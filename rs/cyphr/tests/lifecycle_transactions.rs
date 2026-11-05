@@ -18,15 +18,7 @@ use cyphr::state::HashAlg;
 use cyphr::{Key, ParsedCoz, Principal};
 
 fn make_test_key(id: u8) -> Key {
-    Key {
-        alg: "ES256".to_string(),
-        tmb: Thumbprint::from_bytes(vec![id; 32]),
-        pub_key: vec![id; 64],
-        first_seen: 1000,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::from_pub_key("ES256".to_string(), vec![id; 64]).expect("key binds its tmb").with_first_seen(1000)
 }
 
 /// A dummy `CozJson` for cozies whose signature is never checked: these
@@ -73,7 +65,7 @@ fn lifecycle_pay(tmb: &Thumbprint, typ_suffix: &str, id: &str, now: i64) -> Pay 
 #[test]
 fn principal_delete_parses_and_targets_deleted_state() {
     let key = make_test_key(0xD0);
-    let tmb = key.tmb.clone();
+    let tmb = key.tmb().clone();
     let principal = Principal::implicit(key).unwrap();
     assert_eq!(principal.lifecycle_state(), LifecycleState::Active);
 
@@ -100,7 +92,7 @@ fn principal_delete_parses_and_targets_deleted_state() {
 #[test]
 fn freeze_create_parses_and_targets_frozen_state() {
     let key = make_test_key(0xF0);
-    let tmb = key.tmb.clone();
+    let tmb = key.tmb().clone();
     let principal = Principal::implicit(key).unwrap();
     assert_eq!(principal.lifecycle_state(), LifecycleState::Active);
 
@@ -132,7 +124,7 @@ fn freeze_delete_parses_and_targets_thaw_to_active() {
     // fresh Active principal as a stand-in; the reachable target today is
     // that freeze/delete itself parses.
     let key = make_test_key(0xF1);
-    let tmb = key.tmb.clone();
+    let tmb = key.tmb().clone();
     let principal = Principal::implicit(key).unwrap();
     assert_eq!(principal.lifecycle_state(), LifecycleState::Active);
 
@@ -168,7 +160,7 @@ fn deleted_and_frozen_mutual_exclusion_is_unreachable_today() {
     // parse, extend this test to apply one then the other and assert
     // !(principal.is_deleted() && principal.is_frozen()).
     let key = make_test_key(0xE0);
-    let tmb = key.tmb.clone();
+    let tmb = key.tmb().clone();
     let principal = Principal::implicit(key).unwrap();
     assert!(!principal.is_deleted());
     assert!(!principal.is_frozen());

@@ -223,7 +223,7 @@ pub fn authorize_login<S: eml::Storage>(
         .ok_or(LoginError::KeyNotActive)?;
 
     // Proof of possession: the signature must verify against that key.
-    if coz::verify_json(&login.pay_bytes, &login.sig, &key.alg, &key.pub_key) != Some(true) {
+    if coz::verify_json(&login.pay_bytes, &login.sig, key.alg(), key.pub_key()) != Some(true) {
         return Err(LoginError::InvalidSignature);
     }
 
@@ -500,15 +500,7 @@ mod tests {
         let tmb = coz::Alg::Ed25519
             .compute_thumbprint(&kp.pub_bytes)
             .expect("thumbprint");
-        let key = cyphr::Key {
-            alg: kp.alg.name().to_string(),
-            tmb: tmb.clone(),
-            pub_key: kp.pub_bytes.clone(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let key = cyphr::Key::new(kp.alg.name().to_string(), tmb.clone(), kp.pub_bytes.clone()).expect("key binds its tmb");
         let principal = cyphr::Principal::implicit(key).expect("implicit genesis");
         TestPrincipal {
             principal,

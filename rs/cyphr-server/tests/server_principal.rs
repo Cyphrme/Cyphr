@@ -70,15 +70,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .expect("thumbprint for server key");
     let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
 
-    let genesis_key = cyphr::Key {
-        alg: alg.clone(),
-        tmb: tmb.clone(),
-        pub_key: kp.pub_bytes.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let genesis_key = cyphr::Key::new(alg.clone(), tmb.clone(), kp.pub_bytes.clone()).expect("key binds its tmb");
     let genesis = Genesis::Explicit(vec![genesis_key.clone()]);
 
     // Client-side: build the explicit principal and derive its PG.

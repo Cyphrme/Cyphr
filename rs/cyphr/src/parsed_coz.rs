@@ -496,21 +496,21 @@ pub fn verify_coz(
     new_key: Option<Key>,
 ) -> Result<VerifiedCoz> {
     let pay: Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
-    if pay.alg.as_deref() != Some(key.alg.as_str()) {
+    if pay.alg.as_deref() != Some(key.alg()) {
         return Err(Error::AlgMismatch);
     }
-    if pay.tmb.as_ref() != Some(&key.tmb) {
+    if pay.tmb.as_ref() != Some(key.tmb()) {
         return Err(Error::UnknownKey);
     }
 
     // Verify the signature
-    let valid = coz::verify_json(pay_json, sig, &key.alg, &key.pub_key).unwrap_or(false);
+    let valid = coz::verify_json(pay_json, sig, key.alg(), key.pub_key()).unwrap_or(false);
     if !valid {
         return Err(Error::InvalidSignature);
     }
 
-    let computed = compute_czd(pay_json, sig, &key.alg)
-        .ok_or_else(|| Error::UnsupportedAlgorithm(key.alg.clone()))?;
+    let computed = compute_czd(pay_json, sig, key.alg())
+        .ok_or_else(|| Error::UnsupportedAlgorithm(key.alg().to_owned()))?;
     if computed.as_bytes() != czd.as_bytes() {
         return Err(Error::CzdMismatch);
     }
@@ -524,7 +524,7 @@ pub fn verify_coz(
     };
 
     // Derive hash algorithm from signing key's algorithm
-    let hash_alg = crate::state::hash_alg_from_str(&key.alg)?;
+    let hash_alg = crate::state::hash_alg_from_str(key.alg())?;
 
     // Create coz from parsed Pay
     let cz = ParsedCoz::from_pay(&pay, czd, hash_alg, raw)?;

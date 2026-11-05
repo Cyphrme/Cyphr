@@ -665,10 +665,10 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                     pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
                     tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
                     genesis: GenesisKeyInfo {
-                        alg: genesis_key.alg.clone(),
-                        pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
-                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
-                        first_seen: genesis_key.first_seen,
+                        alg: genesis_key.alg().to_owned(),
+                        pub_key: Base64UrlUnpadded::encode_string(genesis_key.pub_key()),
+                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes()),
+                        first_seen: genesis_key.first_seen(),
                     },
                 }
             },
@@ -790,15 +790,7 @@ mod commit_count_underflow_tests {
             .alg
             .compute_thumbprint(&golden_kp.pub_bytes)
             .expect("golden thumbprint");
-        let golden_key = cyphr::Key {
-            alg: golden_kp.alg.name().to_string(),
-            tmb: golden_tmb.clone(),
-            pub_key: golden_kp.pub_bytes.clone(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let golden_key = cyphr::Key::new(golden_kp.alg.name().to_string(), golden_tmb.clone(), golden_kp.pub_bytes.clone()).expect("key binds its tmb");
 
         let new_kp = coz::Alg::Ed25519.generate_keypair();
         let new_tmb = new_kp
@@ -829,15 +821,7 @@ mod commit_count_underflow_tests {
         let czd =
             coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
 
-        let new_key = cyphr::Key {
-            alg: new_kp.alg.name().to_string(),
-            tmb: new_tmb,
-            pub_key: new_kp.pub_bytes.clone(),
-            first_seen: now,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let new_key = cyphr::Key::new(new_kp.alg.name().to_string(), new_tmb, new_kp.pub_bytes.clone()).expect("key binds its tmb").with_first_seen(now);
 
         let mut principal =
             cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
@@ -892,8 +876,8 @@ mod commit_count_underflow_tests {
         closing.as_object_mut().unwrap().insert(
             "key".to_string(),
             serde_json::json!({
-                "alg": golden_key.alg,
-                "pub": Base64UrlUnpadded::encode_string(&golden_key.pub_key),
+                "alg": golden_key.alg(),
+                "pub": Base64UrlUnpadded::encode_string(golden_key.pub_key()),
                 "tmb": golden_tmb_b64,
             }),
         );

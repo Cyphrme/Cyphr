@@ -28,15 +28,7 @@ fn load_pool() -> test_fixtures::Pool {
 fn pool_key_to_domain(pk: &test_fixtures::PoolKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
     let tmb = pk.compute_tmb().expect("pool tmb");
-    cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 fn pool_key_json(pk: &test_fixtures::PoolKey) -> serde_json::Value {

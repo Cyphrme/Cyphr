@@ -46,15 +46,7 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(alg.to_string(), coz::Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's `genesis_keys` array.
@@ -147,17 +139,9 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(new_key.alg.clone(), coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        ), Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64")).expect("key binds its tmb").with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -279,15 +263,7 @@ async fn send(req: Request<Body>, app: axum::Router) -> (StatusCode, serde_json:
 /// only differ in what (if any) bearer token they attach.
 fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let (mut blobs, _entry) = sign_key_create_commit(principal, pool, "golden", "key_a", now);
 
@@ -296,9 +272,9 @@ fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: 
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -418,15 +394,7 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
     let principal_id = "push-admission-existing-no-token";
 
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let (mut genesis_blobs, genesis_entry) =
         sign_key_create_commit(principal, &pool, "golden", "key_a", 1_700_000_000);
@@ -436,9 +404,9 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     genesis_blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();

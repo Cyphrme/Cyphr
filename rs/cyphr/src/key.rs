@@ -17,43 +17,128 @@ pub struct Revocation {
 ///
 /// Extends the Coz key concept with Cyphr-specific fields for
 /// tracking when keys were added, last used, and revoked.
+///
+/// # Invariant
+///
+/// `tmb` is the thumbprint of (`alg`, `pub_key`). The fields are private
+/// and every constructor establishes this, so no `Key` in existence can
+/// pair one key's thumbprint with another key's public bytes. A signed pay
+/// and every state root bind only the `tmb`; the public key travels
+/// unsigned beside it, so without this invariant anyone able to supply the
+/// sidecar could impersonate a thumbprint.
 #[derive(Debug, Clone)]
 pub struct Key {
-    /// Algorithm identifier (e.g., "ES256").
-    pub alg: String,
-    /// Key thumbprint.
-    pub tmb: Thumbprint,
-    /// Public key bytes.
-    pub pub_key: Vec<u8>,
-    /// When this key was first added to the principal.
-    pub first_seen: i64,
-    /// When this key last signed a valid coz/action.
-    pub last_used: Option<i64>,
-    /// Revocation info (None = active).
-    pub revocation: Option<Revocation>,
-    /// Optional human-readable label.
-    pub tag: Option<String>,
+    alg: String,
+    tmb: Thumbprint,
+    pub_key: Vec<u8>,
+    first_seen: i64,
+    last_used: Option<i64>,
+    revocation: Option<Revocation>,
+    tag: Option<String>,
 }
 
 impl Key {
-    /// Checks that `tmb` is the thumbprint of (`alg`, `pub_key`).
-    ///
-    /// A signed pay and every state root bind only the `tmb`; the public
-    /// key travels unsigned beside it. Without this check anyone who can
-    /// supply the sidecar can pair a victim's `tmb` with their own key.
-    /// Every path that admits a key into a principal calls it.
+    /// Builds a key from a claimed `tmb`, verifying it is the thumbprint of
+    /// (`alg`, `pub_key`). Use this where `tmb` arrives from outside
+    /// (wire sidecars, storage, keystores).
     ///
     /// # Errors
     ///
-    /// - `TmbMismatch`: `tmb` is not the thumbprint of `pub_key` under `alg`
     /// - `UnknownAlg`: `alg` is unknown
-    pub fn verify_binding(&self) -> Result<()> {
-        let computed = coz::compute_thumbprint_for_alg(&self.alg, &self.pub_key)
-            .ok_or(Error::UnknownAlg)?;
-        if computed.as_bytes() != self.tmb.as_bytes() {
+    /// - `TmbMismatch`: `tmb` is not the thumbprint of `pub_key` under `alg`
+    pub fn new(alg: impl Into<String>, tmb: Thumbprint, pub_key: Vec<u8>) -> Result<Self> {
+        let key = Self::from_pub_key(alg, pub_key)?;
+        if key.tmb.as_bytes() != tmb.as_bytes() {
             return Err(Error::TmbMismatch);
         }
-        Ok(())
+        Ok(key)
+    }
+
+    /// Builds a key from its public bytes, computing `tmb`.
+    ///
+    /// # Errors
+    ///
+    /// - `UnknownAlg`: `alg` is unknown or `pub_key` is malformed for it
+    pub fn from_pub_key(alg: impl Into<String>, pub_key: Vec<u8>) -> Result<Self> {
+        let alg = alg.into();
+        let tmb = coz::compute_thumbprint_for_alg(&alg, &pub_key).ok_or(Error::UnknownAlg)?;
+        Ok(Self {
+            alg,
+            tmb,
+            pub_key,
+            first_seen: 0,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        })
+    }
+
+    /// Sets the human-readable label.
+    #[must_use]
+    pub fn with_tag(mut self, tag: Option<String>) -> Self {
+        self.tag = tag;
+        self
+    }
+
+    /// Sets the time the key was first added.
+    #[must_use]
+    pub fn with_first_seen(mut self, first_seen: i64) -> Self {
+        self.first_seen = first_seen;
+        self
+    }
+
+    /// Marks the key revoked. Revocation never touches the tmb binding.
+    #[must_use]
+    pub fn with_revocation(mut self, revocation: Revocation) -> Self {
+        self.revocation = Some(revocation);
+        self
+    }
+
+    /// Algorithm identifier (e.g., "ES256").
+    pub fn alg(&self) -> &str {
+        &self.alg
+    }
+
+    /// Key thumbprint.
+    pub fn tmb(&self) -> &Thumbprint {
+        &self.tmb
+    }
+
+    /// Public key bytes.
+    pub fn pub_key(&self) -> &[u8] {
+        &self.pub_key
+    }
+
+    /// When this key was first added to the principal.
+    pub fn first_seen(&self) -> i64 {
+        self.first_seen
+    }
+
+    /// When this key last signed a valid coz/action.
+    pub fn last_used(&self) -> Option<i64> {
+        self.last_used
+    }
+
+    /// Revocation info (None = active).
+    pub fn revocation(&self) -> Option<&Revocation> {
+        self.revocation.as_ref()
+    }
+
+    /// Optional human-readable label.
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    pub(crate) fn set_first_seen(&mut self, first_seen: i64) {
+        self.first_seen = first_seen;
+    }
+
+    pub(crate) fn set_last_used(&mut self, last_used: i64) {
+        self.last_used = Some(last_used);
+    }
+
+    pub(crate) fn set_revocation(&mut self, revocation: Revocation) {
+        self.revocation = Some(revocation);
     }
 
     /// Returns true if the key is currently active (not revoked).
@@ -74,15 +159,11 @@ mod tests {
     use super::*;
 
     fn make_key(revocation: Option<Revocation>) -> Key {
-        Key {
-            alg: "ES256".to_string(),
-            tmb: Thumbprint::from_bytes(vec![0u8; 32]),
-            pub_key: vec![0u8; 64],
-            first_seen: 1000,
-            last_used: None,
-            revocation,
-            tag: None,
-        }
+        let mut key = Key::from_pub_key("ES256", vec![0u8; 64])
+            .expect("ES256 key")
+            .with_first_seen(1000);
+        key.revocation = revocation;
+        key
     }
 
     #[test]

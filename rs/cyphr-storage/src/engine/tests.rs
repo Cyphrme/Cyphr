@@ -290,15 +290,7 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(alg.to_string(), Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's genesis_keys array.
@@ -1040,15 +1032,7 @@ fn pool_key_to_domain(pk: &test_fixtures::PoolKey) -> cyphr::Key {
 
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
     let tmb = pk.compute_tmb().expect("pool tmb");
-    cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 /// The `"key"` JSON object a raw blob embeds for a key-introducing coz,

@@ -175,15 +175,7 @@ async fn d1_push_refuses_substituted_key_sidecar() {
 fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
-    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb: pk.compute_tmb().expect("tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key::new(pk.alg.clone(), pk.compute_tmb().expect("tmb"), Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64")).expect("key binds its tmb");
     let b64d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
     let mut p = cyphr::Principal::implicit(dom(golden)).expect("genesis");
     let g_prv = b64d(golden.prv.as_ref().expect("golden prv"));
@@ -230,15 +222,7 @@ fn d1_replay_refuses_substituted_key_sidecar() {
     let key_a = pool.get("key_a").expect("key_a");
     let attacker_pub = pool.get("key_b").expect("key_b").pub_key.clone();
 
-    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb: pk.compute_tmb().expect("tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key::new(pk.alg.clone(), pk.compute_tmb().expect("tmb"), Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64")).expect("key binds its tmb");
 
     let p = honest_history(&pool);
     let honest = cyphr_storage::export_commits(&p).expect("export");

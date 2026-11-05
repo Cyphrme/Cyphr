@@ -347,17 +347,9 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(new_key.alg.clone(), coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        ), Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64")).expect("key binds its tmb").with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -417,15 +409,7 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
 /// genesis).
 fn genesis_key(pool: &Pool, name: &str) -> cyphr::Key {
     let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key {
-        alg: k.alg.clone(),
-        tmb: k.compute_tmb().expect("genesis tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(k.alg.clone(), k.compute_tmb().expect("genesis tmb"), Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64")).expect("key binds its tmb")
 }
 
 /// Bootstrap `pid` over real HTTP with an implicit `genesis_name` genesis that
@@ -452,9 +436,9 @@ async fn bootstrap_via_push(
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": gkey.alg,
+            "alg": gkey.alg(),
             "pub": pool.get(genesis_name).unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -674,33 +658,37 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
     bootstrap_golden_key_a(&state, &pool, victim_pid).await;
     let victim_tmb = tmb_b64(&pool, "key_a");
 
-    // Attack: overwrite index[V] -> attacker (alice) pub via a fresh attacker
-    // principal's unauthenticated poison genesis push. `alice` is a distinct
-    // key whose private half the attacker holds.
-    let body =
-        poison_genesis_push_body(&pool, "nr-avail-attacker", "bob", "alice", &victim_tmb, RVK);
+    // Attack: try to overwrite index[V] -> attacker (alice) pub via a fresh
+    // attacker principal's unauthenticated genesis push with a swapped sidecar
+    // pub. `alice` is a distinct key whose private half the attacker holds.
+    let body = poison_genesis_push_body(
+        &pool,
+        &tmb_b64(&pool, "bob"),
+        "bob",
+        "key_a",
+        "alice",
+        RVK,
+    );
     let (pstatus, pjson) = post_push(&state, body).await;
-    assert_eq!(
-        pstatus,
-        StatusCode::CREATED,
-        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
-         it exploits is out of this node's scope: {pjson:?}"
+    assert!(
+        pstatus.is_client_error(),
+        "a push whose sidecar pub does not hash to its tmb must be refused: {pstatus} {pjson:?}"
     );
 
-    // Poison-took precondition: the global index now returns the ATTACKER pub
-    // for the victim's thumbprint. Asserting it makes the DoS genuine (not a
-    // vacuous no-poison pass).
-    let poisoned = state
+    // The poison did not take, so the revoke below runs against a clean
+    // index. The disclosed-key rule (never the index content) still decides
+    // the outcome: that independence is what this test guards.
+    let indexed = state
         .engine
         .indexer()
         .get_key(&victim_tmb)
         .await
         .expect("index lookup succeeds")
-        .expect("V is still indexed after the poison push");
+        .expect("V is still indexed after the refused poison push");
     assert_eq!(
-        poisoned.public_key,
-        pool.get("alice").expect("alice").pub_key,
-        "index[V] must now resolve to the attacker's pub -- the DoS precondition"
+        indexed.public_key,
+        pool.get("key_a").expect("key_a").pub_key,
+        "index[V] must still resolve to the victim's real pub"
     );
 
     // The victim's OWN emergency revoke: discloses key_a's REAL key, self-signed
@@ -1243,28 +1231,28 @@ fn golden(name: &str) -> String {
 // 12 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
 // ========================================================================
 
-/// Build a fresh ATTACKER principal's genesis push whose single added key is
-/// POISONED: the embedded key block declares `declared_tmb_b64` (the victim
-/// thumbprint to hijack) while carrying `attacker_key_name`'s REAL public key.
+/// Build a fresh ATTACKER principal's genesis push that tries to POISON the
+/// global key index: the signed `key/create` introduces `victim_key_name`'s
+/// real thumbprint, but the unsigned sidecar's `pub` is swapped for
+/// `attacker_key_name`'s, so that (if accepted) `index[victim tmb]` would
+/// resolve to the attacker's key. The attacker holds `attacker_key_name`'s
+/// private key and would sign the forged revoke with it.
 ///
-/// No key-introduction site enforces `tmb == H(pub)`, and the global key index
-/// trusts the client-declared `tmb`, overwriting on reuse -- so pushing this
-/// overwrites `index[declared_tmb_b64]` to point at the attacker's pubkey. The
-/// new-principal genesis push is unauthenticated (`genesis_name` self-authorizes
-/// it), so no existing credential is needed. The attacker holds
-/// `attacker_key_name`'s private key and will sign the forged revoke with it.
-///
-/// (The key-introduction `tmb == H(pub)` gap this exploits is broader than
-/// revoke and out of this node's scope; the disclosed-key verification in
-/// `interpret` is what closes the revoke exploit.)
+/// The commit is built honestly through `Principal` (a forged `Key` cannot be
+/// constructed: `tmb` is bound to `pub`), then the sidecar is rewritten on the
+/// wire, which is the only place the attack remains expressible. Only the
+/// server's key-binding check stands between this body and the index.
 fn poison_genesis_push_body(
     pool: &Pool,
     attacker_pid: &str,
     genesis_name: &str,
+    victim_key_name: &str,
     attacker_key_name: &str,
-    declared_tmb_b64: &str,
     now: i64,
 ) -> String {
+    let victim = pool.get(victim_key_name).expect("victim key in pool");
+    let declared_tmb_b64 = victim.compute_tmb_b64().expect("victim tmb");
+    let declared_tmb_b64 = declared_tmb_b64.as_str();
     let genesis = pool.get(genesis_name).expect("genesis key in pool");
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
 
@@ -1288,35 +1276,22 @@ fn poison_genesis_push_body(
 
     // The POISONED key: declared thumbprint = the victim's V, but the actual
     // public key is the attacker's own (whose private key signs the revoke).
-    let victim_tmb_bytes =
-        Base64UrlUnpadded::decode_vec(declared_tmb_b64).expect("victim tmb base64");
-    let attacker_pub =
-        Base64UrlUnpadded::decode_vec(&attacker.pub_key).expect("attacker pub base64");
-    let poisoned_key = cyphr::Key {
-        alg: attacker.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(victim_tmb_bytes),
-        pub_key: attacker_pub,
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let victim_pub = Base64UrlUnpadded::decode_vec(&victim.pub_key).expect("victim pub b64");
+    let honest_victim_key = cyphr::Key::new(
+        victim.alg.clone(),
+        victim.compute_tmb().expect("victim tmb"),
+        victim_pub,
+    )
+    .expect("the victim key binds its tmb")
+    .with_first_seen(now);
 
-    let genesis_key = cyphr::Key {
-        alg: genesis.alg.clone(),
-        tmb: genesis.compute_tmb().expect("genesis tmb"),
-        pub_key: genesis_pub.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let genesis_key = cyphr::Key::new(genesis.alg.clone(), genesis.compute_tmb().expect("genesis tmb"), genesis_pub.clone()).expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
 
     let mut scope = principal.begin_commit();
     scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(poisoned_key))
-        .expect("poison key/create must verify (no tmb==H(pub) gate at key introduction)");
+        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(honest_victim_key))
+        .expect("the honest key/create verifies before the sidecar is swapped");
     let genesis_tmb = coz::Thumbprint::from_bytes(
         Base64UrlUnpadded::decode_vec(&genesis_tmb_b64).expect("genesis tmb base64"),
     );
@@ -1336,7 +1311,7 @@ fn poison_genesis_push_body(
     let entries = cyphr_storage::export_commits(&principal).expect("export the poison commit");
     let new_commit = entries.last().expect("at least one commit after finalize");
 
-    // Embed the (poisoned) key block on the key-introducing cozy, then the
+    // Embed the (swapped-pub) key block on the key-introducing cozy, then the
     // genesis key on the closing cozy -- the never-before-seen-principal wire
     // contract `resolve_genesis` requires.
     let mut key_idx = 0;
@@ -1352,7 +1327,7 @@ fn poison_genesis_push_body(
                     "key".to_string(),
                     serde_json::json!({
                         "alg": key.alg,
-                        "pub": key.pub_key,
+                        "pub": attacker.pub_key,
                         "tmb": key.tmb,
                     }),
                 );
@@ -1367,7 +1342,7 @@ fn poison_genesis_push_body(
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": genesis_key.alg,
+            "alg": genesis_key.alg(),
             "pub": genesis.pub_key,
             "tmb": genesis_tmb_b64,
         }),
@@ -1411,39 +1386,39 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
         "the victim key must log in before the attack (empirical baseline)"
     );
 
-    // Attack step 1: overwrite index[V] -> attacker (alice) pub via a fresh
-    // attacker principal's unauthenticated poison genesis push. `alice` is a
-    // distinct key whose private half the attacker holds (to sign the forge).
+    // Attack step 1: try to overwrite index[V] -> attacker (alice) pub via a
+    // fresh attacker principal's unauthenticated genesis push whose sidecar
+    // `pub` is swapped. `alice` is a distinct key whose private half the
+    // attacker holds (to sign the forge). The attacker principal's id is its
+    // genesis-derived id, so the refusal below is for the swapped sidecar.
     let body = poison_genesis_push_body(
         &pool,
-        "nr-poison-attacker",
+        &tmb_b64(&pool, "bob"),
         "bob",
+        "key_a",
         "alice",
-        &victim_tmb,
         RVK,
     );
     let (pstatus, pjson) = post_push(&state, body).await;
-    assert_eq!(
-        pstatus,
-        StatusCode::CREATED,
-        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
-         it exploits is out of this node's scope: {pjson:?}"
+    assert!(
+        pstatus.is_client_error(),
+        "a push whose sidecar pub does not hash to its tmb must be refused: {pstatus} {pjson:?}"
     );
 
-    // Poison-took precondition: the global index now returns the ATTACKER pub
-    // for the victim's thumbprint. If this failed, the test would be vacuous
-    // (no real poisoning); asserting it makes the attack genuine.
-    let poisoned = state
+    // The poison did not take: the global index still resolves the victim's
+    // thumbprint to the victim's real pub, so the forge below is rejected on
+    // its own merits (the disclosed key does not bind), not on a setup miss.
+    let indexed = state
         .engine
         .indexer()
         .get_key(&victim_tmb)
         .await
         .expect("index lookup succeeds")
-        .expect("V is still indexed after the poison push");
+        .expect("V is still indexed after the refused poison push");
     assert_eq!(
-        poisoned.public_key,
-        pool.get("alice").expect("alice").pub_key,
-        "index[V] must now resolve to the attacker's pub -- the attack precondition"
+        indexed.public_key,
+        pool.get("key_a").expect("key_a").pub_key,
+        "index[V] must still resolve to the victim's real pub"
     );
 
     // Attack step 2: forge a naked revoke of V, signed with and disclosing the

@@ -451,15 +451,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
 async fn push_new_principal_happy_path() {
     let pool = load_pool();
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
 
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let now = 1_700_000_000;
@@ -476,9 +468,9 @@ async fn push_new_principal_happy_path() {
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();

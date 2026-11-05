@@ -73,22 +73,25 @@ fn snapshot(p: &Principal) -> (cyphr::PrincipalRoot, usize, usize, usize) {
     )
 }
 
-/// The honest key: `tmb` is the real thumbprint of `pub`.
-fn honest(k: &Kp) -> Key {
-    key_with_tmb(k, k.tmb.clone())
+/// The only way left to ask for a key carrying `k`'s public bytes under an
+/// arbitrary claimed `tmb`: the checked constructor, which every wire,
+/// storage and keystore path goes through.
+fn try_key_with_tmb(k: &Kp, tmb: coz::Thumbprint) -> cyphr::error::Result<Key> {
+    Key::new(k.alg.to_string(), tmb, k.pubb.clone())
 }
 
-/// A key carrying `k`'s public bytes under an arbitrary claimed `tmb`.
-fn key_with_tmb(k: &Kp, tmb: coz::Thumbprint) -> Key {
-    Key {
-        alg: k.alg.to_string(),
-        tmb,
-        pub_key: k.pubb.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+/// Asserts that forging `Key{tmb: victim, pub: attacker}` is refused at
+/// construction, so no such key exists to hand to any admission path.
+fn assert_forgery_refused(attacker: &Kp, victim: &Kp) {
+    let r = try_key_with_tmb(attacker, victim.tmb.clone());
+    assert!(
+        matches!(r, Err(cyphr::error::Error::TmbMismatch)),
+        "a key pairing the victim's tmb with the attacker's pub was constructed: {r:?}"
+    );
+}
+
+fn honest(k: &Kp) -> Key {
+    try_key_with_tmb(k, k.tmb.clone()).expect("honest key binds its tmb")
 }
 
 fn b64(t: &coz::Thumbprint) -> String {
@@ -176,22 +179,17 @@ fn commit_one(
 // D1 -- tmb must equal H(alg, pub)
 // ============================================================================
 
-/// Backs: a `Key` enters a principal only with `tmb == thumbprint(alg, pub)`
-/// (implicit genesis). Red now because `Principal::implicit` accepts
-/// `Key { tmb: victim, pub: attacker }`, letting an attacker's signature
-/// verify as the victim's thumbprint.
+/// Backs: a `Key` exists only with `tmb == thumbprint(alg, pub)` (implicit
+/// genesis). Turns red if `Key` can be built with a victim's tmb and an
+/// attacker's pub, which would let the attacker's signature verify as the
+/// victim's thumbprint.
 #[test]
 fn d1_implicit_genesis_rejects_unbound_key() {
     let victim = kp();
     let attacker = kp();
-    let forged = key_with_tmb(&attacker, victim.tmb.clone());
-
-    let r = Principal::implicit(forged);
-    assert!(
-        r.is_err(),
-        "implicit genesis accepted Key{{tmb: victim, pub: attacker}}: the attacker now holds the \
-         victim's identity"
-    );
+    // The binding lives in `Key`'s constructor, so implicit genesis never
+    // sees an unbound key: the forged key cannot be built at all.
+    assert_forgery_refused(&attacker, &victim);
 }
 
 /// Backs: same binding at explicit (multi-key) genesis. Red now because
@@ -201,13 +199,9 @@ fn d1_explicit_genesis_rejects_unbound_key() {
     let good = kp();
     let victim = kp();
     let attacker = kp();
-    let forged = key_with_tmb(&attacker, victim.tmb.clone());
-
-    let r = Principal::explicit(vec![honest(&good), forged]);
-    assert!(
-        r.is_err(),
-        "explicit genesis accepted a member with tmb != H(pub)"
-    );
+    // As for implicit genesis: no unbound member can be constructed.
+    assert_forgery_refused(&attacker, &victim);
+    Principal::explicit(vec![honest(&good)]).expect("control: honest members are accepted");
 }
 
 /// Backs: `key/create` with `id = victim tmb` and sidecar `pub = attacker`
@@ -220,12 +214,15 @@ fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
     let attacker = kp();
     let mut p = Principal::implicit(honest(&g)).expect("honest genesis");
     let before = snapshot(&p);
+    assert_forgery_refused(&attacker, &victim);
 
+    // The only sidecar the attacker can build is their own honest key, which
+    // does not match the signed `id` (the victim's tmb).
     let r = commit_one(
         &mut p,
         &g,
         key_create(&g, &victim.tmb, T),
-        Some(key_with_tmb(&attacker, victim.tmb.clone())),
+        Some(honest(&attacker)),
         T + 1,
     );
     assert!(
@@ -251,12 +248,13 @@ fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
     let attacker = kp();
     let mut p = Principal::implicit(honest(&g)).expect("honest genesis");
     let before = snapshot(&p);
+    assert_forgery_refused(&attacker, &victim);
 
     let r = commit_one(
         &mut p,
         &g,
         key_replace(&g, &victim.tmb, T),
-        Some(key_with_tmb(&attacker, victim.tmb.clone())),
+        Some(honest(&attacker)),
         T + 1,
     );
     assert!(
@@ -312,12 +310,9 @@ fn d1_from_checkpoint_rejects_unbound_key() {
     Principal::from_checkpoint(None, ar.clone(), vec![honest(&g), honest(&k2)], None)
         .expect("control: honest checkpoint loads");
 
-    let forged = key_with_tmb(&attacker, k2.tmb.clone());
-    let r = Principal::from_checkpoint(None, ar, vec![honest(&g), forged], None);
-    assert!(
-        r.is_err(),
-        "checkpoint accepted a key whose pub does not hash to its tmb"
-    );
+    // The checkpoint's key set is built from `Key`s, so a swapped `pub`
+    // cannot be expressed: the forged key is refused at construction.
+    assert_forgery_refused(&attacker, &k2);
 }
 
 // ============================================================================

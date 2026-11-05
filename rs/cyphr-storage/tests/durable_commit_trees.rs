@@ -73,15 +73,7 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(alg.to_string(), coz::Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
 }
 
 fn canonicalize(val: &mut serde_json::Value) {
