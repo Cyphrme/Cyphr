@@ -570,18 +570,24 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         anchor: &TaggedDigest,
     ) -> Result<u64, EngineError> {
-        // A digest names a set of holders; the anchor is for this
-        // principal's chain, so take the holder that is this principal.
+        // A digest names a set of holders; only a holder that is this
+        // principal's own commit bounds this chain. A digest held solely by
+        // other principals names no position here (forge #154), and
+        // holders at differing positions of this chain are ambiguous.
         let holders = self.indexer.resolve_digest_holders(anchor).await?;
-        let entity = holders
+        let mut own = holders
             .iter()
-            .find(|h| h.principal_id.as_deref() == Some(principal_id))
-            .or_else(|| holders.first())
-            .ok_or_else(|| {
-                EngineError::NotFound(format!(
-                    "resync anchor {anchor} not indexed (requested for principal {principal_id})"
-                ))
-            })?;
+            .filter(|h| h.principal_id.as_deref() == Some(principal_id));
+        let entity = own.next().ok_or_else(|| {
+            EngineError::NotFound(format!(
+                "resync anchor {anchor} not indexed (requested for principal {principal_id})"
+            ))
+        })?;
+        if own.any(|other| other.sequence != entity.sequence) {
+            return Err(EngineError::InvalidInput(format!(
+                "resync anchor {anchor} is held at several positions of principal {principal_id}"
+            )));
+        }
         entity.sequence.map(|seq| seq + 1).ok_or_else(|| {
             EngineError::NotFound(format!(
                 "resync anchor {anchor} carries no chain position (requested for principal \
@@ -1717,9 +1723,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// `principal_with_keys_before_create_is_pushable_under_its_pg`, whose
     /// commit 0 is a `key/create` pushed under the PG).
     async fn pending_pg_owner(&self, claimed: &str) -> Result<Option<String>, EngineError> {
-        let Some((owner, sequence)) = self.locate_by_pr(claimed).await? else {
+        let located = self.locate_by_pr(claimed).await?;
+        let Some((owner, _)) = located.first().cloned() else {
             return Ok(None);
         };
+        if located.iter().any(|(other, _)| *other != owner) {
+            return Err(EngineError::InvalidInput(format!(
+                "Principal Root {claimed} is held by several principals; address one by its PG"
+            )));
+        }
+        // The same principal may hold a PR at several positions; only its
+        // latest commit can be its current PR.
+        let sequence = located.iter().map(|(_, seq)| *seq).max().unwrap_or_default();
         // An established PG is settled from the index alone: no replay,
         // so naming a public current PR cannot amplify into history loads.
         if self.indexer.is_pg_established(&owner).await? {
@@ -1747,12 +1762,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(holds_claim.then_some(owner))
     }
 
-    /// The principal and commit sequence whose commit has `principal_id`
+    /// Every principal and commit sequence whose commit has `principal_id`
     /// (labelled or bare) as a Principal Root variant, as a locator only:
     /// the caller must verify against replayed state. Any other digest of
     /// a commit (id, SR, AR, CR) is not located, so it cannot trigger a
-    /// replay.
-    async fn locate_by_pr(&self, principal_id: &str) -> Result<Option<(String, u64)>, EngineError> {
+    /// replay. All holders are returned, never one of them: a PR shared by
+    /// several principals is the caller's ambiguity to refuse.
+    async fn locate_by_pr(&self, principal_id: &str) -> Result<Vec<(String, u64)>, EngineError> {
         let candidates: Vec<String> = if principal_id.contains(':') {
             vec![principal_id.to_string()]
         } else {
@@ -1761,23 +1777,24 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .map(|label| format!("{label}:{principal_id}"))
                 .collect()
         };
+        let mut located = Vec::new();
         for candidate in candidates {
             let Ok(digest) = candidate.parse::<cyphr::state::TaggedDigest>() else {
                 continue;
             };
             let holders = self.indexer.resolve_digest_holders(&digest).await?;
-            // A PR names one principal; if a digest has several holders,
-            // take the first that is a Principal Root (canonical order).
-            if let Some(entity) = holders
+            for entity in holders
                 .into_iter()
-                .find(|h| h.entity_type == EntityType::Commit && h.principal_root)
+                .filter(|h| h.entity_type == EntityType::Commit && h.principal_root)
             {
                 if let (Some(principal), Some(sequence)) = (entity.principal_id, entity.sequence) {
-                    return Ok(Some((principal, sequence)));
+                    located.push((principal, sequence));
                 }
             }
         }
-        Ok(None)
+        located.sort_unstable();
+        located.dedup();
+        Ok(located)
     }
 
     /// The canonical (stored) spelling of `principal_id`, or `principal_id`

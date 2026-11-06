@@ -185,7 +185,6 @@ fn meta_with_pr(id: &str, seq: u64, pr: &str) -> IndexableCommit {
 /// holder that sorts first. The single-holder control must name its
 /// holder, so a lookup that always refuses (or names nobody) is caught.
 #[tokio::test]
-#[ignore = "RED(PGK): locate_by_pr takes the first holder"]
 async fn holders_locate_by_pr_never_picks_the_first_holder() {
     let single = test_engine();
     single
@@ -221,7 +220,6 @@ async fn holders_locate_by_pr_never_picks_the_first_holder() {
 /// principal resolves, so a blanket refusal fails. Scope note: forge #154
 /// tracks this gap; whether PGK closes it is the dispatcher's call.
 #[tokio::test]
-#[ignore = "RED(PGK): resync anchor of another principal bounds this chain"]
 async fn holders_patch_anchor_held_only_by_another_principal_is_refused() {
     let engine = test_engine();
     for seq in 0..3u64 {
