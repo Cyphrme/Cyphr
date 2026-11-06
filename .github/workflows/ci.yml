@@ -108,9 +108,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rs
-      - name: Generate lockfile
-        run: cargo generate-lockfile
-        working-directory: rs
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
