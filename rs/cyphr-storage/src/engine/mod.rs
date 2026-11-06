@@ -1901,9 +1901,23 @@ fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
     let mut canonical = serde_json::Map::new();
     canonical.insert("pay".into(), pay);
     canonical.insert("sig".into(), sig.into());
-    if let Some(key) = members.get("key") {
+    // The unsigned `key` member is kept only where the protocol needs it:
+    // on a key-introducing coz and on the `commit/create` genesis carrier,
+    // and only once its `tmb` is checked to be the thumbprint of its `pub`.
+    // Every other coz is stored without it and resolved by `tmb`, so a czd
+    // names exactly one canonical blob: a replayer cannot attach a `key` of
+    // its choosing to bytes that `/e/{czd}` then serves.
+    let typ = canonical
+        .get("pay")
+        .and_then(|p| p.get("typ"))
+        .and_then(|t| t.as_str());
+    let keeps_key = typ
+        .is_some_and(|t| crate::import::is_key_introducing_typ(t) || t.contains("/commit/create"));
+    if let Some(key) = members.get("key").filter(|_| keeps_key) {
         let entry = key_value_to_entry(key)
             .ok_or_else(|| bad("'key' missing required fields (alg, pub, tmb)".into()))?;
+        crate::import::key_entry_to_key(&entry)
+            .map_err(|e| bad(format!("'key' is not a valid key: {e}")))?;
         let mut key = serde_json::Map::new();
         key.insert("alg".into(), entry.alg.into());
         key.insert("pub".into(), entry.pub_key.into());

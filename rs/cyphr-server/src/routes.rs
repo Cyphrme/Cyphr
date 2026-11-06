@@ -731,6 +731,14 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
 }
 
 /// `GET /e/{digest}` — content-addressed entity lookup.
+///
+/// A digest may name several holders (SPEC 7.6 lets principals that share
+/// keys reuse a coz). A czd or blob-hash digest still names one blob: the
+/// store keeps a coz's unsigned `key` member only on key-introducing cozes,
+/// so every holder shares one canonical blob. A state or auth root digest
+/// can differ between holders; the first holder in canonical order is
+/// served. The response is not authenticated by the server: clients verify
+/// what they fetch. The bytes are signed, so that is always possible.
 #[tracing::instrument(skip(state))]
 pub async fn entity(
     State(state): State<Arc<AppState>>,

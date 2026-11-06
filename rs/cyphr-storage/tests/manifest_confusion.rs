@@ -1632,7 +1632,6 @@ async fn rebuild_quarantines_unindexable_manifests() {
 /// and carry no `key`. Turns red if a holder's copy keeps its own `key`
 /// (then the served bytes are whatever the first or last replayer chose).
 #[tokio::test]
-#[ignore = "RED(H1F): a non-key-introducing coz keeps its unsigned key member"]
 async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
     let mut served = Vec::new();
     for attacker_first in [false, true] {
