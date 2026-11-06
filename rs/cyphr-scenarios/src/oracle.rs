@@ -196,12 +196,15 @@ impl Harness {
     async fn proven_evidence(&self, peers: &[&str], p: &Principal) -> BTreeSet<Proven> {
         let mut keys = Keys::new();
         let mut by_peer = BTreeMap::new();
+        let mut chains = BTreeMap::new();
         for name in peers {
             if let Some((id, alg, pub_b64, tmb)) = self.server_key(name).await {
                 keys.insert(tmb.clone(), (alg, pub_b64));
                 by_peer.insert(id, tmb);
             }
-            keys.extend(self.chain_keys(name, p).await);
+            let (chain_keys, view) = self.chain_read(name, p).await;
+            keys.extend(chain_keys);
+            chains.insert((*name).to_owned(), view);
         }
         let mut out = BTreeSet::new();
         for name in peers {
@@ -225,7 +228,7 @@ impl Harness {
             let items = signed::evidence_items(status, &bytes)
                 .unwrap_or_else(|why| panic!("peer `{name}`: {why}"));
             for item in &items {
-                match signed::verify_evidence(item, &keys, &by_peer) {
+                match signed::verify_evidence(item, p.bare(), &keys, &by_peer, &chains[*name]) {
                     Ok(proven) => {
                         out.insert(proven);
                     },
@@ -256,12 +259,13 @@ impl Harness {
         ))
     }
 
-    /// Keys a peer's chain for `p` has introduced, read from its patch.
-    async fn chain_keys(&self, peer: &str, p: &Principal) -> Keys {
+    /// Keys a peer's chain for `p` has introduced, and the chain's roots and
+    /// commit ids, read from its patch.
+    async fn chain_read(&self, peer: &str, p: &Principal) -> (Keys, signed::ChainView) {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         let mut keys = Keys::new();
         let Some(addr) = self.peers.iter().find(|x| x.name == peer).map(|x| x.addr) else {
-            return keys;
+            return (keys, signed::ChainView::default());
         };
         let Ok(resp) = self
             .http
@@ -270,10 +274,10 @@ impl Harness {
             .send()
             .await
         else {
-            return keys;
+            return (keys, signed::ChainView::default());
         };
         let Ok(bytes) = resp.bytes().await else {
-            return keys;
+            return (keys, signed::ChainView::default());
         };
         let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
         for entry in v["payload"]["entries"].as_array().into_iter().flatten() {
@@ -291,7 +295,7 @@ impl Harness {
                 }
             }
         }
-        keys
+        (keys, signed::ChainView::from_patch(&v))
     }
 
     /// Seconds since the tip a peer reports was last updated, by the peer's
