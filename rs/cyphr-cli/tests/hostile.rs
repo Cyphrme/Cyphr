@@ -534,7 +534,6 @@ fn interrupted_rebase_swap_is_refused_not_emptied() {
 /// Claim: a peer that accepts and never answers fails the command with the
 /// typed `unreachable` kind within the timeout, instead of hanging.
 #[test]
-#[ignore = "RED(N16): peer requests have no timeout"]
 fn silent_peer_times_out() {
     let a = User::new();
     let id = a.new_identity();
@@ -559,7 +558,6 @@ fn silent_peer_times_out() {
 /// kind rather than buffered whole. Turns red on an unbounded read (the
 /// 66 MiB body is read and then fails as `malformed`).
 #[test]
-#[ignore = "RED(N16): peer response bodies are unbounded"]
 fn oversized_response_is_refused() {
     let a = User::new();
     let id = a.new_identity();
@@ -573,7 +571,6 @@ fn oversized_response_is_refused() {
 /// chose, including to a plaintext host). Turns red when the second host is
 /// contacted.
 #[test]
-#[ignore = "RED(N16): peer requests follow redirects"]
 fn redirect_is_not_followed() {
     let a = User::new();
     let id = a.new_identity();

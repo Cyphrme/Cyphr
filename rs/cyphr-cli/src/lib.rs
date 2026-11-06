@@ -235,6 +235,10 @@ pub struct Cli {
     #[arg(long, default_value = "cyphr.me")]
     pub authority: String,
 
+    /// Seconds a peer request may take in total before it fails as unreachable
+    #[arg(long, default_value_t = 30)]
+    pub peer_timeout_secs: u64,
+
     /// Output format
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
     pub output: OutputFormat,

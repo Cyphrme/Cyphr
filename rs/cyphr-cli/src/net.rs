@@ -8,10 +8,13 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
-    BindingPolicy, ChannelBinding, ConnectError, Connector, Method, PatchFailure, PatchRequest,
-    Request, fetch_patch,
+    ChannelBinding, ConnectError, Connector, Method, PatchFailure, Request, verify_patch_body,
 };
 use serde_json::Value;
+
+/// Largest response body accepted from a peer. A peer is untrusted, so an
+/// answer is read as a capped stream instead of being buffered whole.
+pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
 
 /// Why an exchange with a peer failed.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,14 @@ pub enum PeerError {
         peer: String,
         /// What the comparison found.
         detail: String,
+    },
+    /// The peer's answer exceeds the size the client will read.
+    #[error("peer {peer} sent more than {limit} bytes")]
+    TooLarge {
+        /// The peer's base URL.
+        peer: String,
+        /// The cap that was exceeded.
+        limit: usize,
     },
     /// The peer's answer is not the expected shape.
     #[error("peer {peer} sent a malformed answer: {reason}")]
@@ -76,6 +87,7 @@ impl PeerError {
             Self::Unreachable { .. } => "unreachable",
             Self::Stale { .. } => "stale",
             Self::Malformed { .. } => "malformed",
+            Self::TooLarge { .. } => "toolarge",
             Self::UnknownVersion { .. } => "unknownversion",
             Self::Diverged { .. } => "forked",
             Self::Status {
@@ -88,57 +100,37 @@ impl PeerError {
             Self::Status { .. } => "other",
         }
     }
-
-    fn from_connect(peer: &str, err: ConnectError) -> Self {
-        match err {
-            ConnectError::Unreachable(reason) => Self::Unreachable {
-                peer: peer.to_owned(),
-                reason,
-            },
-            ConnectError::NonSuccess(status) => Self::Status {
-                peer: peer.to_owned(),
-                status,
-            },
-        }
-    }
-
-    fn from_patch(peer: &str, err: PatchFailure) -> Self {
-        match err {
-            PatchFailure::Unreachable(reason) => Self::Unreachable {
-                peer: peer.to_owned(),
-                reason,
-            },
-            PatchFailure::NonSuccess(status) => Self::Status {
-                peer: peer.to_owned(),
-                status,
-            },
-            PatchFailure::UnsupportedVersion { found, supported } => Self::UnknownVersion {
-                peer: peer.to_owned(),
-                found,
-                supported,
-            },
-            other => Self::Malformed {
-                peer: peer.to_owned(),
-                reason: other.to_string(),
-            },
-        }
-    }
 }
 
 /// One peer reached over HTTP.
+///
+/// Requests carry a total timeout, follow no redirect (a redirect could
+/// leave the peer the user chose, including for a plaintext host), and read
+/// at most [`MAX_RESPONSE_BYTES`].
 pub struct Peer {
     client: reqwest::Client,
     url: String,
 }
 
 impl Peer {
-    /// A peer at `url` (a base URL such as `http://127.0.0.1:8080`).
-    #[must_use]
-    pub fn new(url: &str) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            url: url.trim_end_matches('/').to_owned(),
-        }
+    /// A peer at `url` (a base URL such as `http://127.0.0.1:8080`) whose
+    /// requests give up after `timeout_secs`.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError::Unreachable`] when the HTTP client cannot be built; the
+    /// bounds are never silently dropped.
+    pub fn new(url: &str, timeout_secs: u64) -> Result<Self, PeerError> {
+        let url = url.trim_end_matches('/').to_owned();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| PeerError::Unreachable {
+                peer: url.clone(),
+                reason: format!("cannot build the HTTP client: {e}"),
+            })?;
+        Ok(Self { client, url })
     }
 
     /// The peer's base URL, as named by the caller.
@@ -156,8 +148,10 @@ impl Peer {
     /// contract. The answer is the peer's claim: the server validates any
     /// commit it is later sent, so this is only used to choose what to send.
     pub async fn tip_commit_id(&self, principal: &str) -> Result<Option<String>, PeerError> {
-        let target = format!("/tip?pr={principal}");
-        match self.exchange(&Request::get(target)).await {
+        match self
+            .send(&Request::get(format!("/tip?pr={principal}")))
+            .await
+        {
             Ok(body) => {
                 let doc: Value =
                     serde_json::from_slice(&body).map_err(|e| self.malformed(e.to_string()))?;
@@ -166,8 +160,8 @@ impl Peer {
                     .map(|s| Some(s.to_owned()))
                     .ok_or_else(|| self.malformed("payload.commit_id missing".into()))
             },
-            Err(ConnectError::NonSuccess(404)) => Ok(None),
-            Err(e) => Err(PeerError::from_connect(&self.url, e)),
+            Err(PeerError::Status { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -179,23 +173,25 @@ impl Peer {
     /// [`PeerError`] for a carrier failure, a refusal, or an answer that is
     /// not a well-formed patch.
     pub async fn chain(&self, principal: &str) -> Result<Vec<Vec<Vec<u8>>>, PeerError> {
-        let request = PatchRequest {
+        let target = cyphr_client::PatchRequest {
             principal_id: principal,
             anchor: None,
-        };
-        match fetch_patch(self, &request, BindingPolicy::NotRequired, None).await {
-            Ok(patch) => patch
-                .entries
-                .into_iter()
-                .map(|e| {
-                    e.blobs.map_err(|defect| {
-                        self.malformed(format!("entry {}: {defect:?}", e.sequence))
-                    })
-                })
-                .collect(),
-            Err(PatchFailure::NonSuccess(404)) => Ok(Vec::new()),
-            Err(e) => Err(PeerError::from_patch(&self.url, e)),
         }
+        .target();
+        let body = match self.send(&Request::get(target)).await {
+            Ok(body) => body,
+            Err(PeerError::Status { status: 404, .. }) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let patch = verify_patch_body(&body, principal, None).map_err(|e| self.patch_error(e))?;
+        patch
+            .entries
+            .into_iter()
+            .map(|e| {
+                e.blobs
+                    .map_err(|defect| self.malformed(format!("entry {}: {defect:?}", e.sequence)))
+            })
+            .collect()
     }
 
     /// Send one commit's blobs to the peer.
@@ -210,13 +206,13 @@ impl Peer {
             "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
         });
         let bytes = serde_json::to_vec(&body).map_err(|e| self.malformed(e.to_string()))?;
-        match self.exchange(&Request::post("/push", bytes)).await {
+        match self.send(&Request::post("/push", bytes)).await {
             Ok(_) => Ok(()),
-            Err(ConnectError::NonSuccess(409)) => Err(PeerError::Stale {
+            Err(PeerError::Status { status: 409, .. }) => Err(PeerError::Stale {
                 peer: self.url.clone(),
                 detail: "the peer refused the commit's predecessor (409)".into(),
             }),
-            Err(e) => Err(PeerError::from_connect(&self.url, e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -226,14 +222,24 @@ impl Peer {
             reason,
         }
     }
-}
 
-impl Connector for Peer {
-    fn channel_binding(&self) -> Option<&ChannelBinding> {
-        None
+    fn patch_error(&self, err: PatchFailure) -> PeerError {
+        match err {
+            PatchFailure::UnsupportedVersion { found, supported } => PeerError::UnknownVersion {
+                peer: self.url.clone(),
+                found,
+                supported,
+            },
+            other => self.malformed(other.to_string()),
+        }
     }
 
-    async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
+    /// One request/response exchange, with every bound applied.
+    async fn send(&self, request: &Request) -> Result<Vec<u8>, PeerError> {
+        let unreachable = |e: reqwest::Error| PeerError::Unreachable {
+            peer: self.url.clone(),
+            reason: e.to_string(),
+        };
         let url = format!("{}{}", self.url, request.target);
         let builder = match request.method {
             Method::Get => self.client.get(url),
@@ -243,18 +249,44 @@ impl Connector for Peer {
                 .header("content-type", "application/json")
                 .body(request.body.clone()),
         };
-        let res = builder
+        let mut res = builder
             .header("accept", "application/json")
             .send()
             .await
-            .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         let status = res.status();
         if !status.is_success() {
-            return Err(ConnectError::NonSuccess(status.as_u16()));
+            return Err(PeerError::Status {
+                peer: self.url.clone(),
+                status: status.as_u16(),
+            });
         }
-        res.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| ConnectError::Unreachable(e.to_string()))
+        let mut body = Vec::new();
+        while let Some(chunk) = res.chunk().await.map_err(unreachable)? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(PeerError::TooLarge {
+                    peer: self.url.clone(),
+                    limit: MAX_RESPONSE_BYTES,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    }
+}
+
+/// The `cyphr-client` carrier seam over the same bounded exchange. A
+/// size-cap refusal has no `ConnectError` of its own, so it reads as an
+/// unreachable peer here; the CLI's own calls use the typed path.
+impl Connector for Peer {
+    fn channel_binding(&self) -> Option<&ChannelBinding> {
+        None
+    }
+
+    async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
+        self.send(request).await.map_err(|e| match e {
+            PeerError::Status { status, .. } => ConnectError::NonSuccess(status),
+            other => ConnectError::Unreachable(other.to_string()),
+        })
     }
 }

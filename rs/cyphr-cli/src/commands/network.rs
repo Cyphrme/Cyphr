@@ -43,7 +43,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
-    let peer = Peer::new(peer_url);
+    let peer = Peer::new(peer_url, cli.peer_timeout_secs)?;
 
     let pushed = block_on(async {
         let local = raw_chain(&store, &principal_id).await?;
@@ -91,7 +91,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let genesis = local_genesis(&keystore, identity, &principal_id)?;
-    let peer = Peer::new(peer_url);
+    let peer = Peer::new(peer_url, cli.peer_timeout_secs)?;
 
     let fetched = block_on(async {
         let theirs = peer.chain(&wire).await?;
@@ -250,7 +250,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let wire = wire_id(identity)?;
     let genesis = local_genesis(&keystore, identity, &principal_id)?
         .ok_or_else(|| Error::UnresolvableGenesis(identity.to_owned()))?;
-    let peer = Peer::new(peer_url);
+    let peer = Peer::new(peer_url, cli.peer_timeout_secs)?;
     let path = store_path(cli)?.to_owned();
 
     let old = parse_store(cli)?;
@@ -483,8 +483,11 @@ pub fn verify(
     let answers = block_on(async {
         let mut answers = Vec::new();
         for url in &peers {
-            let peer = Peer::new(url);
-            answers.push((url.clone(), peer.chain(&wire).await));
+            let answer = match Peer::new(url, cli.peer_timeout_secs) {
+                Ok(peer) => peer.chain(&wire).await,
+                Err(e) => Err(e),
+            };
+            answers.push((url.clone(), answer));
         }
         answers
     })?;
