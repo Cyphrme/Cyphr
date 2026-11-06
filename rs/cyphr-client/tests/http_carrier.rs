@@ -165,7 +165,8 @@ async fn large_response_within_the_cap_is_accepted() {
         tokio::spawn(async move {
             let (mut conn, _) = listener.accept().await.expect("accept");
             let _ = read_head(&mut conn).await;
-            let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {len}\r\nconnection: close\r\n\r\n");
+            let head =
+                format!("HTTP/1.1 200 OK\r\ncontent-length: {len}\r\nconnection: close\r\n\r\n");
             conn.write_all(head.as_bytes()).await.expect("head");
             let chunk = vec![b' '; 1 << 16];
             let mut sent = 0;
@@ -176,7 +177,10 @@ async fn large_response_within_the_cap_is_accepted() {
             }
         });
         let connector = HttpConnector::connect(&url, &options()).expect("loopback http");
-        let body = connector.exchange(&Request::get("/patch")).await.expect("large exchange");
+        let body = connector
+            .exchange(&Request::get("/patch"))
+            .await
+            .expect("large exchange");
         assert_eq!(body.len(), len);
     }
 }
