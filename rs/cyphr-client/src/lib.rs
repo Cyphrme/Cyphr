@@ -26,5 +26,5 @@ pub use patch::{
 };
 pub use report::{
     TipReport, TipReportParseError, TipReportRoots, VIEW_STATEMENT_TYP, ViewFailure, ViewStatement,
-    ViewStatementParseError, verify_view_statement,
+    ViewStatementParseError, verify_view, verify_view_statement,
 };

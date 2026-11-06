@@ -29,7 +29,7 @@ use crate::report::TipReport;
 
 /// The response envelope wire version this client reads
 /// (`docs/specs/http-envelope.md`).
-const ENVELOPE_VERSION: u64 = 1;
+pub(crate) const ENVELOPE_VERSION: u64 = 1;
 
 /// The authority key a signed statement must verify against.
 #[derive(Debug, Clone, PartialEq, Eq)]

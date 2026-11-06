@@ -10,7 +10,7 @@ use cyphr::state::TaggedDigest;
 use serde::Deserialize as _;
 use serde_json::Value;
 
-use crate::patch::Statement;
+use crate::patch::{ENVELOPE_VERSION, Statement};
 
 /// The post-commit roots a tip report attests, parsed into the typed
 /// domain: the same four fields [`Roots`] carries on the wire, but each
@@ -238,6 +238,9 @@ pub struct ViewStatement {
     pub pr: coz::Thumbprint,
     pub tree_size: u64,
     pub index: u64,
+    /// The signed `now`: when the peer made the claim. Returned so the
+    /// caller can apply its own freshness policy; see [`verify_view`].
+    pub now: i64,
     pub commit_id: TaggedDigest,
     pub roots: TipReportRoots,
 }
@@ -257,6 +260,9 @@ pub enum ViewStatementParseError {
     /// `index` is not a non-negative integer JSON number.
     #[error("index is not a canonical non-negative integer: {0}")]
     Index(Value),
+    /// `now` is not an integer JSON number.
+    #[error("now is not an integer: {0}")]
+    Now(Value),
     /// `index` is not `tree_size - 1` (an empty tree has no index).
     #[error("index {index} is not tree_size {tree_size} minus one")]
     Inconsistent { tree_size: u64, index: u64 },
@@ -285,6 +291,9 @@ impl ViewStatement {
         if tree_size.checked_sub(1) != Some(index) {
             return Err(ViewStatementParseError::Inconsistent { tree_size, index });
         }
+        let now = pay["now"]
+            .as_i64()
+            .ok_or_else(|| ViewStatementParseError::Now(pay["now"].clone()))?;
         let digest = |field: &'static str| {
             parse_digest_field(&pay["roots"][field])
                 .map_err(|source| ViewStatementParseError::Roots { field, source })
@@ -304,6 +313,7 @@ impl ViewStatement {
             pr,
             tree_size,
             index,
+            now,
             commit_id,
             roots,
         })
@@ -313,6 +323,16 @@ impl ViewStatement {
 /// Why a peer's view statement was not accepted.
 #[derive(Debug, thiserror::Error)]
 pub enum ViewFailure {
+    /// The envelope states a wire version this client does not read;
+    /// nothing of its payload or statement was interpreted.
+    #[error("response envelope version {found} is not the supported {supported}")]
+    UnsupportedVersion {
+        /// The version the peer stated (0 when `v` is missing or not an
+        /// unsigned integer).
+        found: u64,
+        /// The one version this client reads.
+        supported: u64,
+    },
     /// The envelope's statement slot is unsigned or not a statement.
     #[error("the response carries no signed statement")]
     Unsigned,
@@ -322,7 +342,8 @@ pub enum ViewFailure {
     /// The statement's `tmb` is absent or not a thumbprint.
     #[error("the statement names no usable signing key")]
     NoKey,
-    /// The signing key is not active in the peer chain the caller holds.
+    /// The signing key is not active in the peer chain the caller holds:
+    /// never in it, or revoked or replaced since.
     #[error("the signing key is not active in the peer chain")]
     KeyNotActive,
     /// The signature does not verify under the chain's key.
@@ -334,35 +355,48 @@ pub enum ViewFailure {
     /// The statement attests a different principal than the one asked about.
     #[error("the statement attests a different principal")]
     PrincipalMismatch,
+    /// The principal the caller asked about is not a bare canonical
+    /// genesis identifier.
+    #[error("the principal identifier is not a bare canonical genesis identifier")]
+    BadPrincipal,
 }
 
-/// Verify a peer's view statement against the peer principal chain the
-/// caller holds, never against the server's own say-so.
+/// Verify a peer's signed view statement against the peer principal chain
+/// the caller holds, never against the server's own say-so. Pure: no I/O,
+/// so gossip and any other carrier can call it on a coz they already hold;
+/// [`verify_view_statement`] is the HTTP-envelope adapter.
 ///
-/// `envelope` is the `GET /view` response body; `chain` is the peer's own
-/// principal, replayed locally; `pr` is the principal the view is asked
-/// about. The statement is accepted only if its signing key (`pay.tmb`) is
-/// ACTIVE in `chain` and the signature verifies under that chain's key
-/// bytes, so a statement signed by a key the chain does not hold fails even
-/// when its own signature is valid. Because the whole `pay` is signed, a
-/// forged tree size or index fails the signature.
+/// `chain` is the peer's own principal, replayed locally; `pr` is the
+/// principal the view is asked about (not the peer's own).
+///
+/// # What this checks
+///
+/// - `typ` is [`VIEW_STATEMENT_TYP`];
+/// - the signing key (`pay.tmb`) is ACTIVE in `chain`, so a key that was
+///   never in it, or was revoked or replaced, is refused even when its own
+///   signature is valid;
+/// - the signature verifies under that key's bytes (the whole `pay` is
+///   signed, so a forged tree size, index or `now` fails here);
+/// - the claims canonicalize ([`ViewStatement::parse`]) and attest `pr`.
+///
+/// # What this does NOT check
+///
+/// Freshness and pinning. A genuine view captured last year still
+/// verifies, and so does one older than the caller's pinned tip. The
+/// caller owns both: compare the returned [`ViewStatement::now`] and
+/// [`ViewStatement::tree_size`] against its own freshness policy and its
+/// pinned tip before acting on the claim.
 ///
 /// # Errors
 ///
 /// A [`ViewFailure`] naming the first check that refused.
-pub fn verify_view_statement<S: cyphr::eml::Storage>(
-    envelope: &Value,
+pub fn verify_view<S: cyphr::eml::Storage>(
+    coz: &coz::CozJson,
     chain: &cyphr::Principal<S>,
-    pr: &str,
+    pr: &coz::Thumbprint,
 ) -> Result<ViewStatement, ViewFailure> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let statement = envelope
-        .get("statement")
-        .and_then(|s| Statement::deserialize(s).ok());
-    let Some(Statement::Signed(coz)) = statement else {
-        return Err(ViewFailure::Unsigned);
-    };
     if coz.pay["typ"].as_str() != Some(VIEW_STATEMENT_TYP) {
         return Err(ViewFailure::WrongTyp);
     }
@@ -378,15 +412,52 @@ pub fn verify_view_statement<S: cyphr::eml::Storage>(
         .find(|k| k.tmb() == &tmb)
         .ok_or(ViewFailure::KeyNotActive)?;
     if coz.pay["alg"].as_str() != Some(key.alg())
-        || !signature_verifies(&coz, key.alg(), key.pub_key())
+        || !signature_verifies(coz, key.alg(), key.pub_key())
     {
         return Err(ViewFailure::BadSignature);
     }
-    let view = ViewStatement::parse(&coz)?;
-    if view.pr.to_string() != pr.split_once(':').map_or(pr, |(_, digest)| digest) {
+    let view = ViewStatement::parse(coz)?;
+    if view.pr.as_bytes() != pr.as_bytes() {
         return Err(ViewFailure::PrincipalMismatch);
     }
     Ok(view)
+}
+
+/// [`verify_view`] over a `GET /view` response body: gate the envelope version
+/// first, as [`verify_patch_body`](crate::verify_patch_body) does, lift the
+/// signed statement, and verify it. `pr` is the bare canonical b64ut
+/// genesis identifier of the principal asked about.
+///
+/// All of [`verify_view`]'s caveats apply: freshness and pinning are the
+/// caller's.
+///
+/// # Errors
+///
+/// [`ViewFailure::UnsupportedVersion`] for an unknown or missing `v`,
+/// [`ViewFailure::BadPrincipal`] for a malformed `pr`,
+/// [`ViewFailure::Unsigned`] for an unsigned statement, else as [`verify_view`].
+pub fn verify_view_statement<S: cyphr::eml::Storage>(
+    envelope: &Value,
+    chain: &cyphr::Principal<S>,
+    pr: &str,
+) -> Result<ViewStatement, ViewFailure> {
+    // Version first, before any statement is interpreted: a future envelope
+    // may reshape everything below.
+    let found = envelope.get("v").and_then(Value::as_u64).unwrap_or(0);
+    if found != ENVELOPE_VERSION {
+        return Err(ViewFailure::UnsupportedVersion {
+            found,
+            supported: ENVELOPE_VERSION,
+        });
+    }
+    let pr = parse_genesis_id_str(pr).map_err(|_| ViewFailure::BadPrincipal)?;
+    let statement = envelope
+        .get("statement")
+        .and_then(|s| Statement::deserialize(s).ok());
+    let Some(Statement::Signed(coz)) = statement else {
+        return Err(ViewFailure::Unsigned);
+    };
+    verify_view(&coz, chain, &pr)
 }
 
 fn signature_verifies(coz: &coz::CozJson, alg: &str, pub_key: &[u8]) -> bool {
