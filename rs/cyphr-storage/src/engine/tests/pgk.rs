@@ -791,7 +791,7 @@ async fn rekey_reported_id_is_the_pg_once_established() {
 fn nonce_principal_with_gap(g: &Kp, nonce: u8) -> (cyphr::Principal, (String, String)) {
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
     let soft = |g: &Kp| cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
-    let mut apply = |p: &mut cyphr::Principal, pay: serde_json::Value, now: i64| {
+    let apply = |p: &mut cyphr::Principal, pay: serde_json::Value, now: i64| {
         let (pay, sig, czd) = signed(g, pay);
         let mut scope = p.begin_commit();
         scope.verify_and_apply(&pay, &sig, czd, None).expect("apply");
