@@ -176,6 +176,13 @@ impl AppState {
     /// `signer` instead of the server identity -- the seam a non-exportable
     /// key plugs into. Attestor capability still requires a bootstrapped
     /// principal; the identity stays what bearer tokens sign with.
+    ///
+    /// The injector owns rotation: [`AppState::rotate_signing_key`]
+    /// replaces `identity`, not an injected signer, so after a rotation an
+    /// injected signer keeps signing with whatever key it holds. Receipts
+    /// it signs with a rotated-out key are refused by clients holding the
+    /// post-rotation chain; the injector must swap in a signer for the new
+    /// key.
     #[must_use]
     pub fn with_receipt_signer(mut self, signer: Arc<dyn receipt::ReceiptSigner>) -> Self {
         self.receipt_signer = Some(signer);
