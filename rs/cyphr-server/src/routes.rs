@@ -1186,3 +1186,35 @@ mod push_response_tests {
         assert_eq!(env.payload.commit_id, "not-a-digest");
     }
 }
+
+// ========================================================================
+// Operability
+// ========================================================================
+
+/// `GET /healthz` -- can this peer serve? Unauthenticated; the body names
+/// no principal, path, or error text (causes go to the log, not the wire).
+pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.health.storage_writable().await {
+        (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "unavailable",
+                "error": "storage unavailable",
+            })),
+        )
+    }
+}
+
+/// `GET /metrics` -- Prometheus text exposition of the request, refusal and
+/// accepted-push counters.
+pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.metrics.render(),
+    )
+}

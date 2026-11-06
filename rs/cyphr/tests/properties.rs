@@ -123,7 +123,8 @@ proptest! {
         }
     }
 
-    #[test]
+        // @docket: rv-digest-wellformed :: scripts/docket-run rv-digest-wellformed
+#[test]
     fn test_tagged_digest_parsing_roundtrip(
         alg in hash_alg_strategy(),
         digest_bytes in prop::collection::vec(any::<u8>(), 1..100)
@@ -463,6 +464,7 @@ proptest! {
     /// verification (`verify_and_apply`) must succeed since the tampered
     /// arrow is part of what was actually signed; only `finalize()`'s
     /// independent recomputation must catch the mismatch.
+    // @docket: rv-arrow-chain :: scripts/docket-run rv-arrow-chain
     #[test]
     fn test_finalize_commit_rejects_tampered_arrow(
         genesis_idx in arrow_genesis_idx_strategy(),
@@ -616,13 +618,13 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
 }
 
 // Practice: SPEC.md section 7.6 (Idempotency, Uniqueness and Reuse): "For data actions, replaying
-// an previously applied coz is ignored and produces no state change." Claim P1 (RED, owner N09).
-// Mutation that makes this green: `verify_and_record_action` detecting an already-recorded `czd`
-// and returning the current PR without recording it again.
+// an previously applied coz is ignored and produces no state change." Claim P1.
+// Mutation that turns this red: `verify_and_record_action` no longer detecting an already-recorded
+// `czd` and returning the current PR without recording it again.
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,
-        // The expected red must not write a regressions file into the tree.
+        // A failing run must not write a regressions file into the tree.
         failure_persistence: None,
         ..ProptestConfig::default()
     })]
