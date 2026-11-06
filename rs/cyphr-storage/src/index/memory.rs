@@ -7,7 +7,8 @@ use cyphr::state::TaggedDigest;
 
 use super::types::*;
 use super::{
-    DeriveToken, Indexer, IndexerError, IndexerWrite, check_digest_claim, coz_entity_type, digest_claims,
+    DeriveToken, Indexer, IndexerError, IndexerWrite, check_digest_claim, coz_entity_type,
+    digest_claims,
 };
 use crate::blob::Blake3Hash;
 

@@ -161,8 +161,8 @@ pub fn check_digest_claim(
 ) -> Result<(), IndexerError> {
     if held.principal_id.as_deref() != Some(principal_id) || held.entity_type != claimed {
         return Err(IndexerError::Conflict(format!(
-            "digest {digest} already names a {:?} of {:?}; refusing to re-point it to a {claimed:?} \
-             of {principal_id}",
+            "digest {digest} already names a {:?} of {:?}; refusing to re-point it to a \
+             {claimed:?} of {principal_id}",
             held.entity_type, held.principal_id
         )));
     }
