@@ -1400,33 +1400,6 @@ fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>)
     (action, create)
 }
 
-/// Backs the future-timestamp rule: a `now` beyond the verifier clock plus a
-/// small drift is refused on every entry path, whatever the magnitude.
-/// Scenario, default `Principal`: a data action and a `key/create` commit
-/// dated 2^53 - 1 (the largest in-range value, centuries ahead) and
-/// `i64::MAX` are applied. In-range-but-future must be the typed
-/// `TimestampFuture`; `i64::MAX` is out of range and need only be refused.
-/// Turns red if a far-future `now` is accepted on any path (the SC1-F5 red
-/// covers a day ahead; this covers the extremes, where a clock-plus-drift sum
-/// can also overflow). Unit-level on purpose: the extremes cannot be authored
-/// through the server builder, and the HTTP end-to-end is `now_range.rs`.
-#[test]
-#[ignore = "RED(W1): default clock tolerance disabled, extreme future now accepted"]
-fn now_bound_far_future_is_refused_on_every_entry_path() {
-    let (action, create) = now_outcomes(MAX_SAFE);
-    assert!(
-        matches!(action, Err(Error::TimestampFuture)),
-        "action at 2^53 - 1: {action:?}"
-    );
-    assert!(
-        matches!(create, Err(Error::TimestampFuture)),
-        "key/create at 2^53 - 1: {create:?}"
-    );
-    let (action, create) = now_outcomes(i64::MAX);
-    assert!(action.is_err(), "action at i64::MAX accepted");
-    assert!(create.is_err(), "key/create at i64::MAX accepted");
-}
-
 /// Backs the same rule from the other side: it must not over-reach. Scenario:
 /// a data action and a `key/create` dated at the clock, an hour behind it,
 /// and one second ahead of it (inside any non-zero drift window) are all

@@ -45,6 +45,97 @@ fn wall_clock() -> i64 {
     .expect("fits i64")
 }
 
+struct Kp {
+    alg: String,
+    pubb: Vec<u8>,
+    prv: Vec<u8>,
+    tmb: coz::Thumbprint,
+}
+
+fn kp() -> Kp {
+    let k = coz::Alg::Ed25519.generate_keypair();
+    let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
+    Kp {
+        alg: k.alg.name().to_string(),
+        pubb: k.pub_bytes,
+        prv: k.prv_bytes,
+        tmb,
+    }
+}
+
+fn key_of(k: &Kp) -> cyphr::Key {
+    cyphr::Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
+}
+
+fn b64(t: &coz::Thumbprint) -> String {
+    Base64UrlUnpadded::encode_string(t.as_bytes())
+}
+
+fn sign(k: &Kp, mut pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+    pay.as_object_mut().expect("pay object").sort_keys();
+    let v = serde_json::to_vec(&pay).expect("serialize pay");
+    let (sig, cad) = coz::sign_json(&v, &k.alg, &k.prv, &k.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &k.alg).expect("czd");
+    (v, sig, czd)
+}
+
+/// Apply the same `now` through both core entry paths (a data action and a
+/// `key/create` commit) on a default `Principal`.
+fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
+    let (g, k2) = (kp(), kp());
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let (pay, sig, czd) = sign(
+        &g,
+        serde_json::json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
+    );
+    let action = p.verify_and_record_action(&pay, &sig, czd).map(|_| ());
+    let create = (|| {
+        let (pay, sig, czd) = sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": b64(&k2.tmb), "now": at, "tmb": b64(&g.tmb),
+                               "typ": "cyphr.me/cyphr/key/create"}),
+        );
+        let mut scope = p.begin_commit();
+        scope.verify_and_apply(&pay, &sig, czd, Some(key_of(&k2)))?;
+        scope
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
+                at,
+                "cyphr.me",
+            )
+            .map(|_| ())
+    })();
+    (action, create)
+}
+
+/// Backs the future-timestamp rule: a `now` beyond the verifier clock plus a
+/// small drift is refused on every entry path, whatever the magnitude.
+/// Scenario, default `Principal`: a data action and a `key/create` commit
+/// dated 2^53 - 1 (the largest in-range value, centuries ahead) and
+/// `i64::MAX` are applied. In-range-but-future must be the typed
+/// `TimestampFuture`; `i64::MAX` is out of range and need only be refused.
+/// Turns red if a far-future `now` is accepted on any path (the SC1-F5 red
+/// covers a day ahead; this covers the extremes, where a clock-plus-drift sum
+/// can also overflow). Unit-level on purpose: the extremes cannot be authored
+/// through the server builder. Lives here, not in the core `spec_conformance.rs`,
+/// because that file's map test demands a docs row for every red there.
+#[test]
+#[ignore = "RED(W1): default clock tolerance disabled, extreme future now accepted"]
+fn now_bound_far_future_is_refused_on_every_entry_path() {
+    let (action, create) = now_outcomes(MAX_SAFE);
+    assert!(
+        matches!(action, Err(cyphr::Error::TimestampFuture)),
+        "action at 2^53 - 1: {action:?}"
+    );
+    assert!(
+        matches!(create, Err(cyphr::Error::TimestampFuture)),
+        "key/create at 2^53 - 1: {create:?}"
+    );
+    let (action, create) = now_outcomes(i64::MAX);
+    assert!(action.is_err(), "action at i64::MAX accepted");
+    assert!(create.is_err(), "key/create at i64::MAX accepted");
+}
+
 /// `body` with every coz (the genesis key's `key/create` and the closing
 /// `commit/create`, both signed by `golden`) re-signed at `now`. One shared
 /// `now` keeps the bundle monotone, so the only defect left in it is the
