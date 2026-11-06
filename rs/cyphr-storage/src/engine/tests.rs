@@ -1393,3 +1393,59 @@ async fn rebuild_quarantines_a_contested_pg_alias() {
         "the alias winner depends on write order"
     );
 }
+
+/// Claim: whatever the reason a manifest is quarantined, the indexed chain
+/// of its principal is a gapless prefix: here seq 1 names a blob the store
+/// lacks, so seq 2 must be left out too and the next honest commit still
+/// lands at seq 1's successor-free position (the chain length). Turns red if
+/// the chain comes out `[0, 2]`.
+#[tokio::test]
+#[ignore = "RED(H1F): an unsupported manifest leaves a gap"]
+async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
+    use super::QuarantineReason;
+    let engine = test_engine();
+    for (seq, now) in [(0u64, 1), (2, 3)] {
+        let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
+        engine
+            .store_blobs_and_manifest(&[blob.as_bytes()], make_meta("alice", seq, now))
+            .await
+            .unwrap();
+    }
+    let mut lost = make_meta("alice", 1, 2);
+    let gone = crate::blob::Blake3Hash::from_bytes([0x5a; 32]);
+    lost.blob_hashes = vec![gone];
+    lost.cozies[0].blob_hash = gone;
+    let mut bytes = COMMIT_MANIFEST_PREFIX.to_vec();
+    serde_json::to_writer(
+        &mut bytes,
+        &CommitManifest {
+            kind: COMMIT_MANIFEST_KIND.into(),
+            commit: lost,
+        },
+    )
+    .unwrap();
+    engine.blob_store().put(&bytes).await.unwrap();
+
+    let report = engine
+        .rebuild_index_with_report()
+        .await
+        .expect("rebuild survives");
+    let chain = engine
+        .indexer()
+        .get_commit_chain("alice", None, None)
+        .await
+        .unwrap();
+    let seqs: Vec<u64> = chain.iter().map(|c| c.sequence).collect();
+    assert_eq!(
+        seqs,
+        vec![0],
+        "the chain must be a gapless prefix, got {seqs:?}"
+    );
+    assert_eq!(report.quarantined.len(), 2, "{report:?}");
+    assert!(
+        report
+            .quarantined
+            .iter()
+            .any(|q| matches!(q.reason, QuarantineReason::Orphaned(_)))
+    );
+}
