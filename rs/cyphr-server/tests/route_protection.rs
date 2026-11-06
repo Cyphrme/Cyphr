@@ -924,7 +924,7 @@ async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &
 /// Backs: a session lives only while its login key is alive, and a naked
 /// revoke (SPEC 6.4) kills a key globally without touching the chain. The
 /// key that opened a session is naked-revoked after login: its token is
-/// refused at `/push` and by `require_bearer`, while the sibling key's
+/// refused at `/push`, while the sibling key's
 /// session (control) still authorizes the same push. Turns red if: the
 /// session check consults the chain only (the death-set is skipped), so
 /// the token keeps working until it expires. End to end: yes.
@@ -962,25 +962,6 @@ async fn token_key_naked_revoked_session_refused() {
         status,
         StatusCode::UNAUTHORIZED,
         "a naked-revoked key's session must be refused at push: {json:?}"
-    );
-
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::AUTHORIZATION,
-        format!("Bearer {doomed}").parse().unwrap(),
-    );
-    let identity = state.identity.as_deref().unwrap();
-    let refused = cyphr_server::auth::middleware::require_bearer(
-        &headers,
-        identity,
-        &state.engine,
-        &state.observations,
-        real_now(),
-    )
-    .await;
-    assert!(
-        refused.is_err(),
-        "a naked-revoked key's session must be refused by require_bearer"
     );
 
     let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;

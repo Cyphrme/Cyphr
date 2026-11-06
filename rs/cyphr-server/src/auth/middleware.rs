@@ -1,14 +1,13 @@
 //! Reusable bearer-token admission logic for HTTP routes (SPEC.md 17.4).
 //!
 //! This module wraps [`auth::token::verify_token`](crate::auth::token) for
-//! use at any route: [`require_bearer`] for a route that must reject
-//! every request with no valid token, and [`check_push_admission`] for
-//! `/push`'s specific OPTIONAL admission knob (ARCHITECT RULING R7): no
-//! token is always fine, a *presented* token must verify and must name
-//! the principal being pushed to.
+//! use at a route: [`check_push_admission`] is `/push`'s specific
+//! OPTIONAL admission knob (ARCHITECT RULING R7): no token is always
+//! fine, a *presented* token must verify and must name the principal
+//! being pushed to.
 //!
 //! A token's signature and `exp` prove only that the server once issued
-//! it. Both entry points therefore also re-check the key that logged in
+//! it. The admission check therefore also re-checks the key that logged in
 //! against the principal's current chain ([`check_session_key`], #162):
 //! a session lives only while the key that opened it is active.
 
@@ -161,31 +160,6 @@ pub async fn check_session_key(
     Ok(())
 }
 
-/// Require a valid bearer token: reject a missing, malformed, or invalid
-/// token alike, and one whose login key has left the chain. Real,
-/// independently-tested infrastructure for a future route that needs
-/// mandatory bearer auth -- no current route in this campaign uses it (R7
-/// keeps `/push` optional and the witness-read routes public), so nothing
-/// calls this yet.
-pub async fn require_bearer(
-    headers: &HeaderMap,
-    identity: &ServerIdentity,
-    engine: &Engine,
-    observations: &ObservationStore,
-    now: i64,
-) -> Result<Claims, AppError> {
-    match verify_bearer_if_present(headers, identity, now) {
-        Ok(Some(claims)) => {
-            check_session_key(engine, observations, &claims).await?;
-            Ok(claims)
-        },
-        Ok(None) => Err(AppError::unauthorized("missing bearer token")),
-        Err(e) => Err(AppError::unauthorized(format!(
-            "bearer token rejected: {e}"
-        ))),
-    }
-}
-
 /// `/push`'s admission knob (ARCHITECT RULING R7): a bearer token is
 /// never required -- the pushed commit bundle's own signatures are the
 /// real authorization -- but if one IS presented it must verify, its
@@ -277,7 +251,7 @@ mod tests {
 
     // --- verify_bearer_if_present ---
 
-    // --- require_bearer / check_push_admission (paths decided before any
+    // --- check_push_admission (paths decided before any
     // chain lookup; the chain re-check and the subject match are covered
     // end to end in tests/route_protection.rs, which has real principals) ---
 
@@ -291,46 +265,6 @@ mod tests {
         };
         let state = crate::AppState::new(config).expect("open AppState");
         (state, dir)
-    }
-
-    /// Backs: a protected route with no bearer token is refused 401.
-    /// Unit: `require_bearer` has no mounted route that e2e can drive.
-    #[tokio::test]
-    async fn require_bearer_rejects_missing_token() {
-        let identity = test_identity();
-        let (state, _dir) = test_engine();
-        let result = require_bearer(
-            &HeaderMap::new(),
-            &identity,
-            &state.engine,
-            &state.observations,
-            1_100,
-        )
-        .await;
-        assert!(result.is_err());
-    }
-
-    /// A validly signed, unexpired token that names no login key (not
-    /// minted by a login) is refused. Here its principal is also unknown;
-    /// the no-login-key arm for a stored principal is pinned end to end by
-    /// `token_key_absent_or_missing_is_refused_at_push`.
-    #[tokio::test]
-    async fn require_bearer_rejects_token_without_login_key() {
-        let identity = test_identity();
-        let (state, _dir) = test_engine();
-        let token = identity
-            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
-            .expect("issue token");
-        let headers = headers_with_bearer(&token);
-        let result = require_bearer(
-            &headers,
-            &identity,
-            &state.engine,
-            &state.observations,
-            1_100,
-        )
-        .await;
-        assert!(result.is_err(), "a token with no login key must be refused");
     }
 
     /// Backs: a push carrying a garbage bearer token is refused rather than treated as tokenless.
