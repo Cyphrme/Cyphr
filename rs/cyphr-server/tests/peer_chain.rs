@@ -345,3 +345,52 @@ async fn pin_naming_another_server_pg_is_refused() {
         "{refused:?}"
     );
 }
+
+/// Claim (snapshot trust): keys are judged against the held chain snapshot.
+/// After the server rotates away from a key, a tip still signed by that key
+/// is accepted until the caller follows, and refused as `KeyNotActive`
+/// once it has. The caller owns re-follow policy; the verifier does not
+/// guess.
+///
+/// Turns red if: `verify_tip` consults anything newer than the held chain
+/// (accepting nothing stale), or `follow` does not carry the retirement
+/// into the held chain.
+/// End-to-end scenario: yes (pin, follow, rotation, stale signer, re-follow).
+#[tokio::test]
+async fn retired_key_is_accepted_until_the_caller_follows_again() {
+    let (state, retired, _dir, pr) = attestor_state().await;
+    let app = build_router(state.clone());
+    push_golden(&app, &pr).await;
+    let (pg, genesis_key) = discover(&app).await;
+    let mut held = PeerChain::pin(&pg, genesis_key);
+    held.follow(&RouterConnector::new(app.clone()))
+        .await
+        .expect("follow before the rotation");
+
+    drop(app);
+    let mut state = Arc::try_unwrap(state)
+        .unwrap_or_else(|_| panic!("no router or connector may outlive the pre-rotation phase"));
+    state
+        .rotate_signing_key(&coz::Alg::Ed25519.generate_keypair())
+        .await
+        .expect("rotate the signing key");
+    // The stale-backend seam: attestations keep signing with the old key.
+    let app = build_router(Arc::new(state.with_receipt_signer(retired)));
+    let (status, tip) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
+    assert_eq!(status, StatusCode::OK, "{tip:?}");
+
+    assert!(
+        held.verify_tip(&tip, &pr).is_ok(),
+        "the snapshot still holds the retired key until the caller follows"
+    );
+    held.follow(&RouterConnector::new(app))
+        .await
+        .expect("follow after the rotation");
+    assert!(
+        matches!(
+            held.verify_tip(&tip, &pr),
+            Err(PeerFailure::KeyNotActive { .. })
+        ),
+        "after following, the retired key is refused"
+    );
+}

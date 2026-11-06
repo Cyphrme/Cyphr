@@ -6,9 +6,18 @@
 //! principal, replayed locally by the core from the pinned genesis, and
 //! judges every statement (a signed tip, a view) against the keys ACTIVE in
 //! that chain: a statement is never accepted by key bytes alone, and a key
-//! the chain retired is refused. The pattern is the pinned-origin,
+//! the held chain has retired is refused. The pattern is the pinned-origin,
 //! verified-log shape of C2SP `tlog-checkpoint`: trust is rooted in what
 //! the client pinned, and everything else is verified up from it.
+//!
+//! # Snapshot trust
+//!
+//! Keys are judged against the held chain SNAPSHOT, as with
+//! [`verify_view`](crate::verify_view): a key the peer retires after the
+//! last [`follow`](PeerChain::follow) stays accepted until the caller
+//! follows again. The caller owns the re-follow policy (how often, and
+//! after which signal); [`PeerChain::verify_tip_following`] re-follows
+//! only to admit a key the snapshot lacks, never to retire one.
 //!
 //! Nothing the peer says about its own chain is trusted beyond the signed
 //! commits the core verifies on replay. A followed patch is replayed onto a
@@ -229,8 +238,12 @@ impl PeerChain {
     }
 
     /// Verify a signed `/tip` envelope against the keys active in the held
-    /// chain. `principal_id` is the principal the tip is about (not the
-    /// peer's own).
+    /// chain snapshot. `principal_id` is the principal the tip is about (not
+    /// the peer's own).
+    ///
+    /// A key the peer retired after the last [`follow`](Self::follow) is
+    /// still active in the snapshot and still accepted; call `follow` to
+    /// learn of the retirement.
     ///
     /// # Errors
     ///
@@ -293,6 +306,11 @@ impl PeerChain {
     /// pin is key bytes, not a chain) or the signing key is not active in
     /// it (the peer may have rotated). At most one fetch: following cannot
     /// conjure a key, so a key the followed chain still lacks stays refused.
+    ///
+    /// This admits keys; it does not retire them. On a chain already
+    /// followed, a key the snapshot still holds verifies without a fetch
+    /// even if the peer has since retired it; re-follow policy is the
+    /// caller's.
     ///
     /// # Errors
     ///
