@@ -81,6 +81,9 @@ pub enum SyncOutcome {
 pub enum SyncFailure {
     /// The witness's own local tip lookup failed before any network call.
     LocalStorageError(String),
+    /// The carrier fell short of the channel binding the witness requires;
+    /// no request was sent.
+    ChannelBindingRefused(cyphr_client::BindingError),
     /// The upstream authority could not be reached (network/transport
     /// error).
     UpstreamUnreachable(String),
@@ -536,5 +539,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Claim: a refused channel binding surfaces as its own failure, not as
+    /// a connectivity problem an operator would chase on the network. Unit
+    /// level by exception: the witness requires no binding today, so no
+    /// scenario can provoke the refusal end to end.
+    #[test]
+    fn binding_refusal_maps_to_its_own_failure() {
+        let refusal = PatchFailure::Binding(cyphr_client::BindingError::Missing {
+            required: cyphr_client::BindingKind::NoiseHandshakeHash,
+        });
+        assert!(
+            matches!(
+                SyncFailure::from(refusal),
+                SyncFailure::ChannelBindingRefused(_)
+            ),
+            "a binding refusal must not be reported as an unreachable upstream"
+        );
     }
 }

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
     AuthorityKey, BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError,
-    Connector, HttpConnector, PatchFailure, PatchRequest, fetch_patch,
+    Connector, HttpConnector, PatchFailure, PatchRequest, Request, fetch_patch,
     verify_authenticated_envelope,
 };
 
@@ -87,7 +87,7 @@ impl Connector for Pipe {
         self.binding.as_ref()
     }
 
-    async fn exchange(&self, _request: &[u8]) -> Result<Vec<u8>, ConnectError> {
+    async fn exchange(&self, _request: &Request) -> Result<Vec<u8>, ConnectError> {
         self.exchanges.fetch_add(1, Ordering::SeqCst);
         Ok(self.body.clone())
     }
@@ -241,5 +241,98 @@ fn connector_envelope_verifier_refuses_forgeries() {
         verify_authenticated_envelope(&body, &auth.key, &format!("SHA-256:{}", b64(8)))
             .unwrap_err(),
         PatchFailure::PrincipalMismatch
+    );
+}
+
+/// Parse one HTTP/1.1 request off `sock`, answer `method SP target LF body`.
+async fn echo_http(sock: &mut tokio::net::TcpStream) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 1024];
+    let (head_end, len) = loop {
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&raw[..i]).to_ascii_lowercase();
+            let len = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            break (i + 4, len);
+        }
+    };
+    while raw.len() < head_end + len {
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buf[..n]);
+    }
+    let line = String::from_utf8_lossy(&raw)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let mut parts = line.split(' ');
+    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let mut reply = format!("{method} {target}\n").into_bytes();
+    reply.extend_from_slice(&raw[head_end..]);
+    let head = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        reply.len()
+    );
+    let _ = sock.write_all(head.as_bytes()).await;
+    let _ = sock.write_all(&reply).await;
+    let _ = sock.shutdown().await;
+}
+
+/// An in-memory carrier that echoes the whole request it was given.
+struct EchoPipe;
+
+impl Connector for EchoPipe {
+    fn channel_binding(&self) -> Option<&ChannelBinding> {
+        None
+    }
+
+    async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
+        let method = match request.method {
+            cyphr_client::Method::Get => "GET",
+            cyphr_client::Method::Post => "POST",
+        };
+        let mut reply = format!("{method} {}\n", request.target).into_bytes();
+        reply.extend_from_slice(&request.body);
+        Ok(reply)
+    }
+}
+
+/// Claim: a write (method, target and a binary body) crosses the seam
+/// intact on every carrier, so push, evidence and gossip can run over it.
+/// Red if a carrier drops the method or the body, or the trait cannot
+/// carry them.
+#[tokio::test]
+async fn connector_post_body_round_trips() {
+    let body = vec![0u8, 1, 2, 255, 10, 13, 10, 13];
+    let request = Request::post("/evidence?x=1", body.clone());
+    let mut expected = b"POST /evidence?x=1\n".to_vec();
+    expected.extend_from_slice(&body);
+
+    assert_eq!(EchoPipe.exchange(&request).await.unwrap(), expected);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move { echo_http(&mut sock).await });
+        }
+    });
+    let http = HttpConnector::new(reqwest::Client::new(), &format!("http://{addr}"));
+    assert_eq!(
+        http.exchange(&request).await.unwrap(),
+        expected,
+        "the HTTP carrier changed the request"
     );
 }

@@ -73,15 +73,57 @@ pub enum ConnectError {
     NonSuccess(u16),
 }
 
+/// The HTTP-shaped verbs a request can carry. Push, evidence and gossip
+/// run over the same seam as sync, so a request is a whole message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// Read: no body.
+    Get,
+    /// Write: the body carries the payload.
+    Post,
+}
+
+/// One request to the peer: method, target and body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    /// What to do with the target.
+    pub method: Method,
+    /// The request target, e.g. `/patch?pr=...`.
+    pub target: String,
+    /// The payload; empty for a `Get`.
+    pub body: Vec<u8>,
+}
+
+impl Request {
+    /// A body-less read of `target`.
+    #[must_use]
+    pub fn get(target: impl Into<String>) -> Self {
+        Self {
+            method: Method::Get,
+            target: target.into(),
+            body: Vec::new(),
+        }
+    }
+
+    /// A write of `body` to `target`.
+    #[must_use]
+    pub fn post(target: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            method: Method::Post,
+            target: target.into(),
+            body,
+        }
+    }
+}
+
 /// A carrier that moves one request to the peer and the response back.
 pub trait Connector {
     /// The binding established by this carrier's handshake, if any.
     fn channel_binding(&self) -> Option<&ChannelBinding>;
 
-    /// Send `request` (a request target such as `/patch?pr=...`) and
-    /// return the response body bytes.
+    /// Send `request` and return the response body bytes.
     fn exchange(
         &self,
-        request: &[u8],
+        request: &Request,
     ) -> impl Future<Output = Result<Vec<u8>, ConnectError>> + Send;
 }

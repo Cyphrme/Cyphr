@@ -22,7 +22,9 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::connector::{BindingError, BindingPolicy, ChannelBinding, ConnectError, Connector};
+use crate::connector::{
+    BindingError, BindingPolicy, ChannelBinding, ConnectError, Connector, Request,
+};
 use crate::report::TipReport;
 
 /// The authority key a signed statement must verify against.
@@ -161,7 +163,7 @@ pub async fn fetch_patch<C: Connector>(
         }
     }
 
-    let body = connector.exchange(request.target().as_bytes()).await?;
+    let body = connector.exchange(&Request::get(request.target())).await?;
     let mut verified = verify_patch_body(&body, request.principal_id, expected)?;
     verified.binding = connector.channel_binding().cloned();
     Ok(verified)

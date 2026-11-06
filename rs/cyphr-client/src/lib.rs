@@ -15,7 +15,8 @@ mod report;
 mod http;
 
 pub use connector::{
-    BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector,
+    BindingError, BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector, Method,
+    Request,
 };
 #[cfg(feature = "http")]
 pub use http::HttpConnector;

@@ -1,6 +1,6 @@
 //! The HTTP carrier: each request target is a `GET` against a base URL.
 
-use crate::connector::{ChannelBinding, ConnectError, Connector};
+use crate::connector::{ChannelBinding, ConnectError, Connector, Request};
 
 /// A [`Connector`] over HTTP `GET`. It exposes no channel binding.
 pub struct HttpConnector {
@@ -24,9 +24,8 @@ impl Connector for HttpConnector {
         None
     }
 
-    async fn exchange(&self, request: &[u8]) -> Result<Vec<u8>, ConnectError> {
-        let target = std::str::from_utf8(request)
-            .map_err(|err| ConnectError::Unreachable(format!("request target not UTF-8: {err}")))?;
+    async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
+        let target = &request.target;
         let res = self
             .client
             .get(format!("{}{target}", self.base_url))
