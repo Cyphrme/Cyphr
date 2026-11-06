@@ -1530,7 +1530,16 @@ fn key_json_of(who: &str) -> serde_json::Value {
     serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.compute_tmb_b64().unwrap()})
 }
 
+/// No regression file: tests must not write to the tree.
+fn no_regression_file() -> proptest::prelude::ProptestConfig {
+    proptest::prelude::ProptestConfig {
+        failure_persistence: None,
+        ..proptest::prelude::ProptestConfig::default()
+    }
+}
+
 proptest::proptest! {
+    #![proptest_config(no_regression_file())]
     /// Property: whatever unsigned members a replayer or relayer attaches to
     /// the `key` sidecar (a `tag`, a `now`, any extra member, any member
     /// order), `canonical_coz` returns the same bytes, for every coz kind
@@ -1541,7 +1550,6 @@ proptest::proptest! {
     /// blob. Turns red if any unsigned sidecar member, or a foreign key on a
     /// carrier, survives.
     #[test]
-    #[ignore = "RED(H1F): the sidecar keeps unsigned members and any commit/create key"]
     fn canonical_coz_is_independent_of_the_unsigned_sidecar(
         tag in proptest::option::of("[ -~]{0,12}"),
         now in proptest::option::of(proptest::prelude::any::<i64>()),
@@ -1566,7 +1574,8 @@ proptest::proptest! {
             ("cyphr.me/cyphr/commit/create", "alice", "alice"),
         ] {
             let shown = key_json_of(shown);
-            let plain = canonical_coz(&coz_with_sidecar(typ, signer, Some(shown.clone())), 0).unwrap();
+            let plain =
+                canonical_coz(&coz_with_sidecar(typ, signer, Some(shown.clone())), 0).unwrap();
             let varied = canonical_coz(
                 &coz_with_sidecar(typ, signer, Some(vary(shown.clone()))),
                 0,

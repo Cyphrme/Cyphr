@@ -1684,7 +1684,6 @@ async fn action_only_bundle_cannot_create_a_principal() {
 /// sidecar keeps only `alg`, `pub` and `tmb`. Turns red if any unsigned
 /// sidecar member survives canonicalization.
 #[tokio::test]
-#[ignore = "RED(H1F): the stored sidecar keeps unsigned tag and now"]
 async fn replayed_key_create_sidecar_cannot_split_the_czd() {
     use replay::*;
     let e = mem_engine();
@@ -1748,7 +1747,6 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
 /// signed sequence-1 `commit/create`; it must be stored without it. Turns
 /// red if any foreign key survives on a commit/create.
 #[tokio::test]
-#[ignore = "RED(H1F): a commit/create keeps any self-consistent key"]
 async fn relayed_commit_create_cannot_carry_a_foreign_key() {
     use replay::*;
     let e = mem_engine();

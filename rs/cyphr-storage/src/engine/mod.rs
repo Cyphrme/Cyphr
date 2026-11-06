@@ -1918,9 +1918,14 @@ fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
         .get("pay")
         .and_then(|p| p.get("typ"))
         .and_then(|t| t.as_str());
-    let keeps_key =
-        typ.is_some_and(|t| crate::import::is_key_introducing_typ(t) || is_commit_create_typ(t));
-    if let Some(key) = members.get("key").filter(|_| keeps_key) {
+    let pay_tmb = canonical
+        .get("pay")
+        .and_then(|p| p.get("tmb"))
+        .and_then(|t| t.as_str())
+        .map(str::to_string);
+    let introduces = typ.is_some_and(crate::import::is_key_introducing_typ);
+    let carrier = typ.is_some_and(is_commit_create_typ);
+    if let Some(key) = members.get("key").filter(|_| introduces || carrier) {
         let entry = key_value_to_entry(key)
             .ok_or_else(|| bad("'key' missing required fields (alg, pub, tmb)".into()))?;
         crate::import::key_entry_to_key(&entry).map_err(|e| match e {
@@ -1929,17 +1934,19 @@ fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
             crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
             other => bad(format!("'key' is not a valid key: {other}")),
         })?;
-        let mut key = serde_json::Map::new();
-        key.insert("alg".into(), entry.alg.into());
-        key.insert("pub".into(), entry.pub_key.into());
-        key.insert("tmb".into(), entry.tmb.into());
-        if let Some(tag) = entry.tag {
-            key.insert("tag".into(), tag.into());
+        // A genesis carrier is signed by its own key, so its sidecar is the
+        // signer's: a `commit/create` whose key is anyone else's carries a
+        // relayer's attachment and keeps none. Only `alg`, `pub` and `tmb`
+        // are kept: `tag` and `now` are unsigned labels, and the protocol
+        // sets a key's first-seen time from the signed `pay.now` when it
+        // applies the introducing coz.
+        if introduces || pay_tmb.as_deref() == Some(entry.tmb.as_str()) {
+            let mut key = serde_json::Map::new();
+            key.insert("alg".into(), entry.alg.into());
+            key.insert("pub".into(), entry.pub_key.into());
+            key.insert("tmb".into(), entry.tmb.into());
+            canonical.insert("key".into(), key.into());
         }
-        if let Some(now) = entry.now {
-            key.insert("now".into(), now.into());
-        }
-        canonical.insert("key".into(), key.into());
     }
     let mut canonical = serde_json::Value::Object(canonical);
     crate::import::canonicalize_value(&mut canonical);
