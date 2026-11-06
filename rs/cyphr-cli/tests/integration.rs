@@ -160,6 +160,22 @@ fn test_key_list_accepts_thumbprint_starting_with_dash() {
     assert_eq!(list["active_keys"].as_array().unwrap().len(), 2);
 }
 
+/// Backs: a peer URL that is plain http:// to a non-loopback host is refused before any
+/// connection, and the refusal names the `--allow-cleartext` opt-in.
+#[test]
+fn test_cleartext_peer_refused_and_names_opt_in_flag() {
+    let cli = CliTest::new();
+
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={tmb}");
+
+    let err = cli
+        .run(&["fetch", &identity_arg, "--peer=http://192.0.2.1:8080"])
+        .expect_err("cleartext to a remote host must be refused");
+    assert!(err.contains("--allow-cleartext"), "stderr: {err}");
+}
+
 /// Backs: an exported commit record carries its real auth root and state root (SPEC 4 commit
 /// fields), not placeholders.
 #[test]
