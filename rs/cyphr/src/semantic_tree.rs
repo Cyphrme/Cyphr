@@ -51,6 +51,7 @@ use coz::Thumbprint;
 use crate::commit_root::{MaltHasher, hash_alg_to_u64};
 use crate::error::{Error, Result};
 use crate::multihash::MultihashDigest;
+use crate::nonce::{NonceLevel, NonceSets};
 use crate::state::{AuthRoot, DataRoot, HashAlg, KeyRoot, StateRoot};
 
 /// Collection-node arity: dense, left-filled, one leaf per item. At size
@@ -112,7 +113,7 @@ fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<
 /// `compute_dr`. This keeps every algorithm's leaf entry at that
 /// algorithm's own native width, which `EpochTree`'s generic node fold
 /// requires of its siblings.
-fn serialize_converted(bytes: &[u8], algs: &[HashAlg]) -> Result<Vec<u8>> {
+pub(crate) fn serialize_converted(bytes: &[u8], algs: &[HashAlg]) -> Result<Vec<u8>> {
     let native = crate::state::infer_alg_from_len(bytes.len()).ok_or_else(|| {
         Error::UnsupportedAlgorithm(format!("invalid digest length: {}", bytes.len()))
     })?;
@@ -147,8 +148,40 @@ fn new_tree(arity: u64) -> polydigest::EpochTree {
         .expect("arity is a fixed in-range constant (2 or 256)")
 }
 
-/// KT — Key Tree: one leaf per active key thumbprint, lexically sorted by
-/// raw digest bytes. `EpochTree::root(alg_id)` is KR.
+/// The leaves of a collection node: `members` and `nonces` together,
+/// lexically sorted by raw digest bytes (SPEC §3.7: a nonce sorts with the
+/// other digests). The one place that order is defined, so a proof's index
+/// is found in the same order the tree was built in.
+pub(crate) fn sorted_leaves<'a>(members: &[&'a [u8]], nonces: &[&'a [u8]]) -> Vec<&'a [u8]> {
+    let mut leaves: Vec<&[u8]> = members.iter().chain(nonces).copied().collect();
+    leaves.sort();
+    leaves
+}
+
+/// Cell payloads for a role-slot node's nonces: they follow the node's
+/// defined slots, in ascending byte order (SPEC §3.7.1).
+fn nonce_payloads(nonces: &[&[u8]], algs: &[HashAlg]) -> Result<Vec<Vec<u8>>> {
+    let mut sorted = nonces.to_vec();
+    sorted.sort();
+    sorted
+        .into_iter()
+        .map(|n| serialize_converted(n, algs))
+        .collect()
+}
+
+/// Arity for a role-slot node: its two role slots alone, or the collection
+/// arity once nonces follow them (a nonce fold is a flat `H(c0 ∥ … ∥ cn)`,
+/// the same bytes as the two-slot fold when only the slots are filled).
+pub(crate) fn role_arity(nonce_count: usize) -> u64 {
+    if nonce_count == 0 {
+        ROLE_ARITY
+    } else {
+        COLLECTION_ARITY
+    }
+}
+
+/// KT — Key Tree: one leaf per active key thumbprint and per KT nonce,
+/// lexically sorted by raw digest bytes. `EpochTree::root(alg_id)` is KR.
 ///
 /// Replaces `compute_kr`.
 #[derive(Debug)]
@@ -186,20 +219,35 @@ impl KeyTree {
     /// collection-node arity boundary is out of this node's scope (reserved
     /// for future work).
     pub fn build_tree(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<Self> {
+        Self::build_tree_with_nonces(thumbprints, &[], algs)
+    }
+
+    /// [`Self::build_tree`] with the KT-level nonces sorted in among the
+    /// thumbprints (SPEC §3.7, §10.2).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::build_tree`]; the 256-item bound counts nonces too.
+    pub(crate) fn build_tree_with_nonces(
+        thumbprints: &[&Thumbprint],
+        nonces: &[&[u8]],
+        algs: &[HashAlg],
+    ) -> Result<Self> {
         if algs.is_empty() {
             return Err(Error::NoActiveKeys);
         }
-        if thumbprints.len() as u64 > COLLECTION_ARITY {
-            return Err(Error::CollectionArityExceeded(thumbprints.len()));
+        let count = thumbprints.len() + nonces.len();
+        if count as u64 > COLLECTION_ARITY {
+            return Err(Error::CollectionArityExceeded(count));
         }
 
-        let mut sorted: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
-        sorted.sort();
+        let tmbs: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
+        let sorted = sorted_leaves(&tmbs, nonces);
 
         let mut kt = Self::new();
         register_algs(&mut kt.inner, algs)?;
-        for (index, tmb) in sorted.iter().enumerate() {
-            let payload = serialize_converted(tmb, algs)?;
+        for (index, leaf) in sorted.iter().enumerate() {
+            let payload = serialize_converted(leaf, algs)?;
             kt.inner
                 .set(index as u64, payload, Vec::new())
                 .map_err(|e| Error::Storage(e.to_string()))?;
@@ -253,9 +301,9 @@ pub struct AuthTree {
 }
 
 impl AuthTree {
-    fn new() -> Self {
+    fn new(arity: u64) -> Self {
         Self {
-            inner: new_tree(ROLE_ARITY),
+            inner: new_tree(arity),
         }
     }
 
@@ -268,12 +316,36 @@ impl AuthTree {
     /// just its root), so a caller can also generate inclusion proofs over
     /// it via [`Self::kr_inclusion_proof`].
     pub fn build_tree(kr: &KeyRoot, algs: &[HashAlg]) -> Result<Self> {
-        let mut node = Self::new();
+        Self::build_tree_with_nonces(kr, &[], algs)
+    }
+
+    /// [`Self::build_tree`] with the AT-level nonces after the node's
+    /// defined slots (SPEC §3.7.1). RT, the one other slot, is permanently
+    /// absent, so the nonces fill the cells after KR.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::build_tree`]; `CollectionArityExceeded` if KR and the
+    /// nonces exceed one fold.
+    pub(crate) fn build_tree_with_nonces(
+        kr: &KeyRoot,
+        nonces: &[&[u8]],
+        algs: &[HashAlg],
+    ) -> Result<Self> {
+        if 1 + nonces.len() as u64 > COLLECTION_ARITY {
+            return Err(Error::CollectionArityExceeded(1 + nonces.len()));
+        }
+        let mut node = Self::new(role_arity(nonces.len()));
         register_algs(&mut node.inner, algs)?;
         let payload = serialize_digest(&kr.0, algs)?;
         node.inner
             .set(PRIMARY_CELL, payload, Vec::new())
             .map_err(|e| Error::Storage(e.to_string()))?;
+        for (offset, payload) in nonce_payloads(nonces, algs)?.into_iter().enumerate() {
+            node.inner
+                .set(OPTIONAL_CELL + offset as u64, payload, Vec::new())
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        }
 
         Ok(node)
     }
@@ -395,8 +467,21 @@ pub fn derive_state_roots(
     dr: Option<&DataRoot>,
     algs: &[HashAlg],
 ) -> Result<(KeyRoot, AuthRoot, StateRoot)> {
-    let kr = KeyTree::build(thumbprints, algs)?;
-    let ar = AuthTree::build(&kr, algs)?;
+    derive_state_roots_with_nonces(thumbprints, dr, &NonceSets::default(), algs)
+}
+
+/// [`derive_state_roots`] with the nonces held at the KT and AT levels. PR
+/// nonces are not an input here: they enter the Principal Tree, above SR.
+pub(crate) fn derive_state_roots_with_nonces(
+    thumbprints: &[&Thumbprint],
+    dr: Option<&DataRoot>,
+    nonces: &NonceSets,
+    algs: &[HashAlg],
+) -> Result<(KeyRoot, AuthRoot, StateRoot)> {
+    let kr = KeyTree::build_tree_with_nonces(thumbprints, &nonces.at_level(NonceLevel::Kt), algs)?
+        .root(algs)?;
+    let ar = AuthTree::build_tree_with_nonces(&kr, &nonces.at_level(NonceLevel::At), algs)?
+        .root(algs)?;
     let sr = StateTree::build(&ar, dr, algs)?;
     Ok((kr, ar, sr))
 }

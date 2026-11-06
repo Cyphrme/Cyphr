@@ -534,7 +534,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
     /// Check if a claimed arrow matches the expected arrow for this commit scope.
     pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
-        use crate::semantic_tree::derive_state_roots;
+        use crate::semantic_tree::derive_state_roots_with_nonces;
         use crate::state::{compute_dr, derive_hash_algs};
 
         if self.is_empty() {
@@ -555,7 +555,12 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             return false;
         };
 
-        let Ok((_kr, _ar, sr)) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs) else {
+        let Ok((_kr, _ar, sr)) = derive_state_roots_with_nonces(
+            &thumbprints,
+            dr.as_ref(),
+            &self.projected.nonces,
+            &active_algs,
+        ) else {
             return false;
         };
 
@@ -645,8 +650,12 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let action_refs: Vec<&crate::action::Action> = self.projected.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs)?;
 
-        let (_kr, _ar, sr) =
-            crate::semantic_tree::derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
+        let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
+            &thumbprints,
+            dr.as_ref(),
+            &self.projected.nonces,
+            &active_algs,
+        )?;
 
         // For TMR we just use compute_roots early
         let (tmr, ..) = self.pending.compute_roots(&[signer_hash_alg]);

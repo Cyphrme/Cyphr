@@ -54,6 +54,14 @@ pub enum Error {
     #[error("duplicate key")]
     DuplicateKey,
 
+    /// `nonce/create` for a nonce already at that level (SPEC §7.6, §10.2).
+    #[error("duplicate nonce")]
+    DuplicateNonce,
+
+    /// `nonce/delete` for a nonce not at that level.
+    #[error("unknown nonce")]
+    UnknownNonce,
+
     /// A transaction coz this principal already included is submitted
     /// again (SPEC §7.6). The first inclusion stays authoritative.
     #[error("COZ_REUSE: transaction coz already included by this principal")]

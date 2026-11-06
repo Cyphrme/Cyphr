@@ -216,6 +216,7 @@ fn make_lifecycle_cz(
 /// `spec_conformance::frozen_principal_rejects_data_actions_until_thawed`.
 #[test]
 fn frozen_principal_is_default_deny_for_every_coz_kind() {
+    use crate::nonce::{Nonce, NonceLevel};
     use crate::parsed_coz::CozKind;
 
     enum Expect {
@@ -229,6 +230,8 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
             | CozKind::KeyDelete { .. }
             | CozKind::KeyReplace { .. }
             | CozKind::SelfRevoke { .. }
+            | CozKind::NonceCreate { .. }
+            | CozKind::NonceDelete { .. }
             | CozKind::PrincipalCreate { .. } => Expect::Frozen,
             CozKind::FreezeCreate { .. } => Expect::AlreadyFrozen,
             // CommitCreate stays exempt: it finalizes the very commit that
@@ -250,11 +253,24 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
         p
     };
     let probe = frozen();
+    let nonce = Nonce::parse(
+        "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        HashAlg::Sha256,
+    )
+    .unwrap();
     let kinds = vec![
         CozKind::KeyCreate { id: tmb.clone() },
         CozKind::KeyDelete { id: tmb.clone() },
         CozKind::KeyReplace { id: tmb.clone() },
         CozKind::SelfRevoke { rvk: 2001 },
+        CozKind::NonceCreate {
+            level: NonceLevel::Kt,
+            nonce: nonce.clone(),
+        },
+        CozKind::NonceDelete {
+            level: NonceLevel::Kt,
+            nonce,
+        },
         CozKind::PrincipalCreate {
             id: AuthRoot(probe.pr().as_multihash().clone()),
         },
@@ -785,4 +801,50 @@ fn later_commit_bare_finalizer_on_already_deleted_is_rejected() {
         "a bare commit/create against a principal deleted in an earlier, separately-finalized \
          commit must be rejected, got {result:?}"
     );
+}
+
+/// Backs SPEC 7.6 / 10.1 at the principal: creating a nonce twice at one
+/// level is `DuplicateNonce`, deleting one that is absent is `UnknownNonce`,
+/// and a refused nonce leaves the roots as they were. Unit level: the signed
+/// wire scenarios in `tests/nonce.rs` never repeat a nonce or delete an
+/// absent one at the principal, and these two refusals have no cheaper
+/// scenario. Turns red if either refusal is accepted or moves a root.
+#[test]
+fn duplicate_nonce_and_absent_delete_are_typed_refusals() {
+    use crate::nonce::{Nonce, NonceLevel};
+    use crate::parsed_coz::CozKind;
+
+    let key = make_test_key(0xE5);
+    let tmb = key.tmb().clone();
+    let mut p = Principal::implicit(key).unwrap();
+    let nonce = Nonce::parse(
+        "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        HashAlg::Sha256,
+    )
+    .unwrap();
+    let create = || CozKind::NonceCreate {
+        level: NonceLevel::Kt,
+        nonce: nonce.clone(),
+    };
+    let delete = || CozKind::NonceDelete {
+        level: NonceLevel::Kt,
+        nonce: nonce.clone(),
+    };
+
+    let r = p.apply_verified_internal(VerifiedCoz::from_transaction_unsafe(
+        make_lifecycle_cz(delete(), &tmb, 2000),
+        None,
+    ));
+    assert!(matches!(r, Err(Error::UnknownNonce)), "{r:?}");
+
+    p.apply_verified_internal(VerifiedCoz::from_transaction_unsafe(
+        make_lifecycle_cz(create(), &tmb, 2001),
+        None,
+    ))
+    .unwrap();
+    let r = p.apply_verified_internal(VerifiedCoz::from_transaction_unsafe(
+        make_lifecycle_cz(create(), &tmb, 2002),
+        None,
+    ));
+    assert!(matches!(r, Err(Error::DuplicateNonce)), "{r:?}");
 }

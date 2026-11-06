@@ -48,9 +48,9 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   46 |
+| `covered`      |   48 |
 | `red-existing` |    0 |
-| `red-new`      |    6 |
+| `red-new`      |    4 |
 | `not-testable` |   14 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
@@ -693,28 +693,28 @@ evaluator: none
 
 ### [sc-l1673]
 
-SPEC 10.2, line 1673. Disposition: `red-new`.
+SPEC 10.2, line 1673. Disposition: `covered`.
 
 - spec-line: 1673
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: - The nonce's bit length must match the declared algorithm's output size (e.g.,
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s10_2_nonce_bit_length_must_match_the_declared_algorithm`
-- fails when: a nonce whose width differs from the output size of the algorithm it declares (a SHA-256 nonce of anything but 32 bytes, likewise SHA-384 and SHA-512) is accepted at the PR, AT or KT path, or a correct-width nonce is refused (red today: nonces are not implemented).
+- fails when: a nonce whose width differs from the output size of the algorithm it declares (a SHA-256 nonce of anything but 32 bytes, likewise SHA-384 and SHA-512) is accepted at the PR, AT or KT path, or a correct-width nonce is refused.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l1674]
 
-SPEC 10.2, line 1674. Disposition: `red-new`.
+SPEC 10.2, line 1674. Disposition: `covered`.
 
 - spec-line: 1674
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: a nonce declared as SHA-256 must be 256 bits). Bit-checking is the only
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s10_2_nonce_bit_length_must_match_the_declared_algorithm`
@@ -722,7 +722,7 @@ SPEC 10.2, line 1674. Disposition: `red-new`.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l1676]

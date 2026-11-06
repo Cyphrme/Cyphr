@@ -166,7 +166,7 @@ async fn push(app: &axum::Router, body: String, what: &str) {
 /// other. Red today: `nonce/create` is rejected as a malformed payload.
 /// End to end: yes.
 #[tokio::test]
-#[ignore = "RED(NE1): one key cannot yet create two principals (nonces unimplemented)"]
+#[ignore = "RED(PGK): engine keys principals by genesis-key tmb"]
 async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");

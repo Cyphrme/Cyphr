@@ -7,6 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::nonce::{Nonce, NonceLevel};
 use crate::state::{AuthRoot, PrincipalRoot};
 
 // ============================================================================
@@ -23,6 +24,8 @@ use crate::state::{AuthRoot, PrincipalRoot};
 /// demands a `/` between the authority and the suffix, so a typ such as
 /// `cyphr.me/xcyphr/key/create` is not read as `key/create`.
 pub mod typ {
+    use crate::nonce::NonceLevel;
+
     /// `<authority>/cyphr/key/create` - Create a new key (Level 3+)
     pub const KEY_CREATE: &str = "cyphr/key/create";
     /// `<authority>/cyphr/key/delete` - Remove key without invalidation (Level 3+)
@@ -41,6 +44,34 @@ pub mod typ {
     pub const FREEZE_CREATE: &str = "cyphr/freeze/create";
     /// `<authority>/cyphr/freeze/delete` - Thaw (SPEC §14.9.3)
     pub const FREEZE_DELETE: &str = "cyphr/freeze/delete";
+    /// `<authority>/cyphr/nonce/create` - Insert a nonce at the Principal Root (SPEC §10.1)
+    pub const NONCE_CREATE_PR: &str = "cyphr/nonce/create";
+    /// `<authority>/cyphr/nonce/delete` - Remove a nonce at the Principal Root
+    pub const NONCE_DELETE_PR: &str = "cyphr/nonce/delete";
+    /// `<authority>/cyphr/AT/nonce/create` - Insert a nonce at the root of AT
+    pub const NONCE_CREATE_AT: &str = "cyphr/AT/nonce/create";
+    /// `<authority>/cyphr/AT/nonce/delete` - Remove a nonce at the root of AT
+    pub const NONCE_DELETE_AT: &str = "cyphr/AT/nonce/delete";
+    /// `<authority>/cyphr/AT/KT/nonce/create` - Insert a nonce at the root of KT
+    pub const NONCE_CREATE_KT: &str = "cyphr/AT/KT/nonce/create";
+    /// `<authority>/cyphr/AT/KT/nonce/delete` - Remove a nonce at the root of KT
+    pub const NONCE_DELETE_KT: &str = "cyphr/AT/KT/nonce/delete";
+
+    /// Classify a nonce `typ` as (level, is_create), or `None` if it is not
+    /// one of the six nonce paths (SPEC §10.1).
+    pub fn nonce_path(typ: &str) -> Option<(NonceLevel, bool)> {
+        [
+            (NONCE_CREATE_PR, NonceLevel::Pr, true),
+            (NONCE_DELETE_PR, NonceLevel::Pr, false),
+            (NONCE_CREATE_AT, NonceLevel::At, true),
+            (NONCE_DELETE_AT, NonceLevel::At, false),
+            (NONCE_CREATE_KT, NonceLevel::Kt, true),
+            (NONCE_DELETE_KT, NonceLevel::Kt, false),
+        ]
+        .into_iter()
+        .find(|(suffix, ..)| has_suffix(typ, suffix))
+        .map(|(_, level, create)| (level, create))
+    }
 
     /// Returns true if `typ` introduces new key material into the Auth State
     /// (`key/create` or `key/replace`).
@@ -103,6 +134,22 @@ pub enum CozKind {
         arrow: crate::multihash::MultihashDigest,
     },
 
+    /// Insert a nonce at a tree level - SPEC §10.1
+    NonceCreate {
+        /// Level the nonce is inserted at.
+        level: NonceLevel,
+        /// The nonce (`id`).
+        nonce: Nonce,
+    },
+
+    /// Remove a nonce from a tree level - SPEC §10.1
+    NonceDelete {
+        /// Level the nonce is removed from.
+        level: NonceLevel,
+        /// The nonce (`id`).
+        nonce: Nonce,
+    },
+
     /// Close (Level 3+) - SPEC §11.4
     PrincipalDelete {
         /// Target Principal Root (the signer's own PR).
@@ -131,6 +178,8 @@ impl std::fmt::Display for CozKind {
             CozKind::SelfRevoke { .. } => write!(f, "{}", typ::KEY_REVOKE),
             CozKind::PrincipalCreate { .. } => write!(f, "{}", typ::PRINCIPAL_CREATE),
             CozKind::CommitCreate { .. } => write!(f, "{}", typ::COMMIT_CREATE),
+            CozKind::NonceCreate { level, .. } => write!(f, "{}/nonce/create", level.path()),
+            CozKind::NonceDelete { level, .. } => write!(f, "{}/nonce/delete", level.path()),
             CozKind::PrincipalDelete { .. } => write!(f, "{}", typ::PRINCIPAL_DELETE),
             CozKind::FreezeCreate { .. } => write!(f, "{}", typ::FREEZE_CREATE),
             CozKind::FreezeDelete { .. } => write!(f, "{}", typ::FREEZE_DELETE),
@@ -189,7 +238,7 @@ impl ParsedCoz {
         let now = pay.now.ok_or(Error::MalformedPayload)?;
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
-        let kind = Self::parse_kind(pay, typ, &signer)?;
+        let kind = Self::parse_kind(pay, typ, hash_alg)?;
         // SPEC §6.4: `now` on a revoke has the same range as `rvk`.
         if matches!(kind, CozKind::SelfRevoke { .. }) && !coz::is_valid_rvk(now) {
             return Err(Error::MalformedPayload);
@@ -244,7 +293,7 @@ impl ParsedCoz {
     }
 
     /// Parse the coz kind from typ and payload fields.
-    fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<CozKind> {
+    fn parse_kind(pay: &Pay, typ: &str, hash_alg: crate::state::HashAlg) -> Result<CozKind> {
         // Check if typ ends with a known coz type
         if typ::has_suffix(typ, typ::KEY_CREATE) {
             let id = Self::extract_id(pay)?;
@@ -286,6 +335,18 @@ impl ParsedCoz {
         } else if typ::has_suffix(typ, typ::FREEZE_DELETE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::FreezeDelete { id })
+        } else if let Some((level, create)) = typ::nonce_path(typ) {
+            let id = pay
+                .extra
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(Error::MalformedPayload)?;
+            let nonce = Nonce::parse(id, hash_alg)?;
+            Ok(if create {
+                CozKind::NonceCreate { level, nonce }
+            } else {
+                CozKind::NonceDelete { level, nonce }
+            })
         } else {
             Err(Error::MalformedPayload)
         }

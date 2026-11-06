@@ -291,7 +291,6 @@ proptest! {
     /// stays embedded); a nonce counted as a key; a nonce whose value is
     /// ignored. Property test: the invariant ranges over paths and values.
     #[test]
-    #[ignore = "RED(NE1): nonce/create and nonce/delete are not implemented"]
     fn paths_nonce_moves_only_its_roots_and_delete_restores(
         level in prop_oneof![Just(Level::Pr), Just(Level::At), Just(Level::Kt)],
         n1 in any::<[u8; 32]>(),
@@ -341,7 +340,6 @@ proptest! {
 /// every nonce or the wrong one; an insertion-order-dependent root.
 /// End to end: yes (create, create, delete, delete on a live principal).
 #[test]
-#[ignore = "RED(NE1): nonce/create and nonce/delete are not implemented"]
 fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let (n1, n2) = (nonce_bytes(1), nonce_bytes(2));
     let (mut p, g, a) = base();
@@ -416,7 +414,6 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
 /// AR; AR hashing anything but KR and the nonce; an insertion-order
 /// dependent AR. End to end: yes (live principal, create, create, delete).
 #[test]
-#[ignore = "RED(NE1): nonce/create and nonce/delete are not implemented"]
 fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
     let (n1, n2) = (nonce_bytes(3), nonce_bytes(4));
     let (mut p, g, _) = base();
@@ -489,7 +486,6 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
 /// unknown key); 10.1 does not say (SPEC ambiguity, node report). End to end:
 /// yes.
 #[test]
-#[ignore = "RED(NE1): nonce/create and nonce/delete are not implemented"]
 fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
     let (n, never) = (nonce_bytes(5), nonce_bytes(6));
     let (mut p, g, _) = base();
@@ -537,7 +533,6 @@ fn parts_now(parts: &Signed) -> i64 {
 /// nonce `id` is looked up as a thumbprint (the create is refused as an
 /// unknown key). End to end: yes.
 #[test]
-#[ignore = "RED(NE1): nonce/create and nonce/delete are not implemented"]
 fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
     let (mut p, g, _) = base();
     let stranger = pool_key("alice");
@@ -573,7 +568,6 @@ fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
 /// nonce kind bypasses the frozen gate (its `frozen_exempt` match), or if a
 /// nonce is refused after the thaw. End to end: yes.
 #[test]
-#[ignore = "RED(NE1): nonce/create and nonce/delete are not implemented"]
 fn frozen_principal_refuses_nonce_mutations_until_thawed() {
     let (n_old, n_new) = (nonce_bytes(7), nonce_bytes(8));
     let (mut p, g, _) = base();

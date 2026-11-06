@@ -32,6 +32,8 @@ pub mod key;
 /// Principal lifecycle state derivation (SPEC.md §11).
 pub mod lifecycle;
 pub mod multihash;
+/// Nonces (SPEC §10.1, §10.2).
+pub mod nonce;
 pub mod parsed_coz;
 pub mod principal;
 /// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.

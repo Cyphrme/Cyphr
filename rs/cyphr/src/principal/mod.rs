@@ -27,6 +27,7 @@ use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::nonce::{NonceLevel, NonceSets};
 use crate::principal_tree::PrincipalTree;
 use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
@@ -142,6 +143,10 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// included before the checkpoint (restore is test-only today; the
     /// restore path must carry the set or replay history before it serves).
     pub(crate) included_czds: HashSet<Vec<u8>>,
+    /// Nonces held at the PR, AT and KT levels (SPEC §10.1). Not carried by
+    /// a checkpoint restore, like `included_czds`: a restored principal
+    /// derives its roots as if it held none.
+    pub(crate) nonces: NonceSets,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,
     /// Maximum allowed future timestamp (seconds from server time).
@@ -201,6 +206,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             auth: self.auth.clone(),
             data: self.data.clone(),
             included_czds: self.included_czds.clone(),
+            nonces: self.nonces.clone(),
             latest_timestamp: self.latest_timestamp,
             max_clock_skew: self.max_clock_skew,
             genesis_keys: self.genesis_keys.clone(),
@@ -226,6 +232,7 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("dr", &self.dr)
             .field("auth", &self.auth)
             .field("data", &self.data)
+            .field("nonces", &self.nonces)
             .field("latest_timestamp", &self.latest_timestamp)
             .field("max_clock_skew", &self.max_clock_skew)
             .field("genesis_keys", &self.genesis_keys)
@@ -446,6 +453,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             },
             data: DataLedger::default(),
             included_czds: HashSet::new(),
+            nonces: NonceSets::default(),
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,
@@ -489,6 +497,8 @@ impl<S: eml::Storage> PrincipalCore<S> {
     /// only SR changes.
     fn write_pt_sr(&mut self, sr: &StateRoot, algs: &[HashAlg]) -> Result<PrincipalRoot> {
         self.pt.set_sr(sr, algs)?;
+        self.pt
+            .set_nonces(&self.nonces.at_level(NonceLevel::Pr), algs)?;
         self.sr = Some(sr.clone());
         self.pt.pr(algs)
     }
@@ -504,6 +514,8 @@ impl<S: eml::Storage> PrincipalCore<S> {
     ) -> Result<PrincipalRoot> {
         self.pt.set_sr(sr, algs)?;
         self.pt.set_cr(cr, algs)?;
+        self.pt
+            .set_nonces(&self.nonces.at_level(NonceLevel::Pr), algs)?;
         self.sr = Some(sr.clone());
         self.cr = Some(cr.clone());
         self.pt.pr(algs)

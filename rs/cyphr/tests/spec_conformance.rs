@@ -1778,7 +1778,6 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
 /// correct width is refused. RED: nonces are not implemented, so the
 /// control fails first (`MalformedPayload`). End to end: yes.
 #[test]
-#[ignore = "RED(NE1): SPEC 10.2 nonce bit length is unchecked (nonces unimplemented)"]
 fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
     let algs = [
         (coz::Alg::ES256, "SHA-256", 32usize),
