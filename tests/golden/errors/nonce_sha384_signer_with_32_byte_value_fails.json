@@ -1,0 +1,49 @@
+{
+  "name": "nonce_sha384_signer_with_32_byte_value_fails",
+  "principal": [
+    "diana_es384"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES384",
+      "pub": "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ",
+      "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
+    }
+  ],
+  "commits": [
+    {
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES384",
+            "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000000,
+            "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+            "typ": "cyphr.me/cyphr/AT/nonce/create"
+          },
+          "sig": "y5rJ03luTyD1dT8YvWfa0KNS5KAJKRXFqa5bB9oCeeaxUbUvyZikjUPe0vlqFubtNLZlEPs53CsDo_s8Wx2-FYu7Eoxky3nY_wGtch1mDjAiVbUJsEbe-lf8WzEUE27N"
+        }
+      ],
+      "keys": [],
+      "commit_id": "",
+      "ar": "",
+      "sr": "",
+      "pr": ""
+    }
+  ],
+  "digests": [
+    "zdRl7OKpzkZliWjf-RNJfTGFky8CXmoebyHrs17cKOOUB0fyT1EFBucTbqDd4mIl"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 1,
+    "kr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "ar": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "sr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pg": "",
+    "error": "MalformedPayload",
+    "deleted": false,
+    "frozen": false
+  }
+}
