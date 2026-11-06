@@ -360,18 +360,13 @@ fn percent_encode_query_value(value: &str) -> String {
 mod tests {
     use super::*;
 
-    // Unit tests by exception: a pure encoder with no scenario that
-    // reaches its byte table more cheaply than calling it.
+    /// Backs: a patch query value cannot inject an extra parameter or fragment
+    /// (`&`, `=`, `#` are escaped; unreserved bytes pass through).
+    /// Unit: a pure encoder whose byte table no scenario reaches more cheaply.
     #[test]
-    fn percent_encode_query_value_leaves_unreserved_bytes_alone() {
+    fn percent_encode_query_value_escapes_injection_and_keeps_unreserved() {
         assert_eq!(percent_encode_query_value("abcXYZ019-_.~"), "abcXYZ019-_.~");
         assert_eq!(percent_encode_query_value(""), "");
-    }
-
-    #[test]
-    fn percent_encode_query_value_escapes_query_injection_chars() {
-        // `&`, `=`, and `#` are exactly the bytes an injected extra query
-        // parameter or a fragment marker would need.
         assert_eq!(percent_encode_query_value("a&b=c#d"), "a%26b%3Dc%23d");
     }
 
