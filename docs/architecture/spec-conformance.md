@@ -283,6 +283,7 @@ SPEC 4, line 463. Disposition: `red-new`.
 - spec-text: Merkle tree primitive must support n-arity.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s4_key_tree_supports_more_than_256_keys`
+  - `rs/cyphr/tests/spec_conformance.rs::key_tree_arity_growth_past_256_and_delete_restores_the_key_root`
 - fails when: the Key Tree refuses a key set beyond 256 keys (`CollectionArityExceeded`, a documented deferred gap in `error.rs`), or does not make all 257 keys active. The fixing node must also delete `semantic_tree.rs` `kt_arity_boundary_rejected`, which pins the cap.
 
 ```claim

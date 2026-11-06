@@ -304,6 +304,121 @@ mod tests {
         ));
     }
 
+    fn nonce_values(n: usize) -> Vec<Vec<u8>> {
+        (0..n)
+            .map(|i| {
+                let mut v = vec![0xEE; 32];
+                v[..2].copy_from_slice(&(i as u16).to_be_bytes());
+                v
+            })
+            .collect()
+    }
+
+    /// PR (Sha256) over SR, CR and `n` nonces, optionally without CR.
+    fn pr_root(with_cr: bool, n: usize) -> Vec<u8> {
+        let algs = [HashAlg::Sha256];
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
+        if with_cr {
+            pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
+        }
+        let nv = nonce_values(n);
+        let nr: Vec<&[u8]> = nv.iter().map(Vec::as_slice).collect();
+        pt.set_nonces(&nr, &algs)
+            .unwrap_or_else(|e| panic!("PR of SR, CR={with_cr} + {n} nonces refused: {e:?}"));
+        pt.pr(&algs).unwrap().get(HashAlg::Sha256).unwrap().to_vec()
+    }
+
+    /// FNV-1a over the concatenation of `parts`: a dependency-free,
+    /// version-stable fingerprint of many roots at once.
+    fn fingerprint(parts: &[Vec<u8>]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in parts.iter().flatten() {
+            h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Nonce counts the golden pins sample: every count to 20, every ninth,
+    /// and the approach to the boundary (SR, CR and 254 nonces fill 256).
+    fn pinned_counts() -> impl Iterator<Item = usize> {
+        (0..=254usize).filter(|n| *n <= 20 || n % 9 == 0 || *n >= 248)
+    }
+
+    const PIN_PR_254: &str = "6a7e81d8836f5667f1a33fcdec4f8c484666510748746aa43794a00f83347b96";
+    const PIN_PR_NO_CR_254: &str = "afc251fd7384169223e1a3a6e0efc4c434f36a31f20abd765afcaec10f8f2681";
+    const PIN_FP_PR: u64 = 11_276_060_262_666_140_975;
+    const PIN_FP_PR_NO_CR: u64 = 17_233_225_874_401_855_600;
+
+    /// Backs "no root for 256 items or fewer changes" (AR1, SPEC 4) at PR.
+    /// Golden characterization, green on the pre-AR1 tree: roots captured
+    /// before the cap was lifted, as a fingerprint over a fixed sample of
+    /// nonce counts (see `pinned_counts`) with CR, and with SR alone, plus
+    /// the full-fold roots in hex. Turns red if lifting the cap changes any
+    /// root at or below 256 items (a re-leveled fold, a changed cell order,
+    /// a prefixed fold below the boundary). Unit level: 256 cells by signed
+    /// scenario is not cheap.
+    #[test]
+    fn arity_pr_roots_up_to_256_items_are_pinned() {
+        let with_cr: Vec<_> = pinned_counts().map(|n| pr_root(true, n)).collect();
+        let no_cr: Vec<_> = pinned_counts().map(|n| pr_root(false, n)).collect();
+        assert_eq!(hex(with_cr.last().unwrap()), PIN_PR_254);
+        assert_eq!(hex(no_cr.last().unwrap()), PIN_PR_NO_CR_254);
+        assert_eq!(fingerprint(&with_cr), PIN_FP_PR, "PR with CR");
+        assert_eq!(fingerprint(&no_cr), PIN_FP_PR_NO_CR, "PR without CR");
+    }
+
+    /// Backs SPEC 4 ("Merkle tree primitive must support n-arity") at PR with
+    /// SR and CR counted: 255, 300 and 1000 nonces build; every size gives a
+    /// distinct root that differs from the 254-nonce (full-fold) root; the
+    /// root does not depend on nonce input order; and replacing the nonces
+    /// with a smaller set, or with none, restores the earlier root (removal
+    /// is the real incremental path here: `set_nonces` rebuilds in place).
+    /// Turns red if the cap stays, items past the fold are dropped, the
+    /// growth scheme depends on input order, or a shrink keeps cells from the
+    /// larger tree. RED: `CollectionArityExceeded(257)`. Unit level, as above.
+    #[test]
+    #[ignore = "RED(AR1): PR refuses SR, CR plus more than 254 nonces"]
+    fn arity_pr_builds_beyond_256_and_removal_restores_the_root() {
+        let algs = [HashAlg::Sha256];
+        let base = pr_root(true, 254);
+        let mut seen = vec![base.clone()];
+        for n in [255, 300, 1000] {
+            let r = pr_root(true, n);
+            assert!(!seen.contains(&r), "SR, CR + {n} nonces collided");
+            seen.push(r);
+        }
+
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
+        pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
+        let small = nonce_values(10);
+        let small: Vec<&[u8]> = small.iter().map(Vec::as_slice).collect();
+        pt.set_nonces(&small, &algs).unwrap();
+        let before = pt.pr(&algs).unwrap();
+
+        let big = nonce_values(1000);
+        let mut fwd: Vec<&[u8]> = big.iter().map(Vec::as_slice).collect();
+        pt.set_nonces(&fwd, &algs).unwrap();
+        let grown = pt.pr(&algs).unwrap();
+        fwd.reverse();
+        pt.set_nonces(&fwd, &algs).unwrap();
+        assert_eq!(pt.pr(&algs).unwrap(), grown, "root depends on input order");
+
+        pt.set_nonces(&small, &algs).unwrap();
+        assert_eq!(pt.pr(&algs).unwrap(), before, "removal did not restore");
+        pt.set_nonces(&[], &algs).unwrap();
+        assert_eq!(
+            pt.pr(&algs).unwrap().get(HashAlg::Sha256).unwrap(),
+            pr_root(true, 0).as_slice(),
+            "removing every nonce did not restore the nonce-free root"
+        );
+    }
+
     /// Backs the claim in [`NONCE_ARITY`] that a flat k=256 fold over just
     /// SR and CR is the same bytes as the k=2 fold. That equality is what
     /// lets a PR with nonces keep SR and CR in their slots without changing

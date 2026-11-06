@@ -597,6 +597,153 @@ mod tests {
         ));
     }
 
+    const PIN_KT_1: &str = "0000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const PIN_KT_256: &str = "b105a52d7742b86414e74bab99137409d59ee4e61ab2369cfd4d36ffc2d56826";
+    const PIN_KT_MIXED_256: &str =
+        "245553cd5fc13b6acf13dbbec6abb8eb5c42232f49bb402cbcfb6fd98cb3a674";
+    const PIN_AT_256: &str = "1a68338dc3ff6d47d1d03456025a0bc836d51f57d3196b95851e0b5a35afe307";
+    const PIN_KT_256_TWO_ALGS: &str = "13ee9c71c1db9594ebbb08461a071adc76ffc2483c2ee26406fe35b4e14ae1b0f0f1c73339c0967c8be70daec5ceacd1bf19463a558446a9b3b30609b0a3b9fe";
+    const PIN_FP_KT_KEYS: u64 = 4_641_058_611_099_592_328;
+    const PIN_FP_KT_MIXED: u64 = 10_905_821_410_972_046_323;
+    const PIN_FP_AT: u64 = 14_728_611_661_474_525_612;
+
+    /// Distinct 32-byte thumbprints, `n` of them, differing in the first two
+    /// bytes so lexical order is index order.
+    fn distinct_tmbs(n: usize) -> Vec<Thumbprint> {
+        (0..n)
+            .map(|i| {
+                let mut v = vec![0xAA; 32];
+                v[..2].copy_from_slice(&(i as u16).to_be_bytes());
+                Thumbprint::from_bytes(v)
+            })
+            .collect()
+    }
+
+    /// FNV-1a over the concatenation of `parts`: a dependency-free,
+    /// version-stable fingerprint, so one pinned value covers a root at many
+    /// counts.
+    fn fingerprint(parts: &[Vec<u8>]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in parts.iter().flatten() {
+            h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    /// Counts the golden pins sample: every count to 20, every ninth, and
+    /// the whole approach to the 256 boundary. (All 256 counts cost 40 s
+    /// unoptimized: the folds are quadratic in total.)
+    fn pinned_counts() -> impl Iterator<Item = usize> {
+        (1..=256usize).filter(|n| *n <= 20 || n % 9 == 0 || *n >= 250)
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Root, under the last of `algs`, of a KT of `keys` thumbprints and
+    /// `nonces` nonces.
+    fn kt_root(keys: usize, nonces: usize, algs: &[HashAlg]) -> Vec<u8> {
+        let raw = distinct_tmbs(keys);
+        let refs: Vec<&Thumbprint> = raw.iter().collect();
+        let nv = nonce_values(nonces);
+        let nr: Vec<&[u8]> = nv.iter().map(Vec::as_slice).collect();
+        let kt = KeyTree::build_tree_with_nonces(&refs, &nr, algs)
+            .unwrap_or_else(|e| panic!("KT of {keys} keys + {nonces} nonces refused: {e:?}"));
+        let last = algs[algs.len() - 1];
+        kt.root(algs).unwrap().0.get(last).unwrap().to_vec()
+    }
+
+    fn at_root(nonces: usize, algs: &[HashAlg]) -> Vec<u8> {
+        let t = tmb(&[0xAA; 32]);
+        let kr = KeyTree::build(&[&t], algs).unwrap();
+        let nv = nonce_values(nonces);
+        let nr: Vec<&[u8]> = nv.iter().map(Vec::as_slice).collect();
+        let at = AuthTree::build_tree_with_nonces(&kr, &nr, algs)
+            .unwrap_or_else(|e| panic!("AT of KR + {nonces} nonces refused: {e:?}"));
+        at.root(algs).unwrap().0.get(algs[0]).unwrap().to_vec()
+    }
+
+    /// Backs "no root for 256 items or fewer changes" (AR1, SPEC 4) for KT
+    /// and AT. Golden characterization, green on the pre-AR1 tree: the roots
+    /// were captured before the cap was lifted. The fingerprints cover a
+    /// fixed sample of counts on both sides of every small-size regime (see
+    /// `pinned_counts`; KT keys only; KT one key plus n-1 nonces; AT KR plus
+    /// n-1 nonces); the hex roots pin the ends so a fingerprint failure is
+    /// diagnosable. Turns red if lifting the cap changes any root at or
+    /// below 256 items (a re-leveled fold, a changed leaf order or a
+    /// prefixed fold applied below the boundary). Unit level: reaching 256
+    /// leaves by signed scenario is not cheap.
+    #[test]
+    fn arity_roots_up_to_256_items_are_pinned() {
+        let a = [HashAlg::Sha256];
+        let kt_keys: Vec<_> = pinned_counts().map(|n| kt_root(n, 0, &a)).collect();
+        let kt_mixed: Vec<_> = pinned_counts().map(|n| kt_root(1, n - 1, &a)).collect();
+        let at: Vec<_> = pinned_counts().map(|n| at_root(n - 1, &a)).collect();
+        assert_eq!(hex(&kt_keys[0]), PIN_KT_1);
+        assert_eq!(hex(kt_keys.last().unwrap()), PIN_KT_256);
+        assert_eq!(hex(kt_mixed.last().unwrap()), PIN_KT_MIXED_256);
+        assert_eq!(hex(at.last().unwrap()), PIN_AT_256);
+        assert_eq!(fingerprint(&kt_keys), PIN_FP_KT_KEYS, "KT keys");
+        assert_eq!(fingerprint(&kt_mixed), PIN_FP_KT_MIXED, "KT mixed");
+        assert_eq!(fingerprint(&at), PIN_FP_AT, "AT nonces");
+        let two = [HashAlg::Sha256, HashAlg::Sha512];
+        assert_eq!(hex(&kt_root(256, 0, &two)), PIN_KT_256_TWO_ALGS);
+    }
+
+    /// Backs SPEC 4 ("Merkle tree primitive must support n-arity") at KT with
+    /// nonces counted (SPEC 10.1): beyond 256 items (keys, nonces, or both)
+    /// the tree builds; every size gives a distinct root that also differs
+    /// from the 256-item root; the root does not depend on input order; and
+    /// building the smaller set again gives the earlier root (removing items
+    /// restores it). Turns red if: the cap stays or is off by one (build
+    /// refused), items past 256 are dropped (root equals the 256 root), or
+    /// the growth scheme depends on input order. RED:
+    /// `CollectionArityExceeded(257)`. Unit level, as above; the removal
+    /// check on a stateful path is the PR test and the signed lifecycle in
+    /// `spec_conformance.rs`.
+    #[test]
+    #[ignore = "RED(AR1): KT refuses more than 256 items"]
+    fn arity_kt_builds_beyond_256_and_removal_restores_the_root() {
+        let a = [HashAlg::Sha256];
+        let base = kt_root(256, 0, &a);
+        let mut seen = vec![base.clone()];
+        for (keys, nonces) in [(257, 0), (1, 256), (300, 300), (1000, 0), (2048, 0)] {
+            let r = kt_root(keys, nonces, &a);
+            assert!(!seen.contains(&r), "{keys} keys + {nonces} nonces collided");
+            seen.push(r);
+        }
+        let raw = distinct_tmbs(1000);
+        let fwd: Vec<&Thumbprint> = raw.iter().collect();
+        let rev: Vec<&Thumbprint> = raw.iter().rev().collect();
+        assert_eq!(
+            KeyTree::build(&fwd, &a).unwrap().0.get(a[0]),
+            KeyTree::build(&rev, &a).unwrap().0.get(a[0]),
+            "root depends on input order"
+        );
+        assert_eq!(kt_root(256, 0, &a), base, "removal did not restore the root");
+    }
+
+    /// Backs the same n-arity claim at AT, where KR takes one slot and the
+    /// nonces follow it: 256, 300 and 1000 nonces build with distinct roots
+    /// that differ from the 255-nonce (full-fold) root, and rebuilding with
+    /// 255 nonces gives the earlier root. Turns red if the cap stays or
+    /// items past the fold are dropped. RED: `CollectionArityExceeded(257)`.
+    /// Unit level, as above.
+    #[test]
+    #[ignore = "RED(AR1): AT refuses KR plus more than 255 nonces"]
+    fn arity_at_builds_beyond_256_and_removal_restores_the_root() {
+        let a = [HashAlg::Sha256];
+        let base = at_root(255, &a);
+        let mut seen = vec![base.clone()];
+        for n in [256, 300, 1000] {
+            let r = at_root(n, &a);
+            assert!(!seen.contains(&r), "KR + {n} nonces collided");
+            seen.push(r);
+        }
+        assert_eq!(at_root(255, &a), base, "removal did not restore the root");
+    }
+
     #[test]
     fn kt_arity_boundary_rejected() {
         let raw: Vec<Thumbprint> = (0..257u16)
