@@ -17,7 +17,7 @@ use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::{EngineError, StorageEngine};
-use cyphr_storage::index::{Indexer, IndexableCoz, IndexableCommit, MemoryIndexer};
+use cyphr_storage::index::{IndexableCommit, IndexableCoz, Indexer, MemoryIndexer};
 use cyphr_storage::{CommitEntry, Genesis};
 use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
@@ -26,7 +26,14 @@ type Durable =
 
 /// A bundle line as the CLI's `export` writes it.
 fn entry() -> CommitEntry {
-    CommitEntry::new(vec![], vec![], "c".into(), "a".into(), "s".into(), "p".into())
+    CommitEntry::new(
+        vec![],
+        vec![],
+        "c".into(),
+        "a".into(),
+        "s".into(),
+        "p".into(),
+    )
 }
 
 /// Claim: an exported bundle line states the format version it was written
@@ -107,7 +114,8 @@ fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 fn open_durable(dir: &std::path::Path) -> Durable {
     let db = Database::builder(dir.join("db")).open().expect("open db");
     let blobs = FjallBlobStore::from_database(db.clone()).expect("blob store");
-    let index = FjallIndexer::open(&dir.join("index")).expect("an index of ANY older version opens");
+    let index =
+        FjallIndexer::open(&dir.join("index")).expect("an index of ANY older version opens");
     StorageEngine::with_storage_factory(blobs, index, move |_: &str| {
         cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
     })
@@ -125,7 +133,8 @@ fn age_index(index_dir: &std::path::Path, version: Option<u64>) {
             let raw = meta.get(b"index-meta").unwrap().expect("a stamped record");
             let mut rec: serde_json::Value = serde_json::from_slice(&raw).unwrap();
             rec["version"] = v.into();
-            meta.insert(b"index-meta", serde_json::to_vec(&rec).unwrap()).unwrap();
+            meta.insert(b"index-meta", serde_json::to_vec(&rec).unwrap())
+                .unwrap();
         },
         None => meta.remove(b"index-meta").unwrap(),
     }
@@ -153,9 +162,16 @@ async fn legacy_store_index_is_rebuilt_from_blobs() {
     for commit in fx["commits"].as_array().unwrap() {
         let blobs = wire_blobs(commit);
         let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-        engine.submit_commit(&pid, Some(genesis.clone()), &refs).await.expect("ingest");
+        engine
+            .submit_commit(&pid, Some(genesis.clone()), &refs)
+            .await
+            .expect("ingest");
     }
-    let tip = engine.get_tip(&pid).await.unwrap().expect("tip after ingest");
+    let tip = engine
+        .get_tip(&pid)
+        .await
+        .unwrap()
+        .expect("tip after ingest");
     drop(engine);
 
     for aged in [Some(1), Some(2), None] {
@@ -169,18 +185,32 @@ async fn legacy_store_index_is_rebuilt_from_blobs() {
             );
         }
         let engine = open_durable(dir.path());
-        engine.rebuild_index_from_scratch().await.expect("rebuild from blobs");
-        assert_eq!(engine.get_tip(&pid).await.unwrap(), Some(tip.clone()), "version {aged:?}");
+        engine
+            .rebuild_index_from_scratch()
+            .await
+            .expect("rebuild from blobs");
+        assert_eq!(
+            engine.get_tip(&pid).await.unwrap(),
+            Some(tip.clone()),
+            "version {aged:?}"
+        );
         drop(engine);
         let reopened = open_durable(dir.path());
-        assert_eq!(reopened.get_tip(&pid).await.unwrap(), Some(tip.clone()), "after reopen");
+        assert_eq!(
+            reopened.get_tip(&pid).await.unwrap(),
+            Some(tip.clone()),
+            "after reopen"
+        );
     }
 }
 
 // ---- legacy blob store: refused ------------------------------------------
 
 fn digest(tag: u8) -> String {
-    format!("SHA-256:{}", char::from(b'A' + tag % 26).to_string().repeat(42) + "A")
+    format!(
+        "SHA-256:{}",
+        char::from(b'A' + tag % 26).to_string().repeat(42) + "A"
+    )
 }
 
 /// Claim: a blob store still in the pre-H1F shared-manifest layout (a
@@ -220,7 +250,13 @@ async fn legacy_store_shared_manifest_is_refused_naming_reingest() {
         .await
         .unwrap();
 
-    let err = engine.rebuild_index_from_manifests().await.expect_err("refused");
+    let err = engine
+        .rebuild_index_from_manifests()
+        .await
+        .expect_err("refused");
     assert!(matches!(err, EngineError::LegacyManifest { .. }), "{err:?}");
-    assert!(err.to_string().contains("re-ingest"), "remedy not named: {err}");
+    assert!(
+        err.to_string().contains("re-ingest"),
+        "remedy not named: {err}"
+    );
 }

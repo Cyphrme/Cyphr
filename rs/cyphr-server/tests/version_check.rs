@@ -195,8 +195,7 @@ fn open_spent_set(
     let cfg = AdmissionConfig::Invite {
         tokens_path: tokens.to_path_buf(),
     };
-    layer(&cfg, record, resident, 1 << 20)
-        .map(|_| ())
+    layer(&cfg, record, resident, 1 << 20).map(|_| ())
 }
 
 /// Claim: the invite spent set records its format version and refuses a
@@ -253,7 +252,11 @@ fn version_signing_key_file_absent_is_v1_and_written_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = common::write_signing_key(dir.path());
     ServerIdentity::load_from_path(&path).expect("an absent `v` loads as v1");
-    assert_eq!(stamped_v(&path), Some(1), "the file must be written back with v=1");
+    assert_eq!(
+        stamped_v(&path),
+        Some(1),
+        "the file must be written back with v=1"
+    );
 }
 
 /// Claim: a server-principal.json from before versions loads as v1 and is
@@ -268,13 +271,19 @@ async fn version_server_principal_sidecar_absent_is_v1_and_written_back() {
     let boot = || async {
         let state = common::keyed_appstate(&data, &key_path);
         let identity = state.identity.clone().expect("keyed");
-        ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &data).await.map(|_| ())
+        ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &data)
+            .await
+            .map(|_| ())
     };
     boot().await.expect("first boot");
     let sidecar = data.join("record").join("server-principal.json");
     unstamp_json(&sidecar);
     boot().await.expect("an absent `v` loads as v1");
-    assert_eq!(stamped_v(&sidecar), Some(1), "the sidecar must be written back with v=1");
+    assert_eq!(
+        stamped_v(&sidecar),
+        Some(1),
+        "the sidecar must be written back with v=1"
+    );
 }
 
 /// Claim: a death set from before versions keeps every recorded death (a
@@ -287,11 +296,17 @@ async fn version_death_set_absent_is_v1_and_keeps_its_deaths() {
     let tmb = coz::Thumbprint::from_bytes(vec![5; 32]);
     {
         let store = ObservationStore::open(dir.path()).expect("open");
-        store.record(&tmb, serde_json::json!({"pay": {}})).await.expect("record");
+        store
+            .record(&tmb, serde_json::json!({"pay": {}}))
+            .await
+            .expect("record");
     }
     unstamp(dir.path());
     let store = ObservationStore::open(dir.path()).expect("an absent version loads as v1");
-    assert!(store.is_dead(&tmb).await.unwrap(), "a recorded death was lost");
+    assert!(
+        store.is_dead(&tmb).await.unwrap(),
+        "a recorded death was lost"
+    );
     drop(store);
     assert_eq!(stored_version(dir.path()).as_deref(), Some("1"));
 }

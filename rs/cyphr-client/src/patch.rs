@@ -342,4 +342,36 @@ mod tests {
         // parameter or a fragment marker would need.
         assert_eq!(percent_encode_query_value("a&b=c#d"), "a%26b%3Dc%23d");
     }
+
+    fn patch_body(v: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "v": v,
+            "payload": {"entries": []},
+            "statement": {"kind": "unsigned"},
+        }))
+        .unwrap()
+    }
+
+    /// Claim: a client fails closed on a response envelope version it does
+    /// not know: the typed `UnsupportedVersion` (pinned by `Debug` string,
+    /// the variant not existing yet), with nothing handed back to apply, even
+    /// when no authority key is supplied. A known version still decodes.
+    /// Turns red on a reader that ignores `v` (the S10 hostile peer). A unit
+    /// test: the pure entry point the fuzz target drives; the networked form
+    /// is `s10_hostile`, gated on transport.
+    #[test]
+    #[ignore = "RED(N13): verify_patch_body ignores the envelope version"]
+    fn version_patch_envelope_unknown_is_refused() {
+        verify_patch_body(&patch_body(1), "pid", None).expect("v1 decodes");
+        for unknown in [0u64, 99] {
+            let dbg = format!(
+                "{:?}",
+                verify_patch_body(&patch_body(unknown), "pid", None).err()
+            );
+            assert!(
+                dbg.contains("UnsupportedVersion") && dbg.contains(&unknown.to_string()),
+                "envelope v={unknown} must be refused as UnsupportedVersion: {dbg}"
+            );
+        }
+    }
 }

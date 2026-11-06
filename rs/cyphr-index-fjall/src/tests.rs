@@ -371,8 +371,8 @@ fn open_error(dir: &std::path::Path) -> String {
 /// Backs a-versions for the index: a store stamped with a FUTURE schema
 /// version (a downgrade) is refused at open as a typed `UnsupportedVersion`,
 /// never read as if it were current. Older or missing versions are not
-/// refused: the index is a cache and is rebuilt (see `legacy_store_*`). Turns red on an `open` that ignores the
-/// recorded version. A unit test: the stamp is reachable only here.
+/// refused: the index is a cache and is rebuilt (see `legacy_store_*`). Turns red on an `open` that
+/// ignores the recorded version. A unit test: the stamp is reachable only here.
 #[test]
 #[ignore = "RED(N13): FjallIndexer::open never reads the schema version"]
 fn version_index_unknown_is_refused() {

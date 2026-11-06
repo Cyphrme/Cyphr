@@ -207,46 +207,48 @@ mod tests {
         }
     }
 
-    /// Claim: the keystore file states its format version and `open` refuses
-    /// one it does not know, naming the format and the version, before any
-    /// key is read out of it. The current version still round-trips. Turns
-    /// red on a keystore written unstamped, or an `open` that ignores `v`
-    /// (today an extra top-level field is mis-read as a key entry and fails
-    /// as a bare JSON error that names neither). A unit test: the file is
-    /// the unit under claim and no scenario reaches it cheaply.
+    /// Claim: the keystore file AND its genesis sidecar state their format
+    /// version, and `open` refuses one it does not know as a typed
+    /// `UnsupportedVersion`, before any key is read out of it. The current
+    /// version still round-trips. The variant does not exist yet, so it is
+    /// pinned by `Debug` string. Turns red on files written unstamped, or an
+    /// `open` that ignores `v` (today an extra top-level field is mis-read
+    /// as a key entry and fails as a bare JSON error). A unit test: the
+    /// files are the unit under claim and no scenario reaches them cheaply.
     #[test]
-    #[ignore = "RED(N13): the keystore file is unversioned"]
+    #[ignore = "RED(N13): the keystore and genesis sidecar are unversioned"]
     fn version_keystore_unknown_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.json");
+        let sidecar = JsonKeyStore::genesis_path_for(&path);
         let mut ks = JsonKeyStore::open(&path).unwrap();
         ks.store("tmb-1", stored()).unwrap();
         ks.save().unwrap();
-        JsonKeyStore::open(&path)
-            .expect("the current version reopens")
-            .get("tmb-1")
-            .expect("and still holds the key");
+        ks.record_genesis("pid", vec!["tmb-1".into()]).unwrap();
+        let reopened = JsonKeyStore::open(&path).expect("the current version reopens");
+        reopened.get("tmb-1").expect("and still holds the key");
+        assert!(reopened.lookup_genesis("pid").is_some());
 
-        let mut doc: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(
-            doc["v"].is_u64(),
-            "a saved keystore must be stamped with a numeric `v`: {doc}"
-        );
-        for unknown in [0u64, 99] {
-            doc["v"] = unknown.into();
-            std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
-            let msg = JsonKeyStore::open(&path)
-                .err()
-                .unwrap_or_else(|| panic!("keystore v={unknown} was accepted"))
-                .to_string()
-                .to_lowercase();
+        for file in [&path, &sidecar] {
+            let mut doc: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
             assert!(
-                msg.contains("version")
-                    && msg.contains("keystore")
-                    && msg.contains(&unknown.to_string()),
-                "refusal must name the format and the version: {msg}"
+                doc["v"].is_u64(),
+                "{} must be stamped with a numeric `v`: {doc}",
+                file.display()
             );
+            let original = doc.clone();
+            for unknown in [0u64, 99] {
+                doc["v"] = unknown.into();
+                std::fs::write(file, serde_json::to_vec(&doc).unwrap()).unwrap();
+                let dbg = format!("{:?}", JsonKeyStore::open(&path).err());
+                assert!(
+                    dbg.contains("UnsupportedVersion") && dbg.contains(&unknown.to_string()),
+                    "{} v={unknown} must be refused as UnsupportedVersion: {dbg}",
+                    file.display()
+                );
+            }
+            std::fs::write(file, serde_json::to_vec(&original).unwrap()).unwrap();
         }
     }
 }

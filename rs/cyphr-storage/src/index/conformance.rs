@@ -715,7 +715,10 @@ pub async fn index_commit_idempotency_is_keyed_by_chain_position<I: Indexer + In
     let mut rival = make_commit("alice", 0, 2000);
     rival.commit_ids = vec!["SHA-256:commit-rival".to_string()];
     indexer.index_commit(&first, &token).await.unwrap();
-    indexer.index_commit(&first, &token).await.expect("a replay is a no-op");
+    indexer
+        .index_commit(&first, &token)
+        .await
+        .expect("a replay is a no-op");
     let refused = indexer.index_commit(&rival, &token).await;
     assert!(
         matches!(refused, Err(IndexerError::Consistency(_))),

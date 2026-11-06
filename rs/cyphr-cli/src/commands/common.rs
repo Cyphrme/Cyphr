@@ -549,3 +549,52 @@ pub fn generate_key(algo: &str, tag: Option<&str>) -> crate::Result<(String, Sto
 
     Ok((tmb_b64, stored, key))
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    /// Claim: the CLI's store opener fails closed on an index written by a
+    /// FUTURE schema: it returns the typed `UnsupportedVersion` (pinned by
+    /// `Debug` string; today every error is flattened to `Error::Storage`
+    /// text, so the variant must survive `parse_store`) instead of reading it
+    /// as current. Turns red on an opener that ignores the index version or
+    /// flattens the cause. A unit test: `parse_store` is the CLI's only door
+    /// to the store and no cheaper scenario reaches it.
+    #[test]
+    #[ignore = "RED(N13): parse_store does not check the index version"]
+    fn version_cli_store_future_index_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index");
+        drop(FjallIndexer::open(&index).unwrap());
+        let db = fjall::Database::builder(&index).open().unwrap();
+        let meta = db
+            .keyspace("index_meta", fjall::KeyspaceCreateOptions::default)
+            .unwrap();
+        let rec = serde_json::json!({"version": 99, "partitions": []});
+        meta.insert(b"index-meta", serde_json::to_vec(&rec).unwrap())
+            .unwrap();
+        db.persist(fjall::PersistMode::SyncAll).unwrap();
+        drop((meta, db));
+
+        let uri = format!("file:{}", dir.path().display());
+        let cli = crate::Cli::try_parse_from([
+            "cyphr",
+            "--store",
+            &uri,
+            "--keystore",
+            "k.json",
+            "import",
+            "--input",
+            "x",
+        ])
+        .expect("cli parses");
+        let dbg = format!("{:?}", parse_store(&cli).err());
+        assert!(
+            dbg.contains("UnsupportedVersion") && dbg.contains("99"),
+            "an index of schema 99 must be refused as UnsupportedVersion: {dbg}"
+        );
+    }
+}
