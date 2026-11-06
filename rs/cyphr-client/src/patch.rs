@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::connector::{
@@ -29,7 +29,7 @@ use crate::report::TipReport;
 
 /// The response envelope wire version this client reads
 /// (`docs/specs/http-envelope.md`).
-const ENVELOPE_VERSION: u64 = 1;
+pub(crate) const ENVELOPE_VERSION: u64 = 1;
 
 /// The authority key a signed statement must verify against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,11 +258,18 @@ fn decode_blobs(entry: &Value) -> Result<Vec<Vec<u8>>, EntryDefect> {
 }
 
 /// The server statement slot, discriminated by `kind` so trust is decided
-/// by the tag, never by probing for a signature.
-#[derive(Deserialize)]
+/// by the tag, never by probing for a signature. The signed form nests a
+/// pristine coz (`{pay, sig}`) under `coz`, byte identical to a standalone
+/// coz so a verifier can lift it out unchanged.
+///
+/// This is the one definition of the slot: the server serializes it and
+/// every client reads it (`docs/specs/http-envelope.md`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "coz", rename_all = "lowercase")]
-enum Statement {
+pub enum Statement {
+    /// No server attestation -- an affirmative marker, not an absence.
     Unsigned,
+    /// A server-signed coz (`{pay, sig}`) over the response.
     Signed(coz::CozJson),
 }
 

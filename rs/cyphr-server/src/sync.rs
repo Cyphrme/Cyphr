@@ -410,13 +410,11 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
 
 #[cfg(test)]
 mod tests {
-    use coz::base64ct::Encoding as _;
     use cyphr::HashAlg;
     use cyphr::state::TaggedDigest;
     use cyphr_client::TipReportRoots;
 
     use super::*;
-    use crate::receipt;
 
     /// C2: the empty-commit-root invariant, pinned where it is actually
     /// constructible. A principal legitimately in the no-commit-root state
@@ -469,78 +467,6 @@ mod tests {
             "a report with an ABSENT commit root must match a local tip with an EMPTY commit \
              root, not be rejected as a mismatch"
         );
-    }
-
-    /// The client crate carries its own copy of the canonical report parse
-    /// (the server's `receipt` module is its other consumer), so the two
-    /// must agree on every shape or a witness and an equivocation check
-    /// would canonicalize one report differently. Unit-level by exception:
-    /// no end-to-end scenario can present both parsers the same hostile
-    /// pay cheaply.
-    #[test]
-    fn client_and_receipt_report_parsers_agree() {
-        let d = |b: u8| {
-            format!(
-                "SHA-256:{}",
-                coz::base64ct::Base64UrlUnpadded::encode_string(&[b; 32])
-            )
-        };
-        let pr = coz::base64ct::Base64UrlUnpadded::encode_string(&[7u8; 32]);
-        let good = serde_json::json!({
-            "pr": pr, "sequence": 3, "commit_id": d(9),
-            "roots": { "pr": d(1), "sr": d(2), "ar": d(3), "cr": d(4) },
-        });
-        let mut pays = vec![good.clone()];
-        for (path, v) in [
-            ("pr", serde_json::json!(5)),
-            ("pr", serde_json::json!(format!("SHA-256:{pr}"))),
-            ("sequence", serde_json::json!("3")),
-            ("sequence", serde_json::json!("3x")),
-            ("sequence", serde_json::json!(-1)),
-            ("sequence", serde_json::json!(3.5)),
-            ("commit_id", serde_json::json!(null)),
-            ("commit_id", serde_json::json!("SHA-256:AA")),
-        ] {
-            let mut p = good.clone();
-            p[path] = v;
-            pays.push(p);
-        }
-        for (field, v) in [
-            ("cr", serde_json::json!(null)),
-            ("cr", serde_json::json!("")),
-            ("sr", serde_json::json!(null)),
-            ("ar", serde_json::json!(["x"])),
-        ] {
-            let mut p = good.clone();
-            p["roots"][field] = v;
-            pays.push(p);
-        }
-        for pay in pays {
-            let coz = coz::CozJson {
-                pay,
-                sig: Vec::new(),
-            };
-            let client = cyphr_client::TipReport::parse(&coz);
-            let server = receipt::TipReport::parse(&coz);
-            assert_eq!(
-                client
-                    .as_ref()
-                    .map(|r| (r.pr.to_string(), r.sequence, r.commit_id.to_string()))
-                    .ok(),
-                server
-                    .as_ref()
-                    .map(|r| (r.pr.to_string(), r.sequence, r.commit_id.to_string()))
-                    .ok(),
-                "parsers disagree on {:?}",
-                coz.pay
-            );
-            if let (Ok(c), Ok(s)) = (&client, &server) {
-                assert_eq!(
-                    c.roots.cr.as_ref().map(ToString::to_string),
-                    s.roots.cr.as_ref().map(ToString::to_string)
-                );
-            }
-        }
     }
 
     /// Claim: a refused channel binding surfaces as its own failure, not as

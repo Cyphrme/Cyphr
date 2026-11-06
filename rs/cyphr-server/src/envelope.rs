@@ -36,20 +36,10 @@ pub struct Envelope<T> {
     pub statement: Statement,
 }
 
-/// The server statement over a response.
-///
-/// Present in every envelope and discriminated by `kind`, so trust is
-/// decided by reading the tag, never by probing for a signature. The
-/// signed form nests a pristine coz (`{pay, sig}`) under `coz`, byte
-/// identical to a standalone coz so a verifier can lift it out unchanged.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "coz", rename_all = "lowercase")]
-pub enum Statement {
-    /// No server attestation -- an affirmative marker, not an absence.
-    Unsigned,
-    /// A server-signed coz (`{pay, sig}`) over the response.
-    Signed(coz::CozJson),
-}
+// The statement slot is defined once, in the client crate every verifier
+// already depends on, so the wire type the server writes and the one a
+// client reads cannot drift apart.
+pub use cyphr_client::Statement;
 
 /// Why an envelope could not be read.
 #[derive(Debug, thiserror::Error)]

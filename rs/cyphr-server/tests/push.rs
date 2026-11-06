@@ -46,7 +46,7 @@ const NON_CANONICAL_PRINCIPAL_ID: &str = "bob";
 ///
 /// Mutation this binds: reverting the fix's pre-commit refusal (or its
 /// infallible post-commit formatting) back to today's
-/// `receipt::commit_receipt(...).ok_or_else(|| AppError::internal(...))?`
+/// `receipt::commit_receipt(...).await.map_err(|e| AppError::internal(...))?`
 /// called strictly after `submit_commit` makes this test fail at its
 /// first assertion (status1 == 500).
 #[tokio::test]

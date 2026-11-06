@@ -7,6 +7,12 @@
 //! - Library (`lib.rs`) owns the application state, route wiring, and the `serve()` entry point.
 //! - Binary (`main.rs`) handles CLI parsing and process lifecycle.
 
+// The handlers' `Send` proof walks the whole async call chain down through
+// the storage engine (`/tip` -> attestation -> root re-derivation ->
+// engine); the default depth of 128 is exceeded and rustc warns that this
+// will become a hard error.
+#![recursion_limit = "256"]
+
 pub mod admission;
 pub mod auth;
 pub mod config;
@@ -64,6 +70,13 @@ pub struct AppState {
     /// require one (e.g. bearer-token issuance) must handle that case
     /// explicitly rather than assume presence.
     pub identity: Option<Arc<auth::ServerIdentity>>,
+
+    /// Overrides the backend every receipt, tip attestation and view
+    /// statement signs through; `None` signs with `identity`. A field, not
+    /// a copy of `identity`, so a key rotation (which swaps `identity`)
+    /// can never leave receipts signing with the retired key. Set with
+    /// [`AppState::with_receipt_signer`].
+    receipt_signer: Option<Arc<dyn receipt::ReceiptSigner>>,
 
     /// The server's own Cyphr principal, established on a keyed boot from
     /// the same signing key as `identity`. `None` in keyless mode, and also
@@ -147,6 +160,7 @@ impl AppState {
             config,
             engine,
             identity,
+            receipt_signer: None,
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
             observations,
@@ -156,6 +170,23 @@ impl AppState {
             health,
             sync_locks,
         })
+    }
+
+    /// Route every receipt, tip attestation and view statement through
+    /// `signer` instead of the server identity -- the seam a non-exportable
+    /// key plugs into. Attestor capability still requires a bootstrapped
+    /// principal; the identity stays what bearer tokens sign with.
+    ///
+    /// The injector owns rotation: [`AppState::rotate_signing_key`]
+    /// replaces `identity`, not an injected signer, so after a rotation an
+    /// injected signer keeps signing with whatever key it holds. Receipts
+    /// it signs with a rotated-out key are refused by clients holding the
+    /// post-rotation chain; the injector must swap in a signer for the new
+    /// key.
+    #[must_use]
+    pub fn with_receipt_signer(mut self, signer: Arc<dyn receipt::ReceiptSigner>) -> Self {
+        self.receipt_signer = Some(signer);
+        self
     }
 
     /// Rotate the server's signing key.
@@ -221,6 +252,19 @@ impl AppState {
     pub fn attestor_identity(&self) -> Option<&Arc<auth::ServerIdentity>> {
         self.attestor().map(|(_, identity)| identity)
     }
+
+    /// The backend attestations sign through, present exactly when
+    /// [`AppState::attestor`] is: the injected signer if one was set, else
+    /// the live identity. Every server signature other than bearer tokens
+    /// goes through this one accessor.
+    pub fn attestor_signer(&self) -> Option<Arc<dyn receipt::ReceiptSigner>> {
+        let (_, identity) = self.attestor()?;
+        Some(
+            self.receipt_signer
+                .clone()
+                .unwrap_or_else(|| identity.clone()),
+        )
+    }
 }
 
 // ========================================================================
@@ -249,6 +293,7 @@ async fn witness_write_refusal_middleware(
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
     let mut router = axum::Router::new()
         .route("/tip", axum::routing::get(routes::tip))
+        .route("/view", axum::routing::get(routes::view))
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
