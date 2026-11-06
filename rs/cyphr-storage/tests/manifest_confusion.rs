@@ -1211,6 +1211,17 @@ mod replay {
     pub async fn replay_action<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
     ) -> Outcome {
+        replay_action_ordered(e, false, "alice").await
+    }
+
+    /// [`replay_action`] with the pushes in either order and the attacker
+    /// disclosing the pool key `attacker_discloses` in the unsigned `key`
+    /// member of its copy of the action (the victim discloses its own).
+    pub async fn replay_action_ordered<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+        attacker_first: bool,
+        attacker_discloses: &str,
+    ) -> Outcome {
         let p = pool();
         let (alice, golden, bob) = (
             p.get("alice").unwrap(),
@@ -1225,6 +1236,7 @@ mod replay {
                 "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/action"}),
         );
         let act = blob(&apb, &asig, Some(kj(alice)));
+        let act_a = blob(&apb, &asig, Some(kj(p.get(attacker_discloses).unwrap())));
         let (vkpb, vksig, vkczd) = sign(
             alice,
             serde_json::json!({
@@ -1242,7 +1254,7 @@ mod replay {
         let vc = vs
             .finalize_with_software(&signer(alice), T + 22, "cyphr.me")
             .unwrap();
-        let victim_push = push(e, &vid, &[act.clone(), vkc, cc_blob(vc, alice)]).await;
+        let vbundle = vec![act, vkc, cc_blob(vc, alice)];
 
         let (aid, mut aclient) = attacker_with_victim_key(e).await;
         let (kpb, ksig, kczd) = sign(
@@ -1261,9 +1273,20 @@ mod replay {
         let c = s
             .finalize_with_software(&signer(bob), T + 24, "cyphr.me")
             .unwrap();
-        push(e, &aid, &[act, kc, cc_blob(c, bob)])
-            .await
-            .expect("the attacker's replay of the action is accepted");
+        let abundle = vec![act_a, kc, cc_blob(c, bob)];
+
+        let victim_push = if attacker_first {
+            push(e, &aid, &abundle)
+                .await
+                .expect("the attacker's replay of the action is accepted");
+            push(e, &vid, &vbundle).await
+        } else {
+            let r = push(e, &vid, &vbundle).await;
+            push(e, &aid, &abundle)
+                .await
+                .expect("the attacker's replay of the action is accepted");
+            r
+        };
         Outcome {
             vid,
             aid,
@@ -1600,4 +1623,32 @@ async fn rebuild_quarantines_unindexable_manifests() {
     );
     assert_eq!(first.indexed, 2, "the honest commits are indexed");
     assert_eq!(principals(&e).await, honest);
+}
+
+/// Claim (`/e/{czd}` stays content-addressed): the unsigned `key` member
+/// is kept only on a key-introducing coz, so two holders replaying one
+/// action with different `key` members store exactly one blob, and the
+/// bytes `/e/{czd}` serves are the same whichever holder arrived first
+/// and carry no `key`. Turns red if a holder's copy keeps its own `key`
+/// (then the served bytes are whatever the first or last replayer chose).
+#[tokio::test]
+#[ignore = "RED(H1F): a non-key-introducing coz keeps its unsigned key member"]
+async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
+    let mut served = Vec::new();
+    for attacker_first in [false, true] {
+        let e = replay::mem_engine();
+        let o = replay::replay_action_ordered(&e, attacker_first, "bob").await;
+        assert!(o.victim_push.is_ok(), "{:?}", o.victim_push);
+        let holders = e.indexer().resolve_digest_holders(&o.czd).await.unwrap();
+        assert_eq!(holders.len(), 2, "both principals hold the action");
+        assert_eq!(
+            holders[0].blob_hash, holders[1].blob_hash,
+            "one czd, two blobs"
+        );
+        let bytes = e.get_entity(&o.czd).await.unwrap().expect("served");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(v.get("key").is_none(), "an action keeps no key member");
+        served.push(bytes);
+    }
+    assert_eq!(served[0], served[1], "/e/{{czd}} depends on arrival order");
 }
