@@ -502,25 +502,26 @@ elsewhere are named.
 #### [rv-key-set]
 
 A `key/create` of a key already in the key set is refused with `DuplicateKey`.
-Deleting the last key is refused with `NoActiveKeys`. Revoking the last key is
-accepted and leaves the principal Dead (SPEC §3.1, §11); only a `key/delete`
-cannot empty the key set. Deleting or revoking a key outside the active set is
-refused with `UnknownKey`.
+Revoking or deleting the last key is accepted and leaves the principal Dead
+(SPEC §3.1, §11.2), so a replay can empty the key set; a genesis with no key is
+still refused with `NoActiveKeys`. Deleting or revoking a key outside the
+active set is refused with `UnknownKey`.
 
 ```claim
 kind: requirement
 evaluator: test
 ```
 
-Backed by the golden vectors `duplicate_key_fails`, `delete_last_key_fails`
-and `delete_unknown_key_fails` in `tests/golden/errors/`. They cover a
-duplicate create, deleting the last key, and deleting an unknown key; none
-covers revoking an unknown key, though the code refuses it with `UnknownKey`.
-The accepted last-key revoke is pinned by `last_key_revoke_leaves_dead` in
-`tests/golden/lifecycle/`. The marker sits at `test_golden_errors` in
+Backed by the golden vectors `duplicate_key_fails` and
+`delete_unknown_key_fails` in `tests/golden/errors/`. They cover a duplicate
+create and deleting an unknown key; none covers revoking an unknown key,
+though the code refuses it with `UnknownKey`. The accepted removal of the last
+key is pinned by `last_key_revoke_leaves_dead` and `last_key_delete_leaves_dead`
+in `tests/golden/lifecycle/`.
+The marker sits at `test_golden_errors` in
 `rs/cyphr/tests/golden_fixtures.rs` and the runner entry runs that whole test,
 which runs every vector in the directory, so the binding fails if any error
-vector fails; these three are the part that backs this claim. The vectors are
+vector fails; these two are the part that backs this claim. The vectors are
 byte-exact fixtures that assert the error name; none has a control. Not checked: that a rejected
 coz leaves the principal unchanged.
 
