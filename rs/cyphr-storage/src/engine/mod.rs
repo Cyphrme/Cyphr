@@ -1022,13 +1022,34 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }) else {
                 continue;
             };
-            match Self::genesis_from_blob(carrier).and_then(|g| genesis_principal_id(&g)) {
-                Ok(derived) if derived == principal_id => {},
-                Ok(derived) => {
+            let genesis = match Self::genesis_from_blob(carrier) {
+                Ok(genesis) => genesis,
+                Err(e) => {
                     unbound.insert(
                         principal_id.to_string(),
-                        format!("its blobs derive principal {derived}"),
+                        format!("genesis not derivable from its blobs: {e}"),
                     );
+                    continue;
+                },
+            };
+            match genesis_principal_id(&genesis) {
+                Ok(derived) if derived == principal_id => {},
+                // Filed under its PG-to-be: the key must be a Principal
+                // Root the first commit really yields, so that one commit
+                // is replayed (not the chain).
+                Ok(derived) => {
+                    let yields_id = self
+                        .first_commit_prs(genesis, principal_id, &blobs)
+                        .is_ok_and(|prs| prs.iter().any(|pr| pr == principal_id));
+                    if !yields_id {
+                        unbound.insert(
+                            principal_id.to_string(),
+                            format!(
+                                "its blobs derive principal {derived}, and its first commit does \
+                                 not yield this id as a Principal Root"
+                            ),
+                        );
+                    }
                 },
                 Err(e) => {
                     unbound.insert(
@@ -1039,6 +1060,28 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
         Ok(unbound)
+    }
+
+    /// The Principal Root variants after replaying `blobs` (a principal's
+    /// sequence-0 commit) from `genesis`.
+    fn first_commit_prs(
+        &self,
+        genesis: crate::Genesis,
+        principal_id: &str,
+        blobs: &[Vec<u8>],
+    ) -> Result<Vec<String>, EngineError> {
+        let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
+        let mut principal = match genesis {
+            crate::Genesis::Implicit(key) => {
+                cyphr::Principal::implicit_with_storage(key, storage)?
+            },
+            crate::Genesis::Explicit(keys) => {
+                cyphr::Principal::explicit_with_storage(keys, storage)?
+            },
+        };
+        let entry = replay_entry(blobs, "", "")?;
+        crate::import::replay_commits(&mut principal, &[entry])?;
+        format_multihash_all(principal.pr().as_multihash())
     }
 
     /// Whether a manifest's commit names blobs the store holds: the index
@@ -1114,7 +1157,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: crate::Genesis,
     ) -> Result<cyphr::Principal<S>, EngineError> {
-        use crate::CommitEntry;
         use crate::import::replay_commits;
 
         // 1. Construct the principal from genesis (no commits yet), backed
@@ -1147,46 +1189,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // 3. For each CommitRef, fetch blobs and build a CommitEntry.
         let mut commit_entries = Vec::with_capacity(chain.len());
         for commit_ref in &chain {
-            let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
-            let mut keys = Vec::new();
-
+            let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
             for hash in &commit_ref.blob_hashes {
-                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
+                blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
                         "blob {hash} referenced by index commit {} missing",
                         commit_ref.commit_id
                     ))
-                })?;
-
-                // Parse blob as JSON.
-                let json_str = String::from_utf8(data).map_err(|e| {
-                    EngineError::MalformedBlob(format!("blob {hash} is not UTF-8: {e}"))
-                })?;
-                let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-                    EngineError::MalformedBlob(format!("blob {hash} is not valid JSON: {e}"))
-                })?;
-
-                // Extract key material from the coz envelope's "key" field
-                // (for key-introducing transactions).
-                if let Some(key_obj) = value.get("key") {
-                    if let Some(ke) = key_value_to_entry(key_obj) {
-                        keys.push(ke);
-                    }
-                }
-
-                cozies.push(value);
+                })?);
             }
-
-            // replay_commits only reads `cozies` and `keys`;
-            // state digest fields are inert during replay.
-            commit_entries.push(CommitEntry::new(
-                cozies,
-                keys,
-                commit_ref.commit_id.clone(),
-                String::new(), // ar — unused during replay
-                String::new(), // sr — unused during replay
-                commit_ref.pr.clone(),
-            ));
+            commit_entries.push(replay_entry(&blobs, &commit_ref.commit_id, &commit_ref.pr)?);
         }
 
         // 4. Replay commits onto the principal.
@@ -1273,22 +1285,36 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             (None, Some(stored_id)) => self.genesis_of_stored(stored_id).await?,
             (None, None) => Self::genesis_from_raw_blobs(raw_blobs)?,
         };
-        let canonical = genesis_principal_id(&genesis)?;
+        let genesis_id = genesis_principal_id(&genesis)?;
         let claimed = principal_id;
         // A spelling other than the genesis-derived id is honoured only
         // when it already resolves to this stored principal, or (a new
         // principal) when its own first commit yields that Principal Root
         // (checked once the commit is applied, below).
-        let alias_claim = claimed != canonical && claimed != bare_digest(&canonical);
-        if stored
-            .as_deref()
-            .is_some_and(|stored_id| stored_id != canonical)
-        {
-            return Err(EngineError::InvalidInput(format!(
-                "principal_id is not the genesis-derived id: {claimed}"
-            )));
+        let alias_claim = claimed != genesis_id && claimed != bare_digest(&genesis_id);
+        if let Some(stored_id) = stored.as_deref() {
+            // A principal stored under its PG-to-be (not the bare genesis
+            // key, which sibling principals can share) is still this
+            // genesis's principal only if its own first commit derives it.
+            let bound = stored_id == genesis_id
+                || genesis_principal_id(&self.genesis_of_stored(stored_id).await?)? == genesis_id;
+            if !bound {
+                return Err(EngineError::InvalidInput(format!(
+                    "principal_id is not the genesis-derived id: {claimed}"
+                )));
+            }
         }
         let unproven_alias = alias_claim && stored.is_none();
+        // The storage key (SPEC 5.1 line 764: principals sharing a key
+        // differ by nonce, so the bare key is not an identity): an existing
+        // principal keeps its key; a new one whose first push names its
+        // PG-to-be is filed under that PR (the PG once `principal/create`
+        // lands), and any other new principal under its genesis state root.
+        let canonical = match &stored {
+            Some(stored_id) => stored_id.clone(),
+            None if alias_claim => labelled_claim(claimed, &genesis_id),
+            None => genesis_id.clone(),
+        };
         let principal_id = canonical.as_str();
 
         // Serialize the whole sequence-resolution-through-ingest critical
@@ -1508,8 +1534,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // it holds after this commit, and only while this commit does
             // not itself establish the PG (then the PG is the genesis-time
             // PR, and the post-commit PR is a historical root, not an id).
-            let names_pg_to_be = principal.pg().is_none()
-                && pr.iter().any(|v| v == claimed || bare_digest(v) == claimed);
+            let names_pg_to_be = principal.pg().is_none() && pr.iter().any(|v| v == principal_id);
             if unproven_alias && !names_pg_to_be {
                 return Err(EngineError::InvalidInput(format!(
                     "principal_id is not the genesis-derived id: {claimed}"
@@ -1851,6 +1876,47 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 /// merely contains `/commit/create` is an ordinary coz.
 fn is_commit_create_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::COMMIT_CREATE)
+}
+
+/// The [`CommitEntry`](crate::CommitEntry) replay reads from a stored
+/// commit's `blobs`: the cozies plus the key material their envelopes
+/// carry. State digest fields are inert during replay.
+fn replay_entry(
+    blobs: &[Vec<u8>],
+    commit_id: &str,
+    pr: &str,
+) -> Result<crate::CommitEntry, EngineError> {
+    let mut cozies = Vec::with_capacity(blobs.len());
+    let mut keys = Vec::new();
+    for data in blobs {
+        let value: serde_json::Value = serde_json::from_slice(data).map_err(|e| {
+            EngineError::MalformedBlob(format!("commit {commit_id} blob is not valid JSON: {e}"))
+        })?;
+        // Key material of a key-introducing transaction.
+        if let Some(ke) = value.get("key").and_then(key_value_to_entry) {
+            keys.push(ke);
+        }
+        cozies.push(value);
+    }
+    Ok(crate::CommitEntry::new(
+        cozies,
+        keys,
+        commit_id.to_string(),
+        String::new(),
+        String::new(),
+        pr.to_string(),
+    ))
+}
+
+/// The labelled spelling of a claimed id: as given when already labelled,
+/// else bare digest under the label of `genesis_id` (the same hash family
+/// as the genesis it is claimed for).
+fn labelled_claim(claimed: &str, genesis_id: &str) -> String {
+    if claimed.contains(':') {
+        return claimed.to_string();
+    }
+    let label = genesis_id.split_once(':').map_or("", |(label, _)| label);
+    format!("{label}:{claimed}")
 }
 
 /// Whether `data` parses as the pre-keyspace manifest shape. Parsed, not

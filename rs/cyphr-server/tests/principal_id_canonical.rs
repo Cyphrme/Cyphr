@@ -841,7 +841,6 @@ fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
 /// resolves it by first match, is caught by the sibling test below. End to
 /// end: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): the bare genesis tmb resolves to a nonce principal"]
 async fn bare_tmb_never_resolves_to_a_nonce_principal() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
@@ -876,7 +875,6 @@ async fn bare_tmb_never_resolves_to_a_nonce_principal() {
 /// either push moves the other's tip. Order is covered both ways. End to
 /// end: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): a no-nonce principal and a nonce sibling collide on the tmb"]
 async fn bare_tmb_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
     for nonce_first in [true, false] {
         let pool = load_pool();

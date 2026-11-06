@@ -166,7 +166,6 @@ async fn push(app: &axum::Router, body: String, what: &str) {
 /// other. Red today: `nonce/create` is rejected as a malformed payload.
 /// End to end: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): engine keys principals by genesis-key tmb"]
 async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
@@ -238,7 +237,6 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
 /// is pushed in between and must leave the twin's tip alone. End to end:
 /// yes.
 #[tokio::test]
-#[ignore = "RED(PGK): nonce principals are not stored by PG"]
 async fn identical_nonce_principal_pushed_twice_is_one_principal() {
     let pool = load_pool();
     let g = kp(&pool, "golden");

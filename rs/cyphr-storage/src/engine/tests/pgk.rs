@@ -2,9 +2,7 @@
 //! genesis state root while nascent), not by the bare genesis-key tmb.
 //!
 //! Every test states the claim it backs and the defect that turns it red.
-//! Reds are `#[ignore = "RED(PGK): ..."]` and fail with `--ignored` on
-//! their stated assertion. Unit level throughout, each for a stated reason:
-//! two principals sharing a PG, or a PR, cannot be built from signed cozes
+//! Unit level where stated, each for a stated reason: two principals sharing a PG, or a PR, cannot be built from signed cozes
 //! (a PR commits to history), so only crafted index metadata reaches them.
 
 use std::future::Future;
@@ -585,7 +583,6 @@ fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
 /// recovery path. Why storage-level too: the server tests share a red
 /// prerequisite (nonce routing) that would mask a keying defect.
 #[tokio::test]
-#[ignore = "RED(PGK): the engine keys principals by genesis-key tmb"]
 async fn rekey_nonce_siblings_stay_distinct_through_a_reindex() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
