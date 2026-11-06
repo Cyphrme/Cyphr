@@ -1564,7 +1564,7 @@ proptest::proptest! {
             if let Some(n) = now { entries.push(("now".into(), n.into())); }
             if let Some(x) = &extra { entries.push((format!("x-{x}"), x.clone().into())); }
             if reversed { entries.reverse(); }
-            for (k, v) in entries { m.insert(k, v.into()); }
+            for (k, v) in entries { m.insert(k, v); }
             serde_json::Value::Object(m)
         };
         // Kinds that keep the key: the key is the introduced / carried one.
