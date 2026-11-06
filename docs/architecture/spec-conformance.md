@@ -48,10 +48,10 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   48 |
+| `covered`      |   50 |
 | `red-existing` |    0 |
 | `red-new`      |    4 |
-| `not-testable` |   14 |
+| `not-testable` |   12 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
 
@@ -898,14 +898,15 @@ evaluator: none
 
 ### [sc-l1951]
 
-SPEC 11.5.1, line 1951. Disposition: `not-testable`.
+SPEC 11.5.1, line 1951. Disposition: `covered`.
 
 - spec-line: 1951
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: Note the target account must explicitly add keys from the source account (if the
-- tests: none
-- reason: Explicit merge has no transaction kind in `rs/cyphr` (`CozKind` has no `principal/merge` or `merge-ack`). Merge is '(Level 3+)' in the text; whether it is in scope for this map is pending nrd, so it stays out for now.
+- tests:
+  - `rs/cyphr/tests/merge.rs::a_merge_and_its_matching_ack_are_accepted`
+- fails when: a merge or its ack adds the source's keys to the target, or changes the target's actions.
 
 ```claim
 kind: requirement
@@ -914,14 +915,15 @@ evaluator: none
 
 ### [sc-l1953]
 
-SPEC 11.5.1, line 1953. Disposition: `not-testable`.
+SPEC 11.5.1, line 1953. Disposition: `covered`.
 
 - spec-line: 1953
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: must be explicitly added to the target. Also note that the source principal is
-- tests: none
-- reason: Same merge feature as line 1951: no implementation surface, scope pending nrd.
+- tests:
+  - `rs/cyphr/tests/merge.rs::a_merge_and_its_matching_ack_are_accepted`
+- fails when: a merge deactivates or deletes the source, or imports AT into the target.
 
 ```claim
 kind: requirement
