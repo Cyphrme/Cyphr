@@ -5,7 +5,10 @@ where each one lives in the code, and binds each to the test that fails when
 the rule breaks. It also lists, for every error the core can raise, the claim that
 governs it. The page is complete for errors, not for checks: a check that
 raises an error listed under another claim appears, if at all, as a sentence in
-the claim that governs that error. Where a claim has no bound test for part of what it says,
+the claim that governs that error. The completeness has two caveats: the
+`Coz` error variant, which wraps `coz::Error`, is classified outside the core
+paths and has no row, and which errors are reachable on the core paths is
+classified by hand in the test, not derived from the code. Where a claim has no bound test for part of what it says,
 the page says so. It is a reference: it describes the code at this revision,
 and it records a question for the spec author, a known defect and a deferred
 format decision.
@@ -91,9 +94,8 @@ Each claim below is a docket claim: a `[kebab-id]` heading followed by a
 claims are bound this way.
 
 The binding is narrower than the rule in places. Each claim ends with what
-its tests do not check, and states which tests carry a control (a variant of the
-scenario that must succeed, so the rejection can only be the rule) and which do
-not. Where a claim says nothing about a control, treat the test as having none.
+its tests do not check, and names a control (a variant of the scenario that must
+succeed, so the rejection can only be the rule) where it knows of one.
 
 ### Coz shape and signature
 
@@ -125,10 +127,12 @@ absent or different `alg`. The data-action path
 `verify_coz`; no bound test sends a data action with a field missing. Also
 refused as `MalformedPayload`, with no bound test: a data action that carries
 `pre`, a `typ` the parser does not know, and an `id` on a self-revoke
-(`verify_and_record_action` and `ParsedCoz::parse_kind`). Tests that exercise
-them exist elsewhere: the `t2_f15_*` cases in `tests/e2e/e2e_features.toml`,
-`parse_unknown_typ_fails` in `rs/cyphr/src/parsed_coz.rs`, and the golden
-vector `revoke_non_self_fails`. Not checked: non-canonical encoding in fields
+(`verify_and_record_action` and `ParsedCoz::parse_kind`). An unknown `typ` is
+refused only on the transaction path (`parse_kind`); a data action accepts any
+`typ`. Tests that exercise these exist elsewhere: the `t2_f15_*` cases in
+`tests/e2e/e2e_features.toml`, which run through storage replay and not the
+core path, `parse_unknown_typ_fails` in `rs/cyphr/src/parsed_coz.rs`, and the
+golden vector `revoke_non_self_fails`. Not checked: non-canonical encoding in fields
 other than `id`, the data-action path, and the error type of any of these
 rejections.
 
@@ -304,12 +308,16 @@ A coz is accepted only if its signer is an active key in the principal at the
 position the coz is applied. `CommitScope::verify_and_apply` resolves the
 signer against the key set from before the commit, and also accepts a key that
 an earlier mutation in the same commit added (the projected key set). The code
-makes two exceptions to the active check. A
-`commit/create` coz skips the active check in `apply_transaction_internal`.
-The finalizer is instead resolved by `resolve_signer`, which accepts a key
-active in either the pre-commit key set or the projected one, since an earlier
-mutation in the same commit may have replaced its signer. A self-revoke skips only that inner check; `resolve_signer` in
-`CommitScope::verify_and_apply` still requires its signer to be active. A deleted
+makes two exceptions to the active check in `apply_transaction_internal`: a
+self-revoke, which skips only that inner check (`resolve_signer` in
+`CommitScope::verify_and_apply` still requires its signer to be active), and a
+`commit/create` coz submitted through `verify_and_apply`, which is how storage
+replay supplies the finalizer. On the path that builds a commit,
+`prepare_commit` resolves the finalizer's signer with `resolve_signer`, which
+accepts a key active in either the pre-commit key set or the projected one
+(an earlier mutation in the same commit may have replaced it), and
+`finish_commit` pushes the finalizer with `push_tx`, so it does not pass
+through `apply_transaction_internal` at all. A deleted
 key's action is rejected whether dated after the delete or backdated into the
 key's old active period, and a key that is not active cannot authorize its own
 admission. A `key/create` or `key/replace` of a revoked key is refused with
@@ -445,11 +453,16 @@ replay unchanged. That is a property of the storage engine
 A transaction coz this principal already included is rejected with the typed
 `CozReuse`, and the first inclusion stays authoritative. The check precedes the
 timestamp and state checks in `apply_transaction_internal`. The check is per principal: another principal
-that shares the keys may apply the same coz. It compares the whole `czd`, so a
+that shares the keys may apply the same coz. It applies to cozies that pass
+through `apply_transaction_internal`; a finalizer pushed by `finish_commit`
+does not, and its `czd` is not added to `included_czds`, while a `commit/create`
+coz submitted through `verify_and_apply` is checked and recorded like any other. It compares the whole `czd`, so a
 coz signed under a wider digest (ES384) is recognised. The check runs after the
 signer is resolved and the coz is verified (alg, signature, `czd`), so a replay
-whose signer is no longer active returns `UnknownKey` or `KeyRevoked`, not
-`CozReuse`. The other half of SPEC
+whose signer is active in neither the pre-commit nor the projected key set
+returns `UnknownKey` or `KeyRevoked`, not `CozReuse`. A replay whose signer was
+removed earlier in the same commit still resolves through the pre-commit set,
+reaches the reuse check first, and returns `CozReuse`. The other half of SPEC
 §7.6 differs in kind: a replayed data action is ignored and produces no state
 change, and `verify_and_record_action` returns `Ok` for it, but only after the `pre`,
 deleted, frozen and active-signer gates and the alg, signature and `czd`
@@ -556,7 +569,9 @@ No bound test does, so the second sentence of the claim has no backing.
 A tagged digest string with no `:` separator is refused with `MalformedDigest`,
 one with an unknown algorithm tag with `UnsupportedAlgorithm`, one with invalid
 base64 with `MalformedDigest`, and one with the wrong length for its algorithm
-with `DigestLengthMismatch`; parsing arbitrary input never panics. A multihash
+with `DigestLengthMismatch`, up to 64 decoded bytes; parsing arbitrary input
+never panics. Above 64 decoded bytes the parser's fixed buffer overflows and
+the error is `MalformedDigest("invalid base64")`, not `DigestLengthMismatch`. A multihash
 built from a digest of the wrong length is refused.
 
 ```claim
@@ -570,7 +585,9 @@ Backed by `test_tagged_digest_parsing_roundtrip`,
 tests over random digests and strings. They assert that a wrong length fails
 and that parsing does not panic; they do not assert the error type. Unit tests
 in `rs/cyphr/src/state.rs` assert the types for a missing separator, an unknown
-tag and a wrong length; no test of any kind was found for invalid base64. Not
+tag and a wrong length; no test asserts the error type for invalid base64 or for input above
+64 bytes. The roundtrip property test draws up to 99 bytes, so it reaches the
+above-64 branch, and asserts only that parsing fails. Not
 checked on a coz-borne digest: the path that parses an `arrow` out of a coz.
 
 #### [rv-internal-invariants]
