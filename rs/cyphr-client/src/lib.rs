@@ -9,6 +9,7 @@
 
 mod connector;
 mod patch;
+mod peer;
 mod report;
 
 #[cfg(feature = "http")]
@@ -21,7 +22,11 @@ pub use connector::{
 #[cfg(feature = "http")]
 pub use http::HttpConnector;
 pub use patch::{
-    AuthorityKey, EntryDefect, PatchEntry, PatchFailure, PatchRequest, VerifiedPatch, fetch_patch,
-    verify_authenticated_envelope, verify_patch_body,
+    AuthorityKey, EntryDefect, PatchEntry, PatchFailure, PatchRequest, Statement, VerifiedPatch,
+    fetch_patch, verify_authenticated_envelope, verify_patch_body,
 };
-pub use report::{TipReport, TipReportParseError, TipReportRoots};
+pub use peer::{HeldTip, PeerChain, PeerFailure};
+pub use report::{
+    TipReport, TipReportParseError, TipReportRoots, VIEW_STATEMENT_TYP, ViewFailure, ViewStatement,
+    ViewStatementParseError, verify_view, verify_view_statement,
+};

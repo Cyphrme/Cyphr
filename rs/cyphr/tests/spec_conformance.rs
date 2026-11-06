@@ -367,7 +367,19 @@ fn frozen_principal_rejects_data_actions_until_thawed() {
 /// built from the principal's own key, so a rejection cannot be the
 /// signer simply being unknown).
 fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::Result<()> {
+    revoke_outcome_at(None, pay_for)
+}
+
+/// [`revoke_outcome`] under an injected verifier clock, to reach `now`
+/// values the system clock would refuse as future-dated.
+fn revoke_outcome_at(
+    clock: Option<cyphr::principal::Clock>,
+    pay_for: impl Fn(&Kp) -> serde_json::Value,
+) -> cyphr::error::Result<()> {
     let (mut p, _a, b) = two_key_principal();
+    if let Some(clock) = clock {
+        p.set_clock(clock);
+    }
     let before = snapshot(&p);
     let r = commit_one(&mut p, &b, sign(&b, pay_for(&b)), None, T + 1);
     if r.is_err() {
@@ -428,8 +440,11 @@ fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
         }
     }
     revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: now = T is accepted");
-    revoke_outcome(|b| revoke_pay(b, MAX_SAFE, json!(1)))
-        .expect("control: now = 2^53 - 1 is in range");
+    // The in-range control sits at the verifier clock, not at 2^53 - 1: the
+    // future-timestamp bound (SPEC 15.9) refuses that value as a message from
+    // the future, which the W1 tests pin separately.
+    revoke_outcome(|b| revoke_pay(b, unix_now(), json!(1)))
+        .expect("control: now at the verifier clock is in range");
     assert!(
         accepted.is_empty(),
         "key/revoke accepted out-of-range now: {accepted:?}"
@@ -634,18 +649,71 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
 /// is a Merkle tree, so a principal must be able to hold more keys than a
 /// fixed fan-out. Scenario: explicit genesis of 257 distinct keys. Control:
 /// 256 keys build. Turns red if the tree refuses a key set the SPEC does not
-/// bound. RED: the collection node is capped at 256 children and returns
-/// `CollectionArityExceeded` (`error.rs` records it as a known, deferred
-/// gap). End to end: no; a unit-level boundary, because no scenario reaches
-/// 257 keys more cheaply. The fixing node must also delete
-/// `semantic_tree.rs` `kt_arity_boundary_rejected`, which pins the cap.
+/// bound. End to end: no; a unit-level boundary, because no scenario reaches
+/// 257 keys more cheaply.
 #[test]
-#[ignore = "RED(SC1-F3): SPEC 4 KT capped at 256 children"]
 fn s4_key_tree_supports_more_than_256_keys() {
     let keys = |n: usize| -> Vec<Key> { (0..n).map(|_| key_of(&kp())).collect() };
     Principal::explicit(keys(256)).expect("control: 256 keys build");
     let p = Principal::explicit(keys(257)).unwrap_or_else(|e| panic!("257 keys refused: {e:?}"));
     assert_eq!(p.active_key_count(), 257, "not every key is active");
+}
+
+/// Backs SPEC 4 ("Merkle tree primitive must support n-arity") as a
+/// lifecycle: a principal at the old 256-key bound can grow past it by signed
+/// `key/create`, and `key/delete` returns it to the earlier Key Root. Scenario:
+/// explicit genesis of 256 keys (control: builds today); `a` creates keys
+/// 257-259 one commit each, every Key Root distinct from all before it; `a`
+/// then deletes them in reverse and each Key Root equals the one recorded
+/// when that size was first reached. Turns red if: the 257th key is refused
+/// (the cap stays), a key beyond 256 is dropped from the root (Key Root
+/// unchanged by the create), or a delete leaves residue (root not restored).
+/// End to end: yes (signed commits through `finalize`); the genesis-only form is the
+/// `s4_key_tree_supports_more_than_256_keys` red above.
+#[test]
+fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
+    let a = kp();
+    let mut keys = vec![key_of(&a)];
+    keys.extend((1..256).map(|_| key_of(&kp())));
+    let mut p = Principal::explicit(keys).expect("control: 256 keys build");
+    let mut roots = vec![p.key_root().clone()];
+    let extra: Vec<Kp> = (0..3).map(|_| kp()).collect();
+    for (i, k) in extra.iter().enumerate() {
+        let now = T + i as i64;
+        commit_one(
+            &mut p,
+            &a,
+            sign(&a, key_create_pay(&a, &k.tmb, now)),
+            Some(key_of(k)),
+            now,
+        )
+        .unwrap_or_else(|e| panic!("key {} refused: {e:?}", 257 + i));
+        assert!(
+            !roots.contains(p.key_root()),
+            "key {} did not change the Key Root",
+            257 + i
+        );
+        roots.push(p.key_root().clone());
+    }
+    for (step, (i, k)) in extra.iter().enumerate().rev().enumerate() {
+        // Commit timestamps must not go backwards, so `now` follows the
+        // delete order, not the key index.
+        let now = T + 10 + step as i64;
+        commit_one(
+            &mut p,
+            &a,
+            sign(&a, key_delete_pay(&a, &k.tmb, now)),
+            None,
+            now,
+        )
+        .expect("delete of an added key");
+        assert_eq!(
+            p.key_root(),
+            &roots[i],
+            "deleting key {} did not restore the Key Root",
+            257 + i
+        );
+    }
 }
 
 // ============================================================================
@@ -1280,12 +1348,10 @@ fn unix_now() -> i64 {
 /// messages." Scenario, with a default `Principal`: a data action and a
 /// `key/create` dated a day ahead of the clock are applied; the same coz
 /// dated at the clock is the control. Turns red if a message far beyond the
-/// tolerance is accepted. RED: `max_clock_skew` defaults to 0, which
-/// disables the check. The backdated side (a first message far in the past)
+/// tolerance is accepted. The backdated side (a first message far in the past)
 /// is not tested: the whole corpus uses fixed 2023 timestamps (question Q10).
 /// End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F5): SPEC 15.9 default tolerance disabled"]
 fn s15_9_future_dated_message_is_rejected_by_default() {
     let now = unix_now();
     let outcome = |at: i64| {
@@ -1321,6 +1387,50 @@ fn s15_9_future_dated_message_is_rejected_by_default() {
         accepted.is_empty(),
         "day-ahead messages accepted: {accepted:?}"
     );
+}
+
+// ============================================================================
+// W1: the `now` bound on every entry path
+// ============================================================================
+
+/// Apply the same `now` through both entry paths (a data action and a
+/// `key/create` commit) on a default `Principal`, returning each outcome.
+fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
+    let (g, k2) = (kp(), kp());
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let (pay, sig, czd) = sign(
+        &g,
+        json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
+    );
+    let action = p.verify_and_record_action(&pay, &sig, czd).map(|_| ());
+    let create = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, at)),
+        Some(key_of(&k2)),
+        at,
+    );
+    (action, create)
+}
+
+/// Backs the same rule from the other side: it must not over-reach. Scenario:
+/// a data action and a `key/create` dated at the clock, an hour behind it,
+/// and one second ahead of it (inside any non-zero drift window) are all
+/// accepted. A green characterization that must survive the fix: it turns red
+/// if the bound is made strict (no drift) or two-sided against the clock.
+/// Unit-level on purpose: the window edge has no cheaper scenario.
+#[test]
+fn now_bound_inside_the_drift_window_is_accepted() {
+    let now = unix_now();
+    for (label, at) in [
+        ("at the clock", now),
+        ("an hour behind", now - 3_600),
+        ("1s ahead", now + 1),
+    ] {
+        let (action, create) = now_outcomes(at);
+        action.unwrap_or_else(|e| panic!("action {label}: {e:?}"));
+        create.unwrap_or_else(|e| panic!("key/create {label}: {e:?}"));
+    }
 }
 
 // ============================================================================
@@ -1840,4 +1950,21 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
         }
     }
     assert!(accepted.is_empty(), "width mismatch accepted: {accepted:?}");
+}
+
+/// Backs SPEC 6.4 for a revoke `now`: the range is inclusive at 2^53 - 1.
+/// Scenario: under a clock past the range (so only the range binds), a
+/// self-revoke at 2^53 - 1 is accepted and one at 2^53 is refused. Turns red
+/// if the revoke range check rejects its own upper bound (or drops it). The
+/// future-timestamp bound hides this from the system-clock tests above, so an
+/// injected clock is the only way to reach it. End to end: yes.
+#[test]
+fn s6_4_revoke_now_upper_bound_is_inclusive() {
+    let runaway: cyphr::principal::Clock = || i64::MAX;
+    revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE, json!(1)))
+        .expect("a revoke at now = 2^53 - 1 is in range");
+    assert!(
+        revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE + 1, json!(1))).is_err(),
+        "a revoke at now = 2^53 was accepted"
+    );
 }

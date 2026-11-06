@@ -709,7 +709,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// This is synchronous and reaches the commit-root bridge's
     /// `futures::executor::block_on`, so it must not run inside a
-    /// `futures` executor until that bridge is removed. Await the signature
+    /// `futures` executor; the bridge stays until the async chain lands.
+    /// Await the signature
     /// first, then call this outside any such executor.
     ///
     /// # Errors
@@ -756,8 +757,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Async convenience over prepare, sign, finish.
     ///
     /// Do NOT drive this future with a `futures::executor` (`block_on`,
-    /// `LocalPool`) until W1 removes the commit-root bridge's `block_on`:
-    /// the finish step would nest executors and panic. Tokio and
+    /// `LocalPool`): the commit-root bridge's `block_on` stays until the
+    /// async chain lands, and the finish step would nest executors and panic. Tokio and
     /// wasm-bindgen-futures are fine. Under a `futures` executor, call the
     /// three steps separately with the sign step awaited there and
     /// `finish_commit` called after it returns.

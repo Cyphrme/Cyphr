@@ -51,6 +51,11 @@ pub enum EngineError {
         hash: crate::blob::Blake3Hash,
     },
 
+    /// The principal already has [`BRANCH_LIMIT`](super::BRANCH_LIMIT)
+    /// retained branches, so this fork is refused and nothing of it stored.
+    #[error("branch limit reached: principal already has the maximum retained branches")]
+    BranchLimit,
+
     /// The engine's commit-tree storage factory failed to produce a fresh
     /// storage instance for a `Principal`.
     #[error("storage: {0}")]

@@ -180,6 +180,42 @@ struct CommitManifest {
     commit: IndexableCommit,
 }
 
+/// Discriminator of a [`CommitManifest`] that records a retained branch
+/// instead of a chain commit.
+const BRANCH_MANIFEST_KIND: &str = "cyphr-storage/branch-manifest/v1";
+
+/// Marks a blob as a retained-branch manifest: these bytes followed by a
+/// [`CommitManifest`]'s JSON whose `kind` is [`BRANCH_MANIFEST_KIND`].
+///
+/// A keyspace distinct from [`COMMIT_MANIFEST_PREFIX`] is the whole
+/// mechanism: [`StorageEngine::rebuild_index_with_report`] indexes exactly
+/// the blobs behind the commit prefix, so a branch can never be chosen as
+/// (or flip) a principal's canonical chain whatever order manifest hashes
+/// sort in. Branches are read back into the engine's branch table by the
+/// same scan, never into the [`Indexer`].
+pub const BRANCH_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/branch-manifest/v1\0";
+
+/// Retained non-canonical branches kept per principal. A key holder can
+/// mint any number of rivals at one position; the bound caps what one
+/// principal can make the store keep, and the next rival is refused as
+/// [`EngineError::BranchLimit`].
+pub const BRANCH_LIMIT: usize = 16;
+
+/// One branch head of a principal: its canonical chain's tip or a
+/// retained rival, as listed by [`StorageEngine::list_branches`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BranchTip {
+    /// The branch commit's id, in the form of [`TipState::commit_id`].
+    pub tip: String,
+    /// The Principal Root the commit was verified against (the parent PR,
+    /// in the tagged anchor form `/patch` takes); `None` at sequence 0.
+    pub pre: Option<String>,
+    /// The commit's 0-indexed chain position.
+    pub sequence: u64,
+    /// Whether this is the head of the principal's canonical chain.
+    pub canonical: bool,
+}
+
 /// Why a stored manifest was left out of a rebuilt index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuarantineReason {
@@ -338,6 +374,16 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// implicit one always can and is found by [`Self::genesis_lookup`]'s
     /// scan as well.
     genesis_registry: std::sync::Mutex<HashMap<String, Vec<(String, bool)>>>,
+    /// Retained non-canonical branches per canonical principal id: a cache
+    /// of the branch manifests in the blob store (I1), filled by the
+    /// rebuild scan and by retention, at most [`BRANCH_LIMIT`] per
+    /// principal.
+    branches: std::sync::Mutex<HashMap<String, Vec<BranchTip>>>,
+    /// Stored commits [`Self::retain_rival`] has replayed, ever. Retention
+    /// is paid by refused bundles, so its cost is the quantity tests pin.
+    retention_replays: std::sync::atomic::AtomicU64,
+    /// Candidate positions [`Self::retain_rival`] has tried a bundle at.
+    retention_trials: std::sync::atomic::AtomicU64,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -359,6 +405,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
             first_facts: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
             pg_ids: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
             genesis_registry: std::sync::Mutex::new(HashMap::new()),
+            branches: std::sync::Mutex::new(HashMap::new()),
+            retention_replays: std::sync::atomic::AtomicU64::new(0),
+            retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -385,6 +434,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             first_facts: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
             pg_ids: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
             genesis_registry: std::sync::Mutex::new(HashMap::new()),
+            branches: std::sync::Mutex::new(HashMap::new()),
+            retention_replays: std::sync::atomic::AtomicU64::new(0),
+            retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -685,7 +737,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     async fn store_blobs_and_manifest(
         &self,
         blobs: &[&[u8]],
+        commit: IndexableCommit,
+    ) -> Result<(IndexableCommit, Blake3Hash), EngineError> {
+        self.store_manifest(blobs, commit, COMMIT_MANIFEST_PREFIX, COMMIT_MANIFEST_KIND)
+            .await
+    }
+
+    /// [`Self::store_blobs_and_manifest`] under a given manifest keyspace:
+    /// a chain commit, or a retained branch ([`Self::keep_branch`]).
+    async fn store_manifest(
+        &self,
+        blobs: &[&[u8]],
         mut commit: IndexableCommit,
+        prefix: &[u8],
+        kind: &str,
     ) -> Result<(IndexableCommit, Blake3Hash), EngineError> {
         // Store each blob.
         let mut blob_hashes = Vec::with_capacity(blobs.len());
@@ -702,10 +767,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // IndexableCommit -- including the exact ingest-time order of its
         // cozies -- is recoverable from the blob store alone.
         let manifest = CommitManifest {
-            kind: COMMIT_MANIFEST_KIND.to_string(),
+            kind: kind.to_string(),
             commit: commit.clone(),
         };
-        let mut manifest_bytes = COMMIT_MANIFEST_PREFIX.to_vec();
+        let mut manifest_bytes = prefix.to_vec();
         serde_json::to_writer(&mut manifest_bytes, &manifest)
             .map_err(|e| EngineError::MalformedBlob(format!("commit manifest serialize: {e}")))?;
         let manifest_hash = self.blob_store.put(&manifest_bytes).await?;
@@ -860,10 +925,41 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // indexed chain is always a gapless prefix.
         let mut broken_from: HashMap<String, u64> = HashMap::new();
         let mut manifests: Vec<(Blake3Hash, CommitManifest)> = Vec::new();
+        let mut branch_manifests: Vec<(Blake3Hash, CommitManifest)> = Vec::new();
         for hash in hashes {
             let Some(data) = self.blob_store.get(&hash).await? else {
                 continue;
             };
+            if let Some(json) = data.strip_prefix(BRANCH_MANIFEST_PREFIX) {
+                // Retained branches never reach the index, so a bad one
+                // costs only its own listing, never a chain position.
+                match serde_json::from_slice::<CommitManifest>(json) {
+                    Ok(m) if m.kind == BRANCH_MANIFEST_KIND => {
+                        match self.check_manifest_supported(&hash, &m.commit).await? {
+                            Ok(()) => branch_manifests.push((hash, m)),
+                            Err(reason) => quarantined.push(QuarantinedManifest {
+                                manifest: hash,
+                                principal_id: Some(m.commit.principal_id.clone()),
+                                reason,
+                            }),
+                        }
+                    },
+                    Ok(m) => quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: Some(m.commit.principal_id),
+                        reason: QuarantineReason::Malformed(format!(
+                            "branch manifest of kind {}",
+                            m.kind
+                        )),
+                    }),
+                    Err(e) => quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: None,
+                        reason: QuarantineReason::Malformed(e.to_string()),
+                    }),
+                }
+                continue;
+            }
             let Some(json) = data.strip_prefix(COMMIT_MANIFEST_PREFIX) else {
                 // A wire blob. One shaped like a manifest cannot have been
                 // written by this engine (it stores wire cozes in canonical
@@ -971,11 +1067,90 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
 
+        let branches = self
+            .classify_branches(branch_manifests, &mut quarantined)
+            .await?;
+        *self.branches.lock().unwrap_or_else(|p| p.into_inner()) = branches;
+
         quarantined.sort_by_key(|q| *q.manifest.as_bytes());
         Ok(RebuildReport {
             indexed,
             quarantined,
         })
+    }
+
+    /// Decide which stored branch manifests are branches of the index just
+    /// rebuilt. A branch is kept only if it forks the canonical chain: the
+    /// canonical commit at its position exists and is a different commit,
+    /// and its `pre` is the canonical parent's PR. The rest are quarantined.
+    ///
+    /// The index is already final when this runs and is never read to
+    /// decide the canonical chain here, so the result is a function of the
+    /// blob set: manifests are taken in hash order, which only decides
+    /// which rivals survive [`BRANCH_LIMIT`] if a store holds more than the
+    /// engine ever wrote.
+    async fn classify_branches(
+        &self,
+        mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
+        quarantined: &mut Vec<QuarantinedManifest>,
+    ) -> Result<HashMap<String, Vec<BranchTip>>, EngineError> {
+        branch_manifests.sort_by_key(|(hash, _)| *hash.as_bytes());
+        let mut kept: HashMap<String, Vec<BranchTip>> = HashMap::new();
+        for (hash, manifest) in branch_manifests {
+            let commit = manifest.commit;
+            let tip = commit.commit_ids.first().cloned().unwrap_or_default();
+            let mut reject = |reason: QuarantineReason| {
+                quarantined.push(QuarantinedManifest {
+                    manifest: hash,
+                    principal_id: Some(commit.principal_id.clone()),
+                    reason,
+                });
+            };
+            let from = commit.sequence.saturating_sub(1);
+            let chain = self
+                .indexer
+                .get_commit_chain(&commit.principal_id, Some(from), Some(commit.sequence))
+                .await?;
+            let Some(canonical) = chain.iter().find(|c| c.sequence == commit.sequence) else {
+                reject(QuarantineReason::Orphaned(
+                    "no canonical commit at the branch's position".into(),
+                ));
+                continue;
+            };
+            if canonical.commit_id == tip {
+                reject(QuarantineReason::Conflict(
+                    "branch is the canonical commit at its position".into(),
+                ));
+                continue;
+            }
+            let parent = chain.iter().find(|c| c.sequence + 1 == commit.sequence);
+            if commit.pre.as_ref() != parent.map(|c| &c.pr) {
+                reject(QuarantineReason::Orphaned(
+                    "branch's pre is not the canonical parent's PR".into(),
+                ));
+                continue;
+            }
+            let of_principal = kept.entry(commit.principal_id.clone()).or_default();
+            if of_principal
+                .iter()
+                .any(|b| b.tip == tip && b.sequence == commit.sequence)
+            {
+                continue;
+            }
+            if of_principal.len() >= BRANCH_LIMIT {
+                reject(QuarantineReason::Conflict(format!(
+                    "more than {BRANCH_LIMIT} retained branches"
+                )));
+                continue;
+            }
+            of_principal.push(BranchTip {
+                tip,
+                pre: commit.pre,
+                sequence: commit.sequence,
+                canonical: false,
+            });
+        }
+        Ok(kept)
     }
 
     /// A corruption detector for principals whose blobs carry their
@@ -1138,14 +1313,44 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: crate::Genesis,
     ) -> Result<cyphr::Principal<S>, EngineError> {
+        let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
+        self.replay_onto(principal_id, genesis, storage, None).await
+    }
+
+    /// Replay the first `through` stored commits (all of them for `None`)
+    /// of `principal_id` onto a principal built from `genesis` over
+    /// `storage`.
+    ///
+    /// The storage is the caller's so a retention check can replay over a
+    /// private in-memory Commit Tree: a rival verified at an earlier
+    /// position must never read, append to or mismatch the principal's
+    /// durable log.
+    async fn replay_onto<T: cyphr::eml::Storage>(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+        storage: T,
+        through: Option<u64>,
+    ) -> Result<cyphr::Principal<T>, EngineError> {
         use crate::import::replay_commits;
 
-        // 1. Construct the principal from genesis (no commits yet), backed
-        // by a fresh storage instance from this engine's factory.
-        let mut principal = match genesis {
+        let mut principal = Self::principal_from_genesis(genesis, storage)?;
+
+        let commit_entries = self.stored_entries(principal_id, through).await?;
+
+        replay_commits(&mut principal, &commit_entries)?;
+
+        Ok(principal)
+    }
+
+    /// A principal holding only its genesis keys, over `storage`.
+    fn principal_from_genesis<T: cyphr::eml::Storage>(
+        genesis: crate::Genesis,
+        storage: T,
+    ) -> Result<cyphr::Principal<T>, EngineError> {
+        match genesis {
             crate::Genesis::Implicit(key) => {
-                let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
-                cyphr::Principal::implicit_with_storage(key, storage)?
+                Ok(cyphr::Principal::implicit_with_storage(key, storage)?)
             },
             crate::Genesis::Explicit(keys) => {
                 if keys.is_empty() {
@@ -1153,18 +1358,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         "genesis requires at least one key".into(),
                     ));
                 }
-                let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
-                cyphr::Principal::explicit_with_storage(keys, storage)?
+                Ok(cyphr::Principal::explicit_with_storage(keys, storage)?)
             },
-        };
+        }
+    }
 
-        // 2. Get the full commit chain from the indexer.
+    /// The first `through` stored commits (all for `None`) of
+    /// `principal_id` as replayable entries: blobs read and parsed, key
+    /// material taken from each coz's `key` member. No protocol check.
+    async fn stored_entries(
+        &self,
+        principal_id: &str,
+        through: Option<u64>,
+    ) -> Result<Vec<crate::CommitEntry>, EngineError> {
+        use crate::CommitEntry;
+
+        let last = match through {
+            Some(0) => return Ok(Vec::new()),
+            Some(count) => Some(count - 1),
+            None => None,
+        };
         let chain = self
             .indexer
-            .get_commit_chain(principal_id, None, None)
+            .get_commit_chain(principal_id, None, last)
             .await?;
         if chain.is_empty() {
-            return Ok(principal);
+            return Ok(Vec::new());
         }
 
         // 3. For each CommitRef, fetch blobs and build a CommitEntry.
@@ -1182,10 +1401,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             commit_entries.push(replay_entry(&blobs, &commit_ref.commit_id, &commit_ref.pr)?);
         }
 
-        // 4. Replay commits onto the principal.
-        replay_commits(&mut principal, &commit_entries)?;
-
-        Ok(principal)
+        Ok(commit_entries)
     }
 
     /// Submit a commit for protocol validation and persistence.
@@ -1227,10 +1443,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: Option<crate::Genesis>,
         raw_blobs: &[&[u8]],
     ) -> Result<IngestResult, EngineError> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-        use crate::import::{is_key_introducing_typ, is_transaction_typ};
-
         self.ensure_healed().await?;
 
         if raw_blobs.is_empty() {
@@ -1335,11 +1547,92 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let _serialize_writes = lock.lock().await;
 
         // 2. Load (or construct) the principal from existing state.
-        let mut principal = self.replay_stored(principal_id, genesis).await?;
+        let mut principal = self.replay_stored(principal_id, genesis.clone()).await?;
 
         // 3. Determine the next sequence number.
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
+
+        let commit = match Self::build_commit(
+            &mut principal,
+            raw_blobs,
+            principal_id,
+            next_seq,
+        ) {
+            Ok(Some(commit)) => commit,
+            Ok(None) => {
+                // Action-only bundle: just store blobs in blob store without
+                // indexing. No commit was formed, so there is no manifest.
+                let mut blob_hashes = Vec::with_capacity(raw_blobs.len());
+                for blob in raw_blobs {
+                    let hash = self.blob_store.put(blob).await?;
+                    blob_hashes.push(hash);
+                }
+                // Built from the tip read before any write: once the blobs are
+                // durable this response cannot fail (an error would report a
+                // stored bundle as not stored).
+                let tip = tip_before.and_then(|t| {
+                    Some(CommittedTip {
+                        sequence: t.commit_count.checked_sub(1)?,
+                        commit_id: t.commit_id,
+                        pr: t.pr,
+                        sr: t.sr,
+                        ar: t.ar,
+                        cr: t.cr,
+                    })
+                });
+                return Ok(IngestResult {
+                    principal_id: self.reported_id(principal_id).await?,
+                    blob_hashes,
+                    manifest_hash: None,
+                    tip,
+                });
+            },
+            Err(refused) => {
+                // Only a verification failure can be a fork; a malformed
+                // or unreadable bundle is nothing to keep.
+                if matches!(refused, EngineError::Protocol(_)) {
+                    self.retain_rival(principal_id, genesis, raw_blobs)
+                        .await?;
+                }
+                return Err(refused);
+            },
+        };
+        let first_commit = commit.sequence == 0;
+        let new_pg = commit.pg.first().cloned();
+        let nonce = has_nonce_coz(raw_blobs);
+        let mut ingested = self.ingest_commit(raw_blobs, commit).await?;
+        if first_commit {
+            self.genesis_registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(genesis_id.clone())
+                .or_default()
+                .push((principal_id.to_string(), nonce));
+        }
+        ingested.principal_id = match new_pg {
+            Some(pg) => pg,
+            None => self.reported_id(principal_id).await?,
+        };
+        Ok(ingested)
+    }
+
+    /// Verify `raw_blobs` against `principal`'s current state and build the
+    /// commit they would form at `next_seq`, without touching storage.
+    /// `Ok(None)` is an action-only bundle: it forms no commit.
+    ///
+    /// Synchronous and storage-free so a refused fork can be re-verified
+    /// against an earlier state ([`Self::retain_rival`]) by the same code
+    /// that admits a tip.
+    fn build_commit<T: cyphr::eml::Storage>(
+        principal: &mut cyphr::Principal<T>,
+        raw_blobs: &[&[u8]],
+        principal_id: &str,
+        next_seq: u64,
+    ) -> Result<Option<IndexableCommit>, EngineError> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        use crate::import::{is_key_introducing_typ, is_transaction_typ};
 
         let active_algs = principal.active_algs().to_vec();
 
@@ -1589,51 +1882,192 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pg,
             };
 
-            let first_commit = commit.sequence == 0;
-            let new_pg = commit.pg.first().cloned();
-            let nonce = has_nonce_coz(raw_blobs);
-            let mut ingested = self.ingest_commit(raw_blobs, commit).await?;
-            if first_commit {
-                self.genesis_registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .entry(genesis_id.clone())
-                    .or_default()
-                    .push((principal_id.to_string(), nonce));
-            }
-            ingested.principal_id = match new_pg {
-                Some(pg) => pg,
-                None => self.reported_id(principal_id).await?,
-            };
-            Ok(ingested)
+            Ok(Some(commit))
         } else {
-            // Action-only bundle: just store blobs in blob store without
-            // indexing. No commit was formed, so there is no manifest.
-            let mut blob_hashes = Vec::with_capacity(raw_blobs.len());
-            for blob in raw_blobs {
-                let hash = self.blob_store.put(blob).await?;
-                blob_hashes.push(hash);
-            }
-            // Built from the tip read before any write: once the blobs are
-            // durable this response cannot fail (an error would report a
-            // stored bundle as not stored).
-            let tip = tip_before.and_then(|t| {
-                Some(CommittedTip {
-                    sequence: t.commit_count.checked_sub(1)?,
-                    commit_id: t.commit_id,
-                    pr: t.pr,
-                    sr: t.sr,
-                    ar: t.ar,
-                    cr: t.cr,
-                })
-            });
-            Ok(IngestResult {
-                principal_id: self.reported_id(principal_id).await?,
-                blob_hashes,
-                manifest_hash: None,
-                tip,
-            })
+            Ok(None)
         }
+    }
+
+    /// Retain a refused bundle as a non-canonical branch if it is a fork:
+    /// a bundle that verifies against the principal's state at an earlier
+    /// position, where the chain already holds a different commit. The
+    /// bundle is still refused as the tip by the caller (I2: a fork is
+    /// detected, never merged); this only keeps the evidence.
+    ///
+    /// The refusal is attacker-reachable, so the search is bounded:
+    ///
+    /// 1. **Authenticate first, replaying nothing.** Every coz of the bundle must name a key this
+    ///    principal has ever held (its genesis keys and every key a stored coz introduced) and
+    ///    verify under that key's public key. Anyone else costs blob reads only.
+    /// 2. **One forward pass.** The stored chain is replayed once onto a private in-memory Commit
+    ///    Tree. At each position where the bundle's transaction signers are active, a clone of that
+    ///    prefix state tries the bundle through [`Self::build_commit`], the admission path's own
+    ///    verification. At most one replay per stored commit.
+    ///
+    /// A bundle that verifies at no position (a key not active at its
+    /// `pre`, an arrow that fits no state) is not retained. The private
+    /// tree matters: replaying a rival over the principal's durable log
+    /// would hit `DurableLeafMismatch`.
+    ///
+    /// Caller holds the principal's write lock.
+    async fn retain_rival(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+        raw_blobs: &[&[u8]],
+    ) -> Result<(), EngineError> {
+        use crate::import::replay_commits;
+
+        let entries = self.stored_entries(principal_id, None).await?;
+        let Some(signers) = authenticated_signers(raw_blobs, &genesis, &entries) else {
+            return Ok(());
+        };
+        let mut principal =
+            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())?;
+        for (position, entry) in entries.iter().enumerate() {
+            if signers.iter().all(|t| principal.is_key_active(t)) {
+                self.retention_trials
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut candidate = principal.clone();
+                if let Ok(Some(commit)) = Self::build_commit(
+                    &mut candidate,
+                    raw_blobs,
+                    principal_id,
+                    position as u64,
+                ) {
+                    return self.keep_branch(raw_blobs, commit).await;
+                }
+            }
+            // The last commit's own state is never a `pre` of a rival.
+            if position + 1 < entries.len() {
+                self.retention_replays
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                replay_commits(&mut principal, std::slice::from_ref(entry))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store a verified rival `commit` and its blobs behind
+    /// [`BRANCH_MANIFEST_PREFIX`] and list it. A rival that is the
+    /// canonical commit or an already-kept branch is a no-op; the
+    /// (`BRANCH_LIMIT`+1)th distinct rival is [`EngineError::BranchLimit`]
+    /// and stores nothing.
+    async fn keep_branch(
+        &self,
+        raw_blobs: &[&[u8]],
+        commit: IndexableCommit,
+    ) -> Result<(), EngineError> {
+        let tip = commit.commit_ids.first().cloned().unwrap_or_default();
+        let canonical = self
+            .indexer
+            .get_commit_chain(
+                &commit.principal_id,
+                Some(commit.sequence),
+                Some(commit.sequence),
+            )
+            .await?;
+        if canonical.first().is_none_or(|c| c.commit_id == tip) {
+            return Ok(());
+        }
+        {
+            let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+            let of_principal = kept
+                .get(&commit.principal_id)
+                .map_or(&[][..], Vec::as_slice);
+            if of_principal
+                .iter()
+                .any(|b| b.tip == tip && b.sequence == commit.sequence)
+            {
+                return Ok(());
+            }
+            if of_principal.len() >= BRANCH_LIMIT {
+                return Err(EngineError::BranchLimit);
+            }
+        }
+        let branch = BranchTip {
+            tip,
+            pre: commit.pre.clone(),
+            sequence: commit.sequence,
+            canonical: false,
+        };
+        let principal_id = commit.principal_id.clone();
+        self.store_manifest(
+            raw_blobs,
+            commit,
+            BRANCH_MANIFEST_PREFIX,
+            BRANCH_MANIFEST_KIND,
+        )
+        .await?;
+        self.branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(principal_id)
+            .or_default()
+            .push(branch);
+        Ok(())
+    }
+
+    /// How many stored commits retention has replayed so far: the cost
+    /// refused bundles have put on this engine. Exposed so a test can pin
+    /// that an unauthenticated bundle costs none.
+    pub fn retention_replays(&self) -> u64 {
+        self.retention_replays
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many positions retention has tried a bundle at so far (the
+    /// positions where the bundle's signers were active).
+    pub fn retention_trials(&self) -> u64 {
+        self.retention_trials
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Every branch head of a principal: the canonical chain's tip
+    /// (`canonical`, the commit [`Self::get_tip`] reports) and each
+    /// retained rival, by position (the canonical head first at a shared
+    /// position).
+    ///
+    /// A rival is a commit that verified at its `pre` but took a position
+    /// the chain already held, so it was refused as the tip
+    /// ([`Self::submit_commit`]) and kept as evidence of a fork. A
+    /// principal that is not stored is [`EngineError::NotFound`].
+    #[tracing::instrument(skip(self))]
+    pub async fn list_branches(&self, principal_id: &str) -> Result<Vec<BranchTip>, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let not_stored = || EngineError::NotFound(format!("principal {principal_id} not found"));
+        let tip = self
+            .indexer
+            .get_tip(&principal_id)
+            .await?
+            .ok_or_else(not_stored)?;
+        let last = tip.commit_count.checked_sub(1).ok_or_else(not_stored)?;
+        let head = self
+            .indexer
+            .get_commit_chain(&principal_id, Some(last), Some(last))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(not_stored)?;
+        let mut branches = vec![BranchTip {
+            tip: head.commit_id,
+            pre: head.pre,
+            sequence: head.sequence,
+            canonical: true,
+        }];
+        if let Some(kept) = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&principal_id)
+        {
+            branches.extend(kept.iter().cloned());
+        }
+        branches.sort_by(|a, b| {
+            (a.sequence, !a.canonical, &a.tip).cmp(&(b.sequence, !b.canonical, &b.tip))
+        });
+        Ok(branches)
     }
 
     /// Resolve genesis for a principal, auto-detecting from stored or submitted data.
@@ -2030,6 +2464,54 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer.clear(&DeriveToken::new()).await?;
         self.rebuild_index_from_manifests().await
     }
+}
+
+/// The thumbprints that sign the transactions of `raw_blobs`, if every coz
+/// of the bundle is signed by a key the principal has ever held and its
+/// signature verifies under that key; `None` otherwise, or if the bundle
+/// has no transaction. Reads no principal state: `genesis` and the keys the
+/// stored `entries` introduced are the whole key history.
+fn authenticated_signers(
+    raw_blobs: &[&[u8]],
+    genesis: &crate::Genesis,
+    entries: &[crate::CommitEntry],
+) -> Option<Vec<coz::Thumbprint>> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
+    let genesis_keys: &[cyphr::Key] = match genesis {
+        crate::Genesis::Implicit(key) => std::slice::from_ref(key),
+        crate::Genesis::Explicit(keys) => keys,
+    };
+    for key in genesis_keys {
+        history.insert(
+            key.tmb().to_b64(),
+            (key.alg().to_owned(), key.pub_key().to_vec()),
+        );
+    }
+    for key in entries.iter().flat_map(|e| &e.keys) {
+        if let Ok(public) = Base64UrlUnpadded::decode_vec(&key.pub_key) {
+            history.insert(key.tmb.clone(), (key.alg.clone(), public));
+        }
+    }
+
+    let mut signers = Vec::new();
+    for blob in raw_blobs {
+        let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
+        let mut pay = value.get("pay")?.clone();
+        crate::import::canonicalize_value(&mut pay);
+        let header = cyphr::parsed_coz::CozHeader::parse(&pay).ok()?;
+        let sig = Base64UrlUnpadded::decode_vec(value.get("sig")?.as_str()?).ok()?;
+        let (alg, public) = history.get(&header.tmb.to_b64())?;
+        let pay_json = serde_json::to_vec(&pay).ok()?;
+        if coz::verify_json(&pay_json, &sig, alg, public) != Some(true) {
+            return None;
+        }
+        if crate::import::is_transaction_typ(&header.typ) {
+            signers.push(header.tmb);
+        }
+    }
+    (!signers.is_empty()).then_some(signers)
 }
 
 /// Whether `typ` is the protocol's `commit/create` (authority-qualified

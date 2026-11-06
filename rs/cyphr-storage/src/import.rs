@@ -190,8 +190,7 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
 
         if let Some(idx) = first_tx_idx {
             // 2. Process pre-actions (before the first transaction)
-            for tx_idx in 0..idx {
-                let tx_value = &commit.cozies[tx_idx];
+            for (tx_idx, tx_value) in commit.cozies.iter().enumerate().take(idx) {
                 let index = commit_idx * 1000 + tx_idx;
 
                 let pay = tx_value
@@ -233,8 +232,7 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
             let mut scope = principal.begin_commit();
             let mut applied_tx_count = 0;
 
-            for tx_idx in idx..commit.cozies.len() {
-                let tx_value = &commit.cozies[tx_idx];
+            for (tx_idx, tx_value) in commit.cozies.iter().enumerate().skip(idx) {
                 let index = commit_idx * 1000 + tx_idx;
 
                 let pay = tx_value

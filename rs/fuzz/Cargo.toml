@@ -81,3 +81,10 @@ doc   = false
 name  = "fuzz_patch_envelope"
 path  = "fuzz_targets/fuzz_patch_envelope.rs"
 test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_view_statement"
+path  = "fuzz_targets/fuzz_view_statement.rs"
+test  = false

@@ -2,10 +2,10 @@
 
 use coz::Thumbprint;
 
-use super::{Level, Principal, PrincipalKind};
+use super::{Clock, Level, MAX_NOW, Principal, PrincipalKind};
 use crate::action::Action;
 use crate::commit::Commit;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
@@ -251,14 +251,44 @@ impl<S: eml::Storage> Principal<S> {
         )
     }
 
-    /// Configure the maximum allowed clock skew for future timestamps.
+    /// Configure the tolerance for a `now` ahead of the verifier clock.
     ///
-    /// Transactions with `now > server_time + max_clock_skew` will be rejected
-    /// with `TimestampFuture` error. Set to 0 to disable future timestamp checking (default).
-    ///
-    /// Recommended value: 300 (5 minutes).
+    /// A `now` greater than `clock() + seconds` is refused with
+    /// `TimestampFuture`. The default is `DEFAULT_MAX_CLOCK_SKEW`; 0 means
+    /// no tolerance, not "unchecked": the bound cannot be turned off.
     pub fn set_max_clock_skew(&mut self, seconds: i64) {
         self.core_mut().max_clock_skew = seconds;
+    }
+
+    /// Install the verifier's time source (Unix seconds).
+    ///
+    /// The default reads the system clock where one exists. On
+    /// wasm32-unknown-unknown the default reads 0 and so refuses every
+    /// `now`: the host must install a clock (for example one over
+    /// `Date.now`) before applying anything. Until it does, a wasm verifier
+    /// cannot replay a peer chain either, since replay applies each coz
+    /// through the same bound.
+    pub fn set_clock(&mut self, clock: Clock) {
+        self.core_mut().clock = clock;
+    }
+
+    /// Bound a coz or action `now` (SPEC 6.4, 14.1, 15.9) for every entry
+    /// path, commit, action and push alike. Replay needs no exemption: a
+    /// chain's past timestamps are below the clock, so only a message from
+    /// the future is refused.
+    ///
+    /// Below 1 is reported as `TimestampPast` and above 2^53 - 1 as
+    /// `TimestampFuture`, so no new error variant is needed.
+    pub(crate) fn check_now(&self, now: i64) -> Result<()> {
+        if now < 1 {
+            return Err(Error::TimestampPast);
+        }
+        // Saturating: `now` can be up to i64::MAX and the skew is caller-set.
+        let ceiling = ((self.clock)().saturating_add(self.max_clock_skew)).min(MAX_NOW);
+        if now > ceiling {
+            return Err(Error::TimestampFuture);
+        }
+        Ok(())
     }
 
     /// Get the current Data State (None if no actions).

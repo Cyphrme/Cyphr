@@ -64,15 +64,13 @@ pub fn run(
         if let Some(pg) = principal.pg() {
             pg.as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?
+                .map(Base64UrlUnpadded::encode_string)?
         } else {
             principal
                 .pr()
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
+                .map(Base64UrlUnpadded::encode_string)?
         }
     };
 

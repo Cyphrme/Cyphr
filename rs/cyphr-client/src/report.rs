@@ -1,4 +1,5 @@
-//! A signed tip report's claims, canonically parsed.
+//! A signed server statement's claims, canonically parsed: the tip report
+//! and the peer view statement.
 //!
 //! This is the canonical parse a verifier applies to a signed statement's
 //! `pay` before acting on any claim in it: non-canonical input is rejected
@@ -6,7 +7,10 @@
 
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
+use serde::Deserialize as _;
 use serde_json::Value;
+
+use crate::patch::{ENVELOPE_VERSION, Statement};
 
 /// The post-commit roots a tip report attests, parsed into the typed
 /// domain: the same four fields [`Roots`] carries on the wire, but each
@@ -213,4 +217,251 @@ fn parse_sequence(value: &Value) -> Result<u64, TipReportParseError> {
             .map_err(|_| TipReportParseError::Sequence(value.clone())),
         _ => Err(TipReportParseError::Sequence(value.clone())),
     }
+}
+
+/// The `typ` a signed view statement is stamped with. Its own `typ`, so no
+/// receipt, tip report or bearer token can be replayed as a view (and the
+/// reverse): the kind is bound into the signature.
+pub const VIEW_STATEMENT_TYP: &str = "cyphr-server/view";
+
+/// A peer's signed view statement, canonically parsed: "I hold principal
+/// `pr` at this tree size and index" (GOSSIP.md section 3).
+///
+/// The field layout follows the C2SP checkpoint shape
+/// (<https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md>): an origin
+/// (`pr`), a tree size, and the root the size commits to (`commit_id` and
+/// `roots`). `index` is the position of the newest commit, the leaf the
+/// statement is anchored at; it is always `tree_size - 1`, and the parse
+/// refuses a statement where it is not, so the two cannot be signed apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewStatement {
+    pub pr: coz::Thumbprint,
+    pub tree_size: u64,
+    pub index: u64,
+    /// The signed `now`: when the peer made the claim. Returned so the
+    /// caller can apply its own freshness policy; see [`verify_view`].
+    pub now: i64,
+    pub commit_id: TaggedDigest,
+    pub roots: TipReportRoots,
+}
+
+/// Why a view statement's `pay` failed to canonicalize.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewStatementParseError {
+    /// `pr` is not a bare canonical genesis identifier.
+    #[error("pr: {0}")]
+    Pr(cyphr::error::Error),
+    /// `commit_id` is not a tagged digest.
+    #[error("commit_id: {0}")]
+    CommitId(cyphr::error::Error),
+    /// `tree_size` is not a non-negative integer JSON number.
+    #[error("tree_size is not a canonical non-negative integer: {0}")]
+    TreeSize(Value),
+    /// `index` is not a non-negative integer JSON number.
+    #[error("index is not a canonical non-negative integer: {0}")]
+    Index(Value),
+    /// `now` is not an integer JSON number.
+    #[error("now is not an integer: {0}")]
+    Now(Value),
+    /// `index` is not `tree_size - 1` (an empty tree has no index).
+    #[error("index {index} is not tree_size {tree_size} minus one")]
+    Inconsistent { tree_size: u64, index: u64 },
+    /// `roots.<field>` is not a digest.
+    #[error("roots.{field}: {source}")]
+    Roots {
+        field: &'static str,
+        source: cyphr::error::Error,
+    },
+}
+
+impl ViewStatement {
+    /// Parse a view statement's `pay`. Never panics on any input (fuzzed:
+    /// `fuzz_view_statement`).
+    pub fn parse(coz: &coz::CozJson) -> Result<Self, ViewStatementParseError> {
+        let pay = &coz.pay;
+        let pr = parse_genesis_id(&pay["pr"]).map_err(ViewStatementParseError::Pr)?;
+        let commit_id =
+            parse_digest_field(&pay["commit_id"]).map_err(ViewStatementParseError::CommitId)?;
+        let tree_size = pay["tree_size"]
+            .as_u64()
+            .ok_or_else(|| ViewStatementParseError::TreeSize(pay["tree_size"].clone()))?;
+        let index = pay["index"]
+            .as_u64()
+            .ok_or_else(|| ViewStatementParseError::Index(pay["index"].clone()))?;
+        if tree_size.checked_sub(1) != Some(index) {
+            return Err(ViewStatementParseError::Inconsistent { tree_size, index });
+        }
+        let now = pay["now"]
+            .as_i64()
+            .ok_or_else(|| ViewStatementParseError::Now(pay["now"].clone()))?;
+        let digest = |field: &'static str| {
+            parse_digest_field(&pay["roots"][field])
+                .map_err(|source| ViewStatementParseError::Roots { field, source })
+        };
+        let roots = TipReportRoots {
+            pr: digest("pr")?,
+            sr: digest("sr")?,
+            ar: digest("ar")?,
+            cr: parse_optional_digest_field(&pay["roots"]["cr"]).map_err(|source| {
+                ViewStatementParseError::Roots {
+                    field: "cr",
+                    source,
+                }
+            })?,
+        };
+        Ok(Self {
+            pr,
+            tree_size,
+            index,
+            now,
+            commit_id,
+            roots,
+        })
+    }
+}
+
+/// Why a peer's view statement was not accepted.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewFailure {
+    /// The envelope states a wire version this client does not read;
+    /// nothing of its payload or statement was interpreted.
+    #[error("response envelope version {found} is not the supported {supported}")]
+    UnsupportedVersion {
+        /// The version the peer stated (0 when `v` is missing or not an
+        /// unsigned integer).
+        found: u64,
+        /// The one version this client reads.
+        supported: u64,
+    },
+    /// The envelope's statement slot is unsigned or not a statement.
+    #[error("the response carries no signed statement")]
+    Unsigned,
+    /// The signed `typ` is not [`VIEW_STATEMENT_TYP`].
+    #[error("the signed statement is not a view statement")]
+    WrongTyp,
+    /// The statement's `tmb` is absent or not a thumbprint.
+    #[error("the statement names no usable signing key")]
+    NoKey,
+    /// The signing key is not active in the peer chain the caller holds:
+    /// never in it, or revoked or replaced since.
+    #[error("the signing key is not active in the peer chain")]
+    KeyNotActive,
+    /// The signature does not verify under the chain's key.
+    #[error("the statement's signature does not verify")]
+    BadSignature,
+    /// The signed claims do not canonicalize.
+    #[error("the statement is malformed: {0}")]
+    Malformed(#[from] ViewStatementParseError),
+    /// The statement attests a different principal than the one asked about.
+    #[error("the statement attests a different principal")]
+    PrincipalMismatch,
+    /// The principal the caller asked about is not a bare canonical
+    /// genesis identifier.
+    #[error("the principal identifier is not a bare canonical genesis identifier")]
+    BadPrincipal,
+}
+
+/// Verify a peer's signed view statement against the peer principal chain
+/// the caller holds, never against the server's own say-so. Pure: no I/O,
+/// so gossip and any other carrier can call it on a coz they already hold;
+/// [`verify_view_statement`] is the HTTP-envelope adapter.
+///
+/// `chain` is the peer's own principal, replayed locally; `pr` is the
+/// principal the view is asked about (not the peer's own).
+///
+/// # What this checks
+///
+/// - `typ` is [`VIEW_STATEMENT_TYP`];
+/// - the signing key (`pay.tmb`) is ACTIVE in `chain`, so a key that was never in it, or was
+///   revoked or replaced, is refused even when its own signature is valid;
+/// - the signature verifies under that key's bytes (the whole `pay` is signed, so a forged tree
+///   size, index or `now` fails here);
+/// - the claims canonicalize ([`ViewStatement::parse`]) and attest `pr`.
+///
+/// # What this does NOT check
+///
+/// Freshness and pinning. A genuine view captured last year still
+/// verifies, and so does one older than the caller's pinned tip. The
+/// caller owns both: compare the returned [`ViewStatement::now`] and
+/// [`ViewStatement::tree_size`] against its own freshness policy and its
+/// pinned tip before acting on the claim.
+///
+/// # Errors
+///
+/// A [`ViewFailure`] naming the first check that refused.
+pub fn verify_view<S: cyphr::eml::Storage>(
+    coz: &coz::CozJson,
+    chain: &cyphr::Principal<S>,
+    pr: &coz::Thumbprint,
+) -> Result<ViewStatement, ViewFailure> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    if coz.pay["typ"].as_str() != Some(VIEW_STATEMENT_TYP) {
+        return Err(ViewFailure::WrongTyp);
+    }
+    let tmb = coz.pay["tmb"]
+        .as_str()
+        .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
+        .map(coz::Thumbprint::from_bytes)
+        .ok_or(ViewFailure::NoKey)?;
+    // Looked up among ACTIVE keys only: `get_key` also returns revoked ones,
+    // and a key the chain has retired must not vouch for a current view.
+    let key = chain
+        .active_keys()
+        .find(|k| k.tmb() == &tmb)
+        .ok_or(ViewFailure::KeyNotActive)?;
+    if coz.pay["alg"].as_str() != Some(key.alg())
+        || !signature_verifies(coz, key.alg(), key.pub_key())
+    {
+        return Err(ViewFailure::BadSignature);
+    }
+    let view = ViewStatement::parse(coz)?;
+    if view.pr.as_bytes() != pr.as_bytes() {
+        return Err(ViewFailure::PrincipalMismatch);
+    }
+    Ok(view)
+}
+
+/// [`verify_view`] over a `GET /view` response body: gate the envelope version
+/// first, as [`verify_patch_body`](crate::verify_patch_body) does, lift the
+/// signed statement, and verify it. `pr` is the bare canonical b64ut
+/// genesis identifier of the principal asked about.
+///
+/// All of [`verify_view`]'s caveats apply: freshness and pinning are the
+/// caller's.
+///
+/// # Errors
+///
+/// [`ViewFailure::UnsupportedVersion`] for an unknown or missing `v`,
+/// [`ViewFailure::BadPrincipal`] for a malformed `pr`,
+/// [`ViewFailure::Unsigned`] for an unsigned statement, else as [`verify_view`].
+pub fn verify_view_statement<S: cyphr::eml::Storage>(
+    envelope: &Value,
+    chain: &cyphr::Principal<S>,
+    pr: &str,
+) -> Result<ViewStatement, ViewFailure> {
+    // Version first, before any statement is interpreted: a future envelope
+    // may reshape everything below.
+    let found = envelope.get("v").and_then(Value::as_u64).unwrap_or(0);
+    if found != ENVELOPE_VERSION {
+        return Err(ViewFailure::UnsupportedVersion {
+            found,
+            supported: ENVELOPE_VERSION,
+        });
+    }
+    let pr = parse_genesis_id_str(pr).map_err(|_| ViewFailure::BadPrincipal)?;
+    let statement = envelope
+        .get("statement")
+        .and_then(|s| Statement::deserialize(s).ok());
+    let Some(Statement::Signed(coz)) = statement else {
+        return Err(ViewFailure::Unsigned);
+    };
+    verify_view(&coz, chain, &pr)
+}
+
+fn signature_verifies(coz: &coz::CozJson, alg: &str, pub_key: &[u8]) -> bool {
+    let Ok(pay_json) = serde_json::to_vec(&coz.pay) else {
+        return false;
+    };
+    coz::verify_json(&pay_json, &coz.sig, alg, pub_key) == Some(true)
 }
