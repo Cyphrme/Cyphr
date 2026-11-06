@@ -502,15 +502,18 @@ dependencies = [
  "coz-rs",
  "cyphr",
  "cyphr-blob-fjall",
+ "cyphr-client",
  "cyphr-index-fjall",
  "cyphr-storage",
  "fjall",
  "indexmap",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+ "toml",
 ]
 
 [[package]]

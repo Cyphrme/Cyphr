@@ -95,13 +95,12 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
             let computed_pg = pg
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+                .map(Base64UrlUnpadded::encode_string)?;
             if computed_pg != identity {
-                return Err(Error::Storage(format!(
-                    "PG mismatch: computed {} != {}",
-                    computed_pg, identity
-                )));
+                return Err(Error::PgMismatch {
+                    computed: computed_pg,
+                    expected: identity.to_owned(),
+                });
             }
         }
 
@@ -137,13 +136,12 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         let computed_pg = pg
             .as_multihash()
             .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+            .map(Base64UrlUnpadded::encode_string)?;
         if computed_pg != identity {
-            return Err(Error::Storage(format!(
-                "PG mismatch: computed {} != expected {}",
-                computed_pg, identity
-            )));
+            return Err(Error::PgMismatch {
+                computed: computed_pg,
+                expected: identity.to_owned(),
+            });
         }
     }
 
@@ -155,8 +153,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .pr()
         .as_multihash()
         .first_variant()
-        .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+        .map(Base64UrlUnpadded::encode_string)?;
 
     // Parse stored pr which may be in "alg:digest" format
     let stored_pr_digest = last_commit
@@ -166,10 +163,10 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .unwrap_or(&last_commit.pr);
 
     if computed_pr != stored_pr_digest {
-        return Err(Error::Storage(format!(
-            "PR mismatch: computed {} != stored {}",
-            computed_pr, stored_pr_digest
-        )));
+        return Err(Error::PrMismatch {
+            computed: computed_pr,
+            stored: stored_pr_digest.to_owned(),
+        });
     }
 
     let tx_count: usize = principal.iter_all_cozies().count();

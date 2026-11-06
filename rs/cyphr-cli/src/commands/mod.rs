@@ -10,5 +10,7 @@ pub mod inspect;
 pub mod io;
 /// Key management commands.
 pub mod key;
+/// Network commands: push, fetch, rebase, verify.
+pub mod network;
 /// ParsedCoz commands.
 pub mod tx;
