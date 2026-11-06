@@ -142,6 +142,22 @@ pub enum Error {
     #[error("rebase cannot replay a `{0}` transaction")]
     RebaseUnsupported(String),
 
+    /// The store directory is missing but a rebase left siblings next to it:
+    /// the process likely died between the two renames of the swap.
+    #[error(
+        "store {} is missing but a rebase left {}; the previous store is the `.pre-rebase-*` entry \
+         (the rebuilt one is `.rebase`): move the right one back to {} and retry",
+        store.display(),
+        found.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+        store.display()
+    )]
+    InterruptedRebase {
+        /// The missing store directory.
+        store: PathBuf,
+        /// The leftovers found beside it.
+        found: Vec<PathBuf>,
+    },
+
     /// Rebase found its scratch store directory already present.
     #[error("rebase workspace {} already exists; remove it and retry", .0.display())]
     RebaseWorkspace(PathBuf),

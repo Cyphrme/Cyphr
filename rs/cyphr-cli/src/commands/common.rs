@@ -153,7 +153,47 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
 /// Parse the CLI options into a CliStorageEngine.
 pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
     let path = store_path(cli)?;
+    refuse_interrupted_swap(path)?;
     open_store(path, cli.total_check)
+}
+
+/// Refuse to open a store that is missing while a rebase left siblings
+/// behind: opening would silently create an empty store beside the real
+/// history. A store that was never created (no siblings) opens normally.
+fn refuse_interrupted_swap(path: &std::path::Path) -> crate::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return Ok(());
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        parent
+    };
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(parent)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name().to_str().is_some_and(|n| {
+                n.strip_prefix(name).is_some_and(|rest| {
+                    rest == super::network::SWAP_MARKER
+                        || rest == ".rebase"
+                        || rest.starts_with(".pre-rebase-")
+                })
+            })
+        })
+        .map(|e| e.path())
+        .collect();
+    if found.is_empty() {
+        return Ok(());
+    }
+    found.sort();
+    Err(Error::InterruptedRebase {
+        store: path.to_owned(),
+        found,
+    })
 }
 
 /// The directory a `file:<path>` store URI names.

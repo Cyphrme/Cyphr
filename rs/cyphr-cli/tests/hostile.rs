@@ -510,7 +510,6 @@ fn failed_rebase_cleans_up_its_scratch_store() {
 /// the backup, never silently replaced by a new empty store. Turns red on
 /// a CLI that creates `data` afresh.
 #[test]
-#[ignore = "RED(N16): an interrupted rebase swap reopens as an empty store"]
 fn interrupted_rebase_swap_is_refused_not_emptied() {
     let a = User::new();
     let id = a.new_identity();

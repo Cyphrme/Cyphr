@@ -168,11 +168,23 @@ fn first_divergence(a: &[RawCommit], b: &[Vec<Vec<u8>>]) -> Option<usize> {
     a.iter().zip(b).position(|(x, y)| !same_commit(&x.blobs, y))
 }
 
+/// Suffix of the file that records a rebase swap in progress.
+pub const SWAP_MARKER: &str = ".rebase-swap";
+
 /// `path` with `suffix` appended to its final component.
 fn sibling(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(suffix);
     std::path::PathBuf::from(s)
+}
+
+/// Make renames in `path`'s parent directory durable.
+fn sync_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    std::fs::File::open(parent)?.sync_all()
 }
 
 /// Removes the rebase scratch store on every exit path that has not
@@ -336,9 +348,19 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     drop(old);
 
     let backup = sibling(&path, &format!(".pre-rebase-{}", current_timestamp()));
+    // The marker names the backup before anything moves, so a process that
+    // dies between the two renames leaves a trail `parse_store` refuses on.
+    let marker = sibling(&path, SWAP_MARKER);
+    std::fs::write(&marker, backup.display().to_string())?;
+    sync_dir(&path)?;
     std::fs::rename(&path, &backup)?;
+    // From here the scratch store is the only complete copy: keep it.
     scratch.0 = None;
+    sync_dir(&path)?;
     std::fs::rename(&tmp, &path)?;
+    sync_dir(&path)?;
+    std::fs::remove_file(&marker)?;
+    sync_dir(&path)?;
 
     let out = json!({"identity": identity, "peer": peer_url,
         "rebased": local.len() - common, "backup": backup.display().to_string()});
