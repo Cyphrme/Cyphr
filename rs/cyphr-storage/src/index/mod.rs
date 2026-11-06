@@ -76,7 +76,7 @@ impl DeriveToken {
     /// and this constructor is `pub(crate)`) — the engine's derivation
     /// path (`ingest_commit`, `rebuild_index_from_manifests`, `rebuild_index_from_scratch`)
     /// is the intended, and only production, caller.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         DeriveToken(())
     }
 
@@ -116,6 +116,57 @@ pub enum IndexerError {
     /// different principal or entity. Nothing was written.
     #[error("index conflict: {0}")]
     Conflict(String),
+}
+
+/// Every digest `commit` claims in the digest table, with the kind of
+/// entity it would name: each coz's blob hash and czd, then each
+/// commit-level variant (commit IDs, PR/SR/AR/CR).
+pub fn digest_claims(commit: &IndexableCommit) -> Vec<(String, EntityType)> {
+    let mut claims = Vec::new();
+    for coz in &commit.cozies {
+        let entity_type = coz_entity_type(&coz.typ);
+        claims.push((coz.blob_hash.to_string(), entity_type));
+        claims.push((coz.czd.clone(), entity_type));
+    }
+    claims.extend(
+        commit
+            .commit_ids
+            .iter()
+            .chain(&commit.prs)
+            .chain(&commit.srs)
+            .chain(&commit.ars)
+            .chain(&commit.crs)
+            .map(|v| (v.clone(), EntityType::Commit)),
+    );
+    claims
+}
+
+/// Whether a coz of this `typ` is indexed as an action or a transaction.
+pub fn coz_entity_type(typ: &str) -> EntityType {
+    if typ.starts_with("cyphr/action") || typ.contains("/action") {
+        EntityType::Action
+    } else {
+        EntityType::Transaction
+    }
+}
+
+/// Refuse a digest write that would move `digest` off the principal or
+/// entity kind that already holds it. One principal re-claiming its own
+/// digest (a commit that leaves a root unchanged) is not a conflict.
+pub fn check_digest_claim(
+    digest: &str,
+    held: &EntityRef,
+    claimed: EntityType,
+    principal_id: &str,
+) -> Result<(), IndexerError> {
+    if held.principal_id.as_deref() != Some(principal_id) || held.entity_type != claimed {
+        return Err(IndexerError::Conflict(format!(
+            "digest {digest} already names a {:?} of {:?}; refusing to re-point it to a {claimed:?} \
+             of {principal_id}",
+            held.entity_type, held.principal_id
+        )));
+    }
+    Ok(())
 }
 
 /// The index's read surface. Public and unrestricted — revoke.rs,

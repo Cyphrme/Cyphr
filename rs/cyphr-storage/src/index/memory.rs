@@ -6,7 +6,9 @@ use std::sync::RwLock;
 use cyphr::state::TaggedDigest;
 
 use super::types::*;
-use super::{DeriveToken, Indexer, IndexerError, IndexerWrite};
+use super::{
+    DeriveToken, Indexer, IndexerError, IndexerWrite, check_digest_claim, coz_entity_type, digest_claims,
+};
 use crate::blob::Blake3Hash;
 
 /// Internal state for the memory indexer.
@@ -197,6 +199,28 @@ impl IndexerWrite for MemoryIndexer {
                 }
             }
 
+            // Refuse before any mutation: a write that would re-point an
+            // alias or a digest names no new truth, it rewrites an old one.
+            for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+                let owner = state
+                    .aliases
+                    .get(pr)
+                    .map(String::as_str)
+                    .or_else(|| state.principals.contains_key(pr).then_some(pr.as_str()));
+                if owner.is_some_and(|o| o != commit.principal_id) {
+                    return Err(IndexerError::Conflict(format!(
+                        "PG alias {pr} already names another principal; refusing to re-point it \
+                         to {}",
+                        commit.principal_id
+                    )));
+                }
+            }
+            for (digest, entity_type) in digest_claims(&commit) {
+                if let Some(held) = state.digest_index.get(&digest) {
+                    check_digest_claim(&digest, held, entity_type, &commit.principal_id)?;
+                }
+            }
+
             let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
             let primary_pr = commit.prs.first().cloned().unwrap_or_default();
             let primary_sr = commit.srs.first().cloned().unwrap_or_default();
@@ -244,14 +268,13 @@ impl IndexerWrite for MemoryIndexer {
                     last_updated: commit.timestamp,
                 });
 
-            // Alias each PG variant to the principal (first writer wins,
-            // and a stored principal id always outranks an alias).
+            // Alias each PG variant to the principal. The conflict check
+            // above guarantees none names anyone else.
             for pr in &commit.pg {
                 if *pr != commit.principal_id {
                     state
                         .aliases
-                        .entry(pr.clone())
-                        .or_insert_with(|| commit.principal_id.clone());
+                        .insert(pr.clone(), commit.principal_id.clone());
                 }
             }
 
@@ -276,12 +299,7 @@ impl IndexerWrite for MemoryIndexer {
 
             // Index each coz blob.
             for coz in &commit.cozies {
-                let entity_type =
-                    if coz.typ.starts_with("cyphr/action") || coz.typ.contains("/action") {
-                        EntityType::Action
-                    } else {
-                        EntityType::Transaction
-                    };
+                let entity_type = coz_entity_type(&coz.typ);
 
                 let digest_key = coz.blob_hash.to_string();
                 state.digest_index.insert(

@@ -84,19 +84,16 @@ async fn pg_established_marker_tracks_the_pg_commit_memory() {
 }
 
 #[tokio::test]
-#[ignore = "RED(H1F): index_commit re-points aliases and digests silently"]
 async fn alias_conflict_second_principal_is_refused_memory() {
     conformance::alias_conflict_second_principal_is_refused(&MemoryIndexer::new()).await;
 }
 
 #[tokio::test]
-#[ignore = "RED(H1F): index_commit re-points aliases and digests silently"]
 async fn alias_conflict_naming_another_principal_is_refused_memory() {
     conformance::alias_conflict_naming_another_principal_is_refused(&MemoryIndexer::new()).await;
 }
 
 #[tokio::test]
-#[ignore = "RED(H1F): index_commit re-points aliases and digests silently"]
 async fn digest_conflict_other_principal_is_refused_memory() {
     conformance::digest_conflict_other_principal_is_refused(&MemoryIndexer::new()).await;
 }

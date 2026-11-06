@@ -601,16 +601,20 @@ pub async fn alias_conflict_naming_another_principal_is_refused<I: Indexer + Ind
 pub async fn digest_conflict_other_principal_is_refused<I: Indexer + IndexerWrite>(indexer: &I) {
     let token = DeriveToken::for_conformance_tests();
     let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    // Well-formed digests, so `resolve_digest` can parse them.
+    let owned_czd = format!("SHA-256:{}", "A".repeat(43));
+    let owned_commit = format!("SHA-256:{}", "B".repeat(42) + "A");
+    let mut first = make_commit(a, 0, 1000);
+    first.cozies[0].czd = owned_czd.clone();
+    first.commit_ids = vec![owned_commit.clone()];
     indexer
-        .index_commit(&make_commit(a, 0, 1000), &token)
+        .index_commit(&first, &token)
         .await
         .expect("A commit 0");
     indexer
         .index_commit(&make_commit(b, 0, 1000), &token)
         .await
         .expect("B commit 0");
-    let owned_czd = format!("SHA-256:czd-{a}-0");
-    let owned_commit = format!("SHA-256:commit-{a}-0");
 
     for (label, mutate) in [
         (
@@ -655,14 +659,14 @@ pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + Index
 ) {
     let token = DeriveToken::for_conformance_tests();
     let a = "SHA-256:alice-id";
-    indexer
-        .index_commit(&make_commit(a, 0, 1000), &token)
-        .await
-        .unwrap();
+    let sr = format!("SHA-256:{}", "C".repeat(42) + "A");
+    let mut first = make_commit(a, 0, 1000);
+    first.srs = vec![sr.clone()];
+    indexer.index_commit(&first, &token).await.unwrap();
     let mut next = make_commit(a, 1, 2000);
-    next.srs = vec![format!("SHA-256:sr-{a}-0")];
+    next.srs = vec![sr.clone()];
     indexer.index_commit(&next, &token).await.expect("repeat");
-    let digest: TaggedDigest = format!("SHA-256:sr-{a}-0").parse().unwrap();
+    let digest: TaggedDigest = sr.parse().unwrap();
     let e = indexer.resolve_digest(&digest).await.unwrap().unwrap();
     assert_eq!(e.sequence, Some(1));
 }

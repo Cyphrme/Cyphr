@@ -45,7 +45,8 @@ use cyphr::state::TaggedDigest;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{
     CommitRef, DeriveToken, EntityRef, EntityType, IndexableCommit, Indexer, IndexerError,
-    IndexerWrite, PrincipalSummary, PublicKeyInfo, TipState,
+    IndexerWrite, PrincipalSummary, PublicKeyInfo, TipState, check_digest_claim, coz_entity_type,
+    digest_claims,
 };
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
@@ -530,6 +531,29 @@ fn db_index_commit(
     };
 
     let pid_key = commit.principal_id.as_bytes();
+
+    // Refuse before any write: a write that would re-point an alias or a
+    // digest names no new truth, it rewrites an old one.
+    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+        let alias_owner = ks.aliases.get(pr).map_err(to_backend_err)?;
+        let names_principal = ks.principals.contains_key(pr).map_err(to_backend_err)?;
+        let other = match alias_owner {
+            Some(owner) => owner.as_ref() != pid_key,
+            None => names_principal,
+        };
+        if other {
+            return Err(IndexerError::Conflict(format!(
+                "PG alias {pr} already names another principal; refusing to re-point it to {}",
+                commit.principal_id
+            )));
+        }
+    }
+    for (digest, entity_type) in digest_claims(commit) {
+        if let Some(held) = ks.digests.get(digest.as_bytes()).map_err(to_backend_err)? {
+            check_digest_claim(&digest, &de(&held)?, entity_type, &commit.principal_id)?;
+        }
+    }
+
     let existing_summary: Option<PrincipalSummary> = ks
         .principals
         .get(pid_key)
@@ -588,8 +612,8 @@ fn db_index_commit(
     );
 
     for pr in &commit.pg {
-        // First writer wins; the principal's own id needs no alias.
-        if *pr != commit.principal_id && !ks.aliases.contains_key(pr).map_err(to_backend_err)? {
+        // The principal's own id needs no alias.
+        if *pr != commit.principal_id {
             batch.insert(&ks.aliases, pr.as_bytes(), pid_key);
         }
     }
@@ -611,11 +635,7 @@ fn db_index_commit(
     );
 
     for coz in &commit.cozies {
-        let entity_type = if coz.typ.starts_with("cyphr/action") || coz.typ.contains("/action") {
-            EntityType::Action
-        } else {
-            EntityType::Transaction
-        };
+        let entity_type = coz_entity_type(&coz.typ);
 
         for digest_key in [coz.blob_hash.to_string(), coz.czd.clone()] {
             batch.insert(
