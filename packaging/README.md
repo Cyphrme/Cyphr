@@ -8,7 +8,9 @@ Everything an operator needs to build, check and verify `cyphr-server`.
 | `cyphr-server.example.toml` | Example config; only options the binary accepts today.                                           |
 | `smoke.sh`                  | Starts a server on an empty data dir, expects a 404 from `/tip`, and checks the Noise transport. |
 
-Check a build: `packaging/smoke.sh result/bin/cyphr-server`.
+Check a build: `packaging/smoke.sh result/bin/cyphr-server`. The script needs
+`bash`, `curl`, `python3` and `openssl` (it makes a throwaway signing key
+for the transport case).
 
 ## Noise transport
 
