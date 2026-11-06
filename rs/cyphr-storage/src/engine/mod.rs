@@ -1067,12 +1067,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut principal = self.load_principal(principal_id, genesis).await?;
 
         // 3. Determine the next sequence number.
-        let next_seq = self
-            .indexer
-            .get_tip(principal_id)
-            .await?
-            .map(|tip| tip.commit_count)
-            .unwrap_or(0);
+        let tip_before = self.indexer.get_tip(principal_id).await?;
+        let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
 
         let active_algs = principal.active_algs().to_vec();
 
@@ -1342,7 +1338,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 let hash = self.blob_store.put(blob).await?;
                 blob_hashes.push(hash);
             }
-            let tip = self.indexer.get_tip(principal_id).await?.and_then(|t| {
+            // Built from the tip read before any write: once the blobs are
+            // durable this response cannot fail (an error would report a
+            // stored bundle as not stored).
+            let tip = tip_before.and_then(|t| {
                 Some(CommittedTip {
                     sequence: t.commit_count.checked_sub(1)?,
                     commit_id: t.commit_id,

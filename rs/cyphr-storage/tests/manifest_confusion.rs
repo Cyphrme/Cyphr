@@ -666,7 +666,6 @@ impl IndexerWrite for TipFailsAfterStore {
 /// read that fails is the one after the blob write. Turns red if: the
 /// response is built from a fallible read after the store.
 #[tokio::test]
-#[ignore = "RED(H1F): action-only response reads the tip after the blobs are stored"]
 async fn action_only_no_error_after_store() {
     let (armed, stored) = (
         Arc::new(AtomicBool::new(false)),
