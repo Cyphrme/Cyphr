@@ -31,6 +31,56 @@ pub enum Error {
     /// Unknown algorithm.
     #[error("unknown algorithm: {0}")]
     UnknownAlgorithm(String),
+
+    /// The file states a format version this build does not read. No key
+    /// was read from it.
+    #[error("{file} version {found} is not the supported {supported}")]
+    UnsupportedVersion {
+        /// Which file: the keystore or its genesis sidecar.
+        file: &'static str,
+        /// The version the file states.
+        found: u64,
+        /// The one version this build reads.
+        supported: u64,
+    },
+}
+
+/// The format version of the keystore and its genesis sidecar. Both are a
+/// flat map with a top-level `v`; a file from before versions has none and
+/// is v1 (same layout), and is stamped on its next save.
+const FORMAT_VERSION: u64 = 1;
+
+/// Read a versioned flat-map file, checking `v` before any entry is
+/// interpreted.
+fn read_versioned<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    file: &'static str,
+) -> Result<HashMap<String, T>, Error> {
+    let mut doc: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&fs::read_to_string(path)?)?;
+    if let Some(v) = doc.remove("v") {
+        let found = v.as_u64().ok_or_else(|| {
+            <serde_json::Error as serde::de::Error>::custom("`v` is not an unsigned integer")
+        })?;
+        if found != FORMAT_VERSION {
+            return Err(Error::UnsupportedVersion {
+                file,
+                found,
+                supported: FORMAT_VERSION,
+            });
+        }
+    }
+    Ok(serde_json::from_value(serde_json::Value::Object(doc))?)
+}
+
+/// Serialize a flat map with the current `v`.
+fn to_versioned<T: Serialize>(entries: &HashMap<String, T>) -> Result<String, Error> {
+    let mut doc = serde_json::Map::new();
+    for (key, entry) in entries {
+        doc.insert(key.clone(), serde_json::to_value(entry)?);
+    }
+    doc.insert("v".to_string(), FORMAT_VERSION.into());
+    Ok(serde_json::to_string_pretty(&doc)?)
 }
 
 /// A stored key entry with algorithm, public, and private key material.
@@ -92,16 +142,14 @@ impl JsonKeyStore {
         let path = path.as_ref().to_path_buf();
 
         let keys = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
+            read_versioned(&path, "keystore")?
         } else {
             HashMap::new()
         };
 
         let genesis_path = Self::genesis_path_for(&path);
         let genesis = if genesis_path.exists() {
-            let content = fs::read_to_string(&genesis_path)?;
-            serde_json::from_str(&content)?
+            read_versioned(&genesis_path, "keystore genesis sidecar")?
         } else {
             HashMap::new()
         };
@@ -134,7 +182,7 @@ impl JsonKeyStore {
         key_tmbs: Vec<String>,
     ) -> Result<(), Error> {
         self.genesis.insert(principal_id.to_string(), key_tmbs);
-        let content = serde_json::to_string_pretty(&self.genesis)?;
+        let content = to_versioned(&self.genesis)?;
         fs::write(&self.genesis_path, content)?;
         Ok(())
     }
@@ -166,7 +214,7 @@ impl KeyStore for JsonKeyStore {
     }
 
     fn save(&self) -> Result<(), Error> {
-        let content = serde_json::to_string_pretty(&self.keys)?;
+        let content = to_versioned(&self.keys)?;
         fs::write(&self.path, content)?;
         Ok(())
     }
@@ -210,13 +258,11 @@ mod tests {
     /// Claim: the keystore file AND its genesis sidecar state their format
     /// version, and `open` refuses one it does not know as a typed
     /// `UnsupportedVersion`, before any key is read out of it. The current
-    /// version still round-trips. The variant does not exist yet, so it is
-    /// pinned by `Debug` string. Turns red on files written unstamped, or an
+    /// version still round-trips. Turns red on files written unstamped, or an
     /// `open` that ignores `v` (today an extra top-level field is mis-read
     /// as a key entry and fails as a bare JSON error). A unit test: the
     /// files are the unit under claim and no scenario reaches them cheaply.
     #[test]
-    #[ignore = "RED(N13): the keystore and genesis sidecar are unversioned"]
     fn version_keystore_unknown_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.json");
@@ -241,10 +287,13 @@ mod tests {
             for unknown in [0u64, 99] {
                 doc["v"] = unknown.into();
                 std::fs::write(file, serde_json::to_vec(&doc).unwrap()).unwrap();
-                let dbg = format!("{:?}", JsonKeyStore::open(&path).err());
+                let refused = JsonKeyStore::open(&path).err();
                 assert!(
-                    dbg.contains("UnsupportedVersion") && dbg.contains(&unknown.to_string()),
-                    "{} v={unknown} must be refused as UnsupportedVersion: {dbg}",
+                    matches!(
+                        refused,
+                        Some(Error::UnsupportedVersion { found, .. }) if found == unknown
+                    ),
+                    "{} v={unknown} must be refused as UnsupportedVersion: {refused:?}",
                     file.display()
                 );
             }
