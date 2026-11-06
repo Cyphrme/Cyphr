@@ -235,7 +235,8 @@ async fn well_formed_unknown_pr_still_syncs_once_per_request() {
 /// assertion below). A global subscriber leaves no interest to race on.
 struct ReplayCounter;
 
-type Counters = std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, Arc<AtomicUsize>>>;
+type Counters =
+    std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, Arc<AtomicUsize>>>;
 
 fn counters() -> &'static Counters {
     static COUNTERS: std::sync::OnceLock<Counters> = std::sync::OnceLock::new();
