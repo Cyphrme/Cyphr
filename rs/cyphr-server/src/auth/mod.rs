@@ -16,7 +16,7 @@ pub mod middleware;
 pub mod principal;
 pub mod token;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -200,20 +200,65 @@ impl ServerIdentity {
     }
 }
 
-/// Write a keypair to a signing-key file in the on-disk [`KeyFile`] format
-/// that [`ServerIdentity::load_from_path`] reads back.
+/// The staging path for a key replacement: `<path>.next`, beside the key
+/// file so the final rename never crosses a filesystem.
+pub fn next_key_path(path: &Path) -> PathBuf {
+    let mut next = path.as_os_str().to_owned();
+    next.push(".next");
+    PathBuf::from(next)
+}
+
+/// Durably write `kp` to `<path>.next` in the on-disk [`KeyFile`] format,
+/// leaving the live key file untouched.
 ///
-/// Used by the server principal's key rotation to persist the freshly
-/// activated key, so a later boot loads the new key rather than the retired
-/// one (see [`principal`]).
-pub(crate) fn write_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthError> {
+/// This is step one of a crash-safe key replacement (see [`principal`]): the
+/// new key must be on stable storage before the chain commits to it, or a
+/// crash after the commit could leave a chain whose active private key
+/// exists nowhere. The file is fsynced before returning. It inherits the
+/// live key file's permissions, so the later rename does not widen access
+/// to the private key.
+pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthError> {
+    use std::io::Write;
+
     let file = KeyFile {
         v: FILE_FORMAT_VERSION,
         alg: kp.alg.name().to_string(),
         pub_key: kp.pub_bytes.clone(),
         prv_key: kp.prv_bytes.clone(),
     };
-    std::fs::write(path, serde_json::to_vec(&file)?)?;
+    let next = next_key_path(path);
+    let mut out = std::fs::File::create(&next)?;
+    if let Ok(live) = std::fs::metadata(path) {
+        out.set_permissions(live.permissions())?;
+    }
+    out.write_all(&serde_json::to_vec(&file)?)?;
+    out.sync_all()?;
+    Ok(())
+}
+
+/// Atomically replace the key file with the staged `<path>.next`, then
+/// fsync the directory so the rename itself survives a crash.
+pub(crate) fn promote_staged_key(path: &Path) -> Result<(), AuthError> {
+    std::fs::rename(next_key_path(path), path)?;
+    sync_parent_dir(path)?;
+    Ok(())
+}
+
+/// Delete a staged `<path>.next` the chain does not vouch for, durably.
+pub(crate) fn discard_staged_key(path: &Path) -> Result<(), AuthError> {
+    std::fs::remove_file(next_key_path(path))?;
+    sync_parent_dir(path)?;
+    Ok(())
+}
+
+/// fsync the directory holding `path`, making a rename or unlink in it
+/// durable (POSIX: the directory entry is data of the directory).
+fn sync_parent_dir(path: &Path) -> Result<(), AuthError> {
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
 
