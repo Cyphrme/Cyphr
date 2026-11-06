@@ -1510,10 +1510,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
                 new_key = first.and_then(|c| c.prs.into_iter().next());
             } else {
-                // A genesis PR already stored is that principal's: the
-                // position guard decides, so a different commit 0 is
-                // refused as a fork, not filed as a sibling (I2).
-                stored = self.stored_id(&genesis_id).await?;
+                // Keyed by its genesis PR: a different commit 0 of an
+                // already-stored one is refused by the position guard as
+                // a fork, not filed as a sibling (I2).
                 new_key = Some(genesis_id.clone());
             }
         }
