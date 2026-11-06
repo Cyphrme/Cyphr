@@ -48,18 +48,17 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   50 |
+| `covered`      |   51 |
 | `red-existing` |    0 |
-| `red-new`      |    4 |
+| `red-new`      |    3 |
 | `not-testable` |   12 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
 
 Fixing ids on red rows: `q3` is the last-key
 self-revoke decision (the code allows no revoke of the only key; SPEC allows
-it and leaves the principal Dead). `SC1-F3` (Key Tree arity) and `SC1-F5`
-(default future-timestamp tolerance) have no fixing node yet; they are
-tracking ids until one is assigned.
+it and leaves the principal Dead). `SC1-F5` (default future-timestamp
+tolerance) has no fixing node yet; it is a tracking id until one is assigned.
 
 ## Rows
 
@@ -275,15 +274,17 @@ evaluator: none
 
 ### [sc-l463]
 
-SPEC 4, line 463. Disposition: `red-new`.
+SPEC 4, line 463. Disposition: `covered`.
 
 - spec-line: 463
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: Merkle tree primitive must support n-arity.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s4_key_tree_supports_more_than_256_keys`
-- fails when: the Key Tree refuses a key set beyond 256 keys (`CollectionArityExceeded`, a documented deferred gap in `error.rs`), or does not make all 257 keys active. The fixing node must also delete `semantic_tree.rs` `kt_arity_boundary_rejected`, which pins the cap.
+  - `rs/cyphr/tests/spec_conformance.rs::key_tree_arity_growth_past_256_and_delete_restores_the_key_root`
+- fails when: the Key Tree refuses a key set beyond 256 keys, does not make all 257 keys active, or a `key/delete` back to 256 keys does not restore the 256-key Key Root.
+- note: SPEC section 4 requires only that the tree "must support n-arity". Past 256 items the shape is the arity-256 rebalanced skeleton the implementation inherits from its Merkle library; roots at 256 items or fewer are unchanged by it. That shape is provisional and an open question for the spec author.
 
 ```claim
 kind: requirement

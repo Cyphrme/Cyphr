@@ -549,9 +549,7 @@ names come from the code (`NonceSets` and `Nonce::parse` in
 `nonce_create_twice_at_one_level_fails`, `nonce_delete_absent_fails` and the
 `nonce_*_fails` width vectors in `tests/golden/errors/`, which
 `test_golden_errors` runs but this claim's runner entry does not. Not checked:
-the cap of 256 children per level, which is refused with
-`CollectionArityExceeded` and has unit tests only in the source; a nonce
-created in a commit that also deletes it; and the error type of any
+a nonce created in a commit that also deletes it; and the error type of any
 refusal through the bound tests.
 
 #### [rv-key-material]
@@ -639,18 +637,19 @@ is known. Binding needs such a scenario to exist first.
 
 #### [rv-key-arity]
 
-A principal can hold any number of keys. The code does not meet this: the Key
-Tree refuses more than 256 keys with `CollectionArityExceeded`, a known gap.
+A principal can hold any number of keys. The code meets this: the Key Tree
+adds a level of 256 children per fold as it grows, and no error bounds the
+key count.
 
 ```claim
 kind: requirement
 evaluator: none
 ```
 
-Unbound. The test `s4_key_tree_supports_more_than_256_keys` in
-`rs/cyphr/tests/spec_conformance.rs` is ignored as `RED(SC1-F3)`; an ignored
-test runs zero cases, so the runner cannot bind it. Binding needs the fix that
-lifts the cap.
+Unbound. The tests `s4_key_tree_supports_more_than_256_keys` and
+`key_tree_arity_growth_past_256_and_delete_restores_the_key_root` in
+`rs/cyphr/tests/spec_conformance.rs` cover it, but this claim's runner entry
+does not name them yet.
 
 ### Time, lifecycle transitions and commit completeness
 
@@ -746,42 +745,41 @@ points to a different claim than the classification, or a claim is neither
 bound nor declared unbound. Variants the test classifies as outside the core
 paths have no row; its source gives the reason for each.
 
-| Error                     | Claim                      |
-| :------------------------ | :------------------------- |
-| `Signer`                  | `rv-signer-faults`         |
-| `InvalidSignature`        | `rv-sig-verifies`          |
-| `UnknownKey`              | `rv-key-active-gate`       |
-| `UnknownAlg`              | `rv-alg-support`           |
-| `TimestampPast`           | `rv-timestamp-monotone`    |
-| `TimestampFuture`         | `rv-timestamp-future`      |
-| `KeyRevoked`              | `rv-key-active-gate`       |
-| `MalformedPayload`        | `rv-coz-wellformed`        |
-| `TmbMismatch`             | `rv-key-material`          |
-| `AlgMismatch`             | `rv-alg-alignment`         |
-| `CzdMismatch`             | `rv-alg-alignment`         |
-| `DuplicateKey`            | `rv-key-set`               |
-| `DuplicateNonce`          | `rv-nonce-ledger`          |
-| `UnknownNonce`            | `rv-nonce-ledger`          |
-| `CozReuse`                | `rv-no-coz-reuse`          |
-| `StateMismatch`           | `rv-genesis-immutable`     |
-| `EmptyMultihash`          | `rv-internal-invariants`   |
-| `MissingVariant`          | `rv-internal-invariants`   |
-| `NoActiveKeys`            | `rv-key-set`               |
-| `AlreadyDeleted`          | `rv-lifecycle-gate`        |
-| `AlreadyFrozen`           | `rv-lifecycle-transitions` |
-| `NotFrozen`               | `rv-lifecycle-transitions` |
-| `Frozen`                  | `rv-lifecycle-gate`        |
-| `MixedTransactionTyp`     | `rv-intra-commit-shape`    |
-| `UnsupportedAlgorithm`    | `rv-alg-support`           |
-| `Storage`                 | `rv-storage-backend`       |
-| `CollectionArityExceeded` | `rv-key-arity`             |
-| `EmptyCommit`             | `rv-commit-nonempty`       |
-| `CommitNotLast`           | `rv-intra-commit-shape`    |
-| `MissingCommit`           | `rv-commit-nonempty`       |
-| `CommitMismatch`          | `rv-arrow-chain`           |
-| `DurableLeafMismatch`     | `rv-storage-backend`       |
-| `MalformedDigest`         | `rv-digest-wellformed`     |
-| `DigestLengthMismatch`    | `rv-digest-wellformed`     |
+| Error                  | Claim                      |
+| :--------------------- | :------------------------- |
+| `Signer`               | `rv-signer-faults`         |
+| `InvalidSignature`     | `rv-sig-verifies`          |
+| `UnknownKey`           | `rv-key-active-gate`       |
+| `UnknownAlg`           | `rv-alg-support`           |
+| `TimestampPast`        | `rv-timestamp-monotone`    |
+| `TimestampFuture`      | `rv-timestamp-future`      |
+| `KeyRevoked`           | `rv-key-active-gate`       |
+| `MalformedPayload`     | `rv-coz-wellformed`        |
+| `TmbMismatch`          | `rv-key-material`          |
+| `AlgMismatch`          | `rv-alg-alignment`         |
+| `CzdMismatch`          | `rv-alg-alignment`         |
+| `DuplicateKey`         | `rv-key-set`               |
+| `DuplicateNonce`       | `rv-nonce-ledger`          |
+| `UnknownNonce`         | `rv-nonce-ledger`          |
+| `CozReuse`             | `rv-no-coz-reuse`          |
+| `StateMismatch`        | `rv-genesis-immutable`     |
+| `EmptyMultihash`       | `rv-internal-invariants`   |
+| `MissingVariant`       | `rv-internal-invariants`   |
+| `NoActiveKeys`         | `rv-key-set`               |
+| `AlreadyDeleted`       | `rv-lifecycle-gate`        |
+| `AlreadyFrozen`        | `rv-lifecycle-transitions` |
+| `NotFrozen`            | `rv-lifecycle-transitions` |
+| `Frozen`               | `rv-lifecycle-gate`        |
+| `MixedTransactionTyp`  | `rv-intra-commit-shape`    |
+| `UnsupportedAlgorithm` | `rv-alg-support`           |
+| `Storage`              | `rv-storage-backend`       |
+| `EmptyCommit`          | `rv-commit-nonempty`       |
+| `CommitNotLast`        | `rv-intra-commit-shape`    |
+| `MissingCommit`        | `rv-commit-nonempty`       |
+| `CommitMismatch`       | `rv-arrow-chain`           |
+| `DurableLeafMismatch`  | `rv-storage-backend`       |
+| `MalformedDigest`      | `rv-digest-wellformed`     |
+| `DigestLengthMismatch` | `rv-digest-wellformed`     |
 
 ## Storage replay
 
