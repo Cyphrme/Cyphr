@@ -11,7 +11,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cyphr_client::{ConnectError, Connector, HttpConnector, HttpOptions, Request};
+use cyphr_client::{
+    ConnectError, Connector, HttpConnector, HttpOptions, MAX_RESPONSE_BYTES, Request,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -150,4 +152,31 @@ async fn https_peer_works_when_trusted_and_is_refused_when_not() {
         matches!(refused, Err(ConnectError::Unreachable(_))),
         "got {refused:?}"
     );
+}
+
+/// Claim: a legitimately large answer is accepted whole, from a few MiB up
+/// to exactly the cap. Turns red when the cap arithmetic refuses a body
+/// that spans several chunks or one that is exactly `MAX_RESPONSE_BYTES`.
+#[tokio::test]
+async fn large_response_within_the_cap_is_accepted() {
+    for len in [4 << 20, MAX_RESPONSE_BYTES] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.expect("accept");
+            let _ = read_head(&mut conn).await;
+            let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {len}\r\nconnection: close\r\n\r\n");
+            conn.write_all(head.as_bytes()).await.expect("head");
+            let chunk = vec![b' '; 1 << 16];
+            let mut sent = 0;
+            while sent < len {
+                let n = chunk.len().min(len - sent);
+                conn.write_all(&chunk[..n]).await.expect("body");
+                sent += n;
+            }
+        });
+        let connector = HttpConnector::connect(&url, &options()).expect("loopback http");
+        let body = connector.exchange(&Request::get("/patch")).await.expect("large exchange");
+        assert_eq!(body.len(), len);
+    }
 }
