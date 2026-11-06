@@ -27,7 +27,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::signer::SoftwareSigner;
+use cyphr::signer::{Signer, SoftwareSigner};
 use cyphr_client::transport::{
     Channel, NoiseConnector, Role, TransportError, assemble_statement, decode_ack, statement_pay,
 };
@@ -35,7 +35,7 @@ use cyphr_client::{
     BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector, PatchFailure,
     PatchRequest, PeerChain, Request, fetch_patch,
 };
-use cyphr_server::transport::{ServeError, serve_noise, serve_noise_with};
+use cyphr_server::transport::{AuthenticatedPeer, ServeError, serve_noise, serve_noise_with};
 use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -1224,4 +1224,67 @@ async fn the_listener_survives_running_out_of_descriptors() {
     let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis);
     level_one_session(transport, &mut held).await;
     drop(guard);
+}
+
+// ---- identity reaches routes ---------------------------------------------
+
+/// Claim: a route can see who the transport authenticated. Every request
+/// routed over the transport carries an `AuthenticatedPeer` extension naming
+/// the initiator's principal, its signing key and the session's handshake
+/// hash; the same router reached over HTTP sees none.
+///
+/// Turns red if: the extension is missing over the transport, names another
+/// principal, key or session, or is present on an HTTP request.
+/// End-to-end scenario: yes (probe route, real session, real HTTP request).
+#[tokio::test]
+async fn routes_see_the_authenticated_peer_only_over_the_transport() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let own_principal = push_client_principal(&app).await;
+    let (mut held, ..) = pinned_and_followed(&app).await;
+
+    let probe = Router::new().fallback(|request: axum::extract::Request| async move {
+        match request.extensions().get::<AuthenticatedPeer>() {
+            Some(peer) => axum::Json(serde_json::json!({
+                "present": true,
+                "pg": peer.pg,
+                "tmb": peer.tmb.to_b64(),
+                "h": Base64UrlUnpadded::encode_string(&peer.handshake_hash),
+            })),
+            None => axum::Json(serde_json::json!({ "present": false })),
+        }
+    });
+    let (listener, addr) = listen().await;
+    let served = state.clone();
+    let carried = probe.clone();
+    tokio::spawn(async move {
+        _ = serve_noise_with(listener, served, carried).await;
+    });
+
+    let conn = NoiseConnector::connect(addr, &mut held, &golden_signer(), &own_principal)
+        .await
+        .expect("an authenticated session");
+    let over_noise: serde_json::Value = serde_json::from_slice(
+        &conn
+            .exchange(&Request::get("/probe"))
+            .await
+            .expect("served"),
+    )
+    .expect("json");
+    let binding = conn.channel_binding().expect("a binding");
+    assert_eq!(over_noise["present"], true, "{over_noise}");
+    assert_eq!(over_noise["pg"], own_principal);
+    assert_eq!(
+        over_noise["tmb"],
+        golden_signer().tmb().to_b64(),
+        "the signing key"
+    );
+    assert_eq!(
+        over_noise["h"],
+        Base64UrlUnpadded::encode_string(binding.as_bytes()),
+        "this session's handshake hash"
+    );
+
+    let (_, over_http) = get_json(probe, "/probe").await;
+    assert_eq!(over_http["present"], false, "{over_http}");
 }

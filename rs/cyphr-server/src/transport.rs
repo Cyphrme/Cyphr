@@ -49,6 +49,22 @@ const MAX_SESSIONS_PER_IP: usize = 16;
 /// server closes it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Who the transport authenticated, attached to every request it routes as
+/// a request extension. HTTP requests carry none, so a route that finds one
+/// knows the request arrived over an authenticated Noise session and which
+/// principal and key proved themselves on it. No route requires it yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedPeer {
+    /// The initiator's principal: the stored principal's canonical id, or
+    /// for a Level 1 principal the thumbprint that is its id.
+    pub pg: String,
+    /// The key that signed the initiator's statement.
+    pub tmb: coz::Thumbprint,
+    /// The Noise handshake hash of this session: the binding the statement
+    /// was signed over.
+    pub handshake_hash: Vec<u8>,
+}
+
 /// The session slots: a global pool and a per-address allowance, taken at
 /// accept time, before any handshake work, and returned when the session
 /// ends. A connection that finds no slot is dropped at once.
@@ -245,22 +261,23 @@ async fn session(
     state: &AppState,
     router: Router,
 ) -> Result<(), SessionError> {
-    let mut channel = tokio::time::timeout(PREAUTH_DEADLINE, authenticate(stream, state))
-        .await
-        .map_err(|_| TransportError::Timeout)??;
+    let (mut channel, identity) =
+        tokio::time::timeout(PREAUTH_DEADLINE, authenticate(stream, state))
+            .await
+            .map_err(|_| TransportError::Timeout)??;
     // A request carries its body plus a target of at most 64 KiB; anything
     // declared larger would be refused by the body limit anyway.
     let max_request = usize::try_from(state.config.limits.max_body_bytes)
         .unwrap_or(usize::MAX)
         .saturating_add(64 * 1024);
-    serve_requests(&mut channel, peer, &router, max_request).await
+    serve_requests(&mut channel, peer, &identity, &router, max_request).await
 }
 
 /// Handshake, both statements and the ack: everything before a request.
 async fn authenticate(
     stream: TcpStream,
     state: &AppState,
-) -> Result<Channel<TcpStream>, SessionError> {
+) -> Result<(Channel<TcpStream>, AuthenticatedPeer), SessionError> {
     let mut channel = Channel::respond(stream).await?;
     let h = channel.handshake_hash().to_vec();
 
@@ -270,22 +287,26 @@ async fn authenticate(
     let incoming = channel.recv_one().await?;
     // The verdict goes back before anything else, so a refused initiator
     // learns it at `connect` and a served one knows it was accepted.
-    match authorize_initiator(state, &incoming, &h).await {
-        Ok(()) => channel.send_one(&encode_ack(Ok(()))).await?,
+    let identity = match authorize_initiator(state, &incoming, &h).await {
+        Ok(identity) => {
+            channel.send_one(&encode_ack(Ok(()))).await?;
+            identity
+        },
         Err(refusal) => {
             channel
                 .send_one(&encode_ack(Err(&refusal.reason())))
                 .await?;
             return Err(refusal);
         },
-    }
-    Ok(channel)
+    };
+    Ok((channel, identity))
 }
 
 /// Serve requests on an authenticated channel until it closes or idles out.
 async fn serve_requests(
     channel: &mut Channel<TcpStream>,
     peer: SocketAddr,
+    identity: &AuthenticatedPeer,
     router: &Router,
     max_request: usize,
 ) -> Result<(), SessionError> {
@@ -299,7 +320,7 @@ async fn serve_requests(
                 Ok(message) => message?,
             };
         let (status, body) = match decode_request(&message) {
-            Ok(request) => dispatch(router, peer, request).await,
+            Ok(request) => dispatch(router, peer, identity, request).await,
             Err(_) => (400, b"malformed request".to_vec()),
         };
         // A peer that stops reading must not hold the session, and the
@@ -350,13 +371,25 @@ async fn authorize_initiator(
     state: &AppState,
     incoming: &[u8],
     h: &[u8],
-) -> Result<(), SessionError> {
+) -> Result<AuthenticatedPeer, SessionError> {
     let statement = BindStatement::parse(incoming)?;
     statement.expect(Role::Initiator, h)?;
 
     let pr = statement.pr();
     let lookup = |e: cyphr_storage::engine::EngineError| SessionError::Lookup(e.to_string());
     let stored = state.engine.get_tip(pr).await.map_err(lookup)?.is_some();
+    // The principal's one spelling, so a route keys on it whatever the
+    // statement called it (a stored id may be tagged or bare).
+    let pg = if stored {
+        let canonical = state
+            .engine
+            .canonical_principal_id(pr)
+            .await
+            .map_err(lookup)?;
+        cyphr_storage::engine::bare_digest(&canonical).to_string()
+    } else {
+        pr.to_string()
+    };
     if stored {
         // A stored principal is judged by its chain alone; any sidecar the
         // statement carries is ignored, so it cannot widen who may speak.
@@ -408,7 +441,11 @@ async fn authorize_initiator(
     {
         return Err(SessionError::Initiator("the key was naked-revoked"));
     }
-    Ok(())
+    Ok(AuthenticatedPeer {
+        pg,
+        tmb: statement.tmb().clone(),
+        handshake_hash: h.to_vec(),
+    })
 }
 
 /// Run one decoded request through `router` and return the status and body
@@ -416,6 +453,7 @@ async fn authorize_initiator(
 async fn dispatch(
     router: &Router,
     peer: SocketAddr,
+    identity: &AuthenticatedPeer,
     request: cyphr_client::Request,
 ) -> (u16, Vec<u8>) {
     let method = match request.method {
@@ -434,6 +472,8 @@ async fn dispatch(
     };
     // The per-IP fence keys on the peer the kernel reports.
     http.extensions_mut().insert(ConnectInfo(peer));
+    // What the session authenticated, for routes that care who is asking.
+    http.extensions_mut().insert(identity.clone());
     let Ok(response) = router.clone().oneshot(http).await;
     let status = response.status().as_u16();
     match axum::body::to_bytes(response.into_body(), MAX_MESSAGE - 2).await {
