@@ -284,6 +284,7 @@ SPEC 4, line 463. Disposition: `covered`.
   - `rs/cyphr/tests/spec_conformance.rs::s4_key_tree_supports_more_than_256_keys`
   - `rs/cyphr/tests/spec_conformance.rs::key_tree_arity_growth_past_256_and_delete_restores_the_key_root`
 - fails when: the Key Tree refuses a key set beyond 256 keys, does not make all 257 keys active, or a `key/delete` back to 256 keys does not restore the 256-key Key Root.
+- note: SPEC section 4 requires only that the tree "must support n-arity". Past 256 items the shape is the arity-256 rebalanced skeleton the implementation inherits from its Merkle library; roots at 256 items or fewer are unchanged by it. That shape is provisional and an open question for the spec author.
 
 ```claim
 kind: requirement
