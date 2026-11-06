@@ -117,6 +117,15 @@ pub enum PeerFailure {
     View(ViewFailure),
 }
 
+/// The extent of a held peer chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldTip {
+    /// Commits held; zero for a chain not yet followed.
+    pub commits: usize,
+    /// The tip Principal Root, tagged (`ALG:digest`).
+    pub pr: String,
+}
+
 /// The state a pin is in: a verified root to follow from, or a refusal
 /// that every later call repeats.
 enum Pin {
@@ -176,6 +185,45 @@ impl PeerChain {
                 derived: derived.clone(),
             }),
         }
+    }
+
+    /// The pinned PG.
+    #[must_use]
+    pub fn pg(&self) -> &str {
+        &self.pg
+    }
+
+    /// The held chain's ACTIVE key with thumbprint `tmb`, for a transport
+    /// or sign-on layer that verifies a statement of its own against the
+    /// peer chain without HTTP. Judged against the held snapshot, like every
+    /// verification here.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerFailure::KeyNotActive`] when no active key has that
+    /// thumbprint (never held, or revoked or replaced);
+    /// [`PeerFailure::PinMismatch`] for a refused pin.
+    pub fn active_key(&self, tmb: &coz::Thumbprint) -> Result<&Key, PeerFailure> {
+        self.chain()?
+            .active_keys()
+            .find(|k| k.tmb() == tmb)
+            .ok_or_else(|| PeerFailure::KeyNotActive { tmb: tmb.to_b64() })
+    }
+
+    /// How far the held chain reaches: its commit count and tip PR.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerFailure::PinMismatch`] for a refused pin; [`PeerFailure::Replay`]
+    /// if the core cannot render the tip PR.
+    pub fn held_tip(&self) -> Result<HeldTip, PeerFailure> {
+        let chain = self.chain()?;
+        let commits = chain.commits().count();
+        let pr = chain.pr_tagged().map_err(|source| PeerFailure::Replay {
+            commit: commits,
+            source,
+        })?;
+        Ok(HeldTip { commits, pr })
     }
 
     /// Fetch the peer's full chain and extend the held one with it.

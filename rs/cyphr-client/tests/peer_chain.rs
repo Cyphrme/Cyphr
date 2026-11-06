@@ -589,3 +589,60 @@ async fn junk_sidecar_on_a_non_introducing_coz_is_ignored() {
         .expect("junk on a non-introducing coz is ignored");
     assert!(held.verify_tip(&tip_envelope(&k2), &pr).is_ok());
 }
+
+/// Claim: the accessors a transport or sign-on layer builds on report the
+/// held chain truthfully: `pg` is the pinned PG; `active_key` returns the
+/// ACTIVE key with the asked thumbprint (and refuses one never held or
+/// revoked); `held_tip` counts the commits held and names the tip PR the
+/// core derived, advancing as the chain is followed.
+///
+/// Turns red if: `active_key` returns a key other than the one asked for,
+/// or a revoked or unheld one; `held_tip` reports a stale count or a PR
+/// other than the replayed chain's.
+/// End-to-end scenario: yes (real chain with a revocation, replayed).
+#[tokio::test]
+async fn accessors_report_the_held_chain() {
+    let g = kp();
+    let k1 = kp();
+    let k2 = kp();
+    let outsider = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let c2 = peer.commit(&k2, 1_700_000_200);
+    let pr_after_two = peer.principal.pr_tagged().expect("pr");
+    let c3 = peer.revoke(&k1, 1_700_000_300);
+
+    let pipe = Pipe::new(patch_body(&[c1.clone(), c2.clone()]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    assert_eq!(held.pg(), peer.pg());
+    assert_eq!(held.held_tip().expect("tip").commits, 0);
+    assert!(held.active_key(&g.tmb).is_ok());
+    assert!(matches!(
+        held.active_key(&k1.tmb),
+        Err(PeerFailure::KeyNotActive { .. })
+    ));
+
+    held.follow(&pipe).await.expect("follow two commits");
+    let tip = held.held_tip().expect("tip");
+    assert_eq!((tip.commits, tip.pr.as_str()), (2, pr_after_two.as_str()));
+    assert_eq!(held.active_key(&k2.tmb).expect("k2").tmb(), &k2.tmb);
+    assert_eq!(held.active_key(&k1.tmb).expect("k1").tmb(), &k1.tmb);
+    assert!(held.active_key(&outsider.tmb).is_err());
+
+    pipe.serve(patch_body(&[c1, c2, c3]));
+    held.follow(&pipe).await.expect("follow the revoke");
+    let tip = held.held_tip().expect("tip");
+    assert_eq!(tip.commits, 3);
+    assert_eq!(
+        tip.pr,
+        peer.principal.pr_tagged().expect("pr"),
+        "the tip PR is the replayed chain's"
+    );
+    assert!(
+        matches!(
+            held.active_key(&k1.tmb),
+            Err(PeerFailure::KeyNotActive { .. })
+        ),
+        "a revoked key is not an active key"
+    );
+}
