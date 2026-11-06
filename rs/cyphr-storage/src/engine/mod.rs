@@ -807,12 +807,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(count)
     }
 
-    /// Bind each principal's manifests to the blobs they name, with no
-    /// replay: the principal's sequence-0 manifest must name blobs whose
-    /// genesis-derived id is the principal id the manifest carries, and
-    /// every later manifest must have that principal's sequence-0
-    /// manifest present. A corrupt or foreign manifest therefore cannot
-    /// re-point a principal id.
+    /// A corruption detector for principals whose blobs carry their
+    /// genesis, not a security boundary. Without replay: if a principal's
+    /// first-met sequence-0 manifest names a `commit/create` blob carrying
+    /// a key, the genesis-derived id of that key must equal the principal
+    /// id the manifests carry, or the whole rebuild is refused.
+    ///
+    /// Scope: a principal with no such carrier (explicit genesis, whose
+    /// key set is never in blobs) is not judged, and when several
+    /// sequence-0 manifests claim one id only the first met is checked.
+    /// The guarantee that a forged manifest cannot re-point a principal
+    /// comes from the manifest keyspace plus the single writer
+    /// ([`COMMIT_MANIFEST_PREFIX`], [`canonical_coz`]), not from this
+    /// check.
     async fn check_principal_binding(
         &self,
         manifests: &[(Blake3Hash, CommitManifest)],
