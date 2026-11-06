@@ -274,4 +274,32 @@ mod tests {
         let result = ServerIdentity::load_from_path(&path);
         assert!(matches!(result, Err(AuthError::PublicKeyMismatch)));
     }
+
+    /// Backs: a signing-key file that is not JSON, or names an unknown algorithm, is refused at
+    /// startup with a typed error rather than a panic. Unit: startup-only path; the lib test for
+    /// a broken key path covers only the missing file.
+    #[test]
+    fn load_malformed_and_unknown_algorithm_files_are_typed_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("signing-key.json");
+
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(matches!(
+            ServerIdentity::load_from_path(&path),
+            Err(AuthError::Malformed(_))
+        ));
+
+        let kp = coz::Alg::Ed25519.generate_keypair();
+        let file = KeyFile {
+            v: FILE_FORMAT_VERSION,
+            alg: "NotAnAlgorithm".to_string(),
+            pub_key: kp.pub_bytes,
+            prv_key: kp.prv_bytes,
+        };
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        assert!(matches!(
+            ServerIdentity::load_from_path(&path),
+            Err(AuthError::UnknownAlgorithm(_))
+        ));
+    }
 }
