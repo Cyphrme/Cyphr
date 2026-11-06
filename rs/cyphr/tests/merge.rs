@@ -484,3 +484,131 @@ fn merge_and_merge_ack_parse_to_distinct_kinds() {
         "merge and merge-ack must be distinct kinds"
     );
 }
+
+/// Claim: `merge_status` recognises a merge exactly when the source's merge
+/// and the target's ack agree, and reports an unanswered merge as Pending.
+/// Alice merges into Bob and Bob acks (Merged). Carol merges into Diana
+/// but Diana's ack names Alice (Pending for carol; None for alice, whose
+/// merge never named Diana). Eve acks Alice though Alice never named her
+/// (None).
+///
+/// Turns red if: any ack matches any merge (accept-any mutant: alice/diana
+/// or alice/eve become Merged), or Pending is never reported.
+/// End-to-end scenario: yes (five principals, two chains per status).
+#[test]
+fn merge_status_distinguishes_merged_pending_and_none() {
+    let mut alice = Peer::new("alice");
+    let mut bob = Peer::new("bob");
+    let mut carol = Peer::new("carol");
+    let mut diana = Peer::new("diana_es384");
+    let mut eve = Peer::new("eve_ed25519");
+    let (alice_pr, carol_pr) = (alice.pr(), carol.pr());
+    let (bob_pr, diana_pr, eve_pr) = (bob.pr(), diana.pr(), eve.pr());
+
+    for (src, from, to) in [
+        (&mut alice, &alice_pr, &bob_pr),
+        (&mut carol, &carol_pr, &diana_pr),
+    ] {
+        let pay = src.merge_pay(&json!([from]), &json!(to), NOW + 10);
+        src.commit(&[pay], NOW + 10).expect("merge accepted");
+    }
+    for (who, to) in [
+        (&mut bob, &bob_pr),
+        (&mut diana, &diana_pr),
+        (&mut eve, &eve_pr),
+    ] {
+        let pay = who.ack_pay(&json!([alice_pr]), &json!(to), NOW + 20);
+        who.commit(&[pay], NOW + 20).expect("ack accepted");
+    }
+
+    let st = |s: &Peer, t: &Peer| merge_status(&s.principal, &t.principal);
+    assert_eq!(st(&alice, &bob), MergeStatus::Merged);
+    assert_eq!(st(&alice, &diana), MergeStatus::None);
+    assert_eq!(st(&alice, &eve), MergeStatus::None);
+    assert_eq!(st(&carol, &diana), MergeStatus::Pending);
+}
+
+/// Claim: an ack matches a merge only when `merge_from` is equal too, and
+/// equality is order-sensitive (architect ruling on SPEC 11.5.1). Alice
+/// merges from two PRs she held into Bob; acks differing only in
+/// `merge_from` (reordered, shorter, a different PR) leave it Pending, and
+/// the identical ack makes it Merged.
+///
+/// Turns red if: `merge_from` is ignored or compared as a set, or the
+/// positive control (identical ack) is not Merged.
+/// End-to-end scenario: yes.
+#[test]
+fn an_ack_differing_only_in_merge_from_does_not_merge() {
+    let carol = Peer::new("carol");
+    let mut alice = Peer::new("alice");
+    let old = alice.pr();
+    let k = signer("key_a");
+    let key_pay = json!({
+        "alg": alice.signer.alg,
+        "id": k.tmb.to_b64(),
+        "now": NOW + 5,
+        "tmb": alice.signer.tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let key = Key::new(k.alg.clone(), k.tmb.clone(), k.pub_key.clone())
+        .expect("key binds its tmb")
+        .with_first_seen(NOW + 5);
+    alice
+        .commit_with_keys(vec![(key_pay, Some(key))], NOW + 5)
+        .expect("alice advances");
+    let new = alice.pr();
+    let bob_pr = Peer::new("bob").pr();
+
+    let pay = alice.merge_pay(&json!([old, new]), &json!(bob_pr), NOW + 10);
+    alice.commit(&[pay], NOW + 10).expect("merge accepted");
+
+    let variants = [
+        ("reordered", json!([new, old])),
+        ("shorter", json!([old])),
+        ("a different PR", json!([old, carol.pr()])),
+    ];
+    for (why, from) in variants {
+        let mut bob = Peer::new("bob");
+        let pay = bob.ack_pay(&from, &json!(bob_pr), NOW + 20);
+        bob.commit(&[pay], NOW + 20)
+            .expect("an unmatched ack is accepted");
+        assert_eq!(
+            merge_status(&alice.principal, &bob.principal),
+            MergeStatus::Pending,
+            "ack differing in merge_from ({why}) must not merge"
+        );
+    }
+
+    let mut bob = Peer::new("bob");
+    let pay = bob.ack_pay(&json!([old, new]), &json!(bob_pr), NOW + 20);
+    bob.commit(&[pay], NOW + 20)
+        .expect("identical ack accepted");
+    assert_eq!(
+        merge_status(&alice.principal, &bob.principal),
+        MergeStatus::Merged,
+        "positive control: the identical ack merges"
+    );
+}
+
+/// Claim: an empty `merge_from` is malformed for both kinds (architect
+/// ruling on SPEC 11.5.1): a merge from nothing names nothing.
+///
+/// Positive control: the same merge with one PR is accepted.
+/// Turns red if: an empty list is accepted.
+/// Not an end-to-end scenario: a parser boundary case.
+#[test]
+fn an_empty_merge_from_is_refused() {
+    let tpr = Peer::new("bob").pr();
+    let mut ok = Peer::new("alice");
+    let pay = ok.merge_pay(&json!([ok.pr()]), &json!(tpr), NOW + 10);
+    ok.commit(&[pay], NOW + 10).expect("positive control");
+    for (typ, who) in [(MERGE_TYP, "alice"), (ACK_TYP, "bob")] {
+        let mut p = Peer::new(who);
+        let own = if typ == ACK_TYP { p.pr() } else { tpr.clone() };
+        let pay = p.merge_shaped(typ, &json!([]), &json!(own), NOW + 10);
+        assert!(
+            p.commit(&[pay], NOW + 10).is_err(),
+            "{typ}: empty merge_from"
+        );
+    }
+}
