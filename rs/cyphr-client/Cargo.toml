@@ -23,7 +23,7 @@ http = ["dep:reqwest"]
 noise = ["dep:snow", "dep:tokio"]
 
 [dependencies]
-coz = { workspace = true }
+coz   = { workspace = true }
 cyphr = { path = "../cyphr", version = "0.1.0" }
 # TLS is rustls with the bundled webpki roots and the `ring` provider (already
 # in the tree through `snow`): no native-tls, openssl or second provider, so

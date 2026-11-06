@@ -80,7 +80,11 @@ impl HttpConnector {
                     });
                 }
             },
-            other => return Err(unusable(format!("peer URL scheme `{other}` is not http(s)"))),
+            other => {
+                return Err(unusable(format!(
+                    "peer URL scheme `{other}` is not http(s)"
+                )));
+            },
         }
         let mut builder = reqwest::Client::builder()
             .timeout(options.timeout)

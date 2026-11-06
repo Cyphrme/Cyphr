@@ -15,8 +15,9 @@ use cyphr_client::{ConnectError, Connector, HttpConnector, HttpOptions, Request}
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::rustls::crypto::ring::default_provider;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use tokio_rustls::rustls::{ServerConfig, crypto::ring::default_provider};
 
 const CA: &[u8] = include_bytes!("tls/ca.der");
 const LEAF: &[u8] = include_bytes!("tls/leaf.der");
@@ -61,15 +62,22 @@ async fn tls_peer() -> String {
         .expect("server config");
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let url = format!("https://localhost:{}", listener.local_addr().expect("addr").port());
+    let url = format!(
+        "https://localhost:{}",
+        listener.local_addr().expect("addr").port()
+    );
     tokio::spawn(async move {
         loop {
-            let Ok((conn, _)) = listener.accept().await else { return };
+            let Ok((conn, _)) = listener.accept().await else {
+                return;
+            };
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
                 // A failed handshake (the untrusted-client case) is the
                 // client's refusal, not this peer's error.
-                let Ok(mut conn) = acceptor.accept(conn).await else { return };
+                let Ok(mut conn) = acceptor.accept(conn).await else {
+                    return;
+                };
                 let _ = read_head(&mut conn).await;
                 let _ = conn.write_all(OK).await;
                 let _ = conn.shutdown().await;
@@ -130,10 +138,16 @@ async fn https_peer_works_when_trusted_and_is_refused_when_not() {
     let mut trusted = options();
     trusted.trust_root_der = vec![CA.to_vec()];
     let connector = HttpConnector::connect(&url, &trusted).expect("https needs no opt-in");
-    let body = connector.exchange(&Request::get("/tip")).await.expect("trusted https exchange");
+    let body = connector
+        .exchange(&Request::get("/tip"))
+        .await
+        .expect("trusted https exchange");
     assert_eq!(body, b"{}");
 
     let untrusting = HttpConnector::connect(&url, &options()).expect("https needs no opt-in");
     let refused = untrusting.exchange(&Request::get("/tip")).await;
-    assert!(matches!(refused, Err(ConnectError::Unreachable(_))), "got {refused:?}");
+    assert!(
+        matches!(refused, Err(ConnectError::Unreachable(_))),
+        "got {refused:?}"
+    );
 }
