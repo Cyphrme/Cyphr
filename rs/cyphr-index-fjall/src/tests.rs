@@ -282,7 +282,6 @@ fn commit_sharing(i: usize, czd: &str) -> cyphr_storage::index::IndexableCommit 
 /// global write lock on every push), and reads still see every holder, the
 /// first in canonical order. Turns red if holders share one value.
 #[tokio::test]
-#[ignore = "RED(H1F): holders of one digest share a single, growing value"]
 async fn digest_holder_writes_do_not_grow_with_the_holder_count() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     let czd = format!("SHA-256:{}", "A".repeat(43));

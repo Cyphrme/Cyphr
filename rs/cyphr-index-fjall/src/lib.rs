@@ -164,7 +164,54 @@ fn ser<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IndexerError> {
     serde_json::to_vec(value).map_err(|e| IndexerError::Backend(format!("serialize: {e}")))
 }
 
-/// A digest's stored holders. A record written when a digest named one
+/// The key of one holder of a digest: the digest, then the holder's
+/// principal id and entity type, NUL-separated (neither a digest nor a
+/// principal id contains NUL). Keys of one digest share the prefix
+/// `digest NUL`, sort in canonical holder order (principal id, then entity
+/// type), and a write touches only its own key.
+fn holder_key(digest: &str, holder: &EntityRef) -> Vec<u8> {
+    let mut key = digest_prefix(digest);
+    key.extend_from_slice(
+        holder
+            .principal_id
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    key.push(0);
+    key.push(holder.entity_type as u8);
+    key
+}
+
+fn digest_prefix(digest: &str) -> Vec<u8> {
+    let mut prefix = digest.as_bytes().to_vec();
+    prefix.push(0);
+    prefix
+}
+
+/// The first holder of `digest` in canonical order, in O(1) reads: the
+/// smallest keyed holder merged with any legacy record at the bare digest.
+fn first_holder(digests: &Keyspace, digest: &str) -> Result<Option<EntityRef>, IndexerError> {
+    let mut holders = read_holders(digests.get(digest.as_bytes()).map_err(to_backend_err)?)?;
+    if let Some(guard) = digests.prefix(digest_prefix(digest)).next() {
+        let value = guard.value().map_err(to_backend_err)?;
+        merge_holder(&mut holders, de(&value)?);
+    }
+    Ok(holders.into_iter().next())
+}
+
+/// Every holder of `digest` in canonical order.
+fn all_holders(digests: &Keyspace, digest: &str) -> Result<Vec<EntityRef>, IndexerError> {
+    let mut holders = read_holders(digests.get(digest.as_bytes()).map_err(to_backend_err)?)?;
+    for guard in digests.prefix(digest_prefix(digest)) {
+        let value = guard.value().map_err(to_backend_err)?;
+        merge_holder(&mut holders, de(&value)?);
+    }
+    Ok(holders)
+}
+
+/// A digest's stored holders in a record written before holders were keyed
+/// one per entry. A record written when a digest named one
 /// entity holds a single `EntityRef`, which reads as a one-element set.
 fn read_holders(stored: Option<fjall::UserValue>) -> Result<Vec<EntityRef>, IndexerError> {
     let Some(bytes) = stored else {
@@ -351,8 +398,13 @@ impl Indexer for FjallIndexer {
         &self,
         digest: &TaggedDigest,
     ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send {
-        let holders = self.resolve_digest_holders(digest);
-        async move { Ok(holders.await?.into_iter().next()) }
+        let key = digest.to_string();
+        let digests = self.digests.clone();
+        async move {
+            tokio::task::spawn_blocking(move || first_holder(&digests, &key))
+                .await
+                .map_err(join_err)?
+        }
     }
 
     fn resolve_digest_holders(
@@ -362,11 +414,9 @@ impl Indexer for FjallIndexer {
         let key = digest.to_string();
         let digests = self.digests.clone();
         async move {
-            tokio::task::spawn_blocking(move || {
-                read_holders(digests.get(key.as_bytes()).map_err(to_backend_err)?)
-            })
-            .await
-            .map_err(join_err)?
+            tokio::task::spawn_blocking(move || all_holders(&digests, &key))
+                .await
+                .map_err(join_err)?
         }
     }
 
@@ -396,7 +446,10 @@ impl Indexer for FjallIndexer {
         let digests = self.digests.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                digests.contains_key(key.as_bytes()).map_err(to_backend_err)
+                Ok(digests
+                    .contains_key(key.as_bytes())
+                    .map_err(to_backend_err)?
+                    || digests.prefix(digest_prefix(&key)).next().is_some())
             })
             .await
             .map_err(join_err)?
@@ -668,24 +721,29 @@ fn db_index_commit(
         })?,
     );
 
-    // Each digest names its set of holders: read what is stored, merge this
-    // commit's holders in (order-independently, see `merge_holder`), and
-    // write each touched digest once.
-    let mut touched: std::collections::BTreeMap<String, Vec<EntityRef>> =
+    // Each digest names its set of holders, one key per holder, so this
+    // write is O(1) in the holder count: read the holder's own entry, merge
+    // this commit's claim in (order-independently, see `merge_holder`), and
+    // write that one entry. A digest repeated within the commit merges first.
+    let mut touched: std::collections::BTreeMap<Vec<u8>, EntityRef> =
         std::collections::BTreeMap::new();
     for (digest, holder) in digest_entries(commit)? {
-        let holders = match touched.entry(digest) {
-            std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::btree_map::Entry::Vacant(v) => {
-                let stored =
-                    read_holders(ks.digests.get(v.key().as_bytes()).map_err(to_backend_err)?)?;
-                v.insert(stored)
-            },
+        let key = holder_key(&digest, &holder);
+        let current = match touched.remove(&key) {
+            Some(held) => Some(held),
+            None => ks
+                .digests
+                .get(&key)
+                .map_err(to_backend_err)?
+                .map(|bytes| de::<EntityRef>(&bytes))
+                .transpose()?,
         };
-        merge_holder(holders, holder);
+        let mut merged: Vec<EntityRef> = current.into_iter().collect();
+        merge_holder(&mut merged, holder);
+        touched.extend(merged.into_iter().map(|h| (key.clone(), h)));
     }
-    for (digest, holders) in &touched {
-        batch.insert(&ks.digests, digest.as_bytes(), ser(holders)?);
+    for (key, holder) in &touched {
+        batch.insert(&ks.digests, key, ser(holder)?);
     }
 
     for key_info in &commit.keys {
