@@ -197,7 +197,6 @@ async fn assert_refused_and_unwritten(state: &Arc<AppState>, status: StatusCode,
 /// of that principal is written. Turns red if the death set is consulted only
 /// for signers (a dead tmb in `pay.id` accepted).
 #[tokio::test]
-#[ignore = "RED(N13): the push gate checks the signer, never the introduced key"]
 async fn dead_key_refused_as_key_create_in_a_new_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
@@ -210,7 +209,6 @@ async fn dead_key_refused_as_key_create_in_a_new_principal() {
 /// Claim: as above for `key/replace`: a principal cannot swap onto a dead
 /// key. Turns red if only `key/create` is gated.
 #[tokio::test]
-#[ignore = "RED(N13): the push gate checks the signer, never the introduced key"]
 async fn dead_key_refused_as_key_replace_in_a_new_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
@@ -228,7 +226,6 @@ async fn dead_key_refused_as_key_replace_in_a_new_principal() {
 /// only for a first one, and leaves that principal at its prior tip. Turns
 /// red if the gate runs only on the genesis push.
 #[tokio::test]
-#[ignore = "RED(N13): the push gate checks the signer, never the introduced key"]
 async fn dead_key_refused_as_key_create_in_an_existing_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;

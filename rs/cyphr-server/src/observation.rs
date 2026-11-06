@@ -174,6 +174,30 @@ impl ObservationStore {
         .map_err(|e| ObservationError::Join(e.to_string()))?
     }
 
+    /// Whether `coz` introduces a dead key: a `key/create` or `key/replace`
+    /// whose `pay.id` names a thumbprint in the death set (SPEC §6.4), so a
+    /// revoked key cannot be re-added to any principal. A coz of another
+    /// type, or one with no decodable `pay.id`, introduces nothing here and
+    /// is left to the engine's own validation.
+    ///
+    /// Like the signer fence, this reads an unverified, client-declared
+    /// field and is compliant only because its outcome is pure refusal.
+    pub async fn introduces_dead_key(
+        &self,
+        coz: &serde_json::Value,
+    ) -> Result<bool, ObservationError> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let pay = &coz["pay"];
+        if !cyphr::parsed_coz::typ::is_key_introducing(pay["typ"].as_str().unwrap_or("")) {
+            return Ok(false);
+        }
+        let Some(Ok(id)) = pay["id"].as_str().map(Base64UrlUnpadded::decode_vec) else {
+            return Ok(false);
+        };
+        self.is_dead(&Thumbprint::from_bytes(id)).await
+    }
+
     /// Whether `tmb` is dead (carries a naked-revoke record). A true here
     /// refuses the key for every capability, even though it may still be
     /// active on-chain.
