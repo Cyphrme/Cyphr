@@ -52,9 +52,11 @@ use cyphr_storage::index::{
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Current schema version recorded in the `meta` partition. Version 2
-/// adds the `index_aliases` partition; a version-1 store has no alias rows
-/// until the index is rebuilt from blobs (it is a derived cache, I1).
-const SCHEMA_VERSION: u32 = 2;
+/// added the `index_aliases` partition; version 3 keys digest holders as a
+/// set of one row per holder. The index is a derived cache (I1): a store
+/// recorded at an older version, or at none, is discarded on open and
+/// rebuilt from blobs; a newer one is refused (downgrade guard).
+const SCHEMA_VERSION: u32 = 3;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
@@ -189,35 +191,21 @@ fn digest_prefix(digest: &str) -> Vec<u8> {
     prefix
 }
 
-/// The first holder of `digest` in canonical order, in O(1) reads: the
-/// smallest keyed holder merged with any legacy record at the bare digest.
+/// The first holder of `digest` in canonical order, in O(1) reads: holder
+/// keys sort in canonical order, so it is the first key under the prefix.
 fn first_holder(digests: &Keyspace, digest: &str) -> Result<Option<EntityRef>, IndexerError> {
-    let mut holders = read_holders(digests.get(digest.as_bytes()).map_err(to_backend_err)?)?;
-    if let Some(guard) = digests.prefix(digest_prefix(digest)).next() {
-        let value = guard.value().map_err(to_backend_err)?;
-        merge_holder(&mut holders, de(&value)?);
+    match digests.prefix(digest_prefix(digest)).next() {
+        Some(guard) => Ok(Some(de(&guard.value().map_err(to_backend_err)?)?)),
+        None => Ok(None),
     }
-    Ok(holders.into_iter().next())
 }
 
 /// Every holder of `digest` in canonical order.
 fn all_holders(digests: &Keyspace, digest: &str) -> Result<Vec<EntityRef>, IndexerError> {
-    let mut holders = read_holders(digests.get(digest.as_bytes()).map_err(to_backend_err)?)?;
-    for guard in digests.prefix(digest_prefix(digest)) {
-        let value = guard.value().map_err(to_backend_err)?;
-        merge_holder(&mut holders, de(&value)?);
-    }
-    Ok(holders)
-}
-
-/// A digest's stored holders in a record written before holders were keyed
-/// one per entry. A record written when a digest named one
-/// entity holds a single `EntityRef`, which reads as a one-element set.
-fn read_holders(stored: Option<fjall::UserValue>) -> Result<Vec<EntityRef>, IndexerError> {
-    let Some(bytes) = stored else {
-        return Ok(Vec::new());
-    };
-    de::<Vec<EntityRef>>(&bytes).or_else(|_| de::<EntityRef>(&bytes).map(|one| vec![one]))
+    digests
+        .prefix(digest_prefix(digest))
+        .map(|guard| de(&guard.value().map_err(to_backend_err)?))
+        .collect()
 }
 
 fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, IndexerError> {
@@ -285,6 +273,41 @@ impl FjallIndexer {
         let digests = open("index_digests")?;
         let public_keys = open("index_public_keys")?;
         let aliases = open("index_aliases")?;
+
+        let stored = match meta.get(META_KEY).map_err(to_backend_err)? {
+            Some(bytes) => Some(de::<IndexMeta>(&bytes)?.version),
+            None => None,
+        };
+        match stored {
+            Some(v) if v > SCHEMA_VERSION => {
+                return Err(IndexerError::UnsupportedVersion {
+                    found: u64::from(v),
+                    supported: u64::from(SCHEMA_VERSION),
+                });
+            },
+            Some(SCHEMA_VERSION) => {},
+            // Older or unstamped: whatever rows exist were derived by a
+            // schema this build does not read.
+            _ => {
+                for ks in [
+                    &tips,
+                    &principals,
+                    &commits,
+                    &digests,
+                    &public_keys,
+                    &aliases,
+                ] {
+                    // A fresh store has nothing to discard; skipping the
+                    // clear keeps every first open off the slow path.
+                    if !ks.is_empty().map_err(to_backend_err)? {
+                        ks.clear().map_err(to_backend_err)?;
+                    }
+                }
+                if stored.is_some() {
+                    meta.remove(META_KEY).map_err(to_backend_err)?;
+                }
+            },
+        }
 
         // No bootstrap write here: the registry claim (`index_meta`'s
         // record) is written only as derivation OUTPUT, atomically
@@ -446,10 +469,7 @@ impl Indexer for FjallIndexer {
         let digests = self.digests.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                Ok(digests
-                    .contains_key(key.as_bytes())
-                    .map_err(to_backend_err)?
-                    || digests.prefix(digest_prefix(&key)).next().is_some())
+                Ok(digests.prefix(digest_prefix(&key)).next().is_some())
             })
             .await
             .map_err(join_err)?
@@ -584,10 +604,31 @@ fn claims_conflict(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), Index
     Ok(())
 }
 
+/// Whether `commit` is already indexed at its chain position. A different
+/// commit at an indexed position is fork evidence (I2: one writer, one
+/// linear chain), never a no-op.
+fn position_holds_commit(
+    ks: &Keyspaces,
+    key: &[u8],
+    commit: &IndexableCommit,
+) -> Result<bool, IndexerError> {
+    let Some(bytes) = ks.commits.get(key).map_err(to_backend_err)? else {
+        return Ok(false);
+    };
+    let held: CommitRef = de(&bytes)?;
+    if commit.commit_ids.first().map_or("", String::as_str) == held.commit_id {
+        return Ok(true);
+    }
+    Err(IndexerError::Consistency(format!(
+        "principal {} already has commit {} at sequence {}; refusing a rival commit there",
+        commit.principal_id, held.commit_id, commit.sequence
+    )))
+}
+
 /// Dry run of [`db_index_commit`]'s refusal; writes nothing.
 fn db_check_commit(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
     let key = commit_key(&commit.principal_id, commit.sequence);
-    if ks.commits.contains_key(&key).map_err(to_backend_err)? {
+    if position_holds_commit(ks, &key, commit)? {
         return Ok(());
     }
     claims_conflict(ks, commit)
@@ -622,7 +663,7 @@ fn db_index_commit(
     commit: &IndexableCommit,
 ) -> Result<(), IndexerError> {
     let key = commit_key(&commit.principal_id, commit.sequence);
-    if ks.commits.contains_key(&key).map_err(to_backend_err)? {
+    if position_holds_commit(ks, &key, commit)? {
         return Ok(());
     }
 

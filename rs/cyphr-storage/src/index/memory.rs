@@ -191,16 +191,24 @@ impl Indexer for MemoryIndexer {
     }
 }
 
-/// Whether this commit's id is already in the principal's indexed chain.
-fn is_indexed(state: &MemoryState, commit: &IndexableCommit) -> bool {
-    state
+/// Whether this commit is already indexed at its chain position
+/// `(principal_id, sequence)`. A different commit at an indexed position is
+/// fork evidence (I2: one writer, one linear chain), never a no-op.
+fn is_indexed(state: &MemoryState, commit: &IndexableCommit) -> Result<bool, IndexerError> {
+    let Some(held) = state
         .commits
         .get(&commit.principal_id)
-        .is_some_and(|existing| {
-            existing
-                .iter()
-                .any(|c| commit.commit_ids.contains(&c.commit_id))
-        })
+        .and_then(|chain| chain.iter().find(|c| c.sequence == commit.sequence))
+    else {
+        return Ok(false);
+    };
+    if commit.commit_ids.first().map_or("", String::as_str) == held.commit_id {
+        return Ok(true);
+    }
+    Err(IndexerError::Consistency(format!(
+        "principal {} already has commit {} at sequence {}; refusing a rival commit there",
+        commit.principal_id, held.commit_id, commit.sequence
+    )))
 }
 
 /// Refuse a commit whose PG alias claim would re-point an existing alias:
@@ -235,7 +243,7 @@ impl IndexerWrite for MemoryIndexer {
                 .state
                 .read()
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            if is_indexed(&state, &commit) {
+            if is_indexed(&state, &commit)? {
                 return Ok(());
             }
             claims_conflict(&state, &commit)
@@ -254,8 +262,8 @@ impl IndexerWrite for MemoryIndexer {
                 .write()
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
 
-            // Idempotency: skip if this commit_id is already indexed.
-            if is_indexed(&state, &commit) {
+            // Idempotency: keyed by chain position, not commit id.
+            if is_indexed(&state, &commit)? {
                 return Ok(());
             }
 

@@ -107,7 +107,7 @@ impl Capability {
             Self::Audit => "N18b",
             Self::Pinning => "N23",
             Self::Idempotency => "N09",
-            Self::VersionCheck => "N13",
+            Self::VersionCheck => "TR1",
             Self::PeerBackup => "N19",
             Self::PeerRollover => "N20",
             Self::RelyingParty => "SO2",
@@ -141,8 +141,11 @@ impl Capability {
             // probe ran the library's red property; it read "zero tests run" as
             // present and never touched a binary.)
             Self::Idempotency => Probe::Pending("N09"),
-            // Needs a hostile peer serving envelope v=99 and a network CLI.
-            Self::VersionCheck => Probe::Pending("N13"),
+            // The version checks themselves are landed (every stored and wire
+            // format refuses an unknown `v`); the observable form is a
+            // hostile peer serving envelope v=99 to a network client, which
+            // needs the transport.
+            Self::VersionCheck => Probe::Pending("TR1"),
             Self::PeerBackup => Probe::Server(&["backup", "--help"]),
             Self::PeerRollover => Probe::Server(&["rotate-key", "--help"]),
             Self::RelyingParty => {

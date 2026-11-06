@@ -12,6 +12,7 @@
   ],
   "commits": [
     {
+      "v": 1,
       "txs": [
         {
           "pay": {
@@ -49,6 +50,7 @@
       "pr": "SHA-256:1_b_N98Lmv6_zxRYjujHNd6tRy7yZUO6sgpqIF3yw58"
     },
     {
+      "v": 1,
       "txs": [
         {
           "pay": {
@@ -86,6 +88,7 @@
       "pr": "SHA-256:Y81gdP8sD_-xda_l_oQrGgiOFUVo7rPUozIxWYsbq2A"
     },
     {
+      "v": 1,
       "txs": [
         {
           "pay": {

@@ -37,6 +37,7 @@ use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
 use crate::envelope::Envelope;
+use crate::observation::{STORE_FORMAT_VERSION, StampError, check_store_version};
 
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
@@ -79,6 +80,27 @@ pub enum AdmissionError {
     /// A `spawn_blocking` store task failed to join.
     #[error("admission store task join: {0}")]
     Join(String),
+
+    /// The spent-set store records a format version this build does not
+    /// read. Nothing was read from it: a mis-decoded spent set would let a
+    /// consumed single-use token be spent again.
+    #[error("spent set format version {found} is not the supported {supported}")]
+    UnsupportedVersion { found: u64, supported: u32 },
+}
+
+impl From<StampError> for AdmissionError {
+    fn from(e: StampError) -> Self {
+        match e {
+            StampError::Backend(m) => Self::Backend(m),
+            StampError::NotANumber(t) => {
+                Self::Backend(format!("recorded format version is not a number: {t:?}"))
+            },
+            StampError::Unsupported { found } => Self::UnsupportedVersion {
+                found,
+                supported: STORE_FORMAT_VERSION,
+            },
+        }
+    }
 }
 
 fn backend(e: fjall::Error) -> AdmissionError {
@@ -412,6 +434,7 @@ struct SpentSet {
 impl SpentSet {
     fn open(path: &Path) -> Result<Self, AdmissionError> {
         let db = Database::builder(path).open().map_err(backend)?;
+        check_store_version(&db)?;
         let tokens = db
             .keyspace("admission", KeyspaceCreateOptions::default)
             .map_err(backend)?;
