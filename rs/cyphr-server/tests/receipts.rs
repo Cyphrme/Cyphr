@@ -199,8 +199,8 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 /// this is a genuine wire-shape delta from what existed before this node,
 /// reported here per this node's IBC `reserved` clause rather than landed
 /// silently.
-#[test]
-fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() {
+#[tokio::test]
+async fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() {
     let (_dir, identity) = fixed_identity();
     let roots = cyphr_server::receipt::Roots {
         cr: None, // the typed counterpart of storage's former "" sentinel
@@ -214,6 +214,7 @@ fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() 
         VECTOR_COMMIT_ID,
         &roots,
     )
+    .await
     .expect("an absent cr must still compose and sign -- absence is accepted, not refused");
 
     // Positive control: the sibling `pr` root is unaffected -- proves
@@ -523,8 +524,8 @@ fn golden(name: &str) -> String {
         .to_string()
 }
 
-#[test]
-fn commit_receipt_matches_golden_vector() {
+#[tokio::test]
+async fn commit_receipt_matches_golden_vector() {
     let (_dir, identity) = fixed_identity();
     let coz = cyphr_server::receipt::commit_receipt(
         &identity,
@@ -534,6 +535,7 @@ fn commit_receipt_matches_golden_vector() {
         VECTOR_COMMIT_ID,
         &vector_roots(),
     )
+    .await
     .expect("compose and sign commit receipt");
 
     let wire = serde_json::to_string(&coz).unwrap();
@@ -547,8 +549,8 @@ fn commit_receipt_matches_golden_vector() {
     );
 }
 
-#[test]
-fn tip_report_matches_golden_vector() {
+#[tokio::test]
+async fn tip_report_matches_golden_vector() {
     let (_dir, identity) = fixed_identity();
     let coz = cyphr_server::receipt::tip_report(
         &identity,
@@ -560,6 +562,7 @@ fn tip_report_matches_golden_vector() {
         1,
         1_700_000_000,
     )
+    .await
     .expect("compose and sign tip report");
 
     let wire = serde_json::to_string(&coz).unwrap();

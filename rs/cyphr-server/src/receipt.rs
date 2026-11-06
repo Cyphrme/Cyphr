@@ -1,23 +1,108 @@
 //! Signed server receipts: commit-acceptance and tip attestations
 //! (`docs/specs/receipts.md`).
 //!
-//! A receipt is a Coz message the server signs with its own
-//! [`ServerIdentity`], exactly the compose-and-sign pattern
-//! [`ServerIdentity::issue_token`](super::auth::token) uses for bearer
-//! tokens: `coz::Pay::new()`, a dedicated `typ` constant, extra claims,
-//! serde to bytes, `identity.sign`, `coz::CozJson{pay, sig}`. Each kind
-//! gets its own `typ` so no signature can be replayed across purposes,
-//! the same replay-across-purposes closure bearer tokens already apply.
+//! A receipt is a Coz message the server signs through a
+//! [`ReceiptSigner`] -- the one attest path for every server signature
+//! (commit receipts, tip reports, view statements). The signer is a seam:
+//! it wraps the server's [`ServerIdentity`] today and any non-exportable
+//! key later, without this module learning key bytes. Each kind gets its
+//! own `typ` so no signature can be replayed across purposes, the same
+//! replay-across-purposes closure bearer tokens
+//! ([`ServerIdentity::issue_login_token`](super::auth::token)) apply.
 //!
 //! Issuance is stateless (decision D2, `docs/specs/receipts.md`): nothing
 //! here persists a receipt or a received-at time. The recipient holds the
 //! trust object; the server signs and forgets.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use cyphr::HashAlg;
+use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
+// The canonical report parse lives in the client crate; `check_equivocation`
+// consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
+pub use cyphr_client::TipReport;
+use cyphr_client::VIEW_STATEMENT_TYP;
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
+
+/// A signing backend for server statements: the server-side counterpart of
+/// [`cyphr::signer::Signer`], object-safe and `Send` so it can sit behind
+/// an `Arc<dyn ReceiptSigner>` in shared state (the core trait's future is
+/// deliberately not `Send`, for WebCrypto, so it cannot be used as-is).
+///
+/// The signer owns signature canonicality, as in the core contract: the
+/// receipt constructor verifies what it returns and refuses a signature
+/// that does not verify.
+pub trait ReceiptSigner: Send + Sync {
+    /// Coz algorithm name of the key.
+    fn alg(&self) -> &str;
+
+    /// Public key bytes, in the form `coz::verify_json` accepts.
+    fn pub_key(&self) -> &[u8];
+
+    /// Sign the Coz `cad`, returning the signature or why the backend
+    /// could not.
+    fn sign<'a>(
+        &'a self,
+        cad: &'a coz::Cad,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SignerError>> + Send + 'a>>;
+}
+
+impl ReceiptSigner for ServerIdentity {
+    fn alg(&self) -> &str {
+        ServerIdentity::alg(self).name()
+    }
+
+    fn pub_key(&self) -> &[u8] {
+        ServerIdentity::pub_key(self)
+    }
+
+    fn sign<'a>(
+        &'a self,
+        cad: &'a coz::Cad,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SignerError>> + Send + 'a>> {
+        Box::pin(async move {
+            let tmb = ServerIdentity::alg(self)
+                .compute_thumbprint(ServerIdentity::pub_key(self))
+                .ok_or_else(|| SignerError::Backend("identity thumbprint unavailable".into()))?;
+            let software = SoftwareSigner::new(
+                ServerIdentity::alg(self).name(),
+                self.prv_key(),
+                ServerIdentity::pub_key(self),
+                &tmb,
+            );
+            // An in-memory key never suspends, so the synchronous path is
+            // exact and spares a non-`Send` future crossing this boundary.
+            software.sign_now(cad)
+        })
+    }
+}
+
+/// Why a statement was not signed. Server-side only: an unsigned answer
+/// carries no reason on the wire, because an unauthenticated statement is
+/// not something a client can act on; the reason goes to the log.
+#[derive(Debug, thiserror::Error)]
+pub enum ReceiptError {
+    /// A field to be attested is not a canonical identifier or digest.
+    #[error("{field}: {source}")]
+    Field {
+        field: &'static str,
+        source: cyphr::error::Error,
+    },
+    /// The signer's algorithm or key does not yield a thumbprint.
+    #[error("signer key is unusable: {0}")]
+    Key(&'static str),
+    /// The payload did not serialize or canonicalize.
+    #[error("statement payload could not be composed: {0}")]
+    Compose(String),
+    /// The signing backend failed, or returned a signature that does not
+    /// verify.
+    #[error("signer: {0}")]
+    Signer(#[from] SignerError),
+}
 
 /// The `typ` a signed commit-acceptance receipt (the `/push` statement
 /// slot) is stamped with.
@@ -67,26 +152,34 @@ impl Roots {
 /// `pr` is the attested principal's genesis identifier; `sequence` is the
 /// accepted commit's 0-indexed position (the post-state tip's
 /// `commit_count - 1`); `roots` is the post-state roots exactly as the
-/// tip payload carries them. Returns `None` if coz rejects the payload or
-/// this identity's key (mirrors [`ServerIdentity::sign`]).
-pub fn commit_receipt(
-    identity: &ServerIdentity,
+/// tip payload carries them.
+///
+/// # Errors
+///
+/// [`ReceiptError`]: a malformed field, an unusable key, or a signer
+/// failure.
+pub async fn commit_receipt(
+    signer: &dyn ReceiptSigner,
     now: i64,
     pr: impl Into<String>,
     sequence: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
-) -> Option<coz::CozJson> {
-    sign_receipt(
-        identity,
+) -> Result<coz::CozJson, ReceiptError> {
+    let (pr, commit_id) = (pr.into(), commit_id.into());
+    validate(&pr, &commit_id, roots)?;
+    sign_statement(
+        signer,
         now,
         COMMIT_RECEIPT_TYP,
-        pr,
-        sequence,
-        commit_id,
-        roots,
-        None,
+        [
+            ("pr", Value::String(pr)),
+            ("sequence", Value::from(sequence)),
+            ("commit_id", Value::String(commit_id)),
+            ("roots", roots.to_value()),
+        ],
     )
+    .await
 }
 
 /// Compose and sign a tip report for `/tip`'s statement slot.
@@ -94,9 +187,13 @@ pub fn commit_receipt(
 /// As [`commit_receipt`], plus the tip payload's `commit_count` and
 /// `last_updated`, since a tip report attests the whole principal's
 /// current state, not just the one commit that produced it.
+///
+/// # Errors
+///
+/// As [`commit_receipt`].
 #[allow(clippy::too_many_arguments)]
-pub fn tip_report(
-    identity: &ServerIdentity,
+pub async fn tip_report(
+    signer: &dyn ReceiptSigner,
     now: i64,
     pr: impl Into<String>,
     sequence: u64,
@@ -104,251 +201,133 @@ pub fn tip_report(
     roots: &Roots,
     commit_count: u64,
     last_updated: i64,
-) -> Option<coz::CozJson> {
-    sign_receipt(
-        identity,
+) -> Result<coz::CozJson, ReceiptError> {
+    let (pr, commit_id) = (pr.into(), commit_id.into());
+    validate(&pr, &commit_id, roots)?;
+    sign_statement(
+        signer,
         now,
         TIP_REPORT_TYP,
-        pr,
-        sequence,
-        commit_id,
-        roots,
-        Some((commit_count, last_updated)),
+        [
+            ("pr", Value::String(pr)),
+            ("sequence", Value::from(sequence)),
+            ("commit_id", Value::String(commit_id)),
+            ("roots", roots.to_value()),
+            ("commit_count", Value::from(commit_count)),
+            ("last_updated", Value::from(last_updated)),
+        ],
     )
+    .await
 }
 
-/// Shared composition core for both receipt kinds: everything but `typ`
-/// and the tip-only extra claims is identical, so the two public
-/// constructors differ only in what they pass here.
-#[allow(clippy::too_many_arguments)]
-fn sign_receipt(
-    identity: &ServerIdentity,
+/// Compose and sign a view statement for `/view`: the peer's own claim "I
+/// hold `pr` at this tree size and index" (GOSSIP.md section 3). The tree
+/// size is the principal's `commit_count`; the index is the newest
+/// commit's position, `tree_size - 1`, so a zero-size tree has no
+/// statement to sign.
+///
+/// # Errors
+///
+/// As [`commit_receipt`]; additionally [`ReceiptError::Compose`] for a
+/// zero `tree_size`.
+pub async fn view_statement(
+    signer: &dyn ReceiptSigner,
     now: i64,
-    typ: &str,
     pr: impl Into<String>,
-    sequence: u64,
+    tree_size: u64,
     commit_id: impl Into<String>,
     roots: &Roots,
-    tip_extra: Option<(u64, i64)>,
-) -> Option<coz::CozJson> {
-    let pr = pr.into();
-    let commit_id = commit_id.into();
+) -> Result<coz::CozJson, ReceiptError> {
+    let (pr, commit_id) = (pr.into(), commit_id.into());
+    validate(&pr, &commit_id, roots)?;
+    let index = tree_size
+        .checked_sub(1)
+        .ok_or_else(|| ReceiptError::Compose("a tree of size zero has no index".into()))?;
+    sign_statement(
+        signer,
+        now,
+        VIEW_STATEMENT_TYP,
+        [
+            ("pr", Value::String(pr)),
+            ("tree_size", Value::from(tree_size)),
+            ("index", Value::from(index)),
+            ("commit_id", Value::String(commit_id)),
+            ("roots", roots.to_value()),
+        ],
+    )
+    .await
+}
 
-    // Refuse to sign a malformed value into a receipt: validate every
-    // identifier/digest-bearing field at construction, not just at the
-    // wire boundary. Parsing (and discarding) each one before composing
-    // the payload means a value that isn't valid never reaches the
-    // signature -- `?` on `.ok()` returns `None` on the first failure,
-    // matching this function's existing "compose failed" contract.
-    //
-    // `pr` is the attested principal's GENESIS IDENTIFIER, not a tagged
-    // digest: SPEC §2.2.3's DEFAULT identifier form is bare canonical
-    // b64ut -- tagging is the labeled exemption `commit_id`/`roots` use,
-    // not this field. At Level 1/2 a principal's genesis identifier IS
-    // its raw thumbprint via implicit promotion, so requiring a tag here
-    // would reject every Level 1/2 principal's receipt.
-    let _: coz::Thumbprint = parse_genesis_id_str(&pr).ok()?;
-    commit_id.parse::<TaggedDigest>().ok()?;
-    roots.pr.parse::<TaggedDigest>().ok()?;
-    roots.sr.parse::<TaggedDigest>().ok()?;
-    roots.ar.parse::<TaggedDigest>().ok()?;
+/// Refuse to sign a malformed value: every identifier/digest-bearing field
+/// is parsed (and discarded) at construction, not just at the wire
+/// boundary, so a value that is not valid never reaches a signature.
+///
+/// `pr` is the attested principal's GENESIS IDENTIFIER, not a tagged
+/// digest: SPEC §2.2.3's DEFAULT identifier form is bare canonical b64ut --
+/// tagging is the labeled exemption `commit_id`/`roots` use, not this
+/// field. At Level 1/2 a principal's genesis identifier IS its raw
+/// thumbprint via implicit promotion, so requiring a tag here would reject
+/// every Level 1/2 principal's receipt.
+fn validate(pr: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError> {
+    fn digest(field: &'static str, s: &str) -> Result<(), ReceiptError> {
+        s.parse::<TaggedDigest>()
+            .map(drop)
+            .map_err(|source| ReceiptError::Field { field, source })
+    }
+    parse_genesis_id_str(pr)
+        .map(drop)
+        .map_err(|source| ReceiptError::Field {
+            field: "pr",
+            source,
+        })?;
+    digest("commit_id", commit_id)?;
+    digest("roots.pr", &roots.pr)?;
+    digest("roots.sr", &roots.sr)?;
+    digest("roots.ar", &roots.ar)?;
     // `cr` alone may legitimately be absent (#147): a principal that is
     // key-established but has not finalized a data commit has no commit
-    // root yet. `None` needs no validation; `Some` still must parse as a
-    // `TaggedDigest`, exactly as `pr`/`sr`/`ar` above.
+    // root yet. `Some` still must parse as a `TaggedDigest`.
     if let Some(cr) = &roots.cr {
-        cr.parse::<TaggedDigest>().ok()?;
+        digest("roots.cr", cr)?;
     }
+    Ok(())
+}
 
-    let tmb = identity.alg().compute_thumbprint(identity.pub_key())?;
+/// The one signing path: stamp `alg`/`now`/`tmb`/`typ`, add the kind's
+/// claims, sign the payload's `cad` through `signer`, and refuse a
+/// signature that does not verify under the signer's own key.
+async fn sign_statement<const N: usize>(
+    signer: &dyn ReceiptSigner,
+    now: i64,
+    typ: &str,
+    claims: [(&str, Value); N],
+) -> Result<coz::CozJson, ReceiptError> {
+    let (alg, pub_key) = (signer.alg(), signer.pub_key());
+    let tmb = coz::compute_thumbprint_for_alg(alg, pub_key).ok_or(ReceiptError::Key(
+        "no thumbprint for this algorithm and key",
+    ))?;
 
     let mut pay = coz::Pay::new();
-    pay.alg = Some(identity.alg().name().to_string());
+    pay.alg = Some(alg.to_string());
     pay.now = Some(now);
     pay.tmb = Some(tmb);
     pay.typ = Some(typ.to_string());
-    pay.extra.insert("pr".to_string(), Value::String(pr));
-    pay.extra
-        .insert("sequence".to_string(), Value::from(sequence));
-    pay.extra
-        .insert("commit_id".to_string(), Value::String(commit_id));
-    pay.extra.insert("roots".to_string(), roots.to_value());
-    if let Some((commit_count, last_updated)) = tip_extra {
-        pay.extra
-            .insert("commit_count".to_string(), Value::from(commit_count));
-        pay.extra
-            .insert("last_updated".to_string(), Value::from(last_updated));
+    for (name, value) in claims {
+        pay.extra.insert(name.to_string(), value);
     }
 
-    let pay_json = serde_json::to_vec(&pay).ok()?;
-    let (sig, _cad) = identity.sign(&pay_json)?;
-    let pay_value = serde_json::to_value(&pay).ok()?;
-
-    Some(coz::CozJson {
-        pay: pay_value,
-        sig,
-    })
-}
-
-/// The post-commit roots a tip report attests, parsed into the typed
-/// domain: the same four fields [`Roots`] carries on the wire, but each
-/// one validated into a [`TaggedDigest`] rather than trusted as a bare
-/// `String`.
-///
-/// `cr` alone is `Option`: a principal that is key-established but has not
-/// yet finalized a data commit has no commit root, and a signed receipt
-/// carries that absence as wire `null` (#147) -- typed here as `None`
-/// rather than rejected as malformed. `pr`/`sr`/`ar` are always present
-/// once a principal exists, so they stay mandatory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TipReportRoots {
-    pub pr: TaggedDigest,
-    pub sr: TaggedDigest,
-    pub ar: TaggedDigest,
-    pub cr: Option<TaggedDigest>,
-}
-
-/// A signed tip report's claims, canonically parsed: the typed
-/// counterpart to the raw `pr`/`sequence`/`commit_id`/`roots` JSON
-/// [`check_equivocation`] used to compare directly, as raw `Value`s. This
-/// is the ONLY path a report's claims take into that comparison --
-/// non-canonical input is rejected here (the boundary-side property),
-/// never downstream, and everything that parses is compared by this typed
-/// value alone (the passing-through property).
-///
-/// `pr` is `coz::Thumbprint`, not `TaggedDigest`: it is the attested
-/// principal's GENESIS IDENTIFIER, SPEC §2.2.3's DEFAULT (untagged)
-/// identifier form -- at Level 1/2 that identifier IS the principal's raw
-/// key thumbprint via implicit promotion
-/// (`docs/specs/principal-lifecycle.md`), so `coz::Thumbprint` is the
-/// existing type reused here rather than a hand-rolled wrapper.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TipReport {
-    pub pr: coz::Thumbprint,
-    pub sequence: u64,
-    pub commit_id: TaggedDigest,
-    pub roots: TipReportRoots,
-}
-
-/// Why a signed report's `pay` failed to canonicalize into a [`TipReport`].
-///
-/// Every variant is a REJECT-LOUD outcome: a validly-signed report that
-/// produces one of these must never be silently compared or dropped by
-/// its caller -- see `EquivocationVerdict::Malformed` at the one
-/// comparison this type feeds today.
-#[derive(Debug, thiserror::Error)]
-pub enum TipReportParseError {
-    /// `pr` is not a JSON string, or the string does not decode as a bare
-    /// canonical b64ut genesis identifier: an array, a number, or `null`
-    /// is not an identifier encoding at all -- never unwrapped to recover
-    /// one; a tagged `ALG:...` string also fails, since tagging is
-    /// `commit_id`/`roots`'s labeled exemption, not `pr`'s.
-    #[error("pr: {0}")]
-    Pr(cyphr::error::Error),
-    /// `commit_id` -- same disposition as `pr`.
-    #[error("commit_id: {0}")]
-    CommitId(cyphr::error::Error),
-    /// `sequence` is neither a JSON number nor the JSON string of a `u64`'s
-    /// decimal digits (the one field that CANONICALIZES across those two
-    /// representations; anything else -- `"5x"`, `"5.0"`, `""`, a bool, an
-    /// array -- is malformed, never coerced).
-    #[error("sequence is not a canonical non-negative integer: {0}")]
-    Sequence(Value),
-    /// `roots.<field>` -- same disposition as `pr`/`commit_id`.
-    #[error("roots.{field}: {source}")]
-    Roots {
-        field: &'static str,
-        source: cyphr::error::Error,
-    },
-}
-
-impl TipReport {
-    /// Parse a signed report's `pay` into the typed domain -- the
-    /// canonical parse, and the single boundary through which a report's
-    /// claims enter typed comparison.
-    pub fn parse(coz: &coz::CozJson) -> Result<Self, TipReportParseError> {
-        let pr = parse_genesis_id(&coz.pay["pr"]).map_err(TipReportParseError::Pr)?;
-        let commit_id =
-            parse_digest_field(&coz.pay["commit_id"]).map_err(TipReportParseError::CommitId)?;
-        let sequence = parse_sequence(&coz.pay["sequence"])?;
-        let roots = TipReportRoots {
-            pr: parse_digest_field(&coz.pay["roots"]["pr"]).map_err(|source| {
-                TipReportParseError::Roots {
-                    field: "pr",
-                    source,
-                }
-            })?,
-            sr: parse_digest_field(&coz.pay["roots"]["sr"]).map_err(|source| {
-                TipReportParseError::Roots {
-                    field: "sr",
-                    source,
-                }
-            })?,
-            ar: parse_digest_field(&coz.pay["roots"]["ar"]).map_err(|source| {
-                TipReportParseError::Roots {
-                    field: "ar",
-                    source,
-                }
-            })?,
-            cr: parse_optional_digest_field(&coz.pay["roots"]["cr"]).map_err(|source| {
-                TipReportParseError::Roots {
-                    field: "cr",
-                    source,
-                }
-            })?,
-        };
-        Ok(Self {
-            pr,
-            sequence,
-            commit_id,
-            roots,
-        })
+    let pay_json = serde_json::to_vec(&pay).map_err(|e| ReceiptError::Compose(e.to_string()))?;
+    let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
+        .ok_or(ReceiptError::Key("algorithm cannot hash a payload"))?;
+    let sig = signer.sign(&cad).await?;
+    if coz::verify_json(&pay_json, &sig, alg, pub_key) != Some(true) {
+        return Err(SignerError::Backend(
+            "signature does not verify under the signer's key".into(),
+        )
+        .into());
     }
-}
-
-/// Parse a JSON value as a digest field: it MUST be a JSON string -- an
-/// array, a number, or `null` is not a digest encoding at all, and is
-/// never unwrapped down to an inner string -- and that string must parse
-/// as a [`TaggedDigest`]. Used for `commit_id` and each `roots.<field>` --
-/// NOT `pr`, see [`parse_genesis_id`].
-fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error> {
-    value
-        .as_str()
-        .ok_or(cyphr::error::Error::MalformedDigest(
-            "not a JSON string -- digests are never arrays, numbers, or null",
-        ))
-        .and_then(|s| s.parse())
-}
-
-/// Parse a `roots.cr`-shaped JSON value: unlike every other digest field,
-/// JSON `null` is not rejected here -- it is the wire encoding for "no
-/// commit root yet" (#147: a principal that is key-established but has
-/// not finalized a data commit) -- and parses to `None`. Any other value
-/// must still be a JSON string that parses as a [`TaggedDigest`], exactly
-/// as [`parse_digest_field`]; the empty string this function used to
-/// special-case is no longer accepted -- #147 retires that sentinel in
-/// favor of the type, so `""` is now malformed like any other non-digest
-/// string.
-fn parse_optional_digest_field(value: &Value) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    parse_digest_field(value).map(Some)
-}
-
-/// Parse a JSON value as a genesis identifier -- `pr`'s disposition: the
-/// same reject-loud shape discipline as [`parse_digest_field`] (a JSON
-/// string only; an array, a number, or `null` is never an identifier
-/// encoding), but the string itself decodes as BARE canonical b64ut, not
-/// `ALG:b64ut` -- SPEC §2.2.3's DEFAULT identifier form. See
-/// [`parse_genesis_id_str`] for the decode itself.
-fn parse_genesis_id(value: &Value) -> Result<coz::Thumbprint, cyphr::error::Error> {
-    value
-        .as_str()
-        .ok_or(cyphr::error::Error::MalformedDigest(
-            "not a JSON string -- a genesis identifier is never an array, number, or null",
-        ))
-        .and_then(parse_genesis_id_str)
+    let pay = serde_json::to_value(&pay).map_err(|e| ReceiptError::Compose(e.to_string()))?;
+    Ok(coz::CozJson { pay, sig })
 }
 
 /// Decode a bare b64ut genesis-identifier string into `coz::Thumbprint`.
@@ -387,22 +366,6 @@ pub(crate) fn parse_genesis_id_str(s: &str) -> Result<coz::Thumbprint, cyphr::er
         ));
     }
     Ok(coz::Thumbprint::from_bytes(bytes))
-}
-
-/// Parse a JSON value as a `sequence`: a JSON number canonicalizes
-/// directly; a JSON string canonicalizes if and only if it is exactly the
-/// decimal digits of a `u64`. Any other JSON shape, or a string that
-/// isn't a clean integer, is malformed.
-fn parse_sequence(value: &Value) -> Result<u64, TipReportParseError> {
-    match value {
-        Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| TipReportParseError::Sequence(value.clone())),
-        Value::String(s) => s
-            .parse::<u64>()
-            .map_err(|_| TipReportParseError::Sequence(value.clone())),
-        _ => Err(TipReportParseError::Sequence(value.clone())),
-    }
 }
 
 /// The outcome of checking two signed tip reports for equivocation
