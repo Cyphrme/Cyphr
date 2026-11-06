@@ -56,8 +56,10 @@ pub struct PatchResponse {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DerivedRoots {
     pub pr: String,
-    pub sr: String,
-    pub ar: String,
+    /// `None` for a Dead principal with no data.
+    pub sr: Option<String>,
+    /// `None` for a Dead principal.
+    pub ar: Option<String>,
     pub cr: String,
 }
 
@@ -116,10 +118,10 @@ pub struct CommittedTip {
     pub commit_id: String,
     /// Principal Root after the commit.
     pub pr: String,
-    /// State Root after the commit.
-    pub sr: String,
-    /// Auth Root after the commit.
-    pub ar: String,
+    /// State Root after the commit (`None` if absent).
+    pub sr: Option<String>,
+    /// Auth Root after the commit (`None` if absent).
+    pub ar: Option<String>,
     /// Commit Root after the commit (empty if the EML log has no leaf yet,
     /// matching [`TipState::cr`]).
     pub cr: String,
@@ -135,8 +137,8 @@ impl CommittedTip {
             sequence: commit.sequence,
             commit_id: first(&commit.commit_ids),
             pr: first(&commit.prs),
-            sr: first(&commit.srs),
-            ar: first(&commit.ars),
+            sr: commit.srs.first().cloned(),
+            ar: commit.ars.first().cloned(),
             cr: first(&commit.crs),
         }
     }
@@ -695,17 +697,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
 
         // SR and AR are absent for a Dead principal (SPEC 3.7: an empty
-        // component is omitted); an absent root reads as the empty string,
-        // the same convention as an absent CR below.
+        // component is omitted).
         let sr = format_multihash_opt(principal.sr().map(|s| s.as_multihash()))?
             .into_iter()
-            .next()
-            .unwrap_or_default();
+            .next();
 
         let ar = format_multihash_opt(principal.auth_root().map(|a| a.as_multihash()))?
             .into_iter()
-            .next()
-            .unwrap_or_default();
+            .next();
 
         let cr = match principal.cr() {
             Some(cr_obj) => format_multihash_all(cr_obj.as_multihash())?
@@ -1401,8 +1400,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 cozies,
                 keys,
                 commit_ref.commit_id.clone(),
-                String::new(), // ar — unused during replay
-                String::new(), // sr — unused during replay
+                None, // ar — unused during replay
+                None, // sr — unused during replay
                 commit_ref.pr.clone(),
             ));
         }

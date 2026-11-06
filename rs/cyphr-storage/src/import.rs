@@ -458,8 +458,8 @@ mod tests {
             vec![malformed],
             vec![],
             "SHA-256:c".into(),
-            "SHA-256:a".into(),
-            "SHA-256:s".into(),
+            Some("SHA-256:a".into()),
+            Some("SHA-256:s".into()),
             "SHA-256:p".into(),
         );
 

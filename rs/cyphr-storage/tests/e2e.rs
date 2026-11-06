@@ -294,7 +294,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(
-            "  [0] commit_id={}, as={}, pr={}",
+            "  [0] commit_id={}, as={:?}, pr={}",
             commit0.commit_id, commit0.auth_root, commit0.pr
         );
     }
@@ -814,7 +814,7 @@ fn blobs_of(commit: &CommitEntry) -> Vec<Vec<u8>> {
 
 /// Backs SPEC 3.1/3.7/11 through the durable stack: a principal whose only
 /// key is revoked is stored, indexed and reloaded Dead, its tip carries the
-/// absent roots as the empty string (KR/AR absent, SR absent without data)
+/// absent roots as `None` (KR/AR absent, SR absent without data)
 /// with PR equal to CR, and it then refuses a further commit. Turns red if
 /// the dying commit cannot be ingested (an absent root treated as an
 /// error), if reload does not reproduce the dying roots, or if a Dead
@@ -857,7 +857,7 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
         .await
         .expect("tip query")
         .expect("tip exists");
-    assert_eq!((tip.ar.as_str(), tip.sr.as_str()), ("", ""), "absent roots");
+    assert_eq!((&tip.ar, &tip.sr), (&None, &None), "absent roots");
     assert!(!tip.cr.is_empty(), "the dying commit has a CR");
     assert_eq!(tip.pr, tip.cr, "PR is the promoted CR");
 
@@ -866,8 +866,8 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
         .await
         .expect("replay of the dying commit");
     assert_eq!(
-        (roots.pr.as_str(), roots.sr.as_str(), roots.ar.as_str()),
-        (tip.pr.as_str(), "", ""),
+        (&roots.pr, &roots.sr, &roots.ar),
+        (&tip.pr, &None, &None),
         "reload reproduces the indexed roots"
     );
     let reloaded = engine

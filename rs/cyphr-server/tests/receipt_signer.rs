@@ -187,8 +187,8 @@ async fn commit_receipt_reports_a_signer_failure_as_receipt_error_signer() {
     let digest = |n: u8| format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32]));
     let roots = Roots {
         pr: digest(1),
-        sr: digest(2),
-        ar: digest(3),
+        sr: Some(digest(2)),
+        ar: Some(digest(3)),
         cr: Some(digest(4)),
     };
     let pr = Base64UrlUnpadded::encode_string(&[7u8; 32]);

@@ -22,6 +22,7 @@ macro_rules! conformance_test {
 }
 
 conformance_test!(index_commit_and_get_tip);
+conformance_test!(index_commit_with_absent_roots_reads_back_none);
 conformance_test!(get_tip_unknown_returns_none);
 conformance_test!(tip_updates_on_subsequent_commits);
 conformance_test!(index_commit_idempotent);

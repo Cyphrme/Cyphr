@@ -37,8 +37,8 @@
       ],
       "keys": [],
       "commit_id": "SHA-256:edLUVi7yZgh1zzsefAJDp5s8EWo3NvA779E2kQLE5GE",
-      "ar": "",
-      "sr": "",
+      "ar": null,
+      "sr": null,
       "pr": "SHA-256:edLUVi7yZgh1zzsefAJDp5s8EWo3NvA779E2kQLE5GE"
     }
   ],

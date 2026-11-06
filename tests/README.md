@@ -127,7 +127,9 @@ commit use the algorithm set in force before it.
 JSON `null`. A field that is missing altogether is a malformed vector, not an
 absent root: an implementation must not read a missing field as `null`. An
 implementation checks a `null` by asserting the principal has no such root. In
-a `commits[]` entry the same absence is the empty string (`"ar": ""`).
+a `commits[]` entry `ar` and `sr` follow the same rule: `null` for an absent
+root, and a missing field is malformed. `null` is the only encoding of
+absence.
 
 ### Test Categories
 

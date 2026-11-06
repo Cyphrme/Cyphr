@@ -394,8 +394,8 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
         return false;
     }
     if tip.pr != report.roots.pr.to_string()
-        || tip.sr != report.roots.sr.to_string()
-        || tip.ar != report.roots.ar.to_string()
+        || tip.sr != report.roots.sr.as_ref().map(ToString::to_string)
+        || tip.ar != report.roots.ar.as_ref().map(ToString::to_string)
     {
         return false;
     }
@@ -443,8 +443,8 @@ mod tests {
         let tip = TipState {
             principal_id: "test-principal".to_string(),
             pr: pr.to_string(),
-            sr: sr.to_string(),
-            ar: ar.to_string(),
+            sr: Some(sr.to_string()),
+            ar: Some(ar.to_string()),
             cr: String::new(),
             commit_id: commit_id.to_string(),
             commit_count: 1,
@@ -456,8 +456,8 @@ mod tests {
             commit_id,
             roots: TipReportRoots {
                 pr,
-                sr,
-                ar,
+                sr: Some(sr),
+                ar: Some(ar),
                 cr: None,
             },
         };

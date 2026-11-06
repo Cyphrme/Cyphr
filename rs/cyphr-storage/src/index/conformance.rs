@@ -59,11 +59,38 @@ pub async fn index_commit_and_get_tip<I: Indexer + IndexerWrite>(indexer: &I) {
 
     assert_eq!(tip.principal_id, "alice");
     assert_eq!(tip.pr, "SHA-256:pr-alice-0");
-    assert_eq!(tip.sr, "SHA-256:sr-alice-0");
-    assert_eq!(tip.ar, "SHA-256:ar-alice-0");
+    assert_eq!(tip.sr.as_deref(), Some("SHA-256:sr-alice-0"));
+    assert_eq!(tip.ar.as_deref(), Some("SHA-256:ar-alice-0"));
     assert_eq!(tip.commit_id, "SHA-256:commit-alice-0");
     assert_eq!(tip.commit_count, 1);
     assert_eq!(tip.last_updated, 1000);
+}
+
+/// A commit that left the principal with no key and no data has no SR and
+/// no AR (SPEC 3.7). The tip and the chain entry read them back as `None`,
+/// never as an empty string. Turns red if an absent root is stored or read
+/// as `Some("")`.
+pub async fn index_commit_with_absent_roots_reads_back_none<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let mut commit = make_commit("alice", 0, 1000);
+    commit.srs.clear();
+    commit.ars.clear();
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("index_commit failed");
+    let tip = indexer
+        .get_tip("alice")
+        .await
+        .expect("get_tip failed")
+        .expect("tip should exist");
+    assert_eq!((tip.sr, tip.ar), (None, None));
+    let chain = indexer
+        .get_commit_chain("alice", None, None)
+        .await
+        .expect("chain");
+    assert_eq!((chain[0].sr.clone(), chain[0].ar.clone()), (None, None));
 }
 
 pub async fn get_tip_unknown_returns_none<I: Indexer + IndexerWrite>(indexer: &I) {

@@ -498,7 +498,9 @@ async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
         .expect("commit 0");
 
     let before = gets.load(std::sync::atomic::Ordering::SeqCst);
-    for digest in [&entry.commit_id, &entry.sr, &entry.auth_root] {
+    let sr = entry.sr.clone().expect("a live principal has an SR");
+    let ar = entry.auth_root.clone().expect("a live principal has an AR");
+    for digest in [&entry.commit_id, &sr, &ar] {
         assert_ne!(digest, &entry.pr, "premise: {digest} is not the PR");
         for spelling in [
             digest.to_string(),

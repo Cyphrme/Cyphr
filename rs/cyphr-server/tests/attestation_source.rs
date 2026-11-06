@@ -98,8 +98,8 @@ async fn roots_derive_from_blobs() {
         .unwrap()
         .expect("tip exists");
     assert_eq!(index_tip.pr, corrupt_pr(principal_id));
-    assert_eq!(index_tip.sr, corrupt_sr(principal_id));
-    assert_eq!(index_tip.ar, corrupt_ar(principal_id));
+    assert_eq!(index_tip.sr, Some(corrupt_sr(principal_id)));
+    assert_eq!(index_tip.ar, Some(corrupt_ar(principal_id)));
     assert_eq!(index_tip.cr, corrupt_cr(principal_id));
 
     // 3. GET /tip MUST NOT return a receipt signed over corrupted index values (all 4 root fields).

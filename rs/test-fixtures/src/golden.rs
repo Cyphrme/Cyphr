@@ -426,17 +426,11 @@ impl<'a> Generator<'a> {
             let auth_root = principal
                 .auth_root()
                 .and_then(|a| a.as_multihash().first_variant().ok())
-                .map(Base64UrlUnpadded::encode_string)
-                .unwrap_or_default();
+                .map(Base64UrlUnpadded::encode_string);
             let sr = principal
                 .sr()
-                .map(|s| {
-                    s.as_multihash()
-                        .first_variant()
-                        .map(Base64UrlUnpadded::encode_string)
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
+                .and_then(|s| s.as_multihash().first_variant().ok())
+                .map(Base64UrlUnpadded::encode_string);
             let pr_ = principal
                 .pr()
                 .as_multihash()
@@ -483,8 +477,8 @@ impl<'a> Generator<'a> {
             vec![tx_json],
             keys,
             String::new(), // commit_id placeholder for error tests
-            String::new(), // as placeholder for error tests
-            String::new(), // sr placeholder for error tests
+            None,          // ar placeholder for error tests
+            None,          // sr placeholder for error tests
             String::new(), // pr placeholder for error tests
         )
     }
@@ -732,8 +726,8 @@ impl<'a> Generator<'a> {
                 cozies: vec![],
                 keys: vec![],
                 commit_id: "".to_string(),
-                auth_root: "".to_string(),
-                sr: "".to_string(),
+                auth_root: None,
+                sr: None,
                 pr: "".to_string(),
             });
 
@@ -1031,17 +1025,11 @@ impl<'a> Generator<'a> {
                     let auth_root = principal
                         .auth_root()
                         .and_then(|a| a.as_multihash().first_variant().ok())
-                        .map(Base64UrlUnpadded::encode_string)
-                        .unwrap_or_default();
+                        .map(Base64UrlUnpadded::encode_string);
                     let sr = principal
                         .sr()
-                        .map(|s| {
-                            s.as_multihash()
-                                .first_variant()
-                                .map(Base64UrlUnpadded::encode_string)
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default();
+                        .and_then(|s| s.as_multihash().first_variant().ok())
+                        .map(Base64UrlUnpadded::encode_string);
                     let pr_ = principal
                         .pr()
                         .as_multihash()
