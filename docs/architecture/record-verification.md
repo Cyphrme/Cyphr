@@ -4,10 +4,16 @@ This page names twelve rules a replay of a principal's record enforces, says
 where each one lives in the code, and binds each to the test that fails when
 the rule breaks. It also lists the further checks a replay makes that the
 twelve do not cover. Where a claim has no bound test for part of what it says,
-the page says so. It is a
-reference: it describes the code at this revision, and it records two things
-it cannot settle itself, a question for the spec author and a deferred
+the page says so. It is a reference: it describes the code at this revision,
+and it records a question for the spec author, a known defect and a deferred
 format decision.
+
+**Scope.** The rules and claims describe the core apply, finalize and record
+paths of the `cyphr` crate: `CommitScope::verify_and_apply`, `finalize` and
+`Principal::verify_and_record_action`. Every bound test uses the core
+principal directly. Replay from storage reaches the same core paths but differs
+before and around them; [Storage replay](#storage-replay) lists the
+differences in one place.
 
 SPEC references are to `SPEC.md` at commit `be0663f` on the spec author's
 `zami` branch, the normative text.
@@ -28,8 +34,9 @@ Two scoping facts come from SPEC, not from this page:
 
 - The rules range over the auth chain. SPEC §2.3.3 makes the Auth Tree
   append-only, `pre`-chained and replayed from genesis, and the Data Tree
-  mutable and chainless. Data content has no rules of its own. Only its digest
-  (DR) takes part, through rule 7.
+  mutable and chainless. Data content is application-defined, but a data
+  action is a coz and is bound by the coz rules: 2, 3, 5, 8, 9 and 12 apply to
+  it, and its digest (DR) takes part in rule 7.
 - Tip currency, fork resolution and witness exchange sit above the record.
   They decide whether a view is current and unique, never whether a record is
   honest. Their text is in the Extended part of SPEC (from §13), which is in
@@ -62,14 +69,15 @@ Each rule carries a **class** that names the shape of its check:
 | 8   | The signer is an active key when the coz is applied               | §2.3.2, §6     | C     | `UnknownKey`, `KeyRevoked`             | [rv-key-active-gate](#rv-key-active-gate)       |
 | 9   | A frozen principal takes no mutation; a deleted one takes nothing | §2.3.2, §11.2  | C     | `Frozen`, `AlreadyDeleted`             | [rv-lifecycle-gate](#rv-lifecycle-gate)         |
 | 10  | The Principal Genesis is written once                             | §2.3.2, §5     | C     | `StateMismatch`                        | [rv-genesis-immutable](#rv-genesis-immutable)   |
-| 11  | The commit coz is last; a grouped transaction shares one `typ`    | §4.1, §4.6     | A     | `CommitNotLast`, `MixedTransactionTyp` | [rv-intra-commit-shape](#rv-intra-commit-shape) |
+| 11  | The commit coz is last; transaction grouping (known defect)       | §4.1, §4.6     | A     | `CommitNotLast`                        | [rv-intra-commit-shape](#rv-intra-commit-shape) |
 | 12  | A coz this principal already included is refused or ignored       | §7.6           | D     | `CozReuse` (transactions); none (data) | [rv-no-coz-reuse](#rv-no-coz-reuse)             |
 
 Rules 8 and 9 read the state that rule 7 recomputes, and each names a
 distinct way a record can be dishonest, so each has its own claim and its own
 test. A principal whose last key is revoked is Dead (SPEC §11.2). The code has
-no gate for that state: such a principal's coz is refused by rule 8, because
-its only signer is revoked. The error names are variants of `cyphr::Error`
+no gate for that state, and replay cannot reach it today: `revoke_key` refuses
+to revoke the last key with `NoActiveKeys`. A Dead principal's coz would be
+refused by rule 8, because its only signer is revoked. The error names are variants of `cyphr::Error`
 (`rs/cyphr/src/error.rs`).
 
 ### Reading a claim
@@ -108,8 +116,10 @@ well-formed coz; the `alg` test has no control. All three assert only that the
 coz is rejected, not which error. The error names come from the code:
 `ParsedCoz::from_pay` (`rs/cyphr/src/parsed_coz.rs`) checks `tmb`, `now` and
 `typ`, and `verify_coz` and the data-action path return `AlgMismatch` for an
-absent or different `alg`. Not checked: non-canonical encoding in fields other
-than `id`, and the error type of any of these rejections.
+absent or different `alg`. These are the core path's errors; storage replay
+rejects a malformed or `alg`-less coz earlier with other errors (see
+[Storage replay](#storage-replay)). Not checked: non-canonical encoding in
+fields other than `id`, and the error type of any of these rejections.
 
 #### [rv-alg-alignment]
 
@@ -150,7 +160,8 @@ evaluator: test
 Backed by `es256_high_s_signature_is_rejected` and
 `ed25519_non_canonical_s_is_rejected` in `rs/cyphr/tests/negative_vectors.rs`,
 byte-level vectors built from the group orders that assert
-`InvalidSignature`. They pin the encoding rule. The signature check itself is
+`InvalidSignature`. They cover ES256 and Ed25519 only; no bound test covers
+the encoding rule of another algorithm. They pin the encoding rule. The signature check itself is
 in `verify_coz` and the data-action path. Not bound here: the property test
 `any_non_verifying_signature_never_commits` in
 `rs/cyphr/tests/signer_seam.rs`. It covers arbitrary bytes and bit flips from a
@@ -204,10 +215,12 @@ and `action_timestamp_past_fails` in `tests/golden/errors/`. The marker sits at
 entry runs that whole test. It runs every vector in `tests/golden/errors/`, not
 only the two timestamp ones, so the binding fails if any error vector fails; the
 two timestamp vectors are the part that backs this claim. Equal `now` is
-accepted, and two things pin it: in `timestamp_past_fails` the first commit's
-`commit/create` coz carries the same `now` as its transaction and the commit
-applies; and the rule 12 reuse scenario replays a coz at the same `now` and is
-refused as `CozReuse`, not `TimestampPast`. Not checked by any bound test: that
+accepted, and two accepted scenarios pin it: in `timestamp_past_fails` the first
+commit's `commit/create` coz carries the same `now` as its transaction and the
+commit applies, and the rule 12 reuse fixture applies several cozies at one
+`now` before the replay. The reuse refusal itself says nothing about `<`,
+because the reuse check runs before the timestamp check
+(`apply_transaction_internal`). Not checked by any bound test: that
 a coz rejected for `TimestampPast` leaves state unchanged (the golden vectors
 assert only the error). The SPEC wording that governs the boundary is the
 subject of [Question for the spec author](#question-for-the-spec-author).
@@ -274,7 +287,8 @@ position the coz is applied, with two exceptions the code makes. A
 `commit/create` coz skips the active check in `apply_transaction_internal`,
 because the finalizer is authorized against the key set from before the
 commit, and an earlier mutation in the same commit may have replaced its
-signer. A self-revoke also skips it, since the key revokes itself. A deleted
+signer. A self-revoke skips only that inner check; `resolve_signer` in
+`CommitScope::verify_and_apply` still requires its signer to be active. A deleted
 key's action is rejected whether dated after the delete or backdated into the
 key's old active period, and a key that is not active cannot authorize its own
 admission.
@@ -288,8 +302,10 @@ Backed by `deleted_key_action_dated_after_delete_is_rejected` and
 `deleted_key_action_backdated_into_old_active_period_is_rejected` in
 `rs/cyphr/tests/negative_vectors.rs`, and
 `s2_3_2_inactive_key_cannot_authorize_its_own_admission` in
-`spec_conformance.rs`. Only the last carries a control (an active key may admit
-the same key); the two negative-vector tests have none. The backdated case pins
+`spec_conformance.rs`. The last carries an explicit control (an active key may admit
+the same key). The two negative-vector tests have no explicit control, but the
+fixture records an accepted action from the same key before the delete, which
+serves as one. The backdated case pins
 the implementation's fail-closed reading, which tests the signer against
 current key membership and ignores the payload `now`. SPEC §6.2 says past
 signatures from earlier active periods remain valid but does not say whether a
@@ -303,9 +319,12 @@ revoked-key re-add refusals in `rs/cyphr/tests/key_auth.rs`.
 
 A frozen principal refuses key mutations and data actions until it is thawed,
 and thawing restores it. The freeze, thaw, close and finalizer cozies are
-exempt from the frozen gate. A principal whose last key is revoked, a Dead
-principal, takes no transaction or action, and a Deleted principal (after
-`principal/delete`) takes nothing but its close and lifecycle cozies.
+exempt from the frozen gate. After the close commit (`principal/delete`) the
+principal is Deleted and every coz is refused: `AlreadyDeleted` for most
+cozies and for a second `principal/delete` or `freeze/create`, and `NotFrozen`
+for `freeze/delete`, because closing clears the frozen flag. The one exemption
+is the close commit's own `commit/create` coz, which is exempt only while the
+close is pending (`deleted_pending`).
 
 ```claim
 kind: requirement
@@ -318,14 +337,18 @@ The gates are in `apply_transaction_internal`
 `verify_and_record_action`. Backed by
 `s11_2_frozen_principal_rejects_key_mutations` and
 `frozen_principal_rejects_data_actions_until_thawed`, each with a control that
-shows the refusal is the freeze, and by
+shows the refusal is the freeze. Not checked by any bound test: refusal after
+`principal/delete`, which no test bound here exercises.
+
+The bound runner also runs
 `s11_2_dead_principal_accepts_no_transaction_or_action` in
-`rs/cyphr/tests/spec_conformance.rs`. Three limits on that last test. There is
-no Dead gate: a Dead principal's coz is refused by the revoked-signer check of
-rule 8 (`active_signer` returns `KeyRevoked`). The test has no control. It
-asserts only that the key/create and the data action are refused, not which
-error. Not checked by any bound test: refusal after `principal/delete`, which
-the code reports as `AlreadyDeleted` and no test bound here exercises.
+`rs/cyphr/tests/spec_conformance.rs`, which is about Dead, not Deleted, and has
+three limits. There is no Dead gate: a Dead principal's coz is refused by the
+revoked-signer check of rule 8 (`active_signer` returns `KeyRevoked`). Replay
+cannot reach Dead today, because `revoke_key` refuses the last key with
+`NoActiveKeys`; the test builds the state with `pre_revoke_key`, which exists
+only for tests. The test has no control, and it asserts only that the
+`key/create` and the data action are refused, not which error.
 
 #### [rv-genesis-immutable]
 
@@ -352,10 +375,10 @@ thumbprint.
 #### [rv-intra-commit-shape]
 
 The `commit/create` coz must be the last coz of a commit, and a commit with
-the finalizer elsewhere is rejected with `CommitNotLast`. Cozies grouped into
-one transaction through `CommitScope::apply_tx` must carry an identical `typ`,
-and a mixed group is rejected with `MixedTransactionTyp`. Both statements hold
-for the code as it is; the known defect below says what replay does not do.
+the finalizer elsewhere is rejected with `CommitNotLast`. Separately,
+`CommitScope::apply_tx` rejects cozies grouped into one transaction with
+different `typ` values (`MixedTransactionTyp`); replay does not use it, as the
+known defect below says.
 
 ```claim
 kind: requirement
@@ -391,10 +414,14 @@ A transaction coz this principal already included is rejected with the typed
 `CozReuse`, whatever its timestamp or the principal's state, and the first
 inclusion stays authoritative. The check is per principal: another principal
 that shares the keys may apply the same coz. It compares the whole `czd`, so a
-coz signed under a wider digest (ES384) is recognised. The other half of SPEC
+coz signed under a wider digest (ES384) is recognised. The check runs after the
+signer is resolved and the coz is verified (alg, signature, `czd`), so a replay
+whose signer is no longer active returns `UnknownKey` or `KeyRevoked`, not
+`CozReuse`. The other half of SPEC
 §7.6 differs in kind: a replayed data action is ignored and produces no state
-change, and `verify_and_record_action` returns `Ok` for it (`data.rs`, the
-`included_czds` check after the `czd` is proven).
+change, and `verify_and_record_action` returns `Ok` for it, but only after the `pre`,
+deleted, frozen and active-signer gates and the alg, signature and `czd`
+checks have passed (`data.rs`, the `included_czds` check).
 
 ```claim
 kind: requirement
@@ -423,19 +450,54 @@ record. They have no docket claim; the last column names the test that exercises
 each, found by search, not bound to a claim here. "None found" means no test
 turned up for that check.
 
-| Check                                                         | Error                             | Where                                    | Test that exercises it                                                                       |
-| :------------------------------------------------------------ | :-------------------------------- | :--------------------------------------- | :------------------------------------------------------------------------------------------- |
-| `key/create` of a key already in the key set                  | `DuplicateKey`                    | `apply_transaction_internal`             | golden vector `duplicate_key_fails`                                                          |
-| `key/create` or `key/replace` of a revoked key                | `KeyRevoked`                      | `apply_transaction_internal`             | `d3_revoked_key_cannot_be_readded_by_key_create` and `_by_key_replace` in `key_auth.rs`      |
-| Removing or self-revoking the last key                        | `NoActiveKeys`                    | `remove_key`, `revoke_key`               | golden vectors `delete_last_key_fails`, `last_key_revoke_fails`                              |
-| `rvk` outside 1 to 2^53 - 1, or `id` present on a revoke      | `MalformedPayload`                | `ParsedCoz::parse_kind`                  | `s6_4_revoke_rvk_must_be_a_positive_bounded_integer`; golden vector `revoke_non_self_fails`  |
-| The revealed `pub` does not hash to the signed `id`           | `MalformedPayload`, `TmbMismatch` | `apply_transaction_internal`, `Key::new` | `d1_key_create_rejects_victim_tmb_with_attacker_pub` in `key_auth.rs`                        |
-| A lifecycle coz's `id` is not the current PR                  | `StateMismatch`                   | `apply_transaction_internal`             | none found                                                                                   |
-| `freeze/create` when frozen; `freeze/delete` when not frozen  | `AlreadyFrozen`, `NotFrozen`      | `apply_transaction_internal`             | unit tests in `rs/cyphr/src/principal/tests/lifecycle.rs`                                    |
-| A commit with only a finalizer, or without a terminal `arrow` | `EmptyCommit`, `MissingCommit`    | `finalize_commit`                        | unit tests in `rs/cyphr/src/commit.rs`                                                       |
-| A `pre` field on a data action                                | `MalformedPayload`                | `verify_and_record_action`               | intent `data_action_constraints.toml` (tag `[data-action-no-pre]`) through the golden runner |
-| A `typ` the parser does not know                              | `MalformedPayload`                | `ParsedCoz::parse_kind`                  | `parse_unknown_typ_fails` in `rs/cyphr/src/parsed_coz.rs`                                    |
-| A durable leaf at a commit's position differs from its new TR | `DurableLeafMismatch`             | `finalize_commit`                        | `rs/cyphr-storage/tests/durable_commit_trees.rs`                                             |
+| Check                                                                                             | Error                             | Where                                                    | Test that exercises it                                                                                                         |
+| :------------------------------------------------------------------------------------------------ | :-------------------------------- | :------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
+| `key/create` of a key already in the key set                                                      | `DuplicateKey`                    | `apply_transaction_internal`                             | golden vector `duplicate_key_fails`                                                                                            |
+| `key/create` or `key/replace` of a revoked key                                                    | `KeyRevoked`                      | `apply_transaction_internal`                             | `d3_revoked_key_cannot_be_readded_by_key_create` and `_by_key_replace` in `key_auth.rs`                                        |
+| Removing or self-revoking the last key                                                            | `NoActiveKeys`                    | `remove_key`, `revoke_key`                               | golden vectors `delete_last_key_fails`, `last_key_revoke_fails`                                                                |
+| `rvk` outside 1 to 2^53 - 1, or `id` present on a revoke                                          | `MalformedPayload`                | `ParsedCoz::parse_kind`                                  | `s6_4_revoke_rvk_must_be_a_positive_bounded_integer`; golden vector `revoke_non_self_fails`                                    |
+| The revealed `pub` does not hash to the signed `id`                                               | `MalformedPayload`, `TmbMismatch` | `apply_transaction_internal`, `Key::new`                 | `d1_key_create_rejects_victim_tmb_with_attacker_pub` in `key_auth.rs`                                                          |
+| A lifecycle coz's `id` is not the current PR                                                      | `StateMismatch`                   | `apply_transaction_internal`                             | none found                                                                                                                     |
+| `freeze/create` when frozen; `freeze/delete` when not frozen                                      | `AlreadyFrozen`, `NotFrozen`      | `apply_transaction_internal`                             | unit tests in `rs/cyphr/src/principal/tests/lifecycle.rs`                                                                      |
+| A commit with only a finalizer, or without a terminal `arrow`                                     | `EmptyCommit`, `MissingCommit`    | `finalize_commit`                                        | unit tests in `rs/cyphr/src/commit.rs`                                                                                         |
+| A `pre` field on a data action                                                                    | `MalformedPayload`                | `verify_and_record_action`                               | e2e cases `t2_f15_*` in `tests/e2e/e2e_features.toml`, run by `e2e_dynamic_features_matrix` in `rs/cyphr-storage/tests/e2e.rs` |
+| `key/delete` or revoke of a key outside the active set; `principal/create` from a non-genesis key | `UnknownKey`                      | `remove_key`, `revoke_key`, `apply_transaction_internal` | golden vector `delete_unknown_key_fails` for delete; none located for the others                                               |
+| A `principal/create` whose `id` is not the PR                                                     | `StateMismatch`                   | `apply_transaction_internal`                             | `s2_3_2_no_operation_changes_the_principal_genesis` (second create); none located for the first                                |
+| A key-introducing coz with no sidecar key; a `commit/create` with no `arrow`                      | `MalformedPayload`                | `apply_transaction_internal`, `ParsedCoz::parse_kind`    | none located                                                                                                                   |
+| An `arrow` with no variant for the signer's algorithm                                             | `CommitMismatch`                  | `finalize_commit`                                        | none located                                                                                                                   |
+| A key algorithm the core does not support                                                         | `UnsupportedAlgorithm`            | `verify_coz`                                             | golden vector `unsupported_algorithm_fails`                                                                                    |
+| A `typ` the parser does not know                                                                  | `MalformedPayload`                | `ParsedCoz::parse_kind`                                  | `parse_unknown_typ_fails` in `rs/cyphr/src/parsed_coz.rs`                                                                      |
+| A durable leaf at a commit's position differs from its new TR                                     | `DurableLeafMismatch`             | `finalize_commit`                                        | `rs/cyphr-storage/tests/durable_commit_trees.rs`                                                                               |
+
+## Storage replay
+
+Replay from storage (`replay_commits` in `rs/cyphr-storage/src/import.rs`, and
+`submit_commit` in `rs/cyphr-storage/src/engine/mod.rs`) calls the core paths
+above, but differs from them in these ways today:
+
+- **Rejection comes first from the header parse.** Each coz's `pay` goes through
+  `CozHeader::parse`, which requires `typ`, `tmb` and `now` and returns
+  `MalformedPayload` before the core sees the coz. `replay_rejects_commit_missing_typ`
+  in `import.rs` pins this for a missing `typ`. A missing `alg` is rejected
+  next, as `UnsupportedAlgorithm` in `replay_commits`; `submit_commit` instead
+  reports a malformed header or a missing `alg` as `MalformedBlob`. The core
+  errors in rule 1 (`AlgMismatch`) are therefore not what storage replay
+  returns for these inputs.
+- **Data actions are not replayed in signed order.** Data actions before a
+  commit's first transaction coz are recorded first; those after it are
+  deferred and recorded after the commit finalizes. Within each group they keep
+  their order, but the interleaving the principal signed is not kept.
+- **Routing is a substring match.** `is_transaction_typ` tests whether the
+  `typ` contains `/key/`, `/principal/create` and similar, where the core
+  parser matches the `typ` by suffix (`has_suffix`). A `typ` the two disagree
+  about can be routed as a transaction by one and not by the other.
+- **Stored roots are not compared.** A commit entry carries `ar`, `sr` and
+  `pr`; `replay_commits` never reads them. Replay checks the `arrow` through
+  the core and does not compare the roots it computes with the stored ones.
+- **Transaction grouping is dropped.** This is the known defect under
+  [rv-intra-commit-shape](#rv-intra-commit-shape).
+
+No test bound on this page exercises storage replay.
 
 ## Rules by proof form
 

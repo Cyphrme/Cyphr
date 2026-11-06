@@ -617,9 +617,9 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
 }
 
 // Practice: SPEC.md section 7.6 (Idempotency, Uniqueness and Reuse): "For data actions, replaying
-// an previously applied coz is ignored and produces no state change." Claim P1 (RED, owner N09).
-// Mutation that makes this green: `verify_and_record_action` detecting an already-recorded `czd`
-// and returning the current PR without recording it again.
+// an previously applied coz is ignored and produces no state change." Claim P1.
+// Mutation that turns this red: `verify_and_record_action` no longer detecting an already-recorded
+// `czd` and returning the current PR without recording it again.
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,

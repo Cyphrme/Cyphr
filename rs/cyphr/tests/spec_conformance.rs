@@ -161,10 +161,9 @@ fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
     .expect("control: the complete coz is accepted");
 }
 
-/// Backs SPEC 2.3.1 for `alg`. RED: `verify_coz` never reads `pay.alg` (it
-/// verifies under the stored key's algorithm), so a coz with no `alg` is
-/// accepted. Turns green when KA1's `pay.alg == key.alg` check treats an
-/// absent `alg` as a mismatch. End to end: yes.
+/// Backs SPEC 2.3.1 for `alg`. A coz with no `alg` is refused because
+/// `verify_coz` treats an absent `alg` as a mismatch with the signing key's
+/// algorithm. Turns red if a coz with no `alg` is accepted. End to end: yes.
 #[test]
 fn s2_3_1_coz_missing_alg_is_rejected() {
     assert!(
@@ -229,8 +228,7 @@ fn lifecycle_pay(signer: &Kp, p: &Principal, suffix: &str, now: i64) -> serde_js
 /// a self-`key/revoke`) is attempted by an active key. Control: after
 /// `freeze/delete` the same `key/create` is accepted, so the rejections are
 /// the freeze, not a general refusal. Turns red if any mutation changes the
-/// principal while it is frozen. RED: `apply_verified_internal` gates only
-/// `deleted`; `frozen` is recorded and never consulted. End to end: yes.
+/// principal while it is frozen. End to end: yes.
 // @docket: rv-lifecycle-gate :: scripts/docket-run rv-lifecycle-gate
 #[test]
 fn s11_2_frozen_principal_rejects_key_mutations() {
@@ -386,8 +384,7 @@ fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::R
 /// calls suitable) is the control. Turns red if an out-of-range `rvk` revokes
 /// the key. The boundary is pinned both ways: 2^53 - 1 is accepted (the Coz
 /// reference implementations reject only above it) and 2^53 is rejected.
-/// RED: in-commit `key/revoke` parses `rvk` as any `i64` and never bounds
-/// it (the naked-revoke path in the server does). End to end: yes.
+/// End to end: yes.
 #[test]
 fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
     let cases = [
@@ -415,9 +412,8 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
 /// Backs SPEC 6.4: "`rvk` and `now` must be a positive integer less than
 /// 2^53 - 1." for `now`. Scenario: a self-revoke with a valid `rvk` and each
 /// out-of-range `now` (zero, negative, 2^53) must be rejected; `now = T` is
-/// the control. Turns red if an out-of-range `now` is accepted. RED: `now`
-/// is read as any `i64` and only compared with the principal's latest
-/// timestamp, so zero and 2^53 pass. End to end: yes.
+/// the control. Turns red if an out-of-range `now` is accepted. End to end:
+/// yes.
 // @docket: rv-timestamp-range :: scripts/docket-run rv-timestamp-range
 #[test]
 fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
@@ -1058,8 +1054,7 @@ fn map_rows_resolve_and_agree_with_their_tests() {
 /// timestamp rule cannot be what rejects the replay. Control: a fresh
 /// `key/delete` coz signed by `b` in the same state is accepted, so the
 /// rejection can only be the reuse. Turns red if a previously included
-/// transaction coz is applied a second time. RED: the core has no reuse
-/// check and no `COZ_REUSE` variant. End to end: yes.
+/// transaction coz is applied a second time. End to end: yes.
 #[test]
 fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
     let (a, b, k3) = (kp(), kp(), kp());
@@ -1552,8 +1547,8 @@ fn s19_5_failed_commit_leaves_no_partial_state() {
 /// identical `typ`." Scenario: one transaction (an unnamed array of cozies)
 /// holds a `key/create` coz and a `key/delete` coz, both validly signed by an
 /// active key. Control: two `key/create` cozies in one transaction apply.
-/// Turns red if a transaction of mixed `typ` is applied. RED: `apply_tx`
-/// groups cozies without comparing their `typ`. End to end: yes.
+/// Turns red if a transaction of mixed `typ` is applied through `apply_tx`
+/// (the only path that groups cozies). End to end: yes.
 #[test]
 fn s4_1_transaction_cozies_must_share_one_typ() {
     let verified = |p: &Principal, coz: Signed, sidecar: Option<Key>, signer: &Kp| {
