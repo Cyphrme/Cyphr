@@ -2,9 +2,9 @@
 //! are gone with it.
 //!
 //! - `genesis_*`: every genesis key is validated (a duplicate key is refused, not dropped), and
-//!   implicit and explicit genesis both refuse a pre-revoked key with the same typed error (SPEC
-//!   be0663f 7.7: every key, the first included, needs a `key/create`; 6.4: a revoked key is never
-//!   trusted again).
+//!   implicit and explicit genesis both refuse a pre-revoked key with `KeyRevoked`, the refusal
+//!   `key/create` gives a revoked tmb (SPEC be0663f 7.7: every key, the first included, needs a
+//!   `key/create`; 6.4: a revoked key is never trusted again).
 //!
 //! Run the red ones with `cargo test -p cyphr --test genesis_keys -- --ignored`.
 
@@ -89,8 +89,8 @@ fn genesis_unsupported_algorithm_is_unconstructible() {
 }
 
 /// Claim: a pre-revoked genesis key is refused by both genesis paths
-/// with the same typed error (SPEC be0663f 7.7 and 6.4). Turns red if
-/// either path accepts it or the two refuse differently (today implicit
+/// with `KeyRevoked`, the refusal `key/create` gives a revoked tmb (SPEC be0663f 7.7 and 6.4).
+/// Turns red if either path accepts it or refuses with another error (today implicit
 /// genesis returns `Ok`, explicit returns `NoActiveKeys`).
 #[test]
 #[ignore = "RED(N12): implicit genesis accepts a pre-revoked key; the paths disagree"]
@@ -99,14 +99,12 @@ fn genesis_implicit_and_explicit_agree_on_pre_revoked_key() {
     let revoked = key_of(&g).with_revocation(cyphr::key::Revocation { rvk: T, by: None });
     let implicit = Principal::implicit(revoked.clone()).map(|_| ());
     let explicit = Principal::explicit(vec![revoked]).map(|_| ());
-    let (Err(i), Err(e)) = (&implicit, &explicit) else {
-        panic!("pre-revoked genesis key accepted: implicit {implicit:?}, explicit {explicit:?}");
-    };
-    assert_eq!(
-        std::mem::discriminant(i),
-        std::mem::discriminant(e),
-        "refused with different errors: implicit {i:?}, explicit {e:?}"
-    );
+    for (path, r) in [("implicit", &implicit), ("explicit", &explicit)] {
+        assert!(
+            matches!(r, Err(cyphr::Error::KeyRevoked)),
+            "{path} genesis of a pre-revoked key: expected Err(KeyRevoked), got {r:?}"
+        );
+    }
 }
 
 /// Green control for the agreed paths: one supported key gives the same
