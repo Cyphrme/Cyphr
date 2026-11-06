@@ -338,6 +338,17 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Handle NoGenesisKeys special case - error happens at genesis creation
     if expected_error == "NoGenesisKeys" {
         if test.principal.is_empty() {
+            // Load the empty explicit genesis through the production loader: this is
+            // the only check that `load_principal_from_commits` refuses it.
+            let err = load_principal_from_commits(Genesis::Explicit(Vec::new()), &[])
+                .err()
+                .unwrap_or_else(|| panic!("{}: an empty explicit genesis loaded", test.name));
+            assert_eq!(
+                load_error_name(&err),
+                "NoGenesisKeys",
+                "{}: empty explicit genesis refused with the wrong error: {err:?}",
+                test.name
+            );
             eprintln!("  ✓ {} (expected error: NoGenesisKeys)", test.name);
             return;
         }
