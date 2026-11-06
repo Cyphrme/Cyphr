@@ -80,9 +80,9 @@ Each rule carries a **class** that names the shape of its check:
 Rules 8 and 9 read the state that rule 7 recomputes, and each names a
 distinct way a record can be dishonest, so each has its own claim and its own
 test. A principal whose last key is revoked is Dead (SPEC §11.2). The code has
-no gate for that state, and replay cannot reach it today: `revoke_key` refuses
-to revoke the last key with `NoActiveKeys`. A Dead principal's coz would be
-refused by rule 8, because its only signer is revoked. Error names are
+no gate for that state; replay reaches it, because revoking the last key is
+accepted (SPEC §3.1). A Dead principal's coz is refused by rule 8, because its
+only signer is revoked. Error names are
 variants of `cyphr::Error` (`rs/cyphr/src/error.rs`).
 
 ### Reading a claim
@@ -377,12 +377,13 @@ shows the refusal is the freeze. Not checked by any bound test: refusal after
 The bound runner also runs
 `s11_2_dead_principal_accepts_no_transaction_or_action` in
 `rs/cyphr/tests/spec_conformance.rs`, which is about Dead, not Deleted, and has
-three limits. There is no Dead gate: a Dead principal's coz is refused by the
-revoked-signer check of rule 8 (`active_signer` returns `KeyRevoked`). Replay
-cannot reach Dead today, because `revoke_key` refuses the last key with
-`NoActiveKeys`; the test builds the state with `pre_revoke_key`, which exists
-only for tests. The test has no control, and it asserts only that the
-`key/create` and the data action are refused, not which error.
+two limits. There is no Dead gate: a Dead principal's coz is refused by the
+revoked-signer check of rule 8 (`active_signer` returns `KeyRevoked`). The
+test builds the state with `pre_revoke_key`, which exists only for tests; the
+dying commit itself, and the Dead principal's refusal of a further commit, are
+covered by `dead_principal_roots_are_final_no_further_commit` in the same file.
+The test has no control, and it asserts only that the `key/create` and the
+data action are refused, not which error.
 
 #### [rv-genesis-immutable]
 
@@ -501,7 +502,8 @@ elsewhere are named.
 #### [rv-key-set]
 
 A `key/create` of a key already in the key set is refused with `DuplicateKey`.
-Removing or revoking the last key is refused with `NoActiveKeys`, so a replay
+Deleting the last key is refused with `NoActiveKeys`. Revoking the last key is
+accepted and leaves the principal Dead (SPEC §3.1, §11); only a `key/delete`
 cannot empty the key set. Deleting or revoking a key outside the active set is
 refused with `UnknownKey`.
 
@@ -510,14 +512,15 @@ kind: requirement
 evaluator: test
 ```
 
-Backed by the golden vectors `duplicate_key_fails`, `delete_last_key_fails`,
-`last_key_revoke_fails` and `delete_unknown_key_fails` in
-`tests/golden/errors/`. They cover a duplicate create, deleting or revoking the
-last key, and deleting an unknown key; none covers revoking an unknown key,
-though the code refuses it with `UnknownKey`. The marker sits at `test_golden_errors` in
+Backed by the golden vectors `duplicate_key_fails`, `delete_last_key_fails`
+and `delete_unknown_key_fails` in `tests/golden/errors/`. They cover a
+duplicate create, deleting the last key, and deleting an unknown key; none
+covers revoking an unknown key, though the code refuses it with `UnknownKey`.
+The accepted last-key revoke is pinned by `last_key_revoke_leaves_dead` in
+`tests/golden/lifecycle/`. The marker sits at `test_golden_errors` in
 `rs/cyphr/tests/golden_fixtures.rs` and the runner entry runs that whole test,
 which runs every vector in the directory, so the binding fails if any error
-vector fails; these four are the part that backs this claim. The vectors are
+vector fails; these three are the part that backs this claim. The vectors are
 byte-exact fixtures that assert the error name; none has a control. Not checked: that a rejected
 coz leaves the principal unchanged.
 
