@@ -19,8 +19,13 @@ use crate::error::{Error, Result};
 use crate::multihash::MultihashDigest;
 use crate::state::{HashAlg, PrincipalRoot, StateDigest, StateRoot};
 
-/// The proof-spine arity: cell 0 (SR) and cell 1 (CR), no more.
+/// The proof-spine arity while only SR and CR sit in the tree.
 const ARITY: u64 = 2;
+
+/// The arity once PR-level nonces follow SR and CR: one flat fold of up to
+/// 256 children, which for the two defined cells is the same bytes as
+/// [`ARITY`] (SPEC §3.7.1).
+const NONCE_ARITY: u64 = 256;
 
 /// Cell index of the State Root.
 const SR_CELL: u64 = 0;
@@ -30,17 +35,27 @@ const CR_CELL: u64 = 1;
 
 /// Construct a fresh, empty `EpochTree` at the fixed arity-2 spine shape
 /// every `PrincipalTree` (and its clones) uses.
-fn new_inner() -> polydigest::EpochTree {
-    polydigest::EpochTree::new(polydigest::CmtConfig { arity: ARITY })
-        .expect("arity 2 is within the spine's 2..=256 range")
+fn new_inner(arity: u64) -> polydigest::EpochTree {
+    polydigest::EpochTree::new(polydigest::CmtConfig { arity })
+        .expect("arity is a fixed constant within the spine's 2..=256 range")
 }
 
-/// The Principal Tree: a k=2 `EpochTree` with cell 0 = SR, cell 1 = CR.
+/// The Principal Tree: an `EpochTree` with cell 0 = SR, cell 1 = CR, then
+/// any PR-level nonces in ascending byte order. With no nonce it is k=2.
+///
+/// `inner` is derived: every setter rewrites the held cell contents and
+/// rebuilds it, because a nonce's cell index depends on whether CR is set.
 #[derive(Debug)]
 pub struct PrincipalTree {
     inner: polydigest::EpochTree,
     /// Algorithms currently registered in `inner`, in registration order.
     algs: Vec<HashAlg>,
+    /// Cell 0 payload.
+    sr: Option<Vec<u8>>,
+    /// Cell 1 payload.
+    cr: Option<Vec<u8>>,
+    /// PR-level nonces, raw and sorted; payloads depend on `algs`.
+    nonces: Vec<Vec<u8>>,
 }
 
 impl PrincipalTree {
@@ -48,32 +63,64 @@ impl PrincipalTree {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: new_inner(),
+            inner: new_inner(ARITY),
             algs: Vec::new(),
+            sr: None,
+            cr: None,
+            nonces: Vec::new(),
         }
     }
 
     /// Register `alg` if it is not already registered.
+    fn ensure_algorithm(&mut self, alg: HashAlg) {
+        if !self.algs.contains(&alg) {
+            self.algs.push(alg);
+        }
+    }
+
+    /// Rebuild `inner` from the held cells: SR, CR if set, then the nonces,
+    /// registering every algorithm in `algs`.
     ///
     /// # Error mapping
     ///
     /// Like `crate::semantic_tree`'s `register_algs`, this wraps
     /// `EpochTree`/`Cmt` — pure in-memory, no `Storage`-generic backend.
-    /// The mapped failure (`DuplicateAlgorithm`, and `IndexGap` from
-    /// `set_sr`/`set_cr` below) is a dense-tree invariant violation, not
-    /// I/O; `Error::Storage` is still the best-available existing variant
-    /// for it, distinct from `crate::principal`'s `CommitTrees`-backed
-    /// sites, which are genuine `eml::Storage` backend failures.
-    fn ensure_algorithm(&mut self, alg: HashAlg) -> Result<()> {
-        if self.algs.contains(&alg) {
-            return Ok(());
-        }
-        let alg_id = hash_alg_to_u64(alg);
-        self.inner
-            .register_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        self.algs.push(alg);
+    /// The mapped failure (`DuplicateAlgorithm`, `IndexGap`) is a
+    /// dense-tree invariant violation, not I/O; `Error::Storage` is still
+    /// the best-available existing variant for it, distinct from
+    /// `crate::principal`'s `CommitTrees`-backed sites, which are genuine
+    /// `eml::Storage` backend failures.
+    fn rebuild(&mut self) -> Result<()> {
+        let arity = if self.nonces.is_empty() {
+            ARITY
+        } else {
+            NONCE_ARITY
+        };
+        self.inner = self.build_inner(arity)?;
         Ok(())
+    }
+
+    /// The held cells folded at `arity`. Separate from [`Self::rebuild`] so
+    /// a test can fold the same cells at both arities.
+    fn build_inner(&self, arity: u64) -> Result<polydigest::EpochTree> {
+        let mut inner = new_inner(arity);
+        for &alg in &self.algs {
+            inner
+                .register_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        }
+        let mut payloads: Vec<Vec<u8>> = self.sr.iter().chain(&self.cr).cloned().collect();
+        for nonce in &self.nonces {
+            payloads.push(crate::semantic_tree::serialize_converted(
+                nonce, &self.algs,
+            )?);
+        }
+        for (index, payload) in payloads.into_iter().enumerate() {
+            inner
+                .set(index as u64, payload, Vec::new())
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        }
+        Ok(inner)
     }
 
     /// Serialize a multihash's variants into the shared cell-payload idiom
@@ -92,24 +139,46 @@ impl PrincipalTree {
     /// algorithms first. Does not touch cell 1 (CR).
     pub fn set_sr(&mut self, sr: &StateRoot, algs: &[HashAlg]) -> Result<()> {
         for &alg in algs {
-            self.ensure_algorithm(alg)?;
+            self.ensure_algorithm(alg);
         }
-        let payload = Self::serialize(sr.as_multihash())?;
-        self.inner
-            .set(SR_CELL, payload, Vec::new())
-            .map_err(|e| Error::Storage(e.to_string()))
+        self.sr = Some(Self::serialize(sr.as_multihash())?);
+        self.rebuild()
     }
 
     /// Write the Commit Root into cell 1, registering any newly active
     /// algorithms first. Cell 0 (SR) must already be set.
+    ///
+    /// # Errors
+    ///
+    /// `Storage` if cell 0 is unset: the tree is dense, so CR cannot be
+    /// placed before SR.
     pub fn set_cr(&mut self, cr: &CommitRoot, algs: &[HashAlg]) -> Result<()> {
-        for &alg in algs {
-            self.ensure_algorithm(alg)?;
+        if self.sr.is_none() {
+            return Err(Error::Storage(
+                "principal tree cell 1 (CR) set before cell 0 (SR)".to_string(),
+            ));
         }
-        let payload = Self::serialize(cr.as_multihash())?;
-        self.inner
-            .set(CR_CELL, payload, Vec::new())
-            .map_err(|e| Error::Storage(e.to_string()))
+        for &alg in algs {
+            self.ensure_algorithm(alg);
+        }
+        self.cr = Some(Self::serialize(cr.as_multihash())?);
+        self.rebuild()
+    }
+
+    /// Replace the PR-level nonces, registering any newly active
+    /// algorithms first. They sit after SR and CR (SPEC §3.7.1), so a
+    /// nonce moves from cell 1 to cell 2 when CR first appears.
+    pub(crate) fn set_nonces(&mut self, nonces: &[&[u8]], algs: &[HashAlg]) -> Result<()> {
+        for &alg in algs {
+            self.ensure_algorithm(alg);
+        }
+        let mut sorted: Vec<Vec<u8>> = nonces.iter().map(|n| n.to_vec()).collect();
+        sorted.sort();
+        if 2 + sorted.len() as u64 > NONCE_ARITY {
+            return Err(Error::CollectionArityExceeded(2 + sorted.len()));
+        }
+        self.nonces = sorted;
+        self.rebuild()
     }
 
     /// Generate a self-contained inclusion proof for the Commit Root, cell 1,
@@ -122,6 +191,8 @@ impl PrincipalTree {
     /// set (no commits exist yet — a genesis principal has no CR to prove).
     #[must_use]
     pub fn cr_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
+        // Without CR, cell 1 may hold a nonce: it must not be proven as CR.
+        self.cr.as_ref()?;
         self.inner.leaf_proof(alg_id, CR_CELL)
     }
 
@@ -136,6 +207,7 @@ impl PrincipalTree {
     /// set (no SR exists yet).
     #[must_use]
     pub fn sr_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
+        self.sr.as_ref()?;
         self.inner.leaf_proof(alg_id, SR_CELL)
     }
 
@@ -172,27 +244,19 @@ impl Default for PrincipalTree {
 /// applies to its `projected` clone before `finalize()`. A shared PT would
 /// leak an abandoned scope's writes into the live principal; deep-cloning on
 /// every `Principal::clone()` preserves the isolation `CommitScope` depends
-/// on. This is cheap regardless: the tree never holds more than 2 cells.
+/// on. This is cheap regardless: the tree holds SR, CR and a few nonces.
 impl Clone for PrincipalTree {
     fn clone(&self) -> Self {
-        let mut inner = new_inner();
-        for &alg in &self.algs {
-            let alg_id = hash_alg_to_u64(alg);
-            inner
-                .register_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
-                .expect("self.algs is already deduplicated by ensure_algorithm");
-        }
-        for index in 0..self.inner.len() {
-            let payload = self.inner.get(index).expect("index within len").to_vec();
-            let metadata = self.inner.metadata(index).unwrap_or(&[]).to_vec();
-            inner
-                .set(index, payload, metadata)
-                .expect("dense in-order replay of an already-valid tree cannot gap");
-        }
-        Self {
-            inner,
+        let mut tree = Self {
+            inner: new_inner(ARITY),
             algs: self.algs.clone(),
-        }
+            sr: self.sr.clone(),
+            cr: self.cr.clone(),
+            nonces: self.nonces.clone(),
+        };
+        tree.rebuild()
+            .expect("rebuilding an already-valid tree from its own cells cannot fail");
+        tree
     }
 }
 
@@ -207,6 +271,85 @@ mod tests {
 
     fn cr(bytes: &[u8]) -> CommitRoot {
         CommitRoot(MultihashDigest::from_single(HashAlg::Sha256, bytes.to_vec()).unwrap())
+    }
+
+    /// Backs the 256-item bound on the Principal Tree, where SR and CR take
+    /// two slots: 254 nonces build, 255 is `CollectionArityExceeded(257)`.
+    /// Turns red if the cap is missing or miscounts SR and CR. AR1 will
+    /// replace this bound with n-arity (SPEC 4) and retire this test. Unit
+    /// level: reaching 256 leaves by signed scenario is not cheap.
+    #[test]
+    fn nonce_arity_cap_pr_counts_sr_cr_and_nonces() {
+        let values = |n: usize| -> Vec<Vec<u8>> {
+            (0..n)
+                .map(|i| {
+                    let mut v = vec![0xEE; 32];
+                    v[..2].copy_from_slice(&(i as u16).to_be_bytes());
+                    v
+                })
+                .collect()
+        };
+        let algs = [HashAlg::Sha256];
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
+        pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
+        let ok = values(254);
+        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
+        pt.set_nonces(&ok, &algs).unwrap();
+        let over = values(255);
+        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
+        assert!(matches!(
+            pt.set_nonces(&over, &algs),
+            Err(Error::CollectionArityExceeded(257))
+        ));
+    }
+
+    /// Backs the claim in [`NONCE_ARITY`] that a flat k=256 fold over just
+    /// SR and CR is the same bytes as the k=2 fold. That equality is what
+    /// lets a PR with nonces keep SR and CR in their slots without changing
+    /// any nonce-free PR. Property over random SR, CR and algorithm sets
+    /// (each digest at its algorithm's width). Turns red if either fold
+    /// changes its rule for two cells (a reordered or prefixed fold).
+    /// Unit level: with no nonce the code stays on k=2, so no signed
+    /// scenario reaches the k=256 fold over two cells. AR1 may retire this
+    /// with the arity change.
+    mod fold_equivalence {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn digest(alg: HashAlg, seed: &[u8]) -> Vec<u8> {
+            let len = crate::state::TaggedDigest::expected_len(alg);
+            seed.iter().copied().cycle().take(len).collect()
+        }
+
+        fn multihash(algs: &[HashAlg], seed: &[u8]) -> MultihashDigest {
+            let variants = algs
+                .iter()
+                .map(|&a| (a, digest(a, seed).into_boxed_slice()))
+                .collect();
+            MultihashDigest::new(variants).unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn k2_and_k256_folds_of_sr_and_cr_agree(
+                sr_seed in proptest::collection::vec(any::<u8>(), 1..8),
+                cr_seed in proptest::collection::vec(any::<u8>(), 1..8),
+                algs in proptest::sample::subsequence(
+                    vec![HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512], 1..=3),
+            ) {
+                let mut pt = PrincipalTree::new();
+                pt.set_sr(&StateRoot(multihash(&algs, &sr_seed)), &algs).unwrap();
+                pt.set_cr(&CommitRoot(multihash(&algs, &cr_seed)), &algs).unwrap();
+                let k2 = pt.build_inner(ARITY).unwrap();
+                let k256 = pt.build_inner(NONCE_ARITY).unwrap();
+                for alg in algs {
+                    let id = hash_alg_to_u64(alg);
+                    prop_assert_eq!(k2.root(id), k256.root(id), "{:?}", alg);
+                }
+            }
+        }
     }
 
     #[test]

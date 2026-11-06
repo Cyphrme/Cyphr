@@ -63,6 +63,8 @@ declare -A CLAIMS_INDEX=(
   [sc-l1287]="_claim_sc_l1287"
   [sc-l1300]="_claim_sc_l1300"
   [sc-l1869]="_claim_sc_l1869"
+  [sc-l1673]="_claim_sc_l1673"
+  [sc-l1674]="_claim_sc_l1674"
   [sc-l2827]="_claim_sc_l2827"
   [sc-l2828]="_claim_sc_l2828"
   [sc-l3054]="_claim_sc_l3054"
@@ -87,6 +89,7 @@ declare -A CLAIMS_INDEX=(
   [rv-genesis-immutable]="_claim_rv_genesis_immutable"
   [rv-intra-commit-shape]="_claim_rv_intra_commit_shape"
   [rv-no-coz-reuse]="_claim_rv_no_coz_reuse"
+  [rv-nonce-ledger]="_claim_rv_nonce_ledger"
 
   # Self-checks of the zero-test rule itself, run by
   # `docket-run --self-check`; not project claims. The first must FAIL
@@ -189,6 +192,12 @@ _claim_sc_l1300=(
 _claim_sc_l1869=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_dead_principal_accepts_no_transaction_or_action -- --exact"
 )
+_claim_sc_l1673=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s10_2_nonce_bit_length_must_match_the_declared_algorithm -- --exact"
+)
+_claim_sc_l1674=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s10_2_nonce_bit_length_must_match_the_declared_algorithm -- --exact"
+)
 _claim_sc_l2827=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
 )
@@ -270,6 +279,11 @@ _claim_rv_digest_wellformed=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_multihash_digest_validation -- --exact"
 )
 
+_claim_rv_nonce_ledger=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test nonce nonce_created_twice_at_one_level_is_refused -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test nonce nonce_delete_removes_only_the_named_nonce_at_the_named_path -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s10_2_nonce_bit_length_must_match_the_declared_algorithm -- --exact"
+)
 _claim_rv_key_set=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test golden_fixtures test_golden_errors -- --exact"
 )

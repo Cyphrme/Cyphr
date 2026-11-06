@@ -7,7 +7,7 @@ use crate::action::Action;
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::semantic_tree::derive_state_roots;
+use crate::semantic_tree::derive_state_roots_with_nonces;
 use crate::state::{AuthRoot, HashAlg, PrincipalGenesis, compute_dr, derive_hash_algs};
 
 impl<S: eml::Storage> Principal<S> {
@@ -113,7 +113,8 @@ impl<S: eml::Storage> Principal<S> {
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
         let action_refs: Vec<&Action> = self.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs)?;
-        let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
+        let (_kr, _ar, sr) =
+            derive_state_roots_with_nonces(&thumbprints, dr.as_ref(), &self.nonces, &active_algs)?;
 
         // Prefer the signer's own algorithm for the arrow, but a self-revoke
         // of the last key of that algorithm retires it from active_algs —
@@ -233,6 +234,8 @@ impl<S: eml::Storage> Principal<S> {
             | CozKind::KeyDelete { .. }
             | CozKind::KeyReplace { .. }
             | CozKind::SelfRevoke { .. }
+            | CozKind::NonceCreate { .. }
+            | CozKind::NonceDelete { .. }
             | CozKind::PrincipalCreate { .. } => false,
         };
         if self.deleted && !skip_deleted_check {
@@ -255,6 +258,8 @@ impl<S: eml::Storage> Principal<S> {
             | CozKind::KeyDelete { .. }
             | CozKind::KeyReplace { .. }
             | CozKind::SelfRevoke { .. }
+            | CozKind::NonceCreate { .. }
+            | CozKind::NonceDelete { .. }
             | CozKind::PrincipalCreate { .. } => false,
         };
         if self.frozen && !frozen_exempt {
@@ -301,6 +306,16 @@ impl<S: eml::Storage> Principal<S> {
             },
             CozKind::SelfRevoke { rvk } => {
                 self.revoke_key(&cz.signer, *rvk, None)?;
+            },
+            // SPEC §10.1: nonces are accepted at every lifecycle stage a
+            // mutation is, a nascent principal included (§5.1: a nonce
+            // gives a reused authentication component its own PG). Roots
+            // are recomputed at finalize from the nonce sets.
+            CozKind::NonceCreate { level, nonce } => {
+                self.core_mut().nonces.insert(*level, nonce)?;
+            },
+            CozKind::NonceDelete { level, nonce } => {
+                self.core_mut().nonces.remove(*level, nonce)?;
             },
             CozKind::PrincipalCreate { id } => {
                 // Genesis finalization (SPEC §5.1)
@@ -451,7 +466,12 @@ impl<S: eml::Storage> Principal<S> {
         // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.
         let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| k.tmb()).collect();
-        let (kr, ar, sr) = derive_state_roots(&thumbprints, core.dr.as_ref(), &active_algs)?;
+        let (kr, ar, sr) = derive_state_roots_with_nonces(
+            &thumbprints,
+            core.dr.as_ref(),
+            &core.nonces,
+            &active_algs,
+        )?;
         core.kr = kr;
         core.ar = ar;
         // core.sr/core.pt are NOT written yet — the arrow validation below

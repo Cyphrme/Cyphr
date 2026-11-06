@@ -175,6 +175,8 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::AlreadyDeleted => "AlreadyDeleted",
         Error::AlreadyFrozen => "AlreadyFrozen",
         Error::NotFrozen => "NotFrozen",
+        Error::DuplicateNonce => "DuplicateNonce",
+        Error::UnknownNonce => "UnknownNonce",
         _ => "UnknownError",
     }
 }
@@ -1441,6 +1443,10 @@ impl<'a> Generator<'a> {
                 reason: "this coz type requires current PR for id field".to_string(),
             })?;
             fields.insert("id".to_string(), Value::String(pr_val.to_string()));
+        } else if let Some(raw_id) = cz.target.as_deref().and_then(|t| t.strip_prefix("raw:")) {
+            // `raw:<id>` states the `id` verbatim, for values no pool key's
+            // thumbprint can express (e.g. a nonce of an off-by-one width).
+            fields.insert("id".to_string(), Value::String(raw_id.to_string()));
         } else if let Some(target_name) = &cz.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
@@ -1534,8 +1540,13 @@ impl<'a> Generator<'a> {
         let sig_b64 = Base64UrlUnpadded::encode_string(&sig_bytes);
         let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
 
-        // Build embedded key for key/create operations
-        let embedded_key = if let Some(target_name) = &cz.target {
+        // Build embedded key for key/create operations. A nonce's `target`
+        // only lends a value; it is not key material to embed.
+        let embedded_key = if let Some(target_name) = cz
+            .target
+            .as_ref()
+            .filter(|t| !t.starts_with("raw:") && !cz.typ.contains("/nonce/"))
+        {
             let target = self.resolve_key(target_name)?;
             Some(GoldenKey {
                 alg: target.alg.clone(),

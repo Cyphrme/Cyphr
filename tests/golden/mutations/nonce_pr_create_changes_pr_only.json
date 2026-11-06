@@ -1,0 +1,61 @@
+{
+  "name": "nonce_pr_create_changes_pr_only",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/nonce/create"
+          },
+          "sig": "4TKmQWIPrAW3LiZKNS3d1saGOg8xhdvHzOFNmtvgWSdpFHLrpWWd59dG7Yj1CzmM3LmDY-xhL6RFf1c08g--Bw"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "arrow": "SHA-256:XQFi5HqipRw9pq3ZEPwpSl5JVDME3-1M9NAWOSCO9Vg",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/commit/create"
+          },
+          "sig": "XzXZAXy0pteSg-OjHu_iH3uTGk5Y_UhiyO50kQkGfW16FBFO0jh7nj92upsxBv4ZsTcrv9Dx2f7lZorIvrXCaw"
+        }
+      ],
+      "keys": [],
+      "commit_id": "SHA-256:k5hJDKHebtIza6Op9cPP-qNtTIHGAhWZTf90LEHoWdk",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:fbOBxdFipVZ0dwg7ISL2rTDjzCRR0bmfI1XU8pD4pxg"
+    }
+  ],
+  "digests": [
+    "10ktdzliNp_7mfyge_0PUNE2C2no1jkGG1HfTcEP86U",
+    "21bkSpdKHPZSVCdpH5XESSLncpTLpUehPuxQVf-p0hg"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 3,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:fbOBxdFipVZ0dwg7ISL2rTDjzCRR0bmfI1XU8pD4pxg",
+    "cr": "SHA-256:k5hJDKHebtIza6Op9cPP-qNtTIHGAhWZTf90LEHoWdk",
+    "tr": "SHA-256:k5hJDKHebtIza6Op9cPP-qNtTIHGAhWZTf90LEHoWdk",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pg": "",
+    "deleted": false,
+    "frozen": false
+  }
+}

@@ -255,3 +255,105 @@ tx = [
 
 [test.expected]
 error = "CozReuse"
+
+# ============================================================================
+# Nonce bit length (SPEC 10.2): a nonce must be as wide as the algorithm it
+# is under. `target` borrows a pool key's thumbprint as the value, so a bare
+# `id` is as wide as that key's hash.
+# ============================================================================
+
+# A 48-byte value under an ES256 signer (SHA-256, 32 bytes).
+[[test]]
+name      = "nonce_sha256_signer_with_48_byte_value_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+# A 32-byte value under an ES384 signer (SHA-384, 48 bytes).
+[[test]]
+name      = "nonce_sha384_signer_with_32_byte_value_fails"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "golden", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+# Raw ids (`raw:` target) reach widths no pool thumbprint has.
+[[test]]
+name      = "nonce_sha256_with_31_bytes_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpQ", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+[[test]]
+name      = "nonce_sha256_with_33_bytes_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"
+
+# nonce/delete of a nonce the level does not hold.
+[[test]]
+name      = "nonce_delete_absent_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+error = "UnknownNonce"
+
+# The same nonce created twice at one level (SPEC 7.6).
+[[test]]
+name      = "nonce_create_twice_at_one_level_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+error = "DuplicateNonce"

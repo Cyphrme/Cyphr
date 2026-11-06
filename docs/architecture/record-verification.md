@@ -521,6 +521,39 @@ vector fails; these four are the part that backs this claim. The vectors are
 byte-exact fixtures that assert the error name; none has a control. Not checked: that a rejected
 coz leaves the principal unchanged.
 
+#### [rv-nonce-ledger]
+
+A nonce is an opaque digest held per level (Principal Root, AT and KT). A
+`nonce/create` whose `id` is not a digest of its algorithm's width, bare under
+the signing key's hash or labelled with its own, is refused with
+`MalformedPayload`. A `nonce/create` of a value the level already holds is
+refused with `DuplicateNonce`, and a `nonce/delete` of a value the level does
+not hold is refused with `UnknownNonce`. A value held at one level is a
+separate nonce at another. A refused nonce leaves every root unchanged.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+Backed by `nonce_created_twice_at_one_level_is_refused` and
+`nonce_delete_removes_only_the_named_nonce_at_the_named_path` in
+`rs/cyphr/tests/nonce.rs`, and `s10_2_nonce_bit_length_must_match_the_declared_algorithm`
+in `rs/cyphr/tests/spec_conformance.rs`. The first two are end-to-end scenarios
+with controls that accept the valid create or delete; they assert that the coz
+is refused and the roots are unchanged, not which error. The third refuses
+every width off by one, double or another algorithm's, at each level, with a
+control at the correct width, and also asserts only the refusal. The error
+names come from the code (`NonceSets` and `Nonce::parse` in
+`rs/cyphr/src/nonce.rs`) and from the golden vectors
+`nonce_create_twice_at_one_level_fails`, `nonce_delete_absent_fails` and the
+`nonce_*_fails` width vectors in `tests/golden/errors/`, which
+`test_golden_errors` runs but this claim's runner entry does not. Not checked:
+the cap of 256 children per level, which is refused with
+`CollectionArityExceeded` and has unit tests only in the source; a nonce
+created in a commit that also deletes it; and the error type of any
+refusal through the bound tests.
+
 #### [rv-key-material]
 
 A key introduced by `key/create` or `key/replace` must come with its public key
@@ -727,6 +760,8 @@ paths have no row; its source gives the reason for each.
 | `AlgMismatch`             | `rv-alg-alignment`         |
 | `CzdMismatch`             | `rv-alg-alignment`         |
 | `DuplicateKey`            | `rv-key-set`               |
+| `DuplicateNonce`          | `rv-nonce-ledger`          |
+| `UnknownNonce`            | `rv-nonce-ledger`          |
 | `CozReuse`                | `rv-no-coz-reuse`          |
 | `StateMismatch`           | `rv-genesis-immutable`     |
 | `EmptyMultihash`          | `rv-internal-invariants`   |

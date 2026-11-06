@@ -1764,3 +1764,80 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
     assert!(r.is_err(), "a dead principal recorded an action: {r:?}");
     assert_eq!(before, snapshot(&p), "a refused action changed state");
 }
+
+// ============================================================================
+// SPEC 10.2 (lines 1673-1674): a nonce's bit length matches its algorithm
+// ============================================================================
+
+/// Backs SPEC 10.2: "The nonce's bit length must match the declared
+/// algorithm's output size (e.g., a nonce declared as SHA-256 must be 256
+/// bits)." Scenario: for a SHA-256 (ES256), SHA-384 (ES384) and SHA-512
+/// (Ed25519) principal, at each of the three nonce paths (PR, AT, KT), a
+/// `nonce/create` whose `id` declares the principal's algorithm but whose
+/// value is 0, 1, n-1, n+1, 2n bytes or another algorithm's width is
+/// refused and leaves the principal untouched. Control: a value of exactly
+/// n bytes is accepted at the same path, so the refusals are the width and
+/// not a blanket ban. The `id` is the tagged `<alg>:<b64ut>` form.
+/// Turns red if any width mismatch is accepted (a missing or one-sided
+/// length check, such as `len >= n` or a check on the label alone), or if a
+/// correct width is refused. RED: nonces are not implemented, so the
+/// control fails first (`MalformedPayload`). End to end: yes.
+// @docket: sc-l1673 :: scripts/docket-run sc-l1673
+// @docket: sc-l1674 :: scripts/docket-run sc-l1674
+#[test]
+fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
+    let algs = [
+        (coz::Alg::ES256, "SHA-256", 32usize),
+        (coz::Alg::ES384, "SHA-384", 48),
+        (coz::Alg::Ed25519, "SHA-512", 64),
+    ];
+    let paths = ["cyphr", "cyphr/AT", "cyphr/AT/KT"];
+    let nonce_coz = |g: &Kp, label: &str, path: &str, n: &[u8], now: i64| {
+        sign(
+            g,
+            json!({"alg": g.alg, "id": format!("{label}:{}", Base64UrlUnpadded::encode_string(n)),
+                   "now": now, "tmb": b64(&g.tmb), "typ": format!("cyphr.me/{path}/nonce/create")}),
+        )
+    };
+
+    let mut accepted = vec![];
+    for (alg, label, n) in algs {
+        for path in paths {
+            let g = kp_alg(alg);
+            let mut ok = Principal::implicit(key_of(&g)).expect("genesis");
+            let control = commit_one(
+                &mut ok,
+                &g,
+                nonce_coz(&g, label, path, &vec![0xA5; n], T),
+                None,
+                T + 1,
+            );
+            assert!(
+                control.is_ok(),
+                "control: a {n}-byte {label} nonce at {path} was refused: {control:?}"
+            );
+
+            let mut widths = vec![0, 1, n - 1, n + 1, 2 * n, 32, 48, 64];
+            widths.retain(|w| *w != n);
+            widths.sort_unstable();
+            widths.dedup();
+            for w in widths {
+                let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+                let before = snapshot(&p);
+                let r = commit_one(
+                    &mut p,
+                    &g,
+                    nonce_coz(&g, label, path, &vec![0xA5; w], T),
+                    None,
+                    T + 1,
+                );
+                if r.is_ok() {
+                    accepted.push(format!("{label} nonce of {w} bytes at {path}"));
+                } else {
+                    assert_eq!(before, snapshot(&p), "a refused {w}-byte nonce moved state");
+                }
+            }
+        }
+    }
+    assert!(accepted.is_empty(), "width mismatch accepted: {accepted:?}");
+}

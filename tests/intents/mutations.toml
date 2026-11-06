@@ -106,3 +106,146 @@ tx = [
 
 [test.expected]
 key_count = 2
+
+# ============================================================================
+# Nonces (SPEC 10.1, 10.2)
+#
+# A nonce is opaque: `target` names a pool key only to borrow its thumbprint
+# as a 256-bit value, so each `id` is a bare SHA-256 nonce (signed by an
+# ES256 key). The nonce never becomes a key.
+# ============================================================================
+
+# A KT nonce enters the Key Root: KR = H(sort(tmb_golden, nonce)).
+[[test]]
+name      = "nonce_kt_create_changes_kr"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# An AT nonce enters the Auth Root only: KR is untouched.
+[[test]]
+name      = "nonce_at_create_changes_ar_not_kr"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# A PR nonce enters the Principal Root only: KR, AR and SR are untouched.
+[[test]]
+name      = "nonce_pr_create_changes_pr_only"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# nonce/delete undoes nonce/create: the roots return to genesis.
+[[test]]
+name      = "nonce_kt_delete_restores_roots"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# Two nonces sit at one level and are deleted one at a time:
+# KR = H(sort(tmb_golden, nonce_carol)) after the first delete.
+[[test]]
+name      = "nonce_two_kt_deleted_one_at_a_time"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# One key, two principals: the same key reaches a distinct PG once a nonce
+# is in the tree (SPEC 5.1). Compare `pg` with `principal_create_single_key_without_nonce`.
+[[test]]
+name      = "nonce_kt_principal_reaches_distinct_pg"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# The same key with no nonce, the contrast for the PG above.
+[[test]]
+name      = "principal_create_single_key_without_nonce"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1

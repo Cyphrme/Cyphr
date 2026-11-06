@@ -68,7 +68,8 @@ pub struct TxIntent {
     pub now: i64,
     /// Signer key name (from pool).
     pub signer: String,
-    /// Target key name (for key/create, key/revoke).
+    /// Target key name (for key/create, key/revoke). `raw:<id>` instead
+    /// states the pay `id` verbatim.
     #[serde(default)]
     pub target: Option<String>,
     /// Optional message.
