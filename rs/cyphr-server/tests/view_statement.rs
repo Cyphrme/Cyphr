@@ -11,6 +11,8 @@
 //! Every test is `RED(N15b)` until `/view` exists; they fail on an
 //! assertion about the response, not on compilation or setup.
 
+#![allow(unexpected_cfgs)]
+
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::auth::ServerIdentity;
@@ -244,5 +246,126 @@ async fn view_statement_advances_with_the_log() {
     assert_ne!(
         first["statement"]["coz"]["sig"], second["statement"]["coz"]["sig"],
         "a view after another commit is a different statement"
+    );
+}
+
+/// Claim: a client accepts a peer's view statement only through a verifier
+/// that takes the key ACTIVE in the peer principal chain the client holds,
+/// never the server's own say-so. Genuine statement: accepted. Forged tree
+/// size or index: refused. Statement signed by a key not active in that
+/// chain: refused, even though its own signature is valid.
+///
+/// RED(N15b): `cyphr_client::verify_view_statement` does not exist, so this
+/// test sits behind `cfg(red_n15b)`; the implementation removes the cfg line
+/// and nothing else. The verifier shape pinned here: the response envelope,
+/// the peer principal chain the client replayed, and the principal id, giving
+/// `Ok(_)` or `Err(_)`.
+///
+/// Turns red if: a forged size or index is accepted; a statement signed by
+/// an inactive key is accepted; or the genuine statement is refused.
+/// End-to-end scenario: yes (peer over HTTP, chain replayed into a second,
+/// independent engine as in `receipts.rs`).
+#[cfg(red_n15b)] // RED(N15b)
+#[tokio::test]
+async fn client_verifies_view_statement_against_the_active_peer_chain() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state);
+    let pool = load_pool();
+    let pr = golden_principal_id(&pool);
+    let (first, second) = two_commit_bodies(&pool, &pr);
+    for body in [first, second] {
+        let (status, resp) = post_json(app.clone(), "/push", body).await;
+        assert_eq!(status, StatusCode::CREATED, "{resp:?}");
+    }
+
+    // The client's view of the peer's own chain: pin the PG from discovery,
+    // re-derive it from the published genesis key, replay /patch locally.
+    let (_, discovery) = get_json(app.clone(), "/server").await;
+    let d = &discovery["payload"];
+    let pg = d["pg"].as_str().expect("attestor pg").to_string();
+    let g = &d["genesis"];
+    let genesis_key = cyphr::Key::new(
+        g["alg"].as_str().expect("alg").to_string(),
+        coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(g["tmb"].as_str().expect("tmb")).expect("tmb b64"),
+        ),
+        Base64UrlUnpadded::decode_vec(g["pub"].as_str().expect("pub")).expect("pub b64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
+    let (_, patch) = get_json(app.clone(), &format!("/patch?pr={pg}")).await;
+    let local = cyphr_storage::engine::StorageEngine::new(
+        cyphr_storage::blob::MemoryBlobStore::new(),
+        cyphr_storage::index::MemoryIndexer::new(),
+    );
+    for entry in patch["payload"]["entries"].as_array().expect("entries") {
+        let blobs: Vec<Vec<u8>> = entry["blobs"]
+            .as_array()
+            .expect("blobs")
+            .iter()
+            .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("blob b64"))
+            .collect();
+        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        local
+            .submit_commit(
+                &pg,
+                Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
+                &refs,
+            )
+            .await
+            .expect("replay a peer-chain commit");
+    }
+    let chain = local
+        .load_principal(&pg, cyphr_storage::Genesis::Explicit(vec![genesis_key]))
+        .await
+        .expect("load the replayed peer chain");
+
+    let (status, view) = get_json(app, &format!("/view?pr={pr}")).await;
+    assert_eq!(status, StatusCode::OK, "{view:?}");
+
+    assert!(
+        cyphr_client::verify_view_statement(&view, &chain, &pr).is_ok(),
+        "the genuine statement must verify against the peer chain"
+    );
+
+    // Forged size or index: perturb each signed integer field in turn.
+    let pay = view["statement"]["coz"]["pay"].clone();
+    for field in fields_equal(&pay, 2)
+        .iter()
+        .chain(fields_equal(&pay, 1).iter())
+    {
+        let mut forged = view.clone();
+        let original = pay[field].as_u64().expect("integer field");
+        forged["statement"]["coz"]["pay"][field] = serde_json::json!(original + 1);
+        assert!(
+            cyphr_client::verify_view_statement(&forged, &chain, &pr).is_err(),
+            "forged `{field}` was accepted"
+        );
+    }
+
+    // A validly signed statement from a key the peer chain does not hold.
+    let outsider = coz::Alg::Ed25519.generate_keypair();
+    let mut foreign_pay = pay.clone();
+    foreign_pay["alg"] = serde_json::json!("Ed25519");
+    foreign_pay["tmb"] = serde_json::json!(Base64UrlUnpadded::encode_string(
+        outsider
+            .alg
+            .compute_thumbprint(&outsider.pub_bytes)
+            .expect("thumbprint")
+            .as_bytes()
+    ));
+    let (sig, _cad) = coz::sign_json(
+        &serde_json::to_vec(&foreign_pay).expect("pay json"),
+        "Ed25519",
+        &outsider.prv_bytes,
+        &outsider.pub_bytes,
+    )
+    .expect("outsider signs");
+    let mut foreign = view.clone();
+    foreign["statement"]["coz"]["pay"] = foreign_pay;
+    foreign["statement"]["coz"]["sig"] = serde_json::json!(Base64UrlUnpadded::encode_string(&sig));
+    assert!(
+        cyphr_client::verify_view_statement(&foreign, &chain, &pr).is_err(),
+        "a statement signed by a key not active in the peer chain was accepted"
     );
 }
