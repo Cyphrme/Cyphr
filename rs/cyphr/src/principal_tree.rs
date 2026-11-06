@@ -96,6 +96,13 @@ impl PrincipalTree {
         } else {
             NONCE_ARITY
         };
+        self.inner = self.build_inner(arity)?;
+        Ok(())
+    }
+
+    /// The held cells folded at `arity`. Separate from [`Self::rebuild`] so
+    /// a test can fold the same cells at both arities.
+    fn build_inner(&self, arity: u64) -> Result<polydigest::EpochTree> {
         let mut inner = new_inner(arity);
         for &alg in &self.algs {
             inner
@@ -113,8 +120,7 @@ impl PrincipalTree {
                 .set(index as u64, payload, Vec::new())
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
-        self.inner = inner;
-        Ok(())
+        Ok(inner)
     }
 
     /// Serialize a multihash's variants into the shared cell-payload idiom
@@ -296,6 +302,54 @@ mod tests {
             pt.set_nonces(&over, &algs),
             Err(Error::CollectionArityExceeded(257))
         ));
+    }
+
+    /// Backs the claim in [`NONCE_ARITY`] that a flat k=256 fold over just
+    /// SR and CR is the same bytes as the k=2 fold. That equality is what
+    /// lets a PR with nonces keep SR and CR in their slots without changing
+    /// any nonce-free PR. Property over random SR, CR and algorithm sets
+    /// (each digest at its algorithm's width). Turns red if either fold
+    /// changes its rule for two cells (a reordered or prefixed fold).
+    /// Unit level: with no nonce the code stays on k=2, so no signed
+    /// scenario reaches the k=256 fold over two cells. AR1 may retire this
+    /// with the arity change.
+    mod fold_equivalence {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn digest(alg: HashAlg, seed: &[u8]) -> Vec<u8> {
+            let len = crate::state::TaggedDigest::expected_len(alg);
+            seed.iter().copied().cycle().take(len).collect()
+        }
+
+        fn multihash(algs: &[HashAlg], seed: &[u8]) -> MultihashDigest {
+            let variants = algs
+                .iter()
+                .map(|&a| (a, digest(a, seed).into_boxed_slice()))
+                .collect();
+            MultihashDigest::new(variants).unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn k2_and_k256_folds_of_sr_and_cr_agree(
+                sr_seed in proptest::collection::vec(any::<u8>(), 1..8),
+                cr_seed in proptest::collection::vec(any::<u8>(), 1..8),
+                algs in proptest::sample::subsequence(
+                    vec![HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512], 1..=3),
+            ) {
+                let mut pt = PrincipalTree::new();
+                pt.set_sr(&StateRoot(multihash(&algs, &sr_seed)), &algs).unwrap();
+                pt.set_cr(&CommitRoot(multihash(&algs, &cr_seed)), &algs).unwrap();
+                let k2 = pt.build_inner(ARITY).unwrap();
+                let k256 = pt.build_inner(NONCE_ARITY).unwrap();
+                for alg in algs {
+                    let id = hash_alg_to_u64(alg);
+                    prop_assert_eq!(k2.root(id), k256.root(id), "{:?}", alg);
+                }
+            }
+        }
     }
 
     #[test]
