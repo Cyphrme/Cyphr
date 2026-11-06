@@ -433,7 +433,9 @@ token is signed with the thumbprint of the key that opened the session (the `ltm
 claim, `token.rs`), and route protection (`middleware.rs`, `check_session_key`) reloads
 the principal from the server's own storage on each request and refuses the session once
 that key is no longer active: `KeyNotActive` if it was deleted, `Revoked` if it was
-revoked. A token without the claim is refused. So a session issued before a revocation
+revoked on the chain or naked-revoked (the death-set login already consults;
+`token_key_naked_revoked_session_refused` covers it). A token without the claim is
+refused. So a session issued before a revocation
 survives only until the revocation reaches the server's view, not for fifteen minutes
 (`exp`, `token.rs`, remains a cap on top). `token_key_revoked_session_refused_at_push`
 (`rs/cyphr-server/tests/route_protection.rs`) logs in with two keys, revokes one through
