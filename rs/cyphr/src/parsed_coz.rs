@@ -51,13 +51,17 @@ pub mod typ {
         has_suffix(typ, KEY_CREATE) || has_suffix(typ, KEY_REPLACE)
     }
 
-    /// Returns true if `typ` is `<authority>/<suffix>` for a non-empty
-    /// authority: the suffix must start at a path-segment boundary, or a
-    /// foreign segment that merely ends in the suffix text would classify.
+    /// Returns true if `typ` is exactly `suffix` (SPEC §7.3: with the
+    /// protocol itself as authority) or `<authority>/<suffix>` for a
+    /// non-empty authority. The suffix must start at a path-segment
+    /// boundary, or a foreign segment that merely ends in the suffix text
+    /// would classify.
     pub fn has_suffix(typ: &str, suffix: &str) -> bool {
-        typ.strip_suffix(suffix)
-            .and_then(|authority| authority.strip_suffix('/'))
-            .is_some_and(|authority| !authority.is_empty())
+        typ == suffix
+            || typ
+                .strip_suffix(suffix)
+                .and_then(|authority| authority.strip_suffix('/'))
+                .is_some_and(|authority| !authority.is_empty())
     }
 }
 
@@ -820,6 +824,21 @@ mod tests {
         for ok in ["cyphr.me/cyphr/key/create", "a.b/c/cyphr/key/replace"] {
             assert!(typ::is_key_introducing(ok), "control: {ok} must classify");
         }
+    }
+
+    /// Backs SPEC §7.3: the bare `cyphr/<noun>/<verb>` (protocol as
+    /// authority) is a valid typ, while an empty authority
+    /// (`/cyphr/key/create`) is not. Turns red if the boundary check
+    /// refuses the bare form or accepts the empty authority. Unit level:
+    /// pure predicate. Not end to end.
+    #[test]
+    fn typ_boundary_bare_protocol_form_accepted_empty_authority_refused() {
+        assert!(typ::is_key_introducing("cyphr/key/create"));
+        assert!(typ::is_key_introducing("cyphr/key/replace"));
+        assert!(!typ::is_key_introducing("/cyphr/key/create"));
+        assert!(!typ::is_key_introducing("/cyphr/key/replace"));
+        assert!(typ::has_suffix("cyphr/key/revoke", typ::KEY_REVOKE));
+        assert!(!typ::has_suffix("/cyphr/key/revoke", typ::KEY_REVOKE));
     }
 
     /// Same boundary at the parse site (`ParsedCoz::from_pay`, which every

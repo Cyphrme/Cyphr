@@ -69,7 +69,8 @@ pub struct VerifiedRevoke {
 }
 
 /// Whether `typ` is a `key/revoke` under some authority segment, e.g.
-/// `cyphr.me/cyphr/key/revoke`. Reuses the core `KEY_REVOKE` constant so the
+/// `cyphr.me/cyphr/key/revoke`, or the bare `cyphr/key/revoke` (SPEC §7.3).
+/// Reuses the core `KEY_REVOKE` constant so the
 /// accepted shape cannot drift from the protocol's.
 fn is_revoke_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE)
@@ -209,7 +210,10 @@ mod tests {
         assert!(is_revoke_typ("a.b/c/cyphr/key/revoke"));
         assert!(!is_revoke_typ("cyphr.me/xcyphr/key/revoke"));
         assert!(!is_revoke_typ("evilcyphr/key/revoke"));
-        assert!(!is_revoke_typ("cyphr/key/revoke"));
+        // SPEC §7.3: the bare form (protocol as authority) is valid; an
+        // empty authority is not.
+        assert!(is_revoke_typ("cyphr/key/revoke"));
+        assert!(!is_revoke_typ("/cyphr/key/revoke"));
         assert!(!is_revoke_typ("cyphr.me/cyphr/key/create"));
     }
 }
