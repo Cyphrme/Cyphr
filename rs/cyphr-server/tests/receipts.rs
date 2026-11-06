@@ -524,6 +524,8 @@ fn golden(name: &str) -> String {
         .to_string()
 }
 
+/// Backs: the commit receipt wire bytes are pinned by a golden vector
+/// (ac-commit-receipt); a field-order or encoding drift turns it red.
 #[tokio::test]
 async fn commit_receipt_matches_golden_vector() {
     let (_dir, identity) = fixed_identity();
@@ -549,6 +551,8 @@ async fn commit_receipt_matches_golden_vector() {
     );
 }
 
+/// Backs: the tip report wire bytes are pinned by a golden vector
+/// (ac-tip-report); a field-order or encoding drift turns it red.
 #[tokio::test]
 async fn tip_report_matches_golden_vector() {
     let (_dir, identity) = fixed_identity();

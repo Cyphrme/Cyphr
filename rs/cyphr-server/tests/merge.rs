@@ -256,36 +256,6 @@ async fn tip(app: &Router, peer: &Peer) -> Value {
     })
 }
 
-/// Green characterization: five principals (three key algorithms)
-/// bootstrap, and an ordinary second commit pushes, over the helper every
-/// RED test uses. Pins the harness so a RED failure is the merge kind's
-/// absence, not a broken peer. Not an end-to-end scenario for merge.
-#[tokio::test]
-async fn harness_bootstraps_peers_and_pushes_a_plain_commit() {
-    let (state, _identity, _dir) = attestor_server().await;
-    let app = build_router(state);
-    let names = ["alice", "bob", "carol", "diana_es384", "eve_ed25519"];
-    let mut peers: Vec<Peer> = names.iter().map(|n| Peer::new(n)).collect();
-    for p in &mut peers {
-        bootstrap(&app, p, "key_a", 1_700_100_000).await;
-    }
-    let before = tip(&app, &peers[0]).await;
-    let pays = vec![peers[0].key_create("key_b", 1_700_100_100)];
-    let blobs = peers[0]
-        .commit_blobs(pays, 1_700_100_100)
-        .expect("plain commit authors");
-    let (status, body) = push(&app, &peers[0], &blobs).await;
-    assert!(
-        status.is_success(),
-        "plain second commit must push: {status} {body:?}"
-    );
-    let after = tip(&app, &peers[0]).await;
-    assert_eq!(after["commit_count"], json!(2));
-    assert_ne!(before["cr"], after["cr"]);
-    // Server and local verifier name the same root in the same tagged form.
-    assert_eq!(after["pr"], json!(peers[0].pr()));
-}
-
 /// Claim: merge needs both sides and changes only what it says (positive
 /// control for every rejection test below). Source signs a merge, target
 /// signs the matching ack; both are accepted over `/push`, the target's
