@@ -88,16 +88,51 @@ fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<K
 fn two_step_verification_accepts_every_commit_every_algorithm() {
     let (principal, _keys) = build_multi_alg_principal_with_commits(4);
 
+    // EML hashes every leaf under every active algorithm, so each commit's
+    // TR carries both variants and each is checked against its own tree. The
+    // count guards against the loop degenerating (or a variant going null,
+    // which would hash to a constant on both sides and pass vacuously).
+    let mut checked = 0;
     for alg in [HashAlg::Sha256, HashAlg::Sha512] {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
         let size = principal.commit_trees().tree_size(alg_id).unwrap();
         for i in 0..size {
             let tr = principal.commits().nth(i as usize).unwrap().tr().0.clone();
             assert!(
+                tr.contains(alg),
+                "commit {i}'s TR has no {alg:?} variant for an active algorithm"
+            );
+            assert!(
                 principal.verify_transaction_inclusion(alg, i, &tr).unwrap(),
                 "composite verification failed for alg {alg:?} index {i}"
             );
+            checked += 1;
         }
+    }
+    assert_eq!(checked, 8, "2 algorithms x 4 commits must all be checked");
+}
+
+/// SPEC 12.1 / EML: a TR lacking the algorithm being verified is not
+/// evidence of inclusion under it. Scenario: a genuine commit's TR with the
+/// SHA-512 variant stripped is claimed at its real index under SHA-512.
+/// Turns red if verification returns true (a stripped TR hashes to the
+/// null constant, which must never stand in for the real leaf).
+#[test]
+fn stripped_variant_never_verifies() {
+    let (principal, _keys) = build_multi_alg_principal_with_commits(3);
+    for i in 0..3u64 {
+        let full = principal.commits().nth(i as usize).unwrap().tr().0.clone();
+        let stripped = MultihashDigest::from_single(
+            HashAlg::Sha256,
+            full.get(HashAlg::Sha256).unwrap().to_vec(),
+        )
+        .unwrap();
+        assert!(
+            !principal
+                .verify_transaction_inclusion(HashAlg::Sha512, i, &stripped)
+                .unwrap(),
+            "a TR without the SHA-512 variant verified at index {i}"
+        );
     }
 }
 

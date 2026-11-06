@@ -166,6 +166,7 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::KeyRevoked => "KeyRevoked",
         Error::NoActiveKeys => "NoActiveKeys",
         Error::DuplicateKey => "DuplicateKey",
+        Error::CozReuse => "CozReuse",
         Error::TimestampPast => "TimestampPast",
         Error::TimestampFuture => "TimestampFuture",
         Error::InvalidSignature => "InvalidSignature",
@@ -1223,6 +1224,20 @@ impl<'a> Generator<'a> {
             let failing_coz = action_sequence.last().unwrap();
             commits.push(Self::coz_to_commit_entry(failing_coz));
             digests.push(failing_coz.czd.clone());
+        }
+
+        // A repeated submission of an applied action (SPEC 7.6: ignored, no
+        // state change) leaves no trace in the principal's state, so the
+        // export above omits it. Emit it so consumers replay the repeat and
+        // the expected roots pin that it changed nothing.
+        if !is_error_test {
+            let mut seen = std::collections::HashSet::new();
+            for coz in &action_sequence {
+                if !seen.insert(coz.czd.clone()) {
+                    commits.push(Self::coz_to_commit_entry(coz));
+                    digests.push(coz.czd.clone());
+                }
+            }
         }
 
         Ok(Golden {

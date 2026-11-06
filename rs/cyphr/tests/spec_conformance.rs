@@ -998,7 +998,6 @@ fn map_rows_resolve_and_agree_with_their_tests() {
 /// transaction coz is applied a second time. RED: the core has no reuse
 /// check and no `COZ_REUSE` variant. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F4): SPEC 7.6 transaction coz reuse accepted"]
 fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
     let (a, b, k3) = (kp(), kp(), kp());
     let build = || {
@@ -1043,6 +1042,163 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
         "a previously included transaction coz was applied again"
     );
     assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
+}
+
+// ----------------------------------------------------------------------------
+// N09 acceptance: typed COZ_REUSE, first inclusion authoritative, per-principal
+// scope, and replay under another encoding or digest width of the same coz.
+// ----------------------------------------------------------------------------
+
+/// The reuse fixture: `{a, b}` principal; `a` adds `k3` (coz C), `a` deletes
+/// it (coz D, signed by `signer`), `b` re-adds it with a different coz, so D
+/// is state-valid again. Every `now` is `T`, so the timestamp rule cannot be
+/// what rejects a replay. Returns the principal, D and the keys.
+fn reuse_fixture(a: &Kp, b: &Kp, k3: &Kp, d_signer: &Kp) -> (Principal, Signed) {
+    let mut p = Principal::explicit(vec![key_of(a), key_of(b)]).expect("genesis");
+    let d = sign(d_signer, key_delete_pay(d_signer, &k3.tmb, T));
+    commit_one(
+        &mut p,
+        a,
+        sign(a, key_create_pay(a, &k3.tmb, T)),
+        Some(key_of(k3)),
+        T,
+    )
+    .expect("add k3");
+    commit_one(&mut p, d_signer, d.clone(), None, T).expect("first inclusion of D");
+    commit_one(
+        &mut p,
+        b,
+        sign(b, key_create_pay(b, &k3.tmb, T)),
+        Some(key_of(k3)),
+        T,
+    )
+    .expect("re-add k3 by another coz");
+    assert!(p.is_key_active(&k3.tmb), "premise: D is state-valid again");
+    (p, d)
+}
+
+/// The typed rejection is `Error::CozReuse`. The variant does not exist yet,
+/// so the name is pinned through `Debug` (the golden vector's error name is
+/// the same string); this keeps the file compiling on the base.
+fn assert_coz_reuse(r: cyphr::error::Result<()>) {
+    match r {
+        Err(e) => assert_eq!(
+            format!("{e:?}"),
+            "CozReuse",
+            "a replayed transaction coz must fail with the typed COZ_REUSE error"
+        ),
+        Ok(()) => panic!("a previously included transaction coz was applied again"),
+    }
+}
+
+/// Backs SPEC 7.6: "coz reuse by a particular principal is prohibited and
+/// results in error `COZ_REUSE`. The first inclusion of a transaction coz is
+/// considered authoritative." Scenario: see [`reuse_fixture`]; D is replayed.
+/// Controls (green on the base, so the red is the reuse check alone): the
+/// SAME coz C and D applied by a different principal that shares the keys is
+/// accepted (the spec allows cross-principal reuse). Asserts: the replay
+/// fails with the typed `CozReuse`; it leaves state untouched (first
+/// inclusion stays the only inclusion); and the principal is not wedged: a
+/// fresh coz still applies afterwards. Turns red if reuse is accepted, is
+/// rejected with an untyped error, or is rejected globally across principals
+/// (the cross-principal control then fails first). Mutants caught: a no-op
+/// `Ok` (accepts), `Err(StateMismatch)` (wrong type), a process-global czd
+/// set (control). End to end: yes.
+#[test]
+fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
+    let (a, b, c3, k3) = (kp(), kp(), kp(), kp());
+    let (mut p, d) = reuse_fixture(&a, &b, &k3, &a);
+
+    // Control: a different principal (extra genesis key, so a different PR)
+    // applying the very same cozes C and D is not rejected.
+    let c = sign(&a, key_create_pay(&a, &k3.tmb, T));
+    let mut other = Principal::explicit(vec![key_of(&a), key_of(&b), key_of(&c3)]).expect("other");
+    commit_one(&mut other, &a, c, Some(key_of(&k3)), T).expect("other: C accepted");
+    commit_one(&mut other, &a, d.clone(), None, T)
+        .expect("other: D accepted, reuse is per principal");
+
+    let before = snapshot(&p);
+    assert_coz_reuse(commit_one(&mut p, &a, d, None, T));
+    assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
+    assert!(p.is_key_active(&k3.tmb), "first inclusion stays in force");
+
+    commit_one(
+        &mut p,
+        &b,
+        sign(&b, key_delete_pay(&b, &k3.tmb, T)),
+        None,
+        T,
+    )
+    .expect("a fresh coz still applies after a rejected reuse");
+}
+
+/// Backs SPEC 7.6 and SPEC 12.1 (all hash variants name the same content,
+/// so one matching variant is not a match). Scenario: a mixed
+/// ES256 + ES384 principal; the replayed coz D is signed by the ES384 key, so
+/// its czd is a SHA-384 digest and the principal carries both SHA-256 and
+/// SHA-384 state variants. D is replayed verbatim after `k3` returns. The
+/// czd under another algorithm is not a route in: the core already answers
+/// `CzdMismatch` for a czd not derived under the signing key's algorithm
+/// (`verify_coz`), so the same-coz-under-another-digest probe collapses to
+/// this wide-digest case. Turns red if the reuse check compares only a
+/// SHA-256-width identifier, a first variant, or a truncation, and so never
+/// recognises an ES384 coz. Mutant caught: a set of `[u8; 32]` czd prefixes.
+/// End to end: yes.
+#[test]
+fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
+    let (a, b, k3) = (
+        kp_alg(coz::Alg::ES256),
+        kp_alg(coz::Alg::ES384),
+        kp_alg(coz::Alg::ES256),
+    );
+    let (mut p, d) = reuse_fixture(&a, &b, &k3, &b);
+    assert_eq!(d.2.as_bytes().len(), 48, "premise: D's czd is SHA-384 wide");
+
+    let before = snapshot(&p);
+    assert_coz_reuse(commit_one(&mut p, &b, d, None, T));
+    assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
+}
+
+/// Backs SPEC 12.1 / 7.6 (a replay must not slip through a repeating hash
+/// variant): every active algorithm's Commit Root variant is a function of
+/// the whole log, so it must change with every commit. Scenario: an
+/// ES256 + ES384 principal takes three commits; after each, CR carries both
+/// the SHA-256 and SHA-384 variants and each differs from its value after
+/// the previous commit. Turns red if a variant stops advancing (frozen or
+/// recomputed from a stale tree) or a variant goes missing. Mutant caught:
+/// leaving one algorithm's MALT tree out of the per-commit append. End to
+/// end: yes.
+#[test]
+fn every_active_algorithms_cr_variant_advances_with_every_commit() {
+    let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
+    let mut p = Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis");
+    let cr_variants = |p: &Principal| {
+        p.cr()
+            .map(|cr| cr.as_multihash().variants().clone())
+            .unwrap_or_default()
+    };
+    let mut prev = cr_variants(&p);
+    for step in 0..3 {
+        let k = kp_alg(coz::Alg::ES256);
+        commit_one(
+            &mut p,
+            &a,
+            sign(&a, key_create_pay(&a, &k.tmb, T)),
+            Some(key_of(&k)),
+            T,
+        )
+        .expect("commit");
+        let now = cr_variants(&p);
+        assert_eq!(now.len(), 2, "step {step}: CR must carry both algorithms");
+        for (alg, digest) in &now {
+            assert_ne!(
+                prev.get(alg),
+                Some(digest),
+                "step {step}: the {alg:?} CR variant did not advance"
+            );
+        }
+        prev = now;
+    }
 }
 
 // ============================================================================

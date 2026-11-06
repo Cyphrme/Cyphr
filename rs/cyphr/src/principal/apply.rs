@@ -1,7 +1,5 @@
 //! Transaction application and commit finalization.
 
-use std::collections::BTreeMap;
-
 use coz::Thumbprint;
 
 use super::{Principal, current_time};
@@ -48,6 +46,7 @@ impl<S: eml::Storage> Principal<S> {
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
+    /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
         let mut scope = self.begin_commit();
         scope.apply(vtx)?;
@@ -70,6 +69,7 @@ impl<S: eml::Storage> Principal<S> {
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
+    /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub(crate) fn apply_verified_internal(
         &mut self,
         vtx: crate::parsed_coz::VerifiedCoz,
@@ -161,6 +161,13 @@ impl<S: eml::Storage> Principal<S> {
 
         // Access the underlying ParsedCoz via Deref
         let cz = &*vtx;
+
+        // SPEC §7.6: a transaction coz this principal already included is
+        // rejected; the first inclusion is authoritative. Checked first so a
+        // replay is typed COZ_REUSE whatever state or timestamp it meets.
+        if self.included_czds.contains(cz.czd.as_bytes()) {
+            return Err(Error::CozReuse);
+        }
 
         // Validate timestamp is not in the past (SPEC §14.1)
         if cz.now < self.latest_timestamp {
@@ -345,6 +352,7 @@ impl<S: eml::Storage> Principal<S> {
 
         // Update latest timestamp
         let core = self.core_mut();
+        core.included_czds.insert(cz.czd.as_bytes().to_vec());
         if cz.now > core.latest_timestamp {
             core.latest_timestamp = cz.now;
         }
@@ -396,8 +404,15 @@ impl<S: eml::Storage> Principal<S> {
             vec![active_algs.first().copied().unwrap_or(HashAlg::Sha256)]
         };
 
-        // Compute TR from pending commit
-        let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
+        // TR carries a variant for the signer's algorithms AND every active
+        // algorithm. The commit-log leaf is this TR, and each algorithm's
+        // MALT hasher reads only its own variant: a missing one hashes to a
+        // constant and freezes that algorithm's CR variant (SPEC §12.1: all
+        // variants name the same content). The arrow still binds only
+        // `tx_algs` (computed separately below).
+        let mut tr_algs = tx_algs.clone();
+        tr_algs.extend(active_algs.iter().copied().filter(|a| !tx_algs.contains(a)));
+        let tr = pending.compute_tr(&tr_algs).ok_or(Error::EmptyCommit)?;
         core.tr = Some(tr.clone());
 
         // Refresh DR's algorithm coverage to the post-mutation active_algs
@@ -467,13 +482,7 @@ impl<S: eml::Storage> Principal<S> {
         // Serialize this commit's TR once — used both to append a fresh
         // leaf and, on the already_durable path, as the value to
         // byte-compare a pre-existing leaf against.
-        let mut mapped_variants = BTreeMap::new();
-        for (&alg, val) in tr.0.variants() {
-            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-            mapped_variants.insert(alg_id, val.clone());
-        }
-        let serialized =
-            serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
+        let serialized = crate::commit_root::commit_leaf(&tr.0, &active_algs)?;
 
         let cr = if already_durable {
             // A prior durable session already appended a leaf at this
@@ -512,7 +521,7 @@ impl<S: eml::Storage> Principal<S> {
         core.pr = core.write_pt_sr_cr(&sr, &cr, &active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tx_algs)?;
+        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;
 
         core.auth.commits.push(commit);
 

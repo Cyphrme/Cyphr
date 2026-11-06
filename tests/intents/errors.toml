@@ -220,3 +220,38 @@ tx = [
 
 [test.expected]
 error = "UnknownSigner"
+
+# ============================================================================
+# Transaction coz reuse (SPEC §7.6)
+# The identical key/create coz is submitted a second time after the key was
+# deleted, so it is state-valid again; the principal still rejects it with
+# CozReuse because the first inclusion is authoritative.
+# ============================================================================
+
+[[test]]
+name      = "coz_reuse_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "CozReuse"

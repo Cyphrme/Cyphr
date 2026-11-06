@@ -41,19 +41,21 @@ impl eml::Hasher for MaltHasher {
     /// be redundant and would break genesis singleton promotion (PR would
     /// become `H(SR)` instead of `SR`).
     ///
-    /// A missing own-algorithm variant returns `empty()` rather than
-    /// borrowing another algorithm's bytes — falling back across algorithms
-    /// would mix one algorithm's digest into another's tree, violating
-    /// per-algorithm isolation.
+    /// A missing own-algorithm variant means this algorithm was inactive at
+    /// the leaf's position, and maps to EML's null constant (`H("null")`),
+    /// never `empty()` (the empty-tree root) and never another algorithm's
+    /// bytes (per-algorithm isolation). Leaves are produced only by
+    /// [`commit_leaf`], which refuses a missing active-algorithm variant with
+    /// a typed error; the infallible `eml::Hasher` seam cannot carry one.
     fn leaf(&self, data: &[u8]) -> Vec<u8> {
         let variants: BTreeMap<u64, Box<[u8]>> = match serde_json::from_slice(data) {
             Ok(v) => v,
-            Err(_) => return self.empty(),
+            Err(_) => return self.null(),
         };
         let alg_id = hash_alg_to_u64(self.alg);
         match variants.get(&alg_id) {
             Some(bytes) => bytes.to_vec(),
-            None => self.empty(),
+            None => self.null(),
         }
     }
 
@@ -76,6 +78,29 @@ impl eml::Hasher for MaltHasher {
     fn clone_box(&self) -> Box<dyn eml::Hasher> {
         Box::new(self.clone())
     }
+}
+
+/// Serialize a commit's TR as the commit-log leaf, requiring a variant for
+/// every active algorithm. EML hashes each leaf under every active
+/// algorithm, and a missing variant would hash to a constant (`H("null")`),
+/// which collapses in the Merkle fold and freezes that algorithm's root.
+///
+/// # Errors
+///
+/// [`crate::error::Error::MissingVariant`] if `tr` lacks an active algorithm.
+pub(crate) fn commit_leaf(
+    tr: &MultihashDigest,
+    active_algs: &[HashAlg],
+) -> crate::error::Result<Vec<u8>> {
+    for &alg in active_algs {
+        tr.get_or_err(alg)?;
+    }
+    let mapped: BTreeMap<u64, Box<[u8]>> = tr
+        .variants()
+        .iter()
+        .map(|(&alg, digest)| (hash_alg_to_u64(alg), digest.clone()))
+        .collect();
+    serde_json::to_vec(&mapped).map_err(|_| crate::error::Error::MalformedPayload)
 }
 
 /// Verify an inclusion proof for the leaf at `index` in a tree of size
@@ -424,6 +449,21 @@ pub fn commit_root_from_trees_at<S: eml::Storage>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Backs the typed-error path of the commit-log leaf: a TR lacking an
+    /// active algorithm's variant is refused with `MissingVariant`, never
+    /// hashed to a constant. Unit test: `finalize_commit` always computes TR
+    /// over every active algorithm, so no scenario can reach the refusal.
+    /// Turns red if `commit_leaf` serializes a partial TR.
+    #[test]
+    fn commit_leaf_refuses_a_missing_active_variant() {
+        let tr = MultihashDigest::from_single(HashAlg::Sha256, vec![7; 32]).unwrap();
+        assert!(commit_leaf(&tr, &[HashAlg::Sha256]).is_ok(), "control");
+        assert!(matches!(
+            commit_leaf(&tr, &[HashAlg::Sha256, HashAlg::Sha384]),
+            Err(crate::error::Error::MissingVariant(HashAlg::Sha384))
+        ));
+    }
 
     /// F4 -- `CloneableLog::is_empty()` must report empty for an
     /// algorithm-registered zero-leaf log, not only for a log with no
