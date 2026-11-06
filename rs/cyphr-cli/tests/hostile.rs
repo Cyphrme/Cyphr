@@ -488,7 +488,6 @@ fn reserialized_chain_does_not_break_rebase() {
 /// Turns red on a comparison of the whole blob (false fork at height 0,
 /// `forked`, and COZ_REUSE from rebase). End-to-end: yes.
 #[test]
-#[ignore = "RED(N16): unsigned blob members make a false fork"]
 fn unsigned_additions_are_not_a_fork_in_verify() {
     let (a, id, peer, _real) = world(true);
     let r = a.run(&[
@@ -503,7 +502,6 @@ fn unsigned_additions_are_not_a_fork_in_verify() {
 }
 
 #[test]
-#[ignore = "RED(N16): unsigned blob members make a false fork"]
 fn unsigned_additions_are_not_a_fork_in_fetch() {
     let (a, id, peer, _real) = world(true);
     a.add_key(&id);
@@ -517,7 +515,6 @@ fn unsigned_additions_are_not_a_fork_in_fetch() {
 }
 
 #[test]
-#[ignore = "RED(N16): unsigned blob members make a false fork"]
 fn unsigned_additions_do_not_break_rebase() {
     let (a, id, peer, _real) = world(true);
     a.add_key(&id);
