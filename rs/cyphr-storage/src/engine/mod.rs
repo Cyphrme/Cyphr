@@ -142,9 +142,26 @@ impl CommittedTip {
     }
 }
 
-/// Discriminator embedded in every [`CommitManifest`], distinguishing it
-/// from an ordinary coz blob during a full blob-store scan.
+/// Discriminator embedded in every [`CommitManifest`]. Since manifests
+/// moved behind [`COMMIT_MANIFEST_PREFIX`] it no longer separates them from
+/// wire blobs; it survives as the shape of the legacy manifests
+/// [`StorageEngine::rebuild_index_from_manifests`] refuses.
 const COMMIT_MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
+
+/// Marks a blob as a [`CommitManifest`]: every stored manifest is these
+/// bytes followed by its JSON.
+///
+/// This is the manifest keyspace inside the shared blob store. A wire blob
+/// can never carry it: [`canonical_coz`] re-serializes every submitted coz
+/// itself, so a stored wire blob is always a JSON object and begins with
+/// `{`, while the leading NUL here is not valid at the start of any JSON
+/// document. Separation therefore rests on the engine's own serializer,
+/// never on inspecting caller bytes for a marker (an escaped member name
+/// such as `"\u006bind"` would defeat any such inspection). Chosen over a
+/// second backend keyspace because `BlobStore` has out-of-tree
+/// implementors; a backend keyspace is the stronger form if that trait is
+/// ever widened.
+pub const COMMIT_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/commit-manifest/v1\0";
 
 /// A durable, content-addressed record of one [`ingest_commit`](StorageEngine::ingest_commit)
 /// call's fully-resolved [`IndexableCommit`] — written to the blob store
@@ -155,6 +172,8 @@ const COMMIT_MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
 /// re-derive a commit directly, without the permutation search
 /// that reconstructing same-timestamp mutation order would need. Per root `AGENTS.md` invariant I1,
 /// the manifest is itself blob-store content, not a new index-only source of truth.
+///
+/// Stored as [`COMMIT_MANIFEST_PREFIX`] followed by this struct's JSON.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CommitManifest {
     kind: String,
@@ -638,7 +657,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             kind: COMMIT_MANIFEST_KIND.to_string(),
             commit: commit.clone(),
         };
-        let manifest_bytes = serde_json::to_vec(&manifest)
+        let mut manifest_bytes = COMMIT_MANIFEST_PREFIX.to_vec();
+        serde_json::to_writer(&mut manifest_bytes, &manifest)
             .map_err(|e| EngineError::MalformedBlob(format!("commit manifest serialize: {e}")))?;
         let manifest_hash = self.blob_store.put(&manifest_bytes).await?;
 
@@ -756,12 +776,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Some(data) = self.blob_store.get(&hash).await? else {
                 continue;
             };
-            let Ok(manifest) = serde_json::from_slice::<CommitManifest>(&data) else {
+            let Some(json) = data.strip_prefix(COMMIT_MANIFEST_PREFIX) else {
+                // A wire blob. One shaped like a manifest cannot have been
+                // written by this engine (it stores wire cozes in canonical
+                // form only), so it is an old shared-store manifest or a
+                // forged coz, and nothing here can tell which.
+                if is_legacy_manifest(&data) {
+                    return Err(EngineError::LegacyManifest { hash });
+                }
                 continue;
             };
-            if manifest.kind != COMMIT_MANIFEST_KIND {
-                continue;
-            }
+            let manifest: CommitManifest = serde_json::from_slice(json)
+                .map_err(|e| EngineError::MalformedBlob(format!("commit manifest {hash}: {e}")))?;
+            self.check_manifest_supported(&hash, &manifest.commit)
+                .await?;
             manifests.push(manifest);
         }
 
@@ -776,6 +804,36 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         Ok(count)
+    }
+
+    /// Refuse a manifest whose commit names blobs the store does not hold:
+    /// the index is a cache of the blobs (I1), so a manifest field the
+    /// blobs do not support must not reach it.
+    async fn check_manifest_supported(
+        &self,
+        manifest: &Blake3Hash,
+        commit: &IndexableCommit,
+    ) -> Result<(), EngineError> {
+        if commit.blob_hashes.is_empty()
+            || commit.cozies.len() != commit.blob_hashes.len()
+            || commit
+                .cozies
+                .iter()
+                .zip(&commit.blob_hashes)
+                .any(|(coz, hash)| coz.blob_hash != *hash)
+        {
+            return Err(EngineError::MalformedBlob(format!(
+                "commit manifest {manifest}: cozies and blob hashes disagree"
+            )));
+        }
+        for hash in &commit.blob_hashes {
+            if !self.blob_store.exists(hash).await? {
+                return Err(EngineError::NotFound(format!(
+                    "commit manifest {manifest} names blob {hash}, which is not stored"
+                )));
+            }
+        }
+        Ok(())
     }
 
     // ========================================================================
@@ -1544,6 +1602,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 }
 
+/// Whether `data` parses as the pre-keyspace manifest shape. Parsed, not
+/// searched: JSON lets any member name be spelled with escapes.
+fn is_legacy_manifest(data: &[u8]) -> bool {
+    serde_json::from_slice::<CommitManifest>(data).is_ok_and(|m| m.kind == COMMIT_MANIFEST_KIND)
+}
+
 /// The members of a stored wire coz: exactly what the signature and the
 /// protocol need (`pay`, `sig`, and a disclosed `key`). Coz allows
 /// applications to add members, so extras are tolerated on the wire but
@@ -1551,7 +1615,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 /// recomputed and a mismatch refused (and the value dropped, as any
 /// consumer can recompute it).
 ///
-/// One signed coz therefore has one blob address.
+/// One signed coz therefore has one blob address, and a stored wire blob
+/// cannot be shaped like anything else the engine stores.
 fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 

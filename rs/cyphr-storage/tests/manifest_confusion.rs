@@ -708,7 +708,6 @@ async fn action_only_no_error_after_store() {
 /// never silently indexed: rebuild refuses with a typed error and indexes
 /// nothing. Turns red if: rebuild indexes it or ignores it without error.
 #[tokio::test]
-#[ignore = "RED(H1F): manifest keyspace not yet separated"]
 async fn rebuild_refuses_legacy_manifest_shaped_wire_blobs() {
     let e = engine();
     let legacy = serde_json::to_vec(&serde_json::json!({

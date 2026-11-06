@@ -1004,8 +1004,12 @@ async fn manifest_retains_ingest_order_without_search() {
         .await
         .unwrap()
         .expect("manifest must be present in the blob store");
-    let manifest: super::CommitManifest =
-        serde_json::from_slice(&manifest_bytes).expect("manifest must deserialize");
+    let manifest: super::CommitManifest = serde_json::from_slice(
+        manifest_bytes
+            .strip_prefix(super::COMMIT_MANIFEST_PREFIX)
+            .expect("a stored manifest carries the manifest keyspace prefix"),
+    )
+    .expect("manifest must deserialize");
 
     assert_eq!(manifest.kind, super::COMMIT_MANIFEST_KIND);
     let retained_order: Vec<Vec<u8>> = manifest
