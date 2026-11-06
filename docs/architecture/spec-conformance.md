@@ -50,9 +50,9 @@ go stale when a fix lands. Each test name resolves in the named file; a
 | :------------- | ---: |
 | `covered`      |   46 |
 | `red-existing` |    0 |
-| `red-new`      |    4 |
+| `red-new`      |    6 |
 | `not-testable` |   14 |
-| `out-of-scope` |    8 |
+| `out-of-scope` |    6 |
 | `total`        |   72 |
 
 Fixing ids on red rows: `q3` is the last-key
@@ -693,14 +693,15 @@ evaluator: none
 
 ### [sc-l1673]
 
-SPEC 10.2, line 1673. Disposition: `out-of-scope`.
+SPEC 10.2, line 1673. Disposition: `red-new`.
 
 - spec-line: 1673
 - source: rule
-- disposition: out-of-scope
+- disposition: red-new
 - spec-text: - The nonce's bit length must match the declared algorithm's output size (e.g.,
-- tests: none
-- reason: Nonces are not implemented at Levels 1-4: the only nonce-taking code is `#[cfg(test)]` helpers in `state.rs` (`compute_kr` and siblings), which accept a nonce of any length (`ks_with_nonce_hashes` uses two bytes), and no public API passes one. The bit-length requirement is a must (the next bullet's 'only strength check possible') and gets a test when a public nonce path exists.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s10_2_nonce_bit_length_must_match_the_declared_algorithm`
+- fails when: a nonce whose width differs from the output size of the algorithm it declares (a SHA-256 nonce of anything but 32 bytes, likewise SHA-384 and SHA-512) is accepted at the PR, AT or KT path, or a correct-width nonce is refused (red today: nonces are not implemented).
 
 ```claim
 kind: requirement
@@ -709,14 +710,15 @@ evaluator: none
 
 ### [sc-l1674]
 
-SPEC 10.2, line 1674. Disposition: `out-of-scope`.
+SPEC 10.2, line 1674. Disposition: `red-new`.
 
 - spec-line: 1674
 - source: rule
-- disposition: out-of-scope
+- disposition: red-new
 - spec-text: a nonce declared as SHA-256 must be 256 bits). Bit-checking is the only
-- tests: none
-- reason: Same sentence as line 1673 (nonce bit length); no public nonce path to test.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s10_2_nonce_bit_length_must_match_the_declared_algorithm`
+- fails when: same sentence as line 1673 (nonce bit length); the same test covers both lines.
 
 ```claim
 kind: requirement
