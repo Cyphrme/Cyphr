@@ -102,6 +102,9 @@ impl Drop for Slot {
     }
 }
 
+/// Pause after a failed `accept` before trying again.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
 /// How long writing one response may take before the session is dropped.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -155,7 +158,8 @@ impl SessionError {
 ///
 /// [`ServeError::Keyless`] before anything is accepted when the server has
 /// no attestor capability; [`ServeError::Router`] when the application
-/// router cannot be built; [`ServeError::Io`] when accepting fails.
+/// router cannot be built. A failed `accept` is logged and retried, never
+/// returned.
 pub async fn serve_noise(listener: TcpListener, state: Arc<AppState>) -> Result<(), ServeError> {
     require_attestor(&state)?;
     let router = build_app_router(state.clone()).map_err(|e| ServeError::Router(e.to_string()))?;
@@ -177,7 +181,17 @@ pub async fn serve_noise_with(
     require_attestor(&state)?;
     let slots = Slots::new();
     loop {
-        let (stream, peer) = listener.accept().await?;
+        // Running out of descriptors or a connection aborted before accept
+        // is the peers' doing or the machine's, not a reason to stop
+        // listening; back off briefly so a persistent failure cannot spin.
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                tracing::warn!(%err, "transport accept failed; retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            },
+        };
         let Some(slot) = slots.admit(peer.ip()) else {
             tracing::debug!(%peer, "transport at capacity for this address; dropped");
             continue;

@@ -950,12 +950,14 @@ async fn the_transport_carries_the_body_limit() {
 // hold. Source addresses on 127.0.0.0/8 stand in for distinct clients.
 
 /// Connect to `addr` from the loopback address `from`.
+async fn try_connect_from(from: &str, addr: SocketAddr) -> std::io::Result<tokio::net::TcpStream> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    socket.bind(SocketAddr::new(from.parse().expect("ip"), 0))?;
+    socket.connect(addr).await
+}
+
 async fn connect_from(from: &str, addr: SocketAddr) -> tokio::net::TcpStream {
-    let socket = tokio::net::TcpSocket::new_v4().expect("socket");
-    socket
-        .bind(SocketAddr::new(from.parse().expect("ip"), 0))
-        .expect("bind a loopback source");
-    socket.connect(addr).await.expect("connect")
+    try_connect_from(from, addr).await.expect("connect")
 }
 
 /// Whether the server has closed `sock`: a read says end of file or an
@@ -1119,4 +1121,107 @@ async fn a_peer_that_never_reads_is_cut_off() {
         late.is_err(),
         "the server waited out a peer that never read"
     );
+}
+
+/// Claim: the transport listener survives accept failures. With the
+/// process limited to a few dozen file descriptors, connections from many
+/// addresses exhaust them and `accept` fails; once the flood is gone the
+/// listener still accepts and authenticates a client.
+///
+/// Turns red if: an accept error ends the listener (the honest connect is
+/// then refused). End-to-end scenario: yes (the shipped binary, `ulimit`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_listener_survives_running_out_of_descriptors() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = common::write_signing_key(dir.path());
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -n 96; exec \"$0\" \"$@\"")
+        .arg(env!("CARGO_BIN_EXE_cyphr-server"))
+        .args([
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--transport-listen",
+            "127.0.0.1:0",
+        ])
+        .arg("--data-dir")
+        .arg(dir.path().join("data"))
+        .arg("--signing-key-path")
+        .arg(&key)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn cyphr-server");
+    struct Kill(std::process::Child);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            _ = self.0.kill();
+            _ = self.0.wait();
+        }
+    }
+    let stdout = child.stdout.take().expect("piped");
+    let guard = Kill(child);
+    let mut lines = BufReader::new(stdout).lines();
+    let mut addr_of = |prefix: &str| -> SocketAddr {
+        lines
+            .next()
+            .expect("a line")
+            .expect("readable")
+            .strip_prefix(prefix)
+            .expect("the expected announcement")
+            .trim()
+            .parse()
+            .expect("an address")
+    };
+    let http_addr = addr_of("listening on ");
+    let transport = addr_of("transport listening on ");
+
+    // 40 addresses x 3 connections, each under the per-address allowance.
+    let mut flood = Vec::new();
+    for host in 10..50 {
+        for _ in 0..3 {
+            // Once the server is out of descriptors a connect may stall or
+            // fail; either is the point of the flood.
+            if let Ok(Ok(s)) = tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                try_connect_from(&format!("127.0.0.{host}"), transport),
+            )
+            .await
+            {
+                flood.push(s);
+            }
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    drop(flood);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let http = reqwest::Client::new();
+    let discovery: serde_json::Value = http
+        .get(format!("http://{http_addr}/server"))
+        .send()
+        .await
+        .expect("GET /server")
+        .json()
+        .await
+        .expect("json");
+    let d = &discovery["payload"];
+    let g = &d["genesis"];
+    let genesis = cyphr::Key::new(
+        g["alg"].as_str().expect("alg").to_string(),
+        coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(g["tmb"].as_str().expect("tmb")).expect("tmb"),
+        ),
+        Base64UrlUnpadded::decode_vec(g["pub"].as_str().expect("pub")).expect("pub"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
+    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis);
+    level_one_session(transport, &mut held).await;
+    drop(guard);
 }
