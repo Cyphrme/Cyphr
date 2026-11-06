@@ -336,21 +336,22 @@ mod tests {
     // chain lookup; the chain re-check and the subject match are covered
     // end to end in tests/route_protection.rs, which has real principals) ---
 
-    fn test_engine() -> crate::AppState {
+    /// The state and the directory backing it; hold the guard for the
+    /// test's lifetime.
+    fn test_engine() -> (crate::AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = crate::config::ServerConfig {
             data_dir: dir.path().join("data"),
             ..Default::default()
         };
-        // The state outlives this helper; the directory must too.
-        std::mem::forget(dir);
-        crate::AppState::new(config).expect("open AppState")
+        let state = crate::AppState::new(config).expect("open AppState");
+        (state, dir)
     }
 
     #[tokio::test]
     async fn require_bearer_rejects_missing_token() {
         let identity = test_identity();
-        let state = test_engine();
+        let (state, _dir) = test_engine();
         let result = require_bearer(
             &HeaderMap::new(),
             &identity,
@@ -365,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn require_bearer_rejects_invalid_token() {
         let identity = test_identity();
-        let state = test_engine();
+        let (state, _dir) = test_engine();
         let headers = headers_with_bearer("garbage");
         assert!(
             require_bearer(
@@ -387,7 +388,7 @@ mod tests {
     #[tokio::test]
     async fn require_bearer_rejects_token_without_login_key() {
         let identity = test_identity();
-        let state = test_engine();
+        let (state, _dir) = test_engine();
         let token = identity
             .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
@@ -406,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn check_push_admission_allows_no_token() {
         let identity = test_identity();
-        let state = test_engine();
+        let (state, _dir) = test_engine();
         assert!(
             check_push_admission(
                 &HeaderMap::new(),
@@ -424,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn check_push_admission_rejects_invalid_token() {
         let identity = test_identity();
-        let state = test_engine();
+        let (state, _dir) = test_engine();
         let headers = headers_with_bearer("garbage");
         assert!(
             check_push_admission(
@@ -446,7 +447,7 @@ mod tests {
         // all -- no such token could ever have been genuinely issued by
         // this server, so the check is skipped rather than rejecting on a
         // config detail unrelated to the pushed payload's own validity.
-        let state = test_engine();
+        let (state, _dir) = test_engine();
         let headers = headers_with_bearer("anything");
         assert!(
             check_push_admission(
