@@ -455,6 +455,7 @@ pub async fn push(
         &headers,
         state.identity.as_deref(),
         &state.engine,
+        &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
     )

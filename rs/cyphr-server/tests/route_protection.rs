@@ -361,8 +361,9 @@ async fn push_with_mismatched_token_pr_rejected() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(
+        .issue_login_token(
             "a-different-principal",
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["write".to_string()],
             real_now(),
             300,
@@ -392,8 +393,9 @@ async fn push_with_matching_token_pr_succeeds() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(
+        .issue_login_token(
             principal_id,
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["read".to_string(), "write".to_string()],
             real_now(),
             300,
@@ -843,9 +845,27 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
     let absent = identity
         .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300)
         .expect("issue token");
-    let unbound = identity
-        .issue_token(pid.as_str(), perms(), real_now(), 300)
-        .expect("issue token");
+    // What no login mints: a genuine server-signed bearer token naming no
+    // login key (built by hand; issuance has no such path).
+    let unbound = {
+        let mut pay = coz::Pay::new();
+        pay.alg = Some(identity.alg().name().to_string());
+        pay.now = Some(real_now());
+        pay.tmb = identity.alg().compute_thumbprint(identity.pub_key());
+        pay.typ = Some(cyphr_server::auth::token::BEARER_TOKEN_TYP.to_string());
+        pay.extra
+            .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+        pay.extra
+            .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
+        pay.extra
+            .insert("perms".to_string(), serde_json::json!(perms()));
+        let (sig, _cad) = identity.sign(&serde_json::to_vec(&pay).unwrap()).unwrap();
+        serde_json::to_string(&coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig,
+        })
+        .unwrap()
+    };
 
     for (label, token, reason) in [
         ("absent key", absent, "not an active key"),
@@ -866,4 +886,107 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
             "{label}: refused for the wrong reason (want `{reason}`): {json:?}"
         );
     }
+}
+
+/// POST a self-signed naked revoke (SPEC 6.4) of pool key `name`, which
+/// discloses its own key, to `/revoke`. Mirrors `tests/naked_revoke.rs`.
+async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &str) {
+    let key = pool.get(name).expect("key in pool");
+    let pay = serde_json::json!({
+        "alg": key.alg,
+        "now": 1_700_000_300,
+        "rvk": 1_700_000_300,
+        "tmb": key.compute_tmb_b64().expect("tmb"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let prv = Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&key.pub_key).unwrap();
+    let (sig, _cad) =
+        coz::sign_json(&serde_json::to_vec(&pay).unwrap(), &key.alg, &prv, &pub_key).unwrap();
+    let body = serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": { "alg": key.alg, "pub": key.pub_key },
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/revoke")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (status, json) = send(req, build_router(state.clone())).await;
+    assert!(
+        status.is_success(),
+        "naked revoke accepted: {status} {json:?}"
+    );
+}
+
+/// Backs: a session lives only while its login key is alive, and a naked
+/// revoke (SPEC 6.4) kills a key globally without touching the chain. The
+/// key that opened a session is naked-revoked after login: its token is
+/// refused at `/push` and by `require_bearer`, while the sibling key's
+/// session (control) still authorizes the same push. Turns red if: the
+/// session check consults the chain only (the death-set is skipped), so
+/// the token keeps working until it expires. End to end: yes.
+#[tokio::test]
+async fn token_key_naked_revoked_session_refused() {
+    let state = state_with_login();
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool);
+    let pid = pid.as_str();
+
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000);
+    let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
+
+    let doomed = login_token(&state, &pool, "key_a", pid).await;
+    let survivor = login_token(&state, &pool, "golden", pid).await;
+    naked_revoke(&state, &pool, "key_a").await;
+
+    let genesis = state.engine.resolve_genesis(pid, &[]).await.unwrap();
+    let principal = state.engine.load_principal(pid, genesis).await.unwrap();
+    let (blobs, _entry) =
+        sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400);
+    let followup = serde_json::json!({
+        "principal_id": pid,
+        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+    })
+    .to_string();
+
+    let (status, json) = send(
+        push_request(followup.clone(), Some(&doomed)),
+        build_router(state.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a naked-revoked key's session must be refused at push: {json:?}"
+    );
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {doomed}").parse().unwrap(),
+    );
+    let identity = state.identity.as_deref().unwrap();
+    let refused = cyphr_server::auth::middleware::require_bearer(
+        &headers,
+        identity,
+        &state.engine,
+        &state.observations,
+        real_now(),
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "a naked-revoked key's session must be refused by require_bearer"
+    );
+
+    let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the sibling key's session must still authorize the push: {json:?}"
+    );
 }

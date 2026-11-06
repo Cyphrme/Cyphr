@@ -941,7 +941,7 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
 /// Backs: one principal has one token subject. A login claiming the bare
 /// spelling and one claiming the algorithm-labelled spelling of the same
 /// identity both succeed and mint tokens naming the same subject. Turns
-/// red if: `parsed.pr` reaches `issue_token` as typed, giving a relying
+/// red if: `parsed.pr` reaches `issue_login_token` as typed, giving a relying
 /// party two account rows for one identity. A no-op that canonicalizes
 /// only one flow (or lowercases) still fails the equality. End to end: yes.
 #[tokio::test]
@@ -1222,7 +1222,13 @@ async fn login_role_is_not_interchangeable_with_other_statements() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(pid.as_str(), vec!["read".into()], now_secs(), 300)
+        .issue_login_token(
+            pid.as_str(),
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
+            vec!["read".into()],
+            now_secs(),
+            300,
+        )
         .expect("issue token");
     let (status, json) = post_json(build_router(state.clone()), "/auth/login", token).await;
     assert!(

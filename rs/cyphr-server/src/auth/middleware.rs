@@ -19,6 +19,7 @@ use cyphr_storage::engine::{EngineError, bare_digest};
 use super::ServerIdentity;
 use super::token::{Claims, TokenError};
 use crate::error::AppError;
+use crate::observation::{ObservationError, ObservationStore};
 
 /// The concrete engine type the server runs on.
 type Engine = cyphr_storage::engine::StorageEngine<
@@ -33,6 +34,10 @@ pub enum SessionError {
     /// The token's principal has no stored chain, so no key can be checked.
     #[error("bearer token's principal is unknown")]
     UnknownPrincipal,
+
+    /// Reading the naked-revoke death-set failed.
+    #[error("reading the naked-revoke record: {0}")]
+    Observation(ObservationError),
 
     /// Reading the principal from storage failed.
     #[error("loading the session's principal: {0}")]
@@ -65,6 +70,7 @@ impl From<SessionError> for AppError {
     fn from(err: SessionError) -> Self {
         match err {
             SessionError::Storage(e) => AppError::engine(e),
+            SessionError::Observation(e) => AppError::observation(e),
             other => AppError::unauthorized(format!("bearer token rejected: {other}")),
         }
     }
@@ -100,13 +106,18 @@ pub fn verify_bearer_if_present(
         .transpose()
 }
 
-/// Re-check, against `engine`'s current view of the token's principal,
-/// that the key which logged in is still active (#162).
+/// Re-check, against `engine`'s current view of the token's principal and
+/// the naked-revoke death-set, that the key which logged in is still
+/// active (#162).
 ///
 /// The principal is replayed from storage on each call (replay-cost
 /// caching is deferred, root U3), so the answer is as current as the
 /// server's own view -- not a claim about other views of the principal.
-pub async fn check_session_key(engine: &Engine, claims: &Claims) -> Result<(), SessionError> {
+pub async fn check_session_key(
+    engine: &Engine,
+    observations: &ObservationStore,
+    claims: &Claims,
+) -> Result<(), SessionError> {
     let load_error = |e: EngineError| match e {
         EngineError::NotFound(_) => SessionError::UnknownPrincipal,
         other => SessionError::Storage(other),
@@ -134,6 +145,16 @@ pub async fn check_session_key(engine: &Engine, claims: &Claims) -> Result<(), S
     if !principal.is_key_active(&login_tmb) {
         return Err(SessionError::Revoked);
     }
+    // A naked revoke (SPEC 6.4) kills the key globally without touching the
+    // chain, so the chain alone still calls it active; login refuses such a
+    // key and so must the session it opened.
+    if observations
+        .is_dead(&login_tmb)
+        .await
+        .map_err(SessionError::Observation)?
+    {
+        return Err(SessionError::Revoked);
+    }
     if principal.lifecycle_state() != cyphr::lifecycle::LifecycleState::Active {
         return Err(SessionError::PrincipalNotActive);
     }
@@ -150,11 +171,12 @@ pub async fn require_bearer(
     headers: &HeaderMap,
     identity: &ServerIdentity,
     engine: &Engine,
+    observations: &ObservationStore,
     now: i64,
 ) -> Result<Claims, AppError> {
     match verify_bearer_if_present(headers, identity, now) {
         Ok(Some(claims)) => {
-            check_session_key(engine, &claims).await?;
+            check_session_key(engine, observations, &claims).await?;
             Ok(claims)
         },
         Ok(None) => Err(AppError::unauthorized("missing bearer token")),
@@ -179,6 +201,7 @@ pub async fn check_push_admission(
     headers: &HeaderMap,
     identity: Option<&ServerIdentity>,
     engine: &Engine,
+    observations: &ObservationStore,
     target_principal: &str,
     now: i64,
 ) -> Result<(), AppError> {
@@ -205,7 +228,7 @@ pub async fn check_push_admission(
             "bearer token does not authorize this principal",
         ));
     }
-    match check_session_key(engine, &claims).await {
+    match check_session_key(engine, observations, &claims).await {
         // A push naming a principal with no stored chain is its genesis:
         // no session can exist yet, and the optional knob (R7) leaves the
         // bundle's own signatures as the authorization.
@@ -288,7 +311,7 @@ mod tests {
     fn verify_bearer_if_present_ok_some_for_valid_token() {
         let identity = test_identity();
         let token = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
         let headers = headers_with_bearer(&token);
         let result = verify_bearer_if_present(&headers, &identity, 1_100);
@@ -328,7 +351,14 @@ mod tests {
     async fn require_bearer_rejects_missing_token() {
         let identity = test_identity();
         let state = test_engine();
-        let result = require_bearer(&HeaderMap::new(), &identity, &state.engine, 1_100).await;
+        let result = require_bearer(
+            &HeaderMap::new(),
+            &identity,
+            &state.engine,
+            &state.observations,
+            1_100,
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -338,23 +368,38 @@ mod tests {
         let state = test_engine();
         let headers = headers_with_bearer("garbage");
         assert!(
-            require_bearer(&headers, &identity, &state.engine, 1_100)
-                .await
-                .is_err()
+            require_bearer(
+                &headers,
+                &identity,
+                &state.engine,
+                &state.observations,
+                1_100
+            )
+            .await
+            .is_err()
         );
     }
 
-    /// Fail closed (#162): a validly signed, unexpired token that names no
-    /// login key (not minted by a login) is refused before any chain lookup.
+    /// A validly signed, unexpired token that names no login key (not
+    /// minted by a login) is refused. Here its principal is also unknown;
+    /// the no-login-key arm for a stored principal is pinned end to end by
+    /// `token_key_absent_or_missing_is_refused_at_push`.
     #[tokio::test]
     async fn require_bearer_rejects_token_without_login_key() {
         let identity = test_identity();
         let state = test_engine();
         let token = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
         let headers = headers_with_bearer(&token);
-        let result = require_bearer(&headers, &identity, &state.engine, 1_100).await;
+        let result = require_bearer(
+            &headers,
+            &identity,
+            &state.engine,
+            &state.observations,
+            1_100,
+        )
+        .await;
         assert!(result.is_err(), "a token with no login key must be refused");
     }
 
@@ -363,9 +408,16 @@ mod tests {
         let identity = test_identity();
         let state = test_engine();
         assert!(
-            check_push_admission(&HeaderMap::new(), Some(&identity), &state.engine, PR, 1_100)
-                .await
-                .is_ok()
+            check_push_admission(
+                &HeaderMap::new(),
+                Some(&identity),
+                &state.engine,
+                &state.observations,
+                PR,
+                1_100
+            )
+            .await
+            .is_ok()
         );
     }
 
@@ -375,9 +427,16 @@ mod tests {
         let state = test_engine();
         let headers = headers_with_bearer("garbage");
         assert!(
-            check_push_admission(&headers, Some(&identity), &state.engine, PR, 1_100)
-                .await
-                .is_err()
+            check_push_admission(
+                &headers,
+                Some(&identity),
+                &state.engine,
+                &state.observations,
+                PR,
+                1_100
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -390,9 +449,16 @@ mod tests {
         let state = test_engine();
         let headers = headers_with_bearer("anything");
         assert!(
-            check_push_admission(&headers, None, &state.engine, PR, 1_100)
-                .await
-                .is_ok()
+            check_push_admission(
+                &headers,
+                None,
+                &state.engine,
+                &state.observations,
+                PR,
+                1_100
+            )
+            .await
+            .is_ok()
         );
     }
 }

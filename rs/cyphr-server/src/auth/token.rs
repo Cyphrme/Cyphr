@@ -3,7 +3,7 @@
 //! A bearer token is a signed Coz message *from the service*: the server
 //! signs the claims with its own [`ServerIdentity`], and a holder presents
 //! the resulting opaque string on subsequent requests instead of re-signing
-//! each one. `issue_token` is called from the login flow (`auth::login`);
+//! each one. `issue_login_token` is called from the login flow (`auth::login`);
 //! `verify_token` is called from `auth::middleware`'s bearer-verification
 //! helpers, wired into `/push`'s optional admission knob.
 //!
@@ -86,8 +86,11 @@ pub enum TokenError {
 }
 
 impl ServerIdentity {
-    /// Issue a bearer token for `pr`, authorizing `perms`, expiring
-    /// `ttl_secs` after `now`.
+    /// Issue the bearer token a successful login mints: `pr`, authorizing
+    /// `perms`, expiring `ttl_secs` after `now`, plus the thumbprint of the
+    /// key that logged in. That thumbprint is signed into the token so
+    /// route protection can end the session when the key leaves the chain
+    /// or dies (#162).
     ///
     /// The token is always stamped with [`BEARER_TOKEN_TYP`]; the caller
     /// cannot mint a token under any other `typ`, which is the issuance
@@ -95,22 +98,6 @@ impl ServerIdentity {
     ///
     /// Returns `None` if coz rejects the payload or this identity's key
     /// (mirrors [`ServerIdentity::sign`]).
-    pub fn issue_token(
-        &self,
-        pr: impl Into<String>,
-        perms: Vec<String>,
-        now: i64,
-        ttl_secs: i64,
-    ) -> Option<String> {
-        self.issue(pr.into(), None, perms, now, ttl_secs)
-    }
-
-    /// Issue the bearer token a successful login mints: [`issue_token`]
-    /// plus the thumbprint of the key that logged in, signed into the
-    /// token so route protection can end the session when that key
-    /// leaves the chain (#162).
-    ///
-    /// [`issue_token`]: ServerIdentity::issue_token
     pub fn issue_login_token(
         &self,
         pr: impl Into<String>,
@@ -120,6 +107,33 @@ impl ServerIdentity {
         ttl_secs: i64,
     ) -> Option<String> {
         self.issue(pr.into(), Some(login_tmb), perms, now, ttl_secs)
+    }
+
+    /// A login-shaped token under a fixed login key, for unit tests that
+    /// only need some verifiable token.
+    #[cfg(test)]
+    pub(crate) fn issue_test_token(
+        &self,
+        pr: impl Into<String>,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+    ) -> Option<String> {
+        let tmb = coz::Alg::Ed25519.compute_thumbprint(&[7u8; 32])?;
+        self.issue_login_token(pr, &tmb, perms, now, ttl_secs)
+    }
+
+    /// A validly signed token that names no login key -- what no login
+    /// mints -- to exercise route protection's fail-closed arm.
+    #[cfg(test)]
+    pub(crate) fn issue_unbound_token(
+        &self,
+        pr: impl Into<String>,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+    ) -> Option<String> {
+        self.issue(pr.into(), None, perms, now, ttl_secs)
     }
 
     fn issue(
@@ -324,7 +338,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(
+            .issue_test_token(
                 PR,
                 vec!["read".to_string(), "write".to_string()],
                 1_000,
@@ -355,7 +369,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // Flip a claim without re-signing: "read" -> "admin".
@@ -381,7 +395,7 @@ mod tests {
         let foreign = ServerIdentity::load_from_path(&foreign_path).expect("load foreign key");
 
         let token = foreign
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token from foreign identity");
 
         let result = identity.verify_token(&token, 1_100);
@@ -398,7 +412,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // now == exp: expiry is inclusive of the boundary instant.
@@ -431,7 +445,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(
+            .issue_test_token(
                 PR,
                 vec!["read".to_string(), "write".to_string()],
                 1_700_000_000,
@@ -443,8 +457,9 @@ mod tests {
             r#"{"pay":{"alg":"Ed25519","now":1700000000,"#,
             r#""tmb":"aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw","#,
             r#""typ":"cyphr-server/auth/token","pr":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
-            r#""exp":1700000900,"perms":["read","write"]},"#,
-            r#""sig":"a7Gqw1C2Pd8XgBS-HYdzPfinLtAKZl2AlDeEWWpcNLrIoyNBm-_icERvy4SlNMQOJCzLw5w5A0w08t5dl8aYCg"}"#,
+            r#""exp":1700000900,"perms":["read","write"],"#,
+            r#""ltmb":"OzD0J6wdMqmN0aWu42RcWFRp1DzYJeQW8KYvXdrsLOrNV8Pva_ZpjrNtvsdqWsFL_zpZUDutAiTu4W5OdIL44A"},"#,
+            r#""sig":"rdOfTv9Wm11gKJ9YT6tbj1wNs1cB8aF_yQKPjahwc3iEccPcsZF8wjJf9cJb04LHkAqhZ8BD3kYuWJi5HjaVAQ"}"#,
         );
 
         assert_eq!(token, GOLDEN);
@@ -507,7 +522,7 @@ mod tests {
         assert_eq!(claims.login_tmb, Some(login_tmb.to_b64()));
 
         let plain = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue plain token");
         assert_eq!(
             identity.verify_token(&plain, 1_100).unwrap().login_tmb,

@@ -384,7 +384,13 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
         .identity
         .as_ref()
         .expect("identity present after rotation")
-        .issue_token("some-principal", vec!["read".to_string()], now, 900)
+        .issue_login_token(
+            "some-principal",
+            &tmb_of(&new_kp),
+            vec!["read".to_string()],
+            now,
+            900,
+        )
         .expect("issue token");
 
     // The token carries the issuing key's thumbprint; after rotation it must
