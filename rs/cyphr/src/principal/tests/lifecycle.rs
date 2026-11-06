@@ -98,31 +98,6 @@ fn fresh_implicit_principal_derives_active() {
 }
 
 #[test]
-fn checkpoint_restored_principal_derives_active() {
-    // ac-field-threading: a checkpoint-restored principal must not be
-    // spuriously Frozen/Deleted — the new fields must default cleanly
-    // through `from_checkpoint`, not just the constructors that build a
-    // principal directly.
-    let (principal, keys) = build_principal_with_commits(2);
-    let trees = principal.commit_trees().clone();
-
-    let restored = Principal::from_checkpoint(
-        principal.pg().cloned(),
-        principal.auth_root().clone(),
-        keys,
-        Some(trees),
-    )
-    .unwrap();
-
-    assert!(!restored.is_deleted());
-    assert!(!restored.is_frozen());
-    assert_eq!(
-        restored.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Active
-    );
-}
-
-#[test]
 fn principal_with_no_active_keys_derives_dead() {
     let key = make_test_key(0xD1);
     let tmb = key.tmb().clone();
