@@ -10,6 +10,12 @@ Everything an operator needs to build, check and verify `cyphr-server`.
 
 Check a build: `packaging/smoke.sh result/bin/cyphr-server`.
 
+## Data directory
+
+`GET /healthz` writes a one-byte sentinel, `record/healthz.probe`, under the
+data directory to check that the record store is writable. Leave it in
+place: the server recreates it on the next probe, but it is not stray data.
+
 ## Verifying a release
 
 Each `rs/v*` release attaches `cyphr-server-<arch>-<os>` archives next to the
