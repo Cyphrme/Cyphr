@@ -22,7 +22,8 @@
 //! exchange-hash signature (RFC 4253 section 8), with a Cyphr key in place
 //! of a certificate. The responder is judged by the keys ACTIVE in the
 //! [`PeerChain`] the caller pinned ([`PeerChain::active_key`]); the
-//! initiator by the chain the server stores for the principal it names.
+//! initiator by the chain the server stores for the principal it names (or,
+//! for an unstored Level 1 principal, by its self-certifying key sidecar).
 //!
 //! No long-lived key exists outside Cyphr: both Noise keys are
 //! per-handshake ephemerals, and the signing keys are the principals' own,
@@ -41,10 +42,9 @@
 //! ## Noise implementation record
 //!
 //! - Crate: `snow`, pinned `=0.10.0`.
-//! - Audit status (2026-11-06): RUSTSEC-2024-0011 (unauthenticated nonce increment in the stateful
-//!   `TransportState`) is patched from 0.9.5, so 0.10.0 is not affected; no other advisory lists
-//!   `snow` in the RustSec advisory database checkout available at this node (its newest commit is
-//!   dated 2026-01-17). CI's rustsec job is the standing check.
+//! - Audit: CI's `rust-audit` job (`rustsec/audit-check`) audits this crate at `=0.10.0`; it is the
+//!   check of record. RUSTSEC-2024-0011 (unauthenticated nonce increment in the stateful
+//!   `TransportState`) is patched from 0.9.5, so 0.10.0 is not affected by it.
 //!
 //! # Wire format
 //!
@@ -52,14 +52,22 @@
 //! big-endian `u16` length, then the Noise message. After the handshake:
 //!
 //! 1. the responder sends its statement as the first transport message;
-//! 2. the initiator, once it verified that, replies with its own;
-//! 3. the initiator then sends requests and the responder answers, each a *logical message*: a
+//! 2. the initiator, once it verified that, replies with its own, plus a `key` sidecar (`{alg, pub,
+//!    tmb}`, the push-blob convention) beside `{pay, sig}`;
+//! 3. the responder answers with one ack message, accept or a typed refusal ([`encode_ack`]), and
+//!    `connect` returns only after an accept;
+//! 4. the initiator then sends requests and the responder answers, each a *logical message*: a
 //!    `u32` big-endian length and the body, chunked over as many Noise messages as Noise's 65535
 //!    byte limit needs. A request body is `method (1 byte), target length (u16), target, payload`;
 //!    a response body is `status (u16), payload`.
 //!
 //! A statement's plaintext is the Coz JSON; an empty plaintext is "no
-//! statement".
+//! statement". The sidecar is not signed and carries no authority of its
+//! own: a responder holding a stored chain for the named principal ignores
+//! it and verifies against that chain. Only for a principal it has no chain
+//! for (a Level 1 principal, whose id is its key's thumbprint) does it use
+//! the sidecar, and then the key must hash to the thumbprint the statement
+//! names and the thumbprint must be the claimed principal.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -148,6 +156,12 @@ pub enum TransportError {
     KeyNotActive {
         /// The thumbprint the statement names.
         tmb: String,
+    },
+    /// The responder verified this side's statement and refused it.
+    #[error("the responder refused this side: {reason}")]
+    Refused {
+        /// The reason the responder gave.
+        reason: String,
     },
     /// The pinned chain could not judge the statement at all.
     #[error("pinned chain: {0}")]
@@ -404,6 +418,32 @@ pub fn decode_response(bytes: &[u8]) -> Result<(u16, &[u8]), TransportError> {
     Ok((u16::from_be_bytes(*status), payload))
 }
 
+/// Encode the responder's verdict on the initiator statement: `Ok(())`
+/// accepts, `Err(reason)` refuses with a reason the initiator can report.
+#[must_use]
+pub fn encode_ack(verdict: Result<(), &str>) -> Vec<u8> {
+    match verdict {
+        Ok(()) => vec![0],
+        Err(reason) => [&[1u8][..], reason.as_bytes()].concat(),
+    }
+}
+
+/// Decode an ack written by [`encode_ack`].
+///
+/// # Errors
+///
+/// [`TransportError::Refused`] for a refusal; [`TransportError::Malformed`]
+/// for anything that is not an ack.
+pub fn decode_ack(bytes: &[u8]) -> Result<(), TransportError> {
+    match bytes.split_first() {
+        Some((0, [])) => Ok(()),
+        Some((1, reason)) => Err(TransportError::Refused {
+            reason: String::from_utf8_lossy(reason).into_owned(),
+        }),
+        _ => Err(malformed("not an ack message")),
+    }
+}
+
 // ---- the binding statement ----------------------------------------------
 
 /// Which end of the handshake a statement speaks for.
@@ -438,6 +478,7 @@ pub struct BindStatement {
     pr: String,
     role: String,
     tmb: coz::Thumbprint,
+    sidecar: Option<serde_json::Value>,
 }
 
 fn str_field<'a>(
@@ -482,6 +523,9 @@ impl BindStatement {
             pr: str_field(&coz.pay, "pr")?.to_string(),
             role: str_field(&coz.pay, "role")?.to_string(),
             tmb: coz::Thumbprint::from_bytes(b64_field(&coz.pay, "tmb")?),
+            sidecar: serde_json::from_slice::<serde_json::Value>(plaintext)
+                .ok()
+                .and_then(|v| v.get("key").cloned()),
             coz,
         })
     }
@@ -496,6 +540,37 @@ impl BindStatement {
     #[must_use]
     pub fn tmb(&self) -> &coz::Thumbprint {
         &self.tmb
+    }
+
+    /// The key the statement carries as its `key` sidecar, for a responder
+    /// that has no stored chain for the principal. `Ok(None)` when there is
+    /// none. Unsigned: the caller must still [`verify`](Self::verify) the
+    /// statement under it and check it is the key the statement names.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::BadBinding`] when the sidecar is malformed or its
+    /// `tmb` is not the thumbprint of its `alg` and `pub`.
+    pub fn sidecar_key(&self) -> Result<Option<Key>, TransportError> {
+        let bad = |what| TransportError::BadBinding { what };
+        let Some(side) = &self.sidecar else {
+            return Ok(None);
+        };
+        let field = |name: &str| {
+            side.get(name)
+                .and_then(serde_json::Value::as_str)
+                .ok_or(bad("the key sidecar lacks a field"))
+        };
+        let decode = |name: &str| {
+            Base64UrlUnpadded::decode_vec(field(name)?)
+                .map_err(|_| bad("the key sidecar has a field that is not base64url"))
+        };
+        let key = Key::from_pub_key(field("alg")?, decode("pub")?)
+            .map_err(|_| bad("the key sidecar names an unusable key"))?;
+        if key.tmb().as_bytes() != decode("tmb")?.as_slice() {
+            return Err(bad("the key sidecar thumbprint is not its key's"));
+        }
+        Ok(Some(key))
     }
 
     /// Check the statement is for the direction it arrived in and for this
@@ -580,18 +655,30 @@ pub fn statement_cad(alg: &str, pay: &[u8]) -> Result<coz::Cad, TransportError> 
     })
 }
 
-/// Assemble the statement message from its signed `pay` and `sig`.
+/// Assemble the statement message from its signed `pay` and `sig`, with the
+/// signer's public key as the `key` sidecar when `key` is given.
 ///
 /// # Errors
 ///
 /// [`TransportError::Malformed`] if `pay` is not JSON.
-pub fn assemble_statement(pay: &[u8], sig: &[u8]) -> Result<Vec<u8>, TransportError> {
-    serde_json::to_vec(&serde_json::json!({
+pub fn assemble_statement(
+    pay: &[u8],
+    sig: &[u8],
+    key: Option<(&str, &[u8], &coz::Thumbprint)>,
+) -> Result<Vec<u8>, TransportError> {
+    let mut statement = serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(pay)
             .map_err(|_| malformed("the statement pay is not JSON"))?,
         "sig": Base64UrlUnpadded::encode_string(sig),
-    }))
-    .map_err(|_| malformed("the statement does not serialize"))
+    });
+    if let Some((alg, pub_key, tmb)) = key {
+        statement["key"] = serde_json::json!({
+            "alg": alg,
+            "pub": Base64UrlUnpadded::encode_string(pub_key),
+            "tmb": tmb.to_b64(),
+        });
+    }
+    serde_json::to_vec(&statement).map_err(|_| malformed("the statement does not serialize"))
 }
 
 /// Whether two spellings name one principal: equal, or equal once any
@@ -654,8 +741,8 @@ impl NoiseConnector {
     /// [`KeyNotActive`](TransportError::KeyNotActive),
     /// [`MissingStatement`](TransportError::MissingStatement)); I/O, Noise
     /// and timeout errors for a session that never got that far. The
-    /// initiator's own statement is not acknowledged, so a server that
-    /// refuses it shows as a failed first request.
+    /// responder's verdict on this side's statement is awaited, so a server
+    /// that refuses it fails here as [`TransportError::Refused`].
     pub async fn connect(
         addr: SocketAddr,
         responder: &mut PeerChain,
@@ -683,7 +770,14 @@ impl NoiseConnector {
             unix_now(),
         )?;
         let sig = own.sign(&statement_cad(own.alg(), &pay)?).await?;
-        channel.send_one(&assemble_statement(&pay, &sig)?).await?;
+        let sidecar = Some((own.alg(), own.pub_key(), own.tmb()));
+        channel
+            .send_one(&assemble_statement(&pay, &sig, sidecar)?)
+            .await?;
+        let ack = tokio::time::timeout(HANDSHAKE_TIMEOUT, channel.recv_one())
+            .await
+            .map_err(|_| TransportError::Timeout)??;
+        decode_ack(&ack)?;
 
         Ok(Self {
             binding: ChannelBinding::new(BindingKind::NoiseHandshakeHash, h),

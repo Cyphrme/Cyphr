@@ -28,7 +28,9 @@ use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
-use cyphr_client::transport::{NoiseConnector, TransportError};
+use cyphr_client::transport::{
+    Channel, NoiseConnector, Role, TransportError, assemble_statement, decode_ack, statement_pay,
+};
 use cyphr_client::{
     BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector, PatchFailure,
     PatchRequest, PeerChain, Request, fetch_patch,
@@ -649,4 +651,161 @@ async fn serve_starts_the_transport_only_for_a_keyed_server() {
         .expect("keyless HTTP")
         .status();
     assert!(status.is_success(), "a keyless server keeps serving HTTP");
+}
+
+// ---- Level 1 initiators, the responder ack, naked revoke ----------------
+
+/// A hand-rolled initiator, so a test controls exactly what the statement
+/// claims and what sidecar it carries. The responder's own statement is
+/// read and not judged: these tests are about the server's verdict.
+struct Claim<'a> {
+    /// The key that signs.
+    signer: &'a coz::KeyPair,
+    /// The thumbprint and principal the pay claims.
+    tmb: &'a coz::Thumbprint,
+    pr: &'a str,
+    /// The `key` sidecar: algorithm, public key, claimed thumbprint.
+    sidecar: Option<(&'a str, &'a [u8], &'a coz::Thumbprint)>,
+}
+
+async fn initiate_with(addr: SocketAddr, claim: Claim<'_>) -> Result<(), TransportError> {
+    let stream = tokio::net::TcpStream::connect(addr).await?;
+    let mut channel = Channel::initiate(stream).await?;
+    let h = channel.handshake_hash().to_vec();
+    channel.recv_one().await?;
+    let alg = claim.signer.alg.name();
+    let pay = statement_pay(alg, claim.tmb, claim.pr, Role::Initiator, &h, 1_700_000_000)?;
+    let (sig, _) =
+        coz::sign_json(&pay, alg, &claim.signer.prv_bytes, &claim.signer.pub_bytes).expect("sign");
+    channel
+        .send_one(&assemble_statement(&pay, &sig, claim.sidecar)?)
+        .await?;
+    decode_ack(&channel.recv_one().await?)
+}
+
+fn fresh_key() -> (coz::KeyPair, coz::Thumbprint) {
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
+    (kp, tmb)
+}
+
+fn refused(outcome: Result<(), TransportError>, why: &str) {
+    assert!(
+        matches!(outcome, Err(TransportError::Refused { .. })),
+        "{why}: expected a typed refusal at the ack, got {outcome:?}"
+    );
+}
+
+/// Claim: a Level 1 principal (no stored chain; its id is its key's
+/// thumbprint) authenticates with a self-certifying key sidecar. A
+/// connector with a fresh key, nothing pushed, opens a served session; and
+/// the three ways to forge that claim are each refused with a reason: a
+/// sidecar whose thumbprint is not its key's, a sidecar that is not the key
+/// the statement names, and a thumbprint that is not the claimed principal.
+///
+/// Turns red if: an unstored principal is refused with an honest sidecar,
+/// or any forged claim is accepted. End-to-end scenario: yes.
+#[tokio::test]
+async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refused() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    // Positive: through the shipped connector, which always sends the sidecar.
+    let (kp, tmb) = fresh_key();
+    let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
+    let conn = NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+        .await
+        .expect("a Level 1 principal authenticates by its sidecar");
+    conn.exchange(&Request::get("/server"))
+        .await
+        .expect("the Level 1 session is served");
+
+    // The honest claim by hand is accepted, so each forgery below differs
+    // from it in exactly one respect.
+    let honest = Claim {
+        signer: &kp,
+        tmb: &tmb,
+        pr: &tmb.to_b64(),
+        sidecar: Some((kp.alg.name(), &kp.pub_bytes, &tmb)),
+    };
+    initiate_with(addr, honest)
+        .await
+        .expect("the control claim");
+
+    // The sidecar's thumbprint is not the thumbprint of its key. Statement,
+    // sidecar and principal all agree on the false thumbprint.
+    let false_tmb = coz::Thumbprint::from_bytes(vec![9; 32]);
+    let lying = Claim {
+        signer: &kp,
+        tmb: &false_tmb,
+        pr: &false_tmb.to_b64(),
+        sidecar: Some((kp.alg.name(), &kp.pub_bytes, &false_tmb)),
+    };
+    refused(
+        initiate_with(addr, lying).await,
+        "a thumbprint that is not the key's",
+    );
+
+    // The sidecar is another key's: its own thumbprint is honest, but the
+    // statement names a different one.
+    let (other, other_tmb) = fresh_key();
+    let swapped = Claim {
+        signer: &kp,
+        tmb: &tmb,
+        pr: &tmb.to_b64(),
+        sidecar: Some((other.alg.name(), &other.pub_bytes, &other_tmb)),
+    };
+    refused(
+        initiate_with(addr, swapped).await,
+        "a sidecar that is not the statement's key",
+    );
+
+    // Honest key and sidecar, but the claimed principal is not its
+    // thumbprint: a Level 1 key may only speak for itself.
+    let borrowed = Claim {
+        signer: &kp,
+        tmb: &tmb,
+        pr: &other_tmb.to_b64(),
+        sidecar: Some((kp.alg.name(), &kp.pub_bytes, &tmb)),
+    };
+    refused(
+        initiate_with(addr, borrowed).await,
+        "a principal that is not the key's thumbprint",
+    );
+
+    // No sidecar and no stored chain: nothing to verify against.
+    let bare = Claim {
+        signer: &kp,
+        tmb: &tmb,
+        pr: &tmb.to_b64(),
+        sidecar: None,
+    };
+    refused(initiate_with(addr, bare).await, "no chain and no sidecar");
+}
+
+/// Claim: the responder tells the initiator its verdict, so a refused
+/// initiator fails at `connect` with the reason, not on its first request.
+///
+/// Turns red if: `connect` returns Ok for a session the server refused, or
+/// the refusal arrives untyped. End-to-end scenario: yes.
+#[tokio::test]
+async fn a_refused_initiator_fails_at_connect_with_its_reason() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let own_principal = push_client_principal(&app).await;
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    let (kp, tmb) = fresh_key();
+    let stranger = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
+    let err = NoiseConnector::connect(addr, &mut held, &stranger, &own_principal)
+        .await
+        .err()
+        .expect("a stranger key must fail at connect");
+    assert!(
+        matches!(&err, TransportError::Refused { reason } if !reason.is_empty()),
+        "{err:?}"
+    );
 }

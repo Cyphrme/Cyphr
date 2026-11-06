@@ -27,7 +27,7 @@ use axum::extract::ConnectInfo;
 use cyphr_client::Method;
 use cyphr_client::transport::{
     BindStatement, Channel, HANDSHAKE_TIMEOUT, MAX_MESSAGE, Role, TransportError,
-    assemble_statement, decode_request, encode_response, statement_cad, statement_pay,
+    assemble_statement, decode_request, encode_ack, encode_response, statement_cad, statement_pay,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -69,6 +69,17 @@ enum SessionError {
     Initiator(&'static str),
     #[error("initiator lookup: {0}")]
     Lookup(String),
+}
+
+impl SessionError {
+    /// What the initiator is told. A lookup failure is the server's own
+    /// trouble and says nothing about the stored state.
+    fn reason(&self) -> String {
+        match self {
+            Self::Lookup(_) => "the server could not look up the principal".into(),
+            other => other.to_string(),
+        }
+    }
 }
 
 /// Serve the application router over Noise on `listener`, running until
@@ -155,7 +166,17 @@ async fn session(
     let incoming = tokio::time::timeout(HANDSHAKE_TIMEOUT, channel.recv_one())
         .await
         .map_err(|_| TransportError::Timeout)??;
-    authorize_initiator(state, &incoming, &h).await?;
+    // The verdict goes back before anything else, so a refused initiator
+    // learns it at `connect` and a served one knows it was accepted.
+    match authorize_initiator(state, &incoming, &h).await {
+        Ok(()) => channel.send_one(&encode_ack(Ok(()))).await?,
+        Err(refusal) => {
+            channel
+                .send_one(&encode_ack(Err(&refusal.reason())))
+                .await?;
+            return Err(refusal);
+        },
+    }
 
     loop {
         let message = match tokio::time::timeout(IDLE_TIMEOUT, channel.recv_message()).await {
@@ -202,7 +223,7 @@ async fn responder_statement(state: &AppState, h: &[u8]) -> Result<Vec<u8>, Sess
             "the signature does not verify under the signing key",
         ));
     }
-    Ok(assemble_statement(&pay, &sig)?)
+    Ok(assemble_statement(&pay, &sig, None)?)
 }
 
 /// Judge the initiator's statement: bound to this session and role, and
@@ -218,27 +239,48 @@ async fn authorize_initiator(
 
     let pr = statement.pr();
     let lookup = |e: cyphr_storage::engine::EngineError| SessionError::Lookup(e.to_string());
-    let genesis = state
-        .engine
-        .resolve_genesis(pr, &[])
-        .await
-        .map_err(lookup)?;
-    let principal = state
-        .engine
-        .load_principal(pr, genesis)
-        .await
-        .map_err(lookup)?;
-
-    // `get_key` also returns revoked keys, so activity is its own check.
-    let key = principal
-        .get_key(statement.tmb())
-        .ok_or(SessionError::Initiator("the key is not the principal's"))?;
-    statement.verify(key)?;
-    if !principal.is_key_active(statement.tmb()) {
-        return Err(SessionError::Initiator("the key is not active"));
-    }
-    if principal.lifecycle_state() != cyphr::lifecycle::LifecycleState::Active {
-        return Err(SessionError::Initiator("the principal is not active"));
+    let stored = state.engine.get_tip(pr).await.map_err(lookup)?.is_some();
+    if stored {
+        // A stored principal is judged by its chain alone; any sidecar the
+        // statement carries is ignored, so it cannot widen who may speak.
+        let genesis = state
+            .engine
+            .resolve_genesis(pr, &[])
+            .await
+            .map_err(lookup)?;
+        let principal = state
+            .engine
+            .load_principal(pr, genesis)
+            .await
+            .map_err(lookup)?;
+        // `get_key` also returns revoked keys, so activity is its own check.
+        let key = principal
+            .get_key(statement.tmb())
+            .ok_or(SessionError::Initiator("the key is not the principal's"))?;
+        statement.verify(key)?;
+        if !principal.is_key_active(statement.tmb()) {
+            return Err(SessionError::Initiator("the key is not active"));
+        }
+        if principal.lifecycle_state() != cyphr::lifecycle::LifecycleState::Active {
+            return Err(SessionError::Initiator("the principal is not active"));
+        }
+    } else {
+        // No chain: only a Level 1 principal, whose id is its key's
+        // thumbprint, can prove itself, by the key it brings.
+        let key = statement.sidecar_key()?.ok_or(SessionError::Initiator(
+            "no stored chain for the principal and no key sidecar",
+        ))?;
+        if key.tmb() != statement.tmb() {
+            return Err(SessionError::Initiator(
+                "the sidecar key is not the key the statement names",
+            ));
+        }
+        if pr != key.tmb().to_b64() {
+            return Err(SessionError::Initiator(
+                "an unstored principal must be its key's thumbprint",
+            ));
+        }
+        statement.verify(&key)?;
     }
     // Naked revoke (SPEC 6.4) is global by thumbprint and invisible to the chain.
     if state
