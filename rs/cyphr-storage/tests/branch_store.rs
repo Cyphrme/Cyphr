@@ -7,14 +7,9 @@
 //! the canonical chain. Every scenario here runs over the engine seam on
 //! real signed commits.
 //!
-//! The retention API these tests name (`StorageEngine::list_branches`,
-//! `BranchTip`, `EngineError::BranchLimit`) does not exist at the base, so
-//! every test that touches it is gated behind `cfg(red_g1)`; run those with
-//! `RUSTFLAGS="--cfg red_g1"`, where they fail to compile on the base. The
-//! ungated tests characterise behaviour that must survive retention.
-
-// The `red_g1` cfg is a test-only gate, not a Cargo feature.
-#![allow(unexpected_cfgs)]
+//! The tests that touch the retention API (`StorageEngine::list_branches`,
+//! `EngineError::BranchLimit`) were written red against a base that lacked
+//! it; the others characterise behaviour that must survive retention.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_storage::Genesis;
@@ -150,7 +145,6 @@ fn blobs(p: &cyphr::Principal, genesis: &Kp, i: usize) -> Vec<Vec<u8>> {
 struct Fork {
     genesis: Genesis,
     id: String,
-    #[cfg_attr(not(red_g1), allow(dead_code))]
     pre: String,
     /// Commit 0, shared by every branch.
     first: Vec<Vec<u8>>,
@@ -186,12 +180,18 @@ impl Fork {
         fork
     }
 
-    /// One more valid commit at position 1; `salt` makes it distinct.
-    fn add_rival(&mut self, salt: i64) {
+    /// The principal after the rival commit `salt` at position 1.
+    fn rival_state(&self, salt: i64) -> cyphr::Principal {
         let pool = load_pool();
         let mut p = self.base.clone();
         let new = kp(&pool, if salt % 2 == 0 { "key_b" } else { "alice" });
         create_key(&mut p, &self.golden, &new, NOW + 1 + salt);
+        p
+    }
+
+    /// One more valid commit at position 1; `salt` makes it distinct.
+    fn add_rival(&mut self, salt: i64) {
+        let p = self.rival_state(salt);
         self.rivals.push(blobs(&p, &self.golden, 1));
     }
 
@@ -227,6 +227,23 @@ impl Fork {
         }
         (e, outcomes)
     }
+}
+
+/// Every durable branch manifest in the engine's blob store, as JSON.
+async fn branch_manifests(e: &Engine) -> Vec<serde_json::Value> {
+    let store = e.blob_store();
+    let mut found = Vec::new();
+    for hash in store.iter().await.expect("iter") {
+        let data = store
+            .get(&hash.expect("hash"))
+            .await
+            .expect("get")
+            .expect("stored");
+        if let Some(json) = data.strip_prefix(cyphr_storage::engine::BRANCH_MANIFEST_PREFIX) {
+            found.push(serde_json::from_slice(json).expect("manifest json"));
+        }
+    }
+    found
 }
 
 async fn blob_count(e: &Engine) -> usize {
@@ -329,7 +346,6 @@ struct Revoked {
     /// The principal after the revocation, position 1.
     canonical: cyphr::Principal,
     /// A rival AT the revocation position, signed while golden was active.
-    #[cfg_attr(not(red_g1), allow(dead_code))]
     theft: Vec<Vec<u8>>,
 }
 
@@ -438,8 +454,7 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
     assert_eq!(tip_after.commit_id, tip_before.commit_id);
 }
 
-#[cfg(red_g1)]
-mod red {
+mod retained {
     use cyphr_storage::engine::EngineError;
 
     use super::*;
@@ -542,6 +557,50 @@ mod red {
         }
     }
 
+    /// Backs a-replay: a retained branch is derivable from blobs alone and
+    /// equals the branch as ingested. The rival's tip and roots, derived
+    /// independently by applying it to the `Principal` at its `pre`, are
+    /// what the durable branch manifest records and what the listing
+    /// reports, before and after a rebuild from scratch. Turns red if the
+    /// branch is kept only in memory (the manifest is absent or the listing
+    /// is lost on rebuild), or the manifest records a state the rival does
+    /// not produce. End to end at the engine seam: yes.
+    #[tokio::test]
+    async fn branch_replay_from_blobs_equals_the_branch_as_ingested() {
+        let f = Fork::new(2);
+        let (e, _) = f.engine_with(&[0, 1]).await;
+        // `rivals[1]` was refused; the independent derivation of its state.
+        let entry = cyphr_storage::export_commits(&f.rival_state(1))
+            .expect("export")
+            .remove(1);
+
+        let first_digest = |v: &serde_json::Value, field: &str| {
+            v["commit"][field][0].as_str().expect("digest").to_string()
+        };
+
+        let ingested = branches(&e, &f.id).await;
+        for round in ["as ingested", "after rebuild"] {
+            if round == "after rebuild" {
+                e.rebuild_index_from_scratch().await.expect("rebuild");
+                assert_eq!(branches(&e, &f.id).await, ingested, "{round}");
+            }
+            let found = branch_manifests(&e).await;
+            assert_eq!(found.len(), 1, "{round}: one durable branch manifest");
+            let m = &found[0];
+            assert_eq!(first_digest(m, "commit_ids"), entry.commit_id, "{round}");
+            assert_eq!(first_digest(m, "prs"), entry.pr, "{round}");
+            assert_eq!(first_digest(m, "srs"), entry.sr, "{round}");
+            assert_eq!(first_digest(m, "ars"), entry.auth_root, "{round}");
+            assert_eq!(m["commit"]["pre"], f.pre, "{round}");
+            assert!(
+                ingested
+                    .iter()
+                    .any(|b| b.0 == entry.commit_id && !b.3 && b.1.as_deref() == Some(&f.pre)),
+                "{round}: the listing reports the derived rival: {ingested:?}"
+            );
+        }
+    }
+
     /// Backs a-verify: retention is bounded per principal. Rivals are
     /// pushed until the store answers the typed `EngineError::BranchLimit`;
     /// the refused one stores nothing and the listing stops growing.
@@ -561,26 +620,25 @@ mod red {
         for n in 0..ATTEMPTS {
             f.add_rival(n as i64);
             let (blobs_before, listed_before) = (blob_count(&e).await, branches(&e, &f.id).await);
-            match f.submit(&e, f.rivals.last().expect("rival")).await {
-                Err(EngineError::BranchLimit) => {
-                    assert_eq!(
-                        blob_count(&e).await,
-                        blobs_before,
-                        "BranchLimit stored blobs"
-                    );
-                    assert_eq!(
-                        branches(&e, &f.id).await,
-                        listed_before,
-                        "BranchLimit stored a branch"
-                    );
-                    let non_canonical = listed_before.iter().filter(|b| !b.3).count();
-                    assert_eq!(non_canonical, BRANCH_LIMIT, "bound reached off the limit");
-                    limit_at = Some(n);
-                    break;
-                },
-                // The first rival is canonical (Ok); the rest are refused as the
-                // tip yet retained, which is not the bound.
-                Ok(()) | Err(_) => {},
+            // The first rival is canonical (Ok); the rest are refused as the
+            // tip yet retained, which is not the bound.
+            if let Err(EngineError::BranchLimit) =
+                f.submit(&e, f.rivals.last().expect("rival")).await
+            {
+                assert_eq!(
+                    blob_count(&e).await,
+                    blobs_before,
+                    "BranchLimit stored blobs"
+                );
+                assert_eq!(
+                    branches(&e, &f.id).await,
+                    listed_before,
+                    "BranchLimit stored a branch"
+                );
+                let non_canonical = listed_before.iter().filter(|b| !b.3).count();
+                assert_eq!(non_canonical, BRANCH_LIMIT, "bound reached off the limit");
+                limit_at = Some(n);
+                break;
             }
         }
         assert_eq!(
