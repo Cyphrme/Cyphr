@@ -510,7 +510,11 @@ fn harness_evidence_items_are_verified_offline() {
         commit_ids: vec!["C0".into(), "C1".into(), "C2".into()],
     };
 
-    let blob = |c: &Value| json!(Base64UrlUnpadded::encode_string(&serde_json::to_vec(c).expect("coz")));
+    let blob = |c: &Value| {
+        json!(Base64UrlUnpadded::encode_string(
+            &serde_json::to_vec(c).expect("coz")
+        ))
+    };
     let commit = |typ: &str, signer: (&str, &str, &[u8]), n: u64| {
         let c = signed_coz(
             &alg,
@@ -521,9 +525,7 @@ fn harness_evidence_items_are_verified_offline() {
         json!({"blobs": [blob(&c)]})
     };
     let own = (tmb.as_str(), pub_b64.as_str(), prv.as_slice());
-    let fork = |a: Value, b: Value, height: u64, pre: Value, pg: &str| {
-        json!({"kind": "principal-fork", "pg": pg, "height": height, "pre": pre, "a": a, "b": b})
-    };
+    let fork = |a: Value, b: Value, height: u64, pre: Value, pg: &str| json!({"kind": "principal-fork", "pg": pg, "height": height, "pre": pre, "a": a, "b": b});
     let create = "cyphr.me/cyphr/commit/create";
     let ok = |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain);
 
@@ -537,12 +539,27 @@ fn harness_evidence_items_are_verified_offline() {
         Ok(Proven::PrincipalFork { pg: "PG".into() }),
         "a fork at the first position has no ancestor"
     );
-    assert!(ok(&fork(a.clone(), a.clone(), 2, json!("PR1"), "PG")).is_err(), "identical commits");
-    assert!(ok(&fork(a.clone(), b.clone(), 2, json!("PR1"), "OTHER")).is_err(), "another principal");
-    assert!(ok(&fork(a.clone(), b.clone(), 2, json!("PR0"), "PG")).is_err(), "wrong ancestor");
-    assert!(ok(&fork(a.clone(), b.clone(), 9, json!("PR1"), "PG")).is_err(), "height off the chain");
+    assert!(
+        ok(&fork(a.clone(), a.clone(), 2, json!("PR1"), "PG")).is_err(),
+        "identical commits"
+    );
+    assert!(
+        ok(&fork(a.clone(), b.clone(), 2, json!("PR1"), "OTHER")).is_err(),
+        "another principal"
+    );
+    assert!(
+        ok(&fork(a.clone(), b.clone(), 2, json!("PR0"), "PG")).is_err(),
+        "wrong ancestor"
+    );
+    assert!(
+        ok(&fork(a.clone(), b.clone(), 9, json!("PR1"), "PG")).is_err(),
+        "height off the chain"
+    );
     let wrong_typ = commit("cyphr.me/cyphr/key/create", own, 3);
-    assert!(ok(&fork(a.clone(), wrong_typ, 2, json!("PR1"), "PG")).is_err(), "no commit/create");
+    assert!(
+        ok(&fork(a.clone(), wrong_typ, 2, json!("PR1"), "PG")).is_err(),
+        "no commit/create"
+    );
     let by_peer = commit(create, (&peer_tmb, &peer_pub, &peer_prv), 4);
     assert!(
         ok(&fork(a.clone(), by_peer, 2, json!("PR1"), "PG")).is_err(),
@@ -555,7 +572,10 @@ fn harness_evidence_items_are_verified_offline() {
     .expect("json");
     raw["pay"]["n"] = 7.into();
     forged["blobs"][0] = blob(&raw);
-    assert!(ok(&fork(a, forged, 2, json!("PR1"), "PG")).is_err(), "mis-signed commit");
+    assert!(
+        ok(&fork(a, forged, 2, json!("PR1"), "PG")).is_err(),
+        "mis-signed commit"
+    );
 
     let view = |size: u64, id: &str, signer: (&str, &str, &[u8])| {
         signed_coz(
@@ -568,13 +588,36 @@ fn harness_evidence_items_are_verified_offline() {
     };
     let peer = (peer_tmb.as_str(), peer_pub.as_str(), peer_prv.as_slice());
     let equiv = |a: Value, b: Value| json!({"kind": "peer-equivocation", "pg": "PG", "peer": "PEER", "a": a, "b": b});
-    let proven = Ok(Proven::PeerEquivocation { pg: "PG".into(), peer: "PEER".into() });
-    assert_eq!(ok(&equiv(view(2, "C1", peer), view(2, "X1", peer))), proven, "one size, two ids");
-    assert_eq!(ok(&equiv(view(1, "X0", peer), view(3, "C2", peer))), proven, "lower is off the chain");
-    assert!(ok(&equiv(view(2, "C1", peer), view(2, "C1", peer))).is_err(), "agreeing statements");
-    assert!(ok(&equiv(view(1, "C0", peer), view(3, "C2", peer))).is_err(), "a stale prefix");
-    assert!(ok(&equiv(view(1, "X0", peer), view(3, "X2", peer))).is_err(), "higher is not on the chain read");
-    assert!(ok(&equiv(view(2, "C1", own), view(2, "X1", peer))).is_err(), "not the accused peer");
+    let proven = Ok(Proven::PeerEquivocation {
+        pg: "PG".into(),
+        peer: "PEER".into(),
+    });
+    assert_eq!(
+        ok(&equiv(view(2, "C1", peer), view(2, "X1", peer))),
+        proven,
+        "one size, two ids"
+    );
+    assert_eq!(
+        ok(&equiv(view(1, "X0", peer), view(3, "C2", peer))),
+        proven,
+        "lower is off the chain"
+    );
+    assert!(
+        ok(&equiv(view(2, "C1", peer), view(2, "C1", peer))).is_err(),
+        "agreeing statements"
+    );
+    assert!(
+        ok(&equiv(view(1, "C0", peer), view(3, "C2", peer))).is_err(),
+        "a stale prefix"
+    );
+    assert!(
+        ok(&equiv(view(1, "X0", peer), view(3, "X2", peer))).is_err(),
+        "higher is not on the chain read"
+    );
+    assert!(
+        ok(&equiv(view(2, "C1", own), view(2, "X1", peer))).is_err(),
+        "not the accused peer"
+    );
     let mut other = equiv(view(2, "C1", peer), view(2, "X1", peer));
     other["peer"] = "NOBODY".into();
     assert!(ok(&other).is_err(), "unknown peer");

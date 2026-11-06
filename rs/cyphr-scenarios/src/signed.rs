@@ -164,11 +164,17 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
     let size = match pay["typ"].as_str() {
         Some("cyphr-server/view") => pay["tree_size"].as_u64(),
         Some("cyphr-server/receipt/tip") => pay["sequence"].as_u64().map(|s| s + 1),
-        other => return Err(format!("statement typ {other:?} is not a view or tip report")),
+        other => {
+            return Err(format!(
+                "statement typ {other:?} is not a view or tip report"
+            ));
+        },
     }
     .filter(|n| *n > 0)
     .ok_or("statement has no usable size")?;
-    let commit_id = pay["commit_id"].as_str().ok_or("statement has no commit_id")?;
+    let commit_id = pay["commit_id"]
+        .as_str()
+        .ok_or("statement has no commit_id")?;
     Ok((size, commit_id.to_owned(), pay["roots"].clone()))
 }
 

@@ -6,7 +6,9 @@
 // untrusted-input parser.
 
 use cyphr::eml::MemoryStorage;
-use cyphr_client::evidence::{EvidenceItem, KeyHistory, verify_peer_equivocation, verify_principal_fork};
+use cyphr_client::evidence::{
+    EvidenceItem, KeyHistory, verify_peer_equivocation, verify_principal_fork,
+};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
