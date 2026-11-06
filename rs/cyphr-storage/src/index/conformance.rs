@@ -592,68 +592,10 @@ pub async fn alias_conflict_naming_another_principal_is_refused<I: Indexer + Ind
     );
 }
 
-/// Backs "no hostile write can redirect a digest" at the index seam. A
-/// commit of principal B that carries a coz czd (or a commit digest) that
-/// principal A already owns is refused as [`IndexerError::Conflict`];
-/// the digest still resolves to A, and B's commit is not indexed. Turns
-/// red if the digest is overwritten (redirect). A unit test: engine-level
-/// scenarios cannot make two principals' derived digests collide.
-pub async fn digest_conflict_other_principal_is_refused<I: Indexer + IndexerWrite>(indexer: &I) {
-    let token = DeriveToken::for_conformance_tests();
-    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
-    // Well-formed digests, so `resolve_digest` can parse them.
-    let owned_czd = format!("SHA-256:{}", "A".repeat(43));
-    let owned_commit = format!("SHA-256:{}", "B".repeat(42) + "A");
-    let mut first = make_commit(a, 0, 1000);
-    first.cozies[0].czd = owned_czd.clone();
-    first.commit_ids = vec![owned_commit.clone()];
-    indexer
-        .index_commit(&first, &token)
-        .await
-        .expect("A commit 0");
-    indexer
-        .index_commit(&make_commit(b, 0, 1000), &token)
-        .await
-        .expect("B commit 0");
-
-    for (label, mutate) in [
-        (
-            "coz czd",
-            Box::new(|c: &mut IndexableCommit| c.cozies[0].czd = owned_czd.clone())
-                as Box<dyn Fn(&mut IndexableCommit)>,
-        ),
-        (
-            "commit pr",
-            Box::new(|c: &mut IndexableCommit| c.prs = vec![owned_commit.clone()]),
-        ),
-    ] {
-        let mut hostile = make_commit(b, 1, 2000);
-        mutate(&mut hostile);
-        let err = indexer
-            .index_commit(&hostile, &token)
-            .await
-            .expect_err("a colliding digest must be refused");
-        assert!(
-            matches!(err, IndexerError::Conflict(_)),
-            "{label}: got {err:?}"
-        );
-        for owned in [&owned_czd, &owned_commit] {
-            let digest: TaggedDigest = owned.parse().expect("tagged digest");
-            let e = indexer.resolve_digest(&digest).await.unwrap().unwrap();
-            assert_eq!(e.principal_id.as_deref(), Some(a), "{label}: redirected");
-        }
-        assert_eq!(
-            indexer.get_tip(b).await.unwrap().unwrap().commit_count,
-            1,
-            "{label}: the refused commit must write nothing"
-        );
-    }
-}
-
-/// Control for the digest check: one principal's own commits may repeat a
-/// root (a commit that leaves SR unchanged), and the later commit takes
-/// the digest. Turns red if the conflict check is over-broad and refuses
-/// an honest history.
+/// One principal's own commits may repeat a root (a commit that leaves SR
+/// unchanged); the digest keeps one holder for that principal, at the
+/// later commit. Turns red if the repeat is refused or the earlier commit
+/// still answers.
 pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + IndexerWrite>(
     indexer: &I,
 ) {
@@ -671,22 +613,90 @@ pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + Index
     assert_eq!(e.sequence, Some(1));
 }
 
-/// Control for the digest check: state and auth roots derive from the key
-/// set, so two principals that end on the same keys honestly share them.
-/// Both commits are accepted. Turns red if the conflict check covers SR or
-/// AR and so rejects an honest commit (or lets a stranger block one).
-pub async fn digest_conflict_shared_state_roots_are_not_a_conflict<I: Indexer + IndexerWrite>(
+
+fn valid_digest(fill: char) -> String {
+    format!("SHA-256:{}", fill.to_string().repeat(42) + "A")
+}
+
+/// Index a commit of `id` whose czd, blob hash and state root are the given
+/// shared values.
+fn sharing_commit(id: &str, czd: &str, blob_seed: u8, sr: &str) -> IndexableCommit {
+    let mut c = make_commit(id, 0, 1000);
+    let blob = crate::blob::Blake3Hash::from_bytes([blob_seed; 32]);
+    c.blob_hashes = vec![blob];
+    c.cozies[0].blob_hash = blob;
+    c.cozies[0].czd = czd.to_string();
+    c.srs = vec![sr.to_string()];
+    c.ars = vec![sr.to_string()];
+    c
+}
+
+fn holder_ids(holders: &[EntityRef]) -> Vec<String> {
+    holders
+        .iter()
+        .map(|h| h.principal_id.clone().unwrap_or_default())
+        .collect()
+}
+
+/// Backs "a replayed coz can neither block nor misattribute" at the index
+/// seam, for every backend. SPEC 7.6 lets principals that share keys reuse a
+/// coz, and two principals can honestly reach the same state or auth root,
+/// so a czd, a blob hash and an SR/AR each name every principal that holds
+/// them: both commits are accepted and `resolve_digest_holders` returns both
+/// holders, in canonical (principal id) order. Turns red if the second
+/// commit is refused, or either holder is lost or overwritten.
+pub async fn digest_holders_shared_digest_names_every_holder<I: Indexer + IndexerWrite>(
     indexer: &I,
 ) {
     let token = DeriveToken::for_conformance_tests();
-    let shared = format!("SHA-256:{}", "D".repeat(42) + "A");
-    for id in ["SHA-256:alice-id", "SHA-256:bob-id"] {
-        let mut commit = make_commit(id, 0, 1000);
-        commit.srs = vec![shared.clone()];
-        commit.ars = vec![shared.clone()];
+    let (czd, sr) = (valid_digest('A'), valid_digest('C'));
+    for id in ["SHA-256:bob-id", "SHA-256:alice-id"] {
         indexer
-            .index_commit(&commit, &token)
+            .index_commit(&sharing_commit(id, &czd, 7, &sr), &token)
             .await
-            .expect("an honest commit sharing SR/AR with another principal");
+            .expect("a commit sharing a coz and roots with another principal");
+    }
+    let want = vec!["SHA-256:alice-id".to_string(), "SHA-256:bob-id".to_string()];
+    for digest in [czd.clone(), sr.clone()] {
+        let d: TaggedDigest = digest.parse().unwrap();
+        let holders = indexer.resolve_digest_holders(&d).await.unwrap();
+        assert_eq!(holder_ids(&holders), want, "holders of {digest}");
+    }
+    let blob = crate::blob::Blake3Hash::from_bytes([7; 32]);
+    assert!(indexer.is_blob_indexed(&blob).await.unwrap());
+}
+
+/// Backs "the index is a function of the blobs": indexing the same commits
+/// in either order gives the same holders for every digest, so a shuffled
+/// rebuild cannot change what a digest resolves to. Turns red if the order
+/// of arrival shows in the holders.
+pub async fn digest_holders_do_not_depend_on_arrival_order<I: Indexer + IndexerWrite>(
+    forward: &I,
+    backward: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let (czd, sr) = (valid_digest('A'), valid_digest('C'));
+    let commits = [
+        sharing_commit("SHA-256:alice-id", &czd, 7, &sr),
+        sharing_commit("SHA-256:bob-id", &czd, 7, &sr),
+    ];
+    for c in &commits {
+        forward.index_commit(c, &token).await.unwrap();
+    }
+    for c in commits.iter().rev() {
+        backward.index_commit(c, &token).await.unwrap();
+    }
+    for digest in [czd, sr] {
+        let d: TaggedDigest = digest.parse().unwrap();
+        assert_eq!(
+            forward.resolve_digest_holders(&d).await.unwrap(),
+            backward.resolve_digest_holders(&d).await.unwrap(),
+            "holders of {digest} depend on arrival order"
+        );
+        assert_eq!(
+            forward.resolve_digest(&d).await.unwrap(),
+            backward.resolve_digest(&d).await.unwrap(),
+            "the single answer for {digest} depends on arrival order"
+        );
     }
 }

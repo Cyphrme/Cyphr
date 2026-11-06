@@ -250,11 +250,6 @@ async fn alias_conflict_naming_another_principal_is_refused() {
     conformance::alias_conflict_naming_another_principal_is_refused(&indexer).await;
 }
 
-#[tokio::test]
-async fn digest_conflict_other_principal_is_refused() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::digest_conflict_other_principal_is_refused(&indexer).await;
-}
 
 #[tokio::test]
 async fn digest_conflict_same_principal_repeat_is_allowed() {
@@ -262,8 +257,18 @@ async fn digest_conflict_same_principal_repeat_is_allowed() {
     conformance::digest_conflict_same_principal_repeat_is_allowed(&indexer).await;
 }
 
+
 #[tokio::test]
-async fn digest_conflict_shared_state_roots_are_not_a_conflict() {
+#[ignore = "RED(H1F): a shared digest keeps one holder"]
+async fn digest_holders_shared_digest_names_every_holder() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::digest_conflict_shared_state_roots_are_not_a_conflict(&indexer).await;
+    conformance::digest_holders_shared_digest_names_every_holder(&indexer).await;
+}
+
+#[tokio::test]
+#[ignore = "RED(H1F): a shared digest keeps one holder"]
+async fn digest_holders_do_not_depend_on_arrival_order() {
+    let (forward, _d1) = FjallIndexer::temp().expect("open temp indexer");
+    let (backward, _d2) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_holders_do_not_depend_on_arrival_order(&forward, &backward).await;
 }
