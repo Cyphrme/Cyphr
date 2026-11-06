@@ -122,6 +122,12 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::AlreadyDeleted);
         }
 
+        // SPEC §2.3.2, §11: a frozen principal changes only by being
+        // unfrozen, and a data action changes DR and PR.
+        if self.frozen {
+            return Err(Error::Frozen);
+        }
+
         // Signer must be an ACTIVE key
         let signer_key = self.active_signer(&signer_tmb)?;
 

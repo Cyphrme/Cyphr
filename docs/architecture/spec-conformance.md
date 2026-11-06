@@ -229,9 +229,10 @@ SPEC 2.3.2, line 252. Disposition: `covered`.
 - spec-text: 3. **Lifecycle gate**: The principal's current lifecycle state must permit the
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s11_2_frozen_principal_rejects_key_mutations`
+  - `rs/cyphr/tests/spec_conformance.rs::frozen_principal_rejects_data_actions_until_thawed`
   - `rs/cyphr/src/principal/tests/lifecycle.rs::key_create_on_deleted_principal_is_rejected`
   - `rs/cyphr/src/principal/tests/lifecycle.rs::data_action_on_deleted_principal_is_rejected`
-- fails when: a frozen principal accepts a key mutation, or a deleted principal accepts any transaction or action.
+- fails when: a frozen principal accepts a key mutation or a data action (its lifecycle cozies freeze/delete, freeze/create, principal/delete and the commit finalizer are the only transactions it takes), or a deleted principal accepts any transaction or action.
 
 ```claim
 kind: requirement
@@ -812,7 +813,8 @@ SPEC 11.2, line 1862. Disposition: `covered`.
 - spec-text: unfrozen via `freeze/delete`. No mutations until unfrozen.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s11_2_frozen_principal_rejects_key_mutations`
-- fails when: a frozen principal accepts a key mutation (the same gate as line 252).
+  - `rs/cyphr/tests/spec_conformance.rs::frozen_principal_rejects_data_actions_until_thawed`
+- fails when: a frozen principal accepts a key mutation or a data action (the same gate as line 252).
 
 ```claim
 kind: requirement

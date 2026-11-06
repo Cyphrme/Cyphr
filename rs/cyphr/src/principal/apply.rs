@@ -239,19 +239,25 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::AlreadyDeleted);
         }
 
-        // SPEC §2.3.2, §11.2: a frozen principal takes no mutations until
-        // thawed. Only key mutations are gated: the freeze/thaw/close
-        // lifecycle cozies manage their own state checks below, and
-        // CommitCreate is the finalizer of the commit that froze.
-        if self.frozen
-            && matches!(
-                &cz.kind,
-                CozKind::KeyCreate { .. }
-                    | CozKind::KeyDelete { .. }
-                    | CozKind::KeyReplace { .. }
-                    | CozKind::SelfRevoke { .. }
-            )
-        {
+        // SPEC §2.3.2, §11.2, §4.1: a frozen principal takes no mutation
+        // until thawed, so every transaction is refused except the ones that
+        // manage the lifecycle themselves: freeze/delete (the thaw) and
+        // freeze/create (typed AlreadyFrozen in its arm), principal/delete
+        // (close is permitted from Frozen, SPEC §11.4; R1/F5), and
+        // CommitCreate, the finalizer of the commit that froze or thawed.
+        // Exhaustive, so a new CozKind must be classified here.
+        let frozen_exempt = match &cz.kind {
+            CozKind::FreezeCreate { .. }
+            | CozKind::FreezeDelete { .. }
+            | CozKind::PrincipalDelete { .. }
+            | CozKind::CommitCreate { .. } => true,
+            CozKind::KeyCreate { .. }
+            | CozKind::KeyDelete { .. }
+            | CozKind::KeyReplace { .. }
+            | CozKind::SelfRevoke { .. }
+            | CozKind::PrincipalCreate { .. } => false,
+        };
+        if self.frozen && !frozen_exempt {
             return Err(Error::Frozen);
         }
 

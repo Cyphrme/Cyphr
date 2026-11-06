@@ -266,6 +266,23 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
     {
         accepted.push("key/delete");
     }
+    let (mut p, a, _) = frozen();
+    let k4 = kp();
+    if commit_one(
+        &mut p,
+        &a,
+        sign(
+            &a,
+            json!({"alg": a.alg, "id": b64(&k4.tmb), "now": T + 2, "tmb": b64(&a.tmb),
+                   "typ": "cyphr.me/cyphr/key/replace"}),
+        ),
+        Some(key_of(&k4)),
+        T + 3,
+    )
+    .is_ok()
+    {
+        accepted.push("key/replace");
+    }
     let (mut p, _, b) = frozen();
     if commit_one(
         &mut p,
@@ -295,6 +312,48 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         T + 5,
     )
     .expect("control: key/create is accepted once thawed");
+}
+
+/// Backs the freeze scope ruled from SPEC 2.3.2 ("a frozen principal
+/// rejects mutations"), 11 ("No mutations until unfrozen"), 4.1 (a
+/// transaction "results in a mutation of PT") and 14.9: a frozen principal
+/// cannot change at all except by being unfrozen. Scenario: a two-key
+/// principal records a data action (control: accepted while active),
+/// freezes, then a data action signed by an active key is attempted; it
+/// must be refused and leave every observable counter untouched. Then
+/// `freeze/delete` is accepted, the principal is no longer frozen, and the
+/// same action shape is accepted again, so the refusal is the freeze and not
+/// a blanket ban. Turns red if a data action is recorded while frozen, or
+/// if thawing does not restore the principal. End to end: yes.
+#[test]
+fn frozen_principal_rejects_data_actions_until_thawed() {
+    let action = |k: &Kp, now: i64| {
+        sign(
+            k,
+            json!({"alg": k.alg, "msg": "hello", "now": now, "tmb": b64(&k.tmb),
+                   "typ": "cyphr.me/comment/create"}),
+        )
+    };
+    let record = |p: &mut Principal, k: &Kp, now: i64| {
+        let (pay, sig, czd) = action(k, now);
+        p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
+    };
+
+    let (mut p, a, _) = two_key_principal();
+    record(&mut p, &a, T).expect("control: an active principal records an action");
+    let f = sign(&a, lifecycle_pay(&a, &p, "freeze/create", T + 1));
+    commit_one(&mut p, &a, f, None, T + 2).expect("premise: freeze/create applies");
+    assert!(p.is_frozen(), "premise: principal is frozen");
+
+    let before = snapshot(&p);
+    let r = record(&mut p, &a, T + 3);
+    assert!(r.is_err(), "a frozen principal recorded an action: {r:?}");
+    assert_eq!(before, snapshot(&p), "a refused action changed state");
+
+    let thaw = sign(&a, lifecycle_pay(&a, &p, "freeze/delete", T + 4));
+    commit_one(&mut p, &a, thaw, None, T + 5).expect("freeze/delete is accepted while frozen");
+    assert!(!p.is_frozen(), "freeze/delete must unfreeze the principal");
+    record(&mut p, &a, T + 6).expect("control: the thawed principal records actions again");
 }
 
 // ============================================================================

@@ -91,7 +91,7 @@ impl Action {
         &self.raw
     }
 
-    /// Get a custom field from the action payload.
+    /// Get a field (standard or application-specific) from the signed payload.
     pub fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
         self.raw.pay.get(key)
     }
