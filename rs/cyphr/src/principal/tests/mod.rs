@@ -6,7 +6,6 @@ mod proofs;
 mod tree;
 
 use coz::Thumbprint;
-use eml::Hasher;
 
 use super::*;
 use crate::commit_root::MaltHasher;

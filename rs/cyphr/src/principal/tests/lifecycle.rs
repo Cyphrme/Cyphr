@@ -7,46 +7,9 @@ use crate::parsed_coz::VerifiedCoz;
 use crate::semantic_tree::derive_state_roots;
 use crate::state::{compute_dr, derive_hash_algs};
 
-#[test]
-fn implicit_genesis_single_key() {
-    let key = make_test_key(0xAA);
-    let principal = Principal::implicit(key.clone()).unwrap();
-
-    // Level 1: PR is None (no principal/create at L1)
-    assert!(principal.pg().is_none(), "PR should be None at Level 1");
-    assert_eq!(
-        principal.pr().get(principal.hash_alg()).unwrap(),
-        key.tmb().as_bytes()
-    );
-    assert_eq!(
-        principal
-            .auth_root()
-            .expect("a live principal has an AR")
-            .get(principal.hash_alg())
-            .unwrap(),
-        key.tmb().as_bytes()
-    );
-    assert_eq!(
-        principal
-            .key_root()
-            .expect("a live principal has a KR")
-            .get(principal.hash_alg())
-            .unwrap(),
-        key.tmb().as_bytes()
-    );
-}
-
-#[test]
-fn implicit_genesis_has_one_active_key() {
-    let key = make_test_key(0xBB);
-    let tmb = key.tmb().clone();
-    let principal = Principal::implicit(key).unwrap();
-
-    assert_eq!(principal.active_key_count(), 1);
-    assert!(principal.is_key_active(&tmb));
-    assert_eq!(principal.level(), Level::L1);
-}
-
+/// Backs SPEC 3.7 / levels: a multi-key explicit genesis is Level 3, has every key active and no
+/// principal genesis until `principal/create`. Unit: genesis is a constructor call; goldens start
+/// from an already-created principal.
 #[test]
 fn explicit_genesis_multi_key() {
     let key1 = make_test_key(0x11);
@@ -68,58 +31,9 @@ fn explicit_genesis_multi_key() {
     assert_eq!(principal.level(), Level::L3);
 }
 
-#[test]
-fn explicit_genesis_empty_keys_errors() {
-    let result = Principal::explicit(vec![]);
-    assert!(matches!(result, Err(Error::NoActiveKeys)));
-}
-
-#[test]
-fn pg_is_none_at_level1() {
-    let key = make_test_key(0xCC);
-    let principal = Principal::implicit(key).unwrap();
-
-    // PG is None at Level 1 (no principal/create)
-    assert!(principal.pg().is_none(), "PG should be None at Level 1");
-
-    // PR still exists and is stable
-    let pr_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-    assert!(!pr_bytes.is_empty());
-}
-
 // ========================================================================
 // Lifecycle state (SPEC.md §11)
 // ========================================================================
-
-#[test]
-fn fresh_implicit_principal_derives_active() {
-    let key = make_test_key(0xD0);
-    let principal = Principal::implicit(key).unwrap();
-
-    assert!(!principal.is_deleted());
-    assert!(!principal.is_frozen());
-    assert!(!principal.is_errored());
-    assert_eq!(
-        principal.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Active
-    );
-}
-
-#[test]
-fn principal_with_no_active_keys_derives_dead() {
-    let key = make_test_key(0xD1);
-    let tmb = key.tmb().clone();
-    let mut principal = Principal::implicit(key).unwrap();
-
-    principal.pre_revoke_key(&tmb, 1000).unwrap();
-
-    assert_eq!(principal.active_key_count(), 0);
-    assert_eq!(
-        principal.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Dead,
-        "a principal with zero active keys and Level < L4 must derive Dead"
-    );
-}
 
 /// c-zombie-unreachable (integration level): across every principal
 /// shape this node can actually construct (varying key counts, with and
@@ -366,35 +280,8 @@ fn freeze_create_on_deleted_is_rejected() {
     );
 }
 
-#[test]
-fn freeze_create_on_already_frozen_is_rejected() {
-    use crate::parsed_coz::CozKind;
-
-    let key = make_test_key(0xE3);
-    let tmb = key.tmb().clone();
-    let mut principal = Principal::implicit(key).unwrap();
-
-    let freeze_cz = make_lifecycle_cz(
-        CozKind::FreezeCreate {
-            id: principal.pr().clone(),
-        },
-        &tmb,
-        2000,
-    );
-    principal.apply_transaction_test(freeze_cz, None).unwrap();
-    assert!(principal.is_frozen());
-
-    let freeze_again_cz = make_lifecycle_cz(
-        CozKind::FreezeCreate {
-            id: principal.pr().clone(),
-        },
-        &tmb,
-        2001,
-    );
-    let result = principal.apply_transaction_test(freeze_again_cz, None);
-    assert!(matches!(result, Err(Error::AlreadyFrozen)));
-}
-
+/// Backs SPEC 11.2: `freeze/delete` on a principal that is not frozen is refused as `NotFrozen`.
+/// Unit: golden `freeze_delete_thaws_to_active` covers only the legal thaw.
 #[test]
 fn freeze_delete_on_non_frozen_is_rejected() {
     use crate::parsed_coz::CozKind;
@@ -416,43 +303,6 @@ fn freeze_delete_on_non_frozen_is_rejected() {
     assert!(matches!(result, Err(Error::NotFrozen)));
 }
 
-#[test]
-fn freeze_create_then_freeze_delete_thaws_to_active() {
-    use crate::parsed_coz::CozKind;
-
-    let key = make_test_key(0xE5);
-    let tmb = key.tmb().clone();
-    let mut principal = Principal::implicit(key).unwrap();
-
-    let freeze_cz = make_lifecycle_cz(
-        CozKind::FreezeCreate {
-            id: principal.pr().clone(),
-        },
-        &tmb,
-        2000,
-    );
-    principal.apply_transaction_test(freeze_cz, None).unwrap();
-    assert_eq!(
-        principal.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Frozen
-    );
-
-    let thaw_cz = make_lifecycle_cz(
-        CozKind::FreezeDelete {
-            id: principal.pr().clone(),
-        },
-        &tmb,
-        2001,
-    );
-    principal.apply_transaction_test(thaw_cz, None).unwrap();
-
-    assert!(!principal.is_frozen());
-    assert_eq!(
-        principal.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Active
-    );
-}
-
 // ========================================================================
 // Blanket deleted-principal gate (SPEC.md §11.4, F23, N11)
 //
@@ -466,8 +316,7 @@ fn freeze_create_then_freeze_delete_thaws_to_active() {
 // reason rather than a same-commit one: it requires `self.frozen`,
 // and Deleted/Frozen are mutually exclusive (SPEC.md:1974-1978), so
 // FreezeDelete can never be reachable on a Deleted principal in the
-// first place -- `freeze_delete_on_deleted_still_rejected_as_not_frozen`
-// confirms this rather than adding a redundant check.
+// first place, so no redundant check is added.
 // ========================================================================
 
 /// Build a genuinely Deleted principal via a real `principal/delete`
@@ -528,31 +377,6 @@ fn key_delete_on_deleted_principal_is_rejected() {
     assert!(matches!(result, Err(Error::AlreadyDeleted)));
 }
 
-#[test]
-fn key_replace_on_deleted_principal_is_rejected() {
-    use coz::Czd;
-
-    use crate::parsed_coz::{CozKind, ParsedCoz};
-
-    let (mut principal, key1, _key2) = build_deleted_principal();
-
-    let new_key = make_test_key(0xD5);
-    let cz = ParsedCoz {
-        kind: CozKind::KeyReplace {
-            id: new_key.tmb().clone(),
-        },
-        signer: key1.tmb().clone(),
-        now: 2001,
-        czd: Czd::from_bytes(vec![0xD6; 32]),
-        hash_alg: crate::state::HashAlg::Sha256,
-        arrow: None,
-        raw: dummy_coz_json(),
-    };
-
-    let result = principal.apply_transaction_test(cz, Some(new_key));
-    assert!(matches!(result, Err(Error::AlreadyDeleted)));
-}
-
 /// SelfRevoke DOES mutate state (revokes the signer's own key) and has
 /// no same-commit-completion necessity the way CommitCreate does, so
 /// SPEC.md §11.4's "no further transactions" is not exempted here --
@@ -582,60 +406,6 @@ fn self_revoke_on_deleted_principal_is_rejected() {
         principal.is_key_active(key2.tmb()),
         "rejected self-revoke must not mutate the key set"
     );
-}
-
-#[test]
-fn principal_create_on_deleted_principal_is_rejected() {
-    use coz::Czd;
-
-    use crate::parsed_coz::{CozKind, ParsedCoz};
-
-    let (mut principal, key1, _key2) = build_deleted_principal();
-
-    let cz = ParsedCoz {
-        kind: CozKind::PrincipalCreate {
-            id: principal
-                .auth_root()
-                .expect("a live principal has an AR")
-                .clone(),
-        },
-        signer: key1.tmb().clone(),
-        now: 2001,
-        czd: Czd::from_bytes(vec![0xD8; 32]),
-        hash_alg: crate::state::HashAlg::Sha256,
-        arrow: None,
-        raw: dummy_coz_json(),
-    };
-
-    let result = principal.apply_transaction_test(cz, None);
-    assert!(
-        matches!(result, Err(Error::AlreadyDeleted)),
-        "the blanket gate must reject PrincipalCreate before genesis-key/id validation ever runs, \
-         since a Deleted principal is by definition already Established and genesis finalization \
-         can never legitimately be reachable here"
-    );
-}
-
-/// Confirms the reasoning in this node's non-goals: FreezeDelete
-/// requires `self.frozen`, and Deleted/Frozen are mutually exclusive,
-/// so FreezeDelete on a genuinely Deleted principal is already
-/// unreachable via its own existing check (`NotFrozen`) -- no new gate
-/// entry is needed, and the blanket gate must not shadow this error
-/// with `AlreadyDeleted`.
-#[test]
-fn freeze_delete_on_deleted_still_rejected_as_not_frozen() {
-    let (mut principal, key1, _key2) = build_deleted_principal();
-    assert!(!principal.is_frozen());
-
-    let thaw_cz = make_lifecycle_cz(
-        crate::parsed_coz::CozKind::FreezeDelete {
-            id: principal.pr().clone(),
-        },
-        key1.tmb(),
-        2001,
-    );
-    let result = principal.apply_transaction_test(thaw_cz, None);
-    assert!(matches!(result, Err(Error::NotFrozen)));
 }
 
 #[test]

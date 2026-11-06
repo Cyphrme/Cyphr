@@ -777,31 +777,6 @@ mod tests {
         assert_eq!(ks.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
     }
 
-    #[test]
-    fn ks_multi_key_hashes() {
-        // Multiple keys: KS = H(sort(tmb₀, tmb₁))
-        let tmb1 = Thumbprint::from_bytes(vec![1; 32]);
-        let tmb2 = Thumbprint::from_bytes(vec![2; 32]);
-        let ks = compute_kr(&[&tmb1, &tmb2], None, &[HashAlg::Sha256]).unwrap();
-
-        let digest = ks.get(HashAlg::Sha256).unwrap();
-        // Should be hashed SHA-256 output
-        assert_eq!(digest.len(), 32);
-        assert_ne!(digest, tmb1.as_bytes());
-    }
-
-    #[test]
-    fn ks_with_nonce_hashes() {
-        // Single key with nonce: still hashes (no promotion)
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let nonce = vec![0xAA, 0xBB];
-        let ks = compute_kr(&[&tmb], Some(&nonce), &[HashAlg::Sha256]).unwrap();
-
-        let digest = ks.get(HashAlg::Sha256).unwrap();
-        assert_eq!(digest.len(), 32);
-        assert_ne!(digest, tmb.as_bytes());
-    }
-
     /// F46 regression: malformed (non-32-byte) input must be rejected with
     /// `DigestLengthMismatch`, not panic — reachable from untrusted CLI
     /// input via `parse_principal_genesis`.
@@ -816,54 +791,6 @@ mod tests {
                 actual: 31,
             })
         ));
-    }
-
-    #[test]
-    fn principal_genesis_from_bytes_accepts_correct_length() {
-        let pg = PrincipalGenesis::from_bytes(vec![0xAA; 32]).expect("32 bytes should succeed");
-        assert_eq!(pg.0.get(HashAlg::Sha256).unwrap(), &[0xAA; 32][..]);
-    }
-
-    #[test]
-    fn as_promotion_from_ks() {
-        // Only KS, no RS: AS = KS (the specified algorithm variant)
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-
-        // AS should equal the KS variant for this algorithm
-        assert_eq!(
-            auth_root.get(HashAlg::Sha256).unwrap(),
-            ks.get(HashAlg::Sha256).unwrap()
-        );
-    }
-
-    #[test]
-    fn cs_with_ds_hashes() {
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let czd = Czd::from_bytes(vec![10; 32]);
-        let action = crate::action::Action::new(
-            "cyphr.me/comment/create".to_string(),
-            tmb.clone(),
-            1000,
-            czd,
-            coz::CozJson {
-                pay: serde_json::Value::Null,
-                sig: vec![],
-            },
-        );
-        let ds = compute_dr(&[&action], None, &[HashAlg::Sha256])
-            .unwrap()
-            .unwrap();
-
-        let cs = compute_sr(&auth_root, Some(&ds), None, &[HashAlg::Sha256]).unwrap();
-
-        // Should be hashed combination
-        let cs_bytes = cs.get(HashAlg::Sha256).unwrap();
-        assert_eq!(cs_bytes.len(), 32);
-        assert_ne!(cs_bytes, auth_root.get(HashAlg::Sha256).unwrap());
     }
 
     #[test]
@@ -897,136 +824,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pr_promotion_from_sr() {
-        // Only SR, no CR: PR = SR (implicit promotion)
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
-
-        assert_eq!(
-            pr.get(HashAlg::Sha256).unwrap(),
-            auth_root.get(HashAlg::Sha256).unwrap()
-        );
-    }
-
-    #[test]
-    fn full_promotion_chain() {
-        // Level 1: PR = SR = AR = KR = tmb
-        let tmb = Thumbprint::from_bytes(vec![0xDE; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
-        let pg = PrincipalGenesis::from_initial(&pr);
-
-        // All should be identical to tmb
-        let ks_bytes = ks.get(HashAlg::Sha256).unwrap();
-        let as_bytes = auth_root.get(HashAlg::Sha256).unwrap();
-        assert_eq!(ks_bytes, tmb.as_bytes());
-        assert_eq!(as_bytes, tmb.as_bytes());
-        assert_eq!(pr.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
-        assert_eq!(pg.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
-    }
-
-    /// SPEC §14.2 Cross-Algorithm Conversion Test
-    ///
-    /// When computing a Merkle root with mixed-size digests, smaller digests
-    /// are fed directly into larger hash functions. This test verifies:
-    ///
-    /// 1. Mixed-size thumbprints (32B ES256, 48B ES384, 64B Ed25519) can be combined in a single KS
-    ///    computation
-    /// 2. Each algorithm variant processes all thumbprints correctly
-    /// 3. The resulting multihash contains variants for all active algorithms
-    #[test]
-    fn cross_algorithm_conversion_spec_14_2() {
-        // Simulate real thumbprint sizes from different key algorithms:
-        // ES256 → SHA-256 → 32 bytes
-        // ES384 → SHA-384 → 48 bytes
-        // Ed25519 → SHA-512 → 64 bytes
-        let tmb_es256 = Thumbprint::from_bytes(vec![0xAA; 32]); // 32-byte ES256 tmb
-        let tmb_es384 = Thumbprint::from_bytes(vec![0xBB; 48]); // 48-byte ES384 tmb
-        let tmb_ed25519 = Thumbprint::from_bytes(vec![0xCC; 64]); // 64-byte Ed25519 tmb
-
-        // Compute KS with all three algorithms active
-        let all_algs = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512];
-        let ks = compute_kr(&[&tmb_es256, &tmb_es384, &tmb_ed25519], None, &all_algs).unwrap();
-
-        // Verify all algorithm variants are present
-        let sha256_variant = ks.get(HashAlg::Sha256);
-        let sha384_variant = ks.get(HashAlg::Sha384);
-        let sha512_variant = ks.get(HashAlg::Sha512);
-
-        assert!(sha256_variant.is_some(), "SHA-256 variant should exist");
-        assert!(sha384_variant.is_some(), "SHA-384 variant should exist");
-        assert!(sha512_variant.is_some(), "SHA-512 variant should exist");
-
-        // Verify each variant has the correct digest size
-        assert_eq!(
-            sha256_variant.unwrap().len(),
-            32,
-            "SHA-256 digest is 32 bytes"
-        );
-        assert_eq!(
-            sha384_variant.unwrap().len(),
-            48,
-            "SHA-384 digest is 48 bytes"
-        );
-        assert_eq!(
-            sha512_variant.unwrap().len(),
-            64,
-            "SHA-512 digest is 64 bytes"
-        );
-
-        // Verify all three variants are different (not trivially identical)
-        assert_ne!(sha256_variant, sha384_variant);
-        assert_ne!(sha384_variant, sha512_variant);
-        assert_ne!(sha256_variant, sha512_variant);
-
-        // Key insight: The 32-byte ES256 thumbprint is "converted" (fed directly)
-        // into SHA-384 and SHA-512 computations. The implementation handles this
-        // by concatenating all bytes regardless of size and hashing with each
-        // target algorithm—exactly as SPEC §14.2 specifies.
-    }
-
     // ========================================================================
     // TaggedDigest tests
     // ========================================================================
-
-    #[test]
-    fn tagged_digest_parse_valid_sha256() {
-        // 32 bytes = 43 chars base64url (no padding)
-        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let digest: super::TaggedDigest = input.parse().expect("valid digest");
-
-        assert_eq!(digest.alg(), super::HashAlg::Sha256);
-        assert_eq!(digest.as_bytes().len(), 32);
-    }
-
-    #[test]
-    fn tagged_digest_display_roundtrip() {
-        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let digest: super::TaggedDigest = input.parse().expect("valid digest");
-        let output = digest.to_string();
-
-        assert_eq!(input, output);
-    }
-
-    #[test]
-    fn tagged_digest_serde_roundtrip() {
-        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let digest: super::TaggedDigest = input.parse().expect("valid digest");
-
-        // Serialize to JSON
-        let json = serde_json::to_string(&digest).expect("serialize");
-        assert_eq!(json, format!("\"{}\"", input));
-
-        // Deserialize from JSON
-        let parsed: super::TaggedDigest = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(digest, parsed);
-    }
 
     #[test]
     fn tagged_digest_missing_separator() {

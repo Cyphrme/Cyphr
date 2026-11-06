@@ -684,7 +684,6 @@ mod tests {
     use crate::state::HashAlg;
 
     // Valid alg:digest format for 32-byte SHA-256 digests
-    const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
     /// Helper to wrap Pay in CozJson for tests.
@@ -695,146 +694,35 @@ mod tests {
         }
     }
 
-    /// F29: `CozHeader::parse` must reject a coz missing `typ`, `tmb`, or
-    /// `now` -- not silently substitute a default -- since callers use it
-    /// at a trust boundary specifically to avoid that failure mode.
+    /// Backs F29 (trust boundary): `CozHeader::parse` rejects a coz missing
+    /// `typ`, `tmb` or `now`, and a non-object `pay`, instead of substituting
+    /// a default. Unit: the header parser is crate-internal; the signed
+    /// scenarios only ever feed it well-formed headers.
     #[test]
-    fn coz_header_parse_rejects_missing_typ() {
-        let mut pay = PayBuilder::new()
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.typ = None;
-        let value = serde_json::to_value(&pay).unwrap();
-
-        assert!(matches!(
-            CozHeader::parse(&value),
-            Err(Error::MalformedPayload)
-        ));
-    }
-
-    #[test]
-    fn coz_header_parse_rejects_missing_tmb() {
-        let pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/create")
-            .alg("ES256")
-            .now(1000)
-            .build();
-        let value = serde_json::to_value(&pay).unwrap();
-
-        assert!(matches!(
-            CozHeader::parse(&value),
-            Err(Error::MalformedPayload)
-        ));
-    }
-
-    #[test]
-    fn coz_header_parse_rejects_missing_now() {
-        let pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/create")
-            .alg("ES256")
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        let value = serde_json::to_value(&pay).unwrap();
-
-        assert!(matches!(
-            CozHeader::parse(&value),
-            Err(Error::MalformedPayload)
-        ));
-    }
-
-    #[test]
-    fn coz_header_parse_accepts_well_formed_pay() {
+    fn coz_header_parse_rejects_missing_fields_and_non_objects() {
         let tmb = Thumbprint::from_bytes(vec![0xAA; 32]);
-        let pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(tmb.clone())
-            .build();
-        let value = serde_json::to_value(&pay).unwrap();
-
-        let header = CozHeader::parse(&value).expect("well-formed pay should parse");
-        assert_eq!(header.typ, "cyphr.me/cyphr/key/create");
-        assert_eq!(header.tmb, tmb);
-        assert_eq!(header.now, 1000);
-    }
-
-    #[test]
-    fn coz_header_parse_rejects_non_object_pay() {
-        let value = serde_json::json!("not an object");
+        let typ = "cyphr.me/cyphr/key/create";
+        let cases = [
+            PayBuilder::new().alg("ES256").now(1000).tmb(tmb.clone()),
+            PayBuilder::new().typ(typ).alg("ES256").now(1000),
+            PayBuilder::new().typ(typ).alg("ES256").tmb(tmb),
+        ];
+        for pay in cases {
+            let value = serde_json::to_value(pay.build()).unwrap();
+            assert!(matches!(
+                CozHeader::parse(&value),
+                Err(Error::MalformedPayload)
+            ));
+        }
         assert!(matches!(
-            CozHeader::parse(&value),
+            CozHeader::parse(&serde_json::json!("not an object")),
             Err(Error::MalformedPayload)
         ));
     }
 
-    #[test]
-    fn parse_key_add() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("id".into(), json!(TEST_ID));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
-
-        assert!(matches!(cz.kind, CozKind::KeyCreate { .. }));
-        assert_eq!(cz.now, 1000);
-    }
-
-    #[test]
-    fn parse_key_delete() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/delete")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("id".into(), json!(TEST_ID));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
-
-        assert!(matches!(cz.kind, CozKind::KeyDelete { .. }));
-    }
-
-    #[test]
-    fn parse_key_replace() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/replace")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("id".into(), json!(TEST_ID));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
-
-        assert!(matches!(cz.kind, CozKind::KeyReplace { .. }));
-    }
-
-    #[test]
-    fn parse_self_revoke() {
-        let pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/revoke")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .rvk(1000)
-            .build();
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
-
-        assert!(matches!(cz.kind, CozKind::SelfRevoke { rvk: 1000, .. }));
-    }
-
+    /// Backs SPEC 6.4: `id` must be absent on a self-revoke, so a self-revoke carrying one is
+    /// malformed. Unit: ParsedCoz::from_pay is crate-internal; a signed scenario would only reach
+    /// it after signature checks.
     #[test]
     fn parse_self_revoke_with_id_fails() {
         // id MUST be absent on a self-revoke; its presence is a parse-time error.
@@ -858,38 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_principal_create() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/principal/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        // id is the final AS (becomes PR)
-        pay.extra.insert("id".into(), json!(TEST_PRE));
-        pay.extra.insert("commit".into(), json!(true));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
-
-        assert!(matches!(cz.kind, CozKind::PrincipalCreate { .. }));
-    }
-
-    #[test]
-    fn parse_missing_typ_fails() {
-        let pay = PayBuilder::new()
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
-
-        assert!(matches!(result, Err(Error::MalformedPayload)));
-    }
-
-    #[test]
     fn parse_unknown_typ_fails() {
         let pay = PayBuilder::new()
             .typ("cyphr.me/unknown/action")
@@ -902,16 +758,6 @@ mod tests {
         let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
-    }
-
-    #[test]
-    fn typ_is_key_introducing() {
-        assert!(typ::is_key_introducing("cyphr.me/cyphr/key/create"));
-        assert!(typ::is_key_introducing("cyphr.me/cyphr/key/replace"));
-        assert!(!typ::is_key_introducing("cyphr.me/cyphr/key/delete"));
-        assert!(!typ::is_key_introducing("cyphr.me/cyphr/key/revoke"));
-        assert!(!typ::is_key_introducing("cyphr.me/cyphr/principal/create"));
-        assert!(!typ::is_key_introducing("cyphr.me/cyphr/commit/create"));
     }
 
     /// Backs the typ-classification boundary (SPEC 4.2: typ is

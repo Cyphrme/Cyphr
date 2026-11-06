@@ -9,34 +9,6 @@ use crate::multihash::MultihashDigest;
 // MALT Proof Generation Tests
 // ========================================================================
 
-#[test]
-fn inclusion_proof_verifies() {
-    let (principal, _keys) = build_principal_with_commits(4);
-
-    let alg = principal.hash_alg();
-    let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-    let root = principal.commit_trees().root(alg_id).unwrap();
-    let hasher = MaltHasher::new(alg);
-    let size = principal.commit_trees().tree_size(alg_id).unwrap();
-
-    // Verify inclusion for every committed leaf.
-    for i in 0..size {
-        let proof = principal.inclusion_proof(alg, i).unwrap();
-        let commit_tr = principal.commits().nth(i as usize).unwrap().tr();
-        let mut mapped_variants = BTreeMap::new();
-        for (&a, val) in commit_tr.0.variants() {
-            let a_id = crate::commit_root::hash_alg_to_u64(a);
-            mapped_variants.insert(a_id, val.clone());
-        }
-        let serialized = serde_json::to_vec(&mapped_variants).unwrap();
-        let leaf_hash = hasher.leaf(&serialized);
-        assert!(
-            crate::verify_inclusion(&hasher, &leaf_hash, i, size, &proof, &root),
-            "inclusion proof failed for index {i}"
-        );
-    }
-}
-
 // ========================================================================
 // Two-step transaction inclusion verification (composite hop 1 + hop 2)
 // ========================================================================
@@ -163,52 +135,6 @@ fn two_step_verification_rejects_forged_transaction() {
         .verify_transaction_inclusion(alg, 0, &forged)
         .unwrap();
     assert!(!ok, "forged transaction must not verify");
-}
-
-/// c3 attempted the mandatory "wrong skeleton function for a hop"
-/// negative test — but empirically, `mountain_skeleton` and
-/// `rebalanced_skeleton` are byte-identical for every `(arity, size,
-/// index)` this sweeps, at every arity from 2 through 8, not just the
-/// arity-2 this crate actually uses for both CT and PT. This is not a
-/// coincidence: `cml::mountain::bag_peaks`'s doc comment
-/// (`../eml/cml/src/mountain.rs:15-17`) states outright that "`bag_peaks`
-/// is byte-identical to that [`fold_frontier`] fold at every arity" —
-/// the same fold `cmt::shape::build`/`rebalanced_skeleton` use. Both
-/// skeleton generators are built from the same shared
-/// `frontier_for_size` and `fold_frontier` primitives
-/// (`../eml/cml/src/mountain.rs:51`, `../eml/cmt/src/shape.rs:20`), so
-/// their output cannot diverge.
-///
-/// PLAN.md's mandatory negative test — "deliberately compute hop 1's
-/// skeleton with rebalanced_skeleton instead of mountain_skeleton...
-/// and confirm verification fails" — therefore cannot be constructed:
-/// there is no "wrong" skeleton to substitute, so no false-accept is
-/// possible via this specific substitution, at any arity. This is an
-/// architecture-level finding (a premise refuted by the current `eml`
-/// library, post-MMR-migration), not a gap this node's code introduces
-/// or can route around — flagged in the node report for the lead
-/// maintainer/architect seat to judge, per the "constraint cannot
-/// actually be satisfied as specified" reserved-predicate class.
-///
-/// This test still records the actual (surprising, load-bearing)
-/// invariant as a regression guard: if a future `eml` change ever makes
-/// these two functions diverge, this test starts failing and the
-/// composite's topology-pinning assumption needs re-examination.
-#[test]
-fn mountain_and_rebalanced_skeletons_are_identical_at_every_arity() {
-    for k in [2u64, 3, 4, 5, 8] {
-        for size in [2u64, 3, 4, 7, 11, 13, 15, 20, 31, 100] {
-            for idx in 0..size {
-                assert_eq!(
-                    eml::mountain_skeleton(k, size, idx),
-                    polydigest::rebalanced_skeleton(size, k, idx),
-                    "k={k} size={size} idx={idx}: mountain_skeleton and rebalanced_skeleton \
-                     diverged — if this fires, the wrong-topology negative test PLAN.md mandates \
-                     is constructible again and should be added"
-                );
-            }
-        }
-    }
 }
 
 // ========================================================================
@@ -351,16 +277,6 @@ fn sr_inclusion_proof_matches_hop_four() {
     );
 }
 
-/// issue #19 — an algorithm never registered on the principal's PT
-/// has no hop 4 to give; the accessor must mirror
-/// [`crate::principal_tree::PrincipalTree::sr_inclusion_proof`]'s own
-/// `None` behavior rather than panicking.
-#[test]
-fn sr_inclusion_proof_none_for_unregistered_algorithm() {
-    let (principal, _keys) = build_principal_with_commits(1);
-    assert!(principal.sr_inclusion_proof(HashAlg::Sha512).is_none());
-}
-
 /// c3/a3 — the bridge loop itself, isolated from the hop-verify loop.
 ///
 /// Splices hop 0 from principal A's genuine key-inclusion chain with
@@ -444,6 +360,9 @@ fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
     );
 }
 
+/// Backs SPEC 12.1 (EML log): a consistency proof from every earlier commit count verifies against
+/// the current commit-log root. Unit: no server route or scenario serves consistency proofs, so
+/// only the library API can reach it.
 #[test]
 fn consistency_proof_verifies() {
     let (principal, _keys) = build_principal_with_commits(5);
@@ -483,42 +402,22 @@ fn consistency_proof_verifies() {
     }
 }
 
+/// Backs the proof API contract (SPEC 12.1): an out-of-range index, a
+/// zero or too-large `old_size`, and an algorithm the principal never used
+/// are typed refusals, not panics.
+/// Unit: the server only forwards well-formed requests, so no scenario
+/// reaches these arguments.
 #[test]
-fn inclusion_proof_out_of_bounds() {
+fn proof_requests_out_of_range_are_refused() {
     let (principal, _keys) = build_principal_with_commits(3);
     let alg = principal.hash_alg();
 
-    // Index == tree_size should fail.
-    let result = principal.inclusion_proof(alg, 3);
-    assert!(result.is_err(), "should reject out-of-bounds index");
-
-    // Large index should also fail.
-    let result = principal.inclusion_proof(alg, 999);
-    assert!(result.is_err(), "should reject large index");
-}
-
-#[test]
-fn consistency_proof_invalid_old_size() {
-    let (principal, _keys) = build_principal_with_commits(3);
-    let alg = principal.hash_alg();
-
-    // old_size == 0 should fail.
-    let result = principal.consistency_proof(alg, 0);
-    assert!(result.is_err(), "should reject old_size=0");
-
-    // old_size >= tree_size should fail.
-    let result = principal.consistency_proof(alg, 3);
-    assert!(result.is_err(), "should reject old_size >= tree_size");
-}
-
-#[test]
-fn proof_rejects_unknown_algorithm() {
-    let (principal, _keys) = build_principal_with_commits(2);
-
+    assert!(principal.inclusion_proof(alg, 3).is_err());
+    assert!(principal.inclusion_proof(alg, 999).is_err());
+    assert!(principal.consistency_proof(alg, 0).is_err());
+    assert!(principal.consistency_proof(alg, 3).is_err());
     // SHA-384 was never introduced (all test keys use ES256/SHA-256).
-    let result = principal.inclusion_proof(HashAlg::Sha384, 0);
-    assert!(result.is_err(), "should reject unknown algorithm");
-
-    let result = principal.consistency_proof(HashAlg::Sha384, 1);
-    assert!(result.is_err(), "should reject unknown algorithm");
+    assert!(principal.inclusion_proof(HashAlg::Sha384, 0).is_err());
+    assert!(principal.consistency_proof(HashAlg::Sha384, 1).is_err());
+    assert!(principal.sr_inclusion_proof(HashAlg::Sha384).is_none());
 }

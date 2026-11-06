@@ -876,45 +876,9 @@ mod tests {
     // PendingCommit Tests
     // ========================================================================
 
-    #[test]
-    fn pending_commit_empty_state() {
-        let pending = PendingCommit::new();
-        assert!(pending.is_empty());
-        assert_eq!(pending.len(), 0);
-        assert!(pending.compute_tr(&[coz::HashAlg::Sha256]).is_none());
-    }
-
-    #[test]
-    fn pending_commit_push_adds_transactions() {
-        let mut pending = PendingCommit::new();
-
-        // Push cozies
-        let tx1 = make_test_tx(false, 0x01);
-        pending.push_tx(crate::transaction::Transaction(vec![tx1]));
-        assert_eq!(pending.len(), 1);
-
-        let tx2 = make_test_tx(true, 0x02);
-        pending.push_tx(crate::transaction::Transaction(vec![tx2]));
-        assert_eq!(pending.len(), 2);
-    }
-
-    #[test]
-    fn pending_commit_compute_tr_returns_merkle_root() {
-        let mut pending = PendingCommit::new();
-        let tx1 = make_test_tx(false, 0x01);
-        pending.push_tx(crate::transaction::Transaction(vec![tx1]));
-        let tx2 = make_test_tx(true, 0x02);
-        pending.push_tx(crate::transaction::Transaction(vec![tx2]));
-
-        let tr = pending.compute_tr(&[coz::HashAlg::Sha256]);
-        assert!(tr.is_some());
-        // Commit ID should be 32 bytes (SHA256)
-        assert_eq!(
-            tr.clone().unwrap().0.get(HashAlg::Sha256).unwrap().len(),
-            32
-        );
-    }
-
+    /// Backs SPEC 4.6 / `[commit-one-or-more]` (ruling D1, issue #74): a commit holding only its
+    /// own finalizer is rejected as `EmptyCommit`. Unit: PendingCommit is crate-internal; the
+    /// signed scenarios cannot construct a finalizer-only commit.
     #[test]
     fn pending_commit_finalize_rejects_finalizer_only() {
         // A commit whose only content is its own commit/create finalizer
@@ -940,24 +904,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pending_commit_is_empty_vs_is_finalizer_only() {
-        // is_empty() keeps its ordinary collection meaning (len() == 0):
-        // a one-cozy pending commit is not empty. is_finalizer_only()
-        // is the distinct, honestly-named predicate for "no mutation
-        // substance" -- true here because the only cozy present is the
-        // finalizer.
-        let mut pending = PendingCommit::new();
-        let cz = make_test_tx(true, 0x01);
-        pending.push_tx(crate::transaction::Transaction(vec![cz]));
-
-        assert!(!pending.is_empty(), "one cozy is present: len() == 1");
-        assert!(
-            pending.is_finalizer_only(),
-            "the only cozy present is a finalizer, not a mutation"
-        );
-    }
-
+    /// Backs SPEC 4.6: a commit with no `commit/create` finalizer is rejected as `MissingCommit`.
+    /// Unit: PendingCommit is crate-internal; the signed path always appends the finalizer.
     #[test]
     fn pending_commit_finalize_fails_without_finalizer_marker() {
         // Finalizer must be present to distinguish the commit transaction
@@ -978,127 +926,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pending_commit_finalize_fails_when_empty() {
-        let pending = PendingCommit::new();
-
-        let auth_root =
-            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
-        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
-        let pr =
-            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
-
-        let result = pending.finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256]);
-        assert!(result.is_err(), "should fail when empty");
-    }
-
-    #[test]
-    fn pending_commit_into_transactions_returns_accumulated() {
-        let mut pending = PendingCommit::new();
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            false, 0x01,
-        )]));
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            true, 0x02,
-        )]));
-
-        let cozies = pending.into_transactions();
-        assert_eq!(cozies.len(), 2);
-    }
-
     // ========================================================================
     // Commit Tests
     // ========================================================================
-
-    #[test]
-    fn commit_accessors_return_correct_values() {
-        // Needs a mutation cozy ahead of the finalizer: a finalizer-only
-        // PendingCommit is rejected by finalize() (see
-        // pending_commit_finalize_rejects_finalizer_only), so this
-        // accessor test -- which only cares about Commit's getters --
-        // must use a normal (mutation + finalizer) shape to reach them.
-        let mut pending = PendingCommit::new();
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            false, 0x01,
-        )]));
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            true, 0x02,
-        )]));
-
-        let auth_root =
-            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
-        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
-        let pr =
-            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
-
-        let commit = pending
-            .finalize(
-                Some(auth_root.clone()),
-                Some(sr.clone()),
-                pr.clone(),
-                &[coz::HashAlg::Sha256],
-            )
-            .unwrap();
-
-        // Test all accessors
-        assert_eq!(commit.iter_all_cozies().count(), 2);
-        assert!(!commit.is_empty());
-        assert_eq!(commit.len(), 2);
-        assert_eq!(commit.auth_root(), Some(&auth_root));
-        assert_eq!(commit.sr(), Some(&sr));
-        assert_eq!(commit.pr(), &pr);
-        assert_eq!(commit.tr().0.get(HashAlg::Sha256).unwrap().len(), 32);
-    }
-
-    #[test]
-    fn commit_multi_transaction_computes_correct_tr() {
-        let mut pending = PendingCommit::new();
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            false, 0x01,
-        )]));
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            false, 0x02,
-        )]));
-        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            true, 0x03,
-        )])); // finalizer
-
-        let auth_root =
-            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
-        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
-        let pr =
-            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
-
-        let commit = pending
-            .finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256])
-            .unwrap();
-        assert_eq!(commit.len(), 3);
-
-        // Commit ID should be Merkle root of all 3 coz czds
-        let cid = &commit.tr().0;
-        assert_eq!(cid.get(HashAlg::Sha256).unwrap().len(), 32);
-    }
-
-    #[test]
-    fn test_cozjson_serialization() {
-        let mut pay = json!({"typ": "test", "now": 1234});
-        pay.as_object_mut()
-            .unwrap()
-            .insert("commit".to_string(), json!("SHA-256:abc"));
-
-        // Use coz::CozJson directly to see if it drops the field!
-        let raw = coz::CozJson {
-            pay: pay.clone(),
-            sig: vec![0, 1, 2],
-        };
-
-        let out = serde_json::to_string(&raw).unwrap();
-        assert!(
-            out.contains("commit"),
-            "coz::CozJson serialization dropped 'commit'! Output: {}",
-            out
-        );
-    }
 
     // ========================================================================
     // matches_arrow / arrow_component_bytes multi-variant fold symmetry

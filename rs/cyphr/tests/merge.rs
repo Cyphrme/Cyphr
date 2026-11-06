@@ -167,42 +167,6 @@ impl Peer {
     }
 }
 
-/// Green characterization: the raw-pay authoring path used by every merge
-/// test below works for a kind that exists today (`key/create`), so a merge
-/// failure is the merge kind's behaviour, not a broken helper. Also pins
-/// the premise the merge tests depend on: SPEC 3.7.1's PR is the CURRENT
-/// root and moves with every commit (only PG is permanent), so
-/// `merge_to_pr` names a point-in-time snapshot. Not an end-to-end
-/// scenario: it validates the harness.
-#[test]
-fn harness_authors_a_commit_from_raw_pays() {
-    let mut a = Peer::new("alice");
-    let pr_before = a.pr();
-    let k = signer("key_a");
-    let pay = json!({
-        "alg": a.signer.alg,
-        "id": k.tmb.to_b64(),
-        "now": NOW + 1,
-        "tmb": a.signer.tmb.to_b64(),
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let new_key = Key::new(k.alg.clone(), k.tmb.clone(), k.pub_key.clone())
-        .expect("key binds its tmb")
-        .with_first_seen(NOW + 1);
-    let r = a.commit_with_keys(vec![(pay, Some(new_key))], NOW + 1);
-    assert!(
-        r.is_ok(),
-        "a plain key/create commit must author cleanly: {r:?}"
-    );
-    assert_eq!(a.active_tmbs().len(), 2);
-    assert_ne!(
-        a.pr(),
-        pr_before,
-        "the PR is the CURRENT root and moves with every commit"
-    );
-    assert_eq!(a.principal.commits().count(), 1);
-}
-
 /// Claim: merge needs both sides and changes only what it says (positive
 /// control for every rejection test in this file). A source's `merge` and
 /// the target's matching `merge-ack` are each accepted into their own

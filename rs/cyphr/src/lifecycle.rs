@@ -95,6 +95,9 @@ mod tests {
             .map(|(_, s)| s)
     }
 
+    /// Backs SPEC 11 (lifecycle table): every reachable (deleted, frozen, keys, data) cell derives
+    /// the state the spec matrix names. Unit: exhaustive over the boolean domain, which no signed
+    /// scenario enumerates.
     #[test]
     fn matches_spec_matrix_over_reachable_domain() {
         for d in [false, true] {
@@ -154,34 +157,5 @@ mod tests {
             derive_lifecycle_state(true, true, false, false),
             LifecycleState::Nuked
         );
-    }
-
-    /// c-zombie-unreachable (pure-function level): Zombie requires
-    /// `!has_active_keys && can_data_action`, but `can_data_action` is wired
-    /// through `Principal::lifecycle_state` as `level() >= L4 &&
-    /// has_active_keys` (SPEC.md:1990-1992 grounds `CanMutateAR ==
-    /// HasActiveKeys` below Level 5, and this crate's `Level` enum caps at
-    /// L4 — there is no L5 variant anywhere in `rs/`). So no input the real
-    /// accessor can construct ever has `!has_active_keys && can_data_action`
-    /// simultaneously true, and Zombie is unreachable via the public API.
-    #[test]
-    fn zombie_unreachable_when_can_data_action_implies_has_active_keys() {
-        for d in [false, true] {
-            for f in [false, true] {
-                for k in [false, true] {
-                    for c in [false, true] {
-                        if c && !k {
-                            continue; // the wiring invariant under test.
-                        }
-                        assert_ne!(
-                            derive_lifecycle_state(d, f, k, c),
-                            LifecycleState::Zombie,
-                            "d={d} f={f} k={k} c={c} produced Zombie despite can_data_action => \
-                             has_active_keys"
-                        );
-                    }
-                }
-            }
-        }
     }
 }

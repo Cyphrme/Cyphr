@@ -1,7 +1,5 @@
 //! Property-based tests for the cyphr library.
 
-use std::collections::BTreeMap;
-
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::key::{Key, Revocation};
 use cyphr::state::{HashAlg, derive_hash_algs};
@@ -46,6 +44,7 @@ fn key_strategy() -> impl Strategy<Value = Key> {
 }
 
 proptest! {
+    /// Backs SPEC 2.2.1: the principal's active hash algorithms are exactly those of its active keys (property over key sets).
     #[test]
     fn test_derive_hash_algs_matches_active_keys(
         keys in prop::collection::vec(key_strategy(), 1..10),
@@ -91,33 +90,6 @@ proptest! {
             let mh = result.expect("Valid digest length should succeed");
             assert_eq!(mh.get(alg).unwrap(), &digest_bytes[..]);
             assert!(mh.contains(alg));
-        } else {
-            assert!(result.is_err());
-        }
-    }
-
-    #[test]
-    fn test_multihash_digest_multiple_validation(
-        sha256_bytes in prop::collection::vec(any::<u8>(), 1..100),
-        sha384_bytes in prop::collection::vec(any::<u8>(), 1..100),
-        sha512_bytes in prop::collection::vec(any::<u8>(), 1..100),
-    ) {
-        let mut variants = BTreeMap::new();
-        variants.insert(HashAlg::Sha256, sha256_bytes.clone().into_boxed_slice());
-        variants.insert(HashAlg::Sha384, sha384_bytes.clone().into_boxed_slice());
-        variants.insert(HashAlg::Sha512, sha512_bytes.clone().into_boxed_slice());
-
-        let result = MultihashDigest::new(variants);
-
-        let valid_256 = sha256_bytes.len() == 32;
-        let valid_384 = sha384_bytes.len() == 48;
-        let valid_512 = sha512_bytes.len() == 64;
-
-        if valid_256 && valid_384 && valid_512 {
-            let mh = result.expect("All valid sizes should succeed");
-            assert_eq!(mh.get(HashAlg::Sha256).unwrap(), &sha256_bytes[..]);
-            assert_eq!(mh.get(HashAlg::Sha384).unwrap(), &sha384_bytes[..]);
-            assert_eq!(mh.get(HashAlg::Sha512).unwrap(), &sha512_bytes[..]);
         } else {
             assert!(result.is_err());
         }

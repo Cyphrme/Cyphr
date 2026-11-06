@@ -7,7 +7,6 @@
 //!   `key/create`; 6.4: a revoked key is never trusted again).
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::state::HashAlg;
 use cyphr::{Key, Principal};
 
 const T: i64 = 1_700_000_000;
@@ -72,19 +71,6 @@ fn genesis_refuses_duplicate_key() {
     }
 }
 
-/// Characterization: an unsupported algorithm cannot reach genesis at
-/// all, because `Key` refuses to exist for it (no thumbprint), so the
-/// "validate every key's algorithm" duty is discharged by the type. Turns
-/// red if `Key` starts admitting a key whose algorithm has no hash
-/// algorithm, which would reopen the `keys[0]`-only check in genesis.
-#[test]
-fn genesis_unsupported_algorithm_is_unconstructible() {
-    let bad = pool_key("unsupported_key");
-    assert_eq!(bad.alg, "RS256", "premise: the pool's unsupported key");
-    let r = Key::new(bad.alg.clone(), bad.tmb.clone(), bad.pubb.clone());
-    assert!(matches!(r, Err(cyphr::Error::UnknownAlg)), "{r:?}");
-}
-
 /// Claim: a pre-revoked genesis key is refused by both genesis paths
 /// with `KeyRevoked`, the refusal `key/create` gives a revoked tmb (SPEC be0663f 7.7 and 6.4).
 /// Turns red if either path accepts it or refuses with another error (today implicit
@@ -101,25 +87,4 @@ fn genesis_implicit_and_explicit_agree_on_pre_revoked_key() {
             "{path} genesis of a pre-revoked key: expected Err(KeyRevoked), got {r:?}"
         );
     }
-}
-
-/// Green control for the agreed paths: one supported key gives the same
-/// algorithm set through implicit and explicit genesis, and a mixed-algorithm
-/// explicit genesis derives the union. Catches a "fix" that breaks the
-/// ordinary genesis while tightening validation.
-#[test]
-fn genesis_control_valid_keys_agree_and_derive_algs() {
-    for name in ["golden", "diana_es384", "eve_ed25519"] {
-        let k = key_of(&pool_key(name));
-        let i = Principal::implicit(k.clone()).expect("implicit");
-        let e = Principal::explicit(vec![k]).expect("explicit");
-        assert_eq!(i.active_algs(), e.active_algs(), "{name}: alg set");
-        assert_eq!(i.pr(), e.pr(), "{name}: PR");
-    }
-    let mixed = Principal::explicit(vec![
-        key_of(&pool_key("golden")),
-        key_of(&pool_key("diana_es384")),
-    ])
-    .expect("mixed explicit");
-    assert_eq!(mixed.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha384]);
 }

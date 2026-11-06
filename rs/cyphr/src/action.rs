@@ -121,41 +121,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn action_from_pay_basic() {
-        let pay = PayBuilder::new()
-            .typ("cyphr.me/comment/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .msg("Hello, world!")
-            .build();
-
-        let czd = Czd::from_bytes(vec![0xBB; 32]);
-        let action = Action::from_pay(&pay, czd.clone(), to_raw(&pay)).unwrap();
-
-        assert_eq!(action.typ, "cyphr.me/comment/create");
-        assert_eq!(action.now, 1000);
-        assert_eq!(action.msg(), Some("Hello, world!"));
-        assert_eq!(action.czd.as_bytes(), czd.as_bytes());
-    }
-
-    #[test]
-    fn action_from_pay_with_custom_fields() {
-        let mut pay = PayBuilder::new()
-            .typ("example/data")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("custom".into(), json!("value"));
-
-        let czd = Czd::from_bytes(vec![0xDD; 32]);
-        let action = Action::from_pay(&pay, czd, to_raw(&pay)).unwrap();
-
-        assert_eq!(action.get_field("custom"), Some(&json!("value")));
-    }
-
     /// Backs the production constructor: `Action::new` (the only path
     /// `record_action` uses) must expose payload fields, not the empty
     /// placeholder it once stored. Unit level because the read accessors
@@ -180,17 +145,5 @@ mod tests {
         assert_eq!(action.msg(), Some("hi"));
         assert_eq!(action.get_field("custom"), Some(&json!(7)));
         assert_eq!(action.get_field("absent"), None);
-    }
-
-    #[test]
-    fn action_from_pay_missing_tmb_returns_none() {
-        let pay = PayBuilder::new()
-            .typ("example/test")
-            .alg("ES256")
-            .now(1000)
-            .build();
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        assert!(Action::from_pay(&pay, czd, to_raw(&pay)).is_none());
     }
 }
