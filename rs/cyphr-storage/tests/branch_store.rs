@@ -727,7 +727,6 @@ mod retained {
             f.add_rival(n as i64);
             f.submit(&e, f.rivals.last().expect("rival"))
                 .await
-                .map(|()| ())
                 .or_else(|err| match err {
                     EngineError::Protocol(_) => Ok(()),
                     other => Err(other),
