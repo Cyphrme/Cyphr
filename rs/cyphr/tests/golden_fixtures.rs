@@ -670,6 +670,8 @@ fn test_golden_state_computation() {
 }
 
 // @docket: rv-timestamp-monotone :: scripts/docket-run rv-timestamp-monotone
+// @docket: rv-key-set :: scripts/docket-run rv-key-set
+// @docket: rv-alg-support :: scripts/docket-run rv-alg-support
 #[test]
 fn test_golden_errors() {
     run_golden_dir("errors");

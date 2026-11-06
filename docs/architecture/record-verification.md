@@ -472,14 +472,17 @@ refused with `UnknownKey`.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
-Unbound. The golden vectors `duplicate_key_fails`, `delete_last_key_fails`,
-`last_key_revoke_fails` and `delete_unknown_key_fails` in `tests/golden/errors/`
-exercise these refusals and run under `test_golden_errors` in
-`rs/cyphr/tests/golden_fixtures.rs`. Binding needs a change whose file surface
-includes that file, to add a marker for this claim at that test.
+Backed by the golden vectors `duplicate_key_fails`, `delete_last_key_fails`,
+`last_key_revoke_fails` and `delete_unknown_key_fails` in
+`tests/golden/errors/`. The marker sits at `test_golden_errors` in
+`rs/cyphr/tests/golden_fixtures.rs` and the runner entry runs that whole test,
+which runs every vector in the directory, so the binding fails if any error
+vector fails; these four are the part that backs this claim. The vectors are
+byte-exact fixtures that assert the error name. Not checked: that a rejected
+coz leaves the principal unchanged.
 
 #### [rv-key-material]
 
@@ -511,14 +514,16 @@ that has no digest function where one is needed is refused with
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
-Unbound. The golden vector `unsupported_algorithm_fails` exercises the first
-refusal; it expects `UnknownAlg`, not `UnsupportedAlgorithm`, and runs under
-`test_golden_errors`. No test that reaches `UnsupportedAlgorithm` is known.
-Binding needs a change whose file surface includes
-`rs/cyphr/tests/golden_fixtures.rs`.
+Backed, for `UnknownAlg`, by the golden vector `unsupported_algorithm_fails`,
+which expects `UnknownAlg`, not `UnsupportedAlgorithm`. The marker sits at
+`test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs` and the runner
+entry runs that whole test, so the binding fails if any error vector fails;
+this vector is the part that backs the claim. Not checked: the
+`UnsupportedAlgorithm` refusal. No test that reaches it is known, so the second
+sentence of the claim has no backing.
 
 #### [rv-digest-wellformed]
 
