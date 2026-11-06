@@ -485,6 +485,7 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
 /// absent-nonce delete is the narrowest reading (mirrors `key/delete` of an
 /// unknown key); 10.1 does not say (SPEC ambiguity, node report). End to end:
 /// yes.
+// @docket: rv-nonce-ledger :: scripts/docket-run rv-nonce-ledger
 #[test]
 fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
     let (n, never) = (nonce_bytes(5), nonce_bytes(6));
@@ -515,6 +516,35 @@ fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
 
     let r = commit_one(&mut p, &g, delete(Level::At, &g, &n, T + 30), None, T + 30);
     assert!(r.is_ok(), "control: the matching delete was refused: {r:?}");
+}
+
+/// Backs the nonce set at one level (SPEC 7.6, 10.1): a nonce created twice
+/// at one level is refused and leaves every root and the commit count as
+/// they were, while the same value at another level is a separate nonce.
+/// Turns red if a repeat create is accepted (the set becomes a multiset and
+/// one delete no longer removes the nonce) or if levels share one set. End
+/// to end: yes. Controls: the first create and the other-level create are
+/// accepted.
+// @docket: rv-nonce-ledger :: scripts/docket-run rv-nonce-ledger
+#[test]
+fn nonce_created_twice_at_one_level_is_refused() {
+    let n = nonce_bytes(9);
+    let (mut p, g, _) = base();
+    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 10), None, T + 10);
+    assert!(r.is_ok(), "control: first KT create was refused: {r:?}");
+    let armed = roots(&p);
+    let commits = p.commits().count();
+
+    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 11), None, T + 11);
+    assert!(r.is_err(), "a repeat KT create was accepted");
+    assert_eq!(roots(&p), armed, "a refused create moved a root");
+    assert_eq!(p.commits().count(), commits, "a refused create finalized");
+
+    let r = commit_one(&mut p, &g, create(Level::At, &g, &n, T + 12), None, T + 12);
+    assert!(
+        r.is_ok(),
+        "control: the same value at AT was refused: {r:?}"
+    );
 }
 
 /// The signed `now` of a pre-built coz, so a loop can finalize at it.

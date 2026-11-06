@@ -1782,6 +1782,8 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
 /// length check, such as `len >= n` or a check on the label alone), or if a
 /// correct width is refused. RED: nonces are not implemented, so the
 /// control fails first (`MalformedPayload`). End to end: yes.
+// @docket: sc-l1673 :: scripts/docket-run sc-l1673
+// @docket: sc-l1674 :: scripts/docket-run sc-l1674
 #[test]
 fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
     let algs = [
