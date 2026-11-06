@@ -33,13 +33,37 @@ use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
 };
 
-/// Get current unix timestamp in seconds.
-/// Separated for testability.
-fn current_time() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_secs() as i64
+/// The verifier's clock: Unix seconds, injected so the core never reads
+/// ambient time on a platform that has none (wasm32-unknown-unknown).
+pub type Clock = fn() -> i64;
+
+/// Default tolerance for a `now` ahead of the verifier clock: the +-360 s of
+/// SPEC 15.9. A `now` past `clock() + max_clock_skew` is `TimestampFuture`.
+pub const DEFAULT_MAX_CLOCK_SKEW: i64 = 360;
+
+/// Largest valid `now`, 2^53 - 1 (SPEC 6.4: an integer in `1..2^53-1`, the
+/// range every JSON consumer reads exactly). Spec 4.1 states no range for a
+/// coz `now`; applying the 6.4 range to every coz is the implementation's
+/// reading, pending the spec author's answer.
+pub const MAX_NOW: i64 = (1 << 53) - 1;
+
+/// Wall-clock Unix seconds. A clock before the epoch reads 0, which refuses
+/// every `now` as future, so a broken clock fails closed. Without ambient
+/// time (wasm32-unknown-unknown, where `SystemTime::now` panics) it also
+/// reads 0 until the host installs a clock with `Principal::set_clock`.
+pub fn system_clock() -> i64 {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+            .unwrap_or(0)
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        0
+    }
 }
 
 // ============================================================================
@@ -150,8 +174,10 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) nonces: NonceSets,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,
-    /// Maximum allowed future timestamp (seconds from server time).
+    /// Maximum allowed future timestamp (seconds from verifier time).
     pub(crate) max_clock_skew: i64,
+    /// Verifier time source for the future-timestamp bound.
+    pub(crate) clock: Clock,
     /// Base64 thumbprints of the genesis keys (keys present at construction).
     pub(crate) genesis_keys: Vec<String>,
     /// `principal/delete` has been signed (SPEC.md §11.1 `Deleted`). No
@@ -211,6 +237,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             nonces: self.nonces.clone(),
             latest_timestamp: self.latest_timestamp,
             max_clock_skew: self.max_clock_skew,
+            clock: self.clock,
             genesis_keys: self.genesis_keys.clone(),
             deleted: self.deleted,
             deleted_pending: self.deleted_pending,
@@ -238,6 +265,7 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("nonces", &self.nonces)
             .field("latest_timestamp", &self.latest_timestamp)
             .field("max_clock_skew", &self.max_clock_skew)
+            .field("clock", &(self.clock as usize))
             .field("genesis_keys", &self.genesis_keys)
             .field("deleted", &self.deleted)
             .field("deleted_pending", &self.deleted_pending)
@@ -485,7 +513,8 @@ impl<S: eml::Storage> PrincipalCore<S> {
             included_czds: HashSet::new(),
             nonces: NonceSets::default(),
             latest_timestamp: 0,
-            max_clock_skew: 0,
+            max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
+            clock: system_clock,
             genesis_keys,
             deleted: false,
             deleted_pending: false,

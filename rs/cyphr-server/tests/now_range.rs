@@ -120,7 +120,6 @@ fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>)
 /// through the server builder. Lives here, not in the core `spec_conformance.rs`,
 /// because that file's map test demands a docs row for every red there.
 #[test]
-#[ignore = "RED(W1): default clock tolerance disabled, extreme future now accepted"]
 fn now_bound_far_future_is_refused_on_every_entry_path() {
     let (action, create) = now_outcomes(MAX_SAFE);
     assert!(
@@ -199,7 +198,6 @@ async fn assert_refused_for_time(pool: &test_fixtures::Pool, body: String, label
 /// coz is applied and the refusal, if any, names the arrow). End to end: yes
 /// (HTTP, engine, store).
 #[tokio::test]
-#[ignore = "RED(W1): default clock tolerance disabled, future now not refused as a timestamp"]
 async fn push_refuses_a_now_above_clock_plus_drift() {
     let pool = load_pool();
     let id = golden_principal_id(&pool);
@@ -220,7 +218,6 @@ async fn push_refuses_a_now_above_clock_plus_drift() {
 /// timestamp. 2^53 - 1 is not probed here: it is in range and is covered by
 /// the far-future case above. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(W1): pushed coz now is not range-checked"]
 async fn push_refuses_a_now_outside_the_safe_integer_range() {
     let pool = load_pool();
     let id = golden_principal_id(&pool);

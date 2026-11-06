@@ -1,6 +1,6 @@
 //! Data-layer action recording (Level 4).
 
-use super::{Principal, current_time};
+use super::Principal;
 use crate::action::Action;
 use crate::error::{Error, Result};
 use crate::semantic_tree::StateTree;
@@ -23,13 +23,7 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::TimestampPast);
         }
 
-        // Validate timestamp is not too far in the future (SPEC §14.1)
-        if self.max_clock_skew > 0 {
-            let server_time = current_time();
-            if action.now > server_time + self.max_clock_skew {
-                return Err(Error::TimestampFuture);
-            }
-        }
+        self.check_now(action.now)?;
 
         // Verify signer is an active key
         self.active_signer(&action.signer)?;

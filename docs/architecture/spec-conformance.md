@@ -48,17 +48,16 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   51 |
+| `covered`      |   53 |
 | `red-existing` |    0 |
-| `red-new`      |    3 |
+| `red-new`      |    1 |
 | `not-testable` |   12 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
 
 Fixing ids on red rows: `q3` is the last-key
 self-revoke decision (the code allows no revoke of the only key; SPEC allows
-it and leaves the principal Dead). `SC1-F5` (default future-timestamp
-tolerance) has no fixing node yet; it is a tracking id until one is assigned.
+it and leaves the principal Dead).
 
 ## Rows
 
@@ -1048,15 +1047,15 @@ evaluator: none
 
 ### [sc-l2835]
 
-SPEC 15.9, line 2835. Disposition: `red-new`.
+SPEC 15.9, line 2835. Disposition: `covered`.
 
 - spec-line: 2835
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: includes comparing now to witness time on receipt and rejecting outside ±360 s
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s15_9_future_dated_message_is_rejected_by_default`
-- fails when: a message dated a day ahead is accepted by a default principal (red today: the skew check is off by default). The backdated half (far in the past relative to witness time) is not tested because the corpus uses fixed 2023 timestamps; Open point O1.
+- fails when: a message dated a day ahead is accepted by a default principal (the verifier clock plus a 360 s tolerance bounds every coz and action; the far extremes and push are covered in `rs/cyphr-server/tests/now_range.rs`). The backdated half (far in the past relative to witness time) is not tested because the corpus uses fixed 2023 timestamps; Open point O1.
 
 ```claim
 kind: requirement
@@ -1083,11 +1082,11 @@ evaluator: none
 
 ### [sc-l2838]
 
-SPEC 15.9, line 2838. Disposition: `red-new`.
+SPEC 15.9, line 2838. Disposition: `covered`.
 
 - spec-line: 2838
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: prevent history rewriting, and rejecting future-dated messages.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s15_9_future_dated_message_is_rejected_by_default`

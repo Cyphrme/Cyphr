@@ -428,8 +428,11 @@ fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
         }
     }
     revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: now = T is accepted");
-    revoke_outcome(|b| revoke_pay(b, MAX_SAFE, json!(1)))
-        .expect("control: now = 2^53 - 1 is in range");
+    // The in-range control sits at the verifier clock, not at 2^53 - 1: the
+    // future-timestamp bound (SPEC 15.9) refuses that value as a message from
+    // the future, which the W1 tests pin separately.
+    revoke_outcome(|b| revoke_pay(b, unix_now(), json!(1)))
+        .expect("control: now at the verifier clock is in range");
     assert!(
         accepted.is_empty(),
         "key/revoke accepted out-of-range now: {accepted:?}"
@@ -1333,12 +1336,10 @@ fn unix_now() -> i64 {
 /// messages." Scenario, with a default `Principal`: a data action and a
 /// `key/create` dated a day ahead of the clock are applied; the same coz
 /// dated at the clock is the control. Turns red if a message far beyond the
-/// tolerance is accepted. RED: `max_clock_skew` defaults to 0, which
-/// disables the check. The backdated side (a first message far in the past)
+/// tolerance is accepted. The backdated side (a first message far in the past)
 /// is not tested: the whole corpus uses fixed 2023 timestamps (question Q10).
 /// End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F5): SPEC 15.9 default tolerance disabled"]
 fn s15_9_future_dated_message_is_rejected_by_default() {
     let now = unix_now();
     let outcome = |at: i64| {
