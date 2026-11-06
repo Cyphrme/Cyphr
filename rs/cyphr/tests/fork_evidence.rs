@@ -127,8 +127,7 @@ fn fork_branches_verify_from_fresh_ancestors() {
 // Practice: SPEC.md section 15.7.1 and section 15.8: witnesses must be able to hold both branches
 // of a fork, and root AGENTS.md invariant I2 requires the fork be detected, so deriving the
 // branches by cloning the ancestor must not couple them. Claim F2. Mutation that
-// makes this green: `Principal::clone` giving each clone its own commit log instead of sharing the
-// `Arc`.
+// turns this red: `Principal::clone` sharing one commit log `Arc` between the clones.
 #[test]
 fn fork_branches_from_cloned_ancestor() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
@@ -174,13 +173,13 @@ mod clone_independence {
     // Claim: a public clone is fully independent of its source: commits applied to one never
     // appear in the other's PR, CR or commit list, and the untouched side can still commit its
     // own next commit (property over random valid commit sequences, both directions).
-    // Defect that turns it red: any shared mutable state between clones; today `Principal::clone`
-    // shares the commit log `Arc`, so the untouched clone's CR (and its next commit) is perturbed.
+    // Defect that turns it red: any shared mutable state between clones, such as a commit log `Arc`
+    // shared by `Principal::clone`, which would perturb the untouched clone's CR and next commit.
     // End-to-end scenario: no, a property test for an invariant.
     proptest! {
         #![proptest_config(ProptestConfig {
             cases: 8,
-            // The expected red must not write a regressions file into the tree.
+            // A failing run must not write a regressions file into the tree.
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
@@ -242,7 +241,7 @@ mod clone_independence {
     // share one Fjall-backed log (brief Reserved halt predicate; FjallStorage has no copy
     // primitive in eml 0.11). Expressed at runtime via a compile-time trait probe because the
     // package has no trybuild dependency and Cargo.toml is outside this node's file surface.
-    // Defect that turns it red: `Principal<S>: Clone` for every `S: eml::Storage`, as today.
+    // Defect that turns it red: `Principal<S>: Clone` for every `S: eml::Storage`.
     // The in-memory principal must stay publicly Clone (F2 and the property above need it).
     // End-to-end scenario: no, a type-level invariant has no scenario that reaches it.
     #[test]

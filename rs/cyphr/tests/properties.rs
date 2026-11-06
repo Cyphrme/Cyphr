@@ -123,7 +123,8 @@ proptest! {
         }
     }
 
-    #[test]
+        // @docket: rv-digest-wellformed :: scripts/docket-run rv-digest-wellformed
+#[test]
     fn test_tagged_digest_parsing_roundtrip(
         alg in hash_alg_strategy(),
         digest_bytes in prop::collection::vec(any::<u8>(), 1..100)
@@ -623,7 +624,7 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,
-        // The expected red must not write a regressions file into the tree.
+        // A failing run must not write a regressions file into the tree.
         failure_persistence: None,
         ..ProptestConfig::default()
     })]

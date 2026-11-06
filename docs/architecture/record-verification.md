@@ -2,8 +2,8 @@
 
 This page names twelve rules a replay of a principal's record enforces, says
 where each one lives in the code, and binds each to the test that fails when
-the rule breaks. It also lists the further checks a replay makes that the
-twelve do not cover. Where a claim has no bound test for part of what it says,
+the rule breaks. It also lists, per error the core can raise, the claim that
+governs it. Where a claim has no bound test for part of what it says,
 the page says so. It is a reference: it describes the code at this revision,
 and it records a question for the spec author, a known defect and a deferred
 format decision.
@@ -12,8 +12,8 @@ format decision.
 paths of the `cyphr` crate: `CommitScope::verify_and_apply`, `finalize` and
 `Principal::verify_and_record_action`. Every bound test uses the core
 principal directly. Replay from storage reaches the same core paths but differs
-before and around them; [Storage replay](#storage-replay) lists the
-differences in one place.
+before and around them; [Storage replay](#storage-replay) points to where
+that is specified.
 
 SPEC references are to `SPEC.md` at commit `be0663f` on the spec author's
 `zami` branch, the normative text.
@@ -26,9 +26,9 @@ first that fails a check. A record is **honest** when its replay from the
 anchor to the tip accepts every commit. Honesty is a property of the record
 against its commitment. It does not depend on how the record reached the
 verifier or on what any server would have admitted. The twelve rules below
-are the ones this page classifies and binds. Replay makes further checks, listed
-under [Further checks a replay makes](#further-checks-a-replay-makes), so
-passing the twelve is necessary for honesty and is not shown to be sufficient.
+are the ones this page classifies; further claims cover the other checks the
+core makes, and [Errors by claim](#errors-by-claim) maps every error to one.
+Passing the twelve is necessary for honesty and is not shown to be sufficient.
 
 Two scoping facts come from SPEC, not from this page:
 
@@ -57,28 +57,28 @@ Each rule carries a **class** that names the shape of its check:
 - **D**: keyed. The check asks whether a value already occurs in this
   principal's record.
 
-| #   | Rule                                                              | SPEC           | Class | Error                                  | Claim                                           |
-| :-- | :---------------------------------------------------------------- | :------------- | :---- | :------------------------------------- | :---------------------------------------------- |
-| 1   | A coz carries `tmb`, `now`, `typ` and `alg`; encodings canonical  | §2.2.2, §2.3.1 | A     | `MalformedPayload`, `AlgMismatch`      | [rv-coz-wellformed](#rv-coz-wellformed)         |
-| 2   | `pay.alg` equals the signing key's algorithm; `czd` recomputes    | §2.2.3, §12    | C     | `AlgMismatch`, `CzdMismatch`           | [rv-alg-alignment](#rv-alg-alignment)           |
-| 3   | The signature verifies under the key named by `tmb`               | §7.1           | C     | `InvalidSignature`                     | [rv-sig-verifies](#rv-sig-verifies)             |
-| 4   | A self-revoke's `now` is a positive integer within 2^53 - 1       | §6.4           | A     | `MalformedPayload`                     | [rv-timestamp-range](#rv-timestamp-range)       |
-| 5   | A coz's `now` is never earlier than the principal's latest        | §13.2, §15.9   | B     | `TimestampPast`                        | [rv-timestamp-monotone](#rv-timestamp-monotone) |
-| 6   | An `arrow` binds a commit to the prior PR                         | §4.2, §4.3     | B     | `CommitMismatch`                       | [rv-arrow-chain](#rv-arrow-chain)               |
-| 7   | The `arrow` binds the recomputed forward state                    | §3.7, §4.2     | C     | `CommitMismatch`                       | [rv-state-recomputed](#rv-state-recomputed)     |
-| 8   | The signer is an active key when the coz is applied               | §2.3.2, §6     | C     | `UnknownKey`, `KeyRevoked`             | [rv-key-active-gate](#rv-key-active-gate)       |
-| 9   | A frozen principal takes no mutation; a deleted one takes nothing | §2.3.2, §11.2  | C     | `Frozen`, `AlreadyDeleted`             | [rv-lifecycle-gate](#rv-lifecycle-gate)         |
-| 10  | The Principal Genesis is written once                             | §2.3.2, §5     | C     | `StateMismatch`                        | [rv-genesis-immutable](#rv-genesis-immutable)   |
-| 11  | The commit coz is last; transaction grouping (known defect)       | §4.1, §4.6     | A     | `CommitNotLast`                        | [rv-intra-commit-shape](#rv-intra-commit-shape) |
-| 12  | A coz this principal already included is refused or ignored       | §7.6           | D     | `CozReuse` (transactions); none (data) | [rv-no-coz-reuse](#rv-no-coz-reuse)             |
+| #   | Rule                                                              | SPEC           | Class | Claim                                           |
+| :-- | :---------------------------------------------------------------- | :------------- | :---- | :---------------------------------------------- |
+| 1   | A coz carries `tmb`, `now`, `typ` and `alg`; encodings canonical  | §2.2.2, §2.3.1 | A     | [rv-coz-wellformed](#rv-coz-wellformed)         |
+| 2   | `pay.alg` equals the signing key's algorithm; `czd` recomputes    | §2.2.3, §12    | C     | [rv-alg-alignment](#rv-alg-alignment)           |
+| 3   | The signature verifies under the key named by `tmb`               | §7.1           | C     | [rv-sig-verifies](#rv-sig-verifies)             |
+| 4   | A self-revoke's `now` is a positive integer within 2^53 - 1       | §6.4           | A     | [rv-timestamp-range](#rv-timestamp-range)       |
+| 5   | A coz's `now` is never earlier than the principal's latest        | §13.2, §15.9   | B     | [rv-timestamp-monotone](#rv-timestamp-monotone) |
+| 6   | An `arrow` binds a commit to the prior PR                         | §4.2, §4.3     | B     | [rv-arrow-chain](#rv-arrow-chain)               |
+| 7   | The `arrow` binds the recomputed forward state                    | §3.7, §4.2     | C     | [rv-state-recomputed](#rv-state-recomputed)     |
+| 8   | The signer is an active key when the coz is applied               | §2.3.2, §6     | C     | [rv-key-active-gate](#rv-key-active-gate)       |
+| 9   | A frozen principal takes no mutation; a deleted one takes nothing | §2.3.2, §11.2  | C     | [rv-lifecycle-gate](#rv-lifecycle-gate)         |
+| 10  | The Principal Genesis is written once                             | §2.3.2, §5     | C     | [rv-genesis-immutable](#rv-genesis-immutable)   |
+| 11  | The commit coz is last; transaction grouping (known defect)       | §4.1, §4.6     | A     | [rv-intra-commit-shape](#rv-intra-commit-shape) |
+| 12  | A coz this principal already included is refused or ignored       | §7.6           | D     | [rv-no-coz-reuse](#rv-no-coz-reuse)             |
 
 Rules 8 and 9 read the state that rule 7 recomputes, and each names a
 distinct way a record can be dishonest, so each has its own claim and its own
 test. A principal whose last key is revoked is Dead (SPEC §11.2). The code has
 no gate for that state, and replay cannot reach it today: `revoke_key` refuses
 to revoke the last key with `NoActiveKeys`. A Dead principal's coz would be
-refused by rule 8, because its only signer is revoked. The error names are variants of `cyphr::Error`
-(`rs/cyphr/src/error.rs`).
+refused by rule 8, because its only signer is revoked. Error names are
+variants of `cyphr::Error` (`rs/cyphr/src/error.rs`).
 
 ### Reading a claim
 
@@ -116,10 +116,12 @@ well-formed coz; the `alg` test has no control. All three assert only that the
 coz is rejected, not which error. The error names come from the code:
 `ParsedCoz::from_pay` (`rs/cyphr/src/parsed_coz.rs`) checks `tmb`, `now` and
 `typ`, and `verify_coz` and the data-action path return `AlgMismatch` for an
-absent or different `alg`. These are the core path's errors; storage replay
-rejects a malformed or `alg`-less coz earlier with other errors (see
-[Storage replay](#storage-replay)). Not checked: non-canonical encoding in
-fields other than `id`, and the error type of any of these rejections.
+absent or different `alg`. The data-action path
+(`verify_and_record_action`) reads `tmb`, `now` and `typ` and returns
+`MalformedPayload` when one is absent, and checks `alg` the same way as
+`verify_coz`; no bound test sends a data action with a field missing. Not
+checked: non-canonical encoding in fields other than `id`, the data-action
+path, and the error type of any of these rejections.
 
 #### [rv-alg-alignment]
 
@@ -140,9 +142,11 @@ Backed by `d4_action_pay_alg_must_equal_key_alg`,
 runner entry runs all six. `d4_control_es256_matching_alg_action_accepted` is
 the control for the action path and is not in the runner entry. The rule is
 class C because it compares the coz with the registered key. Not checked by
-these tests: the SPEC §2.2.3 statement that the digest algorithm of a new key's
-`id` follows its `alg`, which a golden vector (`ed25519_account_adds_es256_key`)
-pins.
+these tests: SPEC §2.2.3's statement that digest identifiers in a coz align
+with its `alg`. How that applies to a key of another algorithm is a question
+for the spec author (see below); the golden vector
+`ed25519_account_adds_es256_key` records what the implementation does and
+settles nothing.
 
 #### [rv-sig-verifies]
 
@@ -283,7 +287,10 @@ published.
 #### [rv-key-active-gate]
 
 A coz is accepted only if its signer is an active key in the principal at the
-position the coz is applied, with two exceptions the code makes. A
+position the coz is applied. `CommitScope::verify_and_apply` resolves the
+signer against the key set from before the commit, and also accepts a key that
+an earlier mutation in the same commit added (the projected key set). The code
+makes two exceptions to the active check. A
 `commit/create` coz skips the active check in `apply_transaction_internal`,
 because the finalizer is authorized against the key set from before the
 commit, and an earlier mutation in the same commit may have replaced its
@@ -310,10 +317,14 @@ the implementation's fail-closed reading, which tests the signer against
 current key membership and ignores the payload `now`. SPEC §6.2 says past
 signatures from earlier active periods remain valid but does not say whether a
 signer-dated action claiming such a period is accepted on replay, so that test
-pins behaviour, not a ruling. Not bound here: the two exceptions themselves,
-that a replaced signer of the finalizer is accepted, the `KeyRevoked` path
-(`revoked_signer_is_key_revoked` in `rs/cyphr/tests/signer_seam.rs`) and the
-revoked-key re-add refusals in `rs/cyphr/tests/key_auth.rs`.
+pins behaviour, not a ruling. Not bound here: the two exceptions themselves, that a replaced
+signer of the finalizer is accepted, that a key added earlier in the commit may
+sign later cozies, and the `KeyRevoked` path. Tests for the last exist outside
+the bound set: the golden vectors `revoked_key_fails` and
+`action_revoked_key_fails` (both expect `KeyRevoked`), run by
+`test_golden_errors`; `revoked_signer_is_key_revoked` in
+`rs/cyphr/tests/signer_seam.rs`; and the revoked-key re-add refusals in
+`rs/cyphr/tests/key_auth.rs`.
 
 #### [rv-lifecycle-gate]
 
@@ -443,61 +454,257 @@ is `included_czds` on the principal's core, filled as each coz is applied. It is
 not part of any committed root in this code, so a verifier that holds only a
 commitment cannot check reuse without the history.
 
-## Further checks a replay makes
+## Further record checks
 
-The twelve are not everything replay enforces. These checks also reject a
-record. They have no docket claim; the last column names the test that exercises
-each, found by search, not bound to a claim here. "None found" means no test
-turned up for that check.
+The checks below are not among the twelve rules. Each claim is either bound to
+a test or declares itself unbound and says what binding it needs. "Unbound"
+means no test in the bound set closes the claim; tests that exercise it
+elsewhere are named.
 
-| Check                                                                                             | Error                             | Where                                                    | Test that exercises it                                                                                                         |
-| :------------------------------------------------------------------------------------------------ | :-------------------------------- | :------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
-| `key/create` of a key already in the key set                                                      | `DuplicateKey`                    | `apply_transaction_internal`                             | golden vector `duplicate_key_fails`                                                                                            |
-| `key/create` or `key/replace` of a revoked key                                                    | `KeyRevoked`                      | `apply_transaction_internal`                             | `d3_revoked_key_cannot_be_readded_by_key_create` and `_by_key_replace` in `key_auth.rs`                                        |
-| Removing or self-revoking the last key                                                            | `NoActiveKeys`                    | `remove_key`, `revoke_key`                               | golden vectors `delete_last_key_fails`, `last_key_revoke_fails`                                                                |
-| `rvk` outside 1 to 2^53 - 1, or `id` present on a revoke                                          | `MalformedPayload`                | `ParsedCoz::parse_kind`                                  | `s6_4_revoke_rvk_must_be_a_positive_bounded_integer`; golden vector `revoke_non_self_fails`                                    |
-| The revealed `pub` does not hash to the signed `id`                                               | `MalformedPayload`, `TmbMismatch` | `apply_transaction_internal`, `Key::new`                 | `d1_key_create_rejects_victim_tmb_with_attacker_pub` in `key_auth.rs`                                                          |
-| A lifecycle coz's `id` is not the current PR                                                      | `StateMismatch`                   | `apply_transaction_internal`                             | none found                                                                                                                     |
-| `freeze/create` when frozen; `freeze/delete` when not frozen                                      | `AlreadyFrozen`, `NotFrozen`      | `apply_transaction_internal`                             | unit tests in `rs/cyphr/src/principal/tests/lifecycle.rs`                                                                      |
-| A commit with only a finalizer, or without a terminal `arrow`                                     | `EmptyCommit`, `MissingCommit`    | `finalize_commit`                                        | unit tests in `rs/cyphr/src/commit.rs`                                                                                         |
-| A `pre` field on a data action                                                                    | `MalformedPayload`                | `verify_and_record_action`                               | e2e cases `t2_f15_*` in `tests/e2e/e2e_features.toml`, run by `e2e_dynamic_features_matrix` in `rs/cyphr-storage/tests/e2e.rs` |
-| `key/delete` or revoke of a key outside the active set; `principal/create` from a non-genesis key | `UnknownKey`                      | `remove_key`, `revoke_key`, `apply_transaction_internal` | golden vector `delete_unknown_key_fails` for delete; none located for the others                                               |
-| A `principal/create` whose `id` is not the PR                                                     | `StateMismatch`                   | `apply_transaction_internal`                             | `s2_3_2_no_operation_changes_the_principal_genesis` (second create); none located for the first                                |
-| A key-introducing coz with no sidecar key; a `commit/create` with no `arrow`                      | `MalformedPayload`                | `apply_transaction_internal`, `ParsedCoz::parse_kind`    | none located                                                                                                                   |
-| An `arrow` with no variant for the signer's algorithm                                             | `CommitMismatch`                  | `finalize_commit`                                        | none located                                                                                                                   |
-| A key algorithm the core does not support                                                         | `UnsupportedAlgorithm`            | `verify_coz`                                             | golden vector `unsupported_algorithm_fails`                                                                                    |
-| A `typ` the parser does not know                                                                  | `MalformedPayload`                | `ParsedCoz::parse_kind`                                  | `parse_unknown_typ_fails` in `rs/cyphr/src/parsed_coz.rs`                                                                      |
-| A durable leaf at a commit's position differs from its new TR                                     | `DurableLeafMismatch`             | `finalize_commit`                                        | `rs/cyphr-storage/tests/durable_commit_trees.rs`                                                                               |
+### Keys, algorithms and digests
+
+#### [rv-key-set]
+
+A `key/create` of a key already in the key set is refused with `DuplicateKey`.
+Removing or revoking the last key is refused with `NoActiveKeys`, so a replay
+cannot empty the key set. Deleting or revoking a key outside the active set is
+refused with `UnknownKey`.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. The golden vectors `duplicate_key_fails`, `delete_last_key_fails`,
+`last_key_revoke_fails` and `delete_unknown_key_fails` in `tests/golden/errors/`
+exercise these refusals and run under `test_golden_errors` in
+`rs/cyphr/tests/golden_fixtures.rs`. Binding needs a change whose file surface
+includes that file, to add a marker for this claim at that test.
+
+#### [rv-key-material]
+
+A key introduced by `key/create` or `key/replace` must come with its public key
+revealed, and that public key must hash to the signed `id`. A `key/create` with
+no revealed key is refused, and the thumbprint does not become active. A
+revealed key whose thumbprint differs from the signed `id` is refused with
+`MalformedPayload`, and `Key::new` refuses a thumbprint that is not the
+thumbprint of its public key with `TmbMismatch`.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+Backed by `s2_2_13_key_create_without_revealed_pub_is_rejected` in
+`rs/cyphr/tests/spec_conformance.rs`, a scenario that asserts the coz is
+rejected and the key not active; it has no control and does not assert the
+error type. Not bound here: the `TmbMismatch` and mismatched-`id` refusals.
+`d1_key_create_rejects_victim_tmb_with_attacker_pub` and its siblings in
+`rs/cyphr/tests/key_auth.rs` exercise them.
+
+#### [rv-alg-support]
+
+A key algorithm the core does not know is refused with `UnknownAlg`
+(`hash_alg_from_str` in `rs/cyphr/src/state.rs`, and `Key::new`). An algorithm
+that has no digest function where one is needed is refused with
+`UnsupportedAlgorithm`.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. The golden vector `unsupported_algorithm_fails` exercises the first
+refusal; it expects `UnknownAlg`, not `UnsupportedAlgorithm`, and runs under
+`test_golden_errors`. No test that reaches `UnsupportedAlgorithm` is known.
+Binding needs a change whose file surface includes
+`rs/cyphr/tests/golden_fixtures.rs`.
+
+#### [rv-digest-wellformed]
+
+A tagged digest string with a bad tag, bad base64 or the wrong length for its
+algorithm is refused, and parsing arbitrary input never panics. A multihash
+built from a digest of the wrong length is refused.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+Backed by `test_tagged_digest_parsing_roundtrip`,
+`test_tagged_digest_invalid_parsing_does_not_panic` and
+`test_multihash_digest_validation` in `rs/cyphr/tests/properties.rs`, property
+tests over random digests and strings. They assert that a wrong length fails
+and that parsing does not panic; they do not assert the error type
+(`MalformedDigest` for a bad tag or base64, `DigestLengthMismatch` for the
+length). Unit tests in `rs/cyphr/src/state.rs` assert those types. Not checked
+on a coz-borne digest: the path that parses an `arrow` out of a coz.
+
+#### [rv-internal-invariants]
+
+A digest container that lacks a variant the code expects raises
+`EmptyMultihash` or `MissingVariant`. The code raises these for an internal
+fault, not for a property of a record.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. No scenario that reaches either error from a valid or invalid record
+is known. Binding needs such a scenario to exist first.
+
+#### [rv-key-arity]
+
+A principal can hold any number of keys. The code does not meet this: the Key
+Tree refuses more than 256 keys with `CollectionArityExceeded`, a known gap.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. The test `s4_key_tree_supports_more_than_256_keys` in
+`rs/cyphr/tests/spec_conformance.rs` is ignored as `RED(SC1-F3)`; an ignored
+test runs zero cases, so the runner cannot bind it. Binding needs the fix that
+lifts the cap.
+
+### Time, lifecycle transitions and commit completeness
+
+#### [rv-timestamp-future]
+
+When a maximum clock skew is configured, a coz whose `now` exceeds server time
+plus the skew is refused with `TimestampFuture`. The default skew is 0, which
+disables the check.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. The test that would require the check on by default,
+`s15_9_future_dated_message_is_rejected_by_default` in
+`rs/cyphr/tests/spec_conformance.rs`, is ignored as `RED(SC1-F5)`. No test
+enables a skew and checks the refusal. Binding needs a test that configures a
+skew.
+
+#### [rv-lifecycle-transitions]
+
+`freeze/create` on a principal that is already frozen is refused with
+`AlreadyFrozen`, and `freeze/delete` on one that is not frozen is refused with
+`NotFrozen`.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. Unit tests in `rs/cyphr/src/principal/tests/lifecycle.rs` assert both
+errors. They live in the crate's source tree. Binding needs a change whose file
+surface includes that file.
+
+#### [rv-commit-nonempty]
+
+A commit that holds only its finalizer is refused with `EmptyCommit`, and a
+commit whose last coz carries no `arrow` is refused with `MissingCommit`.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. Unit tests in `rs/cyphr/src/commit.rs` assert both errors. Binding
+needs a change whose file surface includes that file.
+
+### Collaborators of the core
+
+#### [rv-signer-faults]
+
+A failure of the signing backend while finalizing a commit surfaces as
+`Error::Signer` and records no commit.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. `faulty_signers_yield_typed_errors_and_no_commit` in
+`rs/cyphr/tests/signer_seam.rs` exercises it. Binding needs a change whose
+file surface includes that file.
+
+#### [rv-storage-backend]
+
+A failure of the backing storage while reading or writing commit trees
+surfaces as `Error::Storage`. A durable leaf at a commit's position that
+differs from the commit's TR, the signature of a crash-window orphan, is
+refused with `DurableLeafMismatch`.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+Unbound. `storage_backend_failure_surfaces_as_storage_error` in
+`rs/cyphr/tests/storage_error_taxonomy.rs` and the orphan-leaf scenario in
+`rs/cyphr-storage/tests/durable_commit_trees.rs` exercise them. Binding needs
+a change whose file surface includes those files.
+
+## Errors by claim
+
+Every error the core apply, finalize and record paths can raise has one row,
+naming the claim that governs it. A claim may govern errors raised for several
+rules; the claim's text says which. The table is checked, not trusted:
+`rs/cyphr/tests/record_verification.rs` classifies every `cyphr::Error`
+variant with an exhaustive `match`, and fails if a reachable variant has no
+row, a row names no variant or one classified outside the core paths, a row
+points to a different claim than the classification, or a claim is neither
+bound nor declared unbound. Variants the test classifies as outside the core
+paths have no row; its source gives the reason for each.
+
+| Error                     | Claim                      |
+| :------------------------ | :------------------------- |
+| `Signer`                  | `rv-signer-faults`         |
+| `InvalidSignature`        | `rv-sig-verifies`          |
+| `UnknownKey`              | `rv-key-active-gate`       |
+| `UnknownAlg`              | `rv-alg-support`           |
+| `TimestampPast`           | `rv-timestamp-monotone`    |
+| `TimestampFuture`         | `rv-timestamp-future`      |
+| `KeyRevoked`              | `rv-key-active-gate`       |
+| `MalformedPayload`        | `rv-coz-wellformed`        |
+| `TmbMismatch`             | `rv-key-material`          |
+| `AlgMismatch`             | `rv-alg-alignment`         |
+| `CzdMismatch`             | `rv-alg-alignment`         |
+| `DuplicateKey`            | `rv-key-set`               |
+| `CozReuse`                | `rv-no-coz-reuse`          |
+| `StateMismatch`           | `rv-genesis-immutable`     |
+| `EmptyMultihash`          | `rv-internal-invariants`   |
+| `MissingVariant`          | `rv-internal-invariants`   |
+| `NoActiveKeys`            | `rv-key-set`               |
+| `AlreadyDeleted`          | `rv-lifecycle-gate`        |
+| `AlreadyFrozen`           | `rv-lifecycle-transitions` |
+| `NotFrozen`               | `rv-lifecycle-transitions` |
+| `Frozen`                  | `rv-lifecycle-gate`        |
+| `MixedTransactionTyp`     | `rv-intra-commit-shape`    |
+| `UnsupportedAlgorithm`    | `rv-alg-support`           |
+| `Storage`                 | `rv-storage-backend`       |
+| `CollectionArityExceeded` | `rv-key-arity`             |
+| `EmptyCommit`             | `rv-commit-nonempty`       |
+| `CommitNotLast`           | `rv-intra-commit-shape`    |
+| `MissingCommit`           | `rv-commit-nonempty`       |
+| `CommitMismatch`          | `rv-arrow-chain`           |
+| `DurableLeafMismatch`     | `rv-storage-backend`       |
+| `MalformedDigest`         | `rv-digest-wellformed`     |
+| `DigestLengthMismatch`    | `rv-digest-wellformed`     |
 
 ## Storage replay
 
-Replay from storage (`replay_commits` in `rs/cyphr-storage/src/import.rs`, and
-`submit_commit` in `rs/cyphr-storage/src/engine/mod.rs`) calls the core paths
-above, but differs from them in these ways today:
-
-- **Rejection comes first from the header parse.** Each coz's `pay` goes through
-  `CozHeader::parse`, which requires `typ`, `tmb` and `now` and returns
-  `MalformedPayload` before the core sees the coz. `replay_rejects_commit_missing_typ`
-  in `import.rs` pins this for a missing `typ`. A missing `alg` is rejected
-  next, as `UnsupportedAlgorithm` in `replay_commits`; `submit_commit` instead
-  reports a malformed header or a missing `alg` as `MalformedBlob`. The core
-  errors in rule 1 (`AlgMismatch`) are therefore not what storage replay
-  returns for these inputs.
-- **Data actions are not replayed in signed order.** Data actions before a
-  commit's first transaction coz are recorded first; those after it are
-  deferred and recorded after the commit finalizes. Within each group they keep
-  their order, but the interleaving the principal signed is not kept.
-- **Routing is a substring match.** `is_transaction_typ` tests whether the
-  `typ` contains `/key/`, `/principal/create` and similar, where the core
-  parser matches the `typ` by suffix (`has_suffix`). A `typ` the two disagree
-  about can be routed as a transaction by one and not by the other.
-- **Stored roots are not compared.** A commit entry carries `ar`, `sr` and
-  `pr`; `replay_commits` never reads them. Replay checks the `arrow` through
-  the core and does not compare the roots it computes with the stored ones.
-- **Transaction grouping is dropped.** This is the known defect under
-  [rv-intra-commit-shape](#rv-intra-commit-shape).
-
-No test bound on this page exercises storage replay.
+Replay from storage reaches these core paths through its own import and
+submission code. Whether it gives the same result as applying the same record
+through the core is the subject of a separate equivalence criterion, "storage
+replay equals core apply". This page makes no claim about storage replay, and
+none of its bound tests exercises it. Known differences are not listed here,
+because a list written by hand goes stale; the criterion's own checks are where
+they are found.
 
 ## Rules by proof form
 
@@ -549,8 +756,8 @@ sits in the liveness group. Whether the referenced principal's own record is
 honest is the same question applied to that log. No code or test in this page
 covers embedding.
 
-Known gap: recovery and merge (SPEC §11.4, §11.5) add record-layer rules once
-their text settles. The merge acceptance tests in `rs/cyphr/tests/merge.rs`
+Known gap: recovery (SPEC §14) and merge and fork (SPEC §11.5) add
+record-layer rules once their text settles. The merge acceptance tests in `rs/cyphr/tests/merge.rs`
 are ignored as red today, and no merge rule is among the twelve.
 
 ## Question for the spec author
@@ -578,6 +785,14 @@ rules (SPEC §4) do not mention it.
    2^53 - 1". The first excludes 2^53 - 1 and the second allows it. The code
    reads the bound as inclusive (`coz::is_valid_rvk`: positive and at most
    2^53 - 1), and a bound test accepts 2^53 - 1. Which is intended?
+
+5. SPEC §2.2.3 requires digest identifiers inside a coz to align with the
+   coz's `alg` "unless explicitly labeled", and gives as an example that the
+   `id` of a new key must be SHA-256, aligning with `ES256`. A key's thumbprint
+   is a digest under the key's own algorithm. When an Ed25519 key signs a
+   `key/create` for an ES256 key, the `id` is a SHA-256 digest while the coz's
+   `alg` is Ed25519. Does the sentence require the `id` to follow the coz's
+   `alg`, the new key's, or either?
 
 Until the spec author answers, this page states rule 5 as the code and the
 Extended text describe it and treats the equality case as unspecified.

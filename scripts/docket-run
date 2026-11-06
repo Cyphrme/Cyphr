@@ -76,6 +76,8 @@ declare -A CLAIMS_INDEX=(
   [rv-timestamp-range]="_claim_rv_timestamp_range"
   [rv-alg-alignment]="_claim_rv_alg_alignment"
   [rv-timestamp-monotone]="_claim_rv_timestamp_monotone"
+  [rv-key-material]="_claim_rv_key_material"
+  [rv-digest-wellformed]="_claim_rv_digest_wellformed"
   [rv-arrow-chain]="_claim_rv_arrow_chain"
   [rv-state-recomputed]="_claim_rv_state_recomputed"
   [rv-key-active-gate]="_claim_rv_key_active_gate"
@@ -255,6 +257,15 @@ _claim_rv_alg_alignment=(
 )
 _claim_rv_timestamp_monotone=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test golden_fixtures test_golden_errors -- --exact"
+)
+
+_claim_rv_key_material=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_13_key_create_without_revealed_pub_is_rejected -- --exact"
+)
+_claim_rv_digest_wellformed=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_tagged_digest_parsing_roundtrip -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_tagged_digest_invalid_parsing_does_not_panic -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_multihash_digest_validation -- --exact"
 )
 
 _claim_selfcheck_zero_tests=(

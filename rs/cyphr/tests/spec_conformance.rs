@@ -523,6 +523,7 @@ fn s4_6_commit_coz_must_be_last_in_txs() {
 /// does not become active. Turns red if a key is admitted by thumbprint
 /// alone. End to end: yes.
 // @docket: sc-l203 :: scripts/docket-run sc-l203
+// @docket: rv-key-material :: scripts/docket-run rv-key-material
 #[test]
 fn s2_2_13_key_create_without_revealed_pub_is_rejected() {
     let (g, k2) = (kp(), kp());
