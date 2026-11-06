@@ -159,6 +159,11 @@ mod tests {
             "bare 32 under SHA-384"
         );
         assert!(Nonce::parse(&format!("SHA-384:{B64_32}"), HashAlg::Sha256).is_err());
+        let wide = format!("A{B64_32}"); // 33 bytes: one too many
+        assert!(
+            Nonce::parse(&wide, HashAlg::Sha256).is_err(),
+            "bare 33 under SHA-256"
+        );
         assert!(Nonce::parse("SHA-256:", HashAlg::Sha256).is_err());
         assert!(Nonce::parse("MD5:AAAA", HashAlg::Sha256).is_err());
         assert!(Nonce::parse("!!!", HashAlg::Sha256).is_err());
