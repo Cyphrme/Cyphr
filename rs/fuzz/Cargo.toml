@@ -7,6 +7,9 @@ version = "0.0.0"
 [package.metadata]
 cargo-fuzz = true
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(red_n15b)"] } # RED(N15b)
+
 [dependencies]
 coz           = { workspace = true }
 libfuzzer-sys = "0.4"
@@ -80,4 +83,11 @@ bench = false
 doc   = false
 name  = "fuzz_patch_envelope"
 path  = "fuzz_targets/fuzz_patch_envelope.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_view_statement"
+path  = "fuzz_targets/fuzz_view_statement.rs"
 test  = false
