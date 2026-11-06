@@ -225,8 +225,22 @@ async fn well_formed_unknown_pr_still_syncs_once_per_request() {
 // Keyed /tip: an unchanged pre-PG tip must not replay history per GET
 // ========================================================================
 
-/// Counts `load_principal` spans (the engine's full-history replay).
-struct ReplayCounter(Arc<AtomicUsize>);
+/// Counts `load_principal` spans created on a registered thread.
+///
+/// Installed ONCE as the process-global subscriber and keyed by thread. A
+/// per-thread `set_default` subscriber raced with the other tests in this
+/// binary: a `load_principal` callsite first hit by a thread with no
+/// subscriber had its (disabled) interest cached, so the counting thread
+/// intermittently saw zero spans (about 1 run in 10, tripping the control
+/// assertion below). A global subscriber leaves no interest to race on.
+struct ReplayCounter;
+
+type Counters = std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, Arc<AtomicUsize>>>;
+
+fn counters() -> &'static Counters {
+    static COUNTERS: std::sync::OnceLock<Counters> = std::sync::OnceLock::new();
+    COUNTERS.get_or_init(Default::default)
+}
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReplayCounter {
     fn on_new_span(
@@ -235,18 +249,30 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReplayCounter {
         _id: &tracing::span::Id,
         _ctx: Context<'_, S>,
     ) {
-        if attrs.metadata().name() == "load_principal" {
-            self.0.fetch_add(1, Ordering::SeqCst);
+        if attrs.metadata().name() != "load_principal" {
+            return;
+        }
+        let map = counters().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(count) = map.get(&std::thread::current().id()) {
+            count.fetch_add(1, Ordering::SeqCst);
         }
     }
 }
 
-/// Run `f` with the replay counter installed on this thread (current-thread
+/// Count this thread's `load_principal` spans from now on (current-thread
 /// runtime: every engine span is created here).
-fn counting_replays() -> (Arc<AtomicUsize>, tracing::subscriber::DefaultGuard) {
+fn counting_replays() -> (Arc<AtomicUsize>, ()) {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let sub = tracing_subscriber::registry().with(ReplayCounter);
+        tracing::subscriber::set_global_default(sub).expect("no other global subscriber");
+    });
     let count = Arc::new(AtomicUsize::new(0));
-    let sub = tracing_subscriber::registry().with(ReplayCounter(count.clone()));
-    (count, tracing::subscriber::set_default(sub))
+    counters()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(std::thread::current().id(), count.clone());
+    (count, ())
 }
 
 /// Claim: repeated unauthenticated reads cannot trigger unbounded work.
