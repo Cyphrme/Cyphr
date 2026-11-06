@@ -50,6 +50,15 @@ use cyphr_server::auth::ServerIdentity;
 use cyphr_server::receipt::{self, EquivocationVerdict, Roots, TipReport};
 use proptest::prelude::*;
 
+/// Drive a receipt constructor from a synchronous `proptest!` body, which
+/// has no runtime of its own.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("build a current-thread runtime")
+        .block_on(fut)
+}
+
 // ========================================================================
 // Fixture helpers (mirrored from tests/equivocation.rs, a separate
 // integration-test crate that cannot be imported here)
@@ -248,9 +257,9 @@ proptest! {
         let commit_id = digest_string(&commit_bytes);
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
-        let mut report = receipt::tip_report(
+        let mut report = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), seq, commit_id, &roots, seq + 1, 1_700_000_000,
-        )
+        ))
         .expect("compose report");
 
         if as_string {
@@ -310,13 +319,13 @@ proptest! {
         let commit_b = digest_string(&differing_bytes(&commit_bytes));
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
-        let a = receipt::tip_report(
+        let a = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), 5u64, commit_a, &roots, 6, 1_700_000_000,
-        )
+        ))
         .expect("compose report a");
-        let b = receipt::tip_report(
+        let b = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), 5u64, commit_b, &roots, 6, 1_700_000_000,
-        )
+        ))
         .expect("compose report b");
 
         let malformed_value = match malformed_field {
@@ -385,13 +394,13 @@ proptest! {
         let roots_a = roots_from(&pr_root, &pr_root, &pr_root, &cr_a);
         let roots_b = roots_from(&pr_root, &pr_root, &pr_root, &cr_b);
 
-        let mut a = receipt::tip_report(
+        let mut a = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), seq, commit_a, &roots_a, seq + 1, 1_700_000_000,
-        )
+        ))
         .expect("compose report a");
-        let mut b = receipt::tip_report(
+        let mut b = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), seq, commit_b, &roots_b, seq + 1, 1_700_000_000,
-        )
+        ))
         .expect("compose report b");
 
         if a_as_string {
@@ -462,13 +471,13 @@ proptest! {
         let commit_b = digest_string(&differing_bytes(&commit_bytes));
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
-        let a = receipt::tip_report(
+        let a = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), 5u64, commit_a, &roots, 6, 1_700_000_000,
-        )
+        ))
         .expect("compose report a");
-        let b = receipt::tip_report(
+        let b = block_on(receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), 5u64, commit_b.clone(), &roots, 6, 1_700_000_000,
-        )
+        ))
         .expect("compose report b");
 
         // The value legitimately sitting at `malformed_field` on `b`
@@ -551,11 +560,11 @@ proptest! {
             _ => unreachable!("prop_oneof exhausts exactly these six field names"),
         };
 
-        let result = receipt::tip_report(
+        let result = block_on(receipt::tip_report(
             &identity, 1_700_000_000, arg_pr, 5u64, arg_commit, &roots, 6, 1_700_000_000,
-        );
+        ));
         prop_assert!(
-            result.is_none(),
+            result.is_err(),
             "tip_report MUST refuse to sign a malformed {}={:?}, not silently build the receipt",
             malformed_field, malformed_digest
         );
@@ -584,8 +593,8 @@ proptest! {
 /// clause; see `rs/cyphr-server/tests/receipts.rs`'s
 /// `commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string`
 /// for the fuller rationale).
-#[test]
-fn genesis_commit_root_is_accepted() {
+#[tokio::test]
+async fn genesis_commit_root_is_accepted() {
     let (_dir, identity) = identity_with_seed(0x66);
     let pr_root = digest_string(&[0x77; 32]);
     let pr = principal_digest(&[0x77; 32]);
@@ -603,7 +612,7 @@ fn genesis_commit_root_is_accepted() {
         &roots,
         1,
         1_700_000_000,
-    )
+    ).await
     .expect("tip_report MUST sign a genesis-stage report whose commit root is legitimately absent");
 
     assert_eq!(

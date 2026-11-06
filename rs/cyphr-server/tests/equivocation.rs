@@ -24,6 +24,15 @@ use http_body_util::BodyExt;
 use proptest::prelude::*;
 use tower::ServiceExt;
 
+/// Drive a receipt constructor from a synchronous `proptest!` body, which
+/// has no runtime of its own.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("build a current-thread runtime")
+        .block_on(fut)
+}
+
 // ========================================================================
 // Fixture helpers (mirrored from tests/receipts.rs, which is a separate
 // integration-test crate and cannot be imported here)
@@ -368,7 +377,7 @@ async fn same_key_pair_proves_equivocation() {
         &roots_b(),
         real_commit_count,
         real_last_updated,
-    )
+    ).await
     .expect("compose a conflicting tip report under the same key");
 
     assert_eq!(
@@ -428,7 +437,7 @@ async fn cross_key_pair_proves_equivocation() {
         &roots_b(),
         real_commit_count,
         real_last_updated,
-    )
+    ).await
     .expect("compose a conflicting tip report under the rotated key");
 
     assert_eq!(
@@ -449,8 +458,8 @@ async fn cross_key_pair_proves_equivocation() {
 /// `||`: a roots-only conflict (the same reported commit outcome, a
 /// different reported chain state) would then be misdiagnosed as
 /// identical and silently dropped.
-#[test]
-fn same_commit_id_differing_roots_still_proves_equivocation() {
+#[tokio::test]
+async fn same_commit_id_differing_roots_still_proves_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let a = receipt::tip_report(
         &identity,
@@ -461,7 +470,7 @@ fn same_commit_id_differing_roots_still_proves_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -472,7 +481,7 @@ fn same_commit_id_differing_roots_still_proves_equivocation() {
         &roots_b(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report b");
 
     assert_eq!(
@@ -488,8 +497,8 @@ fn same_commit_id_differing_roots_still_proves_equivocation() {
 /// would otherwise read as "different sequence" and evade the pinned
 /// predicate entirely -- the same logical claim in two representations is
 /// one claim, not two positions.
-#[test]
-fn asymmetric_type_sequence_proves_equivocation() {
+#[tokio::test]
+async fn asymmetric_type_sequence_proves_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let a = receipt::tip_report(
         &identity,
@@ -500,7 +509,7 @@ fn asymmetric_type_sequence_proves_equivocation() {
         &roots_a(),
         6,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -511,7 +520,7 @@ fn asymmetric_type_sequence_proves_equivocation() {
         &roots_b(),
         6,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report b");
     let b = restamp_sequence(b, &identity, serde_json::json!("5"));
 
@@ -530,8 +539,8 @@ fn asymmetric_type_sequence_proves_equivocation() {
 // ========================================================================
 
 /// Two claim-identical reports are not a conflict.
-#[test]
-fn identical_claims_pair_is_not_equivocation() {
+#[tokio::test]
+async fn identical_claims_pair_is_not_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let a = receipt::tip_report(
         &identity,
@@ -542,7 +551,7 @@ fn identical_claims_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -553,7 +562,7 @@ fn identical_claims_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report b");
 
     assert_eq!(
@@ -564,8 +573,8 @@ fn identical_claims_pair_is_not_equivocation() {
 
 /// Two reports attesting different principals are not a conflict about
 /// the same principal state.
-#[test]
-fn different_principal_pair_is_not_equivocation() {
+#[tokio::test]
+async fn different_principal_pair_is_not_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let a = receipt::tip_report(
         &identity,
@@ -576,7 +585,7 @@ fn different_principal_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -587,7 +596,7 @@ fn different_principal_pair_is_not_equivocation() {
         &roots_b(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report b");
 
     assert_eq!(
@@ -598,8 +607,8 @@ fn different_principal_pair_is_not_equivocation() {
 
 /// Two reports attesting different sequence positions are not a
 /// conflict -- the chain simply advanced.
-#[test]
-fn different_sequence_pair_is_not_equivocation() {
+#[tokio::test]
+async fn different_sequence_pair_is_not_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let a = receipt::tip_report(
         &identity,
@@ -610,7 +619,7 @@ fn different_sequence_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -621,7 +630,7 @@ fn different_sequence_pair_is_not_equivocation() {
         &roots_b(),
         5,
         1_700_000_100,
-    )
+    ).await
     .expect("compose report b");
 
     assert_eq!(
@@ -632,8 +641,8 @@ fn different_sequence_pair_is_not_equivocation() {
 
 /// A report checked against the WRONG key fails signature verification --
 /// no diagnosis beyond "not proven" is drawn from an unverifiable claim.
-#[test]
-fn bad_signature_pair_is_not_equivocation() {
+#[tokio::test]
+async fn bad_signature_pair_is_not_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let (_dir2, wrong_identity) = identity_with_seed(0x22);
     let a = receipt::tip_report(
@@ -645,7 +654,7 @@ fn bad_signature_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -656,7 +665,7 @@ fn bad_signature_pair_is_not_equivocation() {
         &roots_b(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose report b");
 
     assert_eq!(
@@ -667,8 +676,8 @@ fn bad_signature_pair_is_not_equivocation() {
 
 /// A commit receipt smuggled in as the second report is rejected by
 /// `typ` before any claim comparison runs.
-#[test]
-fn wrong_typ_pair_is_not_equivocation() {
+#[tokio::test]
+async fn wrong_typ_pair_is_not_equivocation() {
     let (_dir, identity) = identity_with_seed(0x11);
     let tip = receipt::tip_report(
         &identity,
@@ -679,7 +688,7 @@ fn wrong_typ_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    )
+    ).await
     .expect("compose tip report");
     let commit = receipt::commit_receipt(
         &identity,
@@ -688,7 +697,7 @@ fn wrong_typ_pair_is_not_equivocation() {
         3,
         digest(0x20),
         &roots_a(),
-    )
+    ).await
     .expect("compose commit receipt");
 
     assert_eq!(
@@ -756,7 +765,7 @@ proptest! {
         let (_dir, identity) = identity_with_seed(0x11);
         let pr = principal_digest(0x40);
 
-        let a = receipt::tip_report(
+        let a = block_on(receipt::tip_report(
             &identity,
             1_700_000_000,
             &pr,
@@ -765,9 +774,9 @@ proptest! {
             &roots_a(),
             1,
             1_700_000_000,
-        )
+        ))
         .expect("compose well-formed report a");
-        let b = receipt::tip_report(
+        let b = block_on(receipt::tip_report(
             &identity,
             1_700_000_000,
             &pr,
@@ -776,7 +785,7 @@ proptest! {
             &roots_a(),
             1,
             1_700_000_000,
-        )
+        ))
         .expect("compose well-formed report b (conflicting commit_id)");
 
         let a = if malformed_on_pr {
