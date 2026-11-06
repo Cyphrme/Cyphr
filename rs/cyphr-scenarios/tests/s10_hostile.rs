@@ -14,7 +14,7 @@ use cyphr_scenarios::peer::Limits;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(transport): TR1"]
+#[ignore = "RED(peer-gossip): G2"]
 async fn s10_hostile() {
     // The body limit is pinned in the peers' own config and the oversized
     // blob derived from it, so a change to the compiled default cannot make
