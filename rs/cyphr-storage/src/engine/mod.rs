@@ -1916,8 +1916,12 @@ fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
     if let Some(key) = members.get("key").filter(|_| keeps_key) {
         let entry = key_value_to_entry(key)
             .ok_or_else(|| bad("'key' missing required fields (alg, pub, tmb)".into()))?;
-        crate::import::key_entry_to_key(&entry)
-            .map_err(|e| bad(format!("'key' is not a valid key: {e}")))?;
+        crate::import::key_entry_to_key(&entry).map_err(|e| match e {
+            // e.g. `TmbMismatch`: a client-facing protocol refusal, not a
+            // malformed blob (the status the sidecar check always gave).
+            crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
+            other => bad(format!("'key' is not a valid key: {other}")),
+        })?;
         let mut key = serde_json::Map::new();
         key.insert("alg".into(), entry.alg.into());
         key.insert("pub".into(), entry.pub_key.into());
