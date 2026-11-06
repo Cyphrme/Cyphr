@@ -50,11 +50,30 @@ pub enum Command {
         data_dir: Option<PathBuf>,
     },
 
+    /// Rotate the server's signing key (offline: the server must be
+    /// stopped).
+    RotateKey(RotateKeyArgs),
+
     /// Manage invite tokens (admission policy `invite`).
     Invite {
         #[command(subcommand)]
         action: InviteAction,
     },
+}
+
+/// Arguments for the `rotate-key` subcommand.
+///
+/// Overrides layer over the TOML file like [`ServeArgs`], so the command
+/// reads the same data directory and key file `serve` does.
+#[derive(Debug, clap::Args)]
+pub struct RotateKeyArgs {
+    /// Data directory holding the server's chain.
+    #[arg(long, env = "CYPHR_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Path to the server's signing key file; replaced in place.
+    #[arg(long, env = "CYPHR_SIGNING_KEY_PATH")]
+    pub signing_key_path: Option<PathBuf>,
 }
 
 /// `invite` subcommands.
@@ -468,6 +487,14 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     }
 
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
+    if let Command::RotateKey(ref args) = cli.command {
+        if let Some(ref data_dir) = args.data_dir {
+            config.data_dir = data_dir.clone();
+        }
+        if let Some(ref signing_key_path) = args.signing_key_path {
+            config.signing_key_path = Some(signing_key_path.clone());
+        }
+    }
     if let Command::Serve(ref args) = cli.command {
         if let Some(ref listen) = args.listen {
             config.listen = listen.clone();

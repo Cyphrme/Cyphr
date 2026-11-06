@@ -8,6 +8,8 @@ use std::process::ExitCode;
 use clap::Parser;
 use cyphr_server::config::{AdmissionConfig, Cli, Command, InviteAction};
 
+mod rotate;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -30,7 +32,12 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 },
             };
-            if let Err(e) = rt.block_on(cyphr_server::serve(config)) {
+            // Finish or abandon an interrupted `rotate-key` before the key
+            // file is loaded, so the boot signs with the chain's active key.
+            if let Err(e) = rt.block_on(async {
+                rotate::reconcile(&config).await?;
+                cyphr_server::serve(config).await
+            }) {
                 tracing::error!(error = %e, "server exited with error");
                 return ExitCode::FAILURE;
             }
@@ -59,6 +66,22 @@ fn main() -> ExitCode {
             }) {
                 tracing::error!(error = %e, "rebuild-index failed");
                 return ExitCode::FAILURE;
+            }
+        },
+        Command::RotateKey(_) => {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("failed to create tokio runtime: {e}");
+                    return ExitCode::FAILURE;
+                },
+            };
+            match rt.block_on(rotate::rotate_key(config)) {
+                Ok(report) => println!("{report}"),
+                Err(e) => {
+                    eprintln!("error: rotate-key failed: {e}");
+                    return ExitCode::FAILURE;
+                },
             }
         },
         Command::Export { .. } => {
