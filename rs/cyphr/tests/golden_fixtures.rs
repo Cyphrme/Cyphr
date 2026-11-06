@@ -669,6 +669,7 @@ fn test_golden_state_computation() {
     run_golden_dir("state_computation");
 }
 
+// @docket: rv-timestamp-monotone :: scripts/docket-run rv-timestamp-monotone
 #[test]
 fn test_golden_errors() {
     run_golden_dir("errors");

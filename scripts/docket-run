@@ -74,6 +74,8 @@ declare -A CLAIMS_INDEX=(
   [rv-coz-wellformed]="_claim_rv_coz_wellformed"
   [rv-sig-verifies]="_claim_rv_sig_verifies"
   [rv-timestamp-range]="_claim_rv_timestamp_range"
+  [rv-alg-alignment]="_claim_rv_alg_alignment"
+  [rv-timestamp-monotone]="_claim_rv_timestamp_monotone"
   [rv-arrow-chain]="_claim_rv_arrow_chain"
   [rv-state-recomputed]="_claim_rv_state_recomputed"
   [rv-key-active-gate]="_claim_rv_key_active_gate"
@@ -240,6 +242,18 @@ _claim_rv_no_coz_reuse=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected -- --exact"
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_reuse_is_typed_and_scoped_to_one_principal -- --exact"
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance multihash_replay_of_an_es384_signed_coz_is_reuse -- --exact"
+)
+
+_claim_rv_alg_alignment=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_action_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_commit_coz_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_es256_action_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_es256_commit_coz_pay_alg_must_equal_key_alg -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_wrong_caller_czd_is_not_recorded_for_actions -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test key_auth d4_wrong_caller_czd_is_not_recorded_for_commit_cozies -- --exact"
+)
+_claim_rv_timestamp_monotone=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test golden_fixtures test_golden_errors -- --exact"
 )
 
 _claim_selfcheck_zero_tests=(

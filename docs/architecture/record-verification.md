@@ -68,9 +68,8 @@ test. The error names are variants of `cyphr::Error`
 Each claim below is a docket claim: a `[kebab-id]` heading followed by a
 `claim` block. `evaluator: test` means a test is bound to the claim through an
 `@docket:` marker at the test and an entry in `scripts/docket-run`, and
-`scripts/docket-run <id>` runs every test the rule rests on. `evaluator: none`
-means no bound test closes the claim yet, and the claim's text says why and
-names the existing tests it would bind.
+`scripts/docket-run <id>` runs every test the rule rests on. All twelve
+claims are bound this way.
 
 The binding is narrower than the rule in places. Each claim ends with what
 its tests do not check.
@@ -105,20 +104,15 @@ that is not the digest of the signed bytes is never recorded.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
-Tests that fail when this breaks exist:
-`d4_action_pay_alg_must_equal_key_alg`,
+Backed by `d4_action_pay_alg_must_equal_key_alg`,
 `d4_commit_coz_pay_alg_must_equal_key_alg`, their ES256 variants,
 `d4_wrong_caller_czd_is_not_recorded_for_actions` and
 `d4_wrong_caller_czd_is_not_recorded_for_commit_cozies`, all in
-`rs/cyphr/tests/key_auth.rs`. The claim is `none` only because a docket
-marker must sit at the test and that file lies outside the files the work that
-wrote this page could change. A change that adds
-`// @docket: rv-alg-alignment :: scripts/docket-run rv-alg-alignment` to
-`d4_commit_coz_pay_alg_must_equal_key_alg` and a `scripts/docket-run` entry
-for those tests binds it. Not covered by any test: the SPEC §2.2.3 statement
+`rs/cyphr/tests/key_auth.rs`; the marker sits at the commit-coz test and the
+runner entry runs all six. Not checked by these tests: the SPEC §2.2.3 statement
 that the digest algorithm of a new key's `id` follows its `alg`, which a
 golden vector (`ed25519_account_adds_es256_key`) pins.
 
@@ -172,7 +166,7 @@ the data-action path. A rejected coz changes no state.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 The code is `apply_transaction_internal` in
@@ -180,9 +174,10 @@ The code is `apply_transaction_internal` in
 `rs/cyphr/src/principal/data.rs`; both compare `now` with `latest_timestamp`.
 Two golden vectors pin the rejection, `timestamp_past_fails` and
 `action_timestamp_past_fails` in `tests/golden/errors/`, run by
-`test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs`. That runner covers
-the whole error directory, and its file is outside the files the work that
-wrote this page could change, so no marker binds this claim. The comparison
+`test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs`. The marker sits at `test_golden_errors`, and the runner entry runs that
+whole test. It runs every vector in `tests/golden/errors/`, not only the two
+timestamp ones, so the binding fails if any error vector fails; the two
+timestamp vectors are the part that backs this claim. The comparison
 is strict (`<`), so a coz with a `now` equal to the latest is accepted; no
 test pins that. The SPEC wording that governs the boundary is the subject of
 [Question for the spec author](#question-for-the-spec-author).
