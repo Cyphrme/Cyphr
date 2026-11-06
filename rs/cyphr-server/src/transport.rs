@@ -72,8 +72,10 @@ pub struct AuthenticatedPeer {
 /// merge unrelated hosts behind one provider's block (and one NAT already
 /// shares an address), and no test here supports the wider bucket.
 fn bucket(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V4(_) => ip,
+    // A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`;
+    // key it as the IPv4 address it is, or all of them share one /64.
+    match ip.to_canonical() {
+        v4 @ IpAddr::V4(_) => v4,
         IpAddr::V6(v6) => {
             let prefix = u128::from(v6) & !u128::from(u64::MAX);
             IpAddr::V6(prefix.into())
