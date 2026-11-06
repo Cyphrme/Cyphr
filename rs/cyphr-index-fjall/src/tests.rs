@@ -376,3 +376,85 @@ async fn legacy_digest_records_still_read_and_merge() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// N13: the index schema version is read and checked at open.
+// ---------------------------------------------------------------------
+
+/// Index a commit into a fresh store at `dir` (stamping the current schema),
+/// close it, then rewrite its `index_meta` record's version to `version`, as
+/// an older or newer build would have left it.
+fn store_stamped_with(dir: &std::path::Path, version: u64) {
+    {
+        let indexer = FjallIndexer::open(dir).expect("open");
+        block_on(indexer.index_commit(
+            &conformance::make_commit("alice", 0, 1000),
+            &DeriveToken::for_conformance_tests(),
+        ))
+        .expect("index");
+    }
+    let db = Database::builder(dir).open().expect("raw open");
+    let meta = db
+        .keyspace("index_meta", KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    let raw = meta.get(META_KEY).expect("read").expect("a stamped record");
+    let mut record: serde_json::Value = serde_json::from_slice(&raw).expect("json record");
+    record["version"] = version.into();
+    meta.insert(META_KEY, serde_json::to_vec(&record).unwrap())
+        .expect("rewrite");
+    db.persist(fjall::PersistMode::SyncAll).expect("persist");
+}
+
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime")
+        .block_on(f)
+}
+
+fn open_error(dir: &std::path::Path) -> String {
+    match FjallIndexer::open(dir) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a store of the wrong schema version opened"),
+    }
+}
+
+/// Backs a-versions for the index: a store stamped with a schema version this
+/// build does not know is refused at open, naming the index and the version,
+/// never read as if it were current. Turns red on an `open` that ignores the
+/// recorded version. A unit test: the stamp is reachable only here.
+#[test]
+#[ignore = "RED(N13): FjallIndexer::open never reads the schema version"]
+fn version_index_unknown_is_refused() {
+    for unknown in [0u64, 99] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_stamped_with(dir.path(), unknown);
+        let msg = open_error(dir.path()).to_lowercase();
+        assert!(
+            msg.contains("version") && msg.contains("index") && msg.contains(&unknown.to_string()),
+            "v{unknown} refusal must name the format and the version: {msg}"
+        );
+    }
+}
+
+/// Backs a-old-stores at the index: the schema this build replaced (version
+/// 1 before the alias table, 2 before holder-keyed digests) is refused with
+/// the remedy -- an offline re-ingest -- and a refused open leaves the store
+/// untouched, so a second open is refused the same way rather than finding it
+/// quietly rewritten. Turns red on a bump that is missing, or a refusal that
+/// re-indexes in place.
+#[test]
+#[ignore = "RED(N13): the pre-holder schema (version 2) is still accepted"]
+fn version_index_previous_schemas_are_refused_with_the_remedy() {
+    for old in [1u64, 2] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_stamped_with(dir.path(), old);
+        for attempt in 1..=2 {
+            let msg = open_error(dir.path()).to_lowercase();
+            assert!(
+                msg.contains("re-ingest"),
+                "v{old} refusal (attempt {attempt}) must name the remedy: {msg}"
+            );
+        }
+    }
+}
