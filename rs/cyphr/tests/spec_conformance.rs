@@ -367,7 +367,19 @@ fn frozen_principal_rejects_data_actions_until_thawed() {
 /// built from the principal's own key, so a rejection cannot be the
 /// signer simply being unknown).
 fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::Result<()> {
+    revoke_outcome_at(None, pay_for)
+}
+
+/// [`revoke_outcome`] under an injected verifier clock, to reach `now`
+/// values the system clock would refuse as future-dated.
+fn revoke_outcome_at(
+    clock: Option<cyphr::principal::Clock>,
+    pay_for: impl Fn(&Kp) -> serde_json::Value,
+) -> cyphr::error::Result<()> {
     let (mut p, _a, b) = two_key_principal();
+    if let Some(clock) = clock {
+        p.set_clock(clock);
+    }
     let before = snapshot(&p);
     let r = commit_one(&mut p, &b, sign(&b, pay_for(&b)), None, T + 1);
     if r.is_err() {
@@ -1938,4 +1950,21 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
         }
     }
     assert!(accepted.is_empty(), "width mismatch accepted: {accepted:?}");
+}
+
+/// Backs SPEC 6.4 for a revoke `now`: the range is inclusive at 2^53 - 1.
+/// Scenario: under a clock past the range (so only the range binds), a
+/// self-revoke at 2^53 - 1 is accepted and one at 2^53 is refused. Turns red
+/// if the revoke range check rejects its own upper bound (or drops it). The
+/// future-timestamp bound hides this from the system-clock tests above, so an
+/// injected clock is the only way to reach it. End to end: yes.
+#[test]
+fn s6_4_revoke_now_upper_bound_is_inclusive() {
+    let runaway: cyphr::principal::Clock = || i64::MAX;
+    revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE, json!(1)))
+        .expect("a revoke at now = 2^53 - 1 is in range");
+    assert!(
+        revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE + 1, json!(1))).is_err(),
+        "a revoke at now = 2^53 was accepted"
+    );
 }
