@@ -34,9 +34,8 @@
 //! applied directly to that one live instance (never reloaded via replay
 //! mid-lifetime — exactly how a long-lived server process would use it),
 //! genuinely persists its Commit Tree to disk; and a *fresh* reconstruction
-//! via [`cyphr::commit_root::CommitTrees::open`] plus
-//! [`cyphr::Principal::from_checkpoint_with_trees`] (no replay involved)
-//! recovers byte-identical PR/CR after a full drop and reopen of the same
+//! via [`cyphr::commit_root::CommitTrees::open`] (no replay involved)
+//! recovers a byte-identical CR after a full drop and reopen of the same
 //! physical `fjall::Database` — proving the durability the standalone
 //! `cyphr-blob-fjall` test already proved is faithfully reachable through
 //! `Principal`'s own API.
@@ -232,39 +231,34 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
 
-    let (original_pr, original_cr, ar, keys_snapshot, pg, blob_hash) =
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let db = fjall::Database::builder(&db_path).open().expect("open db");
+    let (original_cr, algs, blob_hash) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let db = fjall::Database::builder(&db_path).open().expect("open db");
 
-            // c5: the blob store and the EML commit-tree storage genuinely
-            // share this one physical `Database` — not two uncoordinated
-            // databases — via `FjallBlobStore::from_database` and
-            // `open_eml_storage` on the same handle.
-            let blob_store =
-                cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+        // c5: the blob store and the EML commit-tree storage genuinely
+        // share this one physical `Database` — not two uncoordinated
+        // databases — via `FjallBlobStore::from_database` and
+        // `open_eml_storage` on the same handle.
+        let blob_store =
+            cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
+        let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
 
-            let blob_hash = blob_store
-                .put(b"a blob living beside the durable commit tree")
-                .await
-                .expect("blob put");
+        let blob_hash = blob_store
+            .put(b"a blob living beside the durable commit tree")
+            .await
+            .expect("blob put");
 
-            let mut principal =
-                cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
+        let mut principal =
+            cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
 
-            for commit in commits {
-                apply_golden_commit(&mut principal, commit).expect("finalize failed");
-            }
+        for commit in commits {
+            apply_golden_commit(&mut principal, commit).expect("finalize failed");
+        }
 
-            let pr = principal.pr().clone();
-            let cr = principal.cr().cloned();
-            let ar = principal.auth_root().clone();
-            let keys_snapshot: Vec<cyphr::Key> = principal.active_keys().cloned().collect();
-            let pg = principal.pg().cloned();
-            (pr, cr, ar, keys_snapshot, pg, blob_hash)
-            // `principal`, `blob_store`, and `db` all drop here, releasing
-            // the on-disk database before it's reopened below.
-        });
+        let cr = principal.cr().cloned();
+        (cr, principal.active_algs(), blob_hash)
+        // `principal`, `blob_store`, and `db` all drop here, releasing
+        // the on-disk database before it's reopened below.
+    });
 
     assert!(
         original_cr.is_some(),
@@ -273,35 +267,31 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
 
     // Reopen from scratch at the same path — a fresh `Database`, not a
     // clone of the one above — to prove the state is genuinely durable.
-    let (restored_pr, restored_cr, blob_survived) =
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let db = fjall::Database::builder(&db_path)
-                .open()
-                .expect("reopen db");
-            let blob_store =
-                cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let eml_storage =
-                cyphr_blob_fjall::open_eml_storage(db.clone()).expect("reopen eml storage");
-            let trees: CommitTrees<FjallStorage> =
-                CommitTrees::open(eml_storage).expect("reconstruct commit tree from disk");
+    let (restored_cr, blob_survived) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let db = fjall::Database::builder(&db_path)
+            .open()
+            .expect("reopen db");
+        let blob_store =
+            cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
+        let eml_storage =
+            cyphr_blob_fjall::open_eml_storage(db.clone()).expect("reopen eml storage");
+        let trees: CommitTrees<FjallStorage> =
+            CommitTrees::open(eml_storage).expect("reconstruct commit tree from disk");
 
-            let restored =
-                cyphr::Principal::from_checkpoint_with_trees(pg, ar, keys_snapshot, trees).unwrap();
+        let restored_cr = cyphr::commit_root::commit_root_from_trees(&trees, &algs)
+            .expect("commit root from reopened trees");
 
-            let blob_survived = blob_store
-                .get(&blob_hash)
-                .await
-                .expect("blob get")
-                .is_some();
-            (restored.pr().clone(), restored.cr().cloned(), blob_survived)
-        });
+        let blob_survived = blob_store
+            .get(&blob_hash)
+            .await
+            .expect("blob get")
+            .is_some();
+        (restored_cr, blob_survived)
+    });
 
     assert_eq!(
-        restored_pr, original_pr,
-        "PR must survive a disk drop-and-reload byte-for-byte"
-    );
-    assert_eq!(
-        restored_cr, original_cr,
+        Some(restored_cr),
+        original_cr,
         "CR must survive a disk drop-and-reload byte-for-byte"
     );
     assert!(
@@ -345,7 +335,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 }
 
 /// c2/c3 (P6c) — `StorageEngine::load_principal`'s NORMAL replay path (not
-/// `CommitTrees::open` + `from_checkpoint_with_trees`, which the test above
+/// `CommitTrees::open` alone, which the test above
 /// deliberately avoids) must correctly reconstruct a multi-commit principal
 /// from a durable Commit Tree that already carries every leaf from a prior
 /// session, without duplicating any of them.

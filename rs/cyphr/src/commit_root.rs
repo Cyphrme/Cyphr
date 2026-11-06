@@ -358,7 +358,7 @@ impl<S: eml::Storage> CloneableLog<S> {
     /// (each contributes its own trivial epoch-at-zero entry), so it
     /// reports `false` for an algorithm-registered zero-leaf log -- wrong
     /// for every call site that means "no prior commits yet" (e.g.
-    /// `principal::from_checkpoint_with_trees`'s CR `None`/`Some` split).
+    /// whether a genesis-fresh principal has a CR yet).
     /// Mirrors [`crate::principal::PrincipalCore::finalize_commit`]'s own
     /// use of `global_size()` for the same "has anything actually been
     /// appended" question.

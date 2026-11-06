@@ -4,7 +4,7 @@
 //!
 //! The type, its shared state ([`PrincipalCore`]) and the one place that
 //! state is assembled live here; behaviour is split by concern:
-//! `genesis` (construction and checkpoint restore), `accessors`
+//! `genesis` (construction and genesis finalization), `accessors`
 //! (read-only views and configuration), `proofs` (inclusion and
 //! consistency proofs), `data` (Level 4 action recording) and `apply`
 //! (transaction application and commit finalization).
@@ -138,14 +138,9 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// Full czd bytes of every transaction coz and data action this
     /// principal has included (SPEC §7.6). Keyed on the whole digest, not a
     /// prefix: czd width follows the signing algorithm (ES384 = 48 bytes).
-    /// Rebuilt by replaying history. LIMIT: a principal restored from a
-    /// checkpoint starts with an empty set, so it accepts reuse of a coz
-    /// included before the checkpoint (restore is test-only today; the
-    /// restore path must carry the set or replay history before it serves).
+    /// Rebuilt by replaying history; there is no checkpoint restore.
     pub(crate) included_czds: HashSet<Vec<u8>>,
-    /// Nonces held at the PR, AT and KT levels (SPEC §10.1). Not carried by
-    /// a checkpoint restore, like `included_czds`: a restored principal
-    /// derives its roots as if it held none.
+    /// Nonces held at the PR, AT and KT levels (SPEC §10.1).
     pub(crate) nonces: NonceSets,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,
@@ -408,6 +403,29 @@ impl StartingRoots {
     }
 }
 
+/// Validate the keys a principal is born with. Genesis is the one place a
+/// key enters the active set without a `key/create` replay, so it applies
+/// the refusals `key/create` gives: a revoked key is `KeyRevoked` (SPEC
+/// §7.7 requires a `key/create` for every key including the first; §6.4
+/// never trusts a revoked key again) and a repeated key is `DuplicateKey`,
+/// not silently collapsed. Revocation is checked for every key before
+/// duplication so both genesis paths report the same error for the same
+/// key. (An unsupported algorithm cannot reach here: [`Key`] has no
+/// constructor for one.)
+fn validate_genesis_keys(keys: &[Key]) -> Result<()> {
+    if keys.is_empty() {
+        return Err(Error::NoActiveKeys);
+    }
+    if keys.iter().any(|k| !k.is_active()) {
+        return Err(Error::KeyRevoked);
+    }
+    let mut seen = HashSet::with_capacity(keys.len());
+    if !keys.iter().all(|k| seen.insert(k.tmb().to_b64())) {
+        return Err(Error::DuplicateKey);
+    }
+    Ok(())
+}
+
 /// Open the Commit Tree over a caller-supplied storage backend.
 fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::CommitTrees<S>> {
     crate::commit_root::CommitTrees::open(storage).map_err(|e| Error::Storage(e.to_string()))
@@ -415,7 +433,9 @@ fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::
 
 impl<S: eml::Storage> PrincipalCore<S> {
     /// Assemble a principal's state from its keys, starting roots and
-    /// Commit Tree. Every constructor ends here, so a field added to
+    /// Commit Tree. Callers pass keys that [`validate_genesis_keys`]
+    /// accepted, so the active set never holds a revoked or repeated key.
+    /// Every constructor ends here, so a field added to
     /// `PrincipalCore` or a change to how a fresh principal is filled is
     /// made once. `keys` become both the active set and the genesis-key
     /// list, in the order given.
@@ -424,6 +444,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
         roots: StartingRoots,
         commit_trees: crate::commit_root::CommitTrees<S>,
     ) -> Self {
+        debug_assert!(validate_genesis_keys(&keys).is_ok());
         let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
         let mut key_map = IndexMap::new();
         for k in keys {
