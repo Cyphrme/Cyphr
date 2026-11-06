@@ -40,9 +40,10 @@ use crate::{AppState, build_app_router};
 /// Sessions served at once, across all addresses.
 const MAX_SESSIONS: usize = 256;
 
-/// Sessions one source address may hold at once. A Level 1 key is its own
+/// Sessions one source may hold at once. A Level 1 key is its own
 /// principal, so a peer authenticates for free and the address is the only
-/// scarce thing it has; without this one address could fill every slot.
+/// scarce thing it has; without this one source could fill every slot. A
+/// source is a full IPv4 address or an IPv6 /64 (see [`bucket`]).
 const MAX_SESSIONS_PER_IP: usize = 16;
 
 /// How long an authenticated session may sit without a request before the
@@ -63,6 +64,21 @@ pub struct AuthenticatedPeer {
     /// The Noise handshake hash of this session: the binding the statement
     /// was signed over.
     pub handshake_hash: Vec<u8>,
+}
+
+/// The unit the per-source cap counts. An IPv6 /64 is one end site, one
+/// subscriber (RFC 6177), who can source an address per connection, so it
+/// is bucketed by its /64 prefix. IPv4 keeps the full address: a /24 would
+/// merge unrelated hosts behind one provider's block (and one NAT already
+/// shares an address), and no test here supports the wider bucket.
+fn bucket(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => {
+            let prefix = u128::from(v6) & !u128::from(u64::MAX);
+            IpAddr::V6(prefix.into())
+        },
+    }
 }
 
 /// The session slots: a global pool and a per-address allowance, taken at
@@ -89,6 +105,7 @@ impl Slots {
     }
 
     fn admit(&self, ip: IpAddr) -> Option<Slot> {
+        let ip = bucket(ip);
         let total = self.total.clone().try_acquire_owned().ok()?;
         // A poisoned lock only means another session panicked mid-update of a
         // plain counter map; the counts stay usable.
