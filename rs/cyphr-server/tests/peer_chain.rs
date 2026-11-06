@@ -3,11 +3,7 @@
 //! signed `/tip` and `/view` against the keys active in that chain, and
 //! follows once when the server rotates its signing key.
 //!
-//! The scenarios name `cyphr_client::PeerChain`, which does not exist yet,
-//! so the file sits behind `cfg(red_n20)`; run it with
-//! `RUSTFLAGS="--cfg red_n20" cargo test -p cyphr-server --test peer_chain`.
-//! Without the cfg the file compiles to nothing and the workspace stays
-//! green. Rotation goes through `AppState::rotate_signing_key`; no key
+//! Rotation goes through `AppState::rotate_signing_key`; no key
 //! storage is involved.
 
 use std::sync::Arc;

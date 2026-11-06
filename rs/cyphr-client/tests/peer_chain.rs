@@ -4,12 +4,7 @@
 //!
 //! Every test here is an end-to-end scenario over the public API with an
 //! in-test carrier (a `Connector` serving canned bodies) and real chains
-//! built with `cyphr`. They name `PeerChain`, `PeerFailure` and the
-//! `peer.rs` surface that does not exist yet, so the whole file sits behind
-//! `cfg(red_n20)`; run it with
-//! `RUSTFLAGS="--cfg red_n20" cargo test -p cyphr-client --test peer_chain`.
-//! Without the cfg the file compiles to nothing and the workspace stays
-//! green. The wire shape the carrier serves (blob format, an unsigned
+//! built with `cyphr`. The wire shape the carrier serves (blob format, an unsigned
 //! statement slot on `/patch`) is the one the server already uses for a
 //! pushed commit; a chain is authenticated by replay against the pinned
 //! genesis, not by the patch statement.
