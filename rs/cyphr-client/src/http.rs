@@ -1,6 +1,6 @@
 //! The HTTP carrier: each request target is a `GET` against a base URL.
 
-use crate::connector::{ChannelBinding, ConnectError, Connector, Request};
+use crate::connector::{ChannelBinding, ConnectError, Connector, Method, Request};
 
 /// A [`Connector`] over HTTP `GET`. It exposes no channel binding.
 pub struct HttpConnector {
@@ -25,10 +25,12 @@ impl Connector for HttpConnector {
     }
 
     async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
-        let target = &request.target;
-        let res = self
-            .client
-            .get(format!("{}{target}", self.base_url))
+        let url = format!("{}{}", self.base_url, request.target);
+        let builder = match request.method {
+            Method::Get => self.client.get(url),
+            Method::Post => self.client.post(url).body(request.body.clone()),
+        };
+        let res = builder
             .header("accept", "application/json")
             .send()
             .await

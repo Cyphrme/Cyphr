@@ -360,11 +360,7 @@ impl From<PatchFailure> for SyncFailure {
             PatchFailure::EnvelopeUnsignedOrMisSigned => Self::EnvelopeUnsignedOrMisSigned,
             PatchFailure::MalformedReport => Self::MalformedReport,
             PatchFailure::PrincipalMismatch => Self::PrincipalMismatch,
-            // The witness requires no binding (`BindingPolicy::NotRequired`),
-            // so this is unreachable today; if a Noise carrier is wired in
-            // with a requirement, a refused binding is the carrier failing
-            // to be what was asked for, which is how the peer reads.
-            err @ PatchFailure::Binding(_) => Self::UpstreamUnreachable(err.to_string()),
+            PatchFailure::Binding(refusal) => Self::ChannelBindingRefused(refusal),
         }
     }
 }
