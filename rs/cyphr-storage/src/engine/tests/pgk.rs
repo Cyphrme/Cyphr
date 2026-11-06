@@ -119,7 +119,6 @@ fn typ_probe_set() -> Vec<String> {
 /// parse in the core. Not end to end: a pure predicate, no scenario
 /// reaches every spelling cheaply.
 #[test]
-#[ignore = "RED(PGK): is_transaction_typ is a hand-listed substring match"]
 fn storage_typ_routing_agrees_with_core_kind_table() {
     let suffixes = core_kind_suffixes();
     assert!(suffixes.len() >= 17, "source scan found {suffixes:?}");
@@ -143,7 +142,6 @@ fn storage_typ_routing_agrees_with_core_kind_table() {
 /// Turns red on `contains("/key/")` routing. Named separately so the
 /// spoof the hacker will try stays pinned if the broad test is reshaped.
 #[test]
-#[ignore = "RED(PGK): is_transaction_typ matches the spoofed key/create"]
 fn storage_typ_routing_spoofed_key_create_is_an_action() {
     for spoof in [
         "cyphr.me/xcyphr/key/create",
