@@ -27,8 +27,8 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use cyphr_client::Method;
 use cyphr_client::transport::{
-    BindStatement, Channel, HANDSHAKE_TIMEOUT, MAX_MESSAGE, Role, TransportError,
-    assemble_statement, decode_request, encode_ack, encode_response, statement_cad, statement_pay,
+    BindStatement, Channel, MAX_MESSAGE, Role, TransportError, assemble_statement, decode_request,
+    encode_ack, encode_response, statement_cad, statement_pay,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -216,21 +216,36 @@ fn require_attestor(state: &AppState) -> Result<(), ServeError> {
     state.attestor_signer().map(drop).ok_or(ServeError::Keyless)
 }
 
+/// The whole pre-authentication exchange, handshake through the ack, must
+/// finish within this, measured from accept. One budget, not one per step,
+/// so a peer cannot stretch its stay by stalling each step just short of
+/// its own limit.
+const PREAUTH_DEADLINE: Duration = Duration::from_secs(10);
+
 async fn session(
     stream: TcpStream,
     peer: SocketAddr,
     state: &AppState,
     router: Router,
 ) -> Result<(), SessionError> {
+    let mut channel = tokio::time::timeout(PREAUTH_DEADLINE, authenticate(stream, state))
+        .await
+        .map_err(|_| TransportError::Timeout)??;
+    serve_requests(&mut channel, peer, &router).await
+}
+
+/// Handshake, both statements and the ack: everything before a request.
+async fn authenticate(
+    stream: TcpStream,
+    state: &AppState,
+) -> Result<Channel<TcpStream>, SessionError> {
     let mut channel = Channel::respond(stream).await?;
     let h = channel.handshake_hash().to_vec();
 
     let statement = responder_statement(state, &h).await?;
     channel.send_one(&statement).await?;
 
-    let incoming = tokio::time::timeout(HANDSHAKE_TIMEOUT, channel.recv_one())
-        .await
-        .map_err(|_| TransportError::Timeout)??;
+    let incoming = channel.recv_one().await?;
     // The verdict goes back before anything else, so a refused initiator
     // learns it at `connect` and a served one knows it was accepted.
     match authorize_initiator(state, &incoming, &h).await {
@@ -242,7 +257,15 @@ async fn session(
             return Err(refusal);
         },
     }
+    Ok(channel)
+}
 
+/// Serve requests on an authenticated channel until it closes or idles out.
+async fn serve_requests(
+    channel: &mut Channel<TcpStream>,
+    peer: SocketAddr,
+    router: &Router,
+) -> Result<(), SessionError> {
     loop {
         let message = match tokio::time::timeout(IDLE_TIMEOUT, channel.recv_message()).await {
             Err(_) => return Ok(()),
@@ -252,7 +275,7 @@ async fn session(
             Ok(message) => message?,
         };
         let (status, body) = match decode_request(&message) {
-            Ok(request) => dispatch(&router, peer, request).await,
+            Ok(request) => dispatch(router, peer, request).await,
             Err(_) => (400, b"malformed request".to_vec()),
         };
         channel

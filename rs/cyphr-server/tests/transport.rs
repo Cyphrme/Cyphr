@@ -1002,3 +1002,34 @@ async fn one_address_cannot_hold_every_session_slot() {
         "{open} of the attacker's connections stayed open"
     );
 }
+
+/// Claim: the whole pre-authentication exchange shares one deadline. A
+/// client that delays its handshake and then stalls its statement is cut off
+/// about 10 s after it connected, not 10 s per step.
+///
+/// Turns red if: each step restarts the clock (the client is held for the
+/// sum, near 18 s here). End-to-end scenario: yes.
+#[tokio::test]
+async fn the_pre_auth_exchange_shares_one_deadline() {
+    let (state, _dir) = attestor_with(|_| {}).await;
+    let addr = start_noise(state).await;
+
+    let started = std::time::Instant::now();
+    let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+    let mut channel = Channel::initiate(stream).await.expect("a late handshake");
+    channel.recv_one().await.expect("the responder statement");
+    // Stalled: the initiator statement never comes.
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(20), channel.recv_one())
+        .await
+        .expect("the server must give up");
+    assert!(
+        closed.is_err(),
+        "the server sent something to a stalled client"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(13),
+        "held for {:?}",
+        started.elapsed()
+    );
+}
