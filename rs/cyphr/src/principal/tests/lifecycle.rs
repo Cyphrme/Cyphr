@@ -203,6 +203,86 @@ fn make_lifecycle_cz(
     }
 }
 
+/// Backs the freeze scope (SPEC 2.3.2, 11, 4.1): a frozen principal is
+/// default-deny. Only `freeze/delete` (the thaw) and `principal/delete`
+/// (close, R1/F5) mutate it; `freeze/create` is typed `AlreadyFrozen`;
+/// `commit/create` is the mutation-free finalizer of the commit that
+/// froze or thawed; every other kind is refused with `Frozen`. The
+/// expectation comes from an exhaustive match over `CozKind`, so adding a
+/// kind (merge, nonce, ...) stops this test compiling until the kind is
+/// classified, and a classified-as-refused kind that slips through turns
+/// it red. Unit level: the kinds are crate-private values that no signed
+/// scenario can enumerate; data actions are covered end to end by
+/// `spec_conformance::frozen_principal_rejects_data_actions_until_thawed`.
+#[test]
+fn frozen_principal_is_default_deny_for_every_coz_kind() {
+    use crate::parsed_coz::CozKind;
+
+    enum Expect {
+        Frozen,
+        AlreadyFrozen,
+        Accepted,
+    }
+    fn expect(kind: &CozKind) -> Expect {
+        match kind {
+            CozKind::KeyCreate { .. }
+            | CozKind::KeyDelete { .. }
+            | CozKind::KeyReplace { .. }
+            | CozKind::SelfRevoke { .. }
+            | CozKind::PrincipalCreate { .. } => Expect::Frozen,
+            CozKind::FreezeCreate { .. } => Expect::AlreadyFrozen,
+            CozKind::FreezeDelete { .. }
+            | CozKind::PrincipalDelete { .. }
+            | CozKind::CommitCreate { .. } => Expect::Accepted,
+        }
+    }
+
+    let key = make_test_key(0xE9);
+    let tmb = key.tmb().clone();
+    let frozen = || {
+        let mut p = Principal::implicit(key.clone()).unwrap();
+        let freeze = make_lifecycle_cz(CozKind::FreezeCreate { id: p.pr().clone() }, &tmb, 2000);
+        p.apply_transaction_test(freeze, None).unwrap();
+        assert!(p.is_frozen(), "premise: principal is frozen");
+        p
+    };
+    let probe = frozen();
+    let kinds = vec![
+        CozKind::KeyCreate { id: tmb.clone() },
+        CozKind::KeyDelete { id: tmb.clone() },
+        CozKind::KeyReplace { id: tmb.clone() },
+        CozKind::SelfRevoke { rvk: 2001 },
+        CozKind::PrincipalCreate {
+            id: AuthRoot(probe.pr().as_multihash().clone()),
+        },
+        CozKind::FreezeCreate {
+            id: probe.pr().clone(),
+        },
+        CozKind::FreezeDelete {
+            id: probe.pr().clone(),
+        },
+        CozKind::PrincipalDelete {
+            id: probe.pr().clone(),
+        },
+        CozKind::CommitCreate {
+            arrow: MultihashDigest::from_single(HashAlg::Sha256, vec![0; 32]).unwrap(),
+        },
+    ];
+    for kind in kinds {
+        let label = kind.to_string();
+        let want = expect(&kind);
+        let mut p = frozen();
+        let cz = make_lifecycle_cz(kind, &tmb, 2001);
+        let got = p.apply_verified_internal(VerifiedCoz::from_transaction_unsafe(cz, None));
+        match (want, &got) {
+            (Expect::Frozen, Err(Error::Frozen))
+            | (Expect::AlreadyFrozen, Err(Error::AlreadyFrozen))
+            | (Expect::Accepted, Ok(())) => {},
+            (_, got) => panic!("frozen principal, {label}: unexpected outcome {got:?}"),
+        }
+    }
+}
+
 #[test]
 fn principal_delete_from_frozen_succeeds_and_clears_frozen() {
     use crate::parsed_coz::CozKind;
