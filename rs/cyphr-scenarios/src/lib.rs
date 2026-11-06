@@ -14,6 +14,7 @@ pub mod oracle;
 pub mod peer;
 pub mod proxy;
 pub mod signed;
+pub mod transport;
 
 pub use capability::Capability;
 pub use harness::Harness;

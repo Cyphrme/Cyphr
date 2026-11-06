@@ -363,8 +363,22 @@ impl Harness {
     }
 
     /// Make a peer answer with an envelope of version `v`.
-    pub async fn serve_envelope_version(&self, _peer: &str, _v: u32) -> ActionResult<()> {
-        unsupported("serve_envelope_version", Capability::VersionCheck)
+    ///
+    /// A shipped peer cannot be rigged (the server has no hook, by design),
+    /// so the hostile party is a responder the harness runs: it
+    /// authenticates as a fresh principal, answers every request with
+    /// envelope `v`, and a transport client must fail closed on it. The
+    /// action succeeds only if that held, and otherwise panics: a client
+    /// that accepted an unknown version is a defect, not a refusal to
+    /// report. `_peer` names the peer the scenario means to rig; HTTP
+    /// clients through the CLI reach it only once `CliNetwork` lands.
+    pub async fn serve_envelope_version(&self, _peer: &str, v: u32) -> ActionResult<()> {
+        let closed = crate::transport::client_fails_closed_on_version(u64::from(v)).await;
+        match closed {
+            Ok(true) => Ok(()),
+            Ok(false) => panic!("a transport client accepted envelope v={v}"),
+            Err(e) => panic!("harness defect: the hostile responder could not run: {e}"),
+        }
     }
 
     /// Flood a peer with `count` bogus evidence submissions.

@@ -63,6 +63,12 @@ pub enum Probe {
     Route(&'static str),
     /// A peer's startup output has a line with this prefix.
     Banner(&'static str),
+    /// A real client completes a Noise handshake with the first peer, both
+    /// signed binding statements verifying, and is served a request.
+    Handshake,
+    /// A hostile responder serves this envelope version over the transport
+    /// and the client fails closed on it with the typed refusal.
+    VersionGate(u64),
     /// A path under the workspace root exists.
     WorkspacePath(&'static [&'static str]),
     /// No observable surface exists yet; reports absent. The named node
@@ -117,11 +123,10 @@ impl Capability {
 
     pub fn probe(self) -> Probe {
         match self {
-            // The brief's probe was "peers accept the Cyphr ALPN over
-            // QUIC"; transport is now decided as Noise XX, so TR1 owns the
-            // final observation. Until then a peer announcing the secure
-            // listener on stdout is the surface.
-            Self::Transport => Probe::Banner("noise-xx listening on "),
+            // Principal-authenticated Noise (TR1): the observation is a
+            // completed handshake in which both statements verify, not an
+            // announcement that a listener exists.
+            Self::Transport => Probe::Handshake,
             Self::CliNetwork => Probe::Cli(&["push", "--help"], None),
             Self::ChoicesFile => Probe::Cli(&["verify", "--help"], Some("--choices")),
             Self::KeyPairing => Probe::Cli(&["key", "accept", "--help"], None),
@@ -143,11 +148,10 @@ impl Capability {
             // probe ran the library's red property; it read "zero tests run" as
             // present and never touched a binary.)
             Self::Idempotency => Probe::Pending("N09"),
-            // The version checks themselves are landed (every stored and wire
-            // format refuses an unknown `v`); the observable form is a
-            // hostile peer serving envelope v=99 to a network client, which
-            // needs the transport.
-            Self::VersionCheck => Probe::Pending("TR1"),
+            // Every stored and wire format refuses an unknown `v`; the
+            // observable form is a hostile peer serving envelope v=99 to a
+            // network client, which the transport now carries.
+            Self::VersionCheck => Probe::VersionGate(99),
             Self::PeerBackup => Probe::Server(&["backup", "--help"]),
             Self::PeerRollover => Probe::Server(&["rotate-key", "--help"]),
             Self::RelyingParty => {
@@ -212,6 +216,16 @@ impl Probe {
                     .ok_or_else(|| run("no peer running".into()))?;
                 Ok(peer.stdout_lines().iter().any(|l| l.starts_with(prefix)))
             },
+            Probe::Handshake => {
+                let peer = h
+                    .peers
+                    .first()
+                    .ok_or_else(|| run("no peer running".into()))?;
+                Ok(crate::transport::handshake(peer, &h.http).await.is_ok())
+            },
+            Probe::VersionGate(v) => crate::transport::client_fails_closed_on_version(*v)
+                .await
+                .map_err(run),
             Probe::WorkspacePath(parts) => {
                 let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                     .parent()

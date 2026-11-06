@@ -10,6 +10,8 @@ version                = "0.1.0"
 
 [dependencies]
 coz.workspace = true
+cyphr = { path = "../cyphr", version = "0.1.0" }
+cyphr-client = { path = "../cyphr-client", version = "0.1.0" }
 futures.workspace = true
 rand = "0.8"
 rand_chacha = "0.3"

@@ -654,6 +654,8 @@ name = "cyphr-scenarios"
 version = "0.1.0"
 dependencies = [
  "coz-rs",
+ "cyphr",
+ "cyphr-client",
  "futures",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
