@@ -138,6 +138,56 @@ impl<'a> Chain<'a> {
     }
 }
 
+impl Chain<'_> {
+    /// A commit in which `victim` revokes itself (SPEC section 4.2.4), the
+    /// commit finalized by the genesis key. Returns the wire blobs.
+    fn revoke(&mut self, victim: &Kp, now: i64) -> Vec<String> {
+        let g = self.genesis;
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": victim.kp.alg.name(),
+            "now": now,
+            "rvk": now,
+            "tmb": victim.tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/revoke",
+        }))
+        .expect("pay json");
+        let (sig, cad) = coz::sign_json(
+            &pay,
+            victim.kp.alg.name(),
+            &victim.kp.prv_bytes,
+            &victim.kp.pub_bytes,
+        )
+        .expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, victim.kp.alg.name()).expect("czd");
+        let mut scope = self.principal.begin_commit();
+        scope
+            .verify_and_apply(&pay, &sig, czd, None)
+            .expect("self-revoke applies");
+        scope
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    g.kp.alg.name(),
+                    &g.kp.prv_bytes,
+                    &g.kp.pub_bytes,
+                    &g.tmb,
+                ),
+                now,
+                "cyphr.me",
+            )
+            .expect("commit finalizes");
+        self.commits += 1;
+        self.principal
+            .commits()
+            .last()
+            .expect("a commit exists")
+            .iter_all_cozies()
+            .map(|cz| {
+                Base64UrlUnpadded::encode_string(&serde_json::to_vec(cz.raw()).expect("coz json"))
+            })
+            .collect()
+    }
+}
+
 /// A `/patch` body carrying `entries` (one blob list per commit).
 fn patch_body(entries: &[Vec<String>]) -> Vec<u8> {
     let entries: Vec<_> = entries
@@ -420,4 +470,42 @@ async fn pin_naming_another_pg_is_refused() {
         held.verify_tip(&tip_envelope(&k1), &pr).is_err(),
         "a mismatched pin adopts nothing"
     );
+}
+
+/// Claim: a key the followed chain REVOKED is refused for a tip and for a
+/// view, while a sibling key the chain still holds verifies, so lookup is
+/// among ACTIVE keys and never among every key the chain ever held.
+///
+/// Turns red if: `verify_tip` or `verify_view` look a key up among all keys
+/// the chain has held (a revoked key still vouches), or trust the
+/// statement's own signature without the chain's say-so.
+/// End-to-end scenario: yes (real chain with a revocation, replayed from a
+/// carrier).
+#[tokio::test]
+async fn revoked_key_in_the_held_chain_is_refused() {
+    let g = kp();
+    let k1 = kp();
+    let k2 = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let c2 = peer.commit(&k2, 1_700_000_200);
+    let c3 = peer.revoke(&k1, 1_700_000_300);
+    let (pr, pr_tmb) = subject();
+
+    let pipe = Pipe::new(patch_body(&[c1.clone(), c2.clone()]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe).await.expect("follow before the revoke");
+    assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
+
+    pipe.serve(patch_body(&[c1, c2, c3]));
+    held.follow(&pipe).await.expect("follow the revoke");
+    assert!(matches!(
+        held.verify_tip(&tip_envelope(&k1), &pr),
+        Err(PeerFailure::KeyNotActive { .. })
+    ));
+    assert!(matches!(
+        held.verify_view(&view_coz(&k1), &pr_tmb),
+        Err(PeerFailure::KeyNotActive { .. })
+    ));
+    assert!(held.verify_tip(&tip_envelope(&k2), &pr).is_ok());
 }
