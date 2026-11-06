@@ -1503,3 +1503,91 @@ fn canonical_key_is_kept_only_on_the_protocol_genesis_carrier() {
         "two copies differing only in key must be one blob",
     );
 }
+
+/// A signed-looking coz of `typ` by pool key `signer`, with `key` as its
+/// unsigned sidecar (absent when `None`). `canonical_coz` never checks the
+/// signature, so a placeholder is enough.
+fn coz_with_sidecar(typ: &str, signer: &str, key: Option<serde_json::Value>) -> Vec<u8> {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let s = pool.get(signer).unwrap();
+    let mut coz = serde_json::json!({
+        "pay": {"alg": s.alg, "now": 1, "tmb": s.compute_tmb_b64().unwrap(), "typ": typ},
+        "sig": "AAAA",
+    });
+    if let Some(k) = key {
+        coz["key"] = k;
+    }
+    serde_json::to_vec(&coz).unwrap()
+}
+
+fn key_json_of(who: &str) -> serde_json::Value {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let k = pool.get(who).unwrap();
+    serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.compute_tmb_b64().unwrap()})
+}
+
+proptest::proptest! {
+    /// Property: whatever unsigned members a replayer or relayer attaches to
+    /// the `key` sidecar (a `tag`, a `now`, any extra member, any member
+    /// order), `canonical_coz` returns the same bytes, for every coz kind
+    /// that keeps `key` (key/create, key/replace, and the commit/create
+    /// genesis carrier signed by its own key). For kinds that keep no key
+    /// (an action, key/delete) and for a commit/create carrying a foreign
+    /// key, the output equals the output with no key at all. One czd, one
+    /// blob. Turns red if any unsigned sidecar member, or a foreign key on a
+    /// carrier, survives.
+    #[test]
+    #[ignore = "RED(H1F): the sidecar keeps unsigned members and any commit/create key"]
+    fn canonical_coz_is_independent_of_the_unsigned_sidecar(
+        tag in proptest::option::of("[ -~]{0,12}"),
+        now in proptest::option::of(proptest::prelude::any::<i64>()),
+        extra in proptest::option::of("[a-z]{1,8}"),
+        reversed in proptest::prelude::any::<bool>(),
+    ) {
+        let vary = |base: serde_json::Value| {
+            let mut m = serde_json::Map::new();
+            let mut entries: Vec<(String, serde_json::Value)> =
+                base.as_object().unwrap().clone().into_iter().collect();
+            if let Some(t) = &tag { entries.push(("tag".into(), t.clone().into())); }
+            if let Some(n) = now { entries.push(("now".into(), n.into())); }
+            if let Some(x) = &extra { entries.push((format!("x-{x}"), x.clone().into())); }
+            if reversed { entries.reverse(); }
+            for (k, v) in entries { m.insert(k, v.into()); }
+            serde_json::Value::Object(m)
+        };
+        // Kinds that keep the key: the key is the introduced / carried one.
+        for (typ, signer, shown) in [
+            ("cyphr.me/cyphr/key/create", "alice", "golden"),
+            ("cyphr.me/cyphr/key/replace", "alice", "golden"),
+            ("cyphr.me/cyphr/commit/create", "alice", "alice"),
+        ] {
+            let shown = key_json_of(shown);
+            let plain = canonical_coz(&coz_with_sidecar(typ, signer, Some(shown.clone())), 0).unwrap();
+            let varied = canonical_coz(
+                &coz_with_sidecar(typ, signer, Some(vary(shown.clone()))),
+                0,
+            )
+            .unwrap();
+            proptest::prop_assert_eq!(&plain, &varied, "{} sidecar changed the blob", typ);
+            proptest::prop_assert!(serde_json::from_slice::<serde_json::Value>(&plain).unwrap().get("key").is_some());
+        }
+        // Kinds that keep no key, and a carrier with a foreign key.
+        for (typ, signer) in [
+            ("cyphr.me/action", "alice"),
+            ("cyphr.me/cyphr/key/delete", "alice"),
+            ("cyphr.me/cyphr/commit/create", "alice"),
+        ] {
+            let none = canonical_coz(&coz_with_sidecar(typ, signer, None), 0).unwrap();
+            let foreign = canonical_coz(
+                &coz_with_sidecar(typ, signer, Some(vary(key_json_of("bob")))),
+                0,
+            )
+            .unwrap();
+            proptest::prop_assert_eq!(&none, &foreign, "{} kept a foreign key", typ);
+        }
+    }
+}

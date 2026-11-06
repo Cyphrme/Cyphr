@@ -1048,14 +1048,14 @@ mod replay {
     use cyphr_storage::engine::{EngineError, IngestResult, StorageEngine, genesis_principal_id};
     use cyphr_storage::index::{Indexer, IndexerWrite, MemoryIndexer};
 
-    const T: i64 = 1_700_000_000;
+    pub const T: i64 = 1_700_000_000;
 
-    fn pool() -> test_fixtures::Pool {
+    pub fn pool() -> test_fixtures::Pool {
         let p =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
         test_fixtures::Pool::load(&p).unwrap()
     }
-    fn dk(pk: &test_fixtures::PoolKey) -> cyphr::Key {
+    pub fn dk(pk: &test_fixtures::PoolKey) -> cyphr::Key {
         cyphr::Key::new(
             pk.alg.clone(),
             pk.compute_tmb().unwrap(),
@@ -1063,10 +1063,10 @@ mod replay {
         )
         .unwrap()
     }
-    fn kj(pk: &test_fixtures::PoolKey) -> serde_json::Value {
+    pub fn kj(pk: &test_fixtures::PoolKey) -> serde_json::Value {
         serde_json::json!({"alg": pk.alg, "pub": pk.pub_key, "tmb": pk.compute_tmb_b64().unwrap()})
     }
-    fn sign(
+    pub fn sign(
         pk: &test_fixtures::PoolKey,
         mut pay: serde_json::Value,
     ) -> (Vec<u8>, Vec<u8>, coz::Czd) {
@@ -1078,7 +1078,7 @@ mod replay {
         let czd = coz::czd_for_alg(&cad, &sig, &pk.alg).unwrap();
         (pb, sig, czd)
     }
-    fn blob(pb: &[u8], sig: &[u8], key: Option<serde_json::Value>) -> Vec<u8> {
+    pub fn blob(pb: &[u8], sig: &[u8], key: Option<serde_json::Value>) -> Vec<u8> {
         let mut o = serde_json::Map::new();
         o.insert("pay".into(), serde_json::from_slice(pb).unwrap());
         o.insert("sig".into(), Base64UrlUnpadded::encode_string(sig).into());
@@ -1087,7 +1087,7 @@ mod replay {
         }
         serde_json::to_vec(&o).unwrap()
     }
-    fn signer(pk: &test_fixtures::PoolKey) -> cyphr::signer::SoftwareSigner {
+    pub fn signer(pk: &test_fixtures::PoolKey) -> cyphr::signer::SoftwareSigner {
         cyphr::signer::SoftwareSigner::new(
             &pk.alg,
             &Base64UrlUnpadded::decode_vec(pk.prv.as_ref().unwrap()).unwrap(),
@@ -1097,7 +1097,7 @@ mod replay {
     }
     /// commit/create blob, with the signer's key disclosed (the genesis
     /// carrier, as a server push / witness sync with no caller genesis needs).
-    fn cc_blob(c: &cyphr::commit::Commit, carrier: &test_fixtures::PoolKey) -> Vec<u8> {
+    pub fn cc_blob(c: &cyphr::commit::Commit, carrier: &test_fixtures::PoolKey) -> Vec<u8> {
         let raw = c.commit_tx().0.last().unwrap().raw();
         let mut v: serde_json::Value = serde_json::to_value(raw).unwrap();
         v.as_object_mut().unwrap().insert("key".into(), kj(carrier));
@@ -1675,4 +1675,124 @@ async fn action_only_bundle_cannot_create_a_principal() {
     assert!(matches!(err, EngineError::MalformedBlob(_)), "{err:?}");
     assert!(e.get_tip(&aid).await.unwrap().is_none());
     assert!(principals(&e).await.is_empty());
+}
+
+/// F-E claim: whatever sidecar a replayer attaches to a replayed key/create,
+/// one czd stores one blob. The attacker replays the victim's signed
+/// key/create with a sidecar carrying a chosen `tag` and `now` (neither is
+/// signed); the victim's blob and the attacker's are the same blob, and its
+/// sidecar keeps only `alg`, `pub` and `tmb`. Turns red if any unsigned
+/// sidecar member survives canonicalization.
+#[tokio::test]
+#[ignore = "RED(H1F): the stored sidecar keeps unsigned tag and now"]
+async fn replayed_key_create_sidecar_cannot_split_the_czd() {
+    use replay::*;
+    let e = mem_engine();
+    let p = pool();
+    let (alice, golden, bob) = (
+        p.get("alice").unwrap(),
+        p.get("golden").unwrap(),
+        p.get("bob").unwrap(),
+    );
+    let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+    let (xpb, xsig, xczd) = sign(
+        alice,
+        serde_json::json!({
+            "alg": alice.alg, "id": golden.compute_tmb_b64().unwrap(), "now": T + 10,
+            "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
+    );
+    let honest = blob(&xpb, &xsig, Some(kj(golden)));
+    let mut sidecar = kj(golden);
+    sidecar["tag"] = "ATTACKER-CHOSEN".into();
+    sidecar["now"] = 1.into();
+    let evil = blob(&xpb, &xsig, Some(sidecar));
+    let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
+    let mut vs = vclient.begin_commit();
+    vs.verify_and_apply(&xpb, &xsig, xczd.clone(), Some(dk(golden)))
+        .unwrap();
+    let vc = vs
+        .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
+        .unwrap();
+    let victim = push(&e, &vid, &[honest, cc_blob(vc, alice)]).await.unwrap();
+
+    let (aid, mut aclient) = attacker_with_victim_key(&e).await;
+    let mut s = aclient.begin_commit();
+    s.verify_and_apply(&xpb, &xsig, xczd, Some(dk(golden)))
+        .unwrap();
+    let c = s
+        .finalize_with_software(&signer(bob), T + 12, "cyphr.me")
+        .unwrap();
+    let attacker = push(&e, &aid, &[evil, cc_blob(c, bob)]).await.unwrap();
+
+    assert_eq!(
+        victim.blob_hashes[0], attacker.blob_hashes[0],
+        "one czd, two blobs"
+    );
+    let stored = cyphr_storage::blob::BlobStore::get(e.blob_store(), &victim.blob_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&stored).unwrap();
+    let mut members: Vec<_> = v["key"].as_object().unwrap().keys().cloned().collect();
+    members.sort();
+    assert_eq!(
+        members,
+        ["alg", "pub", "tmb"],
+        "unsigned sidecar members kept"
+    );
+}
+
+/// F-F claim: a `commit/create` keeps its `key` only when the key is the
+/// signer's own (`key.tmb == pay.tmb`, which a genuine genesis carrier always
+/// satisfies). A relayer attaches Bob's self-consistent key to the victim's
+/// signed sequence-1 `commit/create`; it must be stored without it. Turns
+/// red if any foreign key survives on a commit/create.
+#[tokio::test]
+#[ignore = "RED(H1F): a commit/create keeps any self-consistent key"]
+async fn relayed_commit_create_cannot_carry_a_foreign_key() {
+    use replay::*;
+    let e = mem_engine();
+    let p = pool();
+    let (alice, golden, bob) = (
+        p.get("alice").unwrap(),
+        p.get("golden").unwrap(),
+        p.get("bob").unwrap(),
+    );
+    let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+    let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
+    let (xpb, xsig, xczd) = sign(
+        alice,
+        serde_json::json!({
+            "alg": alice.alg, "id": golden.compute_tmb_b64().unwrap(), "now": T + 10,
+            "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
+    );
+    let x = blob(&xpb, &xsig, Some(kj(golden)));
+    let mut s = vclient.begin_commit();
+    s.verify_and_apply(&xpb, &xsig, xczd, Some(dk(golden)))
+        .unwrap();
+    let c = s
+        .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
+        .unwrap();
+    push(&e, &vid, &[x, cc_blob(c, alice)]).await.unwrap();
+
+    let (dpb, dsig, dczd) = sign(
+        alice,
+        serde_json::json!({
+            "alg": alice.alg, "id": golden.compute_tmb_b64().unwrap(), "now": T + 20,
+            "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/delete"}),
+    );
+    let del = blob(&dpb, &dsig, None);
+    let mut s = vclient.begin_commit();
+    s.verify_and_apply(&dpb, &dsig, dczd, None).unwrap();
+    let c = s
+        .finalize_with_software(&signer(alice), T + 21, "cyphr.me")
+        .unwrap();
+    let relayed = push(&e, &vid, &[del, cc_blob(c, bob)]).await.unwrap();
+
+    let stored = cyphr_storage::blob::BlobStore::get(e.blob_store(), &relayed.blob_hashes[1])
+        .await
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&stored).unwrap();
+    assert!(v.get("key").is_none(), "a foreign key was kept: {v}");
 }
