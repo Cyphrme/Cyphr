@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::actions::{Evidence, Principal, Standing, Verdict};
+use crate::actions::{Evidence, Principal, Standing, Tip, Verdict};
 use crate::capability::Capability;
 use crate::harness::Harness;
 use crate::signed::{self, Keys, Proven};
@@ -79,8 +79,8 @@ impl Harness {
 
         // branches and standing come from the peers' own heads. Several
         // different heads could be a fork or only one peer lagging; only the
-        // peers' stored branches (with `pre`) can tell, and that route does
-        // not exist yet, so such a verdict ends RED instead of guessing.
+        // peers' stored branches (with `pre`) can tell, so such a verdict is
+        // held to what the peers' `/branches` route lists, exactly.
         let heads: BTreeSet<_> = held.iter().map(|(_, t)| t.tip.clone()).collect();
         let claimed_branches: BTreeSet<_> = v.branches.iter().cloned().collect();
         assert!(v.branches.contains(&v.tip), "tip is not among its branches");
@@ -94,9 +94,20 @@ impl Harness {
             }
         } else {
             self.require_route(Capability::BranchStore).await;
+            let mut stored = BTreeSet::new();
+            for name in &live {
+                let Some(branches) = self.peer_branches(name, p).await else {
+                    panic!("peer `{name}` did not list its branches for the principal");
+                };
+                stored.extend(branches);
+            }
+            assert_eq!(
+                claimed_branches, stored,
+                "verdict branches differ from the peers' stored branches"
+            );
             assert!(
-                heads.is_subset(&claimed_branches),
-                "verdict branches {claimed_branches:?} omit a peer's head from {heads:?}"
+                heads.is_subset(&stored),
+                "a peer's head {heads:?} is not among its stored branches {stored:?}"
             );
             assert_eq!(v.standing, Standing::Error, "a fork is reported in Error");
         }
@@ -296,6 +307,28 @@ impl Harness {
             .ok()?;
         let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
         Some(v["payload"]["now"].as_i64()? - v["payload"]["last_updated"].as_i64()?)
+    }
+
+    /// The branch heads `peer` stores for `p` (commit ids), read from its
+    /// `/branches` route. `None` when the route cannot answer.
+    async fn peer_branches(&self, peer: &str, p: &Principal) -> Option<BTreeSet<Tip>> {
+        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
+        let resp = self
+            .http
+            .get(format!("http://{addr}/branches"))
+            .query(&[("pr", p.0.as_str())])
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
+        v["payload"]["branches"]
+            .as_array()?
+            .iter()
+            .map(|b| b["tip"].as_str().map(|t| Tip(t.to_owned())))
+            .collect()
     }
 
     /// The thumbprint that signed the peer's last `commit/create`, chosen by

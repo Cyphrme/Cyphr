@@ -126,8 +126,10 @@ impl Capability {
             Self::ChoicesFile => Probe::Cli(&["verify", "--help"], Some("--choices")),
             Self::KeyPairing => Probe::Cli(&["key", "accept", "--help"], None),
             Self::Discovery => Probe::Cli(&["discover", "--help"], None),
-            // Observing a fork needs the fork-accepting store G1 builds.
-            Self::BranchStore => Probe::Pending("G1"),
+            // Bare, so the route answers 400 (no `pr`) where an absent route
+            // answers 404; a probe with a `pr` would read a stored-branch
+            // lookup's own 404 for an unknown principal as an absent route.
+            Self::BranchStore => Probe::Route("/branches"),
             Self::Evidence => Probe::Route("/evidence?pr=probe"),
             // The brief's probe was "config accepts [gossip] peers", but the
             // server's config does not reject unknown keys, so acceptance
