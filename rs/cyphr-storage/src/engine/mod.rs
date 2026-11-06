@@ -1210,7 +1210,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // the first commit yields, so that one commit is replayed, not
             // the chain.
             let derived = if has_nonce_coz(&blobs) {
-                first_commit_prs(&genesis, &blobs).and_then(|prs| prs.into_iter().next())
+                first_commit(&genesis, &blobs).and_then(|c| c.prs.into_iter().next())
             } else {
                 genesis_principal_id(&genesis).ok()
             };
@@ -1485,23 +1485,28 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // A new principal: these blobs are its first commit. A claim
             // other than the genesis-derived id is honoured only when this
             // commit yields it as a Principal Root.
-            let prs = first_commit_prs(&genesis, raw_blobs);
+            let first = first_commit(&genesis, raw_blobs);
+            let nonce = has_nonce_coz(raw_blobs);
             let claim_is_tmb = claimed == genesis_id || claimed == bare_digest(&genesis_id);
-            let names_pr = prs
+            // A principal that establishes its PG in commit 0 has the
+            // genesis-time PR as PG, so its post-commit PR is no id; with
+            // a nonce the post-commit PR is the key and always is.
+            let names_pr = first
                 .iter()
-                .flatten()
+                .filter(|c| nonce || !c.establishes_pg)
+                .flat_map(|c| &c.prs)
                 .any(|v| v == claimed || bare_digest(v) == claimed);
             if !claim_is_tmb && !names_pr {
                 return Err(not_genesis_id());
             }
-            if has_nonce_coz(raw_blobs) {
+            if nonce {
                 if claim_is_tmb {
                     return Err(EngineError::InvalidInput(format!(
                         "a principal with a nonce is not identified by the bare key {claimed}; \
                          claim its Principal Root or PG"
                     )));
                 }
-                new_key = prs.and_then(|prs| prs.into_iter().next());
+                new_key = first.and_then(|c| c.prs.into_iter().next());
             } else {
                 // A genesis PR already stored is that principal's: the
                 // position guard decides, so a different commit 0 is
@@ -2383,11 +2388,21 @@ fn replay_entry(
     ))
 }
 
-/// The Principal Root variants after applying `raw_blobs` as the first
-/// commit of a principal from `genesis`, on a throwaway in-memory principal;
-/// `None` when they are not a valid first commit. The first variant is the
-/// principal's storage key.
-fn first_commit_prs(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<Vec<String>> {
+/// What `raw_blobs` yield as the first commit of a principal from
+/// `genesis`, replayed on a throwaway in-memory principal.
+struct FirstCommit {
+    /// The Principal Root variants after the commit; the first is the
+    /// storage key of a principal with a nonce.
+    prs: Vec<String>,
+    /// Whether the commit itself established the PG: then the PG is the
+    /// genesis-time PR and the post-commit PR is a historical root, not a
+    /// PG-to-be (SPEC 3.7.1).
+    establishes_pg: bool,
+}
+
+/// The [`FirstCommit`] of `raw_blobs`, or `None` when they are not a valid
+/// first commit.
+fn first_commit(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<FirstCommit> {
     let blobs: Vec<Vec<u8>> = raw_blobs.iter().map(|b| b.as_ref().to_vec()).collect();
     let mut principal = match genesis {
         crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone()),
@@ -2396,7 +2411,10 @@ fn first_commit_prs(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) ->
     .ok()?;
     let entry = replay_entry(&blobs, "", "").ok()?;
     crate::import::replay_commits(&mut principal, &[entry]).ok()?;
-    format_multihash_all(principal.pr().as_multihash()).ok()
+    Some(FirstCommit {
+        prs: format_multihash_all(principal.pr().as_multihash()).ok()?,
+        establishes_pg: principal.pg().is_some(),
+    })
 }
 
 /// Whether any of `blobs` is a nonce coz (SPEC 10.1).
