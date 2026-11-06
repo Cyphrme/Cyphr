@@ -22,6 +22,7 @@ mkShell {
     treefmt
     toolchain
     cargo-fuzz
+    cargo-mutants
     shfmt
     nixfmt
     taplo
