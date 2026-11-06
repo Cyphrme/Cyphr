@@ -295,6 +295,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/tip", axum::routing::get(routes::tip))
         .route("/view", axum::routing::get(routes::view))
         .route("/patch", axum::routing::get(routes::patch))
+        .route("/branches", axum::routing::get(routes::branches))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
         .route("/e/{digest}", axum::routing::get(routes::entity))

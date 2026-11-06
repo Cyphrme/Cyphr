@@ -3,9 +3,7 @@
 //! A commit that forks a stored principal is still refused as its tip
 //! (409), but is retained as a verified non-tip branch; the route reports
 //! each branch's tip, its `pre`, its sequence and whether it is the
-//! canonical chain. There is no `/branches` route at the base, so the
-//! tests that need it compile today and are `#[ignore]`d RED(G1); they
-//! fail on their stated assertions when run with `--ignored`.
+//! canonical chain.
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -210,13 +208,12 @@ async fn branches(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value
 
 /// Backs a-red-route: a server holding a fork lists both branches, under
 /// the genesis id and every PG spelling alike; and the push that forked it
-/// is still refused (409) without moving the tip. Turns red (as it is
-/// today) because `/branches` does not exist, or if the fork is dropped
+/// is still refused (409) without moving the tip. Turns red if the fork is
+/// dropped
 /// (one branch listed), both or neither is canonical, or the listing
 /// differs by spelling. End to end over `/push`, `/tip` and `/branches`:
 /// yes.
 #[tokio::test]
-#[ignore = "RED(G1): no /branches route; a refused fork is not retained"]
 async fn fork_is_listed_under_every_pg_spelling() {
     let f = forked();
     let (state, _dir) = keyless_server();
@@ -274,6 +271,16 @@ async fn fork_is_listed_under_every_pg_spelling() {
             at_fork[0]["tip"], at_fork[1]["tip"],
             "{spelling}: distinct tips"
         );
+        // The canonical branch is the chain `/tip` reports, in `/tip`'s
+        // commit-id form; the rival is not.
+        let canonical = at_fork
+            .iter()
+            .find(|b| b["canonical"] == true)
+            .expect("one canonical");
+        assert_eq!(
+            canonical["tip"], tip_before["commit_id"],
+            "{spelling}: the canonical tip is /tip's commit_id"
+        );
         assert_eq!(
             at_fork.iter().filter(|b| b["canonical"] == true).count(),
             1,
@@ -291,10 +298,9 @@ async fn fork_is_listed_under_every_pg_spelling() {
 /// canonical chain (one canonical branch per position, none other), and an
 /// unknown principal is 404, not an empty listing. The unknown-id 404 is
 /// asserted only after the known principal answers 200, so the absent
-/// route (also 404) cannot satisfy it. Turns red (as it is today) because
-/// `/branches` does not exist. End to end: yes.
+/// route (also 404) cannot satisfy it. Turns red if the route is absent or
+/// lists a rival nothing forked. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(G1): no /branches route"]
 async fn unforked_principal_lists_only_its_chain_and_unknown_is_404() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
@@ -321,6 +327,14 @@ async fn unforked_principal_lists_only_its_chain_and_unknown_is_404() {
         list.iter().all(|b| b["canonical"] == true),
         "no fork was pushed, so no non-canonical branch exists: {payload:?}"
     );
+    let tip = tip_payload(app.clone(), &id).await;
+    assert_eq!(list.len(), 1, "one head, the chain's tip: {payload:?}");
+    assert_eq!(
+        list[0]["tip"], tip["commit_id"],
+        "the head is /tip's commit"
+    );
+    assert_eq!(list[0]["sequence"], 1, "the head is the second commit");
+    assert!(list[0]["pre"].is_string(), "pre past sequence 0 is a PR");
 
     let unknown = common::implicit_principal_id(&pool, "key_a");
     let (status, body) = branches(app, &unknown).await;
