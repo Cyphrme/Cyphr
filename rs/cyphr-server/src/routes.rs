@@ -65,8 +65,10 @@ pub struct PushRequest {
 pub struct TipResponse {
     pub principal_id: String,
     pub pr: String,
-    pub sr: String,
-    pub ar: String,
+    /// `null` for a Dead principal that holds no data.
+    pub sr: Option<String>,
+    /// `null` for a Dead principal.
+    pub ar: Option<String>,
     /// Current Commit Root (empty string if no commit has populated the
     /// EML log yet). `docs/specs/http-envelope.md` `[envelope-r-cr]`.
     pub cr: String,
@@ -122,8 +124,8 @@ pub struct PushResponse {
 #[derive(Debug, Serialize)]
 pub struct PushRoots {
     pub pr: String,
-    pub sr: String,
-    pub ar: String,
+    pub sr: Option<String>,
+    pub ar: Option<String>,
     pub cr: String,
 }
 
@@ -1264,8 +1266,8 @@ mod push_response_tests {
             sequence: 4,
             commit_id,
             pr: digest(1),
-            sr: digest(2),
-            ar: digest(3),
+            sr: Some(digest(2)),
+            ar: Some(digest(3)),
             cr: digest(4),
         };
         let result = IngestResult {

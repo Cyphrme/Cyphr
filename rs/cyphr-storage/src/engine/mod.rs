@@ -56,8 +56,10 @@ pub struct PatchResponse {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DerivedRoots {
     pub pr: String,
-    pub sr: String,
-    pub ar: String,
+    /// `None` for a Dead principal with no data.
+    pub sr: Option<String>,
+    /// `None` for a Dead principal.
+    pub ar: Option<String>,
     pub cr: String,
 }
 
@@ -116,10 +118,10 @@ pub struct CommittedTip {
     pub commit_id: String,
     /// Principal Root after the commit.
     pub pr: String,
-    /// State Root after the commit.
-    pub sr: String,
-    /// Auth Root after the commit.
-    pub ar: String,
+    /// State Root after the commit (`None` if absent).
+    pub sr: Option<String>,
+    /// Auth Root after the commit (`None` if absent).
+    pub ar: Option<String>,
     /// Commit Root after the commit (empty if the EML log has no leaf yet,
     /// matching [`TipState::cr`]).
     pub cr: String,
@@ -135,8 +137,8 @@ impl CommittedTip {
             sequence: commit.sequence,
             commit_id: first(&commit.commit_ids),
             pr: first(&commit.prs),
-            sr: first(&commit.srs),
-            ar: first(&commit.ars),
+            sr: commit.srs.first().cloned(),
+            ar: commit.ars.first().cloned(),
             cr: first(&commit.crs),
         }
     }
@@ -676,18 +678,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .next()
             .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
 
-        let sr_obj = principal
-            .sr()
-            .ok_or_else(|| EngineError::InvalidInput("missing SR".into()))?;
-        let sr = format_multihash_all(sr_obj.as_multihash())?
+        // SR and AR are absent for a Dead principal (SPEC 3.7: an empty
+        // component is omitted).
+        let sr = format_multihash_opt(principal.sr().map(|s| s.as_multihash()))?
             .into_iter()
-            .next()
-            .ok_or_else(|| EngineError::InvalidInput("empty SR".into()))?;
+            .next();
 
-        let ar = format_multihash_all(principal.auth_root().as_multihash())?
+        let ar = format_multihash_opt(principal.auth_root().map(|a| a.as_multihash()))?
             .into_iter()
-            .next()
-            .ok_or_else(|| EngineError::InvalidInput("empty AR".into()))?;
+            .next();
 
         let cr = match principal.cr() {
             Some(cr_obj) => format_multihash_all(cr_obj.as_multihash())?
@@ -1214,6 +1213,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             } else {
                 genesis_principal_id(&genesis).ok()
             };
+            // Strict by decision: the project is pre-1.0 with nothing
+            // deployed, so a store keyed by a PG-to-be exists only in test
+            // runs and needs no lenient branch.
             if derived.as_deref() != Some(principal_id) {
                 unbound.insert(
                     principal_id.to_string(),
@@ -1750,8 +1752,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
                 let commit = scope.finalize()?;
                 let commit_ids = format_multihash_all(&commit.tr().0)?;
-                let ar = format_multihash_all(commit.auth_root().as_multihash())?;
-                let sr = format_multihash_all(commit.sr().as_multihash())?;
+                let ar = format_multihash_opt(commit.auth_root().map(|a| a.as_multihash()))?;
+                let sr = format_multihash_opt(commit.sr().map(|s| s.as_multihash()))?;
                 let pr = format_multihash_all(commit.pr().as_multihash())?;
                 (commit_ids, ar, sr, pr, deferred)
             };
@@ -2377,8 +2379,8 @@ fn replay_entry(
         cozies,
         keys,
         commit_id.to_string(),
-        String::new(),
-        String::new(),
+        None,
+        None,
         pr.to_string(),
     ))
 }
@@ -2594,6 +2596,14 @@ fn format_multihash_all(
     mh.algorithms()
         .map(|alg| Ok(mh.tagged(alg)?.to_string()))
         .collect()
+}
+
+/// [`format_multihash_all`] for a root that may be absent: an absent root
+/// formats to no variants, which readers treat as "no such root".
+fn format_multihash_opt(
+    mh: Option<&cyphr::multihash::MultihashDigest>,
+) -> Result<Vec<String>, EngineError> {
+    mh.map_or_else(|| Ok(Vec::new()), format_multihash_all)
 }
 
 #[cfg(test)]

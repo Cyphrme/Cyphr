@@ -1507,7 +1507,16 @@ mod replay {
                 .unwrap()
             {
                 out.push(format!("{c:?}"));
-                for d in [&c.commit_id, &c.pr, &c.sr, &c.ar, &c.cr] {
+                for d in [
+                    Some(&c.commit_id),
+                    Some(&c.pr),
+                    c.sr.as_ref(),
+                    c.ar.as_ref(),
+                    Some(&c.cr),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     if let Ok(t) = d.parse::<cyphr::state::TaggedDigest>() {
                         probes.push(t);
                     }

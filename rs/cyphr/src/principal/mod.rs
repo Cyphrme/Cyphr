@@ -140,8 +140,9 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// (SPEC 11.5.1) needs the history, not only the current PR. Rebuilt
     /// by replaying history.
     pub(crate) held_prs: Vec<PrincipalRoot>,
-    /// Current Key State.
-    pub(crate) kr: KeyRoot,
+    /// Current Key Root; `None` once no key remains (SPEC 3.7: an empty
+    /// component is omitted, so a Dead principal has no KT).
+    pub(crate) kr: Option<KeyRoot>,
     /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
     /// Per-algorithm MALT trees for computing Commit Root (CR).
@@ -157,8 +158,8 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) cr: Option<crate::commit_root::CommitRoot>,
     /// Current State Root: SR = MR(AR, DR?, embedding?). Mirrors `pt`'s cell 0.
     pub(crate) sr: Option<StateRoot>,
-    /// Current Auth State.
-    pub(crate) ar: AuthRoot,
+    /// Current Auth Root; `None` once no key remains (see `kr`).
+    pub(crate) ar: Option<AuthRoot>,
     /// Current Data State (Level 4+).
     pub(crate) dr: Option<DataRoot>,
     /// Auth ledger.
@@ -497,13 +498,13 @@ impl<S: eml::Storage> PrincipalCore<S> {
         PrincipalCore {
             held_prs: vec![pr.clone()],
             pr,
-            kr,
+            kr: Some(kr),
             tr: None,
             commit_trees,
             pt,
             cr,
             sr: Some(sr),
-            ar,
+            ar: Some(ar),
             dr: None,
             auth: AuthLedger {
                 keys: key_map,
@@ -545,9 +546,18 @@ impl<S: eml::Storage> PrincipalCore<S> {
         }
     }
 
+    /// The algorithm set the principal's roots hash under: that of its
+    /// active keys. A principal with no key has none, so the set stays the
+    /// one its PR was last hashed under (SPEC 3.7: the dying commit hashes
+    /// under the set in force before it). Read mid-commit, `pr` is still
+    /// the pre-commit PR, so the same rule gives the dying commit its set.
     pub(crate) fn active_algs(&self) -> Vec<HashAlg> {
         let key_refs: Vec<&crate::key::Key> = self.auth.keys.values().collect();
-        crate::state::derive_hash_algs(&key_refs)
+        let algs = crate::state::derive_hash_algs(&key_refs);
+        if algs.is_empty() {
+            return self.pr.0.algorithms().collect();
+        }
+        algs
     }
 
     /// Write a new State Root into the Principal Tree's cell 0, leaving
@@ -562,20 +572,24 @@ impl<S: eml::Storage> PrincipalCore<S> {
         self.pt.pr(algs)
     }
 
-    /// Write a new State Root into cell 0 and Commit Root into cell 1, and
-    /// return the recomputed Principal Root. Used at commit finalization,
-    /// where both SR and CR change together.
+    /// Write a new State Root into cell 0 (or remove it, when the commit
+    /// left none) and Commit Root into the next cell, and return the
+    /// recomputed Principal Root. Used at commit finalization, where both
+    /// SR and CR change together.
     fn write_pt_sr_cr(
         &mut self,
-        sr: &StateRoot,
+        sr: Option<&StateRoot>,
         cr: &crate::commit_root::CommitRoot,
         algs: &[HashAlg],
     ) -> Result<PrincipalRoot> {
-        self.pt.set_sr(sr, algs)?;
+        match sr {
+            Some(sr) => self.pt.set_sr(sr, algs)?,
+            None => self.pt.clear_sr(algs)?,
+        }
         self.pt.set_cr(cr, algs)?;
         self.pt
             .set_nonces(&self.nonces.at_level(NonceLevel::Pr), algs)?;
-        self.sr = Some(sr.clone());
+        self.sr = sr.cloned();
         self.cr = Some(cr.clone());
         self.pt.pr(algs)
     }

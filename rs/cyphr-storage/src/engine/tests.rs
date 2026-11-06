@@ -1027,7 +1027,7 @@ async fn manifest_retains_ingest_order_without_search() {
     // arrow the retained order is verified against -- so a reader never
     // needs to re-derive it via search.
     let tip = engine.get_tip("alice").await.unwrap().unwrap();
-    assert_eq!(manifest.commit.ars, vec![tip.ar]);
+    assert_eq!(manifest.commit.ars, tip.ar.into_iter().collect::<Vec<_>>());
 }
 
 // ========================================================================

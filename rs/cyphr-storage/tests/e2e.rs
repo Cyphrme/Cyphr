@@ -294,7 +294,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(
-            "  [0] commit_id={}, as={}, pr={}",
+            "  [0] commit_id={}, as={:?}, pr={}",
             commit0.commit_id, commit0.auth_root, commit0.pr
         );
     }
@@ -397,13 +397,13 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
         "[no-revoke-non-self]" => "MalformedPayload",
-        "[naked-revoke-error]" => "NoActiveKeys",
-        "[no-self-revoke-recovery]" => "NoActiveKeys",
+        // What a Dead principal answers: its revoked key signs nothing.
+        "[no-self-revoke-recovery]" => "KeyRevoked",
         // Authentication
         "[verification-timestamp-order]" => "TimestampPast",
         // Principal Lifecycle
-        "[no-level-1-recovery]" => "NoActiveKeys",
-        "[dead-terminal]" => "NoActiveKeys",
+        "[no-level-1-recovery]" => "KeyRevoked",
+        "[dead-terminal]" => "KeyRevoked",
         // Pass through if not a constraint tag
         other => other,
     }
@@ -699,7 +699,10 @@ fn e2e_multihash_round_trip() {
         // Verify each algorithm variant matches
         for alg in active_algs.clone() {
             // KS coherence
-            let principal_ks = principal.key_root().get(alg);
+            let principal_ks = principal
+                .key_root()
+                .expect("a live principal has a KR")
+                .get(alg);
             let recomputed_ks_variant = recomputed_ks.get(alg);
 
             assert_eq!(
@@ -709,7 +712,10 @@ fn e2e_multihash_round_trip() {
             );
 
             // Verify AS variant exists
-            let principal_as = principal.auth_root().get(alg);
+            let principal_as = principal
+                .auth_root()
+                .expect("a live principal has an AR")
+                .get(alg);
             assert!(
                 principal_as.is_some(),
                 "{}: AS variant {:?} should exist",
@@ -750,7 +756,10 @@ fn e2e_multihash_round_trip() {
 
         for alg in active_algs.clone() {
             assert_eq!(
-                principal.auth_root().get(alg),
+                principal
+                    .auth_root()
+                    .expect("a live principal has an AR")
+                    .get(alg),
                 recomputed_as.get(alg),
                 "{}: AS variant {:?} mismatch after recomputation",
                 test.name,
@@ -778,4 +787,111 @@ fn e2e_multihash_round_trip() {
 
         eprintln!("  ✓ {} multihash coherence verified", test.name);
     }
+}
+
+// ============================================================================
+// Dead principal (SPEC 3.1, 3.7, 11)
+// ============================================================================
+
+/// Raw coz blobs of one golden commit, the shape `submit_commit` takes.
+fn blobs_of(commit: &CommitEntry) -> Vec<Vec<u8>> {
+    let mut keys = commit.keys.iter();
+    commit
+        .cozies
+        .iter()
+        .map(|cz| {
+            let mut cz = cz.clone();
+            let typ = cz["pay"]["typ"].as_str().unwrap_or("").to_owned();
+            if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
+                if let Some(k) = keys.next() {
+                    cz["key"] = serde_json::to_value(k).expect("key entry serializes");
+                }
+            }
+            serde_json::to_vec(&cz).expect("coz serializes")
+        })
+        .collect()
+}
+
+/// Backs SPEC 3.1/3.7/11 through the durable stack: a principal whose only
+/// key is revoked is stored, indexed and reloaded Dead, its tip carries the
+/// absent roots as `None` (KR/AR absent, SR absent without data)
+/// with PR equal to CR, and it then refuses a further commit. Turns red if
+/// the dying commit cannot be ingested (an absent root treated as an
+/// error), if reload does not reproduce the dying roots, or if a Dead
+/// principal's chain accepts a commit. End to end: yes.
+#[tokio::test]
+async fn dead_principal_survives_reload_and_takes_no_commit() {
+    use cyphr_blob_fjall::FjallBlobStore;
+    use cyphr_index_fjall::FjallIndexer;
+    use cyphr_storage::engine::StorageEngine;
+
+    let dying = load_fixture("lifecycle", "last_key_revoke_leaves_dead");
+    let after = load_fixture("lifecycle", "dead_principal_rejects_commit");
+    let genesis = make_genesis(dying.genesis_keys.as_ref().expect("genesis keys"));
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = fjall::Database::builder(dir.path().join("db"))
+        .open()
+        .expect("open db");
+    let engine = StorageEngine::with_storage_factory(
+        FjallBlobStore::from_database(db.clone()).expect("blob store"),
+        FjallIndexer::open(&dir.path().join("index")).expect("indexer"),
+        {
+            let db = db.clone();
+            move |_: &str| cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
+        },
+    );
+
+    let commits = dying.commits.as_ref().expect("commits");
+    let blobs = blobs_of(&commits[0]);
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    engine
+        .submit_commit(&principal_id, Some(genesis.clone()), &refs)
+        .await
+        .expect("the dying commit is ingested");
+
+    let tip = engine
+        .get_tip(&principal_id)
+        .await
+        .expect("tip query")
+        .expect("tip exists");
+    assert_eq!((&tip.ar, &tip.sr), (&None, &None), "absent roots");
+    assert!(!tip.cr.is_empty(), "the dying commit has a CR");
+    assert_eq!(tip.pr, tip.cr, "PR is the promoted CR");
+
+    let roots = engine
+        .rederive_roots_with_genesis(&principal_id, genesis.clone())
+        .await
+        .expect("replay of the dying commit");
+    assert_eq!(
+        (&roots.pr, &roots.sr, &roots.ar),
+        (&tip.pr, &None, &None),
+        "reload reproduces the indexed roots"
+    );
+    let reloaded = engine
+        .load_principal(&principal_id, genesis.clone())
+        .await
+        .expect("reload");
+    assert_eq!(
+        reloaded.lifecycle_state(),
+        cyphr::lifecycle::LifecycleState::Dead
+    );
+
+    let next = blobs_of(&after.commits.as_ref().expect("commits")[1]);
+    let refs: Vec<&[u8]> = next.iter().map(Vec::as_slice).collect();
+    let refused = engine
+        .submit_commit(&principal_id, Some(genesis), &refs)
+        .await;
+    assert!(refused.is_err(), "a Dead principal took a commit");
+    let tip_after = engine
+        .get_tip(&principal_id)
+        .await
+        .expect("tip")
+        .expect("tip");
+    assert_eq!(
+        tip_after.commit_count, 1,
+        "the refused commit left no trace"
+    );
 }

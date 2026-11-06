@@ -19,11 +19,19 @@ fn implicit_genesis_single_key() {
         key.tmb().as_bytes()
     );
     assert_eq!(
-        principal.auth_root().get(principal.hash_alg()).unwrap(),
+        principal
+            .auth_root()
+            .expect("a live principal has an AR")
+            .get(principal.hash_alg())
+            .unwrap(),
         key.tmb().as_bytes()
     );
     assert_eq!(
-        principal.key_root().get(principal.hash_alg()).unwrap(),
+        principal
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(principal.hash_alg())
+            .unwrap(),
         key.tmb().as_bytes()
     );
 }
@@ -586,7 +594,10 @@ fn principal_create_on_deleted_principal_is_rejected() {
 
     let cz = ParsedCoz {
         kind: CozKind::PrincipalCreate {
-            id: principal.auth_root().clone(),
+            id: principal
+                .auth_root()
+                .expect("a live principal has an AR")
+                .clone(),
         },
         signer: key1.tmb().clone(),
         now: 2001,
@@ -701,7 +712,7 @@ fn same_commit_delete_and_own_finalizer_succeeds() {
     let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
     let tmr = tmr_opt.unwrap();
 
-    let arrow_digest = crate::commit::arrow_digest(tx_alg, &principal.pr, &sr, &tmr).unwrap();
+    let arrow_digest = crate::commit::arrow_digest(tx_alg, &principal.pr, Some(&sr), &tmr).unwrap();
     let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest).unwrap();
 
     let commit_coz = ParsedCoz {

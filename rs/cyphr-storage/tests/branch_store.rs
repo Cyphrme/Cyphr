@@ -676,8 +676,8 @@ mod retained {
             let m = &found[0];
             assert_eq!(first_digest(m, "commit_ids"), entry.commit_id, "{round}");
             assert_eq!(first_digest(m, "prs"), entry.pr, "{round}");
-            assert_eq!(first_digest(m, "srs"), entry.sr, "{round}");
-            assert_eq!(first_digest(m, "ars"), entry.auth_root, "{round}");
+            assert_eq!(Some(first_digest(m, "srs")), entry.sr, "{round}");
+            assert_eq!(Some(first_digest(m, "ars")), entry.auth_root, "{round}");
             assert_eq!(m["commit"]["pre"], f.pre, "{round}");
             assert!(
                 ingested

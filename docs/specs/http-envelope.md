@@ -173,6 +173,10 @@ never carried it. The envelope-adoption step (which wraps
 `TipResponse`) adds the field; this document records the ruling that
 it belongs in the payload.
 
+In the tip and push payloads `sr` and `ar` MAY be JSON `null` for a Dead
+principal (SPEC §11), next to the `cr` rule: `null` is the only encoding of
+an absent root, and the envelope `v` is unchanged.
+
 `rs/cyphr-storage/src/index/types.rs:97` has `TipState.cr` present,
 while `rs/cyphr-server/src/routes.rs:57-65`'s `TipResponse` (before
 this ruling) omitted `cr`.

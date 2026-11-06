@@ -1436,7 +1436,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case2"
@@ -1450,7 +1450,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case3"
@@ -1464,7 +1464,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case4"
@@ -1478,7 +1478,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case5"
@@ -1492,7 +1492,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f04_case1"

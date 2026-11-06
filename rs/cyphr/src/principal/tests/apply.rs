@@ -30,6 +30,7 @@ fn apply_key_add_changes_state() {
 
     let old_as = principal
         .auth_root()
+        .expect("a live principal has an AR")
         .get(principal.hash_alg())
         .unwrap()
         .to_vec();
@@ -41,6 +42,7 @@ fn apply_key_add_changes_state() {
 
     let new_as = principal
         .auth_root()
+        .expect("a live principal has an AR")
         .get(principal.hash_alg())
         .unwrap()
         .to_vec();
@@ -124,7 +126,7 @@ fn record_action_unknown_signer_fails() {
 // ========================================================================
 
 #[test]
-fn self_revoke_last_key_prevented() {
+fn self_revoke_last_key_leaves_principal_dead() {
     use coz::Czd;
 
     use crate::parsed_coz::{CozKind, ParsedCoz};
@@ -132,7 +134,8 @@ fn self_revoke_last_key_prevented() {
     let key = make_test_key(0xDD);
     let mut principal = Principal::implicit(key.clone()).unwrap();
 
-    // Level 1: single key, self-revoke should fail
+    // Level 1: single key; SPEC 3.1 makes a self-revoke accepted, and the
+    // principal is Dead afterwards.
     assert_eq!(principal.level(), Level::L1);
 
     let cz = ParsedCoz {
@@ -145,12 +148,15 @@ fn self_revoke_last_key_prevented() {
         raw: dummy_coz_json(),
     };
 
-    let result = principal.apply_transaction_test(cz, None);
-    assert!(matches!(result, Err(Error::NoActiveKeys)));
+    principal.apply_transaction_test(cz, None).unwrap();
 
-    // Key should still be active (no mutation occurred)
-    assert_eq!(principal.active_key_count(), 1);
-    assert!(principal.is_key_active(key.tmb()));
+    assert_eq!(principal.active_key_count(), 0);
+    assert!(!principal.is_key_active(key.tmb()));
+    assert_eq!(
+        principal.lifecycle_state(),
+        crate::lifecycle::LifecycleState::Dead
+    );
+    assert!(principal.key_root().is_none() && principal.auth_root().is_none());
 }
 
 #[test]

@@ -29,8 +29,8 @@ fn entry() -> CommitEntry {
         vec![],
         vec![],
         "c".into(),
-        "a".into(),
-        "s".into(),
+        Some("a".into()),
+        Some("s".into()),
         "p".into(),
     )
 }

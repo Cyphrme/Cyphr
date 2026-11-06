@@ -64,25 +64,6 @@ typ    = "cyphr.me/action"
 error = "KeyRevoked"
 
 # ============================================================================
-# Last key revoke guard (Level 1 protection)
-# Self-revoke of last key fails with NoActiveKeys
-# ============================================================================
-
-[[test]]
-name      = "last_key_revoke_fails"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
-  ],
-]
-
-[test.expected]
-error = "NoActiveKeys"
-
-# ============================================================================
 # Duplicate key test
 # Adding key already in KS fails with DuplicateKey
 # ============================================================================
@@ -197,22 +178,6 @@ tx = [
 
 [test.expected]
 error = "[no-revoke-non-self]"
-
-# key/delete of last remaining key should fail with NoActiveKeys
-# (distinct from revoke — tests the delete path specifically)
-[[test]]
-name      = "delete_last_key_fails"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
-  ],
-]
-
-[test.expected]
-error = "NoActiveKeys"
 
 # key/delete of unknown key (key not in principal)
 [[test]]

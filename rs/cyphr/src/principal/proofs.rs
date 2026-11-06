@@ -321,8 +321,18 @@ impl<S: eml::Storage> Principal<S> {
     pub fn verify_key_inclusion(&self, alg: HashAlg, tmb: &Thumbprint) -> Result<bool> {
         let path = self.key_inclusion_proof(alg, tmb)?;
 
-        let kr_bytes = self.kr.0.get_or_err(alg)?;
-        let ar_bytes = self.ar.0.get_or_err(alg)?;
+        let kr_bytes = self
+            .kr
+            .as_ref()
+            .ok_or(Error::NoActiveKeys)?
+            .0
+            .get_or_err(alg)?;
+        let ar_bytes = self
+            .ar
+            .as_ref()
+            .ok_or(Error::NoActiveKeys)?
+            .0
+            .get_or_err(alg)?;
         let sr_bytes = self
             .sr
             .as_ref()

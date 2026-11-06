@@ -53,12 +53,14 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Current schema version recorded in the `meta` partition. Version 2
 /// added the `index_aliases` partition; version 3 keys digest holders as a
-/// set of one row per holder; version 4 keys a principal by its genesis PR
-/// (no nonce) or the PR after its first commit (a nonce), never by the
-/// first PG-to-be a push named. The index is a derived cache (I1): a store
-/// recorded at an older version, or at none, is discarded on open and
+/// set of one row per holder; version 4 records SR and AR as optional
+/// (`null` for a Dead principal) where older rows held a string; version 5
+/// keys a principal by its genesis PR (no nonce) or the PR after its first
+/// commit (a nonce), never by the first PG-to-be a push named. The index is
+/// a derived cache (I1): a store recorded at an older version, or at none,
+/// is discarded on open and
 /// rebuilt from blobs; a newer one is refused (downgrade guard).
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
@@ -671,8 +673,8 @@ fn db_index_commit(
 
     let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
     let primary_pr = commit.prs.first().cloned().unwrap_or_default();
-    let primary_sr = commit.srs.first().cloned().unwrap_or_default();
-    let primary_ar = commit.ars.first().cloned().unwrap_or_default();
+    let primary_sr = commit.srs.first().cloned();
+    let primary_ar = commit.ars.first().cloned();
     let primary_cr = commit.crs.first().cloned().unwrap_or_default();
 
     let commit_ref = CommitRef {

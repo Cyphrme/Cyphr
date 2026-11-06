@@ -370,10 +370,14 @@ async fn tip_after_new_commit_is_never_stale() {
     assert_eq!(second["payload"]["commit_count"], 2, "tip must advance");
     let derived = state.engine.rederive_roots(&pid).await.expect("rederive");
     let claims = &second["statement"]["coz"]["pay"]["roots"];
-    assert_eq!(claims["sr"], derived.sr, "signed sr is the current chain's");
+    assert_eq!(
+        claims["sr"],
+        serde_json::json!(derived.sr),
+        "signed sr is the current chain's"
+    );
     assert_ne!(
         first["payload"]["sr"], second["payload"]["sr"],
         "state changed"
     );
-    assert_eq!(second["payload"]["sr"], derived.sr);
+    assert_eq!(second["payload"]["sr"], serde_json::json!(derived.sr));
 }

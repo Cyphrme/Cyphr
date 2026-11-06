@@ -175,8 +175,8 @@ struct Roots {
 
 fn roots(p: &Principal) -> Roots {
     Roots {
-        kr: p.key_root().clone(),
-        ar: p.auth_root().clone(),
+        kr: p.key_root().expect("a live principal has a KR").clone(),
+        ar: p.auth_root().expect("a live principal has an AR").clone(),
         sr: p.sr().cloned(),
         keys: p.active_key_count(),
     }
@@ -230,11 +230,24 @@ fn nonce_bytes(seed: u8) -> [u8; 32] {
 fn premise_roots_without_nonce_follow_3_7() {
     let (p, g, a) = base();
     let kr = sha256_of_sorted(&[g.tmb.as_bytes(), a.tmb.as_bytes()]);
-    assert_eq!(sha256_bytes(p.key_root()), kr, "KR = H(sort(tmb...))");
-    assert_eq!(p.auth_root().as_multihash(), p.key_root().as_multihash());
+    assert_eq!(
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
+        kr,
+        "KR = H(sort(tmb...))"
+    );
+    assert_eq!(
+        p.auth_root()
+            .expect("a live principal has an AR")
+            .as_multihash(),
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
+    );
     assert_eq!(
         p.sr().expect("sr").as_multihash(),
-        p.key_root().as_multihash()
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
     );
     assert_eq!(
         &pr_without_embedding(&p),
@@ -349,20 +362,29 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n1, T + 10), None, T + 10);
     assert!(r.is_ok(), "KT nonce/create was refused: {r:?}");
     assert_eq!(
-        sha256_bytes(p.key_root()),
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
         sha256_of_sorted(&[tmbs[0], tmbs[1], &n1]),
         "KR with one nonce"
     );
-    assert_eq!(p.auth_root().as_multihash(), p.key_root().as_multihash());
+    assert_eq!(
+        p.auth_root()
+            .expect("a live principal has an AR")
+            .as_multihash(),
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
+    );
     assert_eq!(
         p.sr().expect("sr").as_multihash(),
-        p.key_root().as_multihash()
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
     );
 
     let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n2, T + 11), None, T + 11);
     assert!(r.is_ok(), "a second KT nonce was refused: {r:?}");
     assert_eq!(
-        sha256_bytes(p.key_root()),
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
         sha256_of_sorted(&[tmbs[0], tmbs[1], &n1, &n2]),
         "KR with two nonces"
     );
@@ -391,7 +413,7 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let r = commit_one(&mut p, &g, delete(Level::Kt, &g, &n1, T + 20), None, T + 20);
     assert!(r.is_ok(), "deleting one of two nonces was refused: {r:?}");
     assert_eq!(
-        sha256_bytes(p.key_root()),
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
         sha256_of_sorted(&[tmbs[0], tmbs[1], &n2]),
         "KR after deleting N1 must keep N2"
     );
@@ -418,19 +440,21 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
     let (n1, n2) = (nonce_bytes(3), nonce_bytes(4));
     let (mut p, g, _) = base();
     let pre = roots(&p);
-    let kr = sha256_bytes(p.key_root());
+    let kr = sha256_bytes(p.key_root().expect("a live principal has a KR"));
 
     let r = commit_one(&mut p, &g, create(Level::At, &g, &n1, T + 10), None, T + 10);
     assert!(r.is_ok(), "AT nonce/create was refused: {r:?}");
     assert_eq!(roots(&p).kr, pre.kr, "an AT nonce reached KR");
-    let ar = sha256_bytes(p.auth_root());
+    let ar = sha256_bytes(p.auth_root().expect("a live principal has an AR"));
     assert!(
         ar == sha256_of_concat(&[&kr, &n1]) || ar == sha256_of_concat(&[&n1, &kr]),
         "AR is not the hash of KR and the nonce"
     );
     assert_eq!(
         p.sr().expect("sr").as_multihash(),
-        p.auth_root().as_multihash(),
+        p.auth_root()
+            .expect("a live principal has an AR")
+            .as_multihash(),
         "SR promotes AR"
     );
 
@@ -652,4 +676,84 @@ fn frozen_principal_refuses_nonce_mutations_until_thawed() {
         r.is_ok(),
         "control: a thawed principal refused a nonce: {r:?}"
     );
+}
+
+// ============================================================================
+// Dead principal: the nonces that remain (SPEC 3.7, 10.2)
+// ============================================================================
+
+/// Backs SPEC 3.7 and 10.2: revoking or deleting the last key removes no
+/// nonce (only `nonce/delete` does), and an empty component is omitted, so
+/// the roots of a principal with no key are derived from the nonces that
+/// remain and a lone nonce is promoted. Scenarios, each ending with the
+/// only key's removal (revoke, then delete in the last): (a) a KT nonce
+/// only: KR is that nonce and AR and SR promote it; (b) an AT nonce only:
+/// no KT, so KR is absent, AR is the nonce and SR promotes it; (c) both: KR
+/// is the KT nonce and AR = H(KR || AT nonce) (3.7.4, AR cells are KR then
+/// nonces). Turns red if the dying commit drops the nonces (KR/AR absent,
+/// or KR/AR of a keyless principal derived from nothing), if a lone nonce
+/// is hashed instead of promoted, or if the AT nonce is placed after an
+/// absent KR slot. End to end: yes.
+#[test]
+fn dead_principal_roots_keep_the_nonces_that_remain() {
+    let (n_kt, n_at) = (nonce_bytes(11), nonce_bytes(12));
+    let revoke = |g: &Kp, now: i64| {
+        sign(
+            g,
+            json!({"alg": g.alg, "now": now, "rvk": now, "tmb": b64(&g.tmb),
+                   "typ": "cyphr.me/cyphr/key/revoke"}),
+        )
+    };
+    let delete_self = |g: &Kp, now: i64| {
+        sign(
+            g,
+            json!({"alg": g.alg, "id": b64(&g.tmb), "now": now, "tmb": b64(&g.tmb),
+                   "typ": "cyphr.me/cyphr/key/delete"}),
+        )
+    };
+    type Die = Box<dyn Fn(&Kp, i64) -> Signed>;
+    let ways: [(&str, Die); 2] = [
+        ("revoke", Box::new(revoke)),
+        ("delete", Box::new(delete_self)),
+    ];
+    for (way, die) in ways {
+        for (kt, at) in [(true, false), (false, true), (true, true)] {
+            let g = pool_key("golden");
+            let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+            let mut now = T;
+            if kt {
+                commit_one(&mut p, &g, create(Level::Kt, &g, &n_kt, now), None, now)
+                    .expect("KT nonce");
+                now += 1;
+            }
+            if at {
+                commit_one(&mut p, &g, create(Level::At, &g, &n_at, now), None, now)
+                    .expect("AT nonce");
+                now += 1;
+            }
+            let r = commit_one(&mut p, &g, die(&g, now), None, now + 1);
+            assert!(r.is_ok(), "{way} of the last key (kt={kt} at={at}): {r:?}");
+            assert_eq!(p.active_key_count(), 0);
+
+            let want_kr: Option<Vec<u8>> = kt.then(|| n_kt.to_vec());
+            let want_ar: Vec<u8> = match (kt, at) {
+                (true, false) => n_kt.to_vec(),
+                (false, true) => n_at.to_vec(),
+                (true, true) => sha256_of_concat(&[&n_kt, &n_at]),
+                (false, false) => unreachable!("covered by the nonce-free Dead tests"),
+            };
+            let case = format!("{way} kt={kt} at={at}");
+            assert_eq!(p.key_root().map(sha256_bytes), want_kr, "{case}: KR");
+            assert_eq!(
+                p.auth_root().map(sha256_bytes),
+                Some(want_ar.clone()),
+                "{case}: AR"
+            );
+            assert_eq!(
+                p.sr().map(sha256_bytes),
+                Some(want_ar),
+                "{case}: SR (no DR)"
+            );
+        }
+    }
 }

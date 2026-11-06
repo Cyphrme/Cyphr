@@ -95,10 +95,10 @@ pub struct TipState {
     pub principal_id: String,
     /// Current Principal Root.
     pub pr: String,
-    /// Current State Root.
-    pub sr: String,
-    /// Current Auth Root.
-    pub ar: String,
+    /// Current State Root; `None` for a Dead principal with no data.
+    pub sr: Option<String>,
+    /// Current Auth Root; `None` for a Dead principal (no keys).
+    pub ar: Option<String>,
     /// Current Commit Root (empty string if no commit has populated the EML
     /// log yet).
     pub cr: String,
@@ -125,10 +125,10 @@ pub struct CommitRef {
     pub pre: Option<String>,
     /// Principal Root after this commit.
     pub pr: String,
-    /// State Root after this commit.
-    pub sr: String,
-    /// Auth Root after this commit.
-    pub ar: String,
+    /// State Root after this commit (`None` if absent).
+    pub sr: Option<String>,
+    /// Auth Root after this commit (`None` if absent).
+    pub ar: Option<String>,
     /// Commit Root after this commit (empty string if none yet).
     pub cr: String,
     /// BLAKE3 hashes of blobs belonging to this commit.

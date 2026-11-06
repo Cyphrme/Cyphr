@@ -272,8 +272,8 @@ impl IndexerWrite for MemoryIndexer {
 
             let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
             let primary_pr = commit.prs.first().cloned().unwrap_or_default();
-            let primary_sr = commit.srs.first().cloned().unwrap_or_default();
-            let primary_ar = commit.ars.first().cloned().unwrap_or_default();
+            let primary_sr = commit.srs.first().cloned();
+            let primary_ar = commit.ars.first().cloned();
             let primary_cr = commit.crs.first().cloned().unwrap_or_default();
 
             // Build CommitRef.

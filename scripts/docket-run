@@ -62,6 +62,7 @@ declare -A CLAIMS_INDEX=(
   [sc-l1059]="_claim_sc_l1059"
   [sc-l1287]="_claim_sc_l1287"
   [sc-l1300]="_claim_sc_l1300"
+  [sc-l298]="_claim_sc_l298"
   [sc-l1869]="_claim_sc_l1869"
   [sc-l1673]="_claim_sc_l1673"
   [sc-l1674]="_claim_sc_l1674"
@@ -188,6 +189,16 @@ _claim_sc_l1287=(
 )
 _claim_sc_l1300=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_7_fork_create_does_not_create_a_principal -- --exact"
+)
+_claim_sc_l298=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s3_1_dead_principal_after_last_key_revoke_records_no_action -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_are_absent_and_pr_is_cr_without_data -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_state_root_is_the_data_root -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_hash_under_the_pre_commit_algorithm_set -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_key_delete_of_the_last_key_leaves_dead -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance dead_principal_roots_are_final_no_further_commit -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test nonce dead_principal_roots_keep_the_nonces_that_remain -- --exact"
 )
 _claim_sc_l1869=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_dead_principal_accepts_no_transaction_or_action -- --exact"

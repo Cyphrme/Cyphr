@@ -8,7 +8,7 @@ use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::semantic_tree::derive_state_roots_with_nonces;
-use crate::state::{AuthRoot, HashAlg, PrincipalGenesis, compute_dr, derive_hash_algs};
+use crate::state::{HashAlg, PrincipalGenesis, compute_dr};
 
 impl<S: eml::Storage> Principal<S> {
     /// Begin a new commit scope.
@@ -44,7 +44,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
@@ -67,7 +66,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub(crate) fn apply_verified_internal(
@@ -93,7 +91,6 @@ impl<S: eml::Storage> Principal<S> {
         use crate::commit::PendingCommit;
         use crate::multihash::MultihashDigest;
         use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
-        use crate::state::derive_hash_algs;
 
         // Apply mutation eagerly (same as apply_verified_internal)
         let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
@@ -108,8 +105,7 @@ impl<S: eml::Storage> Principal<S> {
         // mutate self). DR is refreshed to the current active_algs rather
         // than trusting the cached value, which may predate a key of a new
         // algorithm (see finalize_commit's identical refresh).
-        let key_refs: Vec<&Key> = self.auth.keys.values().collect();
-        let active_algs = derive_hash_algs(&key_refs);
+        let active_algs = self.active_algs();
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
         let action_refs: Vec<&Action> = self.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs)?;
@@ -133,7 +129,7 @@ impl<S: eml::Storage> Principal<S> {
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
         let tmr = tmr_opt.ok_or(Error::EmptyCommit)?;
 
-        let arrow_digest = crate::commit::arrow_digest(tx_alg, &self.pr, &sr, &tmr)?;
+        let arrow_digest = crate::commit::arrow_digest(tx_alg, &self.pr, sr.as_ref(), &tmr)?;
         let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest)?;
         // Create synthetic commit/create coz with arrow
         let commit_coz = ParsedCoz {
@@ -154,10 +150,7 @@ impl<S: eml::Storage> Principal<S> {
     }
 
     /// Internal coz application logic.
-    fn apply_transaction_internal(
-        &mut self,
-        vtx: crate::parsed_coz::VerifiedCoz,
-    ) -> Result<&AuthRoot> {
+    fn apply_transaction_internal(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<()> {
         use crate::parsed_coz::CozKind;
 
         // Access the underlying ParsedCoz via Deref
@@ -298,8 +291,8 @@ impl<S: eml::Storage> Principal<S> {
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
                 self.add_key(key, cz.now);
-                // Use shift_remove directly to bypass NoActiveKeys check
-                // (we just added a key, so this is safe)
+                // The signer is removed outright: it is not a delete of a key
+                // (a key was just added, so the set cannot empty)
                 self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
             },
             CozKind::SelfRevoke { rvk } => {
@@ -408,7 +401,7 @@ impl<S: eml::Storage> Principal<S> {
             core.latest_timestamp = cz.now;
         }
 
-        Ok(&self.ar)
+        Ok(())
     }
 
     /// Finalize a commit with proper state recomputation.
@@ -438,9 +431,10 @@ impl<S: eml::Storage> Principal<S> {
 
         // Re-derive active algorithms from post-mutation key set.
         // Per [alg-set-evolution], state digests for this commit use the
-        // algorithms supported by the post-mutation key set.
-        let key_refs: Vec<&Key> = core.auth.keys.values().collect();
-        let active_algs = derive_hash_algs(&key_refs);
+        // algorithms supported by the post-mutation key set; a commit that
+        // leaves no key hashes under the set in force before it
+        // (`active_algs` falls back to the pre-commit PR's).
+        let active_algs = core.active_algs();
 
         // Extract tx algorithm set from the commit coz (independent of state chain).
         // TX extraction reads only cozies/pending — no dependency on KR/AR/SR —
@@ -505,7 +499,7 @@ impl<S: eml::Storage> Principal<S> {
             // yet (that happens at the end of this function), so it correctly
             // holds the prior value.
             let tx_alg = tx_algs[0];
-            let computed_digest = crate::commit::arrow_digest(tx_alg, &core.pr, &sr, &tmr)?;
+            let computed_digest = crate::commit::arrow_digest(tx_alg, &core.pr, sr.as_ref(), &tmr)?;
 
             let claimed_digest = claimed_arrow.get(tx_alg).ok_or(Error::CommitMismatch)?;
             if claimed_digest != computed_digest.as_slice() {
@@ -574,7 +568,7 @@ impl<S: eml::Storage> Principal<S> {
 
         // Write SR into cell 0 and CR into cell 1 of the Principal Tree, and
         // recompute PR from the tree (EpochTree::root(alg_id) per algorithm).
-        core.pr = core.write_pt_sr_cr(&sr, &cr, &active_algs)?;
+        core.pr = core.write_pt_sr_cr(sr.as_ref(), &cr, &active_algs)?;
         core.held_prs.push(core.pr.clone());
 
         // Finalize the pending commit with computed states
@@ -612,7 +606,6 @@ impl<S: eml::Storage> Principal<S> {
     /// - `InvalidSignature`: Signature doesn't verify
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
-    /// - `NoActiveKeys`: Would leave principal with no keys
     #[must_use = "coz application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
         &mut self,
@@ -647,25 +640,24 @@ impl<S: eml::Storage> Principal<S> {
         self.core_mut().auth.keys.insert(tmb_b64, key);
     }
 
-    /// Remove a key from the active key set (delete, not revoke).
+    /// Remove a key from the active key set (delete, not revoke). Deleting
+    /// the last key is accepted and leaves the principal Dead (SPEC 11.2:
+    /// Dead is a consequence of any condition that leaves no keys).
     fn remove_key(&mut self, tmb: &Thumbprint) -> Result<()> {
         let tmb_b64 = tmb.to_b64();
         let core = self.core_mut();
         if core.auth.keys.shift_remove(&tmb_b64).is_none() {
             return Err(Error::UnknownKey);
         }
-        if core.auth.keys.is_empty() {
-            return Err(Error::NoActiveKeys);
-        }
         Ok(())
     }
 
-    /// Revoke a key (marks as revoked, moves to revoked set).
+    /// Revoke a key (marks as revoked, moves to revoked set). Revoking the
+    /// last key is accepted and leaves the principal Dead.
     ///
     /// # Errors
     ///
     /// - `UnknownKey`: Key not found in active set
-    /// - `NoActiveKeys`: Would leave principal with no active keys
     fn revoke_key(&mut self, tmb: &Thumbprint, rvk: i64, by: Option<Thumbprint>) -> Result<()> {
         use crate::key::Revocation;
 
@@ -677,12 +669,9 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::UnknownKey);
         }
 
-        // Check BEFORE mutation: would this leave us with no keys?
-        if core.auth.keys.len() == 1 {
-            return Err(Error::NoActiveKeys);
-        }
-
-        // Safe to proceed - remove and revoke.
+        // Revoking the last key is accepted and leaves the principal Dead
+        // (SPEC 3.1, 11): refusing it would leave a compromised key live,
+        // and 14.1 makes services that ignore a revoke non-compliant.
         let mut key = core
             .auth
             .keys

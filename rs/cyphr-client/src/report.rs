@@ -17,16 +17,18 @@ use crate::patch::{ENVELOPE_VERSION, Statement};
 /// one validated into a [`TaggedDigest`] rather than trusted as a bare
 /// `String`.
 ///
-/// `cr` alone is `Option`: a principal that is key-established but has not
-/// yet finalized a data commit has no commit root, and a signed receipt
-/// carries that absence as wire `null` (#147) -- typed here as `None`
-/// rather than rejected as malformed. `pr`/`sr`/`ar` are always present
-/// once a principal exists, so they stay mandatory.
+/// `sr`, `ar` and `cr` are `Option`. A principal that is key-established
+/// but has not yet finalized a data commit has no commit root (#147); a
+/// Dead principal (SPEC 11) has no AR, and no SR unless it holds data
+/// (SPEC 3.7). A signed receipt carries each absence as wire `null`, typed
+/// here as `None` rather than rejected as malformed; a field missing from
+/// the claim is still malformed. `pr` is always present once a principal
+/// exists, so it stays mandatory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TipReportRoots {
     pub pr: TaggedDigest,
-    pub sr: TaggedDigest,
-    pub ar: TaggedDigest,
+    pub sr: Option<TaggedDigest>,
+    pub ar: Option<TaggedDigest>,
     pub cr: Option<TaggedDigest>,
 }
 
@@ -98,13 +100,13 @@ impl TipReport {
                     source,
                 }
             })?,
-            sr: parse_digest_field(&coz.pay["roots"]["sr"]).map_err(|source| {
+            sr: parse_nullable_root(&coz.pay["roots"], "sr").map_err(|source| {
                 TipReportParseError::Roots {
                     field: "sr",
                     source,
                 }
             })?,
-            ar: parse_digest_field(&coz.pay["roots"]["ar"]).map_err(|source| {
+            ar: parse_nullable_root(&coz.pay["roots"], "ar").map_err(|source| {
                 TipReportParseError::Roots {
                     field: "ar",
                     source,
@@ -149,6 +151,19 @@ fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error
 /// special-case is no longer accepted -- #147 retires that sentinel in
 /// favor of the type, so `""` is now malformed like any other non-digest
 /// string.
+/// A root that may be `null` but must be present: a field missing from the
+/// `roots` claim is malformed, not an absent root (`Value` indexing would
+/// otherwise read a missing key as `null`).
+fn parse_nullable_root(
+    roots: &Value,
+    field: &str,
+) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
+    match roots.get(field) {
+        Some(value) => parse_optional_digest_field(value),
+        None => parse_digest_field(&Value::Null).map(Some),
+    }
+}
+
 fn parse_optional_digest_field(value: &Value) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
     if value.is_null() {
         return Ok(None);
@@ -300,8 +315,18 @@ impl ViewStatement {
         };
         let roots = TipReportRoots {
             pr: digest("pr")?,
-            sr: digest("sr")?,
-            ar: digest("ar")?,
+            sr: parse_nullable_root(&pay["roots"], "sr").map_err(|source| {
+                ViewStatementParseError::Roots {
+                    field: "sr",
+                    source,
+                }
+            })?,
+            ar: parse_nullable_root(&pay["roots"], "ar").map_err(|source| {
+                ViewStatementParseError::Roots {
+                    field: "ar",
+                    source,
+                }
+            })?,
             cr: parse_optional_digest_field(&pay["roots"]["cr"]).map_err(|source| {
                 ViewStatementParseError::Roots {
                     field: "cr",

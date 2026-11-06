@@ -484,8 +484,8 @@ const VECTOR_COMMIT_ID: &str = "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDz
 fn vector_roots() -> cyphr_server::receipt::Roots {
     cyphr_server::receipt::Roots {
         pr: "SHA-256:GOJBQfC618_bQh9QHQ5ZCWwH1I6tbtDx9-RP1i6Rcjc".to_string(),
-        sr: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
-        ar: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
+        sr: Some("SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string()),
+        ar: Some("SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string()),
         cr: Some("SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao".to_string()),
     }
 }

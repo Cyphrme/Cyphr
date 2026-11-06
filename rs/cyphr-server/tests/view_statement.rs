@@ -669,8 +669,8 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
     let digest = |n: u8| format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32]));
     let roots = cyphr_server::receipt::Roots {
         pr: digest(1),
-        sr: digest(2),
-        ar: digest(3),
+        sr: Some(digest(2)),
+        ar: Some(digest(3)),
         cr: Some(digest(4)),
     };
     let pr = Base64UrlUnpadded::encode_string(&[7u8; 32]);
