@@ -541,6 +541,23 @@ mod tests {
         assert!(slots.admit(v4(1)).is_none());
         assert!(slots.admit(v4(2)).is_some());
 
+        // A dual-stack `[::]` listener reports IPv4 clients as mapped
+        // `::ffff:a.b.c.d`; they must key as plain IPv4, not share the
+        // ::/64 bucket their common prefix would put them in.
+        let mapped = |d: u8| IpAddr::V6(Ipv4Addr::new(198, 51, 100, d).to_ipv6_mapped());
+        let _m: Vec<_> = (0..MAX_SESSIONS_PER_IP)
+            .map(|_| slots.admit(mapped(1)).expect("within the mapped allowance"))
+            .collect();
+        assert!(slots.admit(mapped(1)).is_none());
+        assert!(
+            slots.admit(mapped(2)).is_some(),
+            "a different mapped IPv4 client has its own allowance"
+        );
+        assert!(
+            slots.admit(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))).is_none(),
+            "a mapped address and its plain IPv4 form are one client"
+        );
+
         // Releasing the /64's sessions frees its bucket.
         drop(held);
         assert!(slots.admit(v6(1, 999)).is_some());
