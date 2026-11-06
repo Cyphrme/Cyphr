@@ -588,11 +588,17 @@ mod tests {
         // against that; the assertion holds only because per-key eviction
         // keeps H recently-touched and therefore never the eviction victim,
         // so its exhausted bucket is the one that survives, never a reset one.
+        //
+        // The refill period is an hour, not `quota()`'s one-second floor: the
+        // flood's wall time is machine-load dependent, and under load it can
+        // exceed a second, letting the real clock refill a cell of H's
+        // legitimately-surviving bucket and flip the final check to `Ok`.
         const HOT_BURST: u32 = 64;
-        let lim = BoundedLimiter::new(quota(RateBucket {
-            per_second: 1,
-            burst: HOT_BURST,
-        }));
+        let lim = BoundedLimiter::new(
+            Quota::with_period(Duration::from_secs(3600))
+                .expect("non-zero period")
+                .allow_burst(NonZeroU32::new(HOT_BURST).expect("non-zero burst")),
+        );
         let hot = IpAddr::from([10, 0, 0, 1]);
 
         // 1. Exhaust H's bucket; confirm it is now throttled (guard
