@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Targeted cargo-mutants run: mutate only the non-test code a change touched.
+#
+# usage: scripts/mutants-diff -p <crate> --base <rev> --timeout <n> -- <tests>
+#
+# Runs --in-place because cargo-mutants otherwise copies only rs/, and tests
+# that read repo-root fixtures (../tests/...) fail the unmutated baseline.
+# The diff uses --relative=rs so --in-diff paths match the rs/ workspace.
+# Run inside the nix shell (cargo-mutants comes from it).
+set -euo pipefail
+
+usage() {
+	echo "usage: $0 -p <crate> --base <rev> --timeout <secs> -- <test args>" >&2
+	exit 2
+}
+
+crate="" base="" timeout=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-p) crate="${2:-}"; shift 2 ;;
+	--base) base="${2:-}"; shift 2 ;;
+	--timeout) timeout="${2:-}"; shift 2 ;;
+	--) shift; break ;;
+	*) usage ;;
+	esac
+done
+[ -n "$crate" ] && [ -n "$base" ] && [ -n "$timeout" ] || usage
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# --in-place mutates the working tree; a dirty tree would mix the user's
+# edits with mutants and the diff would not describe the change.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+	echo "mutants-diff: working tree is dirty; commit or stash first" >&2
+	exit 1
+fi
+
+diff_file="$(mktemp "${TMPDIR:-/tmp}/mutants-diff.XXXXXX")"
+trap 'rm -f "$diff_file"' EXIT
+git diff --relative=rs "$base" -- rs >"$diff_file"
+if [ ! -s "$diff_file" ]; then
+	echo "mutants-diff: no changes under rs/ since $base" >&2
+	exit 1
+fi
+
+cmd=(cargo mutants --in-place -p "$crate" --test-package "$crate"
+	--in-diff "$diff_file" --timeout "$timeout" -- "$@")
+echo "mutants-diff: (cd rs && ${cmd[*]})"
+cd rs
+# cargo-mutants exits non-zero for a failed baseline (4) and for missed
+# mutants (2); set -e propagates whichever it is.
+"${cmd[@]}"
