@@ -950,6 +950,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
         }
 
+        // Everything below, storage included, sees only the canonical
+        // coz, never the caller's bytes.
+        let canonical = raw_blobs
+            .iter()
+            .enumerate()
+            .map(|(i, blob)| canonical_coz(blob, i))
+            .collect::<Result<Vec<_>, _>>()?;
+        let raw_blobs: Vec<&[u8]> = canonical.iter().map(Vec::as_slice).collect();
+        let raw_blobs = raw_blobs.as_slice();
+
         // 1. Resolve genesis, then the one canonical spelling of the id.
         //
         // SPEC §3.1: a principal's identifier is derived from its genesis,
@@ -1532,6 +1542,87 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer.clear(&DeriveToken::new()).await?;
         self.rebuild_index_from_manifests().await
     }
+}
+
+/// The members of a stored wire coz: exactly what the signature and the
+/// protocol need (`pay`, `sig`, and a disclosed `key`). Coz allows
+/// applications to add members, so extras are tolerated on the wire but
+/// never stored; `cad`/`czd` are recalculatable, so a present value is
+/// recomputed and a mismatch refused (and the value dropped, as any
+/// consumer can recompute it).
+///
+/// One signed coz therefore has one blob address.
+fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let bad = |why: String| EngineError::MalformedBlob(format!("blob {i}: {why}"));
+    let value: serde_json::Value = serde_json::from_slice(blob).map_err(|e| bad(e.to_string()))?;
+    let serde_json::Value::Object(members) = value else {
+        return Err(bad("not a JSON object".into()));
+    };
+    let mut pay = members
+        .get("pay")
+        .cloned()
+        .ok_or_else(|| bad("missing 'pay'".into()))?;
+    let sig = members
+        .get("sig")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| bad("missing 'sig'".into()))?;
+    crate::import::canonicalize_value(&mut pay);
+
+    let present = |name: &str| -> Result<Option<&str>, EngineError> {
+        members
+            .get(name)
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| bad(format!("'{name}' is not a string")))
+            })
+            .transpose()
+    };
+    let (cad, czd) = (present("cad")?, present("czd")?);
+    if cad.is_some() || czd.is_some() {
+        let alg = pay
+            .get("alg")
+            .and_then(|a| a.as_str())
+            .ok_or_else(|| bad("missing 'alg' in pay".into()))?;
+        let pay_bytes = serde_json::to_vec(&pay).map_err(|e| bad(format!("pay serialize: {e}")))?;
+        let sig_bytes =
+            Base64UrlUnpadded::decode_vec(sig).map_err(|_| bad("invalid sig base64".into()))?;
+        let recomputed = coz::canonical_hash_for_alg(&pay_bytes, alg, None)
+            .ok_or_else(|| bad("cad computation failed".into()))?;
+        if cad.is_some_and(|c| c != recomputed.to_b64()) {
+            return Err(bad("'cad' does not match the pay".into()));
+        }
+        if let Some(claimed) = czd {
+            let czd = coz::czd_for_alg(&recomputed, &sig_bytes, alg)
+                .ok_or_else(|| bad("czd computation failed".into()))?;
+            if claimed != czd.to_b64() {
+                return Err(bad("'czd' does not match the pay and sig".into()));
+            }
+        }
+    }
+
+    let mut canonical = serde_json::Map::new();
+    canonical.insert("pay".into(), pay);
+    canonical.insert("sig".into(), sig.into());
+    if let Some(key) = members.get("key") {
+        let entry = key_value_to_entry(key)
+            .ok_or_else(|| bad("'key' missing required fields (alg, pub, tmb)".into()))?;
+        let mut key = serde_json::Map::new();
+        key.insert("alg".into(), entry.alg.into());
+        key.insert("pub".into(), entry.pub_key.into());
+        key.insert("tmb".into(), entry.tmb.into());
+        if let Some(tag) = entry.tag {
+            key.insert("tag".into(), tag.into());
+        }
+        if let Some(now) = entry.now {
+            key.insert("now".into(), now.into());
+        }
+        canonical.insert("key".into(), key.into());
+    }
+    let mut canonical = serde_json::Value::Object(canonical);
+    crate::import::canonicalize_value(&mut canonical);
+    serde_json::to_vec(&canonical).map_err(|e| bad(format!("serialize: {e}")))
 }
 
 /// Hash labels an identifier may carry. A bare digest is mapped to one of

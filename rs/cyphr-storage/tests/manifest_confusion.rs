@@ -18,8 +18,8 @@
 //! Fix-agnostic: each red test accepts `Ok` or `Err` from the crafted
 //! submit and runs the rebuild and the index assertions either way, so it
 //! turns green under "reject at ingest" and under "store but never
-//! interpret as a manifest". Red tests are `#[ignore = "RED(H1F)"]` and
-//! fail on an index assertion with `--ignored`.
+//! interpret as a manifest". Each failed on an index assertion before the
+//! manifest keyspace separated manifests from wire blobs.
 //!
 //! Run: `cargo test -p cyphr-storage --test manifest_confusion --
 //! --include-ignored`.
@@ -181,12 +181,11 @@ fn engine() -> Engine {
     StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new())
 }
 
-/// RED(H1F), engine-level scenario, transaction path (also witness sync's
+/// engine-level scenario, transaction path (also witness sync's
 /// path). Attacker principal A's validly signed commit carries a forged
 /// manifest naming the honest principal B. Mutant caught: today's
 /// rebuild, and any fix that keys trust on `kind` alone.
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_manifests trusts caller blobs shaped like a manifest"]
 async fn crafted_transaction_blob_cannot_rewrite_another_principals_tip() {
     let e = engine();
     let victim_fx = load_golden("edge_cases", "transaction_replay_order");
@@ -215,14 +214,13 @@ async fn crafted_transaction_blob_cannot_rewrite_another_principals_tip() {
     assert_eq!(others, before_others);
 }
 
-/// RED(H1F), engine-level scenario, action-only path. An action-only
+/// engine-level scenario, action-only path. An action-only
 /// bundle is stored raw with no manifest of its own, yet its blob lands in
 /// the manifest-scanned store. A forged manifest in a signed action must
 /// not invent a principal. Mutant caught: a fix that guards only the
 /// transaction path, and the "only unindexed principals" non-fix (the
 /// phantom is unindexed).
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_manifests trusts caller blobs shaped like a manifest"]
 async fn crafted_action_blob_cannot_invent_a_principal() {
     let e = engine();
     let victim_fx = load_golden("edge_cases", "transaction_replay_order");
@@ -314,12 +312,11 @@ fn raw_blobs_disclosing_genesis(
         .collect()
 }
 
-/// RED(H1F), engine-level scenario, witness-sync call shape. Claim: a
+/// engine-level scenario, witness-sync call shape. Claim: a
 /// manifest-shaped member on a coz the witness replicates from an
 /// authority cannot move any tip on rebuild: not the victim's, not the
 /// replicating principal's own. Turns red if: rebuild trusts the member.
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_manifests trusts caller blobs shaped like a manifest"]
 async fn via_witness_sync_crafted_blob_cannot_move_any_tip() {
     let e = engine();
     let victim_fx = load_golden("edge_cases", "transaction_replay_order");
@@ -360,12 +357,11 @@ async fn via_witness_sync_crafted_blob_cannot_move_any_tip() {
     assert!(own_after_ingest.commit_count >= own_tip.commit_count);
 }
 
-/// RED(H1F), engine-level scenario, action-only call shape with no caller
+/// engine-level scenario, action-only call shape with no caller
 /// genesis. Claim: a manifest-shaped action blob cannot plant a PG alias
 /// that resolves to the victim, nor a digest, on rebuild. Turns red if:
 /// rebuild indexes the forged `pg` or digests.
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_manifests trusts caller blobs shaped like a manifest"]
 async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
     let e = engine();
     let victim_fx = load_golden("edge_cases", "transaction_replay_order");
@@ -414,11 +410,18 @@ async fn stored_blobs(e: &Engine, hashes: &[Blake3Hash]) -> Vec<serde_json::Valu
 /// The first honest commit of the attacker fixture, with `extra` members
 /// added to every coz.
 fn with_extras(extra: &[(&str, serde_json::Value)]) -> Vec<Vec<u8>> {
+    with_extras_on(usize::MAX, extra)
+}
+
+/// [`with_extras`] on the first `n` cozes only (a coz's own `cad`/`czd`
+/// cannot be reused on another coz).
+fn with_extras_on(n: usize, extra: &[(&str, serde_json::Value)]) -> Vec<Vec<u8>> {
     let fx = load_golden("mutations", "transaction_sequence_replay");
     raw_blobs(&fx["commits"][0])
         .into_iter()
-        .map(|mut b| {
-            for (k, v) in extra {
+        .enumerate()
+        .map(|(i, mut b)| {
+            for (k, v) in extra.iter().filter(|_| i < n) {
                 b.as_object_mut().unwrap().insert((*k).into(), v.clone());
             }
             serde_json::to_vec(&b).unwrap()
@@ -435,12 +438,11 @@ async fn submit_reporting(e: &Engine, blobs: &[Vec<u8>]) -> Result<Vec<Blake3Has
         .map(|r| r.blob_hashes)
 }
 
-/// RED(H1F). Claim: the store holds the canonical coz the signature
+/// Claim: the store holds the canonical coz the signature
 /// covers: unsigned extra top-level members (here `kind`, `commit`, and a
 /// harmless `typ`) are not stored, while `pay`, `sig` and the disclosed
 /// `key` are. Turns red if: any unsigned extra is persisted.
 #[tokio::test]
-#[ignore = "RED(H1F): extras are stored verbatim"]
 async fn canonical_unsigned_extras_are_not_stored() {
     let e = engine();
     let blobs = with_extras(&[
@@ -466,11 +468,10 @@ async fn canonical_unsigned_extras_are_not_stored() {
     }
 }
 
-/// RED(H1F). Claim: one signed coz has one blob address, whatever
+/// Claim: one signed coz has one blob address, whatever
 /// unsigned members or pay member order the submitter used. Turns red if:
 /// two spellings of one signed coz hash differently.
 #[tokio::test]
-#[ignore = "RED(H1F): extras are stored verbatim"]
 async fn canonical_one_address_per_signed_coz() {
     let plain = submit_reporting(&engine(), &with_extras(&[]))
         .await
@@ -484,12 +485,11 @@ async fn canonical_one_address_per_signed_coz() {
     assert_eq!(plain, noisy, "extras changed the blob address");
 }
 
-/// RED(H1F). Claim: a present `czd` or `cad` is recomputed and a mismatch
+/// Claim: a present `czd` or `cad` is recomputed and a mismatch
 /// is refused (Coz: recalculatable members), while a correct one is
 /// accepted and not stored. Turns red if: a wrong value is accepted, or a
 /// correct one is stored.
 #[tokio::test]
-#[ignore = "RED(H1F): a present czd/cad is never recomputed"]
 async fn canonical_mismatched_cad_or_czd_is_refused() {
     let fx = load_golden("mutations", "transaction_sequence_replay");
     let coz = &raw_blobs(&fx["commits"][0])[0];
@@ -506,7 +506,7 @@ async fn canonical_mismatched_cad_or_czd_is_refused() {
 
     for (name, bad) in [("czd", &wrong), ("cad", &wrong)] {
         let e = engine();
-        let r = submit_reporting(&e, &with_extras(&[(name, bad.clone().into())])).await;
+        let r = submit_reporting(&e, &with_extras_on(1, &[(name, bad.clone().into())])).await;
         assert!(r.is_err(), "wrong {name} accepted");
         assert!(principals(&e).await.is_empty(), "wrong {name} left state");
     }
@@ -514,7 +514,10 @@ async fn canonical_mismatched_cad_or_czd_is_refused() {
     let e = engine();
     let hashes = submit_reporting(
         &e,
-        &with_extras(&[("czd", czd.to_b64().into()), ("cad", cad.to_b64().into())]),
+        &with_extras_on(
+            1,
+            &[("czd", czd.to_b64().into()), ("cad", cad.to_b64().into())],
+        ),
     )
     .await
     .expect("correct recalculatable members are accepted");
@@ -657,7 +660,7 @@ impl IndexerWrite for TipFailsAfterStore {
     }
 }
 
-/// RED(H1F), engine-level scenario. Claim: once an action-only bundle's
+/// engine-level scenario. Claim: once an action-only bundle's
 /// blobs are durable, the submit cannot report an error, extending the
 /// no-error-after-commit guarantee from commits to actions. The index
 /// read that fails is the one after the blob write. Turns red if: the
@@ -700,12 +703,12 @@ async fn action_only_no_error_after_store() {
     assert!(result.manifest_hash.is_none());
 }
 
-/// RED(H1F), c-i1. Claim: a manifest-shaped blob in the wire store (an old
+/// c-i1. Claim: a manifest-shaped blob in the wire store (an old
 /// shared-store manifest, or a forged coz stored by an old engine) is
 /// never silently indexed: rebuild refuses with a typed error and indexes
 /// nothing. Turns red if: rebuild indexes it or ignores it without error.
 #[tokio::test]
-#[ignore = "RED(H1F): legacy manifest-shaped wire blobs are indexed"]
+#[ignore = "RED(H1F): manifest keyspace not yet separated"]
 async fn rebuild_refuses_legacy_manifest_shaped_wire_blobs() {
     let e = engine();
     let legacy = serde_json::to_vec(&serde_json::json!({
@@ -815,10 +818,19 @@ async fn run(plan: &[Option<Hostile>], hostile_on: bool) -> (Engine, String, Vec
     (e, victim, probes)
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+/// No regression file: this node's tests must not write to the tree.
+fn config() -> ProptestConfig {
+    ProptestConfig {
+        cases: 24,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    }
+}
 
-    /// RED(H1F), property. Claim: rebuild trusts only what the blobs
+proptest! {
+    #![proptest_config(config())]
+
+    /// Claim: rebuild trusts only what the blobs
     /// support. For random hostile manifest-shaped members on random
     /// commits of an honest history (random target principal, sequence,
     /// forged PG alias, escaped member spelling): the index after ingest
@@ -827,7 +839,6 @@ proptest! {
     /// alias resolves. Turns red if: any hostile member moves a tip, alias
     /// or digest, at ingest or on rebuild.
     #[test]
-    #[ignore = "RED(H1F): rebuild trusts manifest-shaped caller blobs"]
     fn rebuild_ignores_hostile_manifest_shaped_blobs(
         plan in proptest::collection::vec(hostile(), 3),
     ) {
