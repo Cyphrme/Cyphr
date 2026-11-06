@@ -435,7 +435,9 @@ impl SpentSet {
             // contains/insert pair below, which leaves the store consistent
             // at every step: a panicked prior holder poisons the lock
             // without invalidating anything, so recover the guard.
-            let _guard = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if tokens.contains_key(hash).map_err(backend)? {
                 return Ok(false);
             }

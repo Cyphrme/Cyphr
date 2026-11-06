@@ -89,10 +89,8 @@ pub struct AppState {
     /// so a keyed `GET /tip` of an unchanged tip does not replay the
     /// principal's whole history on every request. A new commit changes the
     /// key, so an entry is never stale; the bound caps what peers can pin.
-    pub derived_roots: cyphr_storage::engine::BoundedCache<
-        (String, String),
-        cyphr_storage::engine::DerivedRoots,
-    >,
+    pub derived_roots:
+        cyphr_storage::engine::BoundedCache<(String, String), cyphr_storage::engine::DerivedRoots>,
 
     /// Per-principal locks for synchronizing witness state sync execution.
     pub sync_locks: std::sync::Arc<
