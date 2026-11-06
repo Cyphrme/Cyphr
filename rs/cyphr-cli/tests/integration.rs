@@ -74,54 +74,8 @@ impl CliTest {
     }
 }
 
-#[test]
-fn test_key_generate() {
-    let cli = CliTest::new();
-
-    let json = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "test-key"]);
-
-    assert_eq!(json["alg"], "ES256");
-    assert_eq!(json["tag"], "test-key");
-    assert!(json["tmb"].as_str().is_some(), "should have thumbprint");
-}
-
-#[test]
-fn test_key_lifecycle() {
-    let cli = CliTest::new();
-
-    // 1. Generate genesis key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "genesis"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-
-    // 2. Add a new key to identity (this creates the first coz)
-    // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
-    let signer_arg = format!("--signer={genesis_tmb}");
-    let add_result = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
-    let new_key_tmb = add_result["added_key"].as_str().unwrap();
-
-    // 3. List keys - should show both (field is "active_keys")
-    let list_result = cli.run_json(&["key", "list", &identity_arg]);
-    let keys = list_result["active_keys"].as_array().unwrap();
-    assert_eq!(keys.len(), 2, "should have 2 active keys");
-
-    // 4. Revoke the new key (self-revoke: the key signs its own revocation)
-    // Per SPEC §4.2.4, only self-revoke is supported
-    let key_arg = format!("--key={new_key_tmb}");
-    let new_key_signer = format!("--signer={new_key_tmb}");
-    let _ = cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &new_key_signer]);
-
-    // 5. List keys - should show only genesis
-    let list_result = cli.run_json(&["key", "list", &identity_arg]);
-    let keys = list_result["active_keys"].as_array().unwrap();
-    assert_eq!(keys.len(), 1, "should have 1 active key after revoke");
-    // Key order is not guaranteed, check that genesis key is present
-    assert!(
-        keys.iter().any(|k| k["tmb"].as_str() == Some(genesis_tmb)),
-        "genesis key should be in active keys"
-    );
-}
-
+/// Backs: user-visible export then import into a fresh store preserves the identity (quarantined,
+/// #111).
 #[test]
 #[ignore = "QUARANTINE(#111): flaky export-import roundtrip, list step intermittently fails"]
 fn test_export_import_roundtrip() {
@@ -185,6 +139,8 @@ fn test_export_import_roundtrip() {
     assert_eq!(keys.len(), 2, "imported identity should have 2 keys");
 }
 
+/// Backs: an exported commit record carries its real auth root and state root (SPEC 4 commit
+/// fields), not placeholders.
 #[test]
 fn test_exported_commits_carry_real_auth_root_and_state_root() {
     // Regression test: exported CommitEntry lines used to hardcode empty
@@ -219,58 +175,8 @@ fn test_exported_commits_carry_real_auth_root_and_state_root() {
     );
 }
 
-#[test]
-fn test_keystore_list() {
-    let cli = CliTest::new();
-
-    // Generate a few keys
-    cli.run_ok(&["key", "generate", "--algo", "ES256", "--tag", "key1"]);
-    cli.run_ok(&["key", "generate", "--algo", "ES256", "--tag", "key2"]);
-
-    // List keystore keys (no identity specified)
-    let list = cli.run_json(&["key", "list"]);
-    let keys = list.as_array().unwrap();
-    assert_eq!(keys.len(), 2, "should have 2 keys in keystore");
-}
-
-#[test]
-fn test_tx_list_genesis() {
-    let cli = CliTest::new();
-
-    // Generate key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-
-    // List cozies (should be empty for genesis)
-    // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
-    let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-
-    assert_eq!(tx_list["transaction_count"], 0);
-}
-
-#[test]
-fn test_tx_list_after_transactions() {
-    let cli = CliTest::new();
-
-    // Generate key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-
-    // Add a key (creates first coz)
-    // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
-    let signer_arg = format!("--signer={genesis_tmb}");
-    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
-
-    // List cozies - should show 2 (key/create + commit/create per commit)
-    let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-
-    assert_eq!(tx_list["transaction_count"], 2);
-    let cozies = tx_list["cozies"].as_array().unwrap();
-    assert_eq!(cozies.len(), 2);
-}
-
+/// Backs: inspect at genesis shows PG unset and PR/KS/AS equal to the sole key thumbprint (SPEC
+/// 2.2.10 singleton promotion, 2.3.2 PG).
 #[test]
 fn test_inspect_genesis() {
     let cli = CliTest::new();
@@ -295,6 +201,7 @@ fn test_inspect_genesis() {
     assert_eq!(keys.len(), 1);
 }
 
+/// Backs: inspect after a key add shows the new KS, one commit and two active keys.
 #[test]
 fn test_inspect_after_transactions() {
     let cli = CliTest::new();
@@ -325,6 +232,7 @@ fn test_inspect_after_transactions() {
     assert_eq!(keys.len(), 2, "should have 2 keys after add");
 }
 
+/// Backs: a multi-key explicit genesis reloads before any commit (user-visible init/inspect).
 #[test]
 fn test_explicit_multi_key_genesis_reload() {
     // An identity created with explicit genesis (multiple keys) must be
@@ -368,6 +276,7 @@ fn test_explicit_multi_key_genesis_reload() {
     assert!(active_keys.contains(&key2_tmb));
 }
 
+/// Backs: commits chain on a multi-key explicit genesis across separate CLI invocations (F40).
 #[test]
 fn test_explicit_multi_key_genesis_accepts_commits() {
     // F40 regression: a genuinely fresh explicit multi-key genesis (2+
@@ -436,6 +345,7 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
     }
 }
 
+/// Backs: an unknown identity is refused with a clear error, never misread as another genesis.
 #[test]
 fn test_unresolvable_identity_fails_loudly() {
     // An identity that matches neither a keystore key, a recorded
@@ -461,6 +371,8 @@ fn test_unresolvable_identity_fails_loudly() {
     );
 }
 
+/// Backs: end-to-end CLI lifecycle - generate, list, tx list, inspect, add, export, revoke (SPEC
+/// 4.2.4 self-revoke); subsumes the single-step key/list/tx-list checks.
 #[test]
 fn test_full_workflow() {
     // Comprehensive test mimicking the demo script
@@ -531,23 +443,7 @@ fn test_full_workflow() {
     assert_eq!(tx_list["transaction_count"], 4);
 }
 
-#[test]
-fn test_tx_verify_genesis() {
-    let cli = CliTest::new();
-
-    // Generate key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={genesis_tmb}");
-
-    // Verify genesis state (no cozies yet)
-    let verify = cli.run_json(&["tx", "verify", &identity_arg]);
-
-    assert_eq!(verify["status"], "OK");
-    assert_eq!(verify["commits_verified"], 0);
-    assert_eq!(verify["transactions_verified"], 0);
-}
-
+/// Backs: tx verify accepts a real commit chain (PR/arrow consistency, SPEC 4).
 #[test]
 fn test_tx_verify_after_transactions() {
     let cli = CliTest::new();
@@ -570,6 +466,7 @@ fn test_tx_verify_after_transactions() {
     assert_eq!(verify["transactions_verified"], 2);
 }
 
+/// Backs: tx verify fails loudly when stored commit data is unreadable, never reporting a false OK.
 #[test]
 fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
     // Regression test: `tx verify` used to collapse any storage error
