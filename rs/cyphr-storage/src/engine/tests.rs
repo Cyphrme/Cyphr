@@ -1400,7 +1400,6 @@ async fn rebuild_quarantines_a_contested_pg_alias() {
 /// lands at seq 1's successor-free position (the chain length). Turns red if
 /// the chain comes out `[0, 2]`.
 #[tokio::test]
-#[ignore = "RED(H1F): an unsupported manifest leaves a gap"]
 async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
     use super::QuarantineReason;
     let engine = test_engine();

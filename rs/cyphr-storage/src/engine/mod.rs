@@ -836,6 +836,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
 
         let mut quarantined = Vec::new();
+        // The earliest sequence at which a principal's chain broke, for any
+        // reason; every later commit of that principal is orphaned, so the
+        // indexed chain is always a gapless prefix.
+        let mut broken_from: HashMap<String, u64> = HashMap::new();
         let mut manifests: Vec<(Blake3Hash, CommitManifest)> = Vec::new();
         for hash in hashes {
             let Some(data) = self.blob_store.get(&hash).await? else {
@@ -866,6 +870,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .check_manifest_supported(&hash, &manifest.commit)
                 .await?
             {
+                broken_from
+                    .entry(manifest.commit.principal_id.clone())
+                    .and_modify(|from| *from = (*from).min(manifest.commit.sequence))
+                    .or_insert(manifest.commit.sequence);
                 quarantined.push(QuarantinedManifest {
                     manifest: hash,
                     principal_id: Some(manifest.commit.principal_id.clone()),
@@ -885,9 +893,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         });
 
         let unbound = self.unbound_principals(&manifests).await?;
-        // The earliest sequence at which a principal's chain broke; every
-        // later commit of that principal is orphaned.
-        let mut broken_from: HashMap<String, u64> = HashMap::new();
         for (hash, manifest) in &manifests {
             if let Some(why) = unbound.get(&manifest.commit.principal_id) {
                 quarantined.push(QuarantinedManifest {
@@ -897,6 +902,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 });
                 broken_from
                     .entry(manifest.commit.principal_id.clone())
+                    .and_modify(|from| *from = (*from).min(manifest.commit.sequence))
                     .or_insert(manifest.commit.sequence);
             }
         }
