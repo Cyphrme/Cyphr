@@ -11,34 +11,91 @@ use cyphr_storage::index::{DeriveToken, IndexerWrite, conformance};
 
 use super::*;
 
-macro_rules! conformance_test {
-    ($name:ident) => {
-        #[tokio::test]
-        async fn $name() {
-            let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-            conformance::$name(&indexer).await;
-        }
-    };
-}
-
-conformance_test!(index_commit_and_get_tip);
-conformance_test!(index_commit_with_absent_roots_reads_back_none);
-conformance_test!(get_tip_unknown_returns_none);
-conformance_test!(tip_updates_on_subsequent_commits);
-conformance_test!(index_commit_idempotent);
-conformance_test!(get_commit_chain_full);
-conformance_test!(get_commit_chain_range);
-conformance_test!(get_commit_chain_unknown_returns_empty);
-conformance_test!(resolve_digest_returns_none_for_unknown);
-conformance_test!(resolve_digest_returns_indexed_position);
-conformance_test!(indexed_blobs_tracked_in_commit_chain);
-conformance_test!(list_principals_returns_all);
-conformance_test!(principal_summary_tracks_creation_time);
-
+/// Backs the `Indexer` contract (tips, chains, digest and PG-alias
+/// resolution, conflicts, holder sets, position-keyed idempotency) for
+/// the durable backend: every shared function in
+/// `cyphr_storage::index::conformance` against a fresh `FjallIndexer`.
+/// Unit: the `Indexer` trait seam is internal; no end-to-end route names
+/// a backend-independent contract.
 #[tokio::test]
-async fn alias_pg_variants_resolve_to_the_principal() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::alias_pg_variants_resolve_to_the_principal(&indexer).await;
+async fn fjall_indexer_passes_the_shared_conformance_suite() {
+    conformance::index_commit_with_absent_roots_reads_back_none(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::index_commit_and_get_tip(&FjallIndexer::temp().expect("open temp indexer").0)
+        .await;
+    conformance::get_tip_unknown_returns_none(&FjallIndexer::temp().expect("open temp indexer").0)
+        .await;
+    conformance::tip_updates_on_subsequent_commits(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::index_commit_idempotent(&FjallIndexer::temp().expect("open temp indexer").0).await;
+    conformance::get_commit_chain_full(&FjallIndexer::temp().expect("open temp indexer").0).await;
+    conformance::get_commit_chain_range(&FjallIndexer::temp().expect("open temp indexer").0).await;
+    conformance::get_commit_chain_unknown_returns_empty(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::resolve_digest_returns_none_for_unknown(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::resolve_digest_returns_indexed_position(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::indexed_blobs_tracked_in_commit_chain(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::list_principals_returns_all(&FjallIndexer::temp().expect("open temp indexer").0)
+        .await;
+    conformance::principal_summary_tracks_creation_time(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::new_indexer_methods(&FjallIndexer::temp().expect("open temp indexer").0).await;
+    conformance::alias_pg_variants_resolve_to_the_principal(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::pg_established_marker_tracks_the_pg_commit(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::alias_conflict_second_principal_is_refused(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::alias_conflict_naming_another_principal_is_refused(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::digest_conflict_same_principal_repeat_is_allowed(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::digest_holders_shared_digest_names_every_holder(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::index_commit_idempotency_is_keyed_by_chain_position(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    // The pair-taking functions compare two indexers fed in opposite orders.
+    conformance::digest_holders_do_not_depend_on_arrival_order(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
+    conformance::digest_holders_are_a_duplicate_free_set(
+        &FjallIndexer::temp().expect("open temp indexer").0,
+        &FjallIndexer::temp().expect("open temp indexer").0,
+    )
+    .await;
 }
 
 /// Backs R3 (AGENTS.md): the alias table is ONE KV table registered in the
@@ -77,12 +134,6 @@ async fn alias_table_is_one_registered_kv_table() {
         before.len() + 1,
         "the alias table must be exactly one newly registered partition: {registry:?}"
     );
-}
-
-#[tokio::test]
-async fn new_indexer_methods() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::new_indexer_methods(&indexer).await;
 }
 
 /// A durably-reopened `FjallIndexer` (fresh `Database`, not a clone of the
@@ -231,56 +282,6 @@ async fn multitenancy_prefix_principals_are_isolated() {
     assert_eq!(alice_tip.commit_count, 3);
     let alice2_tip = indexer.get_tip("alice2").await.unwrap().unwrap();
     assert_eq!(alice2_tip.commit_count, 2);
-}
-
-#[tokio::test]
-async fn pg_established_marker_tracks_the_pg_commit() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::pg_established_marker_tracks_the_pg_commit(&indexer).await;
-}
-
-#[tokio::test]
-async fn alias_conflict_second_principal_is_refused() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::alias_conflict_second_principal_is_refused(&indexer).await;
-}
-
-#[tokio::test]
-async fn alias_conflict_naming_another_principal_is_refused() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::alias_conflict_naming_another_principal_is_refused(&indexer).await;
-}
-
-#[tokio::test]
-async fn digest_conflict_same_principal_repeat_is_allowed() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::digest_conflict_same_principal_repeat_is_allowed(&indexer).await;
-}
-
-#[tokio::test]
-async fn digest_holders_shared_digest_names_every_holder() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::digest_holders_shared_digest_names_every_holder(&indexer).await;
-}
-
-#[tokio::test]
-async fn digest_holders_do_not_depend_on_arrival_order() {
-    let (forward, _d1) = FjallIndexer::temp().expect("open temp indexer");
-    let (backward, _d2) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::digest_holders_do_not_depend_on_arrival_order(&forward, &backward).await;
-}
-
-#[tokio::test]
-async fn index_commit_idempotency_is_keyed_by_chain_position() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::index_commit_idempotency_is_keyed_by_chain_position(&indexer).await;
-}
-
-#[tokio::test]
-async fn digest_holders_are_a_duplicate_free_set() {
-    let (forward, _d1) = FjallIndexer::temp().expect("open temp indexer");
-    let (backward, _d2) = FjallIndexer::temp().expect("open temp indexer");
-    conformance::digest_holders_are_a_duplicate_free_set(&forward, &backward).await;
 }
 
 /// An index commit of principal `p<i>` whose coz carries the shared `czd`.
