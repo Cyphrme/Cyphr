@@ -3,11 +3,14 @@
 
 use coz::Thumbprint;
 
-use super::{Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees};
+use super::{
+    Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees,
+    validate_genesis_keys,
+};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::semantic_tree::derive_state_roots;
-use crate::state::{PrincipalGenesis, derive_hash_algs, hash_alg_from_str};
+use crate::state::{PrincipalGenesis, derive_hash_algs};
 
 // ============================================================================
 // Genesis constructors (default in-memory storage)
@@ -31,7 +34,9 @@ impl Principal<eml::MemoryStorage> {
     ///
     /// # Errors
     ///
-    /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
+    /// Returns `KeyRevoked` if the key carries a revocation: every key,
+    /// the first included, enters through a `key/create` (SPEC §7.7), and
+    /// a revoked key is never trusted again (SPEC §6.4).
     pub fn implicit(key: Key) -> Result<Self> {
         Self::implicit_with_storage(key, eml::MemoryStorage::new())
     }
@@ -42,6 +47,11 @@ impl Principal<eml::MemoryStorage> {
     /// - PR is absent at construction (established by principal/create)
     ///
     /// This is the Level 3+ genesis path.
+    ///
+    /// # Errors
+    ///
+    /// `NoActiveKeys` if `keys` is empty; `KeyRevoked` if any key carries
+    /// a revocation; `DuplicateKey` if a key appears twice.
     pub fn explicit(keys: Vec<Key>) -> Result<Self> {
         Self::explicit_with_storage(keys, eml::MemoryStorage::new())
     }
@@ -95,12 +105,10 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// # Errors
     ///
-    /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
+    /// `KeyRevoked` if the key carries a revocation.
     pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
-        let hash_alg = hash_alg_from_str(key.alg())?;
-
-        // Derive active algorithms from genesis key
-        let active_algs = vec![hash_alg];
+        validate_genesis_keys(std::slice::from_ref(&key))?;
+        let active_algs = derive_hash_algs(&[&key]);
 
         // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
         let (kr, ar, sr) = derive_state_roots(&[key.tmb()], None, &active_algs)?;
@@ -115,12 +123,13 @@ impl<S: eml::Storage> Principal<S> {
     /// See [`Principal::explicit`] for the SPEC-level contract; this is the
     /// same construction with the storage backend threaded through
     /// explicitly instead of defaulting to [`eml::MemoryStorage`].
+    ///
+    /// # Errors
+    ///
+    /// `NoActiveKeys` if `keys` is empty; `KeyRevoked` if any key carries
+    /// a revocation; `DuplicateKey` if a key appears twice.
     pub fn explicit_with_storage(keys: Vec<Key>, storage: S) -> Result<Self> {
-        if keys.is_empty() {
-            return Err(Error::NoActiveKeys);
-        }
-
-        let _ = hash_alg_from_str(keys[0].alg())?;
+        validate_genesis_keys(&keys)?;
 
         // Derive active algorithms from all keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();

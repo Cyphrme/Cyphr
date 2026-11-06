@@ -6,7 +6,7 @@
 //!   `key/create` gives a revoked tmb (SPEC be0663f 7.7: every key, the first included, needs a
 //!   `key/create`; 6.4: a revoked key is never trusted again).
 //!
-//! Run the red ones with `cargo test -p cyphr --test genesis_keys -- --ignored`.
+
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::state::HashAlg;
@@ -58,7 +58,6 @@ fn key_of(k: &Kp) -> Key {
 /// what the caller computed). Not end-to-end: no scenario reaches the
 /// constructor's argument check more cheaply.
 #[test]
-#[ignore = "RED(N12): explicit genesis collapses duplicate keys into the key map"]
 fn genesis_refuses_duplicate_key() {
     let (g, a) = (pool_key("golden"), pool_key("key_a"));
     for keys in [
@@ -93,7 +92,6 @@ fn genesis_unsupported_algorithm_is_unconstructible() {
 /// Turns red if either path accepts it or refuses with another error (today implicit
 /// genesis returns `Ok`, explicit returns `NoActiveKeys`).
 #[test]
-#[ignore = "RED(N12): implicit genesis accepts a pre-revoked key; the paths disagree"]
 fn genesis_implicit_and_explicit_agree_on_pre_revoked_key() {
     let g = pool_key("golden");
     let revoked = key_of(&g).with_revocation(cyphr::key::Revocation { rvk: T, by: None });

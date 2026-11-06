@@ -403,6 +403,29 @@ impl StartingRoots {
     }
 }
 
+/// Validate the keys a principal is born with. Genesis is the one place a
+/// key enters the active set without a `key/create` replay, so it applies
+/// the refusals `key/create` gives: a revoked key is `KeyRevoked` (SPEC
+/// §7.7 requires a `key/create` for every key including the first; §6.4
+/// never trusts a revoked key again) and a repeated key is `DuplicateKey`,
+/// not silently collapsed. Revocation is checked for every key before
+/// duplication so both genesis paths report the same error for the same
+/// key. (An unsupported algorithm cannot reach here: [`Key`] has no
+/// constructor for one.)
+fn validate_genesis_keys(keys: &[Key]) -> Result<()> {
+    if keys.is_empty() {
+        return Err(Error::NoActiveKeys);
+    }
+    if keys.iter().any(|k| !k.is_active()) {
+        return Err(Error::KeyRevoked);
+    }
+    let mut seen = HashSet::with_capacity(keys.len());
+    if !keys.iter().all(|k| seen.insert(k.tmb().to_b64())) {
+        return Err(Error::DuplicateKey);
+    }
+    Ok(())
+}
+
 /// Open the Commit Tree over a caller-supplied storage backend.
 fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::CommitTrees<S>> {
     crate::commit_root::CommitTrees::open(storage).map_err(|e| Error::Storage(e.to_string()))
@@ -410,7 +433,9 @@ fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::
 
 impl<S: eml::Storage> PrincipalCore<S> {
     /// Assemble a principal's state from its keys, starting roots and
-    /// Commit Tree. Every constructor ends here, so a field added to
+    /// Commit Tree. Callers pass keys that [`validate_genesis_keys`]
+    /// accepted, so the active set never holds a revoked or repeated key.
+    /// Every constructor ends here, so a field added to
     /// `PrincipalCore` or a change to how a fresh principal is filled is
     /// made once. `keys` become both the active set and the genesis-key
     /// list, in the order given.
@@ -419,6 +444,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
         roots: StartingRoots,
         commit_trees: crate::commit_root::CommitTrees<S>,
     ) -> Self {
+        debug_assert!(validate_genesis_keys(&keys).is_ok());
         let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
         let mut key_map = IndexMap::new();
         for k in keys {

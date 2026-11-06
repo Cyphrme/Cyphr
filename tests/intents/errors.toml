@@ -13,6 +13,14 @@ principal = ["unsupported_key"]
 [test.expected]
 error = "UnknownAlg"
 
+# Genesis naming the same key twice is refused, not collapsed to one key
+[[test]]
+name      = "duplicate_genesis_key_fails"
+principal = ["golden", "key_a", "golden"]
+
+[test.expected]
+error = "DuplicateKey"
+
 # ============================================================================
 # Revoked key tests
 # Need setup.revoke_key to pre-revoke a key before the test
