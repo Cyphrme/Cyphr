@@ -17,6 +17,12 @@ mode       = "authority"
 # signing_key_path = "/etc/cyphr/signing-key.json"
 # audience = "login.example.com"
 
+# The Noise transport, a second listener that authenticates both ends as
+# principals. Off unless set; a keyless server refuses it (and serves HTTP
+# only), so set it together with signing_key_path. The per-address session
+# cap counts an IPv6 /64 as one address.
+# transport_listen = "127.0.0.1:3100"
+
 # Witness mode instead pulls from an upstream:
 # mode = "witness"
 # authority_url = "https://authority.example.com"

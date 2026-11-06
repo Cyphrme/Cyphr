@@ -13,6 +13,12 @@
 # server starts, or exits without naming the key, on a config with one
 # unknown key.
 #
+# Third claim: with a signing key, `transport_listen` brings up the Noise
+# listener beside HTTP and /healthz still answers; without one the server
+# refuses the transport, names why, and keeps serving HTTP. Red if the
+# keyed server never reports "transport listening on", /healthz does not
+# answer 200, or the keyless server reports a transport or stops serving.
+#
 # Usage: packaging/smoke.sh [path-to-cyphr-server]   (default: PATH lookup)
 set -euo pipefail
 
@@ -98,4 +104,58 @@ refused top listn '1i listn = "127.0.0.1:1"' || failed=1
 refused admission polcy '/^\[admission\]/a polcy = "invite"' || failed=1
 refused limits max_body_byte '/^\[limits\]/a max_body_byte = 1' || failed=1
 [[ $failed == 0 ]] || exit 1
+
+# Transport case. The signing key is an Ed25519 pair made with openssl: the
+# raw key is the last 32 bytes of the PKCS#8 (seed) and SPKI (public) DER.
+raw() { openssl pkey "$@" -outform DER | tail -c 32 | python3 -I -c \
+  'import base64,sys; print(base64.urlsafe_b64encode(sys.stdin.buffer.read()).rstrip(b"=").decode())'; }
+openssl genpkey -algorithm ed25519 -out "$tmp/key.pem"
+printf '{"alg":"Ed25519","pub_key":"%s","prv_key":"%s"}' \
+  "$(raw -in "$tmp/key.pem" -pubout)" "$(raw -in "$tmp/key.pem")" >"$tmp/signing-key.json"
+
+# Start a server on the example config plus the transport line, uncommented
+# and retargeted to an ephemeral port; $1 is "keyed" (adds the
+# signing key) or "keyless".
+start_with_transport() {
+  sed -e "s|^# transport_listen *= .*|transport_listen = \"127.0.0.1:0\"|" \
+    -e "s|^data_dir *= .*|data_dir = \"$tmp/data-$1\"|" "$tmp/config.toml" >"$tmp/t-$1.toml"
+  grep -q '^transport_listen' "$tmp/t-$1.toml" || { echo "smoke bug: transport_listen not enabled" >&2; return 1; }
+  # Top-level keys go first: appended, they would land in [limits].
+  if [[ $1 == keyed ]]; then
+    sed -i -e "1i signing_key_path = \"$tmp/signing-key.json\"" -e '1i audience = "smoke.example"' "$tmp/t-$1.toml"
+  fi
+  "$bin" --config "$tmp/t-$1.toml" serve >"$tmp/out-t-$1" 2>"$tmp/err-t-$1" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    grep -q '^listening on ' "$tmp/out-t-$1" && return 0
+    kill -0 "$pid" 2>/dev/null || { echo "server exited early:" >&2; cat "$tmp/err-t-$1" >&2; return 1; }
+    sleep 0.1
+  done
+  echo "server never reported a listen address" >&2; return 1
+}
+# Rebuilt from the example so the shipped transport_listen line is the one
+# tested.
+sed -e "s|^listen *= .*|listen = \"127.0.0.1:0\"|" "$here/cyphr-server.example.toml" >"$tmp/config.toml"
+
+start_with_transport keyed
+for _ in $(seq 1 50); do grep -q '^transport listening on ' "$tmp/out-t-keyed" && break; sleep 0.1; done
+grep -q '^transport listening on ' "$tmp/out-t-keyed" || {
+  echo "keyed server did not report the transport listener:" >&2; cat "$tmp/err-t-keyed" >&2; exit 1; }
+taddr=$(sed -n 's/^transport listening on //p' "$tmp/out-t-keyed")
+haddr=$(sed -n 's/^listening on //p' "$tmp/out-t-keyed")
+status=$(curl -s -o /dev/null -w '%{http_code}' "http://$haddr/healthz")
+echo "GET /healthz -> $status; transport on $taddr"
+[[ $status == 200 ]] || { echo "expected /healthz 200, got $status" >&2; exit 1; }
+python3 -I -c 'import socket,sys; h,p=sys.argv[1].rsplit(":",1); socket.create_connection((h,int(p)),2).close()' "$taddr" \
+  || { echo "transport address $taddr does not accept connections" >&2; exit 1; }
+kill "$pid"; wait "$pid" 2>/dev/null || true; pid=
+
+start_with_transport keyless
+sleep 0.5
+if grep -q '^transport listening on ' "$tmp/out-t-keyless"; then
+  echo "keyless server started the transport" >&2; exit 1
+fi
+grep -q 'keyed server' "$tmp/err-t-keyless" || { echo "keyless refusal does not say why:" >&2; cat "$tmp/err-t-keyless" >&2; exit 1; }
+haddr=$(sed -n 's/^listening on //p' "$tmp/out-t-keyless")
+curl -sf -o /dev/null "http://$haddr/healthz" || { echo "keyless server stopped serving HTTP" >&2; exit 1; }
 echo "smoke: ok"
