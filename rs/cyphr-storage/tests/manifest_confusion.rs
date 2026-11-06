@@ -52,7 +52,9 @@ fn genesis_of(fixture: &serde_json::Value) -> (Genesis, String) {
     let gk = &fixture["genesis_keys"][0];
     let key = cyphr::Key::new(
         gk["alg"].as_str().unwrap().to_string(),
-        coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(gk["tmb"].as_str().unwrap()).unwrap()),
+        coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(gk["tmb"].as_str().unwrap()).unwrap(),
+        ),
         Base64UrlUnpadded::decode_vec(gk["pub"].as_str().unwrap()).unwrap(),
     )
     .expect("key binds its tmb");
@@ -121,7 +123,10 @@ fn craft(mut blobs: Vec<serde_json::Value>, commit: &IndexableCommit) -> Vec<Vec
     let o = blobs.last_mut().unwrap().as_object_mut().unwrap();
     o.insert("kind".into(), MANIFEST_KIND.into());
     o.insert("commit".into(), serde_json::to_value(commit).unwrap());
-    blobs.iter().map(|b| serde_json::to_vec(b).unwrap()).collect()
+    blobs
+        .iter()
+        .map(|b| serde_json::to_vec(b).unwrap())
+        .collect()
 }
 
 async fn submit(
@@ -140,8 +145,13 @@ async fn submit(
 async fn submit_honest(engine: &Engine, fixture: &serde_json::Value) -> (Genesis, String) {
     let (g, id) = genesis_of(fixture);
     for c in fixture["commits"].as_array().unwrap() {
-        let blobs: Vec<Vec<u8>> = raw_blobs(c).iter().map(|b| serde_json::to_vec(b).unwrap()).collect();
-        submit(engine, &id, &g, &blobs).await.expect("honest commit");
+        let blobs: Vec<Vec<u8>> = raw_blobs(c)
+            .iter()
+            .map(|b| serde_json::to_vec(b).unwrap())
+            .collect();
+        submit(engine, &id, &g, &blobs)
+            .await
+            .expect("honest commit");
     }
     (g, id)
 }
@@ -184,8 +194,16 @@ async fn crafted_transaction_blob_cannot_rewrite_another_principals_tip() {
 
     e.rebuild_index_from_manifests().await.unwrap();
 
-    assert_eq!(e.get_tip(&victim).await.unwrap().unwrap(), before, "victim tip untouched");
-    let others: Vec<_> = principals(&e).await.into_iter().filter(|p| !p.0.ends_with(aid.split(':').next_back().unwrap())).collect();
+    assert_eq!(
+        e.get_tip(&victim).await.unwrap().unwrap(),
+        before,
+        "victim tip untouched"
+    );
+    let others: Vec<_> = principals(&e)
+        .await
+        .into_iter()
+        .filter(|p| !p.0.ends_with(aid.split(':').next_back().unwrap()))
+        .collect();
     assert_eq!(others, before_others);
 }
 
@@ -211,14 +229,20 @@ async fn crafted_action_blob_cannot_invent_a_principal() {
 
     e.rebuild_index_from_manifests().await.unwrap();
 
-    assert!(e.get_tip(&phantom).await.unwrap().is_none(), "phantom principal must have no tip");
+    assert!(
+        e.get_tip(&phantom).await.unwrap().is_none(),
+        "phantom principal must have no tip"
+    );
     assert!(principals(&e).await.iter().all(|p| p.0 != phantom));
     assert_eq!(e.get_tip(&victim).await.unwrap().unwrap(), before);
 
     // Scratch variant: after `clear`, nothing is indexed, so a
     // "trust only unindexed principals" non-fix would accept the phantom.
     e.rebuild_index_from_scratch().await.unwrap();
-    assert!(e.get_tip(&phantom).await.unwrap().is_none(), "phantom survives a scratch rebuild");
+    assert!(
+        e.get_tip(&phantom).await.unwrap().is_none(),
+        "phantom survives a scratch rebuild"
+    );
 }
 
 /// Green control. Claim: rebuild recovers EXACTLY the engine's own

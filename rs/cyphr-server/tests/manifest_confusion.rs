@@ -24,17 +24,18 @@
 //! principals not yet indexed (which a scratch rebuild defeats, since
 //! after `clear` nothing is indexed).
 
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use cyphr_server::{AppState, build_router};
 use cyphr_storage::blob::Blake3Hash;
-use cyphr_storage::index::{Indexer, IndexableCommit, IndexableCoz, TipState};
-use std::sync::Arc;
+use cyphr_storage::index::{IndexableCommit, IndexableCoz, Indexer, TipState};
 
 mod common;
 
 use common::{
-    build_genesis_push_body, build_genesis_push_body_with,
-    get_json, implicit_principal_id, keyless_server, load_pool, post_json,
+    build_genesis_push_body, build_genesis_push_body_with, get_json, implicit_principal_id,
+    keyless_server, load_pool, post_json,
 };
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -105,7 +106,10 @@ fn with_forged_manifest(body: &str, forge: &Forge) -> String {
             .unwrap();
     let obj = coz.as_object_mut().unwrap();
     obj.insert("kind".into(), MANIFEST_KIND.into());
-    obj.insert("commit".into(), serde_json::to_value(forge.commit()).unwrap());
+    obj.insert(
+        "commit".into(),
+        serde_json::to_value(forge.commit()).unwrap(),
+    );
     *last = Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
     v.to_string()
 }
@@ -150,7 +154,15 @@ async fn world() -> World {
     assert_eq!(s, StatusCode::CREATED, "victim genesis push: {b:?}");
     let before = state.engine.get_tip(&victim).await.unwrap().unwrap();
     let before_principals = principals(&state).await;
-    World { state, app, pool, victim, before, before_principals, _dir: dir }
+    World {
+        state,
+        app,
+        pool,
+        victim,
+        before,
+        before_principals,
+        _dir: dir,
+    }
 }
 
 impl World {
@@ -187,14 +199,21 @@ impl World {
     /// content: the attacker's honest key/create blob (raw, as stored).
     fn attacker_blob_hash(&self) -> Blake3Hash {
         let attacker = implicit_principal_id(&self.pool, "alice");
-        let body = build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001);
+        let body =
+            build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let raw = Base64UrlUnpadded::decode_vec(v["blobs"][0].as_str().unwrap()).unwrap();
         Blake3Hash::from_bytes(*blake3::hash(&raw).as_bytes())
     }
 
     async fn assert_victim_intact(&self) {
-        let after = self.state.engine.get_tip(&self.victim).await.unwrap().unwrap();
+        let after = self
+            .state
+            .engine
+            .get_tip(&self.victim)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after, self.before, "victim tip must be untouched");
         let (s, tip) = get_json(self.app.clone(), &format!("/tip?pr={}", self.victim)).await;
         assert_eq!(s, StatusCode::OK);
@@ -224,7 +243,13 @@ async fn pushed_coz_cannot_rewrite_victim_index_on_rebuild() {
     assert_eq!(w.others().await, w.before_principals);
     let forged: cyphr::state::TaggedDigest = forge.commit_id.parse().unwrap();
     assert!(
-        w.state.engine.indexer().resolve_digest(&forged).await.unwrap().is_none(),
+        w.state
+            .engine
+            .indexer()
+            .resolve_digest(&forged)
+            .await
+            .unwrap()
+            .is_none(),
         "the forged commit id must not be in the index"
     );
     assert!(w.state.engine.get_entity(&forged).await.unwrap().is_none());
@@ -286,7 +311,12 @@ async fn pushed_coz_cannot_plant_a_pg_alias_on_rebuild() {
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
 
     assert!(
-        w.state.engine.get_tip(&w.before.pr).await.unwrap().is_none(),
+        w.state
+            .engine
+            .get_tip(&w.before.pr)
+            .await
+            .unwrap()
+            .is_none(),
         "the victim's PR string must not resolve as an alias to anyone"
     );
     assert!(w.state.engine.get_tip(&phantom).await.unwrap().is_none());
@@ -303,7 +333,14 @@ async fn pushed_coz_cannot_plant_a_pg_alias_on_rebuild() {
 async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
     let w = world().await;
     let digest: cyphr::state::TaggedDigest = w.before.commit_id.parse().unwrap();
-    let entity_before = w.state.engine.indexer().resolve_digest(&digest).await.unwrap().unwrap();
+    let entity_before = w
+        .state
+        .engine
+        .indexer()
+        .resolve_digest(&digest)
+        .await
+        .unwrap()
+        .unwrap();
     let bytes_before = w.state.engine.get_entity(&digest).await.unwrap().unwrap();
 
     let mut forge = Forge::naming(&fake_digest(0xE0), 0xE1);
@@ -313,8 +350,18 @@ async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
 
-    let entity_after = w.state.engine.indexer().resolve_digest(&digest).await.unwrap().unwrap();
-    assert_eq!(entity_after, entity_before, "victim digest must resolve as before");
+    let entity_after = w
+        .state
+        .engine
+        .indexer()
+        .resolve_digest(&digest)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        entity_after, entity_before,
+        "victim digest must resolve as before"
+    );
     assert_eq!(
         w.state.engine.get_entity(&digest).await.unwrap().unwrap(),
         bytes_before,
@@ -344,12 +391,24 @@ async fn rebuild_recovers_exactly_the_honest_manifests() {
 
     let n = w.state.engine.rebuild_index_from_manifests().await.unwrap();
     assert_eq!(n, 2, "exactly one manifest per honest commit");
-    assert_eq!(w.state.engine.get_tip(&w.victim).await.unwrap().unwrap(), tip);
-    assert_eq!(w.state.engine.get_tip(&other).await.unwrap().unwrap(), other_tip);
+    assert_eq!(
+        w.state.engine.get_tip(&w.victim).await.unwrap().unwrap(),
+        tip
+    );
+    assert_eq!(
+        w.state.engine.get_tip(&other).await.unwrap().unwrap(),
+        other_tip
+    );
 
     let n = w.state.engine.rebuild_index_from_scratch().await.unwrap();
     assert_eq!(n, 2, "scratch rebuild recovers every honest manifest");
-    assert_eq!(w.state.engine.get_tip(&w.victim).await.unwrap().unwrap(), tip);
-    assert_eq!(w.state.engine.get_tip(&other).await.unwrap().unwrap(), other_tip);
+    assert_eq!(
+        w.state.engine.get_tip(&w.victim).await.unwrap().unwrap(),
+        tip
+    );
+    assert_eq!(
+        w.state.engine.get_tip(&other).await.unwrap().unwrap(),
+        other_tip
+    );
     assert_eq!(principals(&w.state).await, listed);
 }
