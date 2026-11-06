@@ -1,7 +1,5 @@
 //! Transaction application and commit finalization.
 
-use std::collections::BTreeMap;
-
 use coz::Thumbprint;
 
 use super::{Principal, current_time};
@@ -484,13 +482,7 @@ impl<S: eml::Storage> Principal<S> {
         // Serialize this commit's TR once — used both to append a fresh
         // leaf and, on the already_durable path, as the value to
         // byte-compare a pre-existing leaf against.
-        let mut mapped_variants = BTreeMap::new();
-        for (&alg, val) in tr.0.variants() {
-            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-            mapped_variants.insert(alg_id, val.clone());
-        }
-        let serialized =
-            serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
+        let serialized = crate::commit_root::commit_leaf(&tr.0, &active_algs)?;
 
         let cr = if already_durable {
             // A prior durable session already appended a leaf at this

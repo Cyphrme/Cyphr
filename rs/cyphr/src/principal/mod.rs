@@ -137,7 +137,10 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// Full czd bytes of every transaction coz and data action this
     /// principal has included (SPEC §7.6). Keyed on the whole digest, not a
     /// prefix: czd width follows the signing algorithm (ES384 = 48 bytes).
-    /// Rebuilt by replaying history; a checkpoint restore starts empty.
+    /// Rebuilt by replaying history. LIMIT: a principal restored from a
+    /// checkpoint starts with an empty set, so it accepts reuse of a coz
+    /// included before the checkpoint (restore is test-only today; the
+    /// restore path must carry the set or replay history before it serves).
     pub(crate) included_czds: HashSet<Vec<u8>>,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,

@@ -601,6 +601,7 @@ SPEC 7.6, line 1268. Disposition: `covered`.
   - `rs/cyphr/tests/spec_conformance.rs::every_active_algorithms_cr_variant_advances_with_every_commit`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/coz_reuse_fails]`
 - fails when: a transaction coz already included by a principal is applied again.
+- limit: a principal restored from a checkpoint starts with no record of earlier cozies, so it accepts reuse of a coz included before the checkpoint; the restore path owns closing this.
 
 ```claim
 kind: requirement
