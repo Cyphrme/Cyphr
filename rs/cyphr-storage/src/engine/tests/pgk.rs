@@ -2,8 +2,9 @@
 //! genesis state root while nascent), not by the bare genesis-key tmb.
 //!
 //! Every test states the claim it backs and the defect that turns it red.
-//! Unit level where stated, each for a stated reason: two principals sharing a PG, or a PR, cannot be built from signed cozes
-//! (a PR commits to history), so only crafted index metadata reaches them.
+//! Unit level where stated, each for a stated reason: two principals
+//! sharing a PG, or a PR, cannot be built from signed cozes (a PR commits
+//! to history), so only crafted index metadata reaches them.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -211,6 +212,23 @@ async fn holders_locate_by_pr_never_picks_the_first_holder() {
         names_both || got.starts_with("Err("),
         "two holders of one PR, neither returned nor refused: {got}"
     );
+}
+
+/// Claim: addressing a principal by a PR two principals hold is a typed
+/// `Ambiguous` refusal, not a pick of one of them. Turns red on first-holder
+/// selection (it would resolve to "alice") or on an untyped error.
+#[tokio::test]
+async fn holders_address_by_shared_pr_is_typed_ambiguous() {
+    let engine = test_engine();
+    for (who, now) in [("alice", 1), ("bob", 2)] {
+        let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
+        engine
+            .ingest_commit(&[blob.as_bytes()], meta_with_pr(who, 0, DIGEST_A))
+            .await
+            .expect("ingest");
+    }
+    let got = engine.canonical_principal_id(DIGEST_A).await;
+    assert!(matches!(got, Err(EngineError::Ambiguous(_))), "{got:?}");
 }
 
 /// Claim: a resync anchor held only by ANOTHER principal is refused for

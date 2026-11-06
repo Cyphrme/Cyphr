@@ -22,6 +22,13 @@ pub enum EngineError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// A lookup key names several principals (a Principal Root held by
+    /// more than one, or a resync anchor held at several positions of one
+    /// chain), so no single one can be chosen. Address the principal by a
+    /// key that is unique to it, its PG.
+    #[error("ambiguous: {0}")]
+    Ambiguous(String),
+
     /// Propagated from Principal replay (import/load).
     #[error("load: {0}")]
     Load(#[from] crate::import::LoadError),

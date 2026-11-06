@@ -533,38 +533,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// to "no anchor" (a full resync) or to sequence zero (which would
     /// silently wrap an unrecognized anchor onto genesis).
     ///
-    /// **Not principal-scoped — a known, tracked gap (issue #154), not an
-    /// enforced property.** `principal_id` is a parameter of this function
-    /// only to compose the error messages below; [`Indexer::resolve_digest`]
-    /// takes no principal, and the [`EntityRef`](crate::index::EntityRef) it
-    /// returns carries no principal field, so digest→position resolution is
-    /// a GLOBAL namespace. An anchor genuinely produced by a DIFFERENT
-    /// principal's chain resolves here exactly as it would for its own
-    /// principal — nothing below compares the resolved entity against
-    /// `principal_id` at all. This is the identity-binding gap #154 already
-    /// tracks elsewhere in this file (storage never binds a derived genesis
-    /// to the identifier it is filed under); this is a third instance of
-    /// that same structural gap, not a distinct defect.
-    ///
-    /// Reachable: `from` is attacker-rewritable on the wire (see
-    /// `request_side_from_rewrite_withholding_rejected`,
-    /// `cyphr-server/tests/witness_mode.rs`), so a rewritten anchor
-    /// belonging to principal A can resolve a position that then bounds
-    /// principal B's own `get_commit_chain` query. `get_commit_chain`
-    /// itself stays principal-scoped, so only B's own entries are ever
-    /// served — no cross-principal data leak — but the POSITION used to
-    /// bound them is unverified against which principal it actually names.
-    /// Every downstream branch traced fails closed behind N2's post-apply
-    /// authenticated-channel comparison (`EntryCommitmentMismatch`) --
-    /// but only when the syncing witness has `authority_identity` (K10)
-    /// configured (`cyphr-server/src/sync.rs`'s `authenticated_report`
-    /// gate: the comparison runs inside `if let Some(report) =
-    /// &authenticated_report`, itself populated only when
-    /// `state.config.authority_identity` is `Some`). A witness with no
-    /// `authority_identity` configured has no downstream check that
-    /// would catch a wrongly-bounded response, so this is
-    /// defence-in-depth for the K10 case only, not a demonstrated path
-    /// to forged or leaked state under every configuration.
+    /// Principal-scoped (forge #154): [`Indexer::resolve_digest_holders`]
+    /// names every holder of the digest, and only a holder that is this
+    /// principal's own commit bounds this chain. An anchor held solely by
+    /// other principals is [`EngineError::NotFound`] here, never a position
+    /// borrowed from a foreign chain; an anchor this principal holds at
+    /// several positions is [`EngineError::Ambiguous`].
     async fn resolve_anchor_position(
         &self,
         principal_id: &str,
@@ -584,7 +558,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             ))
         })?;
         if own.any(|other| other.sequence != entity.sequence) {
-            return Err(EngineError::InvalidInput(format!(
+            return Err(EngineError::Ambiguous(format!(
                 "resync anchor {anchor} is held at several positions of principal {principal_id}"
             )));
         }
@@ -1743,7 +1717,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(None);
         };
         if located.iter().any(|(other, _)| *other != owner) {
-            return Err(EngineError::InvalidInput(format!(
+            return Err(EngineError::Ambiguous(format!(
                 "Principal Root {claimed} is held by several principals; address one by its PG"
             )));
         }
