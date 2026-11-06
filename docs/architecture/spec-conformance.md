@@ -263,14 +263,17 @@ SPEC 3.1, line 298. Disposition: `covered`.
   - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_are_absent_and_pr_is_cr_without_data`
   - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_state_root_is_the_data_root`
   - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_hash_under_the_pre_commit_algorithm_set`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_key_delete_of_the_last_key_leaves_dead`
   - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_are_final_no_further_commit`
+  - `rs/cyphr/tests/nonce.rs::dead_principal_roots_keep_the_nonces_that_remain`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_revoke_leaves_dead]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/dead_principal_rejects_commit]`
-- fails when: a self-revoke of a principal's only key is refused (it was, with `NoActiveKeys`), or the dying commit's roots are not the ruled ones (KR and AR absent, SR equal to DR or absent, PR equal to CR when SR is absent, hashed under the pre-commit algorithm set), or the Dead principal accepts anything further. SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. Refusing the revoke leaves Mallory, who copied Alice's only key, a usable key after Alice's revoke.
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_delete_leaves_dead]`
+- fails when: a self-revoke of a principal's only key is refused (it was, with `NoActiveKeys`), or deleting the last key is refused, or the dying commit's roots are not the ruled ones (KR and AR derived from the nonces that remain and absent without any, SR equal to DR or absent, PR equal to CR when SR is absent, hashed under the pre-commit algorithm set), or the Dead principal accepts anything further. SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. Refusing the revoke leaves Mallory, who copied Alice's only key, a usable key after Alice's revoke.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l463]

@@ -1786,6 +1786,7 @@ proptest! {
 /// copied it. The golden vectors `lifecycle/last_key_revoke_leaves_dead` and
 /// `lifecycle/dead_principal_rejects_commit` pin the same behaviour for
 /// other implementations. End to end: yes.
+// @docket: sc-l298 :: scripts/docket-run sc-l298
 #[test]
 fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
     let (g, k2) = (kp(), kp());
