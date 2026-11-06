@@ -568,6 +568,14 @@ proptest! {
             "tip_report MUST refuse to sign a malformed {}={:?}, not silently build the receipt",
             malformed_field, malformed_digest
         );
+        prop_assert!(
+            matches!(
+                &result,
+                Err(receipt::ReceiptError::Field { field, .. }) if *field == malformed_field
+            ),
+            "the refusal MUST name the corrupted field {}: {:?}",
+            malformed_field, result
+        );
     }
 }
 
