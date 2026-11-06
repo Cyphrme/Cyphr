@@ -680,7 +680,6 @@ async fn submit<B: BlobStore>(
 /// key, and a reindex from the blobs reproduces it. Turns red when the key
 /// follows the claim (tmb on one engine, the PR on the other).
 #[tokio::test]
-#[ignore = "RED(PGK): the storage key follows the pushed spelling"]
 async fn rekey_key_is_independent_of_the_pushed_spelling_and_survives_reindex() {
     let pool = load_pool();
     let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
@@ -706,7 +705,6 @@ async fn rekey_key_is_independent_of_the_pushed_spelling_and_survives_reindex() 
 /// genesis-key tmb while exactly one such principal is stored. Turns red
 /// while the tmb is no address at all (404/None).
 #[tokio::test]
-#[ignore = "RED(PGK): a bare tmb does not resolve by genesis-key lookup"]
 async fn rekey_pushed_under_pg_to_be_resolves_by_unambiguous_bare_tmb() {
     let pool = load_pool();
     let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
@@ -728,7 +726,6 @@ async fn rekey_pushed_under_pg_to_be_resolves_by_unambiguous_bare_tmb() {
 /// `Ambiguous` refusal, not a pick and not "not found". Turns red on a
 /// first-match or a silent miss.
 #[tokio::test]
-#[ignore = "RED(PGK): an ambiguous bare tmb is not refused"]
 async fn rekey_ambiguous_bare_tmb_is_typed_ambiguous() {
     let pool = load_pool();
     let (g, k1, k2) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "alice"));
@@ -746,7 +743,6 @@ async fn rekey_ambiguous_bare_tmb_is_typed_ambiguous() {
 /// the identity of the single-key, no-nonce principal only), and nothing
 /// is stored. Turns red when it is accepted.
 #[tokio::test]
-#[ignore = "RED(PGK): a nonce principal is accepted under the bare tmb"]
 async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
@@ -763,7 +759,6 @@ async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
 /// after commit 0, and the reported id becomes the PG once established.
 /// Turns red when the reported id stays the key after `principal/create`.
 #[tokio::test]
-#[ignore = "RED(PGK): the reported id is not the PG once established"]
 async fn rekey_reported_id_is_the_pg_once_established() {
     let pool = load_pool();
     let g = kp(&pool, "golden");

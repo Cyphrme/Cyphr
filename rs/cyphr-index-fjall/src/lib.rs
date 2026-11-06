@@ -53,10 +53,11 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Current schema version recorded in the `meta` partition. Version 2
 /// added the `index_aliases` partition; version 3 keys digest holders as a
-/// set of one row per holder. The index is a derived cache (I1): a store
+/// set of one row per holder; version 4 keys a principal by the PR after
+/// its first commit, not by its genesis tmb. The index is a derived cache (I1): a store
 /// recorded at an older version, or at none, is discarded on open and
 /// rebuilt from blobs; a newer one is refused (downgrade guard).
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
