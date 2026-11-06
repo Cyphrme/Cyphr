@@ -1082,3 +1082,41 @@ async fn an_oversize_message_is_refused_by_its_declared_length() {
         .expect("the server must close, not wait for the rest");
     assert!(closed.is_err(), "the server answered an oversize message");
 }
+
+/// Claim: a write that cannot complete is cut off. A client with a tiny
+/// receive buffer asks for a 12 MiB response and never reads; after the
+/// write deadline the server drops the session, so the client's later read
+/// ends in an error, not in the whole response.
+///
+/// Turns red if: the server's write waits forever on a peer that does not
+/// read (the late read then receives all 12 MiB). End-to-end scenario: yes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_that_never_reads_is_cut_off() {
+    let (state, _dir) = attestor_with(|_| {}).await;
+    let huge = Router::new().fallback(|| async { vec![b'x'; 12 * 1024 * 1024] });
+    let (listener, addr) = listen().await;
+    tokio::spawn(async move {
+        _ = serve_noise_with(listener, state, huge).await;
+    });
+
+    let socket =
+        socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).expect("socket");
+    socket
+        .set_recv_buffer_size(4096)
+        .expect("small receive buffer");
+    socket.connect(&addr.into()).expect("connect");
+    socket.set_nonblocking(true).expect("nonblocking");
+    let stream = tokio::net::TcpStream::from_std(socket.into()).expect("tokio stream");
+    let mut channel = raw_session_over(stream).await;
+
+    let request = cyphr_client::transport::encode_request(&Request::get("/")).expect("request");
+    channel.send_message(&request).await.expect("ask");
+    tokio::time::sleep(std::time::Duration::from_secs(14)).await;
+    let late = channel
+        .recv_message(cyphr_client::transport::MAX_MESSAGE)
+        .await;
+    assert!(
+        late.is_err(),
+        "the server waited out a peer that never read"
+    );
+}

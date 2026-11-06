@@ -102,6 +102,9 @@ impl Drop for Slot {
     }
 }
 
+/// How long writing one response may take before the session is dropped.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Why the transport listener did not run.
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -285,9 +288,14 @@ async fn serve_requests(
             Ok(request) => dispatch(router, peer, request).await,
             Err(_) => (400, b"malformed request".to_vec()),
         };
-        channel
-            .send_message(&encode_response(status, &body))
-            .await?;
+        // A peer that stops reading must not hold the session, and the
+        // buffer behind this write, for the idle timeout or longer.
+        tokio::time::timeout(
+            WRITE_TIMEOUT,
+            channel.send_message(&encode_response(status, &body)),
+        )
+        .await
+        .map_err(|_| TransportError::Timeout)??;
     }
 }
 
