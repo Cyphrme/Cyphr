@@ -115,9 +115,7 @@ pub fn extract_genesis_from_commits(
     }
 
     if genesis_keys.is_empty() {
-        return Err(Error::Storage(
-            "cannot determine genesis keys from storage".into(),
-        ));
+        return Err(Error::MissingField("genesis key in the first commit"));
     }
 
     if genesis_keys.len() == 1 {
@@ -154,36 +152,42 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
 
 /// Parse the CLI options into a CliStorageEngine.
 pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
-    let store_uri = &cli.store;
+    let path = store_path(cli)?;
+    open_store(path, cli.total_check)
+}
 
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        let path = std::path::Path::new(path);
-        let db = fjall::Database::builder(path.join("blobs"))
-            .open()
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let blob_store = FjallBlobStore::from_database(db.clone())
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let indexer = FjallIndexer::open(&path.join("index"))
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let engine =
-            StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
-                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
-                    .map_err(|e| e.to_string())
-            });
+/// The directory a `file:<path>` store URI names.
+pub fn store_path(cli: &crate::Cli) -> crate::Result<&std::path::Path> {
+    cli.store
+        .strip_prefix("file:")
+        .map(std::path::Path::new)
+        .ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "unsupported store URI: {} (expected file:<path>)",
+                cli.store
+            ))
+        })
+}
 
-        // The engine heals manifest-backed gaps lazily on first use; only an
-        // explicit total check discards the index and rebuilds it.
-        if cli.total_check {
-            block_on(engine.rebuild_index_from_scratch())?
-                .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        }
+/// Open (creating if absent) the store rooted at `path`.
+///
+/// `total_check` discards the index and rebuilds it instead of healing
+/// manifest-backed gaps lazily on first use.
+pub fn open_store(path: &std::path::Path, total_check: bool) -> crate::Result<CliStorageEngine> {
+    let db = fjall::Database::builder(path.join("blobs")).open()?;
+    let blob_store = FjallBlobStore::from_database(db.clone())?;
+    let indexer = FjallIndexer::open(&path.join("index"))?;
+    let engine =
+        StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
+            cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
+                .map_err(|e| e.to_string())
+        });
 
-        Ok(engine)
-    } else {
-        Err(Error::InvalidArgument(format!(
-            "unsupported store URI: {store_uri} (expected file:<path>)"
-        )))
+    if total_check {
+        block_on(engine.rebuild_index_from_scratch())??;
     }
+
+    Ok(engine)
 }
 
 /// Get the principal ID string for a PrincipalGenesis
@@ -248,10 +252,7 @@ pub fn load_principal_from_engine(
     let principal_id = get_principal_id(&pg)?;
 
     block_on(async {
-        let tip = engine
-            .get_tip(&principal_id)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        let tip = engine.get_tip(&principal_id).await?;
 
         // `identity` matching a keystore thumbprint directly IS implicit
         // (single-key) genesis, independent of whether a tip has been
@@ -276,21 +277,12 @@ pub fn load_principal_from_engine(
                 .collect::<crate::Result<Vec<_>>>()?;
             cyphr_storage::Genesis::Explicit(keys)
         } else if tip.is_none() {
-            return Err(crate::Error::Storage(format!(
-                "identity {identity} has no stored commits and does not match any keystore key or \
-                 recorded genesis; cannot resolve genesis"
-            )));
+            return Err(crate::Error::UnresolvableGenesis(identity.to_owned()));
         } else {
-            engine
-                .resolve_genesis(&principal_id, &[])
-                .await
-                .map_err(|e| crate::Error::Storage(e.to_string()))?
+            engine.resolve_genesis(&principal_id, &[]).await?
         };
 
-        engine
-            .load_principal(&principal_id, genesis)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))
+        Ok(engine.load_principal(&principal_id, genesis).await?)
     })?
 }
 
@@ -348,15 +340,11 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
     block_on(async {
         let principal_id = get_principal_id_from_principal(principal, keystore)?;
 
-        let tip = engine
-            .get_tip(&principal_id)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        let tip = engine.get_tip(&principal_id).await?;
 
         let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
 
-        let commits = cyphr_storage::export_commits(principal)
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        let commits = cyphr_storage::export_commits(principal)?;
 
         for (i, commit) in commits.iter().enumerate().skip(stored_count) {
             let mut raw_blobs = Vec::new();
@@ -435,8 +423,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 
             engine
                 .submit_commit(&principal_id, Some(genesis), &raw_refs)
-                .await
-                .map_err(|e| crate::Error::Storage(e.to_string()))?;
+                .await?;
         }
 
         Ok(())
@@ -458,8 +445,7 @@ pub fn get_commits_from_engine(
         let chain = engine
             .indexer()
             .get_commit_chain(&principal_id, None, None)
-            .await
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+            .await?;
 
         let mut commit_entries = Vec::with_capacity(chain.len());
         for commit_ref in &chain {
@@ -470,12 +456,10 @@ pub fn get_commits_from_engine(
                 let data = engine
                     .blob_store()
                     .get(hash)
-                    .await
-                    .map_err(|e| crate::Error::Storage(e.to_string()))?
-                    .ok_or_else(|| crate::Error::Storage(format!("blob {hash} not found")))?;
+                    .await?
+                    .ok_or(crate::Error::MissingBlob(*hash))?;
 
-                let json_str = String::from_utf8(data)
-                    .map_err(|e| crate::Error::Storage(format!("blob is not UTF-8: {e}")))?;
+                let json_str = String::from_utf8(data)?;
                 let value: serde_json::Value =
                     serde_json::from_str(&json_str).map_err(crate::Error::Json)?;
 
@@ -502,6 +486,72 @@ pub fn get_commits_from_engine(
 
         Ok(commit_entries)
     })?
+}
+
+/// One stored commit as the exact wire blobs the store holds, so a peer
+/// receives the bytes the commit's digests were computed over.
+pub struct RawCommit {
+    /// The commit id (tagged digest).
+    pub commit_id: String,
+    /// The commit's coz blobs, in commit order.
+    pub blobs: Vec<Vec<u8>>,
+}
+
+/// A principal's stored history as raw wire blobs, oldest first. Empty when
+/// the store holds nothing for `principal_id`.
+pub async fn raw_chain(
+    engine: &CliStorageEngine,
+    principal_id: &str,
+) -> crate::Result<Vec<RawCommit>> {
+    use cyphr_storage::blob::BlobStore;
+    use cyphr_storage::index::Indexer;
+
+    let chain = engine
+        .indexer()
+        .get_commit_chain(principal_id, None, None)
+        .await?;
+    let mut out = Vec::with_capacity(chain.len());
+    for commit_ref in &chain {
+        let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
+        for hash in &commit_ref.blob_hashes {
+            blobs.push(
+                engine
+                    .blob_store()
+                    .get(hash)
+                    .await?
+                    .ok_or(crate::Error::MissingBlob(*hash))?,
+            );
+        }
+        out.push(RawCommit {
+            commit_id: commit_ref.commit_id.clone(),
+            blobs,
+        });
+    }
+    Ok(out)
+}
+
+/// The genesis a locally held keystore can state for `identity`, if any:
+/// the key itself (implicit) or the multi-key genesis recorded at `init`.
+/// `None` means the genesis must come from stored blobs or the peer's.
+pub fn local_genesis(
+    keystore: &JsonKeyStore,
+    identity: &str,
+    principal_id: &str,
+) -> crate::Result<Option<Genesis>> {
+    if keystore.get(identity).is_ok() {
+        return Ok(Some(Genesis::Implicit(load_key_from_keystore(
+            keystore, identity,
+        )?)));
+    }
+    keystore
+        .lookup_genesis(principal_id)
+        .map(|tmbs| {
+            tmbs.iter()
+                .map(|tmb| load_key_from_keystore(keystore, tmb))
+                .collect::<crate::Result<Vec<_>>>()
+                .map(Genesis::Explicit)
+        })
+        .transpose()
 }
 
 /// Parse a base64url principal genesis string into a PrincipalGenesis.

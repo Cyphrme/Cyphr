@@ -21,9 +21,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
-        return Err(Error::Storage(
-            "no commits found for identity (genesis-only state cannot be exported)".into(),
-        ));
+        return Err(Error::EmptyHistory(identity.to_owned()));
     }
 
     // Write commits to JSONL file
@@ -70,13 +68,15 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let commit: CommitEntry = serde_json::from_str(&line)
-            .map_err(|e| Error::Storage(format!("line {}: {}", line_num + 1, e)))?;
+        let commit = CommitEntry::from_json(&line).map_err(|source| Error::Bundle {
+            line: line_num + 1,
+            source,
+        })?;
         commits.push(commit);
     }
 
     if commits.is_empty() {
-        return Err(Error::Storage("no commits found in file".into()));
+        return Err(Error::EmptyBundle);
     }
 
     // Determine genesis from first commit
@@ -92,28 +92,21 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
                 cyphr::PrincipalGenesis::from_bytes(k.tmb().as_bytes().to_vec())?
             },
             Genesis::Explicit(_) => {
-                return Err(Error::Storage(
-                    "explicit genesis must establish a PG".into(),
-                ));
+                return Err(Error::ExplicitGenesisWithoutPg);
             },
         },
     };
 
     // Check if identity already exists in storage
     let pg_id = get_principal_id(&pg)?;
-    let tip = block_on(async { store.get_tip(&pg_id).await })?
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let tip = block_on(async { store.get_tip(&pg_id).await })??;
     if tip.is_some() {
         use base64ct::{Base64UrlUnpadded, Encoding};
         let pg_b64 = pg
             .as_multihash()
             .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
-        return Err(Error::Storage(format!(
-            "identity {} already exists in storage",
-            pg_b64
-        )));
+            .map(Base64UrlUnpadded::encode_string)?;
+        return Err(Error::AlreadyExists(pg_b64));
     }
 
     // Store commits
@@ -125,8 +118,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
             let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+                .map(Base64UrlUnpadded::encode_string)?;
             let result = serde_json::json!({
                 "identity": pg_b64,
                 "input": input.display().to_string(),
@@ -140,8 +132,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
             let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+                .map(Base64UrlUnpadded::encode_string)?;
             println!("Imported identity from {}", input.display());
             println!("  identity: {}", pg_b64);
             println!("  commits: {}", commits.len());

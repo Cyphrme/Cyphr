@@ -10,8 +10,10 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+pub mod choices;
 pub mod commands;
 pub mod keystore;
+pub mod net;
 
 /// CLI error type. Replaces `Box<dyn Error>` throughout the CLI crate.
 #[derive(Debug, thiserror::Error)]
@@ -48,9 +50,101 @@ pub enum Error {
     #[error("{0}")]
     Signing(String),
 
-    /// Storage layer error (file store operations).
-    #[error("{0}")]
-    Storage(String),
+    /// The blob store failed.
+    #[error("blob store: {0}")]
+    Blob(#[from] cyphr_storage::blob::BlobStoreError),
+
+    /// The index failed or refused the stored schema.
+    #[error("index: {0}")]
+    Index(#[from] cyphr_storage::index::IndexerError),
+
+    /// The storage engine refused or failed an operation.
+    #[error("storage engine: {0}")]
+    Engine(Box<cyphr_storage::engine::EngineError>),
+
+    /// The fjall database could not be opened.
+    #[error("database: {0}")]
+    Database(#[from] fjall::Error),
+
+    /// A bundle line could not be read.
+    #[error("bundle line {line}: {source}")]
+    Bundle {
+        /// 1-based line number in the bundle file.
+        line: usize,
+        /// Why the line was refused.
+        #[source]
+        source: cyphr_storage::BundleError,
+    },
+
+    /// A stored blob is not UTF-8.
+    #[error("stored blob is not UTF-8: {0}")]
+    BlobEncoding(#[from] std::string::FromUtf8Error),
+
+    /// The index names a blob the blob store does not hold.
+    #[error("blob {0} is indexed but missing from the blob store")]
+    MissingBlob(cyphr_storage::blob::Blake3Hash),
+
+    /// The identity has no commits to act on.
+    #[error("no commits found for identity {0} (a genesis-only state has none)")]
+    EmptyHistory(String),
+
+    /// An import file holds no commits.
+    #[error("no commits found in file")]
+    EmptyBundle,
+
+    /// Import refused to overwrite an identity the store already holds.
+    #[error("identity {0} already exists in storage")]
+    AlreadyExists(String),
+
+    /// The genesis of an identity cannot be determined from what is held.
+    #[error(
+        "cannot resolve genesis for identity {0}: no stored commits, keystore key or recorded \
+         genesis"
+    )]
+    UnresolvableGenesis(String),
+
+    /// An explicit genesis did not establish a Principal Genesis.
+    #[error("explicit genesis must establish a PG")]
+    ExplicitGenesisWithoutPg,
+
+    /// The Principal Genesis computed from history differs from the identity.
+    #[error("PG mismatch: computed {computed} != expected {expected}")]
+    PgMismatch {
+        /// Computed from replay.
+        computed: String,
+        /// Named by the caller.
+        expected: String,
+    },
+
+    /// The Principal Root computed from history differs from the stored one.
+    #[error("PR mismatch: computed {computed} != stored {stored}")]
+    PrMismatch {
+        /// Computed from replay.
+        computed: String,
+        /// Recorded in the last commit.
+        stored: String,
+    },
+
+    /// A peer exchange failed or was refused.
+    #[error(transparent)]
+    Peer(#[from] net::PeerError),
+
+    /// The choices file is unreadable or malformed.
+    #[error(transparent)]
+    Choices(Box<choices::ChoicesError>),
+
+    /// `verify` was given no peer to ask: neither a flag nor the choices file
+    /// names one.
+    #[error("verify needs at least one peer (--peer or `peers` in the choices file)")]
+    NoPeers,
+
+    /// Rebase cannot replay a local commit's transaction onto the peer's tip.
+    #[error("rebase cannot replay a `{0}` transaction")]
+    RebaseUnsupported(String),
+
+    /// Rebase found its scratch store directory already present.
+    #[error("rebase workspace {} already exists; remove it and retry", .0.display())]
+    RebaseWorkspace(PathBuf),
 
     /// Load error (importing/replaying commits).
     #[error("{0}")]
@@ -59,6 +153,47 @@ pub enum Error {
     /// Export error (serializing principal to commits).
     #[error("{0}")]
     Export(#[from] cyphr_storage::ExportError),
+}
+
+// Boxed variants stay out of `#[from]` so the common `Result` stays small.
+impl From<cyphr_storage::engine::EngineError> for Error {
+    fn from(e: cyphr_storage::engine::EngineError) -> Self {
+        Self::Engine(Box::new(e))
+    }
+}
+
+impl From<choices::ChoicesError> for Error {
+    fn from(e: choices::ChoicesError) -> Self {
+        Self::Choices(Box::new(e))
+    }
+}
+
+impl Error {
+    /// The refusal kind a machine reader switches on, named as the scenario
+    /// harness's `RefusalKind`s lowercased. Failures that are no refusal by a
+    /// peer or of an input (local I/O, keystore, engine faults) are `other`.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        use cyphr_storage::BundleError;
+        use cyphr_storage::index::IndexerError;
+        match self {
+            Self::Peer(e) => e.kind(),
+            Self::Choices(e) => e.kind(),
+            Self::Bundle {
+                source: BundleError::UnsupportedVersion { .. },
+                ..
+            }
+            | Self::Index(IndexerError::UnsupportedVersion { .. }) => "unknownversion",
+            Self::Bundle { .. }
+            | Self::Json(_)
+            | Self::Base64(_)
+            | Self::MissingField(_)
+            | Self::InvalidArgument(_)
+            | Self::Load(_)
+            | Self::EmptyBundle => "malformed",
+            _ => "other",
+        }
+    }
 }
 
 /// CLI result type alias.
@@ -157,6 +292,69 @@ pub enum Commands {
         /// Input file path
         #[arg(long)]
         input: PathBuf,
+    },
+
+    /// Send the commits a peer lacks; refuses a peer holding a newer tip
+    Push {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL (e.g., http://127.0.0.1:8080)
+        #[arg(long)]
+        peer: String,
+    },
+
+    /// Replay unpushed local commits onto a peer's tip
+    ///
+    /// The store keeps no commit once it is written, so the replay builds a
+    /// fresh store beside the old one and swaps them; the old store is kept
+    /// as `<store>.pre-rebase-<unix seconds>`.
+    Rebase {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL
+        #[arg(long)]
+        peer: String,
+    },
+
+    /// Pull and verify a peer's commits into the local store
+    Fetch {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL
+        #[arg(long)]
+        peer: String,
+    },
+
+    /// Report a principal's standing from the local view and its peers
+    ///
+    /// The answer states how old the view is and whether a peer reported a
+    /// newer tip; it never claims the view is current.
+    Verify {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL to ask (repeatable)
+        #[arg(long)]
+        peer: Vec<String>,
+
+        /// Trust anchor: a principal or commit root the history must contain
+        #[arg(long)]
+        anchor: Option<String>,
+
+        /// TOML file with `anchor`, `peers` and `freshness_secs`; flags win
+        #[arg(long)]
+        choices: Option<PathBuf>,
+
+        /// View age beyond which the answer reports the view as stale
+        #[arg(long)]
+        freshness_secs: Option<u64>,
     },
 }
 

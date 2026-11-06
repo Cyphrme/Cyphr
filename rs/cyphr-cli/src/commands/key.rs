@@ -3,8 +3,8 @@ use indexmap::IndexMap;
 use serde_json::Value;
 
 use super::common::{
-    current_timestamp, generate_key, load_key_from_keystore, load_principal_from_engine,
-    parse_store, save_principal_to_engine,
+    CliPrincipal, current_timestamp, generate_key, load_key_from_keystore,
+    load_principal_from_engine, parse_store, save_principal_to_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, KeyCommands, OutputFormat};
@@ -85,6 +85,85 @@ fn add(
         },
     };
 
+    apply_key_create(
+        &mut principal,
+        &keystore,
+        &new_key_tmb,
+        &new_key,
+        signer_tmb,
+        authority,
+    )?;
+
+    // Store updated state
+    save_principal_to_engine(&store, &keystore, &principal)?;
+
+    match cli.output {
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "identity": identity,
+                "added_key": new_key_tmb,
+                "signed_by": signer_tmb,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        },
+        OutputFormat::Table => {
+            println!("Added key to identity");
+            println!("  identity: {identity}");
+            println!("  key: {new_key_tmb}");
+            println!("  signed by: {signer_tmb}");
+        },
+    }
+
+    Ok(())
+}
+
+/// Revoke a key from an identity.
+fn revoke(
+    cli: &Cli,
+    identity: &str,
+    key_tmb: &str,
+    signer_tmb: &str,
+    authority: &str,
+) -> crate::Result<()> {
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let store = parse_store(cli)?;
+    let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
+
+    apply_key_revoke(&mut principal, &keystore, key_tmb, signer_tmb, authority)?;
+
+    // Store updated state
+    save_principal_to_engine(&store, &keystore, &principal)?;
+
+    match cli.output {
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "identity": identity,
+                "revoked_key": key_tmb,
+                "signed_by": signer_tmb,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        },
+        OutputFormat::Table => {
+            println!("Revoked key from identity");
+            println!("  identity: {identity}");
+            println!("  key: {key_tmb}");
+            println!("  signed by: {signer_tmb}");
+        },
+    }
+
+    Ok(())
+}
+
+/// Commit one `key/create` of `new_key` (thumbprint `new_key_tmb`), signed
+/// by `signer_tmb`, onto `principal`. Shared by `key add` and rebase replay.
+pub(crate) fn apply_key_create(
+    principal: &mut CliPrincipal,
+    keystore: &JsonKeyStore,
+    new_key_tmb: &str,
+    new_key: &cyphr::Key,
+    signer_tmb: &str,
+    authority: &str,
+) -> crate::Result<()> {
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 
@@ -93,7 +172,7 @@ fn add(
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
-    pay_map.insert("id".to_string(), Value::String(new_key_tmb.clone()));
+    pay_map.insert("id".to_string(), Value::String(new_key_tmb.to_string()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(
@@ -134,42 +213,18 @@ fn add(
         now,
         authority,
     )?;
-
-    // Store updated state
-    save_principal_to_engine(&store, &keystore, &principal)?;
-
-    match cli.output {
-        OutputFormat::Json => {
-            let output = serde_json::json!({
-                "identity": identity,
-                "added_key": new_key_tmb,
-                "signed_by": signer_tmb,
-            });
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        },
-        OutputFormat::Table => {
-            println!("Added key to identity");
-            println!("  identity: {identity}");
-            println!("  key: {new_key_tmb}");
-            println!("  signed by: {signer_tmb}");
-        },
-    }
-
     Ok(())
 }
 
-/// Revoke a key from an identity.
-fn revoke(
-    cli: &Cli,
-    identity: &str,
+/// Commit one self-`key/revoke` of `signer_tmb` onto `principal`. Shared by
+/// `key revoke` and rebase replay.
+pub(crate) fn apply_key_revoke(
+    principal: &mut CliPrincipal,
+    keystore: &JsonKeyStore,
     key_tmb: &str,
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(cli)?;
-    let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
-
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 
@@ -228,27 +283,6 @@ fn revoke(
         now,
         authority,
     )?;
-
-    // Store updated state
-    save_principal_to_engine(&store, &keystore, &principal)?;
-
-    match cli.output {
-        OutputFormat::Json => {
-            let output = serde_json::json!({
-                "identity": identity,
-                "revoked_key": key_tmb,
-                "signed_by": signer_tmb,
-            });
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        },
-        OutputFormat::Table => {
-            println!("Revoked key from identity");
-            println!("  identity: {identity}");
-            println!("  key: {key_tmb}");
-            println!("  signed by: {signer_tmb}");
-        },
-    }
-
     Ok(())
 }
 

@@ -244,7 +244,6 @@ fn accepted(r: &Ran, what: &str) {
 /// assertion (`push` accepted) fails at runtime; the stale/rebase assertions
 /// are reached once `push` exists.
 #[test]
-#[ignore = "RED(N16): cyphr push/rebase do not exist yet"]
 fn push_stale_is_refused_then_rebased_is_accepted() {
     let server = Server::start();
     let a = User::new();
@@ -294,7 +293,6 @@ fn push_stale_is_refused_then_rebased_is_accepted() {
 /// End-to-end: yes. Turns red on: a fetch that exits 0 without storing, or
 /// stores unverified/partial history (commit count differs from the peer's).
 #[test]
-#[ignore = "RED(N16): cyphr fetch does not exist yet"]
 fn push_fetch_pulls_peer_history() {
     let server = Server::start();
     let a = User::new();
@@ -364,7 +362,6 @@ fn assert_answer_shape(v: &Value) {
 /// Turns red on: a verify that prints "current"/"verified" with no age,
 /// anchor or provenance.
 #[test]
-#[ignore = "RED(N16): cyphr verify does not exist yet"]
 fn verify_answer_states_age_anchor_and_basis() {
     let server = Server::start();
     let a = User::new();
@@ -389,7 +386,6 @@ fn verify_answer_states_age_anchor_and_basis() {
 /// (two peers, one lagging). Turns red on: a verify that ignores peer tips
 /// (`newer_tip_reported` false) or that answers "current" from the local view.
 #[test]
-#[ignore = "RED(N16): cyphr verify does not exist yet"]
 fn verify_reports_newer_tip_from_a_peer() {
     let lagging = Server::start();
     let ahead = Server::start();
@@ -425,7 +421,6 @@ fn verify_reports_newer_tip_from_a_peer() {
 /// Turns red on: a choices file that is ignored (no peer queried, anchor not
 /// the configured one, freshness not echoed).
 #[test]
-#[ignore = "RED(N16): cyphr verify --choices does not exist yet"]
 fn verify_choices_file_sets_anchor_peers_freshness() {
     let server = Server::start();
     let a = User::new();
@@ -461,7 +456,6 @@ fn verify_choices_file_sets_anchor_peers_freshness() {
 /// Turns red on: a verify that vouches `Active` from whichever peer it
 /// reached first, or reports `Error` with no evidence.
 #[test]
-#[ignore = "RED(N16): cyphr verify does not exist yet"]
 fn verify_forked_principal_is_error_with_evidence() {
     let s1 = Server::start();
     let s2 = Server::start();
@@ -494,7 +488,6 @@ fn verify_forked_principal_is_error_with_evidence() {
 /// End-to-end: yes (CLI process). Turns red on: a parser that ignores
 /// unknown keys (here `peerz` would leave no peers, silently).
 #[test]
-#[ignore = "RED(N16): cyphr verify --choices does not exist yet"]
 fn verify_choices_unknown_key_is_refused() {
     let a = User::new();
     let id = a.new_identity();
@@ -538,7 +531,6 @@ fn lib_cli(user_dir: &Path, extra: &[&str]) -> Cli {
 /// Turns red on: `import` mapping a bundle refusal into `Error::Storage`,
 /// `Error::Json` or `Error::Io` text.
 #[test]
-#[ignore = "RED(N16): bundle version refusal is flattened to Error::Storage"]
 fn typed_error_import_unknown_bundle_version() {
     let a = User::new();
     let id = a.new_identity();
@@ -558,8 +550,14 @@ fn typed_error_import_unknown_bundle_version() {
     let cli = lib_cli(other.path(), &["import", "--input", "x"]);
     let err = commands::io::import(&cli, &bundle).expect_err("v=99 must be refused");
     assert!(
-        !matches!(err, Error::Storage(_) | Error::Json(_) | Error::Io(_)),
-        "unknown bundle version must be a typed variant, not flattened: {err:?}"
+        matches!(
+            err,
+            Error::Bundle {
+                source: cyphr_storage::BundleError::UnsupportedVersion { found: 99, .. },
+                ..
+            }
+        ),
+        "unknown bundle version must be Error::Bundle(UnsupportedVersion): {err:?}"
     );
 }
 
@@ -569,7 +567,6 @@ fn typed_error_import_unknown_bundle_version() {
 /// to the store. Turns red on: `parse_store` flattening the cause to
 /// `Error::Storage(String)`.
 #[test]
-#[ignore = "RED(N16): store version refusal is flattened to Error::Storage"]
 fn typed_error_store_unknown_index_version() {
     let dir = TempDir::new().unwrap();
     let index = dir.path().join("data").join("index");
@@ -589,8 +586,11 @@ fn typed_error_store_unknown_index_version() {
         .err()
         .expect("v=99 refused");
     assert!(
-        !matches!(err, Error::Storage(_) | Error::Json(_) | Error::Io(_)),
-        "unknown index version must be a typed variant, not flattened: {err:?}"
+        matches!(
+            err,
+            Error::Index(cyphr_storage::index::IndexerError::UnsupportedVersion { found: 99, .. })
+        ),
+        "unknown index version must be Error::Index(UnsupportedVersion): {err:?}"
     );
 }
 
