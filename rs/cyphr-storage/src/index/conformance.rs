@@ -702,10 +702,11 @@ pub async fn digest_holders_do_not_depend_on_arrival_order<I: Indexer + IndexerW
 
 /// Backs "an indexer's idempotency key is the commit's chain position"
 /// (`(principal_id, sequence)`, I2: one writer, one linear chain), for every
-/// backend. A second, different commit at an already-indexed position is a
-/// replay of that slot, never a second chain entry: the chain keeps the first
-/// commit and the tip does not move. Turns red on a backend that keys on
-/// commit id alone (it appends a second entry at the same sequence).
+/// backend. Replaying the SAME commit is a no-op; a DIFFERENT commit at an
+/// already-indexed position is fork evidence and is refused with
+/// [`IndexerError::Consistency`], leaving the chain and tip as they were.
+/// Turns red on a backend that keys on commit id alone (it appends a second
+/// entry at the same sequence) or one that silently ignores the rival.
 pub async fn index_commit_idempotency_is_keyed_by_chain_position<I: Indexer + IndexerWrite>(
     indexer: &I,
 ) {
@@ -714,15 +715,19 @@ pub async fn index_commit_idempotency_is_keyed_by_chain_position<I: Indexer + In
     let mut rival = make_commit("alice", 0, 2000);
     rival.commit_ids = vec!["SHA-256:commit-rival".to_string()];
     indexer.index_commit(&first, &token).await.unwrap();
-    indexer.index_commit(&rival, &token).await.unwrap();
-    indexer.index_commit(&first, &token).await.unwrap();
+    indexer.index_commit(&first, &token).await.expect("a replay is a no-op");
+    let refused = indexer.index_commit(&rival, &token).await;
+    assert!(
+        matches!(refused, Err(IndexerError::Consistency(_))),
+        "a rival commit at an indexed position is fork evidence: {refused:?}"
+    );
 
     let chain = indexer.get_commit_chain("alice", None, None).await.unwrap();
     assert_eq!(chain.len(), 1, "one chain position, one entry: {chain:?}");
     assert_eq!(chain[0].commit_id, "SHA-256:commit-alice-0");
     let tip = indexer.get_tip("alice").await.unwrap().unwrap();
     assert_eq!(tip.commit_count, 1);
-    assert_eq!(tip.last_updated, 1000, "a replayed position moved the tip");
+    assert_eq!(tip.last_updated, 1000, "a rival position moved the tip");
 }
 
 /// A commit of `id` at `seq` whose state root is the shared `sr`.

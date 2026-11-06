@@ -270,6 +270,7 @@ async fn digest_holders_do_not_depend_on_arrival_order() {
 }
 
 #[tokio::test]
+#[ignore = "RED(N13): FjallIndexer silently ignores a rival commit at an indexed position"]
 async fn index_commit_idempotency_is_keyed_by_chain_position() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     conformance::index_commit_idempotency_is_keyed_by_chain_position(&indexer).await;
@@ -325,58 +326,6 @@ async fn digest_holder_writes_do_not_grow_with_the_holder_count() {
     );
 }
 
-/// Claim: a digest record written before holders were keyed one per entry
-/// (a single `EntityRef`, or a list) still reads, and a new holder merges
-/// with it. Turns red if an old record is lost or unreadable.
-#[tokio::test]
-async fn legacy_digest_records_still_read_and_merge() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    let token = DeriveToken::for_conformance_tests();
-    let (czd_one, czd_list) = (
-        format!("SHA-256:{}", "B".repeat(42) + "A"),
-        format!("SHA-256:{}", "C".repeat(42) + "A"),
-    );
-    let old = |digest: &str, who: &str| cyphr_storage::index::EntityRef {
-        digest: digest.to_string(),
-        blob_hash: cyphr_storage::blob::Blake3Hash::from_bytes([9; 32]),
-        entity_type: cyphr_storage::index::EntityType::Transaction,
-        sequence: Some(0),
-        principal_id: Some(who.to_string()),
-        principal_root: false,
-    };
-    let ks = indexer.keyspaces();
-    ks.digests
-        .insert(
-            czd_one.as_bytes(),
-            serde_json::to_vec(&old(&czd_one, "SHA-256:old")).unwrap(),
-        )
-        .unwrap();
-    ks.digests
-        .insert(
-            czd_list.as_bytes(),
-            serde_json::to_vec(&vec![old(&czd_list, "SHA-256:old")]).unwrap(),
-        )
-        .unwrap();
-    for (i, czd) in [&czd_one, &czd_list].into_iter().enumerate() {
-        indexer
-            .index_commit(&commit_sharing(i + 1, czd), &token)
-            .await
-            .unwrap();
-        let digest: cyphr::state::TaggedDigest = czd.parse().unwrap();
-        let ids: Vec<_> = indexer
-            .resolve_digest_holders(&digest)
-            .await
-            .unwrap()
-            .into_iter()
-            .filter_map(|h| h.principal_id)
-            .collect();
-        assert_eq!(
-            ids,
-            vec!["SHA-256:old".to_string(), format!("SHA-256:p{:04}", i + 1)]
-        );
-    }
-}
-
 // ---------------------------------------------------------------------
 // N13: the index schema version is read and checked at open.
 // ---------------------------------------------------------------------
@@ -414,47 +363,28 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 
 fn open_error(dir: &std::path::Path) -> String {
     match FjallIndexer::open(dir) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("a store of the wrong schema version opened"),
+        Err(e) => format!("{e:?}"),
+        Ok(_) => panic!("a store of an unknown schema version opened"),
     }
 }
 
-/// Backs a-versions for the index: a store stamped with a schema version this
-/// build does not know is refused at open, naming the index and the version,
-/// never read as if it were current. Turns red on an `open` that ignores the
+/// Backs a-versions for the index: a store stamped with a FUTURE schema
+/// version (a downgrade) is refused at open as a typed `UnsupportedVersion`,
+/// never read as if it were current. Older or missing versions are not
+/// refused: the index is a cache and is rebuilt (see `legacy_store_*`). Turns red on an `open` that ignores the
 /// recorded version. A unit test: the stamp is reachable only here.
 #[test]
 #[ignore = "RED(N13): FjallIndexer::open never reads the schema version"]
 fn version_index_unknown_is_refused() {
-    for unknown in [0u64, 99] {
+    for unknown in [99u64] {
         let dir = tempfile::tempdir().expect("tempdir");
         store_stamped_with(dir.path(), unknown);
-        let msg = open_error(dir.path()).to_lowercase();
+        // Typed-variant pin without naming the type: `IndexerError` is
+        // expected to gain `UnsupportedVersion { found, .. }`.
+        let msg = open_error(dir.path());
         assert!(
-            msg.contains("version") && msg.contains("index") && msg.contains(&unknown.to_string()),
-            "v{unknown} refusal must name the format and the version: {msg}"
+            msg.contains("UnsupportedVersion") && msg.contains(&unknown.to_string()),
+            "v{unknown} must be refused as UnsupportedVersion: {msg}"
         );
-    }
-}
-
-/// Backs a-old-stores at the index: the schema this build replaced (version
-/// 1 before the alias table, 2 before holder-keyed digests) is refused with
-/// the remedy -- an offline re-ingest -- and a refused open leaves the store
-/// untouched, so a second open is refused the same way rather than finding it
-/// quietly rewritten. Turns red on a bump that is missing, or a refusal that
-/// re-indexes in place.
-#[test]
-#[ignore = "RED(N13): the pre-holder schema (version 2) is still accepted"]
-fn version_index_previous_schemas_are_refused_with_the_remedy() {
-    for old in [1u64, 2] {
-        let dir = tempfile::tempdir().expect("tempdir");
-        store_stamped_with(dir.path(), old);
-        for attempt in 1..=2 {
-            let msg = open_error(dir.path()).to_lowercase();
-            assert!(
-                msg.contains("re-ingest"),
-                "v{old} refusal (attempt {attempt}) must name the remedy: {msg}"
-            );
-        }
     }
 }
