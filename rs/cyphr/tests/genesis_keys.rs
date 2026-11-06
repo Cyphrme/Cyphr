@@ -5,8 +5,6 @@
 //!   implicit and explicit genesis both refuse a pre-revoked key with `KeyRevoked`, the refusal
 //!   `key/create` gives a revoked tmb (SPEC be0663f 7.7: every key, the first included, needs a
 //!   `key/create`; 6.4: a revoked key is never trusted again).
-//!
-
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::state::HashAlg;
