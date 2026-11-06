@@ -32,13 +32,13 @@ reproduced; a **watcher** cures a monotonicity failure by holding more than one 
 time. A participant trusted for nothing carries no kind — its claims are discharged by an
 evaluator instead.
 
-| participant              | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                                           | kind                                                                                                |
-| :----------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| **The person**           | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                                     | **attestor** at enrollment — see below                                                              |
-| **The relying party**    | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                                          | none — it is the party doing the trusting                                                           |
-| **The record authority** | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                                               | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
-| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](../../SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
-| **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                                             | **watcher**                                                                                         |
+| participant              | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | kind                                                                                                |
+| :----------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| **The person**           | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                                                                                                              | **attestor** at enrollment — see below                                                              |
+| **The relying party**    | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                                                                                                                   | none — it is the party doing the trusting                                                           |
+| **The record authority** | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
+| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
+| **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                                                                                                                      | **watcher**                                                                                         |
 
 Recovery agent and Recovery Authority: `SPEC.md` §14.2 names the external account that
 holds delegated recovery permissions a **Recovery Authority** (_"**External Recovery**
@@ -137,7 +137,7 @@ exchange and need no record.
 
 **It issues a session token bound to its kind.** On success the service signs a bearer
 token with its own key, stamped with a fixed `typ` so that no other message the service
-ever signs can be presented as a session (`token.rs:36`, `:87-115`). `SPEC.md` §17.4:
+ever signs can be presented as a session (`BEARER_TOKEN_TYP` and `verify_token`, `token.rs`). `SPEC.md` §17.4:
 
 > The service signs the token with its own key. The principal verifies the token came from
 > the expected service.
@@ -145,12 +145,12 @@ ever signs can be presented as a session (`token.rs:36`, `:87-115`). `SPEC.md` �
 A separated relying party **inherits** this, and the token's terms matter more there —
 see below.
 
-**The token's terms are the damage bound.** The default lifetime is fifteen minutes and
-there is no revocation list; a short expiry is the only invalidation mechanism
-(`token.rs:19-24`, `:9-13`). Co-located, that bounds a compromised session to fifteen
-minutes after the record changes. Separated, it is the _only_ bound that still functions,
-because the record change may never be observed at all. A separated relying party
-**breaks** the assumption this design rests on.
+**The token's terms are the damage bound.** The default lifetime is fifteen minutes
+(`DEFAULT_TTL_SECS`, `token.rs`) and there is no revocation list, but a session is also
+bound to the key that opened it: co-located, the server ends it as soon as that key leaves
+the chain (see "The exposure bound" under [the forcing case](#the-forcing-case)). Separated,
+the record change may never be observed at all, so only the expiry still functions as a
+bound. A separated relying party **breaks** the assumption this design rests on.
 
 **It declines honestly when it cannot do the job.** A server with no signing identity
 refuses both login and the challenge that precedes it, with the same error, rather than
@@ -371,7 +371,7 @@ than to rows 1 and 7.
 | 8   | This assertion was made _to me_              | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_mismatched_audience`, `rs/cyphr-server/tests/login.rs:636`                             | a login signed for one service is relayed to another           |
 | 9   | This assertion is _fresh_ — challenge        | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_replayed_challenge`, `rs/cyphr-server/tests/login.rs:578`                              | a captured login is replayed                                   |
 | 10  | This assertion is _fresh_ — timestamp window | yes | yes  | **no** | 2 / T3         | none — an accepted expiry, plus clock agreement                                                                         | a captured login is replayed inside the window                 |
-| 11  | This artifact _is a session token I issued_  | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `verify_rejects_valid_signature_with_wrong_typ`, `rs/cyphr-server/src/auth/token.rs:412`              | another message the service signed is presented as a session   |
+| 11  | This artifact _is a session token I issued_  | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `verify_rejects_valid_signature_with_wrong_typ`, `rs/cyphr-server/src/auth/token.rs`                  | another message the service signed is presented as a session   |
 | 12  | A challenge I issue can be redeemed          | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `keyless_login_and_challenge_share_the_same_rejection`, `rs/cyphr-server/tests/keyless_matrix.rs:431` | a person completes a challenge that can never become a session |
 
 **Rows 9 and 10 are one claim under two mechanisms, and the two do not land in the same
@@ -428,26 +428,36 @@ first, so the baseline is empirical rather than assumed; the revocation is accep
 key is then refused; and a sibling key of the same principal still signs in, so the
 refusal is scoped to the key and not the account.
 
-**The exposure bound is argued, not checked.** A session already issued survives at most one
-token lifetime past the revocation — fifteen minutes by default, expiry being the only
-invalidation (`token.rs:9-13`, `:19-24`). That is read from the code, not exercised:
-`verify_token` (`rs/cyphr-server/src/auth/token.rs:125-149`) checks the signature, `typ` and
-`exp` and nothing else, never reloading the principal or consulting the death-set, and no
-test issues a token and verifies it across a revocation. The security-relevant half of this
-paragraph is the un-evaluated half.
+**The exposure bound is checked, and it is tighter than a token lifetime.** A login
+token is signed with the thumbprint of the key that opened the session (the `ltmb`
+claim, `token.rs`), and route protection (`middleware.rs`, `check_session_key`) reloads
+the principal from the server's own storage on each request and refuses the session once
+that key is no longer active: `KeyNotActive` if it was deleted, `Revoked` if it was
+revoked on the chain or naked-revoked (the death-set login already consults;
+`token_key_naked_revoked_session_refused` covers it). A token without the claim is
+refused. So a session issued before a revocation
+survives only until the revocation reaches the server's view, not for fifteen minutes
+(`exp`, `token.rs`, remains a cap on top). `token_key_revoked_session_refused_at_push`
+(`rs/cyphr-server/tests/route_protection.rs`) logs in with two keys, revokes one through
+a real `key/revoke` commit, and asserts the revoked key's session is refused at `/push`
+while `token_key_survivor_session_outlives_sibling_revoke` asserts the sibling's session
+still works. What this establishes is relative to the server's current view of the
+principal; it says nothing about a revocation the server has not yet seen.
 
-Separated, there is no such bound. The stale view never expires on its own, the fifteen
-minutes restart on every fresh sign-in with the lost key, and the correct behaviour — the
-one this document requires — is to bound the age of the view explicitly, refuse to serve
-past that bound, and treat the refusal as an outage to be fixed rather than a security
-event that has been handled.
+Separated, session lifetime alone is no bound. The stale view never expires on its own,
+the fifteen minutes restart on every fresh sign-in with the lost key, and the correct
+behaviour — the one this document requires — is to bound the age of the view explicitly,
+refuse to serve past that bound, and treat the refusal as an outage to be fixed rather
+than a security event that has been handled. With a view-age bound _v_ and a session
+lifetime _s_, a repudiated key retains access for at most _v_ + _s_ after the
+repudiation; without _v_ there is no finite bound.
 
 ## Requirements
 
 Each is traceable to a row of [the claim table](#the-claim-table). Requirements in the
 first group are satisfied by the relying party in this repository. Each requirement
 carries a fenced `claim` block read by docket, this repository's documentation claim gate
-([`docs/AGENTS.md`](../AGENTS.md#docket--the-documentation-claim-gate)): `kind` is always
+([`docs/AGENTS.md`](../AGENTS.md), section "Docket — the documentation claim gate"): `kind` is always
 `requirement` here, `evaluator` is `test` when an automated test backs the requirement and
 `none` when nothing does, and `because` lists the requirement ids it depends on.
 
@@ -590,7 +600,9 @@ the age of its view explicitly and refuse to serve past that bound. Bounding the
 the view is the accepted-expiry remedy: it gives up an eternal certificate, so past the
 bound the view says nothing about the present and the party refuses. That converts a
 silent wrong answer into a refusal, which is an improvement. What it establishes is a
-bounded claim — the view is no older than the bound — and not that the view is current, so
+bounded claim — the view is no older than the bound, so a repudiation older than the
+bound plus one session lifetime cannot still be honored — and not that the view is
+current, so
 [currency-unmet](#currency-unmet) stays unmet. Traces to row 5.
 
 ```claim
@@ -601,11 +613,13 @@ because: [currency-unmet]
 
 ### [separated-session-window]
 
-A relying party MUST treat session lifetime as the only bound on how long a repudiated key
-retains access, and MUST set it against that exposure rather than against convenience. A
-system with no revocation list has no other mechanism, and under
-[currency-unmet](#currency-unmet) a separated party may never observe the repudiation at
-all. Traces to row 4.
+A relying party MUST treat session lifetime, together with the age bound on its view
+([separated-staleness-not-absence](#separated-staleness-not-absence)), as the only bounds
+on how long a repudiated key retains access, and MUST set the session lifetime against
+that exposure rather than against convenience. A system with no revocation list has no
+other mechanism, and under [currency-unmet](#currency-unmet) a separated party may never
+observe the repudiation at all, so the exposure is the view-age bound plus one session
+lifetime. Traces to row 4.
 
 ```claim
 kind: requirement

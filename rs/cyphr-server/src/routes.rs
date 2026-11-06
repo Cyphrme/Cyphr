@@ -491,9 +491,12 @@ pub async fn push(
     crate::auth::middleware::check_push_admission(
         &headers,
         state.identity.as_deref(),
+        &state.engine,
+        &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
-    )?;
+    )
+    .await?;
 
     // #168: an attestor server refuses to sign a post-commit receipt for a
     // non-canonical `principal_id` (`receipt::commit_receipt`'s own

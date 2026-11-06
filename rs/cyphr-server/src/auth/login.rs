@@ -35,11 +35,11 @@ use axum::Json;
 use axum::extract::State;
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_storage::engine::EngineError;
+use cyphr_storage::engine::{EngineError, bare_digest};
 use rand::RngCore;
 use serde::Serialize;
 
-use super::server_now;
+use super::{ServerIdentity, server_now};
 use crate::AppState;
 use crate::envelope::Envelope;
 use crate::error::AppError;
@@ -370,6 +370,34 @@ fn keyless_identity_rejection() -> AppError {
     )
 }
 
+/// The explicit refusal a server with a signing key but no configured
+/// audience gives: it cannot verify any login's audience binding, so no
+/// login can succeed. Same shape as [`keyless_identity_rejection`] -- a
+/// declared capability absence, not a fault.
+fn audienceless_rejection() -> AppError {
+    AppError::not_implemented(
+        "this server has no configured audience; login is not offered -- see GET /server for the \
+         declared capability tier",
+    )
+}
+
+/// What a server must hold before it can complete any login: a signing
+/// identity to issue the token and an audience to bind logins against.
+/// Both `challenge` and `login` gate on this one function, so the server
+/// never issues a nonce that a login cannot redeem.
+fn login_capability(state: &AppState) -> Result<(&ServerIdentity, &str), AppError> {
+    let identity = state
+        .identity
+        .as_deref()
+        .ok_or_else(keyless_identity_rejection)?;
+    let audience = state
+        .config
+        .audience
+        .as_deref()
+        .ok_or_else(audienceless_rejection)?;
+    Ok((identity, audience))
+}
+
 /// Map a principal-load failure: an unknown principal is an
 /// authentication failure (401, and indistinguishable from a
 /// wrong-audience or inactive rejection, so principal existence is not an
@@ -384,17 +412,15 @@ fn map_load_error(err: EngineError) -> AppError {
 /// `POST /auth/challenge` — issue a single-use challenge for the
 /// challenge-response flow (SPEC 17.2 Option A).
 ///
-/// A keyless server (no configured signing identity) never issues a
-/// challenge at all: a nonce that can never be redeemed by a login that
-/// can never succeed is a silent trap, not a service worth offering, so
-/// this fails the same honest way `login` does rather than succeeding
-/// here and only failing later.
+/// A server that cannot complete a login (no signing identity, or no
+/// audience) never issues a challenge at all: a nonce that can never be
+/// redeemed by a login that can never succeed is a silent trap, not a
+/// service worth offering, so this fails the same honest way `login`
+/// does rather than succeeding here and only failing later.
 pub async fn challenge(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Envelope<ChallengeResponse>>, AppError> {
-    if state.identity.is_none() {
-        return Err(keyless_identity_rejection());
-    }
+    login_capability(&state)?;
     let challenge = state.challenges.issue(server_now());
     Ok(Json(Envelope::unsigned(ChallengeResponse { challenge })))
 }
@@ -410,15 +436,7 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     body: String,
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
-    let identity = state
-        .identity
-        .as_ref()
-        .ok_or_else(keyless_identity_rejection)?;
-    let audience = state
-        .config
-        .audience
-        .as_deref()
-        .ok_or_else(|| AppError::internal("server is not configured to accept logins"))?;
+    let (identity, audience) = login_capability(&state)?;
 
     let coz_json: coz::CozJson = serde_json::from_str(&body)
         .map_err(|e| AppError::bad_request(format!("failed to parse login body as JSON: {e}")))?;
@@ -440,6 +458,11 @@ pub async fn login(
         .await
         .map_err(map_load_error)?;
     authorize_login(&parsed, &principal)?;
+    let canonical_id = state
+        .engine
+        .canonical_principal_id(&parsed.pr)
+        .await
+        .map_err(map_load_error)?;
 
     // Naked-revoke gate (SPEC §6.4): a key its own holder self-revoked out of
     // band is refused here even though `authorize_login` found it still active
@@ -465,9 +488,14 @@ pub async fn login(
         },
     }
 
+    // The subject is the principal's one canonical id, never the spelling
+    // the client typed: a relying party keys accounts on this, and two
+    // spellings of one identity must not yield two accounts.
+    let subject = bare_digest(&canonical_id).to_string();
     let token = identity
-        .issue_token(
-            parsed.pr.clone(),
+        .issue_login_token(
+            subject,
+            &parsed.tmb,
             default_login_perms(),
             now,
             super::token::DEFAULT_TTL_SECS,
