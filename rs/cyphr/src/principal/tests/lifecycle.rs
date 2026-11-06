@@ -231,6 +231,9 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
             | CozKind::SelfRevoke { .. }
             | CozKind::PrincipalCreate { .. } => Expect::Frozen,
             CozKind::FreezeCreate { .. } => Expect::AlreadyFrozen,
+            // CommitCreate stays exempt: it finalizes the very commit that
+            // carries freeze/create or freeze/delete, so denying it would
+            // make freezing and thawing impossible. It mutates nothing.
             CozKind::FreezeDelete { .. }
             | CozKind::PrincipalDelete { .. }
             | CozKind::CommitCreate { .. } => Expect::Accepted,

@@ -347,7 +347,10 @@ fn frozen_principal_rejects_data_actions_until_thawed() {
 
     let before = snapshot(&p);
     let r = record(&mut p, &a, T + 3);
-    assert!(r.is_err(), "a frozen principal recorded an action: {r:?}");
+    assert!(
+        matches!(r, Err(cyphr::error::Error::Frozen)),
+        "a frozen principal must refuse an action with Frozen: {r:?}"
+    );
     assert_eq!(before, snapshot(&p), "a refused action changed state");
 
     let thaw = sign(&a, lifecycle_pay(&a, &p, "freeze/delete", T + 4));
