@@ -773,7 +773,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<IngestResult, EngineError> {
         // The one exclusive claim (a PG alias) is checked before the first
         // durable write: a refused commit must leave no blob or manifest
-        // for a later rebuild to trip over.
+        // for a later rebuild to trip over. Two ingests for different
+        // principals contend for one alias without sharing a principal
+        // lock, so the check and the write it admits are held under a lock
+        // per alias (in sorted order, so contenders cannot deadlock).
+        let mut aliases: Vec<String> = commit
+            .pg
+            .iter()
+            .map(|pg| format!("pg-alias\0{pg}"))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        let alias_locks: Vec<_> = aliases.iter().map(|a| self.principal_lock(a)).collect();
+        let mut _alias_guards = Vec::with_capacity(alias_locks.len());
+        for lock in &alias_locks {
+            _alias_guards.push(lock.lock().await);
+        }
         self.indexer
             .check_commit(&commit, &DeriveToken::new())
             .await?;

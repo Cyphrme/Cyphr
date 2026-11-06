@@ -337,7 +337,6 @@ async fn stored_count(store: &MemoryBlobStore) -> usize {
 /// a fix may serialize inside `ingest_commit` or by keying the lock on the
 /// alias. Control: one ingest alone stores the same blob count.
 #[tokio::test]
-#[ignore = "RED(PGK): alias claim is checked outside the write critical section"]
 async fn alias_race_equal_pg_ingests_leave_one_winner_and_no_residue() {
     let control_blobs = MemoryBlobStore::new();
     let control = StorageEngine::new(
