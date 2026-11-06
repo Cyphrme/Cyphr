@@ -111,6 +111,11 @@ pub enum IndexerError {
     /// Internal consistency violation (e.g., duplicate commit ID).
     #[error("index consistency error: {0}")]
     Consistency(String),
+
+    /// A write would re-point an alias or digest that already names a
+    /// different principal or entity. Nothing was written.
+    #[error("index conflict: {0}")]
+    Conflict(String),
 }
 
 /// The index's read surface. Public and unrestricted — revoke.rs,
