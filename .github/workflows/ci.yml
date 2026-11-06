@@ -146,6 +146,23 @@ jobs:
           workspaces: rs
       - run: cargo check --all-features
 
+  # The core runs in the browser: it must keep building without ambient
+  # OS services (the verifier clock is injected, see Principal::set_clock).
+  rust-wasm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - run: cargo check --target wasm32-unknown-unknown -p cyphr --locked
+
   go-vuln:
     runs-on: ubuntu-latest
     defaults:

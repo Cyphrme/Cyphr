@@ -40,3 +40,8 @@ serde_json    = { workspace = true }
 storage-fjall = { workspace = true }
 tempfile      = "3"
 test-fixtures = { path = "../test-fixtures" }
+
+# getrandom 0.2 (via coz's RustCrypto stack) has no wasm32-unknown-unknown
+# backend unless "js" is enabled; the core must build for the browser.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

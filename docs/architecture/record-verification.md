@@ -211,10 +211,10 @@ with controls at `T` and 2^53 - 1. It asserts rejection, not the error type.
 This is narrower than a general "timestamp in range" rule. SPEC §4.1 states no
 range for the `now` of other cozies, and the code bounds only the revoke
 (`ParsedCoz::from_pay`). SPEC §15.9 gives a default tolerance of 360 seconds
-against witness time; the implementation leaves its future-dated check off by
-default (`max_clock_skew` is 0), and the test that would require it is ignored
-as `RED(SC1-F5)` in `spec_conformance.rs`. Not checked: `now` on any coz other
-than a self-revoke, and the future-dated check.
+against witness time; the implementation applies it by default
+(`max_clock_skew` is 360, and 0 means no tolerance, not "off"). Every coz and
+action `now` is also bounded to `1..2^53-1` and by the verifier clock, covered
+in `spec_conformance.rs` and `rs/cyphr-server/tests/now_range.rs`.
 
 #### [rv-timestamp-monotone]
 
@@ -655,9 +655,9 @@ does not name them yet.
 
 #### [rv-timestamp-future]
 
-When a maximum clock skew is configured, a coz whose `now` exceeds server time
-plus the skew is refused with `TimestampFuture`. The default skew is 0, which
-disables the check.
+A coz whose `now` exceeds verifier time plus the skew is refused with
+`TimestampFuture`. The default skew is 360 seconds (SPEC §15.9); setting it to
+0 removes the tolerance and does not disable the check.
 
 ```claim
 kind: requirement

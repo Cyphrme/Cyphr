@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::{Principal, current_time};
+use super::Principal;
 use crate::action::Action;
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
@@ -175,13 +175,7 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::TimestampPast);
         }
 
-        // Validate timestamp is not too far in the future (SPEC §14.1)
-        if self.max_clock_skew > 0 {
-            let server_time = current_time();
-            if cz.now > server_time + self.max_clock_skew {
-                return Err(Error::TimestampFuture);
-            }
-        }
+        self.check_now(cz.now)?;
 
         // Verify signer is an active key.
         // Exceptions:
