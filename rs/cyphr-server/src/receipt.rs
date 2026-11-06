@@ -20,7 +20,10 @@ use std::pin::Pin;
 use cyphr::HashAlg;
 use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
-use cyphr_client::{TipReport, VIEW_STATEMENT_TYP};
+use cyphr_client::VIEW_STATEMENT_TYP;
+// The canonical report parse lives in the client crate; `check_equivocation`
+// consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
+pub use cyphr_client::TipReport;
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -75,6 +78,26 @@ impl ReceiptSigner for ServerIdentity {
             // exact and spares a non-`Send` future crossing this boundary.
             software.sign_now(cad)
         })
+    }
+}
+
+/// A shared signer signs as the signer it shares, so state holding an
+/// `Arc<ServerIdentity>` or an injected `Arc<dyn ReceiptSigner>` passes it
+/// straight to the constructors.
+impl<T: ReceiptSigner + ?Sized> ReceiptSigner for std::sync::Arc<T> {
+    fn alg(&self) -> &str {
+        (**self).alg()
+    }
+
+    fn pub_key(&self) -> &[u8] {
+        (**self).pub_key()
+    }
+
+    fn sign<'a>(
+        &'a self,
+        cad: &'a coz::Cad,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SignerError>> + Send + 'a>> {
+        (**self).sign(cad)
     }
 }
 

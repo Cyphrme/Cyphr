@@ -410,7 +410,6 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
 
 #[cfg(test)]
 mod tests {
-    use coz::base64ct::Encoding as _;
     use cyphr::HashAlg;
     use cyphr::state::TaggedDigest;
     use cyphr_client::TipReportRoots;
