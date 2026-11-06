@@ -647,6 +647,14 @@ impl Indexer for TipFailsAfterStore {
 }
 
 impl IndexerWrite for TipFailsAfterStore {
+    fn check_commit(
+        &self,
+        commit: &IndexableCommit,
+        token: &DeriveToken,
+    ) -> impl Future<Output = Result<(), IndexerError>> + Send {
+        self.inner.check_commit(commit, token)
+    }
+
     fn index_commit(
         &self,
         commit: &IndexableCommit,

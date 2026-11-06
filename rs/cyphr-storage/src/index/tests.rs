@@ -99,13 +99,11 @@ async fn digest_conflict_same_principal_repeat_is_allowed_memory() {
 }
 
 #[tokio::test]
-#[ignore = "RED(H1F): a shared digest keeps one holder"]
 async fn digest_holders_shared_digest_names_every_holder_memory() {
     conformance::digest_holders_shared_digest_names_every_holder(&MemoryIndexer::new()).await;
 }
 
 #[tokio::test]
-#[ignore = "RED(H1F): a shared digest keeps one holder"]
 async fn digest_holders_do_not_depend_on_arrival_order_memory() {
     conformance::digest_holders_do_not_depend_on_arrival_order(
         &MemoryIndexer::new(),

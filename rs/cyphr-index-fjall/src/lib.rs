@@ -44,9 +44,8 @@ use std::collections::BTreeSet;
 use cyphr::state::TaggedDigest;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{
-    CommitRef, DeriveToken, EntityRef, EntityType, IndexableCommit, Indexer, IndexerError,
-    IndexerWrite, PrincipalSummary, PublicKeyInfo, TipState, check_digest_claim, coz_entity_type,
-    digest_claims,
+    CommitRef, DeriveToken, EntityRef, IndexableCommit, Indexer, IndexerError, IndexerWrite,
+    PrincipalSummary, PublicKeyInfo, TipState, digest_entries, merge_holder,
 };
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
@@ -161,6 +160,15 @@ fn join_err(e: tokio::task::JoinError) -> IndexerError {
 
 fn ser<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IndexerError> {
     serde_json::to_vec(value).map_err(|e| IndexerError::Backend(format!("serialize: {e}")))
+}
+
+/// A digest's stored holders. A record written when a digest named one
+/// entity holds a single `EntityRef`, which reads as a one-element set.
+fn read_holders(stored: Option<fjall::UserValue>) -> Result<Vec<EntityRef>, IndexerError> {
+    let Some(bytes) = stored else {
+        return Ok(Vec::new());
+    };
+    de::<Vec<EntityRef>>(&bytes).or_else(|_| de::<EntityRef>(&bytes).map(|one| vec![one]))
 }
 
 fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, IndexerError> {
@@ -341,14 +349,19 @@ impl Indexer for FjallIndexer {
         &self,
         digest: &TaggedDigest,
     ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send {
+        let holders = self.resolve_digest_holders(digest);
+        async move { Ok(holders.await?.into_iter().next()) }
+    }
+
+    fn resolve_digest_holders(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Vec<EntityRef>, IndexerError>> + Send {
         let key = digest.to_string();
         let digests = self.digests.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                match digests.get(key.as_bytes()).map_err(to_backend_err)? {
-                    Some(bytes) => Ok(Some(de(&bytes)?)),
-                    None => Ok(None),
-                }
+                read_holders(digests.get(key.as_bytes()).map_err(to_backend_err)?)
             })
             .await
             .map_err(join_err)?
@@ -436,6 +449,20 @@ impl FjallIndexer {
 }
 
 impl IndexerWrite for FjallIndexer {
+    fn check_commit(
+        &self,
+        commit: &IndexableCommit,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let commit = commit.clone();
+        let ks = self.keyspaces();
+        async move {
+            tokio::task::spawn_blocking(move || db_check_commit(&ks, &commit))
+                .await
+                .map_err(join_err)?
+        }
+    }
+
     fn index_commit(
         &self,
         commit: &IndexableCommit,
@@ -478,6 +505,37 @@ impl IndexerWrite for FjallIndexer {
             .map_err(join_err)?
         }
     }
+}
+
+/// Refuse a commit whose PG alias claim would re-point an existing alias:
+/// such a write names no new truth, it rewrites an old one. The only
+/// exclusive claim; digests name sets of holders.
+fn claims_conflict(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
+    let pid_key = commit.principal_id.as_bytes();
+    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+        let alias_owner = ks.aliases.get(pr).map_err(to_backend_err)?;
+        let names_principal = ks.principals.contains_key(pr).map_err(to_backend_err)?;
+        let other = match alias_owner {
+            Some(owner) => owner.as_ref() != pid_key,
+            None => names_principal,
+        };
+        if other {
+            return Err(IndexerError::Conflict(format!(
+                "PG alias {pr} already names another principal; refusing to re-point it to {}",
+                commit.principal_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Dry run of [`db_index_commit`]'s refusal; writes nothing.
+fn db_check_commit(ks: &Keyspaces, commit: &IndexableCommit) -> Result<(), IndexerError> {
+    let key = commit_key(&commit.principal_id, commit.sequence);
+    if ks.commits.contains_key(&key).map_err(to_backend_err)? {
+        return Ok(());
+    }
+    claims_conflict(ks, commit)
 }
 
 /// Synchronous body of `index_commit`, run inside `spawn_blocking`.
@@ -532,27 +590,7 @@ fn db_index_commit(
 
     let pid_key = commit.principal_id.as_bytes();
 
-    // Refuse before any write: a write that would re-point an alias or a
-    // digest names no new truth, it rewrites an old one.
-    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
-        let alias_owner = ks.aliases.get(pr).map_err(to_backend_err)?;
-        let names_principal = ks.principals.contains_key(pr).map_err(to_backend_err)?;
-        let other = match alias_owner {
-            Some(owner) => owner.as_ref() != pid_key,
-            None => names_principal,
-        };
-        if other {
-            return Err(IndexerError::Conflict(format!(
-                "PG alias {pr} already names another principal; refusing to re-point it to {}",
-                commit.principal_id
-            )));
-        }
-    }
-    for (digest, entity_type) in digest_claims(commit) {
-        if let Some(held) = ks.digests.get(digest.as_bytes()).map_err(to_backend_err)? {
-            check_digest_claim(&digest, &de(&held)?, entity_type, &commit.principal_id)?;
-        }
-    }
+    claims_conflict(ks, commit)?;
 
     let existing_summary: Option<PrincipalSummary> = ks
         .principals
@@ -565,12 +603,6 @@ fn db_index_commit(
     let created = existing_summary
         .as_ref()
         .map_or(commit.timestamp, |p| p.created);
-
-    let first_blob_hash = commit
-        .blob_hashes
-        .first()
-        .cloned()
-        .ok_or_else(|| IndexerError::Consistency("commit has no blob hashes".into()))?;
 
     // All writes below land in one atomic batch: a crash mid-`index_commit`
     // must never leave `commits` updated without `tips`/`principals`
@@ -634,45 +666,24 @@ fn db_index_commit(
         })?,
     );
 
-    for coz in &commit.cozies {
-        let entity_type = coz_entity_type(&coz.typ);
-
-        for digest_key in [coz.blob_hash.to_string(), coz.czd.clone()] {
-            batch.insert(
-                &ks.digests,
-                digest_key.as_bytes(),
-                ser(&EntityRef {
-                    digest: digest_key.clone(),
-                    blob_hash: coz.blob_hash,
-                    entity_type,
-                    sequence: Some(commit.sequence),
-                    principal_id: Some(commit.principal_id.clone()),
-                    principal_root: false,
-                })?,
-            );
-        }
+    // Each digest names its set of holders: read what is stored, merge this
+    // commit's holders in (order-independently, see `merge_holder`), and
+    // write each touched digest once.
+    let mut touched: std::collections::BTreeMap<String, Vec<EntityRef>> =
+        std::collections::BTreeMap::new();
+    for (digest, holder) in digest_entries(commit)? {
+        let holders = match touched.entry(digest) {
+            std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::btree_map::Entry::Vacant(v) => {
+                let stored =
+                    read_holders(ks.digests.get(v.key().as_bytes()).map_err(to_backend_err)?)?;
+                v.insert(stored)
+            },
+        };
+        merge_holder(holders, holder);
     }
-
-    for variant in commit
-        .commit_ids
-        .iter()
-        .chain(commit.prs.iter())
-        .chain(commit.srs.iter())
-        .chain(commit.ars.iter())
-        .chain(commit.crs.iter())
-    {
-        batch.insert(
-            &ks.digests,
-            variant.as_bytes(),
-            ser(&EntityRef {
-                digest: variant.clone(),
-                blob_hash: first_blob_hash,
-                entity_type: EntityType::Commit,
-                sequence: Some(commit.sequence),
-                principal_id: Some(commit.principal_id.clone()),
-                principal_root: commit.prs.contains(variant),
-            })?,
-        );
+    for (digest, holders) in &touched {
+        batch.insert(&ks.digests, digest.as_bytes(), ser(holders)?);
     }
 
     for key_info in &commit.keys {
