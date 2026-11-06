@@ -11,9 +11,13 @@
 //! - `cyphr fetch --identity <pr> --peer <url>`: pulls and verifies the peer's commits into the
 //!   local store.
 //! - `cyphr verify --identity <pr> [--peer <url>]... [--anchor <pr>] [--choices <file>]`: prints
-//!   (JSON) `tip`, `view_age_secs`, `newer_tip_reported`, `peers_queried`, `freshness_secs`,
-//!   `anchor.{value,source}`, and a `verdict` that is never the bare string `current`.
-//! - A choices file is TOML: `anchor = "<pr>"`, `peers = ["<url>", ...]`, `freshness_secs = <n>`.
+//!   (JSON) `tip`, `view_age_secs`, `newer_tip_reported`, `peers_queried` (never 0),
+//!   `freshness_secs`, `anchor.{value,source}` with source one of `pinned`, `trusted-genesis`,
+//!   `hint`, and a `verdict` that is a standing: `"Active"`, or `"Error"` with a non-empty
+//!   top-level `evidence` for an unresolved fork. Never `current`, `verified`, `ok` or `valid`.
+//! - A choices file is TOML: `anchor = "<pr>"`, `peers = ["<url>", ...]`, `freshness_secs = <n>`;
+//!   an unknown key is refused with error kind `malformed`.
+//! - Error kinds are the scenario harness's `RefusalKind` names, lowercased.
 //!
 //! Server-based tests need the `cyphr-server` binary: `CYPHR_SERVER_BIN`, else
 //! one `cargo build -p cyphr-server` (as the scenario harness does).
@@ -182,17 +186,16 @@ impl User {
         self.setup(&["key", "add", &id, &signer]);
     }
 
-    /// Clone this user's identity into a fresh user (same keystore, imported
-    /// commits), as a second device would hold it.
-    fn clone_identity(&self, identity: &str) -> Self {
+    /// Seed a second device directly: copy this user's keystore and store
+    /// directory (all its processes have exited, so the files are quiescent).
+    /// Deliberately not export/import, whose roundtrip is quarantined (#111).
+    fn clone_identity(&self, _identity: &str) -> Self {
         let other = Self::new();
         std::fs::copy(self.keystore(), other.keystore()).expect("copy keystore");
-        let bundle = self.dir.path().join("bundle.jsonl");
-        let out = format!("--output={}", bundle.display());
-        self.setup(&["export", &format!("--identity={identity}"), &out]);
-        // Import goes through the plain `--output` flag of `import`'s parent.
-        let r = other.run(&["import", "--input", bundle.to_str().expect("utf8")]);
-        assert!(r.ok, "setup import failed: {}", r.stderr);
+        copy_dir(
+            &self.dir.path().join("data"),
+            &other.dir.path().join("data"),
+        );
         other
     }
 
@@ -208,6 +211,19 @@ impl User {
         self.setup(&["inspect", &format!("--identity={id}")])["commit_count"]
             .as_u64()
             .expect("commit_count")
+    }
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create dir");
+    for entry in std::fs::read_dir(from).expect("read dir") {
+        let entry = entry.expect("dir entry");
+        let dest = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).expect("copy file");
+        }
     }
 }
 
@@ -325,10 +341,20 @@ fn assert_answer_shape(v: &Value) {
                 .is_some_and(|s| !s.is_empty()),
         "answer must state the anchor and how it was obtained: {v}"
     );
-    let verdict = v["verdict"].as_str().unwrap_or("").to_lowercase();
     assert!(
-        !matches!(verdict.as_str(), "current" | "verified" | "ok" | "valid"),
-        "a bare current/verified verdict hides the view's age and basis: {v}"
+        v["peers_queried"].as_u64().is_some_and(|n| n > 0),
+        "peers_queried must be present and never 0: {v}"
+    );
+    assert!(
+        matches!(
+            v["anchor"]["source"].as_str(),
+            Some("pinned" | "trusted-genesis" | "hint")
+        ),
+        "anchor source must be pinned, trusted-genesis or hint: {v}"
+    );
+    assert!(
+        matches!(v["verdict"].as_str(), Some("Active" | "Error")),
+        "verdict must be a standing (Active or Error), never current/verified: {v}"
     );
 }
 
@@ -354,6 +380,7 @@ fn verify_answer_states_age_anchor_and_basis() {
     );
     let v = r.json();
     assert_answer_shape(&v);
+    assert_eq!(v["verdict"], "Active", "honest principal is Active: {v}");
     assert_eq!(v["newer_tip_reported"], false, "peer is at our tip: {v}");
 }
 
@@ -394,10 +421,9 @@ fn verify_reports_newer_tip_from_a_peer() {
 }
 
 /// Claim: a choices file sets the anchor, the peers and the freshness
-/// window; with no flags the verdict reflects exactly those, and names the
-/// choices file as the anchor's source. End-to-end: yes.
+/// window; with no flags the verdict reflects exactly those. End-to-end: yes.
 /// Turns red on: a choices file that is ignored (no peer queried, anchor not
-/// the configured one, freshness not echoed, source not the file).
+/// the configured one, freshness not echoed).
 #[test]
 #[ignore = "RED(N16): cyphr verify --choices does not exist yet"]
 fn verify_choices_file_sets_anchor_peers_freshness() {
@@ -425,14 +451,65 @@ fn verify_choices_file_sets_anchor_peers_freshness() {
     let v = r.json();
     assert_answer_shape(&v);
     assert_eq!(v["anchor"]["value"], id.as_str(), "anchor from file: {v}");
-    assert!(
-        v["anchor"]["source"]
-            .as_str()
-            .is_some_and(|s| s.contains("choices")),
-        "anchor source must name the choices file: {v}"
-    );
     assert_eq!(v["peers_queried"], 1, "peer from file was queried: {v}");
     assert_eq!(v["freshness_secs"], 7, "freshness from file: {v}");
+}
+
+/// Claim: a principal with an unresolved fork (two devices advanced the same
+/// tip, each pushed to a different peer) gets standing `Error` with evidence,
+/// not `Active` (SPEC section 15, zami branch). End-to-end: yes.
+/// Turns red on: a verify that vouches `Active` from whichever peer it
+/// reached first, or reports `Error` with no evidence.
+#[test]
+#[ignore = "RED(N16): cyphr verify does not exist yet"]
+fn verify_forked_principal_is_error_with_evidence() {
+    let s1 = Server::start();
+    let s2 = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    let b = a.clone_identity(&id);
+    a.add_key(&id);
+    b.add_key(&id);
+    accepted(&a.push(&id, &s1.url), "A's branch to peer 1");
+    accepted(&b.push(&id, &s2.url), "B's competing branch to peer 2");
+
+    let p1 = format!("--peer={}", s1.url);
+    let p2 = format!("--peer={}", s2.url);
+    let r = a.run(&verify_args(&format!("--identity={id}"), &[&p1, &p2]));
+    assert!(
+        r.ok,
+        "a fork is an answer (standing Error), not a failure: {}",
+        r.stderr
+    );
+    let v = r.json();
+    assert_eq!(v["verdict"], "Error", "an unresolved fork is Error: {v}");
+    assert!(
+        !v["evidence"].is_null() && v["evidence"] != "" && v["evidence"] != serde_json::json!([]),
+        "Error must carry evidence: {v}"
+    );
+}
+
+/// Claim: a choices file with an unknown (misspelled) key is refused with a
+/// typed `malformed` error and never silently falls back to defaults.
+/// End-to-end: yes (CLI process). Turns red on: a parser that ignores
+/// unknown keys (here `peerz` would leave no peers, silently).
+#[test]
+#[ignore = "RED(N16): cyphr verify --choices does not exist yet"]
+fn verify_choices_unknown_key_is_refused() {
+    let a = User::new();
+    let id = a.new_identity();
+    let choices = a.dir.path().join("choices.toml");
+    std::fs::write(
+        &choices,
+        format!("anchor = \"{id}\"\npeerz = [\"http://127.0.0.1:1\"]\nfreshness_secs = 7\n"),
+    )
+    .expect("write choices");
+    let c = format!("--choices={}", choices.display());
+    let r = a.run(&verify_args(&format!("--identity={id}"), &[&c]));
+    assert!(!r.ok, "an unknown choices key must be refused");
+    let err: Value = serde_json::from_str(r.stderr.lines().last().unwrap_or(""))
+        .unwrap_or_else(|e| panic!("refusal must be a JSON error ({e}): {}", r.stderr));
+    assert_eq!(err["error"]["kind"], "malformed", "typed refusal: {err}");
 }
 
 // ----------------------------------------------------------- typed errors
