@@ -721,7 +721,11 @@ mod tests {
             KeyTree::build(&rev, &a).unwrap().0.get(a[0]),
             "root depends on input order"
         );
-        assert_eq!(kt_root(256, 0, &a), base, "removal did not restore the root");
+        assert_eq!(
+            kt_root(256, 0, &a),
+            base,
+            "removal did not restore the root"
+        );
     }
 
     /// Backs the same n-arity claim at AT, where KR takes one slot and the

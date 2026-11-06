@@ -350,7 +350,8 @@ mod tests {
     }
 
     const PIN_PR_254: &str = "6a7e81d8836f5667f1a33fcdec4f8c484666510748746aa43794a00f83347b96";
-    const PIN_PR_NO_CR_254: &str = "afc251fd7384169223e1a3a6e0efc4c434f36a31f20abd765afcaec10f8f2681";
+    const PIN_PR_NO_CR_254: &str =
+        "afc251fd7384169223e1a3a6e0efc4c434f36a31f20abd765afcaec10f8f2681";
     const PIN_FP_PR: u64 = 11_276_060_262_666_140_975;
     const PIN_FP_PR_NO_CR: u64 = 17_233_225_874_401_855_600;
 
