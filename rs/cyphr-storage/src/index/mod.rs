@@ -227,6 +227,22 @@ pub trait Indexer: Send + Sync {
         digest: &TaggedDigest,
     ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send;
 
+    /// Every holder of a digest, in a canonical order (principal id, then
+    /// entity type, then sequence). One signed coz may live in several
+    /// principals (SPEC 7.6 lets principals that share keys reuse a coz),
+    /// and two principals can honestly share a state or auth root, so a
+    /// digest names a set, not a single entity. Empty when unknown.
+    ///
+    /// The default is the single-holder answer of [`Self::resolve_digest`];
+    /// a backend that stores several holders overrides it.
+    fn resolve_digest_holders(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Vec<EntityRef>, IndexerError>> + Send {
+        let single = self.resolve_digest(digest);
+        async move { Ok(single.await?.into_iter().collect()) }
+    }
+
     /// List all known principals with summary metadata.
     fn list_principals(
         &self,
