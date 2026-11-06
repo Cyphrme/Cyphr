@@ -31,6 +31,8 @@ pub mod inclusion;
 pub mod key;
 /// Principal lifecycle state derivation (SPEC.md §11).
 pub mod lifecycle;
+/// Explicit merge (SPEC 11.5.1).
+pub mod merge;
 pub mod multihash;
 /// Nonces (SPEC §10.1, §10.2).
 pub mod nonce;
@@ -70,6 +72,7 @@ pub use inclusion::{
     TransactionHop1, TransactionHop2, verify_key_inclusion, verify_transaction_inclusion,
 };
 pub use key::Key;
+pub use merge::{MergeClaim, MergeStatus, merge_status};
 pub use multihash::MultihashDigest;
 pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, compute_czd, verify_coz};
 pub use principal::Principal;

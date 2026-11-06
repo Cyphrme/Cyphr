@@ -5,13 +5,10 @@
 //! stays active. The ack exists to stop a "merge attack": an outsider
 //! merging themselves into someone else's account.
 //!
-//! No merge kind exists in `rs/cyphr` yet, so every RED test authors its
-//! cozies as raw signed pays through the ordinary commit path and fails on
-//! the first assertion, where `verify_and_apply` refuses the unknown
-//! `typ`. Each rejection test opens with a valid-merge prelude (the
-//! positive control, `a_merge_and_its_matching_ack_are_accepted`'s shape):
-//! with merge unimplemented every "is rejected" check passes by
-//! construction, so only the prelude makes it red.
+//! Every test authors its cozies as raw signed pays through the ordinary
+//! commit path. Each rejection test opens with a valid-merge prelude (the
+//! positive control, `a_merge_and_its_matching_ack_are_accepted`'s shape),
+//! so a rejection cannot pass because the kind is simply unrecognised.
 //!
 //! Readings fixed here (the SPEC does not settle them; question for the
 //! spec author, "Xammy"):
@@ -23,18 +20,15 @@
 //!   unmoved; what happens when the target advances between merge and ack, and which PR in the
 //!   target's history an ack may name, is left open for the spec author. The narrowest reading
 //!   asserted: an ack's `merge_to_pr` must be a PR the acking principal actually had.
-//! - A merge is accepted into its signer's own chain on its own; it takes effect on the target only
-//!   through the target's ack. Matching the ack against the source's merge needs both chains, so it
-//!   is asserted at the server (`rs/cyphr-server/tests/merge.rs`), not here.
-//!
-//! Run: `cd rs && cargo test -p cyphr --test merge -- --ignored`.
+//! - A merge is accepted into its signer's own chain on its own; it takes effect only for a
+//!   verifier holding both chains, through `merge_status`.
 
 use std::collections::BTreeSet;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::lifecycle::LifecycleState;
 use cyphr::state::HashAlg;
-use cyphr::{Error, Key, ParsedCoz, Principal};
+use cyphr::{Error, Key, MergeStatus, ParsedCoz, Principal, merge_status};
 use serde_json::{Value, json};
 use test_fixtures::Pool;
 
@@ -173,9 +167,9 @@ impl Peer {
     }
 }
 
-/// Green characterization: the raw-pay authoring path used by every RED
-/// test below works for a kind that exists today (`key/create`), so a RED
-/// failure is the merge kind's absence, not a broken helper. Also pins
+/// Green characterization: the raw-pay authoring path used by every merge
+/// test below works for a kind that exists today (`key/create`), so a merge
+/// failure is the merge kind's behaviour, not a broken helper. Also pins
 /// the premise the merge tests depend on: SPEC 3.7.1's PR is the CURRENT
 /// root and moves with every commit (only PG is permanent), so
 /// `merge_to_pr` names a point-in-time snapshot. Not an end-to-end
@@ -215,12 +209,11 @@ fn harness_authors_a_commit_from_raw_pays() {
 /// chains; afterwards the source is still active and the target holds
 /// exactly the keys it held before (no implicit key or AT import).
 ///
-/// Turns red if: the kind is unrecognised (today: first assertion); the
+/// Turns red if: the kind is unrecognised; the
 /// merge deactivates or deletes the source; the merge or ack copies the
 /// source's keys or actions into the target.
 /// End-to-end scenario: yes (two principals, two commits).
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn a_merge_and_its_matching_ack_are_accepted() {
     let mut source = Peer::new("alice");
     let mut target = Peer::new("bob");
@@ -254,6 +247,17 @@ fn a_merge_and_its_matching_ack_are_accepted() {
         Some(ACK_TYP)
     );
 
+    assert_eq!(
+        merge_status(&source.principal, &target.principal),
+        MergeStatus::Merged,
+        "SPEC 11.5.1: a merge and its equal ack, held together, are a merge"
+    );
+    assert_eq!(
+        merge_status(&target.principal, &source.principal),
+        MergeStatus::None,
+        "the merge is directed: the target did not merge into the source"
+    );
+
     // Source stays active unless explicitly deleted.
     assert_eq!(source.principal.lifecycle_state(), LifecycleState::Active);
     assert!(!source.principal.is_deleted());
@@ -283,15 +287,14 @@ fn a_merge_and_its_matching_ack_are_accepted() {
 ///
 /// Positive control: the prelude below is the matching ack of
 /// `a_merge_and_its_matching_ack_are_accepted` and must be accepted first,
-/// which is what makes this red today (a never-accepting stub would pass
-/// the rejection alone).
+/// which is what keeps a never-accepting stub from passing the rejection
+/// alone.
 /// Turns red if: the ack kind is unrecognised (prelude fails); ack
 /// verification ignores `merge_to_pr` (accept-everything mutant fails the
 /// second assertion).
 /// End-to-end scenario: yes (the ack is judged against the principal it
 /// is committed to).
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn an_ack_naming_another_target_is_refused() {
     let source = Peer::new("alice");
     let other = Peer::new("carol");
@@ -328,7 +331,7 @@ fn an_ack_naming_another_target_is_refused() {
 /// shape: `merge_from` an array of tagged PRs, `merge_to_pr` a tagged PR.
 /// Malformed shapes are refused, not coerced.
 ///
-/// Positive control: the well-formed pair is accepted first (red today).
+/// Positive control: the well-formed pair is accepted first.
 /// Turns red if: the parser is unimplemented (prelude); it coerces a bare
 /// string into a one-element list, accepts a missing target, or accepts a
 /// non-digest element.
@@ -336,7 +339,6 @@ fn an_ack_naming_another_target_is_refused() {
 /// here because no multi-peer scenario reaches each malformed shape
 /// cheaply.
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn malformed_merge_fields_are_refused() {
     let source = Peer::new("alice");
     let target = Peer::new("bob");
@@ -397,12 +399,11 @@ fn malformed_merge_fields_are_refused() {
 /// ruling on SPEC 11.5.1), including one before later commits, but never
 /// a PR it never held.
 ///
-/// Positive control: the earlier-PR ack is accepted (red today); the
+/// Positive control: the earlier-PR ack is accepted; the
 /// refusal follows it. A name-the-tip-only mutant fails the first
 /// assertion; an accept-any-PR mutant fails the second.
 /// End-to-end scenario: yes (target commits, then acks an older PR).
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn an_ack_may_name_an_earlier_pr_of_the_target() {
     let source = Peer::new("alice");
     let from = json!([source.pr()]);
@@ -455,7 +456,6 @@ fn an_ack_may_name_an_earlier_pr_of_the_target() {
 /// Not an end-to-end scenario: the dispatch table has no scenario that
 /// reaches the shadowing case without already trusting it.
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn merge_and_merge_ack_parse_to_distinct_kinds() {
     let p = Peer::new("alice");
     let from = json!([p.pr()]);

@@ -236,6 +236,8 @@ impl<S: eml::Storage> Principal<S> {
             | CozKind::SelfRevoke { .. }
             | CozKind::NonceCreate { .. }
             | CozKind::NonceDelete { .. }
+            | CozKind::Merge(_)
+            | CozKind::MergeAck(_)
             | CozKind::PrincipalCreate { .. } => false,
         };
         if self.deleted && !skip_deleted_check {
@@ -260,6 +262,8 @@ impl<S: eml::Storage> Principal<S> {
             | CozKind::SelfRevoke { .. }
             | CozKind::NonceCreate { .. }
             | CozKind::NonceDelete { .. }
+            | CozKind::Merge(_)
+            | CozKind::MergeAck(_)
             | CozKind::PrincipalCreate { .. } => false,
         };
         if self.frozen && !frozen_exempt {
@@ -334,6 +338,22 @@ impl<S: eml::Storage> Principal<S> {
                 // PG") establish_pg() is the ONLY code path that transitions
                 // Nascent → Established.
                 self.establish_pg(PrincipalGenesis::from_initial(&self.pr))?;
+            },
+            // SPEC 11.5.1: a merge and its ack are each the signer's own
+            // statement, accepted into the signer's chain alone. Neither
+            // touches keys, AT or the other principal; whether they make
+            // a merge is `merge_status`, which needs both chains. Each
+            // names a PR the signer must actually have held: the source
+            // merges from PRs of its own, the target acks a PR of its own.
+            CozKind::Merge(claim) => {
+                if !claim.from.iter().all(|pr| self.has_held(pr)) {
+                    return Err(Error::StateMismatch);
+                }
+            },
+            CozKind::MergeAck(claim) => {
+                if !self.has_held(&claim.to_pr) {
+                    return Err(Error::StateMismatch);
+                }
             },
             CozKind::CommitCreate { .. } => {
                 // Finalize commit marker does not mutate state other than marking completion
@@ -561,6 +581,7 @@ impl<S: eml::Storage> Principal<S> {
         // Write SR into cell 0 and CR into cell 1 of the Principal Tree, and
         // recompute PR from the tree (EpochTree::root(alg_id) per algorithm).
         core.pr = core.write_pt_sr_cr(&sr, &cr, &active_algs)?;
+        core.held_prs.push(core.pr.clone());
 
         // Finalize the pending commit with computed states
         let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;

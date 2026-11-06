@@ -110,6 +110,12 @@ pub enum Level {
 pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// Current Principal State.
     pub(crate) pr: PrincipalRoot,
+    /// Every PR this principal has held, oldest first: the PR it was born
+    /// with, then the PR after each commit and each recorded action. A PR
+    /// is a point-in-time snapshot (SPEC 3.7.1), so merge matching
+    /// (SPEC 11.5.1) needs the history, not only the current PR. Rebuilt
+    /// by replaying history.
+    pub(crate) held_prs: Vec<PrincipalRoot>,
     /// Current Key State.
     pub(crate) kr: KeyRoot,
     /// Current Commit ID (Merkle root of last commit's cozies).
@@ -190,6 +196,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
     fn with_trees(&self, commit_trees: crate::commit_root::CommitTrees<S>) -> Self {
         Self {
             pr: self.pr.clone(),
+            held_prs: self.held_prs.clone(),
             kr: self.kr.clone(),
             tr: self.tr.clone(),
             commit_trees,
@@ -217,6 +224,7 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PrincipalCore")
             .field("pr", &self.pr)
+            .field("held_prs", &self.held_prs)
             .field("kr", &self.kr)
             .field("tr", &self.tr)
             .field("commit_trees", &self.commit_trees)
@@ -459,6 +467,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             pr,
         } = roots;
         PrincipalCore {
+            held_prs: vec![pr.clone()],
             pr,
             kr,
             tr: None,

@@ -207,6 +207,8 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
             | CozKind::SelfRevoke { .. }
             | CozKind::NonceCreate { .. }
             | CozKind::NonceDelete { .. }
+            | CozKind::Merge(_)
+            | CozKind::MergeAck(_)
             | CozKind::PrincipalCreate { .. } => Expect::Frozen,
             CozKind::FreezeCreate { .. } => Expect::AlreadyFrozen,
             // CommitCreate stays exempt: it finalizes the very commit that
@@ -233,6 +235,10 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
         HashAlg::Sha256,
     )
     .unwrap();
+    let claim = crate::merge::MergeClaim {
+        from: vec![probe.pr().clone()],
+        to_pr: probe.pr().clone(),
+    };
     let kinds = vec![
         CozKind::KeyCreate { id: tmb.clone() },
         CozKind::KeyDelete { id: tmb.clone() },
@@ -249,6 +255,8 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
         CozKind::PrincipalCreate {
             id: AuthRoot(probe.pr().as_multihash().clone()),
         },
+        CozKind::Merge(claim.clone()),
+        CozKind::MergeAck(claim),
         CozKind::FreezeCreate {
             id: probe.pr().clone(),
         },
