@@ -659,7 +659,8 @@ async fn resolve_all(
 }
 
 // ---------------------------------------------------------------------------
-// keying ruling: key = PR after commit 0; tmb is a lookup; PG is the report
+// keying rule: no nonce -> genesis PR; nonce in commit 0 -> PR after commit 0;
+// the reported id is the key
 // ---------------------------------------------------------------------------
 
 async fn submit<B: BlobStore>(
@@ -674,69 +675,97 @@ async fn submit<B: BlobStore>(
         .await
 }
 
-/// Claim: the storage key is derived from the record (the PR after commit
-/// 0), never from the spelling the push used, so one principal pushed under
-/// its tmb on one server and under its PG-to-be on another gets the same
-/// key, and a reindex from the blobs reproduces it. Turns red when the key
-/// follows the claim (tmb on one engine, the PR on the other).
+/// Claim: a principal with no nonce is stored under its genesis PR (the
+/// tmb, for an implicit genesis), whatever spelling the push used, so one
+/// principal pushed under its tmb on one server and under its PG-to-be on
+/// another gets the same key, reports that key as its id, and a reindex
+/// from the blobs reproduces it. Turns red when the key follows the claim
+/// or is the PR after commit 0 (a rev-2 keying), or when the report names
+/// anything but the key.
 #[tokio::test]
-async fn rekey_key_is_independent_of_the_pushed_spelling_and_survives_reindex() {
+async fn rekey_no_nonce_principal_is_keyed_by_its_genesis_pr_under_any_spelling() {
     let pool = load_pool();
     let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let (blobs, pr) = commit0_adding_with_pr(&g, &k1);
     assert_ne!(pr, tmb, "premise: commit 0 moves the PR off the bare tmb");
     let (by_tmb, by_pr) = (test_engine(), test_engine());
-    submit(&by_tmb, &tmb, &g, &blobs).await.expect("under tmb");
-    submit(&by_pr, &pr, &g, &blobs).await.expect("under PR");
-    let (a, b) = (
-        by_tmb.canonical_principal_id(&tmb).await.expect("a"),
-        by_pr.canonical_principal_id(&pr).await.expect("b"),
-    );
-    assert_eq!(a, b, "the key follows the pushed spelling");
-    assert_eq!(a, pr, "before principal/create the reported id is the key");
+    let reported = [
+        submit(&by_tmb, &tmb, &g, &blobs).await.expect("under tmb"),
+        submit(&by_pr, &pr, &g, &blobs).await.expect("under PR"),
+    ]
+    .map(|r| r.principal_id);
+    assert_eq!(reported, [tmb.clone(), tmb.clone()], "report is the key");
     for e in [&by_tmb, &by_pr] {
+        assert_eq!(resolve_one(e, &tmb).await, tmb);
+        assert_eq!(resolve_one(e, &pr).await, tmb, "the PG-to-be reaches the key");
+        assert_eq!(e.get_tip(&pr).await.expect("tip").expect("stored").principal_id, tmb);
         e.rebuild_index_from_scratch().await.expect("reindex");
-        assert_eq!(e.canonical_principal_id(&tmb).await.expect("after"), pr);
+        assert_eq!(resolve_one(e, &tmb).await, tmb);
+        assert_eq!(resolve_one(e, &pr).await, tmb);
     }
 }
 
-/// Claim: a principal pushed under its PG-to-be is found by its bare
-/// genesis-key tmb while exactly one such principal is stored. Turns red
-/// while the tmb is no address at all (404/None).
-#[tokio::test]
-async fn rekey_pushed_under_pg_to_be_resolves_by_unambiguous_bare_tmb() {
-    let pool = load_pool();
-    let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
-    let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (blobs, pr) = commit0_adding_with_pr(&g, &k1);
-    let engine = test_engine();
-    submit(&engine, &pr, &g, &blobs).await.expect("under PG-to-be");
-    let by_tmb = engine.get_tip(&tmb).await.expect("tip").expect("stored");
-    let by_pr = engine.get_tip(&pr).await.expect("tip").expect("stored");
-    assert_eq!(by_tmb.commit_id, by_pr.commit_id);
-    assert_eq!(
-        engine.canonical_principal_id(&tmb).await.expect("tmb"),
-        engine.canonical_principal_id(&pr).await.expect("pr"),
-        "the two addresses name different principals"
-    );
+async fn resolve_one(
+    engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>,
+    id: &str,
+) -> String {
+    engine.canonical_principal_id(id).await.expect("resolve")
 }
 
-/// Claim: a bare tmb shared by two stored principals is a typed
-/// `Ambiguous` refusal, not a pick and not "not found". Turns red on a
-/// first-match or a silent miss.
+/// Claim: a nonce principal's key is the PR after its commit 0 (not the
+/// genesis tmb), and the reported id stays that key after `principal/create`
+/// establishes a PG: one id per durable keyspace, and the PG addresses the
+/// same chain. Turns red when the report switches to the PG, or the key is
+/// the tmb.
 #[tokio::test]
-async fn rekey_ambiguous_bare_tmb_is_typed_ambiguous() {
+async fn rekey_nonce_principal_key_is_its_post_commit_0_pr_and_is_reported() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
+    let (p, (first, pg)) = nonce_principal_with_gap(&g, 0x66);
+    assert_ne!(first, pg, "premise: the PG differs from the commit-0 PR");
+    let engine = test_engine();
+    let mut reported = Vec::new();
+    for i in 0..3 {
+        let r = submit(&engine, &first, &g, &wire_blobs(&p, i, &g)).await;
+        reported.push(r.expect("commit").principal_id);
+    }
+    assert_eq!(reported, vec![first.clone(); 3], "report is the key");
+    for addr in [&first, &pg] {
+        assert_eq!(engine.canonical_principal_id(addr).await.expect("id"), first);
+        let tip = engine.get_tip(addr).await.expect("tip").expect("stored");
+        assert_eq!((tip.principal_id, tip.commit_count), (first.clone(), 3));
+    }
+    assert!(engine.get_tip(&tmb).await.expect("tip").is_none(), "tmb is no key");
+}
+
+/// Claim: a second, different commit 0 of a no-nonce principal, whatever it
+/// claims as its id, is refused as a fork of the first (I2), never filed as
+/// a sibling and never merged; the stored chain is untouched. Turns red when
+/// the rival is stored under its own key (two principals on one genesis) or
+/// moves the tip.
+#[tokio::test]
+async fn rekey_divergent_no_nonce_commit_0_is_refused_as_a_fork() {
     let pool = load_pool();
     let (g, k1, k2) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "alice"));
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let engine = test_engine();
-    for k in [&k1, &k2] {
-        let (blobs, pr) = commit0_adding_with_pr(&g, k);
-        submit(&engine, &pr, &g, &blobs).await.expect("push");
+    let (first, first_pr) = commit0_adding_with_pr(&g, &k1);
+    submit(&engine, &first_pr, &g, &first).await.expect("first");
+    let before = engine.get_tip(&tmb).await.expect("tip").expect("stored");
+    let (rival, rival_pr) = commit0_adding_with_pr(&g, &k2);
+    for claim in [&tmb, &rival_pr] {
+        let got = submit(&engine, claim, &g, &rival).await;
+        assert!(got.is_err(), "rival accepted under {claim}: {got:?}");
     }
-    let got = engine.get_tip(&tmb).await;
-    assert!(matches!(got, Err(EngineError::Ambiguous(_))), "{got:?}");
+    let principals = engine.indexer().list_principals().await.expect("list");
+    assert_eq!(principals.len(), 1, "a sibling was stored: {principals:?}");
+    let after = engine.get_tip(&tmb).await.expect("tip").expect("stored");
+    assert_eq!(
+        (after.commit_id, after.commit_count),
+        (before.commit_id, before.commit_count)
+    );
 }
 
 /// Claim: a nonce principal claimed by its bare tmb is refused (the tmb is
@@ -753,36 +782,6 @@ async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
     let got = submit(&engine, &tmb, &g, &blobs).await;
     assert!(got.is_err(), "accepted: {got:?}");
     assert!(engine.indexer().list_principals().await.expect("list").is_empty());
-}
-
-/// Claim: after commits before `principal/create` the key stays the PR
-/// after commit 0, and the reported id becomes the PG once established.
-/// Turns red when the reported id stays the key after `principal/create`.
-#[tokio::test]
-async fn rekey_reported_id_is_the_pg_once_established() {
-    let pool = load_pool();
-    let g = kp(&pool, "golden");
-    let (p, pg_after_two) = nonce_principal_with_gap(&g, 0x66);
-    let engine = test_engine();
-    let b0 = wire_blobs(&p, 0, &g);
-    let key = submit(&engine, &pg_after_two.0, &g, &b0)
-        .await
-        .expect("commit 0")
-        .principal_id;
-    let b1 = wire_blobs(&p, 1, &g);
-    submit(&engine, &pg_after_two.0, &g, &b1).await.expect("commit 1");
-    assert_eq!(engine.canonical_principal_id(&key).await.expect("id"), key);
-    let b2 = wire_blobs(&p, 2, &g);
-    submit(&engine, &pg_after_two.0, &g, &b2).await.expect("create");
-    assert_ne!(key, pg_after_two.1, "premise: the PG differs from the key");
-    assert_eq!(
-        engine.canonical_principal_id(&key).await.expect("after"),
-        pg_after_two.1
-    );
-    assert_eq!(
-        engine.canonical_principal_id(&pg_after_two.1).await.expect("by pg"),
-        pg_after_two.1
-    );
 }
 
 /// Principal on `g`: commit 0 inserts `nonce`, commit 1 inserts a second
