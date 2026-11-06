@@ -74,10 +74,8 @@ impl CliTest {
     }
 }
 
-/// Backs: user-visible export then import into a fresh store preserves the identity (quarantined,
-/// #111).
+/// Backs: user-visible export then import into a fresh store preserves the identity.
 #[test]
-#[ignore = "QUARANTINE(#111): flaky export-import roundtrip, list step intermittently fails"]
 fn test_export_import_roundtrip() {
     let cli = CliTest::new();
 
@@ -128,8 +126,7 @@ fn test_export_import_roundtrip() {
         .arg("json")
         .arg("key")
         .arg("list")
-        .arg("--identity")
-        .arg(genesis_tmb);
+        .arg(&identity_arg);
 
     let output = cmd.output().expect("list failed");
     assert!(output.status.success(), "list should succeed");
@@ -137,6 +134,30 @@ fn test_export_import_roundtrip() {
     let list: serde_json::Value = serde_json::from_slice(&output.stdout).expect("invalid JSON");
     let keys = list["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 2, "imported identity should have 2 keys");
+}
+
+/// Backs: `key list --identity=<tmb>` works for a thumbprint that begins with `-`, which a
+/// separate-argument `--identity <tmb>` would parse as a flag (#111, the cause of the former
+/// intermittent failure). One in 64 generated thumbprints qualifies, so the test generates until
+/// one does.
+#[test]
+fn test_key_list_accepts_thumbprint_starting_with_dash() {
+    let cli = CliTest::new();
+
+    let tmb = (0..1000)
+        .map(|_| {
+            let key = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+            key["tmb"].as_str().unwrap().to_owned()
+        })
+        .find(|tmb| tmb.starts_with('-'))
+        .expect("no thumbprint starting with '-' in 1000 keys");
+
+    let identity_arg = format!("--identity={tmb}");
+    let signer_arg = format!("--signer={tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+    let list = cli.run_json(&["key", "list", &identity_arg]);
+    assert_eq!(list["active_keys"].as_array().unwrap().len(), 2);
 }
 
 /// Backs: an exported commit record carries its real auth root and state root (SPEC 4 commit
