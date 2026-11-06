@@ -794,3 +794,128 @@ async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
         "the refused push stored a principal"
     );
 }
+
+/// A nonce-embedded principal on `g`: commit 0 inserts `nonce` at the KT
+/// root (so its PR differs from the bare key's), commit 1 is
+/// `principal/create` at that PR. Returns it with its PG (`SHA-256:` form).
+fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
+    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    commit_one(
+        &mut p,
+        g,
+        sign(
+            g,
+            serde_json::json!({
+                "alg": g.alg,
+                "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[nonce; 32])),
+                "now": NOW, "tmb": g.tmb.to_b64(),
+                "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
+            }),
+        ),
+        None,
+        NOW,
+    );
+    let pg = p.pr_tagged().expect("pr");
+    commit_one(
+        &mut p,
+        g,
+        sign(
+            g,
+            serde_json::json!({"alg": g.alg, "id": pg, "now": NOW + 1, "tmb": g.tmb.to_b64(),
+                               "typ": "cyphr.me/cyphr/principal/create"}),
+        ),
+        None,
+        NOW + 1,
+    );
+    (p, pg)
+}
+
+/// Backs SPEC be0663f 5.1 l764 (the bare key thumbprint is the identity of
+/// the single-key, no-nonce principal ONLY): after a nonce-embedded
+/// principal on the golden key is pushed, `/tip` under the bare tmb (either
+/// spelling) must not answer with that principal. Turns red if the engine
+/// keys a stored principal by its genesis-key tmb, so the bare tmb resolves
+/// to the nonce principal (200, its tip). Control: the same principal is
+/// served under its own PG, so a server that serves nothing fails. A lying
+/// fix that answers 404 for the bare tmb by refusing the key, or that
+/// resolves it by first match, is caught by the sibling test below. End to
+/// end: yes.
+#[tokio::test]
+#[ignore = "RED(PGK): the bare genesis tmb resolves to a nonce principal"]
+async fn bare_tmb_never_resolves_to_a_nonce_principal() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (n, pg) = nonce_principal(&g, 0x11);
+    let (bare, labelled) = spellings(&pool);
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+
+    let (status, body) = post_json(app.clone(), "/push", wire(&n, 0, &g, &pg)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "nonce principal commit 0: {body:?}"
+    );
+    let (status, t) = tip(app.clone(), &pg).await;
+    assert_eq!(status, StatusCode::OK, "control: its own PG-to-be: {t:?}");
+    for id in [&bare, &labelled] {
+        let (status, t) = tip(app.clone(), id).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the bare key id {id} resolved to a nonce principal: {t:?}"
+        );
+    }
+}
+
+/// Backs the same identity rule from the other side: a no-nonce single-key
+/// principal and a nonce-embedded principal on the SAME key coexist, and
+/// the bare tmb names the first only, each tip being its own. Turns red if
+/// the second push collides (non-201: both would be stored under the one
+/// tmb key), if the bare tmb answers with the nonce principal's root, or if
+/// either push moves the other's tip. Order is covered both ways. End to
+/// end: yes.
+#[tokio::test]
+#[ignore = "RED(PGK): a no-nonce principal and a nonce sibling collide on the tmb"]
+async fn bare_tmb_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
+    for nonce_first in [true, false] {
+        let pool = load_pool();
+        let g = kp(&pool, "golden");
+        let (n, pg) = nonce_principal(&g, 0x22);
+        let (plain, _, plain_pr_0) = nascent_principal(&pool);
+        let (bare, labelled) = spellings(&pool);
+        let (state, _dir) = keyless_server();
+        let app = build_router(state);
+
+        let push_nonce = || post_json(app.clone(), "/push", wire(&n, 0, &g, &pg));
+        let push_plain = || post_json(app.clone(), "/push", wire(&plain, 0, &g, &labelled));
+        let (a, b) = if nonce_first {
+            let a = push_nonce().await;
+            (a, push_plain().await)
+        } else {
+            let b = push_plain().await;
+            (push_nonce().await, b)
+        };
+        assert_eq!(a.0, StatusCode::CREATED, "nonce_first={nonce_first}: {a:?}");
+        assert_eq!(b.0, StatusCode::CREATED, "nonce_first={nonce_first}: {b:?}");
+
+        let (_, by_bare) = tip(app.clone(), &bare).await;
+        let (_, by_label) = tip(app.clone(), &labelled).await;
+        assert_eq!(by_bare, by_label, "the two spellings read different chains");
+        let plain_bare = plain_pr_0.split_once(':').expect("tagged").1;
+        assert!(
+            by_bare["pr"]
+                .as_str()
+                .is_some_and(|v| v.contains(plain_bare)),
+            "the bare tmb does not read the no-nonce principal: {by_bare:?}"
+        );
+        let (status, own) = tip(app.clone(), &pg).await;
+        assert_eq!(status, StatusCode::OK, "{own:?}");
+        assert_ne!(
+            by_bare["pr"], own["pr"],
+            "the bare tmb reads the nonce principal"
+        );
+        assert_eq!(by_bare["commit_count"], serde_json::json!(1), "{by_bare:?}");
+        assert_eq!(own["commit_count"], serde_json::json!(1), "{own:?}");
+    }
+}
