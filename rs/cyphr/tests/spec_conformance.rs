@@ -1598,7 +1598,10 @@ fn s4_1_transaction_cozies_must_share_one_typ() {
         .apply_tx(solo)
         .expect("premise: each coz is valid alone");
     let r = p.begin_commit().apply_tx(mixed);
-    assert!(r.is_err(), "a mixed-typ transaction was applied");
+    assert!(
+        matches!(r, Err(Error::MixedTransactionTyp)),
+        "a mixed-typ transaction must fail with MixedTransactionTyp: {r:?}"
+    );
 }
 
 // ============================================================================

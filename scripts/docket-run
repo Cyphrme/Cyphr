@@ -242,6 +242,7 @@ _claim_rv_no_coz_reuse=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected -- --exact"
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_reuse_is_typed_and_scoped_to_one_principal -- --exact"
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance multihash_replay_of_an_es384_signed_coz_is_reuse -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties prop_data_action_replay_is_idempotent -- --exact"
 )
 
 _claim_rv_alg_alignment=(
