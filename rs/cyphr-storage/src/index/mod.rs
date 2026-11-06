@@ -111,6 +111,100 @@ pub enum IndexerError {
     /// Internal consistency violation (e.g., duplicate commit ID).
     #[error("index consistency error: {0}")]
     Consistency(String),
+
+    /// A write would re-point a PG alias that already names a different
+    /// principal. Nothing was written. (Digests are never exclusive.)
+    #[error("index conflict: {0}")]
+    Conflict(String),
+}
+
+/// Every `(digest, holder)` pair `commit` contributes to the digest table:
+/// each coz's blob hash and czd, then the commit IDs and the PR, SR, AR and
+/// CR variants. A digest is never an exclusive claim: SPEC 7.6 lets
+/// principals that share keys reuse a coz, and two principals can honestly
+/// reach the same state or auth root, so each digest names the set of its
+/// holders (see [`merge_holder`]).
+///
+/// # Errors
+///
+/// [`IndexerError::Consistency`] when the commit names no blob.
+pub fn digest_entries(commit: &IndexableCommit) -> Result<Vec<(String, EntityRef)>, IndexerError> {
+    let first_blob = commit
+        .blob_hashes
+        .first()
+        .copied()
+        .ok_or_else(|| IndexerError::Consistency("commit has no blob hashes".into()))?;
+    let holder = |digest: &str, blob_hash, entity_type, principal_root| EntityRef {
+        digest: digest.to_string(),
+        blob_hash,
+        entity_type,
+        sequence: Some(commit.sequence),
+        principal_id: Some(commit.principal_id.clone()),
+        principal_root,
+    };
+    let mut entries = Vec::new();
+    for coz in &commit.cozies {
+        let entity_type = coz_entity_type(&coz.typ);
+        for digest in [coz.blob_hash.to_string(), coz.czd.clone()] {
+            entries.push((
+                digest.clone(),
+                holder(&digest, coz.blob_hash, entity_type, false),
+            ));
+        }
+    }
+    for variant in commit
+        .commit_ids
+        .iter()
+        .chain(&commit.prs)
+        .chain(&commit.srs)
+        .chain(&commit.ars)
+        .chain(&commit.crs)
+    {
+        entries.push((
+            variant.clone(),
+            holder(
+                variant,
+                first_blob,
+                EntityType::Commit,
+                commit.prs.contains(variant),
+            ),
+        ));
+    }
+    Ok(entries)
+}
+
+/// Add `new` to a digest's holders so the result does not depend on the
+/// order commits arrive in. A holder is a `(principal, entity type)`: one
+/// principal repeating a root (a commit that leaves SR unchanged) keeps the
+/// holder at the latest sequence, and holders at the same sequence merge
+/// their `principal_root` flags. The list stays sorted by principal id,
+/// entity type, then sequence.
+pub fn merge_holder(holders: &mut Vec<EntityRef>, new: EntityRef) {
+    match holders
+        .iter_mut()
+        .find(|h| h.principal_id == new.principal_id && h.entity_type == new.entity_type)
+    {
+        Some(held) if new.sequence > held.sequence => *held = new,
+        Some(held) if new.sequence == held.sequence => held.principal_root |= new.principal_root,
+        Some(_) => {},
+        None => holders.push(new),
+    }
+    holders.sort_by(|a, b| {
+        (&a.principal_id, a.entity_type as u8, a.sequence).cmp(&(
+            &b.principal_id,
+            b.entity_type as u8,
+            b.sequence,
+        ))
+    });
+}
+
+/// Whether a coz of this `typ` is indexed as an action or a transaction.
+pub fn coz_entity_type(typ: &str) -> EntityType {
+    if typ.starts_with("cyphr/action") || typ.contains("/action") {
+        EntityType::Action
+    } else {
+        EntityType::Transaction
+    }
 }
 
 /// The index's read surface. Public and unrestricted — revoke.rs,
@@ -165,6 +259,22 @@ pub trait Indexer: Send + Sync {
         digest: &TaggedDigest,
     ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send;
 
+    /// Every holder of a digest, in a canonical order (principal id, then
+    /// entity type, then sequence). One signed coz may live in several
+    /// principals (SPEC 7.6 lets principals that share keys reuse a coz),
+    /// and two principals can honestly share a state or auth root, so a
+    /// digest names a set, not a single entity. Empty when unknown.
+    ///
+    /// The default is the single-holder answer of [`Self::resolve_digest`];
+    /// a backend that stores several holders overrides it.
+    fn resolve_digest_holders(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Vec<EntityRef>, IndexerError>> + Send {
+        let single = self.resolve_digest(digest);
+        async move { Ok(single.await?.into_iter().collect()) }
+    }
+
     /// List all known principals with summary metadata.
     fn list_principals(
         &self,
@@ -189,6 +299,17 @@ pub trait Indexer: Send + Sync {
 /// docs' "Write invariant" section for why this is what actually closes
 /// out-of-crate calls, not merely out-of-crate implementations.
 pub trait IndexerWrite: Send + Sync {
+    /// Dry run of [`Self::index_commit`]'s one refusal: `Err(Conflict)`
+    /// exactly when indexing `commit` would re-point a PG alias that names
+    /// another principal; `Ok` for a commit that is already indexed. Writes
+    /// nothing. The engine calls it before its first durable write, so a
+    /// refused commit leaves no blob or manifest behind.
+    fn check_commit(
+        &self,
+        commit: &IndexableCommit,
+        token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
+
     /// Record a validated commit in the index.
     ///
     /// The engine calls this after storing coz blobs.

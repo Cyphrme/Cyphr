@@ -82,3 +82,32 @@ async fn alias_pg_variants_resolve_to_the_principal_memory() {
 async fn pg_established_marker_tracks_the_pg_commit_memory() {
     conformance::pg_established_marker_tracks_the_pg_commit(&MemoryIndexer::new()).await;
 }
+
+#[tokio::test]
+async fn alias_conflict_second_principal_is_refused_memory() {
+    conformance::alias_conflict_second_principal_is_refused(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
+async fn alias_conflict_naming_another_principal_is_refused_memory() {
+    conformance::alias_conflict_naming_another_principal_is_refused(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
+async fn digest_conflict_same_principal_repeat_is_allowed_memory() {
+    conformance::digest_conflict_same_principal_repeat_is_allowed(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
+async fn digest_holders_shared_digest_names_every_holder_memory() {
+    conformance::digest_holders_shared_digest_names_every_holder(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
+async fn digest_holders_do_not_depend_on_arrival_order_memory() {
+    conformance::digest_holders_do_not_depend_on_arrival_order(
+        &MemoryIndexer::new(),
+        &MemoryIndexer::new(),
+    )
+    .await;
+}

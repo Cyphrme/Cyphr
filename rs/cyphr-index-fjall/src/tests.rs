@@ -237,3 +237,129 @@ async fn pg_established_marker_tracks_the_pg_commit() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     conformance::pg_established_marker_tracks_the_pg_commit(&indexer).await;
 }
+
+#[tokio::test]
+async fn alias_conflict_second_principal_is_refused() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::alias_conflict_second_principal_is_refused(&indexer).await;
+}
+
+#[tokio::test]
+async fn alias_conflict_naming_another_principal_is_refused() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::alias_conflict_naming_another_principal_is_refused(&indexer).await;
+}
+
+#[tokio::test]
+async fn digest_conflict_same_principal_repeat_is_allowed() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_conflict_same_principal_repeat_is_allowed(&indexer).await;
+}
+
+#[tokio::test]
+async fn digest_holders_shared_digest_names_every_holder() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_holders_shared_digest_names_every_holder(&indexer).await;
+}
+
+#[tokio::test]
+async fn digest_holders_do_not_depend_on_arrival_order() {
+    let (forward, _d1) = FjallIndexer::temp().expect("open temp indexer");
+    let (backward, _d2) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_holders_do_not_depend_on_arrival_order(&forward, &backward).await;
+}
+
+/// An index commit of principal `p<i>` whose coz carries the shared `czd`.
+fn commit_sharing(i: usize, czd: &str) -> cyphr_storage::index::IndexableCommit {
+    let mut c = conformance::make_commit(&format!("SHA-256:p{i:04}"), 0, 1000);
+    c.cozies[0].czd = czd.to_string();
+    c
+}
+
+/// Claim: a digest held by many principals costs one small write per
+/// holder, not a rewrite of the whole set: no stored value grows with the
+/// holder count (F-D: 3001 holders made a ~1 MB value rewritten under the
+/// global write lock on every push), and reads still see every holder, the
+/// first in canonical order. Turns red if holders share one value.
+#[tokio::test]
+async fn digest_holder_writes_do_not_grow_with_the_holder_count() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    let czd = format!("SHA-256:{}", "A".repeat(43));
+    let token = DeriveToken::for_conformance_tests();
+    const HOLDERS: usize = 300;
+    for i in 0..HOLDERS {
+        indexer
+            .index_commit(&commit_sharing(i, &czd), &token)
+            .await
+            .unwrap();
+    }
+    let digest: cyphr::state::TaggedDigest = czd.parse().unwrap();
+    let holders = indexer.resolve_digest_holders(&digest).await.unwrap();
+    assert_eq!(holders.len(), HOLDERS);
+    let first = indexer.resolve_digest(&digest).await.unwrap().unwrap();
+    assert_eq!(first.principal_id.as_deref(), Some("SHA-256:p0000"));
+
+    let ks = indexer.keyspaces();
+    let largest = ks
+        .digests
+        .iter()
+        .map(|g| g.value().unwrap().len())
+        .max()
+        .unwrap();
+    assert!(
+        largest < 1024,
+        "a stored digest value is {largest} bytes after {HOLDERS} holders"
+    );
+}
+
+/// Claim: a digest record written before holders were keyed one per entry
+/// (a single `EntityRef`, or a list) still reads, and a new holder merges
+/// with it. Turns red if an old record is lost or unreadable.
+#[tokio::test]
+async fn legacy_digest_records_still_read_and_merge() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    let token = DeriveToken::for_conformance_tests();
+    let (czd_one, czd_list) = (
+        format!("SHA-256:{}", "B".repeat(42) + "A"),
+        format!("SHA-256:{}", "C".repeat(42) + "A"),
+    );
+    let old = |digest: &str, who: &str| cyphr_storage::index::EntityRef {
+        digest: digest.to_string(),
+        blob_hash: cyphr_storage::blob::Blake3Hash::from_bytes([9; 32]),
+        entity_type: cyphr_storage::index::EntityType::Transaction,
+        sequence: Some(0),
+        principal_id: Some(who.to_string()),
+        principal_root: false,
+    };
+    let ks = indexer.keyspaces();
+    ks.digests
+        .insert(
+            czd_one.as_bytes(),
+            serde_json::to_vec(&old(&czd_one, "SHA-256:old")).unwrap(),
+        )
+        .unwrap();
+    ks.digests
+        .insert(
+            czd_list.as_bytes(),
+            serde_json::to_vec(&vec![old(&czd_list, "SHA-256:old")]).unwrap(),
+        )
+        .unwrap();
+    for (i, czd) in [&czd_one, &czd_list].into_iter().enumerate() {
+        indexer
+            .index_commit(&commit_sharing(i + 1, czd), &token)
+            .await
+            .unwrap();
+        let digest: cyphr::state::TaggedDigest = czd.parse().unwrap();
+        let ids: Vec<_> = indexer
+            .resolve_digest_holders(&digest)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|h| h.principal_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["SHA-256:old".to_string(), format!("SHA-256:p{:04}", i + 1)]
+        );
+    }
+}

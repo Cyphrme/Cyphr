@@ -34,6 +34,16 @@ pub enum EngineError {
     #[error("malformed blob: {0}")]
     MalformedBlob(String),
 
+    /// The wire blob store holds a blob shaped like a commit manifest.
+    /// Manifests live apart from wire blobs; a manifest-shaped wire blob
+    /// is either an old shared-store manifest or a forged one, and
+    /// nothing here can tell which, so it is never indexed.
+    #[error("legacy manifest-shaped blob {hash} in the wire blob store; re-ingest from the wire")]
+    LegacyManifest {
+        /// BLAKE3 hash of the offending blob.
+        hash: crate::blob::Blake3Hash,
+    },
+
     /// The engine's commit-tree storage factory failed to produce a fresh
     /// storage instance for a `Principal`.
     #[error("storage: {0}")]

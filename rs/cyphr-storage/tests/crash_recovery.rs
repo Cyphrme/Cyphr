@@ -73,11 +73,21 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
 /// Write a manifest blob directly, with no accompanying index write --
 /// the crash-window state: durably stored, unindexed.
 async fn write_orphan_manifest(blob_store: &MemoryBlobStore, commit: &IndexableCommit) {
+    // The commit's blob must exist: rebuild refuses a manifest the store's
+    // blobs do not support.
+    let hash = blob_store
+        .put(format!("{}-{}", commit.principal_id, commit.sequence).as_bytes())
+        .await
+        .expect("blob put");
+    let mut commit = commit.clone();
+    commit.blob_hashes = vec![hash];
+    commit.cozies[0].blob_hash = hash;
     let manifest = RawManifest {
         kind: COMMIT_MANIFEST_KIND,
-        commit,
+        commit: &commit,
     };
-    let bytes = serde_json::to_vec(&manifest).expect("manifest serialize");
+    let mut bytes = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
+    serde_json::to_writer(&mut bytes, &manifest).expect("manifest serialize");
     blob_store.put(&bytes).await.expect("manifest put");
 }
 

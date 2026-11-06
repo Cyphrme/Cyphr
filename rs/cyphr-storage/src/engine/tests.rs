@@ -1004,8 +1004,12 @@ async fn manifest_retains_ingest_order_without_search() {
         .await
         .unwrap()
         .expect("manifest must be present in the blob store");
-    let manifest: super::CommitManifest =
-        serde_json::from_slice(&manifest_bytes).expect("manifest must deserialize");
+    let manifest: super::CommitManifest = serde_json::from_slice(
+        manifest_bytes
+            .strip_prefix(super::COMMIT_MANIFEST_PREFIX)
+            .expect("a stored manifest carries the manifest keyspace prefix"),
+    )
+    .expect("manifest must deserialize");
 
     assert_eq!(manifest.kind, super::COMMIT_MANIFEST_KIND);
     let retained_order: Vec<Vec<u8>> = manifest
@@ -1277,4 +1281,322 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
         .await
         .expect("the same commit under the genesis-derived id must be accepted");
     assert!(engine.get_tip(&derived).await.unwrap().is_some());
+}
+
+/// Claim: a commit whose PG alias another principal already holds is
+/// refused before anything is written, so a refused push leaves no blob or
+/// manifest behind and a fresh engine on the same blob store serves every
+/// principal. A unit test: two principals claiming one PG cannot be built
+/// from signed cozes. Turns red if the refusal comes after the manifest is
+/// durable (the store then keeps a manifest every rebuild trips over).
+#[tokio::test]
+async fn alias_conflict_is_refused_before_anything_is_written() {
+    let blobs = MemoryBlobStore::new();
+    let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    let pg = vec!["SHA-256:contested-pg".to_string()];
+
+    let a0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1}}"];
+    engine
+        .ingest_commit(&a0, make_meta("alice", 0, 1))
+        .await
+        .unwrap();
+    let mut a1 = make_meta("alice", 1, 2);
+    a1.pg = pg.clone();
+    let a1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":2}}"];
+    engine.ingest_commit(&a1b, a1).await.unwrap();
+    let b0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":3}}"];
+    engine
+        .ingest_commit(&b0, make_meta("bob", 0, 3))
+        .await
+        .unwrap();
+
+    let stored = |store: &MemoryBlobStore| {
+        let store = store.clone();
+        async move { store.iter().await.unwrap().count() }
+    };
+    let before = stored(&blobs).await;
+    let mut b1 = make_meta("bob", 1, 4);
+    b1.pg = pg;
+    let b1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":4}}"];
+    let err = engine
+        .ingest_commit(&b1b, b1)
+        .await
+        .expect_err("alias held by alice");
+    assert!(
+        matches!(
+            err,
+            EngineError::Indexer(crate::index::IndexerError::Conflict(_))
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        stored(&blobs).await,
+        before,
+        "a refused commit wrote to the blob store"
+    );
+
+    let reopened = StorageEngine::new(blobs, MemoryIndexer::new());
+    for who in ["alice", "bob"] {
+        let tip = reopened
+            .get_tip(who)
+            .await
+            .expect("a fresh engine heals")
+            .expect("served");
+        assert_eq!(tip.principal_id, who);
+    }
+}
+
+/// Claim: two manifests contesting one PG alias do not fail the rebuild:
+/// the earlier in canonical order (sequence, then principal id) keeps the
+/// alias and the other is quarantined as a conflict, whatever order the
+/// manifests were written in. A unit test: the contest cannot be built from
+/// signed cozes, and `store_blobs_and_manifest` is the only way to write
+/// both manifests past the ingest-time check. Turns red if a contested
+/// alias aborts the rebuild or the winner depends on write order.
+#[tokio::test]
+async fn rebuild_quarantines_a_contested_pg_alias() {
+    use super::{QuarantineReason, QuarantinedManifest};
+    let pg = vec!["SHA-256:contested-pg".to_string()];
+    let mut reports = Vec::new();
+    for order in [["alice", "bob"], ["bob", "alice"]] {
+        let engine = test_engine();
+        for (i, who) in order.iter().enumerate() {
+            let blob = format!("{{\"pay\":{{\"now\":{i}}}}}");
+            let mut meta = make_meta(who, 0, 10);
+            meta.pg = pg.clone();
+            engine
+                .store_blobs_and_manifest(&[blob.as_bytes()], meta)
+                .await
+                .unwrap();
+        }
+        let report = engine
+            .rebuild_index_with_report()
+            .await
+            .expect("rebuild survives");
+        assert_eq!(report.indexed, 1);
+        let q: Vec<&QuarantinedManifest> = report.quarantined.iter().collect();
+        assert_eq!(q.len(), 1, "{report:?}");
+        assert_eq!(q[0].principal_id.as_deref(), Some("bob"));
+        assert!(matches!(q[0].reason, QuarantineReason::Conflict(_)));
+        reports.push(
+            engine
+                .indexer()
+                .get_tip("SHA-256:contested-pg")
+                .await
+                .unwrap()
+                .map(|t| t.principal_id),
+        );
+    }
+    assert_eq!(reports[0], Some("alice".to_string()));
+    assert_eq!(
+        reports[0], reports[1],
+        "the alias winner depends on write order"
+    );
+}
+
+/// Claim: whatever the reason a manifest is quarantined, the indexed chain
+/// of its principal is a gapless prefix: here seq 1 names a blob the store
+/// lacks, so seq 2 must be left out too and the next honest commit still
+/// lands at seq 1's successor-free position (the chain length). Turns red if
+/// the chain comes out `[0, 2]`.
+#[tokio::test]
+async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
+    use super::QuarantineReason;
+    let engine = test_engine();
+    for (seq, now) in [(0u64, 1), (2, 3)] {
+        let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
+        engine
+            .store_blobs_and_manifest(&[blob.as_bytes()], make_meta("alice", seq, now))
+            .await
+            .unwrap();
+    }
+    let mut lost = make_meta("alice", 1, 2);
+    let gone = crate::blob::Blake3Hash::from_bytes([0x5a; 32]);
+    lost.blob_hashes = vec![gone];
+    lost.cozies[0].blob_hash = gone;
+    let mut bytes = COMMIT_MANIFEST_PREFIX.to_vec();
+    serde_json::to_writer(
+        &mut bytes,
+        &CommitManifest {
+            kind: COMMIT_MANIFEST_KIND.into(),
+            commit: lost,
+        },
+    )
+    .unwrap();
+    engine.blob_store().put(&bytes).await.unwrap();
+
+    let report = engine
+        .rebuild_index_with_report()
+        .await
+        .expect("rebuild survives");
+    let chain = engine
+        .indexer()
+        .get_commit_chain("alice", None, None)
+        .await
+        .unwrap();
+    let seqs: Vec<u64> = chain.iter().map(|c| c.sequence).collect();
+    assert_eq!(
+        seqs,
+        vec![0],
+        "the chain must be a gapless prefix, got {seqs:?}"
+    );
+    assert_eq!(report.quarantined.len(), 2, "{report:?}");
+    assert!(
+        report
+            .quarantined
+            .iter()
+            .any(|q| matches!(q.reason, QuarantineReason::Orphaned(_)))
+    );
+}
+
+/// A signed coz blob of `typ` disclosing the pool key `who` in its unsigned
+/// `key` member.
+fn coz_disclosing(typ: &str, who: &str) -> Vec<u8> {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let signer = pool.get("alice").unwrap();
+    let shown = pool.get(who).unwrap();
+    serde_json::to_vec(&serde_json::json!({
+        "pay": {"alg": signer.alg, "now": 1, "tmb": signer.compute_tmb_b64().unwrap(), "typ": typ},
+        "sig": "AAAA",
+        "key": {"alg": shown.alg, "pub": shown.pub_key, "tmb": shown.compute_tmb_b64().unwrap()},
+    }))
+    .unwrap()
+}
+
+/// Claim: the unsigned `key` member survives canonicalization only on the
+/// protocol's own genesis carrier, judged by the protocol predicate (the
+/// typ's authority-qualified suffix), never by substring: an application
+/// typ that merely contains `/commit/create` is an ordinary coz, keeps no
+/// key, and two copies differing only in `key` store as the same bytes.
+/// A unit test: the engine's action classifier is substring-based, so such
+/// a typ cannot be pushed end to end. Turns red if `key` is kept on it.
+#[test]
+fn canonical_key_is_kept_only_on_the_protocol_genesis_carrier() {
+    let kept = |typ: &str, who: &str| {
+        let bytes = canonical_coz(&coz_disclosing(typ, who), 0).expect("canonical");
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .unwrap()
+            .get("key")
+            .is_some()
+    };
+    assert!(
+        kept("cyphr.me/cyphr/commit/create", "alice"),
+        "the genesis carrier keeps its key"
+    );
+    assert!(
+        kept("cyphr.me/cyphr/key/create", "golden"),
+        "a key-introducing coz keeps its key"
+    );
+    assert!(
+        !kept("example.com/repo/commit/create", "alice"),
+        "an application typ is not a carrier"
+    );
+    assert_eq!(
+        canonical_coz(
+            &coz_disclosing("example.com/repo/commit/create", "alice"),
+            0
+        )
+        .unwrap(),
+        canonical_coz(&coz_disclosing("example.com/repo/commit/create", "bob"), 0).unwrap(),
+        "two copies differing only in key must be one blob",
+    );
+}
+
+/// A signed-looking coz of `typ` by pool key `signer`, with `key` as its
+/// unsigned sidecar (absent when `None`). `canonical_coz` never checks the
+/// signature, so a placeholder is enough.
+fn coz_with_sidecar(typ: &str, signer: &str, key: Option<serde_json::Value>) -> Vec<u8> {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let s = pool.get(signer).unwrap();
+    let mut coz = serde_json::json!({
+        "pay": {"alg": s.alg, "now": 1, "tmb": s.compute_tmb_b64().unwrap(), "typ": typ},
+        "sig": "AAAA",
+    });
+    if let Some(k) = key {
+        coz["key"] = k;
+    }
+    serde_json::to_vec(&coz).unwrap()
+}
+
+fn key_json_of(who: &str) -> serde_json::Value {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let k = pool.get(who).unwrap();
+    serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.compute_tmb_b64().unwrap()})
+}
+
+/// No regression file: tests must not write to the tree.
+fn no_regression_file() -> proptest::prelude::ProptestConfig {
+    proptest::prelude::ProptestConfig {
+        failure_persistence: None,
+        ..proptest::prelude::ProptestConfig::default()
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(no_regression_file())]
+    /// Property: whatever unsigned members a replayer or relayer attaches to
+    /// the `key` sidecar (a `tag`, a `now`, any extra member, any member
+    /// order), `canonical_coz` returns the same bytes, for every coz kind
+    /// that keeps `key` (key/create, key/replace, and the commit/create
+    /// genesis carrier signed by its own key). For kinds that keep no key
+    /// (an action, key/delete) and for a commit/create carrying a foreign
+    /// key, the output equals the output with no key at all. One czd, one
+    /// blob. Turns red if any unsigned sidecar member, or a foreign key on a
+    /// carrier, survives.
+    #[test]
+    fn canonical_coz_is_independent_of_the_unsigned_sidecar(
+        tag in proptest::option::of("[ -~]{0,12}"),
+        now in proptest::option::of(proptest::prelude::any::<i64>()),
+        extra in proptest::option::of("[a-z]{1,8}"),
+        reversed in proptest::prelude::any::<bool>(),
+    ) {
+        let vary = |base: serde_json::Value| {
+            let mut m = serde_json::Map::new();
+            let mut entries: Vec<(String, serde_json::Value)> =
+                base.as_object().unwrap().clone().into_iter().collect();
+            if let Some(t) = &tag { entries.push(("tag".into(), t.clone().into())); }
+            if let Some(n) = now { entries.push(("now".into(), n.into())); }
+            if let Some(x) = &extra { entries.push((format!("x-{x}"), x.clone().into())); }
+            if reversed { entries.reverse(); }
+            for (k, v) in entries { m.insert(k, v); }
+            serde_json::Value::Object(m)
+        };
+        // Kinds that keep the key: the key is the introduced / carried one.
+        for (typ, signer, shown) in [
+            ("cyphr.me/cyphr/key/create", "alice", "golden"),
+            ("cyphr.me/cyphr/key/replace", "alice", "golden"),
+            ("cyphr.me/cyphr/commit/create", "alice", "alice"),
+        ] {
+            let shown = key_json_of(shown);
+            let plain =
+                canonical_coz(&coz_with_sidecar(typ, signer, Some(shown.clone())), 0).unwrap();
+            let varied = canonical_coz(
+                &coz_with_sidecar(typ, signer, Some(vary(shown.clone()))),
+                0,
+            )
+            .unwrap();
+            proptest::prop_assert_eq!(&plain, &varied, "{} sidecar changed the blob", typ);
+            proptest::prop_assert!(serde_json::from_slice::<serde_json::Value>(&plain).unwrap().get("key").is_some());
+        }
+        // Kinds that keep no key, and a carrier with a foreign key.
+        for (typ, signer) in [
+            ("cyphr.me/action", "alice"),
+            ("cyphr.me/cyphr/key/delete", "alice"),
+            ("cyphr.me/cyphr/commit/create", "alice"),
+        ] {
+            let none = canonical_coz(&coz_with_sidecar(typ, signer, None), 0).unwrap();
+            let foreign = canonical_coz(
+                &coz_with_sidecar(typ, signer, Some(vary(key_json_of("bob")))),
+                0,
+            )
+            .unwrap();
+            proptest::prop_assert_eq!(&none, &foreign, "{} kept a foreign key", typ);
+        }
+    }
 }

@@ -14,8 +14,9 @@
 //! the crafted push (a fix that rejects at ingest) and then runs the
 //! rebuild and the index assertions either way, which hold for both
 //! "reject at ingest" and "store but never interpret as a manifest".
-//! Every red test is `#[ignore = "RED(H1F)"]` and fails with `--ignored`
-//! on its index assertion after the crafted push was accepted.
+//! Each of these failed on its index assertion, after the crafted push
+//! was accepted, before the manifest keyspace separated manifests from
+//! wire blobs.
 //!
 //! Each red test is an end-to-end scenario (push over HTTP, rebuild,
 //! observe through the index and the served routes). Mutants named per
@@ -225,13 +226,12 @@ impl World {
     }
 }
 
-/// RED(H1F), E2E. Claim: another principal's pushed coz cannot rewrite a
+/// E2E. Claim: another principal's pushed coz cannot rewrite a
 /// victim's index entry on rebuild. Mutant caught: today's rebuild, and
 /// any fix that still interprets a wire blob as a manifest (e.g. only
 /// checking `kind`). Fails on tip equality / principal list / forged
 /// commit id lookup, after the crafted push was accepted.
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_manifests trusts wire blobs shaped like a manifest"]
 async fn pushed_coz_cannot_rewrite_victim_index_on_rebuild() {
     let w = world().await;
     let forge = Forge::naming(&w.before.principal_id, 0xA1);
@@ -255,11 +255,10 @@ async fn pushed_coz_cannot_rewrite_victim_index_on_rebuild() {
     assert!(w.state.engine.get_entity(&forged).await.unwrap().is_none());
 }
 
-/// RED(H1F), E2E. Claim: a pushed coz cannot invent a principal that was
+/// E2E. Claim: a pushed coz cannot invent a principal that was
 /// never pushed. Mutant caught: a fix that guards only already-indexed
 /// principals (the phantom is unindexed, so it slips through).
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_manifests trusts wire blobs shaped like a manifest"]
 async fn pushed_coz_cannot_invent_a_principal_on_rebuild() {
     let w = world().await;
     let phantom = fake_digest(0xB0);
@@ -274,13 +273,12 @@ async fn pushed_coz_cannot_invent_a_principal_on_rebuild() {
     assert_eq!(w.others().await, w.before_principals);
 }
 
-/// RED(H1F), E2E, scratch variant. Same claims after a FULL index wipe
+/// E2E, scratch variant. Same claims after a FULL index wipe
 /// (`rebuild_index_from_scratch`). Mutant caught: the non-fix "trust
 /// manifests only for principals not yet indexed": after `clear` nothing
 /// is indexed, so the phantom (and a tie-sequence forgery of the victim)
 /// is trusted again.
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild_index_from_scratch trusts wire blobs shaped like a manifest"]
 async fn pushed_coz_cannot_poison_a_scratch_rebuild() {
     let w = world().await;
     let phantom = fake_digest(0xC0);
@@ -293,43 +291,47 @@ async fn pushed_coz_cannot_poison_a_scratch_rebuild() {
     w.assert_victim_intact().await;
 }
 
-/// RED(H1F), E2E. Claim: a pushed coz cannot plant a PG alias (aliases
-/// are first-writer-wins in `index_commit`, so a forged first writer
-/// owns the name for good). The forged commit claims the victim's PR as
-/// its own `pg` variant; a PR is not an alias (`Indexer::get_tip` docs),
-/// so the victim's PR string must resolve to nothing. Mutant caught: a
-/// fix that validates `principal_id` but leaves `pg` unchecked.
+/// E2E. Claim: a pushed coz cannot plant a PG alias (aliases were
+/// first-writer-wins in `index_commit`, so a forged first writer owned the
+/// name for good). The forged commit claims a fresh digest as its own `pg`
+/// variant. That digest resolves to nothing before the push (it is no
+/// principal's id, PR or PG), so it must still resolve to nothing after the
+/// push and a rebuild: any answer would come from the alias table. (The
+/// victim's own PR is a poor probe: a principal with no PG answers to its
+/// current PR as the PG-to-be, SPEC 3.7.1, which masks a planted alias.)
+/// Mutant caught: a fix that validates `principal_id` but leaves `pg`
+/// unchecked.
 #[tokio::test]
-#[ignore = "RED(H1F): forged manifest pg plants an alias on rebuild"]
 async fn pushed_coz_cannot_plant_a_pg_alias_on_rebuild() {
     let w = world().await;
+    let planted = fake_digest(0xD2);
+    assert!(
+        w.state.engine.get_tip(&planted).await.unwrap().is_none(),
+        "control: the probe digest resolves to nothing before the push"
+    );
+
     let phantom = fake_digest(0xD0);
     let mut forge = Forge::naming(&phantom, 0xD1);
-    forge.pg = vec![w.before.pr.clone()];
+    forge.pg = vec![planted.clone()];
     w.push_forged(&forge).await;
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
 
     assert!(
-        w.state
-            .engine
-            .get_tip(&w.before.pr)
-            .await
-            .unwrap()
-            .is_none(),
-        "the victim's PR string must not resolve as an alias to anyone"
+        w.state.engine.get_tip(&planted).await.unwrap().is_none(),
+        "a forged pg must not create an alias: the probe digest resolves to nothing"
     );
     assert!(w.state.engine.get_tip(&phantom).await.unwrap().is_none());
+    w.assert_victim_intact().await;
 }
 
-/// RED(H1F), E2E. Claim: a pushed coz cannot redirect the digest index.
+/// E2E. Claim: a pushed coz cannot redirect the digest index.
 /// The forged commit (under a phantom principal) reuses the victim's real
 /// commit id and points its blob at attacker bytes, so `GET /e/{digest}`
 /// for the victim's commit would serve attacker content attributed to the
 /// phantom. Mutant caught: a fix that only protects `tips`/`principals`
 /// but leaves `digest_index` writable.
 #[tokio::test]
-#[ignore = "RED(H1F): forged manifest redirects the digest index on rebuild"]
 async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
     let w = world().await;
     let digest: cyphr::state::TaggedDigest = w.before.commit_id.parse().unwrap();

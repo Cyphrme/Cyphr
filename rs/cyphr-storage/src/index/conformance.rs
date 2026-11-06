@@ -511,3 +511,191 @@ pub async fn pg_established_marker_tracks_the_pg_commit<I: Indexer + IndexerWrit
     indexer.clear(&token).await.expect("clear");
     assert!(!indexer.is_pg_established(id).await.unwrap());
 }
+
+/// A `principal/create` commit for `id` whose PG variants are `pg`.
+fn create_commit_with_pg(id: &str, seq: u64, pg: &[&str]) -> IndexableCommit {
+    let mut c = make_commit(id, seq, 1000 + seq as i64);
+    c.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
+    c.pg = pg.iter().map(|s| s.to_string()).collect();
+    c
+}
+
+/// Backs "no hostile write can re-point a principal alias" at the index
+/// seam, for every backend. Principal A establishes a PG; a later commit
+/// of principal B naming the same PG variant is refused as
+/// [`IndexerError::Conflict`], writes nothing (B has no chain, tip or
+/// alias), and A's alias still resolves to A. Re-indexing A's own commit
+/// stays a no-op. Turns red if the second writer is silently ignored
+/// (first-writer-wins) or wins (overwrite). A unit test: engine-level
+/// scenarios cannot reach a second principal claiming the same PG.
+pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    let pg = "SHA-256:contested-pg";
+    for id in [a, b] {
+        indexer
+            .index_commit(&make_commit(id, 0, 1000), &token)
+            .await
+            .expect("commit 0");
+    }
+    indexer
+        .index_commit(&create_commit_with_pg(a, 1, &[pg]), &token)
+        .await
+        .expect("A establishes the PG");
+
+    let err = indexer
+        .index_commit(&create_commit_with_pg(b, 1, &[pg]), &token)
+        .await
+        .expect_err("B re-pointing A's alias must be refused");
+    assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
+
+    assert_eq!(
+        indexer.get_tip(pg).await.unwrap().map(|t| t.principal_id),
+        Some(a.to_string()),
+        "A's alias moved or vanished"
+    );
+    assert_eq!(
+        indexer.get_tip(b).await.unwrap().unwrap().commit_count,
+        1,
+        "the refused commit must write nothing"
+    );
+    assert!(!indexer.is_pg_established(b).await.unwrap());
+    indexer
+        .index_commit(&create_commit_with_pg(a, 1, &[pg]), &token)
+        .await
+        .expect("re-indexing A's own commit stays a no-op");
+}
+
+/// An alias that spells another stored principal's id is refused too: the
+/// id would be unreachable through the alias and a reader could not tell
+/// the two apart. Turns red if the alias is written (shadowed) or ignored.
+pub async fn alias_conflict_naming_another_principal_is_refused<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    for id in [a, b] {
+        indexer
+            .index_commit(&make_commit(id, 0, 1000), &token)
+            .await
+            .expect("commit 0");
+    }
+    let err = indexer
+        .index_commit(&create_commit_with_pg(b, 1, &[a]), &token)
+        .await
+        .expect_err("an alias spelling A's id must be refused");
+    assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        indexer.get_tip(a).await.unwrap().unwrap().principal_id,
+        a,
+        "A still resolves to itself"
+    );
+}
+
+/// One principal's own commits may repeat a root (a commit that leaves SR
+/// unchanged); the digest keeps one holder for that principal, at the
+/// later commit. Turns red if the repeat is refused or the earlier commit
+/// still answers.
+pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let a = "SHA-256:alice-id";
+    let sr = format!("SHA-256:{}", "C".repeat(42) + "A");
+    let mut first = make_commit(a, 0, 1000);
+    first.srs = vec![sr.clone()];
+    indexer.index_commit(&first, &token).await.unwrap();
+    let mut next = make_commit(a, 1, 2000);
+    next.srs = vec![sr.clone()];
+    indexer.index_commit(&next, &token).await.expect("repeat");
+    let digest: TaggedDigest = sr.parse().unwrap();
+    let e = indexer.resolve_digest(&digest).await.unwrap().unwrap();
+    assert_eq!(e.sequence, Some(1));
+}
+
+fn valid_digest(fill: char) -> String {
+    format!("SHA-256:{}", fill.to_string().repeat(42) + "A")
+}
+
+/// Index a commit of `id` whose czd, blob hash and state root are the given
+/// shared values.
+fn sharing_commit(id: &str, czd: &str, blob_seed: u8, sr: &str) -> IndexableCommit {
+    let mut c = make_commit(id, 0, 1000);
+    let blob = crate::blob::Blake3Hash::from_bytes([blob_seed; 32]);
+    c.blob_hashes = vec![blob];
+    c.cozies[0].blob_hash = blob;
+    c.cozies[0].czd = czd.to_string();
+    c.srs = vec![sr.to_string()];
+    c.ars = vec![sr.to_string()];
+    c
+}
+
+fn holder_ids(holders: &[EntityRef]) -> Vec<String> {
+    holders
+        .iter()
+        .map(|h| h.principal_id.clone().unwrap_or_default())
+        .collect()
+}
+
+/// Backs "a replayed coz can neither block nor misattribute" at the index
+/// seam, for every backend. SPEC 7.6 lets principals that share keys reuse a
+/// coz, and two principals can honestly reach the same state or auth root,
+/// so a czd, a blob hash and an SR/AR each name every principal that holds
+/// them: both commits are accepted and `resolve_digest_holders` returns both
+/// holders, in canonical (principal id) order. Turns red if the second
+/// commit is refused, or either holder is lost or overwritten.
+pub async fn digest_holders_shared_digest_names_every_holder<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let (czd, sr) = (valid_digest('A'), valid_digest('C'));
+    for id in ["SHA-256:bob-id", "SHA-256:alice-id"] {
+        indexer
+            .index_commit(&sharing_commit(id, &czd, 7, &sr), &token)
+            .await
+            .expect("a commit sharing a coz and roots with another principal");
+    }
+    let want = vec!["SHA-256:alice-id".to_string(), "SHA-256:bob-id".to_string()];
+    for digest in [czd.clone(), sr.clone()] {
+        let d: TaggedDigest = digest.parse().unwrap();
+        let holders = indexer.resolve_digest_holders(&d).await.unwrap();
+        assert_eq!(holder_ids(&holders), want, "holders of {digest}");
+    }
+    let blob = crate::blob::Blake3Hash::from_bytes([7; 32]);
+    assert!(indexer.is_blob_indexed(&blob).await.unwrap());
+}
+
+/// Backs "the index is a function of the blobs": indexing the same commits
+/// in either order gives the same holders for every digest, so a shuffled
+/// rebuild cannot change what a digest resolves to. Turns red if the order
+/// of arrival shows in the holders.
+pub async fn digest_holders_do_not_depend_on_arrival_order<I: Indexer + IndexerWrite>(
+    forward: &I,
+    backward: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let (czd, sr) = (valid_digest('A'), valid_digest('C'));
+    let commits = [
+        sharing_commit("SHA-256:alice-id", &czd, 7, &sr),
+        sharing_commit("SHA-256:bob-id", &czd, 7, &sr),
+    ];
+    for c in &commits {
+        forward.index_commit(c, &token).await.unwrap();
+    }
+    for c in commits.iter().rev() {
+        backward.index_commit(c, &token).await.unwrap();
+    }
+    for digest in [czd, sr] {
+        let d: TaggedDigest = digest.parse().unwrap();
+        assert_eq!(
+            forward.resolve_digest_holders(&d).await.unwrap(),
+            backward.resolve_digest_holders(&d).await.unwrap(),
+            "holders of {digest} depend on arrival order"
+        );
+        assert_eq!(
+            forward.resolve_digest(&d).await.unwrap(),
+            backward.resolve_digest(&d).await.unwrap(),
+            "the single answer for {digest} depends on arrival order"
+        );
+    }
+}

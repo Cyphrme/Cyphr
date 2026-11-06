@@ -6,7 +6,7 @@ use std::sync::RwLock;
 use cyphr::state::TaggedDigest;
 
 use super::types::*;
-use super::{DeriveToken, Indexer, IndexerError, IndexerWrite};
+use super::{DeriveToken, Indexer, IndexerError, IndexerWrite, digest_entries, merge_holder};
 use crate::blob::Blake3Hash;
 
 /// Internal state for the memory indexer.
@@ -19,7 +19,7 @@ struct MemoryState {
     /// Tip state keyed by principal_id.
     tips: HashMap<String, TipState>,
     /// Digest → entity reference lookup.
-    digest_index: HashMap<String, EntityRef>,
+    digest_index: HashMap<String, Vec<EntityRef>>,
     /// Public keys keyed by thumbprint.
     public_keys: HashMap<String, PublicKeyInfo>,
     /// Alias table: Principal Root variant → the principal id it names.
@@ -133,7 +133,24 @@ impl Indexer for MemoryIndexer {
                 .state
                 .read()
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.digest_index.get(&key).cloned())
+            Ok(state
+                .digest_index
+                .get(&key)
+                .and_then(|h| h.first().cloned()))
+        }
+    }
+
+    fn resolve_digest_holders(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Vec<EntityRef>, IndexerError>> + Send {
+        let key = digest.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.digest_index.get(&key).cloned().unwrap_or_default())
         }
     }
 
@@ -174,7 +191,57 @@ impl Indexer for MemoryIndexer {
     }
 }
 
+/// Whether this commit's id is already in the principal's indexed chain.
+fn is_indexed(state: &MemoryState, commit: &IndexableCommit) -> bool {
+    state
+        .commits
+        .get(&commit.principal_id)
+        .is_some_and(|existing| {
+            existing
+                .iter()
+                .any(|c| commit.commit_ids.contains(&c.commit_id))
+        })
+}
+
+/// Refuse a commit whose PG alias claim would re-point an existing alias:
+/// such a write names no new truth, it rewrites an old one. The only
+/// exclusive claim; digests name sets of holders.
+fn claims_conflict(state: &MemoryState, commit: &IndexableCommit) -> Result<(), IndexerError> {
+    for pr in commit.pg.iter().filter(|pr| **pr != commit.principal_id) {
+        let owner = state
+            .aliases
+            .get(pr)
+            .map(String::as_str)
+            .or_else(|| state.principals.contains_key(pr).then_some(pr.as_str()));
+        if owner.is_some_and(|o| o != commit.principal_id) {
+            return Err(IndexerError::Conflict(format!(
+                "PG alias {pr} already names another principal; refusing to re-point it to {}",
+                commit.principal_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl IndexerWrite for MemoryIndexer {
+    fn check_commit(
+        &self,
+        commit: &IndexableCommit,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let commit = commit.clone();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            if is_indexed(&state, &commit) {
+                return Ok(());
+            }
+            claims_conflict(&state, &commit)
+        }
+    }
+
     fn index_commit(
         &self,
         commit: &IndexableCommit,
@@ -188,14 +255,12 @@ impl IndexerWrite for MemoryIndexer {
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
 
             // Idempotency: skip if this commit_id is already indexed.
-            if let Some(existing) = state.commits.get(&commit.principal_id) {
-                if existing
-                    .iter()
-                    .any(|c| commit.commit_ids.contains(&c.commit_id))
-                {
-                    return Ok(());
-                }
+            if is_indexed(&state, &commit) {
+                return Ok(());
             }
+
+            claims_conflict(&state, &commit)?;
+            let entries = digest_entries(&commit)?;
 
             let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
             let primary_pr = commit.prs.first().cloned().unwrap_or_default();
@@ -244,14 +309,13 @@ impl IndexerWrite for MemoryIndexer {
                     last_updated: commit.timestamp,
                 });
 
-            // Alias each PG variant to the principal (first writer wins,
-            // and a stored principal id always outranks an alias).
+            // Alias each PG variant to the principal. The conflict check
+            // above guarantees none names anyone else.
             for pr in &commit.pg {
                 if *pr != commit.principal_id {
                     state
                         .aliases
-                        .entry(pr.clone())
-                        .or_insert_with(|| commit.principal_id.clone());
+                        .insert(pr.clone(), commit.principal_id.clone());
                 }
             }
 
@@ -274,62 +338,10 @@ impl IndexerWrite for MemoryIndexer {
                 },
             );
 
-            // Index each coz blob.
-            for coz in &commit.cozies {
-                let entity_type =
-                    if coz.typ.starts_with("cyphr/action") || coz.typ.contains("/action") {
-                        EntityType::Action
-                    } else {
-                        EntityType::Transaction
-                    };
-
-                let digest_key = coz.blob_hash.to_string();
-                state.digest_index.insert(
-                    digest_key.clone(),
-                    EntityRef {
-                        digest: digest_key,
-                        blob_hash: coz.blob_hash,
-                        entity_type,
-                        sequence: Some(commit.sequence),
-                        principal_id: Some(commit.principal_id.clone()),
-                        principal_root: false,
-                    },
-                );
-
-                state.digest_index.insert(
-                    coz.czd.clone(),
-                    EntityRef {
-                        digest: coz.czd.clone(),
-                        blob_hash: coz.blob_hash,
-                        entity_type,
-                        sequence: Some(commit.sequence),
-                        principal_id: Some(commit.principal_id.clone()),
-                        principal_root: false,
-                    },
-                );
-            }
-
-            // Map every commit-level digest variant (commit IDs, PR/SR/AR/CR)
-            // to the same EntityRef, mirroring FjallIndexer's db_index_commit.
-            for variant in commit
-                .commit_ids
-                .iter()
-                .chain(commit.prs.iter())
-                .chain(commit.srs.iter())
-                .chain(commit.ars.iter())
-                .chain(commit.crs.iter())
-            {
-                state.digest_index.insert(
-                    variant.clone(),
-                    EntityRef {
-                        digest: variant.clone(),
-                        blob_hash: commit.blob_hashes[0],
-                        entity_type: EntityType::Commit,
-                        sequence: Some(commit.sequence),
-                        principal_id: Some(commit.principal_id.clone()),
-                        principal_root: commit.prs.contains(variant),
-                    },
-                );
+            // Every digest names its set of holders; arrival order is
+            // invisible in the result (see `merge_holder`).
+            for (digest, holder) in entries {
+                merge_holder(state.digest_index.entry(digest).or_default(), holder);
             }
 
             // Index public keys.
