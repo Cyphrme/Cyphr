@@ -139,69 +139,135 @@ pub async fn count(
     resp
 }
 
+/// Why a health probe failed: which step, and the underlying cause. Logged
+/// server-side only; the HTTP response stays generic.
+#[derive(Debug, thiserror::Error)]
+pub enum ProbeError {
+    /// The sentinel file could not be written.
+    #[error("writing sentinel {path}: {source}")]
+    Sentinel {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    /// The blocking probe task did not complete.
+    #[error("probe task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+}
+
+type ProbeFn = dyn Fn() -> Result<(), ProbeError> + Send + Sync;
+
 /// Single-flight storage write probe for `/healthz`.
 ///
 /// Reads cannot detect a destroyed store (open descriptors keep answering),
-/// and neither can an insert into an already-open keyspace (it lands in the
-/// unlinked journal), so liveness is two writes that must both succeed: one
-/// fixed key in a dedicated `healthz` keyspace (catches a poisoned or
-/// failing engine), and one fixed-name, fixed-content sentinel file in the
-/// record directory, synced (catches a vanished, read-only, or full
-/// directory). Keys, values and file name are constants, so the probe is
-/// idempotent, bounded to a few bytes, and touches no blob, commit, or
-/// principal data.
+/// and neither can an insert into an already-open database (it lands in the
+/// unlinked journal), so liveness is a write into the record directory
+/// itself: one fixed-name, fixed-content sentinel file. It fails when the
+/// directory has vanished or is not writable. It is not fsynced, so it does
+/// not claim to detect a full disk or a failing device; those surface on
+/// the real write path. The name and content are constants, so the probe
+/// is idempotent, one byte, and touches no blob, commit, or principal
+/// data.
 ///
 /// Cost control for an unauthenticated caller: probes never run
 /// concurrently. A caller that arrives while one is in flight adopts that
 /// probe's result instead of issuing its own, so write rate is bounded by
-/// one disk sync at a time regardless of request rate (the per-IP fence
-/// still applies on top). No TTL cache: a stale "healthy" is exactly the
-/// defect the probe exists to avoid.
+/// one tiny write at a time regardless of request rate (the per-IP fence
+/// applies on top). No TTL cache: a stale "healthy" is exactly the defect
+/// the probe exists to avoid.
 pub struct HealthProbe {
-    db: fjall::Database,
-    keyspace: fjall::Keyspace,
-    sentinel: std::path::PathBuf,
+    run: std::sync::Arc<ProbeFn>,
     gate: tokio::sync::Mutex<()>,
     generation: AtomicU64,
     last_ok: AtomicBool,
 }
 
 impl HealthProbe {
-    /// Open the sentinel keyspace on the record database.
-    pub fn open(db: fjall::Database, record_dir: &std::path::Path) -> Result<Self, fjall::Error> {
-        let keyspace = db.keyspace("healthz", fjall::KeyspaceCreateOptions::default)?;
-        Ok(Self {
-            db,
-            keyspace,
-            sentinel: record_dir.join("healthz.probe"),
-            gate: tokio::sync::Mutex::new(()),
-            generation: AtomicU64::new(0),
-            last_ok: AtomicBool::new(true),
+    /// A probe that writes `<record_dir>/healthz.probe`.
+    pub fn new(record_dir: &std::path::Path) -> Self {
+        let sentinel = record_dir.join("healthz.probe");
+        Self::with_probe(move || {
+            std::fs::write(&sentinel, b"1").map_err(|source| ProbeError::Sentinel {
+                path: sentinel.clone(),
+                source,
+            })
         })
     }
 
-    /// Whether the record store accepted a durable write just now (or
-    /// within the in-flight probe this call coalesced into).
+    fn with_probe(run: impl Fn() -> Result<(), ProbeError> + Send + Sync + 'static) -> Self {
+        Self {
+            run: std::sync::Arc::new(run),
+            gate: tokio::sync::Mutex::new(()),
+            generation: AtomicU64::new(0),
+            last_ok: AtomicBool::new(true),
+        }
+    }
+
+    /// Whether the record directory accepted a write just now (or within
+    /// the in-flight probe this call coalesced into). Failure causes are
+    /// logged here with the step that failed.
     pub async fn storage_writable(&self) -> bool {
         let seen = self.generation.load(Ordering::Acquire);
         let _turn = self.gate.lock().await;
         if self.generation.load(Ordering::Acquire) != seen {
             return self.last_ok.load(Ordering::Acquire);
         }
-        let (db, keyspace, sentinel) = (
-            self.db.clone(),
-            self.keyspace.clone(),
-            self.sentinel.clone(),
-        );
-        let ok = tokio::task::spawn_blocking(move || {
-            keyspace.insert("probe", "1").is_ok()
-                && db.persist(fjall::PersistMode::SyncAll).is_ok()
-                && std::fs::write(&sentinel, b"1").is_ok()
-        })
-        .await
-        .unwrap_or(false);
+        let run = self.run.clone();
+        let outcome = match tokio::task::spawn_blocking(move || run()).await {
+            Ok(result) => result,
+            Err(join) => Err(ProbeError::from(join)),
+        };
+        if let Err(err) = &outcome {
+            tracing::error!(error = %err, "healthz probe failed");
+        }
+        let ok = outcome.is_ok();
         self.last_ok.store(ok, Ordering::Release);
         self.generation.fetch_add(1, Ordering::AcqRel);
         ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    use super::*;
+
+    /// Claim: concurrent `/healthz` callers coalesce into few probes and
+    /// never overlap, which is the unauthenticated-caller write bound.
+    /// Turns red if coalescing is removed (every caller probes) or the
+    /// gate is removed (probes overlap). A unit test because the router
+    /// cannot count probes. 16 callers vs a 50ms probe.
+    #[tokio::test]
+    async fn concurrent_callers_coalesce_and_never_overlap() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::new(HealthProbe::with_probe({
+            let (runs, in_flight, max) = (runs.clone(), in_flight.clone(), max_in_flight.clone());
+            move || {
+                runs.fetch_add(1, Ordering::SeqCst);
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }));
+
+        let calls = (0..16).map(|_| {
+            let probe = probe.clone();
+            tokio::spawn(async move { probe.storage_writable().await })
+        });
+        for ok in futures::future::join_all(calls).await {
+            assert!(ok.expect("caller task"), "healthy probe answers true");
+        }
+
+        assert_eq!(max_in_flight.load(Ordering::SeqCst), 1, "probes overlapped");
+        assert!(
+            runs.load(Ordering::SeqCst) <= 2,
+            "16 concurrent callers ran {} probes; coalescing is broken",
+            runs.load(Ordering::SeqCst)
+        );
     }
 }

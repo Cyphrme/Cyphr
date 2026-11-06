@@ -118,7 +118,6 @@ impl AppState {
     /// is a startup error, not a silent fallback to no identity.
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let db = fjall::Database::builder(config.blobs_dir()).open()?;
-        let health = metrics::HealthProbe::open(db.clone(), &config.record_dir())?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
         let indexer = FjallIndexer::open(&config.index_dir())?;
         let engine =
@@ -141,6 +140,8 @@ impl AppState {
 
         let sync_locks =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+        let health = metrics::HealthProbe::new(&config.record_dir());
 
         Ok(Self {
             config,

@@ -1197,7 +1197,6 @@ pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.health.storage_writable().await {
         (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
     } else {
-        tracing::error!("healthz: record store rejected the probe write");
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
