@@ -331,6 +331,9 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
             Err(cyphr_storage::engine::EngineError::Protocol(cyphr::Error::CommitMismatch)) => {
                 conflicts += 1
             },
+            // All racers are signed by one key, so past its retention quota
+            // a loser is refused as BranchLimit: still a typed refusal.
+            Err(cyphr_storage::engine::EngineError::BranchLimit { .. }) => conflicts += 1,
             Err(other) => panic!("unexpected error for a racing submission: {other}"),
         }
     }
