@@ -97,6 +97,19 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         let theirs = peer.chain(&wire).await?;
         let local = raw_chain(&store, &principal_id).await?;
         if let Some(i) = first_divergence(&local, &theirs) {
+            // A fork needs two histories that both replay; a peer chain that
+            // does not is a bad answer, not a rival branch.
+            let replay_from = match &genesis {
+                Some(g) => g.clone(),
+                None => store.resolve_genesis(&principal_id, &[]).await?,
+            };
+            if let Err(reason) = replays(&replay_from, &theirs) {
+                return Err(PeerError::Malformed {
+                    peer: peer.url().to_owned(),
+                    reason,
+                }
+                .into());
+            }
             return Err(PeerError::Diverged {
                 peer: peer.url().to_owned(),
                 height: i,
@@ -120,9 +133,39 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     })
 }
 
+/// A blob in the identity the engine stores it under: members sorted at
+/// every depth, whitespace gone. Two encodings of one signed coz compare
+/// equal; any difference in a signed or carried value does not. Bytes that
+/// are not JSON are their own identity.
+fn canonical_blob(blob: &[u8]) -> Vec<u8> {
+    fn sorted(v: Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut members: Vec<_> = m.into_iter().map(|(k, v)| (k, sorted(v))).collect();
+                members.sort_by(|a, b| a.0.cmp(&b.0));
+                Value::Object(members.into_iter().collect())
+            },
+            Value::Array(a) => Value::Array(a.into_iter().map(sorted).collect()),
+            other => other,
+        }
+    }
+    serde_json::from_slice::<Value>(blob)
+        .ok()
+        .and_then(|v| serde_json::to_vec(&sorted(v)).ok())
+        .unwrap_or_else(|| blob.to_vec())
+}
+
+/// Whether two commits are the same signed commit, whatever their encoding.
+fn same_commit(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| canonical_blob(x) == canonical_blob(y))
+}
+
 /// Index of the first commit at which `a` and `b` both hold one and differ.
 fn first_divergence(a: &[RawCommit], b: &[Vec<Vec<u8>>]) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| x.blobs != *y)
+    a.iter().zip(b).position(|(x, y)| !same_commit(&x.blobs, y))
 }
 
 /// A local commit's transaction, to be re-signed onto a new tip.
@@ -186,7 +229,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let common = local
         .iter()
         .zip(&theirs)
-        .take_while(|(x, y)| x.blobs == **y)
+        .take_while(|(x, y)| same_commit(&x.blobs, y))
         .count();
     let mut replay = Vec::new();
     let mut authority = cli.authority.clone();
@@ -301,7 +344,7 @@ enum Relation {
 }
 
 fn relate(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> Relation {
-    if let Some(i) = a.iter().zip(b).position(|(x, y)| x != y) {
+    if let Some(i) = a.iter().zip(b).position(|(x, y)| !same_commit(x, y)) {
         return Relation::Fork(i);
     }
     match a.len().cmp(&b.len()) {

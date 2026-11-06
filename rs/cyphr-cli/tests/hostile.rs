@@ -409,7 +409,6 @@ fn reserialized_world() -> (User, String, Hostile, Server) {
 /// reports Active with no evidence. Turns red on a byte comparison of blobs
 /// (verify reports `principal_fork` at height 0). End-to-end: yes.
 #[test]
-#[ignore = "RED(N16): raw-byte chain comparison reports a false fork"]
 fn reserialized_chain_is_not_a_fork_in_verify() {
     let (a, id, peer, _real) = reserialized_world();
     let r = a.run(&[
@@ -429,7 +428,6 @@ fn reserialized_chain_is_not_a_fork_in_verify() {
 /// Claim: fetch from a peer that re-serializes our own history stores
 /// nothing and fails nothing. Turns red on "diverges at commit 0".
 #[test]
-#[ignore = "RED(N16): raw-byte chain comparison reports a false fork"]
 fn reserialized_chain_is_not_a_fork_in_fetch() {
     let (a, id, peer, _real) = reserialized_world();
     a.add_key(&id);
@@ -446,7 +444,6 @@ fn reserialized_chain_is_not_a_fork_in_fetch() {
 /// nothing to move and leaves the store alone. Turns red on a "duplicate
 /// key" failure from replaying onto a mis-detected empty common prefix.
 #[test]
-#[ignore = "RED(N16): raw-byte chain comparison reports a false fork"]
 fn reserialized_chain_does_not_break_rebase() {
     let (a, id, peer, _real) = reserialized_world();
     a.add_key(&id);
