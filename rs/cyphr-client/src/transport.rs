@@ -316,13 +316,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Channel<S> {
         Ok(())
     }
 
-    /// Receive one logical message.
+    /// Receive one logical message of at most `max` bytes. The declared
+    /// length is checked against `max` as soon as the first chunk arrives,
+    /// before the rest is read or buffered, so a peer cannot make this side
+    /// hold what it will refuse.
     ///
     /// # Errors
     ///
-    /// [`TransportError::Malformed`] for a length above [`MAX_MESSAGE`] or
-    /// bytes beyond the declared length; I/O and Noise errors otherwise.
-    pub async fn recv_message(&mut self) -> Result<Vec<u8>, TransportError> {
+    /// [`TransportError::Malformed`] for a length above `max` (or
+    /// [`MAX_MESSAGE`]) or bytes beyond the declared length; I/O and Noise
+    /// errors otherwise.
+    pub async fn recv_message(&mut self, max: usize) -> Result<Vec<u8>, TransportError> {
         let mut buf = self.recv_one().await?;
         let head: [u8; 4] = buf
             .get(..4)
@@ -330,7 +334,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Channel<S> {
             .ok_or_else(|| malformed("message shorter than its length prefix"))?;
         let len = usize::try_from(u32::from_be_bytes(head))
             .map_err(|_| malformed("message length does not fit"))?;
-        if len > MAX_MESSAGE {
+        if len > max.min(MAX_MESSAGE) {
             return Err(malformed("message exceeds the size limit"));
         }
         while buf.len() < 4 + len {
@@ -847,7 +851,7 @@ impl Connector for NoiseConnector {
         // session is unusable afterwards; callers reconnect.
         let reply = tokio::time::timeout(REQUEST_TIMEOUT, async {
             channel.send_message(&body).await?;
-            channel.recv_message().await
+            channel.recv_message(MAX_MESSAGE).await
         })
         .await
         .map_err(|_| ConnectError::Unreachable("request timed out".into()))?

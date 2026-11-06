@@ -12,8 +12,8 @@ use std::net::SocketAddr;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
 use cyphr_client::transport::{
-    Channel, NoiseConnector, Role, assemble_statement, decode_request, encode_ack, encode_response,
-    statement_pay,
+    Channel, MAX_MESSAGE, NoiseConnector, Role, assemble_statement, decode_request, encode_ack,
+    encode_response, statement_pay,
 };
 use cyphr_client::{
     BindingKind, BindingPolicy, Connector, PatchFailure, PatchRequest, PeerChain, Request,
@@ -160,7 +160,7 @@ async fn serve_envelope(
     channel.recv_one().await?;
     channel.send_one(&encode_ack(Ok(()))).await?;
     loop {
-        let request = channel.recv_message().await?;
+        let request = channel.recv_message(MAX_MESSAGE).await?;
         decode_request(&request)?;
         channel
             .send_message(&encode_response(200, envelope))

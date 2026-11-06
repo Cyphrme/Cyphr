@@ -1033,3 +1033,52 @@ async fn the_pre_auth_exchange_shares_one_deadline() {
         started.elapsed()
     );
 }
+
+/// An authenticated Level 1 session driven by hand, so a test controls
+/// every byte after the ack.
+async fn raw_session(addr: SocketAddr) -> Channel<tokio::net::TcpStream> {
+    let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    raw_session_over(stream).await
+}
+
+async fn raw_session_over<S>(stream: S) -> Channel<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (kp, tmb) = fresh_key();
+    let mut channel = Channel::initiate(stream).await.expect("handshake");
+    let h = channel.handshake_hash().to_vec();
+    channel.recv_one().await.expect("the responder statement");
+    let alg = kp.alg.name();
+    let pay =
+        statement_pay(alg, &tmb, &tmb.to_b64(), Role::Initiator, &h, 1_700_000_000).expect("pay");
+    let (sig, _) = coz::sign_json(&pay, alg, &kp.prv_bytes, &kp.pub_bytes).expect("sign");
+    let sidecar = Some((alg, kp.pub_bytes.as_slice(), &tmb));
+    channel
+        .send_one(&assemble_statement(&pay, &sig, sidecar).expect("statement"))
+        .await
+        .expect("send");
+    decode_ack(&channel.recv_one().await.expect("ack")).expect("accepted");
+    channel
+}
+
+/// Claim: a message is refused by its declared length, before it is
+/// buffered. A session that announces a 16 MiB message (the router's body
+/// limit is 2 MiB) and sends only its first chunk is closed within seconds.
+///
+/// Turns red if: the server waits for the rest (up to the idle timeout)
+/// while holding what it has read. End-to-end scenario: yes.
+#[tokio::test]
+async fn an_oversize_message_is_refused_by_its_declared_length() {
+    let (state, _dir) = attestor_with(|_| {}).await;
+    let addr = start_noise(state).await;
+    let mut channel = raw_session(addr).await;
+
+    let mut first = (16u32 * 1024 * 1024).to_be_bytes().to_vec();
+    first.extend(vec![0u8; 65519 - 4]);
+    channel.send_one(&first).await.expect("the first chunk");
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(3), channel.recv_one())
+        .await
+        .expect("the server must close, not wait for the rest");
+    assert!(closed.is_err(), "the server answered an oversize message");
+}

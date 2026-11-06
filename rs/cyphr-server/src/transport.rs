@@ -231,7 +231,12 @@ async fn session(
     let mut channel = tokio::time::timeout(PREAUTH_DEADLINE, authenticate(stream, state))
         .await
         .map_err(|_| TransportError::Timeout)??;
-    serve_requests(&mut channel, peer, &router).await
+    // A request carries its body plus a target of at most 64 KiB; anything
+    // declared larger would be refused by the body limit anyway.
+    let max_request = usize::try_from(state.config.limits.max_body_bytes)
+        .unwrap_or(usize::MAX)
+        .saturating_add(64 * 1024);
+    serve_requests(&mut channel, peer, &router, max_request).await
 }
 
 /// Handshake, both statements and the ack: everything before a request.
@@ -265,15 +270,17 @@ async fn serve_requests(
     channel: &mut Channel<TcpStream>,
     peer: SocketAddr,
     router: &Router,
+    max_request: usize,
 ) -> Result<(), SessionError> {
     loop {
-        let message = match tokio::time::timeout(IDLE_TIMEOUT, channel.recv_message()).await {
-            Err(_) => return Ok(()),
-            Ok(Err(TransportError::Io(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(());
-            },
-            Ok(message) => message?,
-        };
+        let message =
+            match tokio::time::timeout(IDLE_TIMEOUT, channel.recv_message(max_request)).await {
+                Err(_) => return Ok(()),
+                Ok(Err(TransportError::Io(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(());
+                },
+                Ok(message) => message?,
+            };
         let (status, body) = match decode_request(&message) {
             Ok(request) => dispatch(router, peer, request).await,
             Err(_) => (400, b"malformed request".to_vec()),
