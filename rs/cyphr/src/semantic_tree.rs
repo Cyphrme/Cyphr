@@ -56,9 +56,9 @@ use crate::state::{AuthRoot, DataRoot, HashAlg, KeyRoot, StateRoot};
 
 /// Collection-node arity: dense, left-filled, one leaf per item. At size
 /// `<= 256` the tree folds as a single `H(child_0 ∥ … ∥ child_n)` — the same
-/// bytes the old flat formulas produced. Beyond 256
-/// items the spine's canonical fold takes over; that boundary is explicitly
-/// out of this node's scope (reserved for future work).
+/// bytes the old flat formulas produced. Beyond 256 items the spine's
+/// rebalanced fold adds levels of 256 (SPEC §4: the Merkle primitive
+/// supports n-arity); there is no item bound.
 const COLLECTION_ARITY: u64 = 256;
 
 /// Role-slot arity: fixed two cells, position IS the semantics.
@@ -214,10 +214,7 @@ impl KeyTree {
     ///
     /// # Errors
     ///
-    /// Returns `NoActiveKeys` if `algs` is empty. Returns
-    /// `CollectionArityExceeded` if `thumbprints.len() > 256` — the
-    /// collection-node arity boundary is out of this node's scope (reserved
-    /// for future work).
+    /// Returns `NoActiveKeys` if `algs` is empty.
     pub fn build_tree(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<Self> {
         Self::build_tree_with_nonces(thumbprints, &[], algs)
     }
@@ -227,7 +224,7 @@ impl KeyTree {
     ///
     /// # Errors
     ///
-    /// As [`Self::build_tree`]; the 256-item bound counts nonces too.
+    /// As [`Self::build_tree`].
     pub(crate) fn build_tree_with_nonces(
         thumbprints: &[&Thumbprint],
         nonces: &[&[u8]],
@@ -236,11 +233,6 @@ impl KeyTree {
         if algs.is_empty() {
             return Err(Error::NoActiveKeys);
         }
-        let count = thumbprints.len() + nonces.len();
-        if count as u64 > COLLECTION_ARITY {
-            return Err(Error::CollectionArityExceeded(count));
-        }
-
         let tmbs: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
         let sorted = sorted_leaves(&tmbs, nonces);
 
@@ -325,16 +317,12 @@ impl AuthTree {
     ///
     /// # Errors
     ///
-    /// As [`Self::build_tree`]; `CollectionArityExceeded` if KR and the
-    /// nonces exceed one fold.
+    /// As [`Self::build_tree`].
     pub(crate) fn build_tree_with_nonces(
         kr: &KeyRoot,
         nonces: &[&[u8]],
         algs: &[HashAlg],
     ) -> Result<Self> {
-        if 1 + nonces.len() as u64 > COLLECTION_ARITY {
-            return Err(Error::CollectionArityExceeded(1 + nonces.len()));
-        }
         let mut node = Self::new(role_arity(nonces.len()));
         register_algs(&mut node.inner, algs)?;
         let payload = serialize_digest(&kr.0, algs)?;
@@ -556,47 +544,6 @@ mod tests {
             .collect()
     }
 
-    /// Backs the 256-item bound on KT counting nonces (SPEC 10.1 puts nonces
-    /// among the key thumbprints): one key plus 255 nonces is exactly 256 and
-    /// builds; one more is `CollectionArityExceeded(257)`. Turns red if the
-    /// cap ignores nonces (only thumbprints counted) or is off by one.
-    /// AR1 will replace this bound with n-arity (SPEC 4) and retire this
-    /// test. Unit level: reaching 256 leaves by signed scenario is not cheap.
-    #[test]
-    fn nonce_arity_cap_kt_counts_nonces() {
-        let t = tmb(&[0xAA; 32]);
-        let algs = [HashAlg::Sha256];
-        let ok = nonce_values(255);
-        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
-        assert!(KeyTree::build_tree_with_nonces(&[&t], &ok, &algs).is_ok());
-        let over = nonce_values(256);
-        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
-        assert!(matches!(
-            KeyTree::build_tree_with_nonces(&[&t], &over, &algs),
-            Err(Error::CollectionArityExceeded(257))
-        ));
-    }
-
-    /// Backs the same bound on the AT node, where KR takes one slot: 255
-    /// nonces build, 256 is `CollectionArityExceeded(257)`. Turns red if
-    /// the cap is missing or miscounts KR. AR1 will replace this bound with
-    /// n-arity (SPEC 4) and retire this test. Unit level, as for KT.
-    #[test]
-    fn nonce_arity_cap_at_counts_kr_and_nonces() {
-        let t = tmb(&[0xAA; 32]);
-        let algs = [HashAlg::Sha256];
-        let kr = KeyTree::build(&[&t], &algs).unwrap();
-        let ok = nonce_values(255);
-        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
-        assert!(AuthTree::build_tree_with_nonces(&kr, &ok, &algs).is_ok());
-        let over = nonce_values(256);
-        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
-        assert!(matches!(
-            AuthTree::build_tree_with_nonces(&kr, &over, &algs),
-            Err(Error::CollectionArityExceeded(257))
-        ));
-    }
-
     const PIN_KT_1: &str = "0000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const PIN_KT_256: &str = "b105a52d7742b86414e74bab99137409d59ee4e61ab2369cfd4d36ffc2d56826";
     const PIN_KT_MIXED_256: &str =
@@ -698,12 +645,10 @@ mod tests {
     /// building the smaller set again gives the earlier root (removing items
     /// restores it). Turns red if: the cap stays or is off by one (build
     /// refused), items past 256 are dropped (root equals the 256 root), or
-    /// the growth scheme depends on input order. RED:
-    /// `CollectionArityExceeded(257)`. Unit level, as above; the removal
-    /// check on a stateful path is the PR test and the signed lifecycle in
-    /// `spec_conformance.rs`.
+    /// the growth scheme depends on input order. Unit
+    /// level, as above; the removal check on a stateful path is the PR test and the signed
+    /// lifecycle in `spec_conformance.rs`.
     #[test]
-    #[ignore = "RED(AR1): KT refuses more than 256 items"]
     fn arity_kt_builds_beyond_256_and_removal_restores_the_root() {
         let a = [HashAlg::Sha256];
         let base = kt_root(256, 0, &a);
@@ -732,10 +677,8 @@ mod tests {
     /// nonces follow it: 256, 300 and 1000 nonces build with distinct roots
     /// that differ from the 255-nonce (full-fold) root, and rebuilding with
     /// 255 nonces gives the earlier root. Turns red if the cap stays or
-    /// items past the fold are dropped. RED: `CollectionArityExceeded(257)`.
-    /// Unit level, as above.
+    /// items past the fold are dropped. Unit level, as above.
     #[test]
-    #[ignore = "RED(AR1): AT refuses KR plus more than 255 nonces"]
     fn arity_at_builds_beyond_256_and_removal_restores_the_root() {
         let a = [HashAlg::Sha256];
         let base = at_root(255, &a);
@@ -746,18 +689,6 @@ mod tests {
             seen.push(r);
         }
         assert_eq!(at_root(255, &a), base, "removal did not restore the root");
-    }
-
-    #[test]
-    fn kt_arity_boundary_rejected() {
-        let raw: Vec<Thumbprint> = (0..257u16)
-            .map(|i| Thumbprint::from_bytes(vec![(i % 256) as u8; 32]))
-            .collect();
-        let refs: Vec<&Thumbprint> = raw.iter().collect();
-        assert!(matches!(
-            KeyTree::build(&refs, &[HashAlg::Sha256]),
-            Err(Error::CollectionArityExceeded(257))
-        ));
     }
 }
 

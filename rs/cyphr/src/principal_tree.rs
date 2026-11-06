@@ -174,9 +174,6 @@ impl PrincipalTree {
         }
         let mut sorted: Vec<Vec<u8>> = nonces.iter().map(|n| n.to_vec()).collect();
         sorted.sort();
-        if 2 + sorted.len() as u64 > NONCE_ARITY {
-            return Err(Error::CollectionArityExceeded(2 + sorted.len()));
-        }
         self.nonces = sorted;
         self.rebuild()
     }
@@ -273,37 +270,6 @@ mod tests {
         CommitRoot(MultihashDigest::from_single(HashAlg::Sha256, bytes.to_vec()).unwrap())
     }
 
-    /// Backs the 256-item bound on the Principal Tree, where SR and CR take
-    /// two slots: 254 nonces build, 255 is `CollectionArityExceeded(257)`.
-    /// Turns red if the cap is missing or miscounts SR and CR. AR1 will
-    /// replace this bound with n-arity (SPEC 4) and retire this test. Unit
-    /// level: reaching 256 leaves by signed scenario is not cheap.
-    #[test]
-    fn nonce_arity_cap_pr_counts_sr_cr_and_nonces() {
-        let values = |n: usize| -> Vec<Vec<u8>> {
-            (0..n)
-                .map(|i| {
-                    let mut v = vec![0xEE; 32];
-                    v[..2].copy_from_slice(&(i as u16).to_be_bytes());
-                    v
-                })
-                .collect()
-        };
-        let algs = [HashAlg::Sha256];
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
-        pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
-        let ok = values(254);
-        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
-        pt.set_nonces(&ok, &algs).unwrap();
-        let over = values(255);
-        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
-        assert!(matches!(
-            pt.set_nonces(&over, &algs),
-            Err(Error::CollectionArityExceeded(257))
-        ));
-    }
-
     fn nonce_values(n: usize) -> Vec<Vec<u8>> {
         (0..n)
             .map(|i| {
@@ -381,9 +347,8 @@ mod tests {
     /// is the real incremental path here: `set_nonces` rebuilds in place).
     /// Turns red if the cap stays, items past the fold are dropped, the
     /// growth scheme depends on input order, or a shrink keeps cells from the
-    /// larger tree. RED: `CollectionArityExceeded(257)`. Unit level, as above.
+    /// larger tree. Unit level, as above.
     #[test]
-    #[ignore = "RED(AR1): PR refuses SR, CR plus more than 254 nonces"]
     fn arity_pr_builds_beyond_256_and_removal_restores_the_root() {
         let algs = [HashAlg::Sha256];
         let base = pr_root(true, 254);

@@ -634,13 +634,9 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
 /// is a Merkle tree, so a principal must be able to hold more keys than a
 /// fixed fan-out. Scenario: explicit genesis of 257 distinct keys. Control:
 /// 256 keys build. Turns red if the tree refuses a key set the SPEC does not
-/// bound. RED: the collection node is capped at 256 children and returns
-/// `CollectionArityExceeded` (`error.rs` records it as a known, deferred
-/// gap). End to end: no; a unit-level boundary, because no scenario reaches
-/// 257 keys more cheaply. The fixing node must also delete
-/// `semantic_tree.rs` `kt_arity_boundary_rejected`, which pins the cap.
+/// bound. End to end: no; a unit-level boundary, because no scenario reaches
+/// 257 keys more cheaply.
 #[test]
-#[ignore = "RED(SC1-F3): SPEC 4 KT capped at 256 children"]
 fn s4_key_tree_supports_more_than_256_keys() {
     let keys = |n: usize| -> Vec<Key> { (0..n).map(|_| key_of(&kp())).collect() };
     Principal::explicit(keys(256)).expect("control: 256 keys build");
@@ -657,11 +653,9 @@ fn s4_key_tree_supports_more_than_256_keys() {
 /// when that size was first reached. Turns red if: the 257th key is refused
 /// (the cap stays), a key beyond 256 is dropped from the root (Key Root
 /// unchanged by the create), or a delete leaves residue (root not restored).
-/// RED: `CollectionArityExceeded(257)` on the 257th `key/create`. End to end:
-/// yes (signed commits through `finalize`); the genesis-only form is the
+/// End to end: yes (signed commits through `finalize`); the genesis-only form is the
 /// `s4_key_tree_supports_more_than_256_keys` red above.
 #[test]
-#[ignore = "RED(AR1): KT refuses the 257th key"]
 fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
     let a = kp();
     let mut keys = vec![key_of(&a)];
@@ -686,8 +680,10 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
         );
         roots.push(p.key_root().clone());
     }
-    for (i, k) in extra.iter().enumerate().rev() {
-        let now = T + 10 + i as i64;
+    for (step, (i, k)) in extra.iter().enumerate().rev().enumerate() {
+        // Commit timestamps must not go backwards, so `now` follows the
+        // delete order, not the key index.
+        let now = T + 10 + step as i64;
         commit_one(
             &mut p,
             &a,
