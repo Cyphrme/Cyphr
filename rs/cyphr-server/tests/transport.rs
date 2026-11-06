@@ -111,17 +111,67 @@ async fn push_client_principal(app: &Router) -> String {
     pr
 }
 
-/// The test-supplied Level 1 client key: the pool's `golden` key behind the
-/// `Signer` interface. No key is stored anywhere.
-fn golden_signer() -> SoftwareSigner {
+/// A pool key behind the `Signer` interface. No key is stored anywhere.
+fn pool_signer(name: &str) -> SoftwareSigner {
     let pool = load_pool();
-    let golden = pool.get("golden").expect("golden in pool");
+    let key = pool.get(name).expect("key in pool");
     SoftwareSigner::new(
-        &golden.alg,
-        &Base64UrlUnpadded::decode_vec(golden.prv.as_ref().expect("golden prv")).expect("prv b64"),
-        &Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("pub b64"),
-        &golden.compute_tmb().expect("golden tmb"),
+        &key.alg,
+        &Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).expect("prv b64"),
+        &Base64UrlUnpadded::decode_vec(&key.pub_key).expect("pub b64"),
+        &key.compute_tmb().expect("tmb"),
     )
+}
+
+/// The test-supplied Level 1 client key: the pool's `golden` key.
+fn golden_signer() -> SoftwareSigner {
+    pool_signer("golden")
+}
+
+/// Extend `principal` with a commit in which `signer_name` revokes itself
+/// (SPEC's self-revoke shape), returning the commit's wire blobs. Mirrors
+/// the helper `tests/login.rs` keeps for the same purpose; the two suites
+/// do not share a module.
+fn self_revoke_commit_blobs(
+    mut principal: cyphr::Principal<impl cyphr::eml::Storage>,
+    signer_name: &str,
+    at: i64,
+) -> Vec<Vec<u8>> {
+    let pool = load_pool();
+    let key = pool.get(signer_name).expect("key in pool");
+    let tmb = key.compute_tmb_b64().expect("tmb");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": key.alg,
+        "now": at,
+        "rvk": at,
+        "tmb": tmb,
+        "typ": "cyphr.me/cyphr/key/revoke",
+    }))
+    .expect("pay json");
+    let prv = Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).expect("prv b64");
+    let pub_key = Base64UrlUnpadded::decode_vec(&key.pub_key).expect("pub b64");
+    let (sig, cad) = coz::sign_json(&pay, &key.alg, &prv, &pub_key).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &key.alg).expect("czd");
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("the self-revoke verifies against the principal");
+    scope
+        .finalize_with_software(
+            &SoftwareSigner::new(&key.alg, &prv, &pub_key, &key.compute_tmb().expect("tmb")),
+            at,
+            "cyphr.me",
+        )
+        .expect("the commit finalizes");
+    let entries = cyphr_storage::export_commits(&principal).expect("export the commit");
+    entries
+        .last()
+        .expect("a commit after finalize")
+        .cozies
+        .iter()
+        .map(|c| serde_json::to_vec(c).expect("cozy serializes"))
+        .collect()
 }
 
 async fn listen() -> (tokio::net::TcpListener, SocketAddr) {
@@ -256,6 +306,108 @@ async fn initiator_key_outside_the_principal_chain_is_refused() {
             .map_err(|_| ()),
     };
     assert!(outcome.is_err(), "a stranger key must not get a session");
+}
+
+/// Claim: the server verifies the initiator's SIGNATURE, not just that the
+/// key it names is in the chain. A client that claims the principal's real
+/// thumbprint but signs with a key of its own is refused.
+///
+/// The control with the real key must be served first, so a transport that
+/// refuses everything cannot pass.
+///
+/// Turns red if: the claimed thumbprint alone, without a verifying
+/// signature, opens a session. End-to-end scenario: yes.
+#[tokio::test]
+async fn initiator_claiming_a_chain_key_without_its_signature_is_refused() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let own_principal = push_client_principal(&app).await;
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    NoiseConnector::connect(addr, &mut held, &golden_signer(), &own_principal)
+        .await
+        .expect("the principal's own key opens a session")
+        .exchange(&Request::get("/server"))
+        .await
+        .expect("the control session is served");
+
+    let pool = load_pool();
+    let golden = pool.get("golden").expect("golden in pool");
+    let thief = coz::Alg::Ed25519.generate_keypair();
+    let forged = SoftwareSigner::new(
+        thief.alg.name(),
+        &thief.prv_bytes,
+        &thief.pub_bytes,
+        &golden.compute_tmb().expect("golden tmb"),
+    );
+    let outcome = match NoiseConnector::connect(addr, &mut held, &forged, &own_principal).await {
+        Err(_) => Err(()),
+        Ok(conn) => conn
+            .exchange(&Request::get("/server"))
+            .await
+            .map_err(|_| ()),
+    };
+    assert!(
+        outcome.is_err(),
+        "a claimed key without its signature must not get a session"
+    );
+}
+
+/// Claim: the server refuses an initiator key its chain has revoked, even
+/// though the key is still present in the chain and its signature verifies.
+/// `key_a` is pushed with the principal, then self-revokes in a second
+/// commit; the principal's other key, `golden`, stays active.
+///
+/// The control with `golden` must be served first, so a transport that
+/// refuses everything cannot pass.
+///
+/// Turns red if: a revoked key's valid signature opens a session.
+/// End-to-end scenario: yes (push, revoke commit, handshake).
+#[tokio::test]
+async fn initiator_key_revoked_in_the_chain_is_refused() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let own_principal = push_client_principal(&app).await;
+
+    let genesis = state
+        .engine
+        .resolve_genesis(&own_principal, &[])
+        .await
+        .expect("resolve genesis");
+    let principal = state
+        .engine
+        .load_principal(&own_principal, genesis)
+        .await
+        .expect("load the pushed principal");
+    let blobs = self_revoke_commit_blobs(principal, "key_a", 1_700_000_100);
+    let slices: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    state
+        .engine
+        .submit_commit(&own_principal, None, &slices)
+        .await
+        .expect("submit the revoke commit");
+
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    NoiseConnector::connect(addr, &mut held, &golden_signer(), &own_principal)
+        .await
+        .expect("the active key opens a session")
+        .exchange(&Request::get("/server"))
+        .await
+        .expect("the control session is served");
+
+    let outcome =
+        match NoiseConnector::connect(addr, &mut held, &pool_signer("key_a"), &own_principal).await
+        {
+            Err(_) => Err(()),
+            Ok(conn) => conn
+                .exchange(&Request::get("/server"))
+                .await
+                .map_err(|_| ()),
+        };
+    assert!(outcome.is_err(), "a revoked key must not get a session");
 }
 
 /// Claim: a responder statement signed by a key the client's held chain no

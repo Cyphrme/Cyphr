@@ -9,8 +9,8 @@
 //!
 //! Assumptions the implement brief must honour or amend here (a Noise
 //! suite and wire framing are free choices; the fake needs one):
-//! - Noise params `Noise_NN_25519_ChaChaPoly_BLAKE2s`, via the `snow` crate (a dependency of
-//!   this crate's `noise` feature).
+//! - Noise params `Noise_NN_25519_ChaChaPoly_BLAKE2s`, via the `snow` crate (a dependency of this
+//!   crate's `noise` feature).
 //! - Every message, handshake and transport, is one frame: a big-endian `u16` length, then the
 //!   Noise message.
 //! - The responder's first transport message is its statement; the initiator replies with its own,
