@@ -699,3 +699,75 @@ pub async fn digest_holders_do_not_depend_on_arrival_order<I: Indexer + IndexerW
         );
     }
 }
+
+/// Backs "an indexer's idempotency key is the commit's chain position"
+/// (`(principal_id, sequence)`, I2: one writer, one linear chain), for every
+/// backend. A second, different commit at an already-indexed position is a
+/// replay of that slot, never a second chain entry: the chain keeps the first
+/// commit and the tip does not move. Turns red on a backend that keys on
+/// commit id alone (it appends a second entry at the same sequence).
+pub async fn index_commit_idempotency_is_keyed_by_chain_position<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let first = make_commit("alice", 0, 1000);
+    let mut rival = make_commit("alice", 0, 2000);
+    rival.commit_ids = vec!["SHA-256:commit-rival".to_string()];
+    indexer.index_commit(&first, &token).await.unwrap();
+    indexer.index_commit(&rival, &token).await.unwrap();
+    indexer.index_commit(&first, &token).await.unwrap();
+
+    let chain = indexer.get_commit_chain("alice", None, None).await.unwrap();
+    assert_eq!(chain.len(), 1, "one chain position, one entry: {chain:?}");
+    assert_eq!(chain[0].commit_id, "SHA-256:commit-alice-0");
+    let tip = indexer.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(tip.commit_count, 1);
+    assert_eq!(tip.last_updated, 1000, "a replayed position moved the tip");
+}
+
+/// A commit of `id` at `seq` whose state root is the shared `sr`.
+fn state_root_commit(id: &str, seq: u64, sr: &str) -> IndexableCommit {
+    let mut c = make_commit(id, seq, 1000 + seq as i64);
+    c.srs = vec![sr.to_string()];
+    c
+}
+
+/// Backs "holders are an order-independent SET": a principal that repeats a
+/// state root across commits is ONE holder (at its latest sequence), beside
+/// every other principal holding it, and arrival order shows in neither the
+/// membership nor the multiplicity. Turns red on a backend that appends a
+/// holder per commit, or that keeps the first sequence it saw.
+pub async fn digest_holders_are_a_duplicate_free_set<I: Indexer + IndexerWrite>(
+    forward: &I,
+    backward: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let sr = valid_digest('C');
+    let commits = [
+        state_root_commit("SHA-256:alice-id", 0, &sr),
+        state_root_commit("SHA-256:alice-id", 1, &sr),
+        state_root_commit("SHA-256:bob-id", 0, &sr),
+    ];
+    for c in &commits {
+        forward.index_commit(c, &token).await.unwrap();
+    }
+    for c in commits.iter().rev() {
+        backward.index_commit(c, &token).await.unwrap();
+    }
+    let d: TaggedDigest = sr.parse().unwrap();
+    for (name, indexer) in [("forward", forward), ("backward", backward)] {
+        let holders = indexer.resolve_digest_holders(&d).await.unwrap();
+        let seen: Vec<_> = holders
+            .iter()
+            .map(|h| (h.principal_id.clone().unwrap_or_default(), h.sequence))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("SHA-256:alice-id".to_string(), Some(1)),
+                ("SHA-256:bob-id".to_string(), Some(0)),
+            ],
+            "{name} holders of the shared state root"
+        );
+    }
+}

@@ -111,3 +111,18 @@ async fn digest_holders_do_not_depend_on_arrival_order_memory() {
     )
     .await;
 }
+
+#[tokio::test]
+#[ignore = "RED(N13): MemoryIndexer keys idempotency on commit id, not chain position"]
+async fn index_commit_idempotency_is_keyed_by_chain_position_memory() {
+    conformance::index_commit_idempotency_is_keyed_by_chain_position(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
+async fn digest_holders_are_a_duplicate_free_set_memory() {
+    conformance::digest_holders_are_a_duplicate_free_set(
+        &MemoryIndexer::new(),
+        &MemoryIndexer::new(),
+    )
+    .await;
+}

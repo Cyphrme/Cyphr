@@ -269,6 +269,19 @@ async fn digest_holders_do_not_depend_on_arrival_order() {
     conformance::digest_holders_do_not_depend_on_arrival_order(&forward, &backward).await;
 }
 
+#[tokio::test]
+async fn index_commit_idempotency_is_keyed_by_chain_position() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::index_commit_idempotency_is_keyed_by_chain_position(&indexer).await;
+}
+
+#[tokio::test]
+async fn digest_holders_are_a_duplicate_free_set() {
+    let (forward, _d1) = FjallIndexer::temp().expect("open temp indexer");
+    let (backward, _d2) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_holders_are_a_duplicate_free_set(&forward, &backward).await;
+}
+
 /// An index commit of principal `p<i>` whose coz carries the shared `czd`.
 fn commit_sharing(i: usize, czd: &str) -> cyphr_storage::index::IndexableCommit {
     let mut c = conformance::make_commit(&format!("SHA-256:p{i:04}"), 0, 1000);
