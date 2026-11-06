@@ -85,6 +85,13 @@ test  = false
 [[bin]]
 bench = false
 doc   = false
+name  = "fuzz_evidence"
+path  = "fuzz_targets/fuzz_evidence.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
 name  = "fuzz_view_statement"
 path  = "fuzz_targets/fuzz_view_statement.rs"
 test  = false
