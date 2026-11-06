@@ -376,15 +376,14 @@ fn open_error(dir: &std::path::Path) -> String {
 #[test]
 #[ignore = "RED(N13): FjallIndexer::open never reads the schema version"]
 fn version_index_unknown_is_refused() {
-    for unknown in [99u64] {
-        let dir = tempfile::tempdir().expect("tempdir");
-        store_stamped_with(dir.path(), unknown);
-        // Typed-variant pin without naming the type: `IndexerError` is
-        // expected to gain `UnsupportedVersion { found, .. }`.
-        let msg = open_error(dir.path());
-        assert!(
-            msg.contains("UnsupportedVersion") && msg.contains(&unknown.to_string()),
-            "v{unknown} must be refused as UnsupportedVersion: {msg}"
-        );
-    }
+    let unknown = 99u64;
+    let dir = tempfile::tempdir().expect("tempdir");
+    store_stamped_with(dir.path(), unknown);
+    // Typed-variant pin without naming the type: `IndexerError` is
+    // expected to gain `UnsupportedVersion { found, .. }`.
+    let msg = open_error(dir.path());
+    assert!(
+        msg.contains("UnsupportedVersion") && msg.contains(&unknown.to_string()),
+        "v{unknown} must be refused as UnsupportedVersion: {msg}"
+    );
 }
