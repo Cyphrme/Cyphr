@@ -267,6 +267,37 @@ mod tests {
         CommitRoot(MultihashDigest::from_single(HashAlg::Sha256, bytes.to_vec()).unwrap())
     }
 
+    /// Backs the 256-item bound on the Principal Tree, where SR and CR take
+    /// two slots: 254 nonces build, 255 is `CollectionArityExceeded(257)`.
+    /// Turns red if the cap is missing or miscounts SR and CR. AR1 will
+    /// replace this bound with n-arity (SPEC 4) and retire this test. Unit
+    /// level: reaching 256 leaves by signed scenario is not cheap.
+    #[test]
+    fn nonce_arity_cap_pr_counts_sr_cr_and_nonces() {
+        let values = |n: usize| -> Vec<Vec<u8>> {
+            (0..n)
+                .map(|i| {
+                    let mut v = vec![0xEE; 32];
+                    v[..2].copy_from_slice(&(i as u16).to_be_bytes());
+                    v
+                })
+                .collect()
+        };
+        let algs = [HashAlg::Sha256];
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
+        pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
+        let ok = values(254);
+        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
+        pt.set_nonces(&ok, &algs).unwrap();
+        let over = values(255);
+        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
+        assert!(matches!(
+            pt.set_nonces(&over, &algs),
+            Err(Error::CollectionArityExceeded(257))
+        ));
+    }
+
     #[test]
     fn genesis_pr_equals_sr_verbatim() {
         let mut pt = PrincipalTree::new();

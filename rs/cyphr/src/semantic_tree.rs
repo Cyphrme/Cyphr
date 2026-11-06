@@ -545,6 +545,58 @@ mod tests {
         assert!(kr.0.get(HashAlg::Sha512).unwrap().len() == 64);
     }
 
+    /// 32-byte nonce values, distinct per index.
+    fn nonce_values(n: usize) -> Vec<Vec<u8>> {
+        (0..n)
+            .map(|i| {
+                let mut v = vec![0xEE; 32];
+                v[..2].copy_from_slice(&(i as u16).to_be_bytes());
+                v
+            })
+            .collect()
+    }
+
+    /// Backs the 256-item bound on KT counting nonces (SPEC 10.1 puts nonces
+    /// among the key thumbprints): one key plus 255 nonces is exactly 256 and
+    /// builds; one more is `CollectionArityExceeded(257)`. Turns red if the
+    /// cap ignores nonces (only thumbprints counted) or is off by one.
+    /// AR1 will replace this bound with n-arity (SPEC 4) and retire this
+    /// test. Unit level: reaching 256 leaves by signed scenario is not cheap.
+    #[test]
+    fn nonce_arity_cap_kt_counts_nonces() {
+        let t = tmb(&[0xAA; 32]);
+        let algs = [HashAlg::Sha256];
+        let ok = nonce_values(255);
+        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
+        assert!(KeyTree::build_tree_with_nonces(&[&t], &ok, &algs).is_ok());
+        let over = nonce_values(256);
+        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
+        assert!(matches!(
+            KeyTree::build_tree_with_nonces(&[&t], &over, &algs),
+            Err(Error::CollectionArityExceeded(257))
+        ));
+    }
+
+    /// Backs the same bound on the AT node, where KR takes one slot: 255
+    /// nonces build, 256 is `CollectionArityExceeded(257)`. Turns red if
+    /// the cap is missing or miscounts KR. AR1 will replace this bound with
+    /// n-arity (SPEC 4) and retire this test. Unit level, as for KT.
+    #[test]
+    fn nonce_arity_cap_at_counts_kr_and_nonces() {
+        let t = tmb(&[0xAA; 32]);
+        let algs = [HashAlg::Sha256];
+        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let ok = nonce_values(255);
+        let ok: Vec<&[u8]> = ok.iter().map(Vec::as_slice).collect();
+        assert!(AuthTree::build_tree_with_nonces(&kr, &ok, &algs).is_ok());
+        let over = nonce_values(256);
+        let over: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
+        assert!(matches!(
+            AuthTree::build_tree_with_nonces(&kr, &over, &algs),
+            Err(Error::CollectionArityExceeded(257))
+        ));
+    }
+
     #[test]
     fn kt_arity_boundary_rejected() {
         let raw: Vec<Thumbprint> = (0..257u16)
