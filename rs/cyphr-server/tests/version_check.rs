@@ -11,11 +11,10 @@
 //!   opened.
 //! - An absent `v` (a file or store from before versions) means v1: it loads, and is written back
 //!   with `v` (`1`). Any other unknown `v` is refused.
-//! - A refusal is a typed `UnsupportedVersion` variant of the format's own error. The variants do
-//!   not exist yet, so each is pinned by `matches!`-style inspection of the error's `Debug` string
-//!   (variant name plus the offending number) instead of naming the type, which would not compile.
-//!   The envelope reader is a plain serde `Deserialize`, so its `Debug` is the serde message; the
-//!   implementer should give it a typed error that Debug-prints `UnsupportedVersion`.
+//! - A refusal is a typed `UnsupportedVersion` variant of the format's own error, pinned by
+//!   `matches!` on the variant and the offending number. The envelope is read through its typed
+//!   reader `Envelope::from_value`; its plain serde `Deserialize` can only flatten that to a
+//!   message.
 //!
 //! Each test states its claim and the defect that turns it red. None is an
 //! end-to-end scenario: the reader is the unit under claim and no scenario
@@ -25,12 +24,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use cyphr_server::admission::{ResidentProbe, layer};
-use cyphr_server::auth::ServerIdentity;
-use cyphr_server::auth::principal::ServerPrincipal;
+use cyphr_server::admission::{AdmissionError, ResidentProbe, layer};
+use cyphr_server::auth::principal::{ServerPrincipal, ServerPrincipalError};
+use cyphr_server::auth::{AuthError, ServerIdentity};
 use cyphr_server::config::AdmissionConfig;
-use cyphr_server::envelope::Envelope;
-use cyphr_server::observation::ObservationStore;
+use cyphr_server::envelope::{Envelope, EnvelopeError};
+use cyphr_server::observation::{ObservationError, ObservationStore};
 use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
 mod common;
@@ -40,13 +39,17 @@ const VERSION_KEY: &str = "format-version";
 /// Versions no build knows: the floor and a far-future one.
 const UNKNOWN: [u64; 2] = [0, 99];
 
-/// A refusal must be the typed `UnsupportedVersion` and carry the number.
-fn assert_unsupported(err: &dyn std::fmt::Debug, format: &str, version: u64) {
-    let dbg = format!("{err:?}");
-    assert!(
-        dbg.contains("UnsupportedVersion") && dbg.contains(&version.to_string()),
-        "{format} v={version} must be refused as UnsupportedVersion: {dbg}"
-    );
+/// A refusal must be the typed `UnsupportedVersion` variant of the format's
+/// own error enum, carrying the offending number.
+macro_rules! assert_unsupported {
+    ($err:expr, $enum:ident, $format:expr, $version:expr) => {{
+        let (err, version): (&$enum, u64) = (&$err, $version);
+        assert!(
+            matches!(err, $enum::UnsupportedVersion { found, .. } if u64::from(*found) == version),
+            "{} v={version} must be refused as UnsupportedVersion: {err:?}",
+            $format
+        );
+    }};
 }
 
 /// Read a JSON document, set its top-level `v`, and write it back.
@@ -88,16 +91,15 @@ fn restamp(dir: &Path, v: u64) {
 /// `[envelope-r-migration]` ruling). The current version still reads. Turns
 /// red on a reader that accepts every `v` (today's derived `Deserialize`).
 #[test]
-#[ignore = "RED(N13): Envelope deserializes any `v`"]
 fn version_envelope_unknown_is_refused() {
     let doc =
         |v: u64| serde_json::json!({"v": v, "payload": {}, "statement": {"kind": "unsigned"}});
-    serde_json::from_value::<Envelope<serde_json::Value>>(doc(1)).expect("v1 reads");
+    Envelope::<serde_json::Value>::from_value(doc(1)).expect("v1 reads");
     for unknown in UNKNOWN {
-        let err = serde_json::from_value::<Envelope<serde_json::Value>>(doc(unknown))
+        let err = Envelope::<serde_json::Value>::from_value(doc(unknown))
             .err()
             .unwrap_or_else(|| panic!("envelope v={unknown} was accepted"));
-        assert_unsupported(&err, "envelope", unknown);
+        assert_unsupported!(err, EnvelopeError, "envelope", unknown);
     }
 }
 
@@ -107,7 +109,6 @@ fn version_envelope_unknown_is_refused() {
 /// named, before any key is loaded from it. Turns red on a loader that
 /// ignores the field (today serde skips unknown fields).
 #[test]
-#[ignore = "RED(N13): the signing-key file loader ignores `v`"]
 fn version_signing_key_file_unknown_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = common::write_signing_key(dir.path());
@@ -117,7 +118,7 @@ fn version_signing_key_file_unknown_is_refused() {
         let err = ServerIdentity::load_from_path(&path)
             .err()
             .unwrap_or_else(|| panic!("key file v={unknown} was accepted"));
-        assert_unsupported(&err, "signing key", unknown);
+        assert_unsupported!(err, AuthError, "signing key", unknown);
     }
 }
 
@@ -129,7 +130,6 @@ fn version_signing_key_file_unknown_is_refused() {
 /// unmodified sidecar still loads. Turns red on a sidecar written unstamped,
 /// or a loader that ignores `v`.
 #[tokio::test]
-#[ignore = "RED(N13): server-principal.json is unversioned"]
 async fn version_server_principal_sidecar_unknown_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let key_path = common::write_signing_key(dir.path());
@@ -156,7 +156,7 @@ async fn version_server_principal_sidecar_unknown_is_refused() {
             .await
             .err()
             .unwrap_or_else(|| panic!("sidecar v={unknown} was accepted"));
-        assert_unsupported(&err, "server principal", unknown);
+        assert_unsupported!(err, ServerPrincipalError, "server principal", unknown);
     }
 }
 
@@ -167,7 +167,6 @@ async fn version_server_principal_sidecar_unknown_is_refused() {
 /// must not be read: a mis-decoded set would un-revoke keys silently. Turns
 /// red on a store that stamps nothing, or an `open` that ignores the stamp.
 #[tokio::test]
-#[ignore = "RED(N13): the death set records no format version"]
 async fn version_death_set_unknown_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     drop(ObservationStore::open(dir.path()).expect("fresh open"));
@@ -181,7 +180,7 @@ async fn version_death_set_unknown_is_refused() {
         let err = ObservationStore::open(dir.path())
             .err()
             .unwrap_or_else(|| panic!("death set v={unknown} was accepted"));
-        assert_unsupported(&err, "death set", unknown);
+        assert_unsupported!(err, ObservationError, "death set", unknown);
     }
 }
 
@@ -203,7 +202,6 @@ fn open_spent_set(
 /// consumed single-use token be spent again. Turns red on a store that
 /// stamps nothing, or one that ignores the stamp.
 #[test]
-#[ignore = "RED(N13): the spent set records no format version"]
 fn version_spent_set_unknown_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (record, tokens) = (dir.path().join("record"), dir.path().join("tokens"));
@@ -221,7 +219,7 @@ fn version_spent_set_unknown_is_refused() {
         let err = open_spent_set(&record, &tokens)
             .err()
             .unwrap_or_else(|| panic!("spent set v={unknown} was accepted"));
-        assert_unsupported(&err, "spent set", unknown);
+        assert_unsupported!(err, AdmissionError, "spent set", unknown);
     }
 }
 
@@ -247,7 +245,6 @@ fn unstamp_json(path: &Path) {
 /// Turns red on a loader that leaves the file unstamped, or one that refuses
 /// the absent version.
 #[test]
-#[ignore = "RED(N13): an absent-v key file is not written back as v1"]
 fn version_signing_key_file_absent_is_v1_and_written_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = common::write_signing_key(dir.path());
@@ -263,7 +260,6 @@ fn version_signing_key_file_absent_is_v1_and_written_back() {
 /// written back with `v: 1`. Turns red on a sidecar left unstamped by a boot,
 /// or a boot that refuses it.
 #[tokio::test]
-#[ignore = "RED(N13): an absent-v sidecar is not written back as v1"]
 async fn version_server_principal_sidecar_absent_is_v1_and_written_back() {
     let dir = tempfile::tempdir().unwrap();
     let key_path = common::write_signing_key(dir.path());
@@ -290,7 +286,6 @@ async fn version_server_principal_sidecar_absent_is_v1_and_written_back() {
 /// lost record would un-revoke a key) and is stamped v1 on open. Turns red
 /// on an `open` that stamps nothing, or one that refuses or empties the set.
 #[tokio::test]
-#[ignore = "RED(N13): an unversioned death set is not stamped v1 on open"]
 async fn version_death_set_absent_is_v1_and_keeps_its_deaths() {
     let dir = tempfile::tempdir().unwrap();
     let tmb = coz::Thumbprint::from_bytes(vec![5; 32]);
@@ -314,7 +309,6 @@ async fn version_death_set_absent_is_v1_and_keeps_its_deaths() {
 /// Claim: a spent set from before versions loads as v1 and is stamped on
 /// open. Turns red on an `open` that stamps nothing, or one that refuses it.
 #[test]
-#[ignore = "RED(N13): an unversioned spent set is not stamped v1 on open"]
 fn version_spent_set_absent_is_v1() {
     let dir = tempfile::tempdir().unwrap();
     let (record, tokens) = (dir.path().join("record"), dir.path().join("tokens"));
