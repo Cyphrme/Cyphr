@@ -2422,3 +2422,187 @@ async fn patch_bounded_to_is_unsigned_on_attestor() {
         "to=0 should bound the response to exactly commit 0: {bounded:?}"
     );
 }
+
+// ========================================================================
+// Extraction net: behaviour the pull-sync extraction must preserve
+// ========================================================================
+
+/// Claim: witness pull sync of a MULTI-commit principal converges to the
+/// authority's tip, and the authenticated channel refuses both a
+/// body altered after signing and a body signed by a different key,
+/// leaving the witness holding nothing. End-to-end scenario: yes (real
+/// authority over TCP, on-path proxy, real witness engine).
+///
+/// Turns red if a refactor of the sync path: applies entries without
+/// reconciling to the signed report (the tamper cases then end `Synced`);
+/// verifies the envelope against the wrong key or skips the algorithm
+/// check (the mis-signed case then applies); or stops advancing past the
+/// first commit (the convergence case then stops at count 1). Existing
+/// tests pin each of these on genesis-only or single-field fixtures; this
+/// pins them together on a chained principal against the engine's
+/// resulting tip, which is what a relocated sync loop must still produce.
+#[tokio::test]
+async fn sync_converges_and_refuses_tampered_or_missigned() {
+    let now = 1_700_000_000;
+    let principal = common::golden_principal_id(&load_pool());
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_tip = authority
+        .instance
+        .state
+        .engine
+        .get_tip(&principal)
+        .await
+        .expect("authority tip lookup")
+        .expect("authority holds the principal");
+    assert_eq!(
+        authority_tip.commit_count, 2,
+        "fixture is a two-commit chain"
+    );
+
+    // 1. Convergence: both commits applied, every root equal to the authority's.
+    let (w, _app) = witness_for(&authority.url, Some(authority.identity())).await;
+    let outcome = sync_from_authority(&w, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            SyncOutcome::Synced {
+                applied: 2,
+                rejected: 0
+            }
+        ),
+        "an untampered two-commit sync must apply both commits: {outcome:?}"
+    );
+    let tip = w
+        .engine
+        .get_tip(&principal)
+        .await
+        .expect("witness tip lookup")
+        .expect("witness holds the principal after sync");
+    assert_eq!(tip.commit_count, 2);
+    assert_eq!(tip.commit_id, authority_tip.commit_id);
+    assert_eq!(
+        (&tip.pr, &tip.sr, &tip.ar, &tip.cr),
+        (
+            &authority_tip.pr,
+            &authority_tip.sr,
+            &authority_tip.ar,
+            &authority_tip.cr
+        ),
+        "witness roots must equal the authority's"
+    );
+
+    // 2. Statement altered after signing: signature no longer verifies.
+    let (proxy_url, _p1) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            body["statement"]["coz"]["pay"]["sequence"] = serde_json::json!(0);
+            body
+        }),
+    )
+    .await;
+    let (w, _app) = witness_for(&proxy_url, Some(authority.identity())).await;
+    let outcome = sync_from_authority(&w, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
+            }
+        ),
+        "a statement altered after signing must be refused as mis-signed: {outcome:?}"
+    );
+    assert!(
+        w.engine.get_tip(&principal).await.unwrap().is_none(),
+        "a refused sync must leave the witness unchanged"
+    );
+
+    // 3. Every entry's blob signature corrupted under an intact envelope.
+    let (proxy_url, _p2) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            let entries = body["payload"]["entries"]
+                .as_array_mut()
+                .expect("authority serves entries");
+            for entry in entries {
+                let blob = Base64UrlUnpadded::decode_vec(entry["blobs"][0].as_str().unwrap())
+                    .expect("entry blob decodes");
+                let mut coz: serde_json::Value = serde_json::from_slice(&blob).unwrap();
+                let sig = coz["sig"].as_str().unwrap().to_string();
+                let flipped = if sig.starts_with('A') { "B" } else { "A" };
+                coz["sig"] = format!("{flipped}{}", &sig[1..]).into();
+                entry["blobs"][0] =
+                    Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
+            }
+            body
+        }),
+    )
+    .await;
+    let (w, _app) = witness_for(&proxy_url, Some(authority.identity())).await;
+    let outcome = sync_from_authority(&w, &principal).await;
+    assert!(
+        matches!(outcome, SyncOutcome::Failed { .. }),
+        "entries failing signature verification must not end Synced: {outcome:?}"
+    );
+    assert!(
+        w.engine.get_tip(&principal).await.unwrap().is_none(),
+        "forged entries must leave the witness unchanged"
+    );
+
+    // 4. Signed by a key other than the configured authority identity.
+    let other = coz::Alg::Ed25519.generate_keypair();
+    let wrong = AuthorityIdentity {
+        alg: other.alg.name().to_string(),
+        pub_key: other.pub_bytes.clone(),
+    };
+    let (w, _app) = witness_for(&authority.url, Some(wrong)).await;
+    let outcome = sync_from_authority(&w, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
+            }
+        ),
+        "a patch signed by another key must be refused as mis-signed: {outcome:?}"
+    );
+    assert!(
+        w.engine.get_tip(&principal).await.unwrap().is_none(),
+        "a mis-signed sync must leave the witness unchanged"
+    );
+}
+
+/// Claim: an unauthenticated read cannot grow server memory without bound;
+/// once syncs for N attacker-chosen principal ids have finished, the
+/// per-principal lock map holds no entry for them. End-to-end scenario: no
+/// (it inspects `AppState::sync_locks`, which has no HTTP surface; a
+/// memory-growth property is not observable through responses).
+///
+/// Turns red if a lock entry is kept per requested id after its sync
+/// completes -- today `sync_from_authority` inserts and never removes.
+/// The assertion is "nothing retained once idle", the strongest bound a
+/// fix can honour; a mere cap above the probe count would not satisfy it.
+#[tokio::test]
+async fn sync_locks_bounded() {
+    let (authority_url, _auth) = spawn_fixed_authority(serde_json::json!({})).await;
+    let (witness_state, witness_app) = witness_for(&authority_url, None).await;
+
+    const PROBES: usize = 32;
+    for i in 0..PROBES {
+        let (status, _) = get_json(
+            witness_app.clone(),
+            &format!("/tip?pr=SHA-256:unknown-principal-{i}"),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "an unknown principal must not exist"
+        );
+    }
+
+    let retained = witness_state.sync_locks.lock().await.len();
+    assert_eq!(
+        retained, 0,
+        "{PROBES} finished syncs for distinct unknown ids left {retained} lock entries"
+    );
+}

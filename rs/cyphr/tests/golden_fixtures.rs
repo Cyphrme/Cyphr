@@ -70,6 +70,7 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::KeyRevoked => "KeyRevoked",
         Error::NoActiveKeys => "NoActiveKeys",
         Error::DuplicateKey => "DuplicateKey",
+        Error::CozReuse => "CozReuse",
         Error::TimestampPast => "TimestampPast",
         Error::TimestampFuture => "TimestampFuture",
         Error::InvalidSignature => "InvalidSignature",

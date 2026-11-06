@@ -628,7 +628,6 @@ proptest! {
     })]
 
     #[test]
-    #[ignore = "RED(N09): SPEC 7.6"]
     fn prop_data_action_replay_is_idempotent(
         signer_name in prop_oneof![Just("key_a"), Just("alice"), Just("bob")],
         now_offset in 0i64..1_000,
@@ -663,7 +662,7 @@ proptest! {
             p.action_count() == count_once
                 && p.data_root().cloned() == dr_once
                 && *p.pr() == pr_once,
-            "RED(N09): SPEC 7.6: replayed data action changed state (actions {} -> {})",
+            "SPEC 7.6: replayed data action changed state (actions {} -> {})",
             count_once,
             p.action_count()
         );
