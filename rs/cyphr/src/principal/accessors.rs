@@ -265,7 +265,9 @@ impl<S: eml::Storage> Principal<S> {
     /// The default reads the system clock where one exists. On
     /// wasm32-unknown-unknown the default reads 0 and so refuses every
     /// `now`: the host must install a clock (for example one over
-    /// `Date.now`) before applying anything.
+    /// `Date.now`) before applying anything. Until it does, a wasm verifier
+    /// cannot replay a peer chain either, since replay applies each coz
+    /// through the same bound.
     pub fn set_clock(&mut self, clock: Clock) {
         self.core_mut().clock = clock;
     }
