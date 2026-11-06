@@ -81,26 +81,6 @@ impl ReceiptSigner for ServerIdentity {
     }
 }
 
-/// A shared signer signs as the signer it shares, so state holding an
-/// `Arc<ServerIdentity>` or an injected `Arc<dyn ReceiptSigner>` passes it
-/// straight to the constructors.
-impl<T: ReceiptSigner + ?Sized> ReceiptSigner for std::sync::Arc<T> {
-    fn alg(&self) -> &str {
-        (**self).alg()
-    }
-
-    fn pub_key(&self) -> &[u8] {
-        (**self).pub_key()
-    }
-
-    fn sign<'a>(
-        &'a self,
-        cad: &'a coz::Cad,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SignerError>> + Send + 'a>> {
-        (**self).sign(cad)
-    }
-}
-
 /// Why a statement was not signed. Server-side only: an unsigned answer
 /// carries no reason on the wire, because an unauthenticated statement is
 /// not something a client can act on; the reason goes to the log.

@@ -369,7 +369,7 @@ async fn same_key_pair_proves_equivocation() {
         .expect("real last_updated");
 
     let conflicting = receipt::tip_report(
-        &identity,
+        identity.as_ref(),
         now,
         real_pr,
         real_sequence,
