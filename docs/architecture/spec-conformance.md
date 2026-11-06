@@ -247,7 +247,7 @@ SPEC 3.1, line 295. Disposition: `covered`.
 
 ```claim
 kind: requirement
-evaluator: test
+evaluator: none
 ```
 
 ### [sc-l298]
@@ -271,7 +271,7 @@ SPEC 3.1, line 298. Disposition: `covered`.
 
 ```claim
 kind: requirement
-evaluator: test
+evaluator: none
 ```
 
 ### [sc-l463]
