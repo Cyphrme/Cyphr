@@ -9,7 +9,13 @@
 //! - A dedicated fjall store (death set, spent set) records its version in the keyspace
 //!   [`META_KEYSPACE`] under [`VERSION_KEY`] as decimal text, written when the store is first
 //!   opened.
-//! - A refusal's text says "version", names the offending value and the format.
+//! - An absent `v` (a file or store from before versions) means v1: it loads, and is written back
+//!   with `v` (`1`). Any other unknown `v` is refused.
+//! - A refusal is a typed `UnsupportedVersion` variant of the format's own error. The variants do
+//!   not exist yet, so each is pinned by `matches!`-style inspection of the error's `Debug` string
+//!   (variant name plus the offending number) instead of naming the type, which would not compile.
+//!   The envelope reader is a plain serde `Deserialize`, so its `Debug` is the serde message; the
+//!   implementer should give it a typed error that Debug-prints `UnsupportedVersion`.
 //!
 //! Each test states its claim and the defect that turns it red. None is an
 //! end-to-end scenario: the reader is the unit under claim and no scenario
@@ -34,12 +40,12 @@ const VERSION_KEY: &str = "format-version";
 /// Versions no build knows: the floor and a far-future one.
 const UNKNOWN: [u64; 2] = [0, 99];
 
-/// A refusal must name the version it saw and say what it refused.
-fn assert_names(msg: &str, format: &str, version: u64) {
-    let msg = msg.to_lowercase();
+/// A refusal must be the typed `UnsupportedVersion` and carry the number.
+fn assert_unsupported(err: &dyn std::fmt::Debug, format: &str, version: u64) {
+    let dbg = format!("{err:?}");
     assert!(
-        msg.contains("version") && msg.contains(format) && msg.contains(&version.to_string()),
-        "a refusal must name the {format} format and version {version}: {msg}"
+        dbg.contains("UnsupportedVersion") && dbg.contains(&version.to_string()),
+        "{format} v={version} must be refused as UnsupportedVersion: {dbg}"
     );
 }
 
@@ -91,7 +97,7 @@ fn version_envelope_unknown_is_refused() {
         let err = serde_json::from_value::<Envelope<serde_json::Value>>(doc(unknown))
             .err()
             .unwrap_or_else(|| panic!("envelope v={unknown} was accepted"));
-        assert_names(&err.to_string(), "envelope", unknown);
+        assert_unsupported(&err, "envelope", unknown);
     }
 }
 
@@ -111,7 +117,7 @@ fn version_signing_key_file_unknown_is_refused() {
         let err = ServerIdentity::load_from_path(&path)
             .err()
             .unwrap_or_else(|| panic!("key file v={unknown} was accepted"));
-        assert_names(&err.to_string(), "signing key", unknown);
+        assert_unsupported(&err, "signing key", unknown);
     }
 }
 
@@ -150,7 +156,7 @@ async fn version_server_principal_sidecar_unknown_is_refused() {
             .await
             .err()
             .unwrap_or_else(|| panic!("sidecar v={unknown} was accepted"));
-        assert_names(&err.to_string(), "server principal", unknown);
+        assert_unsupported(&err, "server principal", unknown);
     }
 }
 
@@ -175,20 +181,22 @@ async fn version_death_set_unknown_is_refused() {
         let err = ObservationStore::open(dir.path())
             .err()
             .unwrap_or_else(|| panic!("death set v={unknown} was accepted"));
-        assert_names(&err.to_string(), "death set", unknown);
+        assert_unsupported(&err, "death set", unknown);
     }
 }
 
 // ---- admission spent set -----------------------------------------------
 
-fn open_spent_set(record: &Path, tokens: &Path) -> Result<(), String> {
+fn open_spent_set(
+    record: &Path,
+    tokens: &Path,
+) -> Result<(), cyphr_server::admission::AdmissionError> {
     let resident: ResidentProbe = Arc::new(|_| Box::pin(async { false }));
     let cfg = AdmissionConfig::Invite {
         tokens_path: tokens.to_path_buf(),
     };
     layer(&cfg, record, resident, 1 << 20)
         .map(|_| ())
-        .map_err(|e| e.to_string())
 }
 
 /// Claim: the invite spent set records its format version and refuses a
@@ -214,6 +222,92 @@ fn version_spent_set_unknown_is_refused() {
         let err = open_spent_set(&record, &tokens)
             .err()
             .unwrap_or_else(|| panic!("spent set v={unknown} was accepted"));
-        assert_names(&err, "spent set", unknown);
+        assert_unsupported(&err, "spent set", unknown);
     }
+}
+
+// ---- absent `v` means v1 -------------------------------------------------
+
+fn unstamp(dir: &Path) {
+    let db = Database::builder(dir).open().expect("raw open");
+    let meta = db
+        .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+        .expect("meta");
+    meta.remove(VERSION_KEY).expect("remove");
+    db.persist(PersistMode::SyncAll).expect("persist");
+}
+
+fn unstamp_json(path: &Path) {
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("v");
+    std::fs::write(path, serde_json::to_vec(&doc).unwrap()).unwrap();
+}
+
+/// Claim: a signing-key file from before versions (no `v`) loads as v1 and
+/// is written back stamped `v: 1`, so the next read is of a versioned file.
+/// Turns red on a loader that leaves the file unstamped, or one that refuses
+/// the absent version.
+#[test]
+#[ignore = "RED(N13): an absent-v key file is not written back as v1"]
+fn version_signing_key_file_absent_is_v1_and_written_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = common::write_signing_key(dir.path());
+    ServerIdentity::load_from_path(&path).expect("an absent `v` loads as v1");
+    assert_eq!(stamped_v(&path), Some(1), "the file must be written back with v=1");
+}
+
+/// Claim: a server-principal.json from before versions loads as v1 and is
+/// written back with `v: 1`. Turns red on a sidecar left unstamped by a boot,
+/// or a boot that refuses it.
+#[tokio::test]
+#[ignore = "RED(N13): an absent-v sidecar is not written back as v1"]
+async fn version_server_principal_sidecar_absent_is_v1_and_written_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = common::write_signing_key(dir.path());
+    let data = dir.path().join("data");
+    let boot = || async {
+        let state = common::keyed_appstate(&data, &key_path);
+        let identity = state.identity.clone().expect("keyed");
+        ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &data).await.map(|_| ())
+    };
+    boot().await.expect("first boot");
+    let sidecar = data.join("record").join("server-principal.json");
+    unstamp_json(&sidecar);
+    boot().await.expect("an absent `v` loads as v1");
+    assert_eq!(stamped_v(&sidecar), Some(1), "the sidecar must be written back with v=1");
+}
+
+/// Claim: a death set from before versions keeps every recorded death (a
+/// lost record would un-revoke a key) and is stamped v1 on open. Turns red
+/// on an `open` that stamps nothing, or one that refuses or empties the set.
+#[tokio::test]
+#[ignore = "RED(N13): an unversioned death set is not stamped v1 on open"]
+async fn version_death_set_absent_is_v1_and_keeps_its_deaths() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmb = coz::Thumbprint::from_bytes(vec![5; 32]);
+    {
+        let store = ObservationStore::open(dir.path()).expect("open");
+        store.record(&tmb, serde_json::json!({"pay": {}})).await.expect("record");
+    }
+    unstamp(dir.path());
+    let store = ObservationStore::open(dir.path()).expect("an absent version loads as v1");
+    assert!(store.is_dead(&tmb).await.unwrap(), "a recorded death was lost");
+    drop(store);
+    assert_eq!(stored_version(dir.path()).as_deref(), Some("1"));
+}
+
+/// Claim: a spent set from before versions loads as v1 and is stamped on
+/// open. Turns red on an `open` that stamps nothing, or one that refuses it.
+#[test]
+#[ignore = "RED(N13): an unversioned spent set is not stamped v1 on open"]
+fn version_spent_set_absent_is_v1() {
+    let dir = tempfile::tempdir().unwrap();
+    let (record, tokens) = (dir.path().join("record"), dir.path().join("tokens"));
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(&tokens, format!("{}\n", "a".repeat(64))).unwrap();
+    open_spent_set(&record, &tokens).expect("fresh open");
+    let store = record.join("admission");
+    unstamp(&store);
+    open_spent_set(&record, &tokens).expect("an absent version loads as v1");
+    assert_eq!(stored_version(&store).as_deref(), Some("1"));
 }
