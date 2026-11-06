@@ -437,10 +437,7 @@ async fn responder_signing_with_a_retired_key_is_refused() {
         .err()
         .expect("a retired key's statement must not open a session");
     assert!(
-        matches!(
-            refused,
-            TransportError::Revoked { .. } | TransportError::KeyNotActive { .. }
-        ),
+        matches!(refused, TransportError::KeyNotActive { .. }),
         "typed refusal expected: {refused:?}"
     );
 }

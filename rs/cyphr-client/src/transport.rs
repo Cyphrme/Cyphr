@@ -149,14 +149,6 @@ pub enum TransportError {
         /// The thumbprint the statement names.
         tmb: String,
     },
-    /// The signing key is revoked in the held chain. Reserved: the held
-    /// chain reports a revoked key as [`KeyNotActive`](Self::KeyNotActive)
-    /// today, so nothing constructs this yet.
-    #[error("signing key {tmb} is revoked in the peer chain")]
-    Revoked {
-        /// The thumbprint the statement names.
-        tmb: String,
-    },
     /// The pinned chain could not judge the statement at all.
     #[error("pinned chain: {0}")]
     Peer(PeerFailure),
