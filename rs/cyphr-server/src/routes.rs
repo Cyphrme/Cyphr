@@ -84,6 +84,12 @@ pub struct BranchesResponse {
     pub branches: Vec<cyphr_storage::engine::BranchTip>,
 }
 
+/// Response for `GET /evidence`.
+#[derive(Debug, Serialize)]
+pub struct EvidenceResponse {
+    pub items: Vec<serde_json::Value>,
+}
+
 /// A single commit entry in a patch response.
 #[derive(Debug, Serialize)]
 pub struct PatchEntryResponse {
@@ -281,6 +287,67 @@ pub async fn branches(
         .await
         .map_err(AppError::engine)?;
     Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
+}
+
+/// `GET /evidence?pr=<PG>` -- every principal fork the store holds
+/// evidence of, each item self-describing and checkable offline.
+///
+/// An item is `{kind: "principal-fork", pg, height, pre, a, b}`: two
+/// distinct commits (`a`, `b`, each `{blobs: [base64url coz]}`) that both
+/// verify against the principal's state at `pre`, the Principal Root after
+/// commit `height - 1` (`null` at height 0). One of the two is the
+/// canonical commit at `height`. A verifier replays the principal's chain
+/// to `height`, checks its root is `pre`, and replays each commit from
+/// there (`cyphr_client::evidence`); no server signature takes part, so
+/// nothing here asks to be believed (arch-evidence-is-portable).
+///
+/// Only forks of principals are served: the server keeps no peer
+/// equivocation evidence, which a client assembles from signed statements
+/// it collected itself. A principal never forked answers an empty list.
+#[tracing::instrument(skip(state))]
+pub async fn evidence(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TipQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    // A malformed id is the caller's error (400), not an unknown principal
+    // (404): the harness probes for this route with an id that is not one.
+    if query.pr.parse::<cyphr::state::TaggedDigest>().is_err()
+        && receipt::parse_genesis_id_str(&query.pr).is_err()
+    {
+        return Err(AppError::bad_request(format!(
+            "pr is not a principal identifier: {}",
+            query.pr
+        )));
+    }
+    witness_sync(&state, &query.pr).await;
+
+    let (principal, forks) = state
+        .engine
+        .fork_evidence(&query.pr)
+        .await
+        .map_err(AppError::engine)?;
+    let pg = cyphr_storage::engine::bare_digest(&principal).to_string();
+    let blobs = |bundle: &[Vec<u8>]| {
+        serde_json::json!({
+            "blobs": bundle.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+        })
+    };
+    let items = forks
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "kind": "principal-fork",
+                "pg": pg,
+                "height": f.sequence,
+                "pre": f.pre,
+                "a": blobs(&f.canonical),
+                "b": blobs(&f.rival),
+            })
+        })
+        .collect();
+    Ok(Json(Envelope::unsigned(EvidenceResponse { items })))
 }
 
 /// `GET /view?pr=<PG>` -- this peer's signed claim "I hold `pr` at this
