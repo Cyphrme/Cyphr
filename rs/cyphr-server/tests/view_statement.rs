@@ -8,14 +8,20 @@
 //! (C2SP checkpoint shape); these tests locate the tree size and index by
 //! VALUE, not by name, so any layout that signs them passes.
 
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::auth::ServerIdentity;
+use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::build_router;
 
 mod common;
 
-use common::{attestor_server, get_json, golden_principal_id, load_pool, post_json};
+use common::{
+    attestor_server, get_json, golden_principal_id, keyed_appstate, load_pool, post_json,
+    write_signing_key,
+};
 
 /// Typs the server already stamps; a view statement must not reuse one, or
 /// a receipt could be replayed as a view (and the reverse).
@@ -375,5 +381,323 @@ async fn client_verifies_view_statement_against_the_active_peer_chain() {
     assert!(
         cyphr_client::verify_view_statement(&foreign, &chain, &pr).is_err(),
         "a statement signed by a key not active in the peer chain was accepted"
+    );
+}
+
+// ========================================================================
+// Rotation, revocation, freshness and the envelope version
+// ========================================================================
+
+/// A bootstrapped attestor that has rotated its signing key once, serving
+/// two commits of `golden`, plus the key it rotated away from. With
+/// `inject_retired` the retired key is injected as the receipt signer, the
+/// way a stale non-exportable backend would be; otherwise the live
+/// (rotated-in) identity signs.
+async fn rotated_attestor(
+    inject_retired: bool,
+) -> (axum::Router, String, Arc<ServerIdentity>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = write_signing_key(dir.path());
+    let mut state = keyed_appstate(&dir.path().join("data"), &key_path);
+    let retired = state.identity.clone().expect("keyed state has identity");
+    let sp = ServerPrincipal::bootstrap(
+        &state.engine,
+        retired.clone(),
+        &key_path,
+        &state.config.data_dir,
+    )
+    .await
+    .expect("bootstrap the server principal");
+    state.principal = Some(Arc::new(sp));
+
+    state
+        .rotate_signing_key(&coz::Alg::Ed25519.generate_keypair())
+        .await
+        .expect("rotate the signing key");
+    if inject_retired {
+        state = state.with_receipt_signer(retired.clone());
+    }
+
+    let app = build_router(Arc::new(state));
+    let pool = load_pool();
+    let pr = golden_principal_id(&pool);
+    let (first, second) = two_commit_bodies(&pool, &pr);
+    for body in [first, second] {
+        let (status, resp) = post_json(app.clone(), "/push", body).await;
+        assert_eq!(status, StatusCode::CREATED, "{resp:?}");
+    }
+    (app, pr, retired, dir)
+}
+
+/// The client's replay of the peer's OWN principal chain from `/server`
+/// and `/patch`, as in `client_verifies_view_statement_against_the_active_peer_chain`.
+async fn replay_peer_chain(app: &axum::Router) -> cyphr::Principal<cyphr::eml::MemoryStorage> {
+    let (_, discovery) = get_json(app.clone(), "/server").await;
+    let d = &discovery["payload"];
+    let pg = d["pg"].as_str().expect("attestor pg").to_string();
+    let g = &d["genesis"];
+    let genesis_key = cyphr::Key::new(
+        g["alg"].as_str().expect("alg").to_string(),
+        coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(g["tmb"].as_str().expect("tmb")).expect("tmb b64"),
+        ),
+        Base64UrlUnpadded::decode_vec(g["pub"].as_str().expect("pub")).expect("pub b64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
+    let (_, patch) = get_json(app.clone(), &format!("/patch?pr={pg}")).await;
+    let local = cyphr_storage::engine::StorageEngine::new(
+        cyphr_storage::blob::MemoryBlobStore::new(),
+        cyphr_storage::index::MemoryIndexer::new(),
+    );
+    for entry in patch["payload"]["entries"].as_array().expect("entries") {
+        let blobs: Vec<Vec<u8>> = entry["blobs"]
+            .as_array()
+            .expect("blobs")
+            .iter()
+            .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("blob b64"))
+            .collect();
+        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        local
+            .submit_commit(
+                &pg,
+                Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
+                &refs,
+            )
+            .await
+            .expect("replay a peer-chain commit");
+    }
+    local
+        .load_principal(&pg, cyphr_storage::Genesis::Explicit(vec![genesis_key]))
+        .await
+        .expect("load the replayed peer chain")
+}
+
+/// Claim: a view signed with the key the server rotated TO verifies against
+/// the post-rotation peer chain, and the verifier hands back the signed
+/// `now` and tree size so the CALLER can apply its own freshness policy
+/// (the verifier deliberately checks neither).
+///
+/// Turns red if: the rotated-in key is refused; `now` is dropped or differs
+/// from the signed value; or the tree size/index are not returned.
+/// End-to-end scenario: yes (rotation through `AppState`, two pushes,
+/// `/view`, replayed chain).
+#[tokio::test]
+async fn view_signed_by_the_rotated_in_key_verifies_and_returns_now() {
+    let (app, pr, _retired, _dir) = rotated_attestor(false).await;
+    let chain = replay_peer_chain(&app).await;
+    let (status, view) = get_json(app, &format!("/view?pr={pr}")).await;
+    assert_eq!(status, StatusCode::OK, "{view:?}");
+
+    let verified = cyphr_client::verify_view_statement(&view, &chain, &pr)
+        .expect("a view signed by the rotated-in key verifies");
+    assert_eq!(
+        Some(verified.now),
+        view["statement"]["coz"]["pay"]["now"].as_i64(),
+        "the verifier returns the signed `now`"
+    );
+    assert_eq!((verified.tree_size, verified.index), (2, 1));
+}
+
+/// Claim: a view signed by a key that WAS active in the peer chain and has
+/// since been rotated out is refused as `KeyNotActive` by a client holding
+/// the post-rotation chain, even though its own signature is valid. The
+/// retired key is injected through `with_receipt_signer`, the stale-backend
+/// case the seam exists for. (Rotation drops the old key from the chain; the
+/// revoked-key case is `view_signed_by_a_revoked_key_is_refused_as_not_active`.)
+///
+/// Turns red if: the verifier looks keys up among all keys the chain ever
+/// held (`get_key`) instead of the active ones, or skips the active check.
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn view_signed_by_a_retired_key_is_refused_as_not_active() {
+    let (app, pr, retired, _dir) = rotated_attestor(true).await;
+    let chain = replay_peer_chain(&app).await;
+    let (status, view) = get_json(app, &format!("/view?pr={pr}")).await;
+    assert_eq!(status, StatusCode::OK, "{view:?}");
+    assert_eq!(view["statement"]["kind"], serde_json::json!("signed"));
+
+    // Guard: the statement really was signed by the retired key, and that
+    // key is no longer active in the chain the client holds.
+    let retired_tmb = coz::Thumbprint::from_bytes(
+        Base64UrlUnpadded::decode_vec(
+            view["statement"]["coz"]["pay"]["tmb"]
+                .as_str()
+                .expect("tmb"),
+        )
+        .expect("tmb b64"),
+    );
+    assert_eq!(
+        Some(retired_tmb.clone()),
+        coz::Alg::Ed25519.compute_thumbprint(retired.pub_key()),
+        "the view carries the retired key's thumbprint"
+    );
+    assert!(!chain.is_key_active(&retired_tmb));
+
+    let refused = cyphr_client::verify_view_statement(&view, &chain, &pr);
+    assert!(
+        matches!(refused, Err(cyphr_client::ViewFailure::KeyNotActive)),
+        "a retired key's view must be refused as KeyNotActive: {refused:?}"
+    );
+}
+
+/// Claim: a client reads the envelope version before anything else and
+/// fails closed on one it does not know, with a typed failure; a missing
+/// `v` is refused too.
+///
+/// Turns red if: an unknown or missing `v` still verifies, or surfaces as
+/// some other failure. End-to-end scenario: yes (real `/view` body with `v`
+/// rewritten).
+#[tokio::test]
+async fn view_with_an_unknown_envelope_version_is_refused() {
+    let (app, pr, _retired, _dir) = rotated_attestor(false).await;
+    let chain = replay_peer_chain(&app).await;
+    let (_, view) = get_json(app, &format!("/view?pr={pr}")).await;
+    assert!(cyphr_client::verify_view_statement(&view, &chain, &pr).is_ok());
+
+    let mut future = view.clone();
+    future["v"] = serde_json::json!(2);
+    let refused = cyphr_client::verify_view_statement(&future, &chain, &pr);
+    assert!(
+        matches!(
+            refused,
+            Err(cyphr_client::ViewFailure::UnsupportedVersion { found: 2, .. })
+        ),
+        "an unknown version must be refused as UnsupportedVersion: {refused:?}"
+    );
+
+    let mut unversioned = view;
+    unversioned
+        .as_object_mut()
+        .expect("envelope is an object")
+        .remove("v");
+    assert!(
+        matches!(
+            cyphr_client::verify_view_statement(&unversioned, &chain, &pr),
+            Err(cyphr_client::ViewFailure::UnsupportedVersion { .. })
+        ),
+        "a missing version is refused"
+    );
+}
+
+/// A signing key as a file-loaded `ServerIdentity` (the receipt signer) plus
+/// its raw pair, so the same key can sit in a chain and sign its commits.
+fn identity_and_pair(dir: &std::path::Path, name: &str) -> (ServerIdentity, coz::KeyPair) {
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let path = dir.join(name);
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "alg": kp.alg.name(),
+            "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+        }))
+        .expect("key file json"),
+    )
+    .expect("write key file");
+    (ServerIdentity::load_from_path(&path).expect("load key"), kp)
+}
+
+/// Claim: a view signed by a key that was ACTIVE in the client's peer chain
+/// and then REVOKED there (a `key/revoke` the chain records, which keeps the
+/// key findable by thumbprint as a revoked key) is refused as
+/// `KeyNotActive`, while the same view signed by a key that is still active
+/// verifies. Rotation through `rotate_signing_key` drops the old key from
+/// the chain entirely, so only a revoke exercises the revoked-key lookup.
+///
+/// Turns red if: the verifier resolves the signer by thumbprint among every
+/// key the chain ever held (including revoked ones) rather than the active
+/// keys. The chain is built with the core API, not over HTTP, because the
+/// server principal has no revoke operation; the statement is the real
+/// `receipt::view_statement` output. End-to-end scenario: no (a server
+/// cannot be driven to revoke its own key), a chain-state scenario.
+#[tokio::test]
+async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (active_id, active_kp) = identity_and_pair(dir.path(), "active.json");
+    let (revoked_id, revoked_kp) = identity_and_pair(dir.path(), "revoked.json");
+    let key_of = |kp: &coz::KeyPair| {
+        let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
+        cyphr::Key::new(kp.alg.name().to_string(), tmb, kp.pub_bytes.clone()).expect("key")
+    };
+    let mut chain =
+        cyphr::Principal::explicit(vec![key_of(&active_kp), key_of(&revoked_kp)]).expect("chain");
+
+    // The revoked key revokes itself (SPEC 6.4) in a commit it finalizes.
+    let tmb = revoked_kp
+        .alg
+        .compute_thumbprint(&revoked_kp.pub_bytes)
+        .expect("tmb");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": revoked_kp.alg.name(),
+        "now": 1_700_000_100,
+        "rvk": 1_700_000_100,
+        "tmb": tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    }))
+    .expect("revoke pay");
+    let (sig, cad) = coz::sign_json(
+        &pay,
+        revoked_kp.alg.name(),
+        &revoked_kp.prv_bytes,
+        &revoked_kp.pub_bytes,
+    )
+    .expect("sign revoke");
+    let czd = coz::czd_for_alg(&cad, &sig, revoked_kp.alg.name()).expect("czd");
+    let mut scope = chain.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("revoke applies");
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                revoked_kp.alg.name(),
+                &revoked_kp.prv_bytes,
+                &revoked_kp.pub_bytes,
+                &tmb,
+            ),
+            1_700_000_101,
+            "cyphr.me",
+        )
+        .expect("revoke commit finalizes");
+    assert!(chain.is_key_revoked(&tmb) && !chain.is_key_active(&tmb));
+    assert!(chain.get_key(&tmb).is_some(), "a revoked key stays findable");
+
+    let digest = |n: u8| format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32]));
+    let roots = cyphr_server::receipt::Roots {
+        pr: digest(1),
+        sr: digest(2),
+        ar: digest(3),
+        cr: Some(digest(4)),
+    };
+    let pr = Base64UrlUnpadded::encode_string(&[7u8; 32]);
+    let envelope_signed_by = async |signer: &ServerIdentity| {
+        let coz = cyphr_server::receipt::view_statement(
+            signer,
+            1_700_000_200,
+            pr.clone(),
+            2,
+            digest(5),
+            &roots,
+        )
+        .await
+        .expect("sign a view");
+        serde_json::json!({
+            "v": 1,
+            "payload": {},
+            "statement": {"kind": "signed", "coz": coz},
+        })
+    };
+
+    let control = envelope_signed_by(&active_id).await;
+    assert!(
+        cyphr_client::verify_view_statement(&control, &chain, &pr).is_ok(),
+        "control: a view signed by a still-active key verifies"
+    );
+    let refused =
+        cyphr_client::verify_view_statement(&envelope_signed_by(&revoked_id).await, &chain, &pr);
+    assert!(
+        matches!(refused, Err(cyphr_client::ViewFailure::KeyNotActive)),
+        "a revoked key's view must be refused as KeyNotActive: {refused:?}"
     );
 }
