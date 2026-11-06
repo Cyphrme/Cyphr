@@ -704,3 +704,32 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
         "a revoked key's view must be refused as KeyNotActive: {refused:?}"
     );
 }
+
+/// Claim: a view statement is bound to the principal it attests. The peer
+/// signs a genuine view for principal X; `verify_view`, called directly on
+/// the coz (no HTTP envelope), accepts it as X and refuses it as any other
+/// principal Y with `PrincipalMismatch`, so a view for one principal cannot
+/// be passed off as a view of another.
+///
+/// Turns red if: the verifier skips the principal comparison. End-to-end
+/// scenario: yes (real `/view` from a rotated attestor, replayed peer chain).
+#[tokio::test]
+async fn view_is_bound_to_its_principal() {
+    let (app, pr, _retired, _dir) = rotated_attestor(false).await;
+    let chain = replay_peer_chain(&app).await;
+    let (_, view) = get_json(app, &format!("/view?pr={pr}")).await;
+    let coz: coz::CozJson =
+        serde_json::from_value(view["statement"]["coz"].clone()).expect("signed coz");
+
+    let x = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&pr).expect("pr b64"));
+    let y = coz::Thumbprint::from_bytes(vec![0x42; 32]);
+    assert!(
+        cyphr_client::verify_view(&coz, &chain, &x).is_ok(),
+        "control: the view verifies as the principal it attests"
+    );
+    let refused = cyphr_client::verify_view(&coz, &chain, &y);
+    assert!(
+        matches!(refused, Err(cyphr_client::ViewFailure::PrincipalMismatch)),
+        "a view for X verified as Y: {refused:?}"
+    );
+}
