@@ -60,6 +60,7 @@ impl<S: eml::Storage> Principal<S> {
         // Write SR into the Principal Tree (cell 1/CR is untouched) and
         // recompute PR from the tree.
         core.pr = core.write_pt_sr(&sr, &active_algs)?;
+        core.held_prs.push(core.pr.clone());
 
         Ok(&self.pr)
     }

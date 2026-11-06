@@ -7,6 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::merge::MergeClaim;
 use crate::nonce::{Nonce, NonceLevel};
 use crate::state::{AuthRoot, PrincipalRoot};
 
@@ -40,6 +41,10 @@ pub mod typ {
     pub const COMMIT_CREATE: &str = "cyphr/commit/create";
     /// `<authority>/cyphr/principal/delete` - Close a principal (Level 3+, SPEC §11.4)
     pub const PRINCIPAL_DELETE: &str = "cyphr/principal/delete";
+    /// `<authority>/cyphr/principal/merge` - Source side of an explicit merge (SPEC 11.5.1)
+    pub const MERGE: &str = "cyphr/principal/merge";
+    /// `<authority>/cyphr/principal/merge-ack` - Target side of an explicit merge (SPEC 11.5.1)
+    pub const MERGE_ACK: &str = "cyphr/principal/merge-ack";
     /// `<authority>/cyphr/freeze/create` - Self-freeze (SPEC §14.9.1)
     pub const FREEZE_CREATE: &str = "cyphr/freeze/create";
     /// `<authority>/cyphr/freeze/delete` - Thaw (SPEC §14.9.3)
@@ -156,6 +161,12 @@ pub enum CozKind {
         id: PrincipalRoot,
     },
 
+    /// Source signs a merge into another principal - SPEC 11.5.1
+    Merge(MergeClaim),
+
+    /// Target signs the acceptance of a merge - SPEC 11.5.1
+    MergeAck(MergeClaim),
+
     /// Self-freeze - SPEC §14.9.1
     FreezeCreate {
         /// Targeted Principal Root (the signer's own PR).
@@ -181,6 +192,8 @@ impl std::fmt::Display for CozKind {
             CozKind::NonceCreate { level, .. } => write!(f, "{}/nonce/create", level.path()),
             CozKind::NonceDelete { level, .. } => write!(f, "{}/nonce/delete", level.path()),
             CozKind::PrincipalDelete { .. } => write!(f, "{}", typ::PRINCIPAL_DELETE),
+            CozKind::Merge(_) => write!(f, "{}", typ::MERGE),
+            CozKind::MergeAck(_) => write!(f, "{}", typ::MERGE_ACK),
             CozKind::FreezeCreate { .. } => write!(f, "{}", typ::FREEZE_CREATE),
             CozKind::FreezeDelete { .. } => write!(f, "{}", typ::FREEZE_DELETE),
         }
@@ -329,6 +342,10 @@ impl ParsedCoz {
         } else if typ::has_suffix(typ, typ::PRINCIPAL_DELETE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::PrincipalDelete { id })
+        } else if typ::has_suffix(typ, typ::MERGE) {
+            Ok(CozKind::Merge(Self::extract_merge_claim(pay)?))
+        } else if typ::has_suffix(typ, typ::MERGE_ACK) {
+            Ok(CozKind::MergeAck(Self::extract_merge_claim(pay)?))
         } else if typ::has_suffix(typ, typ::FREEZE_CREATE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::FreezeCreate { id })
@@ -407,6 +424,43 @@ impl ParsedCoz {
             MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
                 .map_err(|_| Error::MalformedPayload)?,
         ))
+    }
+
+    /// Extract `merge_from` (a non-empty array of tagged PRs) and
+    /// `merge_to_pr` (one tagged PR) for `principal/merge` and
+    /// `principal/merge-ack`. Nothing is coerced: a bare string where a
+    /// list belongs, an empty list, or a non-digest element is malformed.
+    fn extract_merge_claim(pay: &Pay) -> Result<MergeClaim> {
+        use crate::multihash::MultihashDigest;
+        use crate::state::TaggedDigest;
+
+        let tagged_pr = |v: &serde_json::Value| -> Result<PrincipalRoot> {
+            let tagged: TaggedDigest = v
+                .as_str()
+                .ok_or(Error::MalformedPayload)?
+                .parse()
+                .map_err(|_| Error::MalformedPayload)?;
+            Ok(PrincipalRoot(
+                MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
+                    .map_err(|_| Error::MalformedPayload)?,
+            ))
+        };
+
+        let from = pay
+            .extra
+            .get("merge_from")
+            .and_then(serde_json::Value::as_array)
+            .filter(|list| !list.is_empty())
+            .ok_or(Error::MalformedPayload)?
+            .iter()
+            .map(tagged_pr)
+            .collect::<Result<Vec<_>>>()?;
+        let to_pr = tagged_pr(
+            pay.extra
+                .get("merge_to_pr")
+                .ok_or(Error::MalformedPayload)?,
+        )?;
+        Ok(MergeClaim { from, to_pr })
     }
 
     // Extract optional `arrow` field.

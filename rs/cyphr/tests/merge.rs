@@ -5,13 +5,10 @@
 //! stays active. The ack exists to stop a "merge attack": an outsider
 //! merging themselves into someone else's account.
 //!
-//! No merge kind exists in `rs/cyphr` yet, so every RED test authors its
-//! cozies as raw signed pays through the ordinary commit path and fails on
-//! the first assertion, where `verify_and_apply` refuses the unknown
-//! `typ`. Each rejection test opens with a valid-merge prelude (the
-//! positive control, `a_merge_and_its_matching_ack_are_accepted`'s shape):
-//! with merge unimplemented every "is rejected" check passes by
-//! construction, so only the prelude makes it red.
+//! Every test authors its cozies as raw signed pays through the ordinary
+//! commit path. Each rejection test opens with a valid-merge prelude (the
+//! positive control, `a_merge_and_its_matching_ack_are_accepted`'s shape),
+//! so a rejection cannot pass because the kind is simply unrecognised.
 //!
 //! Readings fixed here (the SPEC does not settle them; question for the
 //! spec author, "Xammy"):
@@ -23,18 +20,15 @@
 //!   unmoved; what happens when the target advances between merge and ack, and which PR in the
 //!   target's history an ack may name, is left open for the spec author. The narrowest reading
 //!   asserted: an ack's `merge_to_pr` must be a PR the acking principal actually had.
-//! - A merge is accepted into its signer's own chain on its own; it takes effect on the target only
-//!   through the target's ack. Matching the ack against the source's merge needs both chains, so it
-//!   is asserted at the server (`rs/cyphr-server/tests/merge.rs`), not here.
-//!
-//! Run: `cd rs && cargo test -p cyphr --test merge -- --ignored`.
+//! - A merge is accepted into its signer's own chain on its own; it takes effect only for a
+//!   verifier holding both chains, through `merge_status`.
 
 use std::collections::BTreeSet;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::lifecycle::LifecycleState;
 use cyphr::state::HashAlg;
-use cyphr::{Error, Key, ParsedCoz, Principal};
+use cyphr::{Error, Key, MergeStatus, ParsedCoz, Principal, merge_status};
 use serde_json::{Value, json};
 use test_fixtures::Pool;
 
@@ -173,9 +167,9 @@ impl Peer {
     }
 }
 
-/// Green characterization: the raw-pay authoring path used by every RED
-/// test below works for a kind that exists today (`key/create`), so a RED
-/// failure is the merge kind's absence, not a broken helper. Also pins
+/// Green characterization: the raw-pay authoring path used by every merge
+/// test below works for a kind that exists today (`key/create`), so a merge
+/// failure is the merge kind's behaviour, not a broken helper. Also pins
 /// the premise the merge tests depend on: SPEC 3.7.1's PR is the CURRENT
 /// root and moves with every commit (only PG is permanent), so
 /// `merge_to_pr` names a point-in-time snapshot. Not an end-to-end
@@ -215,12 +209,11 @@ fn harness_authors_a_commit_from_raw_pays() {
 /// chains; afterwards the source is still active and the target holds
 /// exactly the keys it held before (no implicit key or AT import).
 ///
-/// Turns red if: the kind is unrecognised (today: first assertion); the
+/// Turns red if: the kind is unrecognised; the
 /// merge deactivates or deletes the source; the merge or ack copies the
 /// source's keys or actions into the target.
 /// End-to-end scenario: yes (two principals, two commits).
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn a_merge_and_its_matching_ack_are_accepted() {
     let mut source = Peer::new("alice");
     let mut target = Peer::new("bob");
@@ -254,6 +247,17 @@ fn a_merge_and_its_matching_ack_are_accepted() {
         Some(ACK_TYP)
     );
 
+    assert_eq!(
+        merge_status(&source.principal, &target.principal),
+        MergeStatus::Merged,
+        "SPEC 11.5.1: a merge and its equal ack, held together, are a merge"
+    );
+    assert_eq!(
+        merge_status(&target.principal, &source.principal),
+        MergeStatus::None,
+        "the merge is directed: the target did not merge into the source"
+    );
+
     // Source stays active unless explicitly deleted.
     assert_eq!(source.principal.lifecycle_state(), LifecycleState::Active);
     assert!(!source.principal.is_deleted());
@@ -283,15 +287,14 @@ fn a_merge_and_its_matching_ack_are_accepted() {
 ///
 /// Positive control: the prelude below is the matching ack of
 /// `a_merge_and_its_matching_ack_are_accepted` and must be accepted first,
-/// which is what makes this red today (a never-accepting stub would pass
-/// the rejection alone).
+/// which is what keeps a never-accepting stub from passing the rejection
+/// alone.
 /// Turns red if: the ack kind is unrecognised (prelude fails); ack
 /// verification ignores `merge_to_pr` (accept-everything mutant fails the
 /// second assertion).
 /// End-to-end scenario: yes (the ack is judged against the principal it
 /// is committed to).
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn an_ack_naming_another_target_is_refused() {
     let source = Peer::new("alice");
     let other = Peer::new("carol");
@@ -328,7 +331,7 @@ fn an_ack_naming_another_target_is_refused() {
 /// shape: `merge_from` an array of tagged PRs, `merge_to_pr` a tagged PR.
 /// Malformed shapes are refused, not coerced.
 ///
-/// Positive control: the well-formed pair is accepted first (red today).
+/// Positive control: the well-formed pair is accepted first.
 /// Turns red if: the parser is unimplemented (prelude); it coerces a bare
 /// string into a one-element list, accepts a missing target, or accepts a
 /// non-digest element.
@@ -336,7 +339,6 @@ fn an_ack_naming_another_target_is_refused() {
 /// here because no multi-peer scenario reaches each malformed shape
 /// cheaply.
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn malformed_merge_fields_are_refused() {
     let source = Peer::new("alice");
     let target = Peer::new("bob");
@@ -397,12 +399,11 @@ fn malformed_merge_fields_are_refused() {
 /// ruling on SPEC 11.5.1), including one before later commits, but never
 /// a PR it never held.
 ///
-/// Positive control: the earlier-PR ack is accepted (red today); the
+/// Positive control: the earlier-PR ack is accepted; the
 /// refusal follows it. A name-the-tip-only mutant fails the first
 /// assertion; an accept-any-PR mutant fails the second.
 /// End-to-end scenario: yes (target commits, then acks an older PR).
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn an_ack_may_name_an_earlier_pr_of_the_target() {
     let source = Peer::new("alice");
     let from = json!([source.pr()]);
@@ -455,7 +456,6 @@ fn an_ack_may_name_an_earlier_pr_of_the_target() {
 /// Not an end-to-end scenario: the dispatch table has no scenario that
 /// reaches the shadowing case without already trusting it.
 #[test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
 fn merge_and_merge_ack_parse_to_distinct_kinds() {
     let p = Peer::new("alice");
     let from = json!([p.pr()]);
@@ -483,4 +483,132 @@ fn merge_and_merge_ack_parse_to_distinct_kinds() {
         format!("{}", ack.kind()),
         "merge and merge-ack must be distinct kinds"
     );
+}
+
+/// Claim: `merge_status` recognises a merge exactly when the source's merge
+/// and the target's ack agree, and reports an unanswered merge as Pending.
+/// Alice merges into Bob and Bob acks (Merged). Carol merges into Diana
+/// but Diana's ack names Alice (Pending for carol; None for alice, whose
+/// merge never named Diana). Eve acks Alice though Alice never named her
+/// (None).
+///
+/// Turns red if: any ack matches any merge (accept-any mutant: alice/diana
+/// or alice/eve become Merged), or Pending is never reported.
+/// End-to-end scenario: yes (five principals, two chains per status).
+#[test]
+fn merge_status_distinguishes_merged_pending_and_none() {
+    let mut alice = Peer::new("alice");
+    let mut bob = Peer::new("bob");
+    let mut carol = Peer::new("carol");
+    let mut diana = Peer::new("diana_es384");
+    let mut eve = Peer::new("eve_ed25519");
+    let (alice_pr, carol_pr) = (alice.pr(), carol.pr());
+    let (bob_pr, diana_pr, eve_pr) = (bob.pr(), diana.pr(), eve.pr());
+
+    for (src, from, to) in [
+        (&mut alice, &alice_pr, &bob_pr),
+        (&mut carol, &carol_pr, &diana_pr),
+    ] {
+        let pay = src.merge_pay(&json!([from]), &json!(to), NOW + 10);
+        src.commit(&[pay], NOW + 10).expect("merge accepted");
+    }
+    for (who, to) in [
+        (&mut bob, &bob_pr),
+        (&mut diana, &diana_pr),
+        (&mut eve, &eve_pr),
+    ] {
+        let pay = who.ack_pay(&json!([alice_pr]), &json!(to), NOW + 20);
+        who.commit(&[pay], NOW + 20).expect("ack accepted");
+    }
+
+    let st = |s: &Peer, t: &Peer| merge_status(&s.principal, &t.principal);
+    assert_eq!(st(&alice, &bob), MergeStatus::Merged);
+    assert_eq!(st(&alice, &diana), MergeStatus::None);
+    assert_eq!(st(&alice, &eve), MergeStatus::None);
+    assert_eq!(st(&carol, &diana), MergeStatus::Pending);
+}
+
+/// Claim: an ack matches a merge only when `merge_from` is equal too, and
+/// equality is order-sensitive (architect ruling on SPEC 11.5.1). Alice
+/// merges from two PRs she held into Bob; acks differing only in
+/// `merge_from` (reordered, shorter, a different PR) leave it Pending, and
+/// the identical ack makes it Merged.
+///
+/// Turns red if: `merge_from` is ignored or compared as a set, or the
+/// positive control (identical ack) is not Merged.
+/// End-to-end scenario: yes.
+#[test]
+fn an_ack_differing_only_in_merge_from_does_not_merge() {
+    let carol = Peer::new("carol");
+    let mut alice = Peer::new("alice");
+    let old = alice.pr();
+    let k = signer("key_a");
+    let key_pay = json!({
+        "alg": alice.signer.alg,
+        "id": k.tmb.to_b64(),
+        "now": NOW + 5,
+        "tmb": alice.signer.tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let key = Key::new(k.alg.clone(), k.tmb.clone(), k.pub_key.clone())
+        .expect("key binds its tmb")
+        .with_first_seen(NOW + 5);
+    alice
+        .commit_with_keys(vec![(key_pay, Some(key))], NOW + 5)
+        .expect("alice advances");
+    let new = alice.pr();
+    let bob_pr = Peer::new("bob").pr();
+
+    let pay = alice.merge_pay(&json!([old, new]), &json!(bob_pr), NOW + 10);
+    alice.commit(&[pay], NOW + 10).expect("merge accepted");
+
+    let variants = [
+        ("reordered", json!([new, old])),
+        ("shorter", json!([old])),
+        ("a different PR", json!([old, carol.pr()])),
+    ];
+    for (why, from) in variants {
+        let mut bob = Peer::new("bob");
+        let pay = bob.ack_pay(&from, &json!(bob_pr), NOW + 20);
+        bob.commit(&[pay], NOW + 20)
+            .expect("an unmatched ack is accepted");
+        assert_eq!(
+            merge_status(&alice.principal, &bob.principal),
+            MergeStatus::Pending,
+            "ack differing in merge_from ({why}) must not merge"
+        );
+    }
+
+    let mut bob = Peer::new("bob");
+    let pay = bob.ack_pay(&json!([old, new]), &json!(bob_pr), NOW + 20);
+    bob.commit(&[pay], NOW + 20)
+        .expect("identical ack accepted");
+    assert_eq!(
+        merge_status(&alice.principal, &bob.principal),
+        MergeStatus::Merged,
+        "positive control: the identical ack merges"
+    );
+}
+
+/// Claim: an empty `merge_from` is malformed for both kinds (architect
+/// ruling on SPEC 11.5.1): a merge from nothing names nothing.
+///
+/// Positive control: the same merge with one PR is accepted.
+/// Turns red if: an empty list is accepted.
+/// Not an end-to-end scenario: a parser boundary case.
+#[test]
+fn an_empty_merge_from_is_refused() {
+    let tpr = Peer::new("bob").pr();
+    let mut ok = Peer::new("alice");
+    let pay = ok.merge_pay(&json!([ok.pr()]), &json!(tpr), NOW + 10);
+    ok.commit(&[pay], NOW + 10).expect("positive control");
+    for (typ, who) in [(MERGE_TYP, "alice"), (ACK_TYP, "bob")] {
+        let mut p = Peer::new(who);
+        let own = if typ == ACK_TYP { p.pr() } else { tpr.clone() };
+        let pay = p.merge_shaped(typ, &json!([]), &json!(own), NOW + 10);
+        assert!(
+            p.commit(&[pay], NOW + 10).is_err(),
+            "{typ}: empty merge_from"
+        );
+    }
 }

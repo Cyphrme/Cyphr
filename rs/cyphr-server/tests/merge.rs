@@ -10,16 +10,21 @@
 //!
 //! Merge cozies are authored through the core verifier first (the peer
 //! helper applies them to a local `Principal` before exporting wire
-//! blobs), so until the kind exists the first assertion of each RED test
-//! fails there: that failure is the verifier half of "push and verifier
-//! agree", and the server half follows once it passes.
+//! blobs), so the first assertion of each test is the verifier half of
+//! "push and verifier agree", and the server half follows. Each peer's
+//! local `Principal` is the same chain the server holds, so
+//! `merge_status` is asserted on the pair of local mirrors.
 //!
-//! Run: `cd rs && cargo test -p cyphr-server --test merge -- --ignored`.
+//! The push-path tests are `RED(PGK)`: the storage engine routes a coz as a
+//! transaction by `typ` substring (`is_transaction_typ`), which names no
+//! `principal/merge*`, so a merge push is read as a data action and refused
+//! as an empty commit. Adding `|| typ.contains("/principal/merge")` there
+//! turns all five green (checked); drop the markers with that fix.
 
 use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::{Error, Key, Principal};
+use cyphr::{Error, Key, MergeStatus, Principal, merge_status};
 use cyphr_server::build_router;
 use serde_json::{Value, json};
 
@@ -203,6 +208,20 @@ impl Peer {
             .collect())
     }
 
+    /// A copy that continues this peer's chain, for authoring a commit the
+    /// honest peer's verifier would refuse.
+    fn fork(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            alg: self.alg.clone(),
+            prv: self.prv.clone(),
+            pub_key: self.pub_key.clone(),
+            tmb: self.tmb.clone(),
+            principal: self.principal.clone(),
+            pushed_genesis: self.pushed_genesis,
+        }
+    }
+
     fn push_body(&self, blobs: &[Vec<u8>]) -> String {
         json!({
             "principal_id": self.id(),
@@ -281,12 +300,12 @@ async fn harness_bootstraps_peers_and_pushes_a_plain_commit() {
 /// verifier's commit count.
 ///
 /// Turns red if: the kind is unrecognised by the verifier or the push
-/// path (today: the first assertion); the merge or ack changes the
+/// path ; the merge or ack changes the
 /// target's key state (implicit key or AT import); the merge deactivates
 /// the source; push and verifier disagree on acceptance.
 /// End-to-end scenario: yes (two principals, push path, tips).
 #[tokio::test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
+#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn merge_with_matching_ack_is_accepted_end_to_end() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -321,6 +340,12 @@ async fn merge_with_matching_ack_is_accepted_end_to_end() {
         "the target's matching ack must push: {status} {body:?}"
     );
 
+    assert_eq!(
+        merge_status(&source.principal, &target.principal),
+        MergeStatus::Merged,
+        "SPEC 11.5.1: the merge and its equal ack, held together, are a merge"
+    );
+
     let target_after = tip(&app, &target).await;
     assert_eq!(
         target_after["commit_count"],
@@ -351,13 +376,13 @@ async fn merge_with_matching_ack_is_accepted_end_to_end() {
 /// Positive control: `merge_with_matching_ack_is_accepted_end_to_end`
 /// (a valid merge plus its ack IS a merge); the prelude here also needs
 /// the attacker's merge to be accepted into the attacker's own chain,
-/// which is red today.
+///
 /// Turns red if: a merge is accepted without the ack and still moves the
 /// target (any of pr, sr, ar, cr, commit_count changes on the victim),
 /// or it wedges the victim's next ordinary commit.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
+#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn merge_without_ack_leaves_the_target_untouched() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -379,6 +404,11 @@ async fn merge_without_ack_leaves_the_target_untouched() {
         "an unsolicited merge is accepted into the attacker's chain: {status} {body:?}"
     );
 
+    assert_eq!(
+        merge_status(&attacker.principal, &victim.principal),
+        MergeStatus::Pending,
+        "the merge is signed and names the victim, but the victim has not acked"
+    );
     assert_eq!(
         tip(&app, &victim).await,
         victim_before,
@@ -404,14 +434,14 @@ async fn merge_without_ack_leaves_the_target_untouched() {
 /// (`merge_from` she never merged from) and Eve acking Alice (a merge that
 /// never named Eve) are accepted as commits that change no key state.
 ///
-/// Positive control: Bob's matching ack in the prelude (red today).
+/// Positive control: Bob's matching ack in the prelude.
 /// Turns red if: the ack kind is unrecognised (prelude); an unmatched ack
 /// is refused, or alters key state or the commit count by other than one.
-/// The mutant that treats any ack as a merge cannot be told apart until
-/// `merge_status` exists (see INTERIM below).
+/// The `merge_status` assertions at the end tell apart the mutant that
+/// treats any ack as a merge.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
+#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -456,13 +486,6 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
     // An ack with no matching merge is the target's own signed statement:
     // it is accepted into the target's chain and makes no merge (architect
     // ruling on SPEC 11.5.1). Each target is fresh so no commit is reused.
-    //
-    // INTERIM: match not observable until merge_status. MG1 must add:
-    //   merge_status(alice, bob)   == Merged   (bob acked alice's merge)
-    //   merge_status(alice, diana) == None     (diana's merge is carol's)
-    //   merge_status(alice, eve)   == None     (alice never named eve)
-    //   merge_status(carol, diana) == Pending  (carol merged, diana's ack
-    //                                           named alice, not carol)
     for (who, to, why) in [
         (
             &mut diana,
@@ -496,21 +519,42 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
             "an ack never changes key state ({why})"
         );
     }
+
+    // The accept-any-ack mutant is told apart here: only bob's ack equals
+    // a merge on both fields.
+    assert_eq!(
+        merge_status(&alice.principal, &bob.principal),
+        MergeStatus::Merged,
+        "bob acked alice's merge"
+    );
+    assert_eq!(
+        merge_status(&alice.principal, &diana.principal),
+        MergeStatus::None,
+        "alice's merge never named diana; diana's ack matches nothing"
+    );
+    assert_eq!(
+        merge_status(&alice.principal, &eve.principal),
+        MergeStatus::None,
+        "alice never named eve"
+    );
+    assert_eq!(
+        merge_status(&carol.principal, &diana.principal),
+        MergeStatus::Pending,
+        "carol merged into diana; diana's ack named alice, not carol"
+    );
 }
 
 /// Claim: an ack may name an earlier PR the target held (not only its
 /// tip), and the push path accepts it. The refusal of a PR the target
 /// never held is asserted in `rs/cyphr/tests/merge.rs`
-/// (`an_ack_may_name_an_earlier_pr_of_the_target`): the local verifier
-/// refuses it before any wire blob exists, so no honest client can put
-/// that commit on the wire and a typed-4xx push test needs a hand-forged
-/// commit (open item for MG1: add a golden forged-ack vector).
+/// (`an_ack_may_name_an_earlier_pr_of_the_target`) and, at the wire, in
+/// `forged_ack_naming_a_never_held_pr_is_refused_over_push`.
 ///
-/// Positive control: this test is itself the accepted case (red today).
+/// Positive control: this test is itself the accepted case.
 /// Turns red if: the kind is unrecognised, or only the tip PR is accepted.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(MG1): SPEC 11.5.1"]
+#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -545,5 +589,87 @@ async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
     assert!(
         status.is_success(),
         "an ack naming an earlier PR must push: {status} {body:?}"
+    );
+    assert_eq!(
+        merge_status(&alice.principal, &bob.principal),
+        MergeStatus::Merged,
+        "an ack of an earlier PR the target held matches the merge naming it"
+    );
+}
+
+/// Claim: an ack is refused at the wire when its `merge_to_pr` is a PR the
+/// target never held, with a typed 4xx and no change to the target. Bob's
+/// own verifier refuses such an ack, so the commit is authored on a copy
+/// of bob's chain that believes carol's PR was bob's (`pretend_held`) and
+/// pushed to the real bob. The refusal must not wedge bob: his honest ack
+/// of alice's merge pushes afterwards and the merge completes.
+///
+/// Turns red if: the ack is accepted into bob's chain (accept-any-PR
+/// mutant), the refusal is not a typed 4xx, or it changes bob's tip.
+/// End-to-end scenario: yes (forged commit over HTTP, then recovery).
+#[tokio::test]
+#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
+async fn forged_ack_naming_a_never_held_pr_is_refused_over_push() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state);
+    let mut alice = Peer::new("alice");
+    let mut bob = Peer::new("bob");
+    let mut carol = Peer::new("carol");
+    bootstrap(&app, &mut alice, "key_a", 1_700_100_000).await;
+    bootstrap(&app, &mut bob, "key_b", 1_700_100_000).await;
+    bootstrap(&app, &mut carol, "key_a", 1_700_100_000).await;
+    let (alice_pr, bob_pr, carol_pr) = (alice.pr(), bob.pr(), carol.pr());
+
+    let pays = vec![alice.merge(std::slice::from_ref(&alice_pr), &bob_pr, 1_700_100_100)];
+    let blobs = alice
+        .commit_blobs(pays, 1_700_100_100)
+        .expect("merge authors");
+    let (status, body) = push(&app, &alice, &blobs).await;
+    assert!(status.is_success(), "merge must push: {status} {body:?}");
+
+    // Positive control: the honest peer's verifier refuses the forgery.
+    let mut honest = bob.fork();
+    let pays = vec![honest.ack(std::slice::from_ref(&alice_pr), &carol_pr, 1_700_100_200)];
+    assert!(
+        honest.commit_blobs(pays, 1_700_100_200).is_err(),
+        "an honest verifier refuses an ack naming a PR it never held"
+    );
+
+    let mut forger = bob.fork();
+    forger.principal.pretend_held(carol.principal.pr().clone());
+    let pays = vec![forger.ack(std::slice::from_ref(&alice_pr), &carol_pr, 1_700_100_200)];
+    let blobs = forger
+        .commit_blobs(pays, 1_700_100_200)
+        .expect("the believing copy authors the forgery");
+    let before = tip(&app, &bob).await;
+    let (status, body) = push(&app, &forger, &blobs).await;
+    assert!(
+        status.is_client_error(),
+        "a forged ack must be a typed 4xx: {status} {body:?}"
+    );
+    assert!(
+        body["payload"]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("state mismatch")),
+        "the refusal names its cause: {body:?}"
+    );
+    assert_eq!(
+        tip(&app, &bob).await,
+        before,
+        "a refused ack leaves bob's chain untouched"
+    );
+
+    let pays = vec![bob.ack(&[alice_pr], &bob_pr, 1_700_100_300)];
+    let blobs = bob
+        .commit_blobs(pays, 1_700_100_300)
+        .expect("honest ack authors");
+    let (status, body) = push(&app, &bob, &blobs).await;
+    assert!(
+        status.is_success(),
+        "bob is not wedged by the refusal: {status} {body:?}"
+    );
+    assert_eq!(
+        merge_status(&alice.principal, &bob.principal),
+        MergeStatus::Merged
     );
 }

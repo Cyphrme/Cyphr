@@ -29,6 +29,12 @@ impl<S: eml::Storage> Principal<S> {
         &self.pr
     }
 
+    /// Whether this principal has ever held `pr` (SPEC 11.5.1), compared by
+    /// value on every algorithm the two share.
+    pub fn has_held(&self, pr: &PrincipalRoot) -> bool {
+        self.held_prs.iter().any(|h| h.0.matches(&pr.0))
+    }
+
     /// Get the current Auth State.
     pub fn auth_root(&self) -> &AuthRoot {
         &self.ar
@@ -141,6 +147,17 @@ impl<S: eml::Storage> Principal<S> {
         key.set_revocation(Revocation { rvk, by: None });
         core.auth.revoked.insert(tmb_b64, key);
         Ok(())
+    }
+
+    /// Make this principal believe it once held `pr`.
+    ///
+    /// Test setup for a forged `principal/merge-ack`: an honest client's
+    /// own verifier refuses an ack naming a PR it never held, so no honest
+    /// client can put such a commit on the wire. A test authors one on a
+    /// copy that believes otherwise and pushes it to the real chain.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn pretend_held(&mut self, pr: PrincipalRoot) {
+        self.core_mut().held_prs.push(pr);
     }
 
     /// Get all cozies (across all commits).
