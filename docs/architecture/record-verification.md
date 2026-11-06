@@ -354,7 +354,8 @@ thumbprint.
 The `commit/create` coz must be the last coz of a commit, and a commit with
 the finalizer elsewhere is rejected with `CommitNotLast`. Cozies grouped into
 one transaction through `CommitScope::apply_tx` must carry an identical `typ`,
-and a mixed group is rejected with `MixedTransactionTyp`.
+and a mixed group is rejected with `MixedTransactionTyp`. Both statements hold
+for the code as it is; the known defect below says what replay does not do.
 
 ```claim
 kind: requirement
@@ -368,15 +369,21 @@ second asserts `MixedTransactionTyp` and has a control (a same-typ group
 applies). The finalizer-position check is in `finalize_commit`, so it holds on
 every path that finalizes a commit.
 
-**Gap.** The shared-`typ` rule is enforced only on the `apply_tx` API path.
-`apply_tx` has no production caller: `git grep -n "apply_tx(" -- rs` finds only
-the definition and tests in `spec_conformance.rs`. Storage, import and the
-server apply cozies one at a time through `verify_and_apply`, which groups
-nothing, so a replay does not check that a transaction's cozies share a `typ`.
-Whether replay should group cozies by the wire `txs` array and check this is
-open for the architect. Not checked: that the order of transactions inside a
-commit survives storage and replay unchanged. That is a property of the storage
-engine (`rs/cyphr-storage`), outside these tests.
+**Known defect.** The implementation does not honour transaction grouping.
+SPEC §4.6.2 makes grouping part of the wire format (`txs` is a list of lists),
+and SPEC §3.7.5 makes it a hash input: `TX = MR(czd₀, czd₁?, …)` and
+`TR = MR(TXₘ₀?, …, TX꜀)`. Ingest drops the grouping and applies each coz as its
+own transaction, through `verify_and_apply`, which groups nothing. For any
+transaction with more than one coz, the computed TR, and therefore CR and PR,
+differ from the values the specification defines. The shared-`typ` rule of
+SPEC §4.1 is likewise not enforced at replay: it is checked only by
+`CommitScope::apply_tx`, which has no production caller
+(`git grep -n "apply_tx(" -- rs` finds only the definition and tests in
+`spec_conformance.rs`). The bound tests therefore pin the `apply_tx` API
+behaviour, not replay, and no bound test shows the grouping defect. Not
+checked: that the order of transactions inside a commit survives storage and
+replay unchanged. That is a property of the storage engine
+(`rs/cyphr-storage`), outside these tests.
 
 #### [rv-no-coz-reuse]
 
