@@ -9,8 +9,6 @@
 //! Without the cfg the file compiles to nothing and the workspace stays
 //! green. Rotation goes through `AppState::rotate_signing_key`; no key
 //! storage is involved.
-#![allow(unexpected_cfgs)]
-#![cfg(red_n20)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

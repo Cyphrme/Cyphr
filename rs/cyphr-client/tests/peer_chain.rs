@@ -13,8 +13,6 @@
 //! statement slot on `/patch`) is the one the server already uses for a
 //! pushed commit; a chain is authenticated by replay against the pinned
 //! genesis, not by the patch statement.
-#![allow(unexpected_cfgs)]
-#![cfg(red_n20)]
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
