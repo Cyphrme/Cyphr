@@ -74,8 +74,8 @@ pub use principal::Principal;
 #[cfg(any(test, feature = "test-utils"))]
 pub use state::compute_pr;
 pub use state::{
-    AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest,
-    StateRoot, compute_commit_id, compute_dr,
+    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest, StateRoot,
+    compute_dr,
 };
 pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};

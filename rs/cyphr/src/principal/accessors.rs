@@ -5,7 +5,7 @@ use coz::Thumbprint;
 use super::{Level, Principal, PrincipalKind};
 use crate::action::Action;
 use crate::commit::Commit;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
@@ -108,14 +108,6 @@ impl<S: eml::Storage> Principal<S> {
         self.auth.keys.values()
     }
 
-    /// Get mutable access to all active keys.
-    ///
-    /// This is primarily for test setup (e.g., pre-revoking keys).
-    /// Use with caution - direct mutation bypasses state recomputation.
-    pub fn active_keys_mut(&mut self) -> impl Iterator<Item = &mut Key> {
-        self.core_mut().auth.keys.values_mut()
-    }
-
     /// Get number of active keys.
     pub fn active_key_count(&self) -> usize {
         self.auth.keys.len()
@@ -134,7 +126,9 @@ impl<S: eml::Storage> Principal<S> {
     /// # Errors
     ///
     /// Returns `UnknownKey` if the key is not found in the active set.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn pre_revoke_key(&mut self, tmb: &Thumbprint, rvk: i64) -> Result<()> {
+        use crate::error::Error;
         use crate::key::Revocation;
 
         let tmb_b64 = tmb.to_b64();

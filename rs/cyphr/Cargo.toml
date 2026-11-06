@@ -24,13 +24,13 @@ serde_json = { workspace = true }
 thiserror  = { workspace = true }
 
 [features]
-# Exposes test-oracle functions (e.g. compute_pr) that are otherwise
-# cfg(test)-only, so dependent crates' own tests can cross-check against
-# them. Only ever enable this from a [dev-dependencies] declaration
-# (as cyphr-storage does): dev-dependency features aren't compiled into
-# a normal `cargo build`/release artifact. Enabling it from a
-# [dependencies] block instead would re-expose compute_pr in a real
-# production build, defeating the point of the gate.
+# Exposes test-oracle functions (e.g. compute_pr) and the state-setup hook
+# pre_revoke_key, which are otherwise cfg(test)-only, so dependent crates'
+# own tests can cross-check against them. Only enable this from test-only
+# crates: a [dev-dependencies] declaration (as cyphr-storage does) or the
+# test-fixtures crate, which no production crate depends on outside its
+# own [dev-dependencies]. Enabling it from a production [dependencies]
+# block would re-expose these in a real release build.
 test-utils = []
 
 [dev-dependencies]

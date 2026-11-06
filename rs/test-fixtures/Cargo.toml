@@ -8,7 +8,7 @@ version                = "0.1.0"
 
 [dependencies]
 coz.workspace       = true
-cyphr               = { path = "../cyphr" }
+cyphr               = { path = "../cyphr", features = ["test-utils"] }
 cyphr-storage       = { path = "../cyphr-storage" }
 indexmap.workspace  = true
 serde.workspace     = true
