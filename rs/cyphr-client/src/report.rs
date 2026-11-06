@@ -319,7 +319,7 @@ pub enum ViewFailure {
     /// The signed `typ` is not [`VIEW_STATEMENT_TYP`].
     #[error("the signed statement is not a view statement")]
     WrongTyp,
-    /// The signing key is absent or malformed in the statement.
+    /// The statement's `tmb` is absent or not a thumbprint.
     #[error("the statement names no usable signing key")]
     NoKey,
     /// The signing key is not active in the peer chain the caller holds.
@@ -371,10 +371,12 @@ pub fn verify_view_statement<S: cyphr::eml::Storage>(
         .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
         .map(coz::Thumbprint::from_bytes)
         .ok_or(ViewFailure::NoKey)?;
-    if !chain.is_key_active(&tmb) {
-        return Err(ViewFailure::KeyNotActive);
-    }
-    let key = chain.get_key(&tmb).ok_or(ViewFailure::NoKey)?;
+    // Looked up among ACTIVE keys only: `get_key` also returns revoked ones,
+    // and a key the chain has retired must not vouch for a current view.
+    let key = chain
+        .active_keys()
+        .find(|k| k.tmb() == &tmb)
+        .ok_or(ViewFailure::KeyNotActive)?;
     if coz.pay["alg"].as_str() != Some(key.alg())
         || !signature_verifies(&coz, key.alg(), key.pub_key())
     {

@@ -333,6 +333,24 @@ async fn client_verifies_view_statement_against_the_active_peer_chain() {
         );
     }
 
+    // A forgery that keeps tree size and index consistent with each other
+    // (so the parse's own consistency check cannot catch it), and a forged
+    // field outside the size pair: only the signature stands in the way.
+    let mut grown = view.clone();
+    grown["statement"]["coz"]["pay"]["tree_size"] = serde_json::json!(3);
+    grown["statement"]["coz"]["pay"]["index"] = serde_json::json!(2);
+    assert!(
+        cyphr_client::verify_view_statement(&grown, &chain, &pr).is_err(),
+        "a consistently forged size and index was accepted"
+    );
+    let mut restamped = view.clone();
+    restamped["statement"]["coz"]["pay"]["now"] =
+        serde_json::json!(pay["now"].as_i64().expect("now") + 1);
+    assert!(
+        cyphr_client::verify_view_statement(&restamped, &chain, &pr).is_err(),
+        "a statement with a forged `now` was accepted"
+    );
+
     // A validly signed statement from a key the peer chain does not hold.
     let outsider = coz::Alg::Ed25519.generate_keypair();
     let mut foreign_pay = pay.clone();
