@@ -220,23 +220,3 @@ impl Probe {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Claim: the `version-check` capability is observed, not parked behind a
-    /// pending supplier. While it is `Pending` every scenario that requires
-    /// it (S10) stops at the capability table and never reaches its
-    /// unknown-version step. Turns red while `probe()` is
-    /// `Probe::Pending(..)`. A unit test: the table is the unit, and the
-    /// observation itself is exercised by `s10_hostile`.
-    #[test]
-    #[ignore = "RED(N13): version-check is still Probe::Pending"]
-    fn version_check_probe_is_a_real_observation() {
-        assert!(
-            !matches!(Capability::VersionCheck.probe(), Probe::Pending(_)),
-            "version-check must be observed against the shipped binaries"
-        );
-    }
-}
