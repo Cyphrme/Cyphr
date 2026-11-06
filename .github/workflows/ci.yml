@@ -41,6 +41,11 @@ jobs:
         working-directory: .
         run: test $(git grep -n "#\[ignore" -- rs | grep -vE "RED\(|QUARANTINE\(#[0-9]+\)" | wc -l) -eq 0
       - run: cargo build --workspace --all-targets --verbose
+      # The packaged example config must keep starting a server and the
+      # server must keep refusing unknown keys; this regressed silently once
+      # because only a manual run exercised it.
+      - name: Smoke the packaged example config
+        run: bash ../packaging/smoke.sh target/debug/cyphr-server
       - run: cargo test --workspace --verbose
       - run: cargo clippy --workspace --all-targets -- -D warnings
 

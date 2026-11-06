@@ -115,6 +115,7 @@ pub struct ServeArgs {
 
 /// Fully-resolved server configuration.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Listen address.
     pub listen: String,
@@ -178,7 +179,7 @@ pub struct ServerConfig {
 /// `#[serde(default)]` makes every field independently omittable, so a partial
 /// `[limits]` table tunes one fence and inherits defaults for the rest.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum request body in bytes; an over-cap body is refused `413` before
     /// any handler work. Defaults to 2 MiB (the historical push-body bound).
@@ -227,6 +228,7 @@ pub struct LimitsConfig {
 /// sufficient: it identifies a key but cannot verify a signature. Mirrors
 /// the `alg`/`pub` wire shape of [`crate::revoke::DisclosedKey`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthorityIdentity {
     /// The authority's signature algorithm (e.g. `Ed25519`).
     pub alg: String,
@@ -247,6 +249,7 @@ pub struct AuthorityIdentity {
 /// functional (merely very strict) rather than bricking writes, so it is
 /// loosened, not refused.
 #[derive(Debug, Clone, Copy, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateBucket {
     /// Sustained replenishment rate in requests per second.
     pub per_second: u32,
@@ -283,8 +286,13 @@ impl Default for LimitsConfig {
 ///
 /// Selected by the `policy` tag of the `[admission]` TOML table. `Open`
 /// (the default) installs no fence at all -- a bare server is permissionless.
+///
+/// Deserialized through [`AdmissionWire`] so that unknown keys are refused
+/// even under `policy = "open"`: serde's internally tagged enums ignore
+/// every key a *unit* variant does not name, which would let a misspelled
+/// `polcy = "invite"` silently fall back to open admission.
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
-#[serde(tag = "policy", rename_all = "lowercase")]
+#[serde(tag = "policy", rename_all = "lowercase", from = "AdmissionWire")]
 pub enum AdmissionConfig {
     /// No admission fence. The layer is absent, not an always-pass
     /// middleware; a new principal may take up residency without a token.
@@ -302,6 +310,24 @@ pub enum AdmissionConfig {
         /// Path to the deployment's `sha256(token)` hex-line file.
         tokens_path: PathBuf,
     },
+}
+
+/// Strict wire shape of [`AdmissionConfig`]: `Open` is a field-less struct
+/// variant here so `deny_unknown_fields` applies to it.
+#[derive(Deserialize)]
+#[serde(tag = "policy", rename_all = "lowercase", deny_unknown_fields)]
+enum AdmissionWire {
+    Open {},
+    Invite { tokens_path: PathBuf },
+}
+
+impl From<AdmissionWire> for AdmissionConfig {
+    fn from(wire: AdmissionWire) -> Self {
+        match wire {
+            AdmissionWire::Open {} => Self::Open,
+            AdmissionWire::Invite { tokens_path } => Self::Invite { tokens_path },
+        }
+    }
 }
 
 impl ServerConfig {
