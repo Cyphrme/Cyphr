@@ -237,3 +237,30 @@ async fn pg_established_marker_tracks_the_pg_commit() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     conformance::pg_established_marker_tracks_the_pg_commit(&indexer).await;
 }
+
+#[tokio::test]
+#[ignore = "RED(H1F): index_commit re-points aliases and digests silently"]
+async fn alias_conflict_second_principal_is_refused() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::alias_conflict_second_principal_is_refused(&indexer).await;
+}
+
+#[tokio::test]
+#[ignore = "RED(H1F): index_commit re-points aliases and digests silently"]
+async fn alias_conflict_naming_another_principal_is_refused() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::alias_conflict_naming_another_principal_is_refused(&indexer).await;
+}
+
+#[tokio::test]
+#[ignore = "RED(H1F): index_commit re-points aliases and digests silently"]
+async fn digest_conflict_other_principal_is_refused() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_conflict_other_principal_is_refused(&indexer).await;
+}
+
+#[tokio::test]
+async fn digest_conflict_same_principal_repeat_is_allowed() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_conflict_same_principal_repeat_is_allowed(&indexer).await;
+}

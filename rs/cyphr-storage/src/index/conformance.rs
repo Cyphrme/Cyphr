@@ -511,3 +511,158 @@ pub async fn pg_established_marker_tracks_the_pg_commit<I: Indexer + IndexerWrit
     indexer.clear(&token).await.expect("clear");
     assert!(!indexer.is_pg_established(id).await.unwrap());
 }
+
+/// A `principal/create` commit for `id` whose PG variants are `pg`.
+fn create_commit_with_pg(id: &str, seq: u64, pg: &[&str]) -> IndexableCommit {
+    let mut c = make_commit(id, seq, 1000 + seq as i64);
+    c.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
+    c.pg = pg.iter().map(|s| s.to_string()).collect();
+    c
+}
+
+/// Backs "no hostile write can re-point a principal alias" at the index
+/// seam, for every backend. Principal A establishes a PG; a later commit
+/// of principal B naming the same PG variant is refused as
+/// [`IndexerError::Conflict`], writes nothing (B has no chain, tip or
+/// alias), and A's alias still resolves to A. Re-indexing A's own commit
+/// stays a no-op. Turns red if the second writer is silently ignored
+/// (first-writer-wins) or wins (overwrite). A unit test: engine-level
+/// scenarios cannot reach a second principal claiming the same PG.
+pub async fn alias_conflict_second_principal_is_refused<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    let pg = "SHA-256:contested-pg";
+    for id in [a, b] {
+        indexer
+            .index_commit(&make_commit(id, 0, 1000), &token)
+            .await
+            .expect("commit 0");
+    }
+    indexer
+        .index_commit(&create_commit_with_pg(a, 1, &[pg]), &token)
+        .await
+        .expect("A establishes the PG");
+
+    let err = indexer
+        .index_commit(&create_commit_with_pg(b, 1, &[pg]), &token)
+        .await
+        .expect_err("B re-pointing A's alias must be refused");
+    assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
+
+    assert_eq!(
+        indexer.get_tip(pg).await.unwrap().map(|t| t.principal_id),
+        Some(a.to_string()),
+        "A's alias moved or vanished"
+    );
+    assert_eq!(
+        indexer.get_tip(b).await.unwrap().unwrap().commit_count,
+        1,
+        "the refused commit must write nothing"
+    );
+    assert!(!indexer.is_pg_established(b).await.unwrap());
+    indexer
+        .index_commit(&create_commit_with_pg(a, 1, &[pg]), &token)
+        .await
+        .expect("re-indexing A's own commit stays a no-op");
+}
+
+/// An alias that spells another stored principal's id is refused too: the
+/// id would be unreachable through the alias and a reader could not tell
+/// the two apart. Turns red if the alias is written (shadowed) or ignored.
+pub async fn alias_conflict_naming_another_principal_is_refused<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    for id in [a, b] {
+        indexer
+            .index_commit(&make_commit(id, 0, 1000), &token)
+            .await
+            .expect("commit 0");
+    }
+    let err = indexer
+        .index_commit(&create_commit_with_pg(b, 1, &[a]), &token)
+        .await
+        .expect_err("an alias spelling A's id must be refused");
+    assert!(matches!(err, IndexerError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        indexer.get_tip(a).await.unwrap().unwrap().principal_id,
+        a,
+        "A still resolves to itself"
+    );
+}
+
+/// Backs "no hostile write can redirect a digest" at the index seam. A
+/// commit of principal B that carries a coz czd (or a commit digest) that
+/// principal A already owns is refused as [`IndexerError::Conflict`];
+/// the digest still resolves to A, and B's commit is not indexed. Turns
+/// red if the digest is overwritten (redirect). A unit test: engine-level
+/// scenarios cannot make two principals' derived digests collide.
+pub async fn digest_conflict_other_principal_is_refused<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let (a, b) = ("SHA-256:alice-id", "SHA-256:bob-id");
+    indexer
+        .index_commit(&make_commit(a, 0, 1000), &token)
+        .await
+        .expect("A commit 0");
+    indexer
+        .index_commit(&make_commit(b, 0, 1000), &token)
+        .await
+        .expect("B commit 0");
+    let owned_czd = format!("SHA-256:czd-{a}-0");
+    let owned_commit = format!("SHA-256:commit-{a}-0");
+
+    for (label, mutate) in [
+        (
+            "coz czd",
+            Box::new(|c: &mut IndexableCommit| c.cozies[0].czd = owned_czd.clone())
+                as Box<dyn Fn(&mut IndexableCommit)>,
+        ),
+        (
+            "commit sr",
+            Box::new(|c: &mut IndexableCommit| c.srs = vec![owned_commit.clone()]),
+        ),
+    ] {
+        let mut hostile = make_commit(b, 1, 2000);
+        mutate(&mut hostile);
+        let err = indexer
+            .index_commit(&hostile, &token)
+            .await
+            .expect_err("a colliding digest must be refused");
+        assert!(
+            matches!(err, IndexerError::Conflict(_)),
+            "{label}: got {err:?}"
+        );
+        for owned in [&owned_czd, &owned_commit] {
+            let digest: TaggedDigest = owned.parse().expect("tagged digest");
+            let e = indexer.resolve_digest(&digest).await.unwrap().unwrap();
+            assert_eq!(e.principal_id.as_deref(), Some(a), "{label}: redirected");
+        }
+        assert_eq!(
+            indexer.get_tip(b).await.unwrap().unwrap().commit_count,
+            1,
+            "{label}: the refused commit must write nothing"
+        );
+    }
+}
+
+/// Control for the digest check: one principal's own commits may repeat a
+/// root (a commit that leaves SR unchanged), and the later commit takes
+/// the digest. Turns red if the conflict check is over-broad and refuses
+/// an honest history.
+pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let a = "SHA-256:alice-id";
+    indexer
+        .index_commit(&make_commit(a, 0, 1000), &token)
+        .await
+        .unwrap();
+    let mut next = make_commit(a, 1, 2000);
+    next.srs = vec![format!("SHA-256:sr-{a}-0")];
+    indexer.index_commit(&next, &token).await.expect("repeat");
+    let digest: TaggedDigest = format!("SHA-256:sr-{a}-0").parse().unwrap();
+    let e = indexer.resolve_digest(&digest).await.unwrap().unwrap();
+    assert_eq!(e.sequence, Some(1));
+}
