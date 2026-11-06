@@ -220,8 +220,9 @@ not present either branch as the principal's state: the principal's
 consensus state is Error (SPEC §15.8). A peer may refuse further writes
 for that principal; it keeps serving both branches and the evidence.
 
-The server does not meet this today: it refuses the second branch with
-`409` and keeps nothing of it.
+The server meets this: it refuses the second branch as the tip (`409`),
+keeps it as a verified branch within a per-key quota, and serves both
+branches at `GET /evidence`.
 
 ```claim
 kind: requirement
