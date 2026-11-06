@@ -557,3 +557,35 @@ async fn data_action_typed_like_a_freeze_follows() {
         .expect("a chain with an app/freeze/status action follows");
     assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
 }
+
+/// Claim: the `key` sidecar is read only where a key is introduced; an
+/// unsigned, junk `key` member on any other coz is ignored, never a reason
+/// to refuse a chain whose signed content is valid.
+///
+/// Turns red if: the sidecar is parsed for every blob, so a junk member on
+/// a `commit/create` coz refuses the follow.
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn junk_sidecar_on_a_non_introducing_coz_is_ignored() {
+    let g = kp();
+    let k1 = kp();
+    let k2 = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let mut c2 = peer.commit(&k2, 1_700_000_200);
+    // The closing cozy of a non-genesis commit carries no sidecar; add junk.
+    let closing = c2.last_mut().expect("closing cozy");
+    let mut coz: serde_json::Value =
+        serde_json::from_slice(&Base64UrlUnpadded::decode_vec(closing).expect("b64"))
+            .expect("coz json");
+    coz["key"] = serde_json::json!({ "junk": true });
+    *closing = Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"));
+    let pipe = Pipe::new(patch_body(&[c1, c2]));
+    let (pr, _) = subject();
+
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe)
+        .await
+        .expect("junk on a non-introducing coz is ignored");
+    assert!(held.verify_tip(&tip_envelope(&k2), &pr).is_ok());
+}

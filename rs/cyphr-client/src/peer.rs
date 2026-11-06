@@ -399,10 +399,17 @@ fn decode_wire(blob: &[u8], commit: usize) -> Result<Wire, PeerFailure> {
         .and_then(Value::as_str)
         .ok_or_else(|| bad("no alg"))?
         .to_string();
-    let key = value
-        .get("key")
-        .map(|k| sidecar_key(k).ok_or_else(|| bad("key sidecar is malformed")))
-        .transpose()?;
+    // The sidecar is unsigned and read only where a key is introduced;
+    // on any other coz it is never interpreted, so junk there cannot
+    // refuse a chain whose signed content is valid.
+    let key = if cyphr::parsed_coz::typ::is_key_introducing(&header.typ) {
+        value
+            .get("key")
+            .map(|k| sidecar_key(k).ok_or_else(|| bad("key sidecar is malformed")))
+            .transpose()?
+    } else {
+        None
+    };
     Ok(Wire {
         pay_json: serde_json::to_vec(&pay).map_err(|_| bad("pay does not serialize"))?,
         sig,
