@@ -668,13 +668,8 @@ pub async fn push(
         AppError::bad_request("bundle formed no commit and the principal has no committed state")
     })?;
     let signer = state.attestor_signer();
-    let (envelope, receipt_unavailable) = push_response(
-        &result,
-        tip,
-        crate::auth::server_now(),
-        signer.as_deref(),
-    )
-    .await;
+    let (envelope, receipt_unavailable) =
+        push_response(&result, tip, crate::auth::server_now(), signer.as_deref()).await;
     if let Some(reason) = receipt_unavailable {
         tracing::error!(
             principal = %result.principal_id,
@@ -1258,8 +1253,13 @@ mod push_response_tests {
     async fn push_response_signs_the_tip_it_is_given() {
         let (identity, _dir) = identity();
         let (result, tip) = committed(digest(5));
-        let (env, unavailable) =
-            push_response(&result, &tip, 1_700_000_000, Some(&identity as &dyn receipt::ReceiptSigner)).await;
+        let (env, unavailable) = push_response(
+            &result,
+            &tip,
+            1_700_000_000,
+            Some(&identity as &dyn receipt::ReceiptSigner),
+        )
+        .await;
         assert!(unavailable.is_none());
         assert_eq!(env.payload.sequence, 4);
         assert_eq!(env.payload.commit_id, digest(5));
@@ -1275,8 +1275,13 @@ mod push_response_tests {
         let (identity, _dir) = identity();
         // Not a digest: `commit_receipt` refuses to sign it.
         let (result, tip) = committed("not-a-digest".to_string());
-        let (env, unavailable) =
-            push_response(&result, &tip, 1_700_000_000, Some(&identity as &dyn receipt::ReceiptSigner)).await;
+        let (env, unavailable) = push_response(
+            &result,
+            &tip,
+            1_700_000_000,
+            Some(&identity as &dyn receipt::ReceiptSigner),
+        )
+        .await;
         assert!(matches!(
             unavailable,
             Some(receipt::ReceiptError::Field { .. })

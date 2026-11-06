@@ -20,10 +20,10 @@ use std::pin::Pin;
 use cyphr::HashAlg;
 use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
-use cyphr_client::VIEW_STATEMENT_TYP;
 // The canonical report parse lives in the client crate; `check_equivocation`
 // consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
 pub use cyphr_client::TipReport;
+use cyphr_client::VIEW_STATEMENT_TYP;
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -323,8 +323,9 @@ async fn sign_statement<const N: usize>(
     claims: [(&str, Value); N],
 ) -> Result<coz::CozJson, ReceiptError> {
     let (alg, pub_key) = (signer.alg(), signer.pub_key());
-    let tmb = coz::compute_thumbprint_for_alg(alg, pub_key)
-        .ok_or(ReceiptError::Key("no thumbprint for this algorithm and key"))?;
+    let tmb = coz::compute_thumbprint_for_alg(alg, pub_key).ok_or(ReceiptError::Key(
+        "no thumbprint for this algorithm and key",
+    ))?;
 
     let mut pay = coz::Pay::new();
     pay.alg = Some(alg.to_string());
@@ -340,8 +341,10 @@ async fn sign_statement<const N: usize>(
         .ok_or(ReceiptError::Key("algorithm cannot hash a payload"))?;
     let sig = signer.sign(&cad).await?;
     if coz::verify_json(&pay_json, &sig, alg, pub_key) != Some(true) {
-        return Err(SignerError::Backend("signature does not verify under the signer's key".into())
-            .into());
+        return Err(SignerError::Backend(
+            "signature does not verify under the signer's key".into(),
+        )
+        .into());
     }
     let pay = serde_json::to_value(&pay).map_err(|e| ReceiptError::Compose(e.to_string()))?;
     Ok(coz::CozJson { pay, sig })

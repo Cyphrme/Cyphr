@@ -377,7 +377,8 @@ async fn same_key_pair_proves_equivocation() {
         &roots_b(),
         real_commit_count,
         real_last_updated,
-    ).await
+    )
+    .await
     .expect("compose a conflicting tip report under the same key");
 
     assert_eq!(
@@ -437,7 +438,8 @@ async fn cross_key_pair_proves_equivocation() {
         &roots_b(),
         real_commit_count,
         real_last_updated,
-    ).await
+    )
+    .await
     .expect("compose a conflicting tip report under the rotated key");
 
     assert_eq!(
@@ -470,7 +472,8 @@ async fn same_commit_id_differing_roots_still_proves_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -481,7 +484,8 @@ async fn same_commit_id_differing_roots_still_proves_equivocation() {
         &roots_b(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report b");
 
     assert_eq!(
@@ -509,7 +513,8 @@ async fn asymmetric_type_sequence_proves_equivocation() {
         &roots_a(),
         6,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -520,7 +525,8 @@ async fn asymmetric_type_sequence_proves_equivocation() {
         &roots_b(),
         6,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report b");
     let b = restamp_sequence(b, &identity, serde_json::json!("5"));
 
@@ -551,7 +557,8 @@ async fn identical_claims_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -562,7 +569,8 @@ async fn identical_claims_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report b");
 
     assert_eq!(
@@ -585,7 +593,8 @@ async fn different_principal_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -596,7 +605,8 @@ async fn different_principal_pair_is_not_equivocation() {
         &roots_b(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report b");
 
     assert_eq!(
@@ -619,7 +629,8 @@ async fn different_sequence_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -630,7 +641,8 @@ async fn different_sequence_pair_is_not_equivocation() {
         &roots_b(),
         5,
         1_700_000_100,
-    ).await
+    )
+    .await
     .expect("compose report b");
 
     assert_eq!(
@@ -654,7 +666,8 @@ async fn bad_signature_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report a");
     let b = receipt::tip_report(
         &identity,
@@ -665,7 +678,8 @@ async fn bad_signature_pair_is_not_equivocation() {
         &roots_b(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose report b");
 
     assert_eq!(
@@ -688,7 +702,8 @@ async fn wrong_typ_pair_is_not_equivocation() {
         &roots_a(),
         4,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose tip report");
     let commit = receipt::commit_receipt(
         &identity,
@@ -697,7 +712,8 @@ async fn wrong_typ_pair_is_not_equivocation() {
         3,
         digest(0x20),
         &roots_a(),
-    ).await
+    )
+    .await
     .expect("compose commit receipt");
 
     assert_eq!(

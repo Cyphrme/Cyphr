@@ -612,7 +612,8 @@ async fn genesis_commit_root_is_accepted() {
         &roots,
         1,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("tip_report MUST sign a genesis-stage report whose commit root is legitimately absent");
 
     assert_eq!(

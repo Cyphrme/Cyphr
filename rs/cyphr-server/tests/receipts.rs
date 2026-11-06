@@ -213,7 +213,8 @@ async fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_str
         0,
         VECTOR_COMMIT_ID,
         &roots,
-    ).await
+    )
+    .await
     .expect("an absent cr must still compose and sign -- absence is accepted, not refused");
 
     // Positive control: the sibling `pr` root is unaffected -- proves
@@ -533,7 +534,8 @@ async fn commit_receipt_matches_golden_vector() {
         0,
         VECTOR_COMMIT_ID,
         &vector_roots(),
-    ).await
+    )
+    .await
     .expect("compose and sign commit receipt");
 
     let wire = serde_json::to_string(&coz).unwrap();
@@ -559,7 +561,8 @@ async fn tip_report_matches_golden_vector() {
         &vector_roots(),
         1,
         1_700_000_000,
-    ).await
+    )
+    .await
     .expect("compose and sign tip report");
 
     let wire = serde_json::to_string(&coz).unwrap();
