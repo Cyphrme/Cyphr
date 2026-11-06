@@ -338,6 +338,20 @@ impl AuthTree {
         Ok(node)
     }
 
+    /// AR of a principal whose KT is empty but which holds AT nonces: with
+    /// KR absent the nonces fill the cells from 0 (SPEC 3.7: an empty
+    /// component is omitted), so one nonce is promoted.
+    pub(crate) fn build_nonces_only(nonces: &[&[u8]], algs: &[HashAlg]) -> Result<AuthRoot> {
+        let mut node = Self::new(role_arity(nonces.len()));
+        register_algs(&mut node.inner, algs)?;
+        for (index, payload) in nonce_payloads(nonces, algs)?.into_iter().enumerate() {
+            node.inner
+                .set(index as u64, payload, Vec::new())
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        }
+        node.root(algs)
+    }
+
     /// Build AR-node fresh from `kr` and return its root as [`AuthRoot`].
     pub fn build(kr: &KeyRoot, algs: &[HashAlg]) -> Result<AuthRoot> {
         Self::build_tree(kr, algs)?.root(algs)
@@ -477,29 +491,39 @@ pub fn derive_state_roots(
 /// [`derive_state_roots`] with the nonces held at the KT and AT levels. PR
 /// nonces are not an input here: they enter the Principal Tree, above SR.
 ///
-/// A principal with no keys (Dead, SPEC 11) has no KT, and an empty
-/// component is omitted (SPEC 3.7), so KR and AR are `None` and SR is the
-/// DR promoted alone, or `None` when there is no data either. `algs` is
-/// the set the roots hash under; for the commit that leaves no key, the
-/// caller supplies the set in force before the commit.
+/// A principal with no keys (Dead, SPEC 11) has KR and AR only from the
+/// nonces it still holds, and SR is the DR promoted alone when AR is absent
+/// (`None` when there is no data either). `algs` is the set the roots hash
+/// under; for the commit that leaves no key, the caller supplies the set in
+/// force before the commit.
 pub(crate) fn derive_state_roots_with_nonces(
     thumbprints: &[&Thumbprint],
     dr: Option<&DataRoot>,
     nonces: &NonceSets,
     algs: &[HashAlg],
 ) -> Result<(Option<KeyRoot>, Option<AuthRoot>, Option<StateRoot>)> {
-    if thumbprints.is_empty() {
-        let sr = dr
-            .map(|dr| StateTree::build_data_only(dr, algs))
-            .transpose()?;
-        return Ok((None, None, sr));
-    }
-    let kr = KeyTree::build_tree_with_nonces(thumbprints, &nonces.at_level(NonceLevel::Kt), algs)?
-        .root(algs)?;
-    let ar = AuthTree::build_tree_with_nonces(&kr, &nonces.at_level(NonceLevel::At), algs)?
-        .root(algs)?;
-    let sr = StateTree::build(&ar, dr, algs)?;
-    Ok((Some(kr), Some(ar), Some(sr)))
+    // Each root is built from its components that exist (SPEC 3.7: empty
+    // ones are omitted, a lone one is promoted). A principal with no keys
+    // (Dead, SPEC 11) still holds its nonces, which only `nonce/delete`
+    // removes (10.2), so KR and AR survive as long as a KT or AT nonce does.
+    let kt_nonces = nonces.at_level(NonceLevel::Kt);
+    let at_nonces = nonces.at_level(NonceLevel::At);
+    let kr = if thumbprints.is_empty() && kt_nonces.is_empty() {
+        None
+    } else {
+        Some(KeyTree::build_tree_with_nonces(thumbprints, &kt_nonces, algs)?.root(algs)?)
+    };
+    let ar = match &kr {
+        Some(kr) => Some(AuthTree::build_tree_with_nonces(kr, &at_nonces, algs)?.root(algs)?),
+        None if at_nonces.is_empty() => None,
+        None => Some(AuthTree::build_nonces_only(&at_nonces, algs)?),
+    };
+    let sr = match (&ar, dr) {
+        (Some(ar), dr) => Some(StateTree::build(ar, dr, algs)?),
+        (None, Some(dr)) => Some(StateTree::build_data_only(dr, algs)?),
+        (None, None) => None,
+    };
+    Ok((kr, ar, sr))
 }
 
 #[cfg(test)]

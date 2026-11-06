@@ -677,3 +677,83 @@ fn frozen_principal_refuses_nonce_mutations_until_thawed() {
         "control: a thawed principal refused a nonce: {r:?}"
     );
 }
+
+// ============================================================================
+// Dead principal: the nonces that remain (SPEC 3.7, 10.2)
+// ============================================================================
+
+/// Backs SPEC 3.7 and 10.2: revoking or deleting the last key removes no
+/// nonce (only `nonce/delete` does), and an empty component is omitted, so
+/// the roots of a principal with no key are derived from the nonces that
+/// remain and a lone nonce is promoted. Scenarios, each ending with the
+/// only key's removal (revoke, then delete in the last): (a) a KT nonce
+/// only: KR is that nonce and AR and SR promote it; (b) an AT nonce only:
+/// no KT, so KR is absent, AR is the nonce and SR promotes it; (c) both: KR
+/// is the KT nonce and AR = H(KR || AT nonce) (3.7.4, AR cells are KR then
+/// nonces). Turns red if the dying commit drops the nonces (KR/AR absent,
+/// or KR/AR of a keyless principal derived from nothing), if a lone nonce
+/// is hashed instead of promoted, or if the AT nonce is placed after an
+/// absent KR slot. End to end: yes.
+#[test]
+fn dead_principal_roots_keep_the_nonces_that_remain() {
+    let (n_kt, n_at) = (nonce_bytes(11), nonce_bytes(12));
+    let revoke = |g: &Kp, now: i64| {
+        sign(
+            g,
+            json!({"alg": g.alg, "now": now, "rvk": now, "tmb": b64(&g.tmb),
+                   "typ": "cyphr.me/cyphr/key/revoke"}),
+        )
+    };
+    let delete_self = |g: &Kp, now: i64| {
+        sign(
+            g,
+            json!({"alg": g.alg, "id": b64(&g.tmb), "now": now, "tmb": b64(&g.tmb),
+                   "typ": "cyphr.me/cyphr/key/delete"}),
+        )
+    };
+    type Die = Box<dyn Fn(&Kp, i64) -> Signed>;
+    let ways: [(&str, Die); 2] = [
+        ("revoke", Box::new(revoke)),
+        ("delete", Box::new(delete_self)),
+    ];
+    for (way, die) in ways {
+        for (kt, at) in [(true, false), (false, true), (true, true)] {
+            let g = pool_key("golden");
+            let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+            let mut now = T;
+            if kt {
+                commit_one(&mut p, &g, create(Level::Kt, &g, &n_kt, now), None, now)
+                    .expect("KT nonce");
+                now += 1;
+            }
+            if at {
+                commit_one(&mut p, &g, create(Level::At, &g, &n_at, now), None, now)
+                    .expect("AT nonce");
+                now += 1;
+            }
+            let r = commit_one(&mut p, &g, die(&g, now), None, now + 1);
+            assert!(r.is_ok(), "{way} of the last key (kt={kt} at={at}): {r:?}");
+            assert_eq!(p.active_key_count(), 0);
+
+            let want_kr: Option<Vec<u8>> = kt.then(|| n_kt.to_vec());
+            let want_ar: Vec<u8> = match (kt, at) {
+                (true, false) => n_kt.to_vec(),
+                (false, true) => n_at.to_vec(),
+                (true, true) => sha256_of_concat(&[&n_kt, &n_at]),
+                (false, false) => unreachable!("covered by the nonce-free Dead tests"),
+            };
+            let case = format!("{way} kt={kt} at={at}");
+            assert_eq!(p.key_root().map(sha256_bytes), want_kr, "{case}: KR");
+            assert_eq!(
+                p.auth_root().map(sha256_bytes),
+                Some(want_ar.clone()),
+                "{case}: AR"
+            );
+            assert_eq!(
+                p.sr().map(sha256_bytes),
+                Some(want_ar),
+                "{case}: SR (no DR)"
+            );
+        }
+    }
+}
