@@ -661,7 +661,10 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
         )
         .expect("revoke commit finalizes");
     assert!(chain.is_key_revoked(&tmb) && !chain.is_key_active(&tmb));
-    assert!(chain.get_key(&tmb).is_some(), "a revoked key stays findable");
+    assert!(
+        chain.get_key(&tmb).is_some(),
+        "a revoked key stays findable"
+    );
 
     let digest = |n: u8| format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32]));
     let roots = cyphr_server::receipt::Roots {

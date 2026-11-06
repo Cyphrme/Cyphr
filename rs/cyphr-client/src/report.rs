@@ -372,11 +372,10 @@ pub enum ViewFailure {
 /// # What this checks
 ///
 /// - `typ` is [`VIEW_STATEMENT_TYP`];
-/// - the signing key (`pay.tmb`) is ACTIVE in `chain`, so a key that was
-///   never in it, or was revoked or replaced, is refused even when its own
-///   signature is valid;
-/// - the signature verifies under that key's bytes (the whole `pay` is
-///   signed, so a forged tree size, index or `now` fails here);
+/// - the signing key (`pay.tmb`) is ACTIVE in `chain`, so a key that was never in it, or was
+///   revoked or replaced, is refused even when its own signature is valid;
+/// - the signature verifies under that key's bytes (the whole `pay` is signed, so a forged tree
+///   size, index or `now` fails here);
 /// - the claims canonicalize ([`ViewStatement::parse`]) and attest `pr`.
 ///
 /// # What this does NOT check
