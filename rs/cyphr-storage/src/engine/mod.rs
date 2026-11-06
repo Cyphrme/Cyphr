@@ -514,8 +514,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
         self.ensure_healed().await?;
-        let principal_id = self.canonical_principal_id(principal_id).await?;
-        Ok(self.indexer.get_tip(&principal_id).await?)
+        let key = self.resolve_key(principal_id).await?;
+        Ok(self
+            .indexer
+            .get_tip(key.as_deref().unwrap_or(principal_id))
+            .await?)
     }
 
     /// Retrieve a patch: commit chain metadata joined with blob content.
@@ -541,8 +544,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
         self.ensure_healed().await?;
-        let principal_id = self.canonical_principal_id(principal_id).await?;
-        let principal_id = principal_id.as_str();
+        let key = self.resolve_key(principal_id).await?;
+        let principal_id = key.as_deref().unwrap_or(principal_id);
         let from_seq = match from {
             Some(anchor) => Some(self.resolve_anchor_position(principal_id, anchor).await?),
             None => None,
@@ -587,55 +590,35 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// to "no anchor" (a full resync) or to sequence zero (which would
     /// silently wrap an unrecognized anchor onto genesis).
     ///
-    /// **Not principal-scoped — a known, tracked gap (issue #154), not an
-    /// enforced property.** `principal_id` is a parameter of this function
-    /// only to compose the error messages below; [`Indexer::resolve_digest`]
-    /// takes no principal, and the [`EntityRef`](crate::index::EntityRef) it
-    /// returns carries no principal field, so digest→position resolution is
-    /// a GLOBAL namespace. An anchor genuinely produced by a DIFFERENT
-    /// principal's chain resolves here exactly as it would for its own
-    /// principal — nothing below compares the resolved entity against
-    /// `principal_id` at all. This is the identity-binding gap #154 already
-    /// tracks elsewhere in this file (storage never binds a derived genesis
-    /// to the identifier it is filed under); this is a third instance of
-    /// that same structural gap, not a distinct defect.
-    ///
-    /// Reachable: `from` is attacker-rewritable on the wire (see
-    /// `request_side_from_rewrite_withholding_rejected`,
-    /// `cyphr-server/tests/witness_mode.rs`), so a rewritten anchor
-    /// belonging to principal A can resolve a position that then bounds
-    /// principal B's own `get_commit_chain` query. `get_commit_chain`
-    /// itself stays principal-scoped, so only B's own entries are ever
-    /// served — no cross-principal data leak — but the POSITION used to
-    /// bound them is unverified against which principal it actually names.
-    /// Every downstream branch traced fails closed behind N2's post-apply
-    /// authenticated-channel comparison (`EntryCommitmentMismatch`) --
-    /// but only when the syncing witness has `authority_identity` (K10)
-    /// configured (`cyphr-server/src/sync.rs`'s `authenticated_report`
-    /// gate: the comparison runs inside `if let Some(report) =
-    /// &authenticated_report`, itself populated only when
-    /// `state.config.authority_identity` is `Some`). A witness with no
-    /// `authority_identity` configured has no downstream check that
-    /// would catch a wrongly-bounded response, so this is
-    /// defence-in-depth for the K10 case only, not a demonstrated path
-    /// to forged or leaked state under every configuration.
+    /// Principal-scoped (forge #154): [`Indexer::resolve_digest_holders`]
+    /// names every holder of the digest, and only a holder that is this
+    /// principal's own commit bounds this chain. An anchor held solely by
+    /// other principals is [`EngineError::NotFound`] here, never a position
+    /// borrowed from a foreign chain; an anchor this principal holds at
+    /// several positions is [`EngineError::Ambiguous`].
     async fn resolve_anchor_position(
         &self,
         principal_id: &str,
         anchor: &TaggedDigest,
     ) -> Result<u64, EngineError> {
-        // A digest names a set of holders; the anchor is for this
-        // principal's chain, so take the holder that is this principal.
+        // A digest names a set of holders; only a holder that is this
+        // principal's own commit bounds this chain. A digest held solely by
+        // other principals names no position here (forge #154), and
+        // holders at differing positions of this chain are ambiguous.
         let holders = self.indexer.resolve_digest_holders(anchor).await?;
-        let entity = holders
+        let mut own = holders
             .iter()
-            .find(|h| h.principal_id.as_deref() == Some(principal_id))
-            .or_else(|| holders.first())
-            .ok_or_else(|| {
-                EngineError::NotFound(format!(
-                    "resync anchor {anchor} not indexed (requested for principal {principal_id})"
-                ))
-            })?;
+            .filter(|h| h.principal_id.as_deref() == Some(principal_id));
+        let entity = own.next().ok_or_else(|| {
+            EngineError::NotFound(format!(
+                "resync anchor {anchor} not indexed (requested for principal {principal_id})"
+            ))
+        })?;
+        if own.any(|other| other.sequence != entity.sequence) {
+            return Err(EngineError::Ambiguous(format!(
+                "resync anchor {anchor} is held at several positions of principal {principal_id}"
+            )));
+        }
         entity.sequence.map(|seq| seq + 1).ok_or_else(|| {
             EngineError::NotFound(format!(
                 "resync anchor {anchor} carries no chain position (requested for principal \
@@ -688,8 +671,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: crate::Genesis,
     ) -> Result<DerivedRoots, EngineError> {
         self.ensure_healed().await?;
-        let principal_id = self.canonical_principal_id(principal_id).await?;
-        let principal = self.load_principal(&principal_id, genesis).await?;
+        let principal = self.load_principal(principal_id, genesis).await?;
 
         let pr = format_multihash_all(principal.pr().as_multihash())?
             .into_iter()
@@ -831,7 +813,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<IngestResult, EngineError> {
         // The one exclusive claim (a PG alias) is checked before the first
         // durable write: a refused commit must leave no blob or manifest
-        // for a later rebuild to trip over.
+        // for a later rebuild to trip over. Two ingests for different
+        // principals contend for one alias without sharing a principal
+        // lock, so the check and the write it admits are held under a lock
+        // per alias (in sorted order, so contenders cannot deadlock).
+        let mut aliases: Vec<String> = commit
+            .pg
+            .iter()
+            .map(|pg| format!("pg-alias\0{pg}"))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        let alias_locks: Vec<_> = aliases.iter().map(|a| self.principal_lock(a)).collect();
+        let mut _alias_guards = Vec::with_capacity(alias_locks.len());
+        for lock in &alias_locks {
+            _alias_guards.push(lock.lock().await);
+        }
         self.indexer
             .check_commit(&commit, &DeriveToken::new())
             .await?;
@@ -1139,8 +1136,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// A corruption detector for principals whose blobs carry their
     /// genesis, not a security boundary. Without replay: if a principal's
     /// first sequence-0 manifest (in canonical order) names a
-    /// `commit/create` blob carrying a key, the genesis-derived id of that
-    /// key must equal the principal id the manifests carry. Returns each
+    /// `commit/create` blob carrying a key, the id derived from that
+    /// commit (the genesis PR, or with a nonce the PR after the commit)
+    /// must equal the principal id the manifests carry. Returns each
     /// failing principal with why; they are quarantined.
     ///
     /// Scope: a principal with no such carrier (explicit genesis, whose
@@ -1196,20 +1194,33 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }) else {
                 continue;
             };
-            match Self::genesis_from_blob(carrier).and_then(|g| genesis_principal_id(&g)) {
-                Ok(derived) if derived == principal_id => {},
-                Ok(derived) => {
-                    unbound.insert(
-                        principal_id.to_string(),
-                        format!("its blobs derive principal {derived}"),
-                    );
-                },
+            let genesis = match Self::genesis_from_blob(carrier) {
+                Ok(genesis) => genesis,
                 Err(e) => {
                     unbound.insert(
                         principal_id.to_string(),
                         format!("genesis not derivable from its blobs: {e}"),
                     );
+                    continue;
                 },
+            };
+            // The key is a function of the record (I1: not of what a
+            // manifest claims): the genesis PR without a nonce, else the PR
+            // the first commit yields, so that one commit is replayed, not
+            // the chain.
+            let derived = if has_nonce_coz(&blobs) {
+                first_commit(&genesis, &blobs).and_then(|c| c.prs.into_iter().next())
+            } else {
+                genesis_principal_id(&genesis).ok()
+            };
+            // Strict by decision: the project is pre-1.0 with nothing
+            // deployed, so a store keyed by a PG-to-be exists only in test
+            // runs and needs no lenient branch.
+            if derived.as_deref() != Some(principal_id) {
+                unbound.insert(
+                    principal_id.to_string(),
+                    "its first commit does not derive this id as its key".to_string(),
+                );
             }
         }
         Ok(unbound)
@@ -1275,8 +1286,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: crate::Genesis,
     ) -> Result<cyphr::Principal<S>, EngineError> {
         self.ensure_healed().await?;
-        let principal_id = self.canonical_principal_id(principal_id).await?;
-        self.replay_stored(&principal_id, genesis).await
+        let key = self.resolve_key(principal_id).await?;
+        self.replay_stored(key.as_deref().unwrap_or(principal_id), genesis)
+            .await
     }
 
     /// [`load_principal`](Self::load_principal) for an id already known to
@@ -1346,8 +1358,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         through: Option<u64>,
     ) -> Result<Vec<crate::CommitEntry>, EngineError> {
-        use crate::CommitEntry;
-
         let last = match through {
             Some(0) => return Ok(Vec::new()),
             Some(count) => Some(count - 1),
@@ -1364,46 +1374,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // 3. For each CommitRef, fetch blobs and build a CommitEntry.
         let mut commit_entries = Vec::with_capacity(chain.len());
         for commit_ref in &chain {
-            let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
-            let mut keys = Vec::new();
-
+            let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
             for hash in &commit_ref.blob_hashes {
-                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
+                blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
                         "blob {hash} referenced by index commit {} missing",
                         commit_ref.commit_id
                     ))
-                })?;
-
-                // Parse blob as JSON.
-                let json_str = String::from_utf8(data).map_err(|e| {
-                    EngineError::MalformedBlob(format!("blob {hash} is not UTF-8: {e}"))
-                })?;
-                let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-                    EngineError::MalformedBlob(format!("blob {hash} is not valid JSON: {e}"))
-                })?;
-
-                // Extract key material from the coz envelope's "key" field
-                // (for key-introducing transactions).
-                if let Some(key_obj) = value.get("key") {
-                    if let Some(ke) = key_value_to_entry(key_obj) {
-                        keys.push(ke);
-                    }
-                }
-
-                cozies.push(value);
+                })?);
             }
-
-            // replay_commits only reads `cozies` and `keys`;
-            // state digest fields are inert during replay.
-            commit_entries.push(CommitEntry::new(
-                cozies,
-                keys,
-                commit_ref.commit_id.clone(),
-                None, // ar — unused during replay
-                None, // sr — unused during replay
-                commit_ref.pr.clone(),
-            ));
+            commit_entries.push(replay_entry(&blobs, &commit_ref.commit_id, &commit_ref.pr)?);
         }
 
         Ok(commit_entries)
@@ -1431,8 +1411,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// * `principal_id` — The principal's genesis-derived id (SPEC §3.1), labelled (`ALG:digest`,
     ///   the stored spelling) or bare, or any Principal Root variant the principal has had (its PG
-    ///   among them, SPEC §3.7.1/§12.1), labelled or bare. Any other id is refused with
-    ///   [`EngineError::InvalidInput`]; every key below is the genesis-derived labelled spelling.
+    ///   among them, SPEC §3.7.1/§12.1), labelled or bare. A bare genesis id claims only a
+    ///   principal with no nonce. Any other id is refused with [`EngineError::InvalidInput`]. The
+    ///   storage key, and the id reported back, is the genesis PR (no nonce) or the PR after commit
+    ///   0 (a nonce in commit 0), in the labelled spelling.
     /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
     ///   storage (existing principal) or from the submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
@@ -1464,41 +1446,78 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let raw_blobs: Vec<&[u8]> = canonical.iter().map(Vec::as_slice).collect();
         let raw_blobs = raw_blobs.as_slice();
 
-        // 1. Resolve genesis, then the one canonical spelling of the id.
+        // 1. Resolve the principal's storage key.
         //
-        // SPEC §3.1: a principal's identifier is derived from its genesis,
-        // never chosen by the caller. The derived id has one stored
-        // spelling (the algorithm-labelled `ALG:digest`); the bare digest
-        // is accepted as input only when it names that same id. Every
-        // lock, index and storage key below is the canonical spelling, so
-        // one identity cannot be stored as two independent principals
-        // (a fork refused under one spelling accepted under the other, or a
-        // revoked key committing under an alias).
-        let mut stored = self.stored_id(principal_id).await?;
+        // The key is a function of the record, never of the spelling the
+        // caller used, so a rebuild from blobs reproduces it (I1): a
+        // principal with no nonce is keyed by its genesis PR (the tmb, for
+        // an implicit genesis); one with a nonce in commit 0 by the PR
+        // after commit 0 (SPEC 5.1 l764: principals sharing a key differ by
+        // nonce, so the bare key is not their identity). The key is also
+        // the id a response reports. An id addresses a stored principal by
+        // its key, its PG (any variant) or, while it is the principal's
+        // current PR, its PG-to-be.
+        let claimed = principal_id;
+        let mut stored = self.stored_id(claimed).await?;
         if stored.is_none() {
-            stored = self.pending_pg_owner(principal_id).await?;
+            stored = self.pending_pg_owner(claimed).await?;
         }
         let genesis = match (genesis, &stored) {
             (Some(g), _) => g,
             (None, Some(stored_id)) => self.genesis_of_stored(stored_id).await?,
             (None, None) => Self::genesis_from_raw_blobs(raw_blobs)?,
         };
-        let canonical = genesis_principal_id(&genesis)?;
-        let claimed = principal_id;
-        // A spelling other than the genesis-derived id is honoured only
-        // when it already resolves to this stored principal, or (a new
-        // principal) when its own first commit yields that Principal Root
-        // (checked once the commit is applied, below).
-        let alias_claim = claimed != canonical && claimed != bare_digest(&canonical);
-        if stored
-            .as_deref()
-            .is_some_and(|stored_id| stored_id != canonical)
-        {
-            return Err(EngineError::InvalidInput(format!(
+        let genesis_id = genesis_principal_id(&genesis)?;
+        let not_genesis_id = || {
+            EngineError::InvalidInput(format!(
                 "principal_id is not the genesis-derived id: {claimed}"
-            )));
+            ))
+        };
+        let mut new_key = None;
+        if let Some(stored_id) = stored.as_deref() {
+            // A stored principal is this genesis's only if its own first
+            // commit says so; one keyed by its genesis PR is bound by
+            // construction.
+            if stored_id != genesis_id
+                && genesis_principal_id(&self.genesis_of_stored(stored_id).await?)? != genesis_id
+            {
+                return Err(not_genesis_id());
+            }
+        } else {
+            // A new principal: these blobs are its first commit. A claim
+            // other than the genesis-derived id is honoured only when this
+            // commit yields it as a Principal Root.
+            let first = first_commit(&genesis, raw_blobs);
+            let nonce = has_nonce_coz(raw_blobs);
+            let claim_is_tmb = claimed == genesis_id || claimed == bare_digest(&genesis_id);
+            // A principal that establishes its PG in commit 0 has the
+            // genesis-time PR as PG, so its post-commit PR is no id; with
+            // a nonce the post-commit PR is the key and always is.
+            let names_pr = first
+                .iter()
+                .filter(|c| nonce || !c.establishes_pg)
+                .flat_map(|c| &c.prs)
+                .any(|v| v == claimed || bare_digest(v) == claimed);
+            if !claim_is_tmb && !names_pr {
+                return Err(not_genesis_id());
+            }
+            if nonce {
+                if claim_is_tmb {
+                    return Err(EngineError::InvalidInput(format!(
+                        "a principal with a nonce is not identified by the bare key {claimed}; \
+                         claim its Principal Root or PG"
+                    )));
+                }
+                new_key = first.and_then(|c| c.prs.into_iter().next());
+            } else {
+                // A genesis PR already stored is that principal's: the
+                // position guard decides, so a different commit 0 is
+                // refused as a fork, not filed as a sibling (I2).
+                stored = self.stored_id(&genesis_id).await?;
+                new_key = Some(genesis_id.clone());
+            }
         }
-        let unproven_alias = alias_claim && stored.is_none();
+        let canonical = stored.or(new_key).ok_or_else(not_genesis_id)?;
         let principal_id = canonical.as_str();
 
         // Serialize the whole sequence-resolution-through-ingest critical
@@ -1510,20 +1529,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let _serialize_writes = lock.lock().await;
 
         // 2. Load (or construct) the principal from existing state.
-        let mut principal = self.load_principal(principal_id, genesis.clone()).await?;
+        let mut principal = self.replay_stored(principal_id, genesis.clone()).await?;
 
         // 3. Determine the next sequence number.
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
 
-        let commit = match Self::build_commit(
-            &mut principal,
-            raw_blobs,
-            principal_id,
-            claimed,
-            unproven_alias,
-            next_seq,
-        ) {
+        let commit = match Self::build_commit(&mut principal, raw_blobs, principal_id, next_seq) {
             Ok(Some(commit)) => commit,
             Ok(None) => {
                 // Action-only bundle: just store blobs in blob store without
@@ -1557,8 +1569,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
-                    self.retain_rival(principal_id, genesis, raw_blobs, claimed, unproven_alias)
-                        .await?;
+                    self.retain_rival(principal_id, genesis, raw_blobs).await?;
                 }
                 return Err(refused);
             },
@@ -1577,8 +1588,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal: &mut cyphr::Principal<T>,
         raw_blobs: &[&[u8]],
         principal_id: &str,
-        claimed: &str,
-        unproven_alias: bool,
         next_seq: u64,
     ) -> Result<Option<IndexableCommit>, EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -1783,17 +1792,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
 
         if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
-            // A new principal's non-genesis id must be its PG-to-be: the PR
-            // it holds after this commit, and only while this commit does
-            // not itself establish the PG (then the PG is the genesis-time
-            // PR, and the post-commit PR is a historical root, not an id).
-            let names_pg_to_be = principal.pg().is_none()
-                && pr.iter().any(|v| v == claimed || bare_digest(v) == claimed);
-            if unproven_alias && !names_pg_to_be {
-                return Err(EngineError::InvalidInput(format!(
-                    "principal_id is not the genesis-derived id: {claimed}"
-                )));
-            }
             let pg = match principal.pg() {
                 Some(pg) if !had_pg => format_multihash_all(pg.as_multihash())?,
                 _ => Vec::new(),
@@ -1877,8 +1875,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: crate::Genesis,
         raw_blobs: &[&[u8]],
-        claimed: &str,
-        unproven_alias: bool,
     ) -> Result<(), EngineError> {
         use crate::import::replay_commits;
 
@@ -1893,14 +1889,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 self.retention_trials
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let mut candidate = principal.clone();
-                if let Ok(Some(commit)) = Self::build_commit(
-                    &mut candidate,
-                    raw_blobs,
-                    principal_id,
-                    claimed,
-                    unproven_alias,
-                    position as u64,
-                ) {
+                if let Ok(Some(commit)) =
+                    Self::build_commit(&mut candidate, raw_blobs, principal_id, position as u64)
+                {
                     return self.keep_branch(raw_blobs, commit).await;
                 }
             }
@@ -2132,9 +2123,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// `principal_with_keys_before_create_is_pushable_under_its_pg`, whose
     /// commit 0 is a `key/create` pushed under the PG).
     async fn pending_pg_owner(&self, claimed: &str) -> Result<Option<String>, EngineError> {
-        let Some((owner, sequence)) = self.locate_by_pr(claimed).await? else {
+        let located = self.locate_by_pr(claimed).await?;
+        let Some((owner, _)) = located.first().cloned() else {
             return Ok(None);
         };
+        if located.iter().any(|(other, _)| *other != owner) {
+            return Err(EngineError::Ambiguous(format!(
+                "Principal Root {claimed} is held by several principals; address one by its PG"
+            )));
+        }
+        // The same principal may hold a PR at several positions; only its
+        // latest commit can be its current PR.
+        let sequence = located
+            .iter()
+            .map(|(_, seq)| *seq)
+            .max()
+            .unwrap_or_default();
         // An established PG is settled from the index alone: no replay,
         // so naming a public current PR cannot amplify into history loads.
         if self.indexer.is_pg_established(&owner).await? {
@@ -2162,12 +2166,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(holds_claim.then_some(owner))
     }
 
-    /// The principal and commit sequence whose commit has `principal_id`
+    /// Every principal and commit sequence whose commit has `principal_id`
     /// (labelled or bare) as a Principal Root variant, as a locator only:
     /// the caller must verify against replayed state. Any other digest of
     /// a commit (id, SR, AR, CR) is not located, so it cannot trigger a
-    /// replay.
-    async fn locate_by_pr(&self, principal_id: &str) -> Result<Option<(String, u64)>, EngineError> {
+    /// replay. All holders are returned, never one of them: a PR shared by
+    /// several principals is the caller's ambiguity to refuse.
+    async fn locate_by_pr(&self, principal_id: &str) -> Result<Vec<(String, u64)>, EngineError> {
         let candidates: Vec<String> = if principal_id.contains(':') {
             vec![principal_id.to_string()]
         } else {
@@ -2176,35 +2181,44 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .map(|label| format!("{label}:{principal_id}"))
                 .collect()
         };
+        let mut located = Vec::new();
         for candidate in candidates {
             let Ok(digest) = candidate.parse::<cyphr::state::TaggedDigest>() else {
                 continue;
             };
             let holders = self.indexer.resolve_digest_holders(&digest).await?;
-            // A PR names one principal; if a digest has several holders,
-            // take the first that is a Principal Root (canonical order).
-            if let Some(entity) = holders
+            for entity in holders
                 .into_iter()
-                .find(|h| h.entity_type == EntityType::Commit && h.principal_root)
+                .filter(|h| h.entity_type == EntityType::Commit && h.principal_root)
             {
                 if let (Some(principal), Some(sequence)) = (entity.principal_id, entity.sequence) {
-                    return Ok(Some((principal, sequence)));
+                    located.push((principal, sequence));
                 }
             }
         }
-        Ok(None)
+        located.sort_unstable();
+        located.dedup();
+        Ok(located)
     }
 
-    /// The canonical (stored) spelling of `principal_id`, or `principal_id`
-    /// unchanged if no such principal is stored. Read paths key on this so
-    /// the bare and labelled spellings of one id reach one chain.
+    /// The id a principal is stored and reported under (its key), or
+    /// `principal_id` unchanged if no such principal is stored. Read paths
+    /// resolve on the key, so every address (key, PG, PG variant or
+    /// PG-to-be) reaches one chain.
     pub async fn canonical_principal_id(&self, principal_id: &str) -> Result<String, EngineError> {
         self.ensure_healed().await?;
-        let stored = match self.stored_id(principal_id).await? {
-            Some(id) => Some(id),
-            None => self.pending_pg_owner(principal_id).await?,
-        };
-        Ok(stored.unwrap_or_else(|| principal_id.to_string()))
+        Ok(self
+            .resolve_key(principal_id)
+            .await?
+            .unwrap_or_else(|| principal_id.to_string()))
+    }
+
+    /// The storage key `principal_id` addresses, if any.
+    async fn resolve_key(&self, principal_id: &str) -> Result<Option<String>, EngineError> {
+        match self.stored_id(principal_id).await? {
+            Some(key) => Ok(Some(key)),
+            None => self.pending_pg_owner(principal_id).await,
+        }
     }
 
     /// Scan `blobs` (a single commit bundle, in wire order) for a `commit/create`-typed cozy
@@ -2339,6 +2353,75 @@ fn authenticated_signers(
 /// merely contains `/commit/create` is an ordinary coz.
 fn is_commit_create_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::COMMIT_CREATE)
+}
+
+/// The [`CommitEntry`](crate::CommitEntry) replay reads from a stored
+/// commit's `blobs`: the cozies plus the key material their envelopes
+/// carry. State digest fields are inert during replay.
+fn replay_entry(
+    blobs: &[Vec<u8>],
+    commit_id: &str,
+    pr: &str,
+) -> Result<crate::CommitEntry, EngineError> {
+    let mut cozies = Vec::with_capacity(blobs.len());
+    let mut keys = Vec::new();
+    for data in blobs {
+        let value: serde_json::Value = serde_json::from_slice(data).map_err(|e| {
+            EngineError::MalformedBlob(format!("commit {commit_id} blob is not valid JSON: {e}"))
+        })?;
+        // Key material of a key-introducing transaction.
+        if let Some(ke) = value.get("key").and_then(key_value_to_entry) {
+            keys.push(ke);
+        }
+        cozies.push(value);
+    }
+    Ok(crate::CommitEntry::new(
+        cozies,
+        keys,
+        commit_id.to_string(),
+        None,
+        None,
+        pr.to_string(),
+    ))
+}
+
+/// What `raw_blobs` yield as the first commit of a principal from
+/// `genesis`, replayed on a throwaway in-memory principal.
+struct FirstCommit {
+    /// The Principal Root variants after the commit; the first is the
+    /// storage key of a principal with a nonce.
+    prs: Vec<String>,
+    /// Whether the commit itself established the PG: then the PG is the
+    /// genesis-time PR and the post-commit PR is a historical root, not a
+    /// PG-to-be (SPEC 3.7.1).
+    establishes_pg: bool,
+}
+
+/// The [`FirstCommit`] of `raw_blobs`, or `None` when they are not a valid
+/// first commit.
+fn first_commit(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<FirstCommit> {
+    let blobs: Vec<Vec<u8>> = raw_blobs.iter().map(|b| b.as_ref().to_vec()).collect();
+    let mut principal = match genesis {
+        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone()),
+        crate::Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone()),
+    }
+    .ok()?;
+    let entry = replay_entry(&blobs, "", "").ok()?;
+    crate::import::replay_commits(&mut principal, &[entry]).ok()?;
+    Some(FirstCommit {
+        prs: format_multihash_all(principal.pr().as_multihash()).ok()?,
+        establishes_pg: principal.pg().is_some(),
+    })
+}
+
+/// Whether any of `blobs` is a nonce coz (SPEC 10.1).
+fn has_nonce_coz(blobs: &[impl AsRef<[u8]>]) -> bool {
+    blobs.iter().any(|blob| {
+        serde_json::from_slice::<serde_json::Value>(blob.as_ref())
+            .ok()
+            .and_then(|v| v.pointer("/pay/typ")?.as_str().map(str::to_owned))
+            .is_some_and(|typ| cyphr::parsed_coz::typ::nonce_path(&typ).is_some())
+    })
 }
 
 /// Whether `data` parses as the pre-keyspace manifest shape. Parsed, not

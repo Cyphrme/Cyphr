@@ -77,16 +77,29 @@ pub enum LoadError {
 
 /// Determine if a typ string represents a transaction (not an action).
 ///
-/// Transactions are: key/*, principal/create, principal/delete,
-/// freeze/create, freeze/delete, commit/create. Everything else is an
-/// action.
+/// Every kind in the core kind table is a transaction; anything else is an
+/// action. Matching goes through the core's `/`-boundary
+/// `typ::has_suffix`, so storage cannot classify a typ the core would
+/// refuse to parse as a kind (`xcyphr/key/create`) and cannot miss a kind
+/// the core added.
 pub(crate) fn is_transaction_typ(typ: &str) -> bool {
-    typ.contains("/key/")
-        || typ.contains("/principal/create")
-        || typ.contains("/principal/delete")
-        || typ.contains("/freeze/create")
-        || typ.contains("/freeze/delete")
-        || typ.contains("/commit/create")
+    use cyphr::parsed_coz::typ as k;
+    [
+        k::KEY_CREATE,
+        k::KEY_DELETE,
+        k::KEY_REPLACE,
+        k::KEY_REVOKE,
+        k::PRINCIPAL_CREATE,
+        k::PRINCIPAL_DELETE,
+        k::COMMIT_CREATE,
+        k::MERGE,
+        k::MERGE_ACK,
+        k::FREEZE_CREATE,
+        k::FREEZE_DELETE,
+    ]
+    .iter()
+    .any(|suffix| k::has_suffix(typ, suffix))
+        || k::nonce_path(typ).is_some()
 }
 
 // ============================================================================

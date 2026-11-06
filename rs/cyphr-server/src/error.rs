@@ -153,6 +153,7 @@ impl AppError {
     /// Variant mapping:
     /// - `NotFound` → 404
     /// - `InvalidInput`, `MalformedBlob` → 400
+    /// - `Ambiguous` → 409 Conflict (the key names several principals)
     /// - `Protocol(cyphr::Error::StateMismatch | cyphr::Error::CommitMismatch)` → 409 Conflict (the
     ///   submitted commit's claimed predecessor state no longer matches the principal's actual
     ///   current state — the signature that a concurrent writer already claimed this principal's
@@ -167,6 +168,7 @@ impl AppError {
 
         match &err {
             EngineError::NotFound(_) => Self::not_found(err.to_string()),
+            EngineError::Ambiguous(_) => Self::conflict(err.to_string()),
             EngineError::InvalidInput(_) | EngineError::MalformedBlob(_) => {
                 Self::bad_request(err.to_string())
             },

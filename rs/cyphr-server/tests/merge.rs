@@ -14,12 +14,6 @@
 //! "push and verifier agree", and the server half follows. Each peer's
 //! local `Principal` is the same chain the server holds, so
 //! `merge_status` is asserted on the pair of local mirrors.
-//!
-//! The push-path tests are `RED(PGK)`: the storage engine routes a coz as a
-//! transaction by `typ` substring (`is_transaction_typ`), which names no
-//! `principal/merge*`, so a merge push is read as a data action and refused
-//! as an empty commit. Adding `|| typ.contains("/principal/merge")` there
-//! turns all five green (checked); drop the markers with that fix.
 
 use axum::Router;
 use axum::http::StatusCode;
@@ -305,7 +299,6 @@ async fn harness_bootstraps_peers_and_pushes_a_plain_commit() {
 /// the source; push and verifier disagree on acceptance.
 /// End-to-end scenario: yes (two principals, push path, tips).
 #[tokio::test]
-#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn merge_with_matching_ack_is_accepted_end_to_end() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -382,7 +375,6 @@ async fn merge_with_matching_ack_is_accepted_end_to_end() {
 /// or it wedges the victim's next ordinary commit.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn merge_without_ack_leaves_the_target_untouched() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -441,7 +433,6 @@ async fn merge_without_ack_leaves_the_target_untouched() {
 /// treats any ack as a merge.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -554,7 +545,6 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
 /// Turns red if: the kind is unrecognised, or only the tip PR is accepted.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -608,7 +598,6 @@ async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
 /// mutant), the refusal is not a typed 4xx, or it changes bob's tip.
 /// End-to-end scenario: yes (forged commit over HTTP, then recovery).
 #[tokio::test]
-#[ignore = "RED(PGK): storage is_transaction_typ does not route principal/merge*"]
 async fn forged_ack_naming_a_never_held_pr_is_refused_over_push() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);

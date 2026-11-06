@@ -166,7 +166,6 @@ async fn push(app: &axum::Router, body: String, what: &str) {
 /// other. Red today: `nonce/create` is rejected as a malformed payload.
 /// End to end: yes.
 #[tokio::test]
-#[ignore = "RED(PGK): engine keys principals by genesis-key tmb"]
 async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
@@ -223,4 +222,39 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
         );
         assert_eq!(t["commit_count"], 2, "{pg}: {t:?}");
     }
+}
+
+/// Backs the identity rule from the equality side: the same key with the
+/// SAME nonce is the same principal (same PG), so pushing it twice never
+/// yields a second principal, and its second push cannot move or fork the
+/// first one's tip. Every refusal is fine; a second principal, a moved
+/// tip or a 5xx is not. Also pins N13's chain-position idempotency through
+/// the PG key: the replay of position 0 is a no-op or a typed refusal,
+/// never position 1. Turns red if the engine files the twin under another
+/// key than the PG (a second chain, or a tip that advances), or if the
+/// first push is refused (today: nonce kinds route as actions). A sibling
+/// with a different nonce is the control that the two are told apart: it
+/// is pushed in between and must leave the twin's tip alone. End to end:
+/// yes.
+#[tokio::test]
+async fn identical_nonce_principal_pushed_twice_is_one_principal() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let a = principal_with_nonce(&g, &[0x33; 32]).expect("a");
+    let sibling = principal_with_nonce(&g, &[0x44; 32]).expect("sibling");
+    let (pg_a, pg_s) = (pg_of(&a), pg_of(&sibling));
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+
+    push(&app, wire(&a, 0, &g, &pg_a), "A commit 0").await;
+    let first = tip(&app, &pg_a).await;
+    push(&app, wire(&sibling, 0, &g, &pg_s), "sibling commit 0").await;
+    let (status, resp) = post_json(app.clone(), "/push", wire(&a, 0, &g, &pg_a)).await;
+    assert!(
+        !status.is_server_error(),
+        "replaying position 0 is a 5xx: {resp:?}"
+    );
+    let after = tip(&app, &pg_a).await;
+    assert_eq!(after, first, "the replay or the sibling moved A's tip");
+    assert_eq!(after.1["commit_count"], 1, "a second position appeared");
 }
