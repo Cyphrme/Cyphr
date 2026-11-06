@@ -487,23 +487,15 @@ async fn revoke_takes_ordinary_limits_no_exemption() {
 /// Everything except the per-principal bucket configured below is generous,
 /// so the ONLY thing that can 429 the victim is a per-principal rate fence
 /// drained by the attacker -- the failure is unambiguously that fence. With
-/// the field dropped from `LimitsConfig`, the `per_principal` line below is
-/// an unknown `[limits]` key the server ignores, so the victim's follow-on
-/// push reaches the handler and commits (2xx).
+/// no per-principal field in `LimitsConfig` (and unknown `[limits]` keys
+/// refused at startup), nothing can throttle the victim's follow-on push
+/// except per-IP and quota, both generous here, so it commits (2xx).
 #[tokio::test]
 async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
-    // Generous everywhere, then append a per-principal rate bucket as raw
-    // `[limits]` TOML, tight enough that the attacker's burst drains it. This
-    // key no longer exists in `LimitsConfig`, so the server ignores this line
-    // (it does not deny unknown fields), which is exactly what lets the
-    // victim through.
-    let limits = Limits::generous();
-    let extra = format!(
-        "{}per_principal = {{ per_second = {}, burst = {} }}\n",
-        limits.render(),
-        TRIP_PER_SECOND,
-        TRIP_BURST,
-    );
+    // Generous everywhere. There is deliberately no per-principal bucket to
+    // configure: the server refuses unknown `[limits]` keys, so the attacker
+    // flood below can only be fenced by per-IP and quota, both generous.
+    let extra = Limits::generous().render();
     let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), &extra).await;
 
     // The victim establishes residency with an active key via its genesis push

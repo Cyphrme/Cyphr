@@ -224,7 +224,7 @@ async fn harness_peer_view_reads_the_peer_itself() {
     assert!(v1.is_some(), "p1 must report the seeded principal");
     assert_eq!(v1, v2, "both peers took the same commit");
     assert_eq!(
-        h.peer_view("p1", &Principal("SHA-512:AAAA".into())).await,
+        h.peer_view("p1", &Principal("SHA-512:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into())).await,
         None
     );
 
@@ -274,7 +274,7 @@ async fn harness_partition_cuts_a_peer_to_peer_link() {
 
     let h = Harness::start(&["p1"]).await.expect("start authority");
     h.start_witness("w1", "p1").await.expect("start witness");
-    let asked = Principal("SHA-512:AAAA".into()); // any pr makes the witness pull
+    let asked = Principal("SHA-512:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()); // any pr makes the witness pull
 
     h.proxy.partition("w1", "p1");
     let before = h.proxy.stats("w1", "p1");

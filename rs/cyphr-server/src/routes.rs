@@ -184,28 +184,48 @@ pub enum IdentityResponse {
 // Handlers
 // ========================================================================
 
+/// Whether `raw` is shaped like a principal identifier: an `ALG:digest`
+/// tagged digest or a bare canonical base64url digest of a supported
+/// length. Peer input, so checked before it can reach an outbound request.
+fn is_principal_ref(raw: &str) -> bool {
+    if raw.contains(':') {
+        raw.parse::<cyphr::state::TaggedDigest>().is_ok()
+    } else {
+        receipt::parse_genesis_id_str(raw).is_ok()
+    }
+}
+
+/// Witness mode only: sync `pr` from the authority before the local read.
+///
+/// A `pr` that is not shaped like a principal identifier is never forwarded:
+/// the local lookup alone answers (not found), so unauthenticated garbage
+/// costs the witness no outbound request. Authority mode is unchanged.
+async fn witness_sync(state: &Arc<AppState>, pr: &str) {
+    if state.config.mode != crate::config::ServerMode::Witness {
+        return;
+    }
+    if !is_principal_ref(pr) {
+        tracing::debug!("witness sync skipped: pr is not a principal identifier");
+        return;
+    }
+    match crate::sync::sync_from_authority(state, pr).await {
+        SyncOutcome::Synced { applied, rejected } => {
+            tracing::debug!(principal = %pr, applied, rejected, "witness sync applied entries");
+        },
+        SyncOutcome::UpToDate => {},
+        SyncOutcome::Failed { reason } => {
+            tracing::warn!(principal = %pr, ?reason, "witness sync failed");
+        },
+    }
+}
+
 /// `GET /tip?pr=<PG>` — current principal state.
 #[tracing::instrument(skip(state))]
 pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    if state.config.mode == crate::config::ServerMode::Witness {
-        match crate::sync::sync_from_authority(&state, &query.pr).await {
-            SyncOutcome::Synced { applied, rejected } => {
-                tracing::debug!(
-                    principal = %query.pr,
-                    applied,
-                    rejected,
-                    "witness sync applied entries"
-                );
-            },
-            SyncOutcome::UpToDate => {},
-            SyncOutcome::Failed { reason } => {
-                tracing::warn!(principal = %query.pr, ?reason, "witness sync failed");
-            },
-        }
-    }
+    witness_sync(&state, &query.pr).await;
 
     let tip = state
         .engine
@@ -246,6 +266,42 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
         .ok_or_else(|| AppError::internal("tip commit_count is zero: cannot derive sequence"))
 }
 
+/// The roots re-derived from the blob store for tip `t`, memoized per
+/// (principal, commit id): the replay is a pure function of the chain up to
+/// that commit, so a hit is exact and the next commit misses by construction.
+/// The caller still compares the result against the index's roots, so a
+/// diverging index is caught on every request, cached or not.
+async fn derived_roots(
+    state: &Arc<AppState>,
+    t: &TipState,
+) -> Result<cyphr_storage::engine::DerivedRoots, AppError> {
+    let key = (t.principal_id.clone(), t.commit_id.clone());
+    if let Some(hit) = state.derived_roots.get(&key) {
+        return Ok(hit);
+    }
+    // The server's own principal has an explicit genesis, which its blobs
+    // cannot express, so its genesis is supplied rather than read back.
+    let own = state
+        .principal
+        .as_ref()
+        .filter(|p| p.pg() == t.principal_id);
+    let derived = match own {
+        Some(p) => {
+            state
+                .engine
+                .rederive_roots_with_genesis(
+                    &t.principal_id,
+                    cyphr_storage::Genesis::Explicit(vec![p.genesis_key().clone()]),
+                )
+                .await
+        },
+        None => state.engine.rederive_roots(&t.principal_id).await,
+    }
+    .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?;
+    state.derived_roots.insert(key, derived.clone());
+    Ok(derived)
+}
+
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
 /// the claim set `/tip` and `/patch` both need (identity, entry/root
 /// binding, `now`), factored out so `/patch`'s envelope signing (K10) reuses
@@ -259,11 +315,7 @@ async fn sign_tip_attestation(
         return Ok(None);
     };
 
-    let derived = state
-        .engine
-        .rederive_roots(&t.principal_id)
-        .await
-        .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?;
+    let derived = derived_roots(state, t).await?;
 
     if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr {
         return Err(AppError::internal(
@@ -303,22 +355,7 @@ pub async fn patch(
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    if state.config.mode == crate::config::ServerMode::Witness {
-        match crate::sync::sync_from_authority(&state, &query.pr).await {
-            SyncOutcome::Synced { applied, rejected } => {
-                tracing::debug!(
-                    principal = %query.pr,
-                    applied,
-                    rejected,
-                    "witness sync applied entries"
-                );
-            },
-            SyncOutcome::UpToDate => {},
-            SyncOutcome::Failed { reason } => {
-                tracing::warn!(principal = %query.pr, ?reason, "witness sync failed");
-            },
-        }
-    }
+    witness_sync(&state, &query.pr).await;
 
     // Retyped from a bare sequence to a content digest (Zami #140; S0.1: the
     // anchor root is PR). Parsed here, once, at the same boundary the
@@ -533,70 +570,78 @@ pub async fn push(
         .await
         .map_err(AppError::engine)?;
 
-    // The response attests the state that RESULTED from this accepted
-    // commit -- read back via the same post-submit tip any other client
-    // would see. A push client previously had no way to learn the
-    // accepted commit_id/sequence/roots without a follow-up /tip read.
-    // Read back under the canonical id the engine stored under: the
-    // submitted spelling can stop resolving once this commit moves the PR.
-    let t = state
-        .engine
-        .get_tip(&result.principal_id)
-        .await
-        .map_err(AppError::engine)?
-        .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
+    let tip = result.tip.as_ref().ok_or_else(|| {
+        AppError::bad_request("bundle formed no commit and the principal has no committed state")
+    })?;
+    let (envelope, receipt_unavailable) = push_response(
+        &result,
+        tip,
+        crate::auth::server_now(),
+        state.attestor_identity().map(|i| i.as_ref()),
+    );
+    if let Some(reason) = receipt_unavailable {
+        tracing::error!(
+            principal = %result.principal_id,
+            ?reason,
+            "commit is durable but its receipt could not be signed; answering unsigned"
+        );
+    }
+    Ok((StatusCode::CREATED, Json(envelope)))
+}
 
+/// Build the `201` body from data already in hand after the commit: the
+/// tip the engine computed while ingesting. Nothing here re-reads the index
+/// or re-derives roots (the ingest replay is the authority; an index that
+/// disagrees is a reindex concern, not a push response).
+fn push_response(
+    result: &cyphr_storage::engine::IngestResult,
+    tip: &cyphr_storage::engine::CommittedTip,
+    now: i64,
+    identity: Option<&crate::auth::ServerIdentity>,
+) -> (Envelope<PushResponse>, Option<ReceiptUnavailable>) {
     let payload = PushResponse {
         blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
-        commit_id: t.commit_id.clone(),
-        sequence: commit_sequence(t.commit_count)?,
+        commit_id: tip.commit_id.clone(),
+        sequence: tip.sequence,
         roots: PushRoots {
-            pr: t.pr.clone(),
-            sr: t.sr.clone(),
-            ar: t.ar.clone(),
-            cr: t.cr.clone(),
+            pr: tip.pr.clone(),
+            sr: tip.sr.clone(),
+            ar: tip.ar.clone(),
+            cr: tip.cr.clone(),
         },
     };
-
-    match state.attestor_identity() {
-        Some(identity) => {
-            let derived = state
-                .engine
-                .rederive_roots(&result.principal_id)
-                .await
-                .map_err(|e| {
-                    AppError::internal(format!("attestation root re-derivation failed: {e}"))
-                })?;
-
-            if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr
-            {
-                return Err(AppError::internal(
-                    "attestation root desynchronized with index",
-                ));
-            }
-
-            let roots = receipt::Roots {
-                pr: derived.pr,
-                sr: derived.sr,
-                ar: derived.ar,
-                // See `sign_tip_attestation`'s identical conversion: the
-                // empty-string sentinel becomes the receipt's typed
-                // absence at this boundary (#147).
-                cr: (!derived.cr.is_empty()).then_some(derived.cr),
-            };
-            let coz = receipt::commit_receipt(
-                identity,
-                crate::auth::server_now(),
-                cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
-                commit_sequence(t.commit_count)?,
-                t.commit_id,
-                &roots,
-            )
-            .ok_or_else(|| AppError::internal("commit receipt signing unavailable"))?;
-            Ok((StatusCode::CREATED, Json(Envelope::signed(payload, coz))))
-        },
-        None => Ok((StatusCode::CREATED, Json(Envelope::unsigned(payload)))),
+    let Some(identity) = identity else {
+        return (Envelope::unsigned(payload), None);
+    };
+    let roots = receipt::Roots {
+        pr: tip.pr.clone(),
+        sr: tip.sr.clone(),
+        ar: tip.ar.clone(),
+        cr: (!tip.cr.is_empty()).then(|| tip.cr.clone()),
+    };
+    // The commit is durable: a receipt that cannot be signed degrades the
+    // envelope to unsigned, it does not turn the answer into an error.
+    match receipt::commit_receipt(
+        identity,
+        now,
+        cyphr_storage::engine::bare_digest(&result.principal_id).to_string(),
+        tip.sequence,
+        tip.commit_id.clone(),
+        &roots,
+    ) {
+        Some(coz) => (Envelope::signed(payload, coz), None),
+        None => (
+            Envelope::unsigned(payload),
+            Some(ReceiptUnavailable::SigningFailed),
+        ),
     }
+}
+
+/// Why a committed push is answered without a signed receipt.
+#[derive(Debug, PartialEq, Eq)]
+enum ReceiptUnavailable {
+    /// The receipt constructor refused or failed to sign.
+    SigningFailed,
 }
 
 /// `POST /revoke` — accept, verify, and record a self-signed naked revoke
@@ -791,6 +836,14 @@ mod commit_count_underflow_tests {
     /// Returns the principal id the genesis derives (SPEC §3.1), the only
     /// id the engine accepts for this commit.
     async fn push_test_genesis(state: &AppState, now: i64) -> String {
+        push_test_genesis_ingest(state, now).await.0
+    }
+
+    /// [`push_test_genesis`], also returning the engine's ingest result.
+    async fn push_test_genesis_ingest(
+        state: &AppState,
+        now: i64,
+    ) -> (String, cyphr_storage::engine::IngestResult) {
         let golden_kp = coz::Alg::Ed25519.generate_keypair();
         let golden_tmb = golden_kp
             .alg
@@ -909,12 +962,35 @@ mod commit_count_underflow_tests {
         )
         .expect("genesis-derived principal id");
         let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
-        state
+        let ingest = state
             .engine
             .submit_commit(&principal_id, None, &blob_refs)
             .await
             .expect("genesis push succeeds");
-        principal_id
+        (principal_id, ingest)
+    }
+
+    /// Claim: the tip `submit_commit` returns is exactly the tip the index
+    /// then serves, so a push answer built from it cannot disagree with
+    /// `GET /tip`. Red if ingest and the indexer pick different digest
+    /// variants, or the sequence is off by one.
+    #[tokio::test]
+    async fn push_response_tip_equals_the_indexed_tip() {
+        let (state, _dir) = attestor_state().await;
+        let (principal_id, ingest) = push_test_genesis_ingest(&state, 1_700_200_200).await;
+        let committed = ingest.tip.expect("a commit forms a tip");
+        let indexed = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("indexed");
+        assert_eq!(committed.sequence, indexed.commit_count - 1);
+        assert_eq!(committed.commit_id, indexed.commit_id);
+        assert_eq!(
+            (committed.pr, committed.sr, committed.ar, committed.cr),
+            (indexed.pr, indexed.sr, indexed.ar, indexed.cr)
+        );
     }
 
     /// Positive control: proves this suite's harness genuinely exercises
@@ -1013,5 +1089,97 @@ mod commit_count_underflow_tests {
                 // exact representation is this node's delegated call.
             },
         }
+    }
+}
+
+// ========================================================================
+// A committed push is always reported as committed
+// ========================================================================
+
+/// Claim: once a commit is durable, the push answer is `201` carrying that
+/// commit's tip -- a receipt that cannot be signed degrades to an unsigned
+/// envelope, never to an error. Red if `push_response` fails (the route
+/// would answer 500 for a write that landed).
+///
+/// Pure-function tests, because no fault reachable over HTTP lands after a
+/// durable commit (see `tests/peer_bounds.rs`). The failure is injected
+/// through `receipt::commit_receipt`'s own refusal of a value that is not a
+/// digest; the receipt constructor takes a concrete `ServerIdentity`, not a
+/// `cyphr::signer::Signer`, so a failing `Signer` cannot be injected here.
+#[cfg(test)]
+mod push_response_tests {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr_storage::engine::{CommittedTip, IngestResult};
+
+    use super::*;
+    use crate::envelope::Statement;
+
+    fn digest(fill: u8) -> String {
+        format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[fill; 32]))
+    }
+
+    fn identity() -> (crate::auth::ServerIdentity, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let kp = coz::Alg::Ed25519.generate_keypair();
+        let path = dir.path().join("key.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "alg": kp.alg.name(),
+                "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+                "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        (
+            crate::auth::ServerIdentity::load_from_path(&path).expect("load key"),
+            dir,
+        )
+    }
+
+    fn committed(commit_id: String) -> (IngestResult, CommittedTip) {
+        let tip = CommittedTip {
+            sequence: 4,
+            commit_id,
+            pr: digest(1),
+            sr: digest(2),
+            ar: digest(3),
+            cr: digest(4),
+        };
+        let result = IngestResult {
+            principal_id: digest(9),
+            blob_hashes: Vec::new(),
+            manifest_hash: None,
+            tip: Some(tip.clone()),
+        };
+        (result, tip)
+    }
+
+    #[test]
+    fn push_response_signs_the_tip_it_is_given() {
+        let (identity, _dir) = identity();
+        let (result, tip) = committed(digest(5));
+        let (env, unavailable) = push_response(&result, &tip, 1_700_000_000, Some(&identity));
+        assert_eq!(unavailable, None);
+        assert_eq!(env.payload.sequence, 4);
+        assert_eq!(env.payload.commit_id, digest(5));
+        let Statement::Signed(coz) = env.statement else {
+            panic!("an attestor with a signable tip signs the receipt");
+        };
+        assert_eq!(coz.pay["sequence"], serde_json::json!(4));
+        assert_eq!(coz.pay["commit_id"], serde_json::json!(digest(5)));
+    }
+
+    #[test]
+    fn push_response_receipt_failure_is_still_a_committed_answer() {
+        let (identity, _dir) = identity();
+        // Not a digest: `commit_receipt` refuses to sign it.
+        let (result, tip) = committed("not-a-digest".to_string());
+        let (env, unavailable) = push_response(&result, &tip, 1_700_000_000, Some(&identity));
+        assert_eq!(unavailable, Some(ReceiptUnavailable::SigningFailed));
+        assert!(matches!(env.statement, Statement::Unsigned));
+        assert_eq!(env.payload.sequence, 4, "the commit is still reported");
+        assert_eq!(env.payload.commit_id, "not-a-digest");
     }
 }
