@@ -381,13 +381,67 @@ fn malformed_merge_fields_are_refused() {
     // A missing field is a different shape from a null one.
     for typ in [MERGE_TYP, ACK_TYP] {
         for drop in ["merge_from", "merge_to_pr"] {
-            let mut p = Peer::new("alice");
+            // The acking principal must be the ack's target, or self-targeting
+            // would refuse it whatever field is missing.
+            let mut p = Peer::new(if typ == MERGE_TYP { "alice" } else { "bob" });
             let mut pay = p.merge_shaped(typ, &json!([spr]), &json!(tpr), NOW + 10);
             pay.as_object_mut().expect("object").remove(drop);
             let r = p.commit(&[pay], NOW + 10);
             assert!(r.is_err(), "{typ}: must refuse a pay missing {drop}");
         }
     }
+}
+
+/// Claim: an ack matches by PR values, and the target need not be at the
+/// PR it names: the ack may name any PR the target has held (architect
+/// ruling on SPEC 11.5.1), including one before later commits, but never
+/// a PR it never held.
+///
+/// Positive control: the earlier-PR ack is accepted (red today); the
+/// refusal follows it. A name-the-tip-only mutant fails the first
+/// assertion; an accept-any-PR mutant fails the second.
+/// End-to-end scenario: yes (target commits, then acks an older PR).
+#[test]
+#[ignore = "RED(MG1): SPEC 11.5.1"]
+fn an_ack_may_name_an_earlier_pr_of_the_target() {
+    let source = Peer::new("alice");
+    let from = json!([source.pr()]);
+    let stranger = Peer::new("carol");
+
+    let advance = |p: &mut Peer| {
+        let k = signer("key_a");
+        let pay = json!({
+            "alg": p.signer.alg,
+            "id": k.tmb.to_b64(),
+            "now": NOW + 5,
+            "tmb": p.signer.tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/create",
+        });
+        let key = Key::new(k.alg.clone(), k.tmb.clone(), k.pub_key.clone())
+            .expect("key binds its tmb")
+            .with_first_seen(NOW + 5);
+        p.commit_with_keys(vec![(pay, Some(key))], NOW + 5)
+    };
+
+    let mut bob = Peer::new("bob");
+    let earlier = bob.pr();
+    advance(&mut bob).expect("an ordinary commit advances the target");
+    assert_ne!(bob.pr(), earlier);
+    let ack = bob.ack_pay(&from, &json!(earlier), NOW + 20);
+    let r = bob.commit(&[ack], NOW + 20);
+    assert!(
+        r.is_ok(),
+        "SPEC 11.5.1: an ack may name a PR the target held earlier: {r:?}"
+    );
+
+    let mut bob = Peer::new("bob");
+    advance(&mut bob).expect("an ordinary commit advances the target");
+    let ack = bob.ack_pay(&from, &json!(stranger.pr()), NOW + 20);
+    let r = bob.commit(&[ack], NOW + 20);
+    assert!(
+        r.is_err(),
+        "SPEC 11.5.1: an ack naming a PR the target never held must be refused"
+    );
 }
 
 /// Claim: `principal/merge-ack` is a different transaction from

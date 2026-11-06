@@ -396,24 +396,23 @@ async fn merge_without_ack_leaves_the_target_untouched() {
     );
 }
 
-/// Claim: an ack is accepted only for a merge actually signed for it, and
-/// a refused ack changes nothing. Alice merges into Bob; Carol merges
-/// into Diana. Bob's ack naming Alice is the matching one (accepted,
-/// positive control). Diana acking Alice (`merge_from` she never merged
-/// from) and Eve acking Alice (a merge that never named Eve as
-/// `merge_to_pr`) are both refused with a 4xx, leaving their tips equal.
+/// Claim: an ack makes a merge only when it matches one actually signed
+/// for it (equal `merge_from` and `merge_to_pr`); an unmatched ack is
+/// still the target's own valid commit, accepted and producing no merge.
+/// Alice merges into Bob; Carol merges into Diana. Bob's ack naming Alice
+/// is the matching one (positive control). Diana acking Alice
+/// (`merge_from` she never merged from) and Eve acking Alice (a merge that
+/// never named Eve) are accepted as commits that change no key state.
 ///
 /// Positive control: Bob's matching ack in the prelude (red today).
-/// Turns red if: the ack kind is unrecognised (prelude); ack acceptance
-/// ignores `merge_from` or `merge_to_pr` (accept-any-ack mutant fails the
-/// refusals); a refusal still writes the ack (tip moves).
+/// Turns red if: the ack kind is unrecognised (prelude); an unmatched ack
+/// is refused, or alters key state or the commit count by other than one.
+/// The mutant that treats any ack as a merge cannot be told apart until
+/// `merge_status` exists (see INTERIM below).
 /// End-to-end scenario: yes.
-/// Open question for the spec author: whether a pre-emptive ack (ack
-/// before the merge exists) is legal; asserted here only as not-accepted
-/// for a merge that does not exist.
 #[tokio::test]
 #[ignore = "RED(MG1): SPEC 11.5.1"]
-async fn an_ack_must_match_a_merge_signed_for_it() {
+async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let mut alice = Peer::new("alice");
@@ -454,9 +453,16 @@ async fn an_ack_must_match_a_merge_signed_for_it() {
         "the matching ack must push: {status} {body:?}"
     );
 
-    // Mismatches: each is a fresh target so no refused commit is reused.
-    let diana_before = tip(&app, &diana).await;
-    let eve_before = tip(&app, &eve).await;
+    // An ack with no matching merge is the target's own signed statement:
+    // it is accepted into the target's chain and makes no merge (architect
+    // ruling on SPEC 11.5.1). Each target is fresh so no commit is reused.
+    //
+    // INTERIM: match not observable until merge_status. MG1 must add:
+    //   merge_status(alice, bob)   == Merged   (bob acked alice's merge)
+    //   merge_status(alice, diana) == None     (diana's merge is carol's)
+    //   merge_status(alice, eve)   == None     (alice never named eve)
+    //   merge_status(carol, diana) == Pending  (carol merged, diana's ack
+    //                                           named alice, not carol)
     for (who, to, why) in [
         (
             &mut diana,
@@ -469,24 +475,75 @@ async fn an_ack_must_match_a_merge_signed_for_it() {
             "alice's merge never named eve as merge_to_pr",
         ),
     ] {
+        let before = tip(&app, who).await;
         let pays = vec![who.ack(std::slice::from_ref(&alice_pr), to, 1_700_100_200)];
         let blobs = who
             .commit_blobs(pays, 1_700_100_200)
             .expect("locally well-formed");
         let (status, body) = push(&app, who, &blobs).await;
         assert!(
-            status.is_client_error(),
-            "ack must be refused ({why}): {status} {body:?}"
+            status.is_success(),
+            "an unmatched ack is still the target's own valid commit ({why}): {status} {body:?}"
+        );
+        let after = tip(&app, who).await;
+        assert_eq!(
+            after["commit_count"].as_u64(),
+            before["commit_count"].as_u64().map(|n| n + 1),
+            "the unmatched ack lands as exactly one commit ({why})"
+        );
+        assert_eq!(
+            after["ar"], before["ar"],
+            "an ack never changes key state ({why})"
         );
     }
-    assert_eq!(
-        tip(&app, &diana).await,
-        diana_before,
-        "refused ack must leave diana untouched"
+}
+
+/// Claim: an ack may name an earlier PR the target held (not only its
+/// tip), and the push path accepts it. The refusal of a PR the target
+/// never held is asserted in `rs/cyphr/tests/merge.rs`
+/// (`an_ack_may_name_an_earlier_pr_of_the_target`): the local verifier
+/// refuses it before any wire blob exists, so no honest client can put
+/// that commit on the wire and a typed-4xx push test needs a hand-forged
+/// commit (open item for MG1: add a golden forged-ack vector).
+///
+/// Positive control: this test is itself the accepted case (red today).
+/// Turns red if: the kind is unrecognised, or only the tip PR is accepted.
+/// End-to-end scenario: yes.
+#[tokio::test]
+#[ignore = "RED(MG1): SPEC 11.5.1"]
+async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state);
+    let mut alice = Peer::new("alice");
+    let mut bob = Peer::new("bob");
+    bootstrap(&app, &mut alice, "key_a", 1_700_100_000).await;
+    bootstrap(&app, &mut bob, "key_b", 1_700_100_000).await;
+    let (alice_pr, earlier) = (alice.pr(), bob.pr());
+
+    let pays = vec![alice.merge(std::slice::from_ref(&alice_pr), &earlier, 1_700_100_100)];
+    let blobs = alice.commit_blobs(pays, 1_700_100_100);
+    assert!(
+        blobs.is_ok(),
+        "SPEC 11.5.1: the verifier must accept principal/merge: {blobs:?}"
     );
-    assert_eq!(
-        tip(&app, &eve).await,
-        eve_before,
-        "refused ack must leave eve untouched"
+    let (status, body) = push(&app, &alice, &blobs.expect("checked")).await;
+    assert!(status.is_success(), "merge must push: {status} {body:?}");
+
+    let pays = vec![bob.key_create("alice", 1_700_100_150)];
+    let blobs = bob.commit_blobs(pays, 1_700_100_150).expect("bob advances");
+    let (status, body) = push(&app, &bob, &blobs).await;
+    assert!(status.is_success(), "plain commit: {status} {body:?}");
+    assert_ne!(bob.pr(), earlier);
+
+    let pays = vec![bob.ack(std::slice::from_ref(&alice_pr), &earlier, 1_700_100_200)];
+    let blobs = bob.commit_blobs(pays, 1_700_100_200);
+    assert!(
+        blobs.is_ok(),
+        "SPEC 11.5.1: the verifier must accept an ack naming an earlier PR: {blobs:?}"
+    );
+    let (status, body) = push(&app, &bob, &blobs.expect("checked")).await;
+    assert!(
+        status.is_success(),
+        "an ack naming an earlier PR must push: {status} {body:?}"
     );
 }
