@@ -17,8 +17,9 @@
 //! dispatched through the same router HTTP uses, so every route keeps its
 //! own checks.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -30,19 +31,76 @@ use cyphr_client::transport::{
     assemble_statement, decode_request, encode_ack, encode_response, statement_cad, statement_pay,
 };
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use crate::{AppState, build_app_router};
 
-/// Sessions served at once. A further connection waits in the listen
-/// backlog rather than costing a task and a buffer.
+/// Sessions served at once, across all addresses.
 const MAX_SESSIONS: usize = 256;
+
+/// Sessions one source address may hold at once. A Level 1 key is its own
+/// principal, so a peer authenticates for free and the address is the only
+/// scarce thing it has; without this one address could fill every slot.
+const MAX_SESSIONS_PER_IP: usize = 16;
 
 /// How long an authenticated session may sit without a request before the
 /// server closes it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The session slots: a global pool and a per-address allowance, taken at
+/// accept time, before any handshake work, and returned when the session
+/// ends. A connection that finds no slot is dropped at once.
+struct Slots {
+    total: Arc<Semaphore>,
+    per_ip: Arc<Mutex<HashMap<IpAddr, usize>>>,
+}
+
+/// A held slot; dropping it frees both halves.
+struct Slot {
+    _total: OwnedSemaphorePermit,
+    per_ip: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl Slots {
+    fn new() -> Self {
+        Self {
+            total: Arc::new(Semaphore::new(MAX_SESSIONS)),
+            per_ip: Arc::default(),
+        }
+    }
+
+    fn admit(&self, ip: IpAddr) -> Option<Slot> {
+        let total = self.total.clone().try_acquire_owned().ok()?;
+        // A poisoned lock only means another session panicked mid-update of a
+        // plain counter map; the counts stay usable.
+        let mut held = self.per_ip.lock().unwrap_or_else(|p| p.into_inner());
+        let n = held.entry(ip).or_insert(0);
+        if *n >= MAX_SESSIONS_PER_IP {
+            return None;
+        }
+        *n += 1;
+        Some(Slot {
+            _total: total,
+            per_ip: self.per_ip.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut held = self.per_ip.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = held.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                held.remove(&self.ip);
+            }
+        }
+    }
+}
 
 /// Why the transport listener did not run.
 #[derive(Debug, thiserror::Error)]
@@ -114,20 +172,20 @@ pub async fn serve_noise_with(
     router: Router,
 ) -> Result<(), ServeError> {
     require_attestor(&state)?;
-    let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
+    let slots = Slots::new();
     loop {
-        // Closed only by `close()`, which nothing here calls.
-        let Ok(permit) = sessions.clone().acquire_owned().await else {
-            return Ok(());
-        };
         let (stream, peer) = listener.accept().await?;
+        let Some(slot) = slots.admit(peer.ip()) else {
+            tracing::debug!(%peer, "transport at capacity for this address; dropped");
+            continue;
+        };
         let (state, router) = (state.clone(), router.clone());
         tokio::spawn(async move {
             match session(stream, peer, &state, router).await {
                 Ok(()) => tracing::debug!(%peer, "transport session closed"),
                 Err(err) => tracing::warn!(%peer, %err, "transport session ended"),
             }
-            drop(permit);
+            drop(slot);
         });
     }
 }

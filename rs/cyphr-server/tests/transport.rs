@@ -942,3 +942,63 @@ async fn the_transport_carries_the_body_limit() {
         .await
         .expect("the session survives a refused request");
 }
+
+// ---- bounds on what a peer that costs nothing can hold --------------------
+//
+// A Level 1 key is its own principal, so any peer authenticates for free:
+// the transport must bound what an unauthenticated or throwaway peer can
+// hold. Source addresses on 127.0.0.0/8 stand in for distinct clients.
+
+/// Connect to `addr` from the loopback address `from`.
+async fn connect_from(from: &str, addr: SocketAddr) -> tokio::net::TcpStream {
+    let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+    socket
+        .bind(SocketAddr::new(from.parse().expect("ip"), 0))
+        .expect("bind a loopback source");
+    socket.connect(addr).await.expect("connect")
+}
+
+/// Whether the server has closed `sock`: a read says end of file or an
+/// error, where an open silent socket would say it would block.
+fn closed_by_peer(sock: &tokio::net::TcpStream) -> bool {
+    !matches!(sock.try_read(&mut [0u8; 1]), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+/// Claim: one address cannot hold the transport. 300 silent connections
+/// from one address leave an honest client from another address served
+/// within seconds, and all but a small per-address allowance of the
+/// attacker's connections are closed by the server.
+///
+/// Turns red if: the session slots are a shared pool one address can fill
+/// (the honest connect then times out), or one address may hold more than
+/// its allowance. End-to-end scenario: yes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_address_cannot_hold_every_session_slot() {
+    let (state, _dir) = attestor_with(|_| {}).await;
+    let app = build_router(state.clone());
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    let mut attacker = Vec::new();
+    for _ in 0..300 {
+        attacker.push(connect_from("127.0.0.2", addr).await);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let honest = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        level_one_session(addr, &mut held),
+    )
+    .await
+    .expect("an honest client must connect while one address floods");
+    honest
+        .exchange(&Request::get("/server"))
+        .await
+        .expect("and be served");
+
+    let open = attacker.iter().filter(|s| !closed_by_peer(s)).count();
+    assert!(
+        open <= 16,
+        "{open} of the attacker's connections stayed open"
+    );
+}
