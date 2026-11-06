@@ -12,6 +12,7 @@
   ],
   "commits": [
     {
+      "v": 1,
       "txs": [
         {
           "pay": {
@@ -31,6 +32,7 @@
       "pr": "dmxf3XdyXCI7oraJuQK4cvys_6DMGXNNyyvwzZPzyxg"
     },
     {
+      "v": 1,
       "txs": [
         {
           "pay": {
