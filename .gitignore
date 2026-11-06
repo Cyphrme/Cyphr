@@ -5,3 +5,4 @@ target
 .meetings
 .scratch
 .grepai/
+rs/mutants.out/

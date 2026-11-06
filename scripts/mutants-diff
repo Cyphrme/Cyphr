@@ -6,6 +6,8 @@
 # Runs --in-place because cargo-mutants otherwise copies only rs/, and tests
 # that read repo-root fixtures (../tests/...) fail the unmutated baseline.
 # The diff uses --relative=rs so --in-diff paths match the rs/ workspace.
+# A hard kill during an --in-place run can leave a mutant in the checkout:
+# check `git status` after an interrupted run.
 # Run inside the nix shell (cargo-mutants comes from it).
 set -euo pipefail
 
