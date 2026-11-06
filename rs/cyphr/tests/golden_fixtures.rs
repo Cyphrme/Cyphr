@@ -79,6 +79,8 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::AlreadyDeleted => "AlreadyDeleted",
         Error::AlreadyFrozen => "AlreadyFrozen",
         Error::NotFrozen => "NotFrozen",
+        Error::DuplicateNonce => "DuplicateNonce",
+        Error::UnknownNonce => "UnknownNonce",
         _ => "UnknownError",
     }
 }
@@ -462,6 +464,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                     || typ.contains("/principal/delete")
                     || typ.contains("/freeze/create")
                     || typ.contains("/freeze/delete")
+                    || typ.contains("/nonce/")
                     || typ.contains("/commit/create");
 
                 if is_transaction {
