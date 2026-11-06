@@ -748,6 +748,20 @@ async fn level_one_initiator_authenticates_by_its_sidecar_and_forgeries_are_refu
         "a thumbprint that is not the key's",
     );
 
+    // The statement is honest but the sidecar declares a thumbprint that is
+    // not its key's: the sidecar is refused on its own, not just because it
+    // disagrees with the statement.
+    let mislabelled = Claim {
+        signer: &kp,
+        tmb: &tmb,
+        pr: &tmb.to_b64(),
+        sidecar: Some((kp.alg.name(), &kp.pub_bytes, &false_tmb)),
+    };
+    refused(
+        initiate_with(addr, mislabelled).await,
+        "a sidecar mislabelled with another thumbprint",
+    );
+
     // The sidecar is another key's: its own thumbprint is honest, but the
     // statement names a different one.
     let (other, other_tmb) = fresh_key();
