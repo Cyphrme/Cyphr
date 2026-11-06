@@ -16,7 +16,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(transport): TR1"]
+#[ignore = "RED(discovery): G4"]
 async fn s09_migration() {
     let h = Harness::start(&["p1", "p2", "p3"])
         .await

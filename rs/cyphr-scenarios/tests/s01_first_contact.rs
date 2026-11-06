@@ -17,7 +17,7 @@ use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(transport): TR1"]
+#[ignore = "RED(key-pairing): N22"]
 async fn s01_first_contact() {
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
     h.require(&[

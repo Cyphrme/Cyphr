@@ -26,6 +26,7 @@ pub mod receipt;
 pub mod revoke;
 pub mod routes;
 pub mod sync;
+pub mod transport;
 
 use std::sync::Arc;
 
@@ -404,6 +405,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     let signals = UnixShutdownSignals::install()?;
 
     let listen_addr = config.listen.clone();
+    let transport_listen = config.transport_listen.clone();
     let mut state = AppState::new(config)?;
 
     // Heal any crash-window manifests the index missed before serving
@@ -429,7 +431,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     }
 
     let state = Arc::new(state);
-    let app = build_app_router(state)?;
+    let app = build_app_router(state.clone())?;
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;
@@ -441,6 +443,26 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     println!("listening on {local_addr}");
     std::io::Write::flush(&mut std::io::stdout())?;
     tracing::info!(listen = %local_addr, "server started");
+
+    // The Noise transport is an additional carrier for the same router,
+    // opt-in by `transport_listen`. A keyless server cannot authenticate
+    // itself as a principal, so it refuses the listener (typed) and keeps
+    // serving HTTP.
+    let transport = match &transport_listen {
+        None => None,
+        Some(addr) => match transport::spawn_noise(addr, state.clone(), app.clone()).await {
+            Ok((local, handle)) => {
+                println!("transport listening on {local}");
+                std::io::Write::flush(&mut std::io::stdout())?;
+                tracing::info!(listen = %local, "transport started");
+                Some(handle)
+            },
+            Err(err) => {
+                tracing::error!(%err, "transport listener not started; serving HTTP only");
+                None
+            },
+        },
+    };
 
     // Serve with per-connection peer info so the per-IP fence can key on the
     // real peer address the kernel reports.
@@ -454,6 +476,9 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     ))
     .await?;
 
+    if let Some(handle) = transport {
+        handle.abort();
+    }
     tracing::info!("server stopped");
     Ok(())
 }

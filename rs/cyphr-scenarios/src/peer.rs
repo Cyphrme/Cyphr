@@ -99,7 +99,11 @@ impl Peer {
             .arg(&data_dir);
         match role {
             Role::Attestor => {
-                cmd.arg("--signing-key-path").arg(&key_path);
+                cmd.arg("--signing-key-path")
+                    .arg(&key_path)
+                    // Keyed peers also carry the Noise transport, so a
+                    // scenario can reach them as principals.
+                    .args(["--transport-listen", "127.0.0.1:0"]);
             },
             Role::Witness { authority } => {
                 cmd.args(["--mode", "witness", "--authority-url"])
@@ -158,6 +162,23 @@ impl Peer {
             _child: child,
             _dir: dir,
         })
+    }
+
+    /// The Noise transport address the peer announced on stdout, waiting
+    /// briefly for the line, which follows the HTTP one. `None` for a peer
+    /// that runs no transport (a witness) or never announced one.
+    pub async fn transport_addr(&self) -> Option<SocketAddr> {
+        for _ in 0..50 {
+            let found = self.stdout_lines().iter().find_map(|l| {
+                l.strip_prefix("transport listening on ")
+                    .and_then(|a| a.trim().parse().ok())
+            });
+            if found.is_some() {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        None
     }
 
     pub fn stdout_lines(&self) -> Vec<String> {

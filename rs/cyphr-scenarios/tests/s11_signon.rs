@@ -15,7 +15,7 @@ use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(transport): TR1"]
+#[ignore = "RED(relying-party): SO2"]
 async fn s11_signon() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[

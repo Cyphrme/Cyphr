@@ -128,18 +128,19 @@ up silently. It is the fastest way to get a server that behaves nothing like
 its command line — the TOML-only settings especially, since no flag can
 override them. Pass `--config` explicitly in anything you automate.
 
-| Setting              | Flag                 | Environment              | What it buys                                                                     |
-| :------------------- | :------------------- | :----------------------- | :------------------------------------------------------------------------------- |
-| `listen`             | `--listen`           | `CYPHR_LISTEN`           | Bind address. `:0` picks a free port and reports it on stdout.                   |
-| `data_dir`           | `--data-dir`         | `CYPHR_DATA_DIR`         | Where every durable store lives. Locked exclusively while running.               |
-| `signing_key_path`   | `--signing-key-path` | `CYPHR_SIGNING_KEY_PATH` | The key the server signs receipts and tokens with. Absent means keyless.         |
-| `audience`           | `--audience`         | `CYPHR_AUDIENCE`         | The name clients must sign into. Absent means logins are refused.                |
-| `mode`               | `--mode`             | `CYPHR_MODE`             | `authority` (accepts writes) or `witness` (read-only, syncs from an authority).  |
-| `log_format`         | `--log-format`       | `CYPHR_LOG_FORMAT`       | `pretty` for a terminal, `json` for a log pipeline.                              |
-| `authority_url`      | `--authority-url`    | `CYPHR_AUTHORITY_URL`    | The upstream a witness pulls from.                                               |
-| `authority_identity` | —                    | —                        | The upstream's public key, so a witness can verify what it pulls. **TOML only.** |
-| `[admission]`        | —                    | —                        | The gate on new principals. **TOML only.**                                       |
-| `[limits]`           | —                    | —                        | Rate, body size, and commit-count fences. **TOML only.**                         |
+| Setting              | Flag                 | Environment              | What it buys                                                                                                                                           |
+| :------------------- | :------------------- | :----------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listen`             | `--listen`           | `CYPHR_LISTEN`           | Bind address. `:0` picks a free port and reports it on stdout.                                                                                         |
+| `transport_listen`   | `--transport-listen` | `CYPHR_TRANSPORT_LISTEN` | Bind address for the Noise transport, which authenticates both ends as principals. Off when unset; a keyless server refuses it and keeps serving HTTP. |
+| `data_dir`           | `--data-dir`         | `CYPHR_DATA_DIR`         | Where every durable store lives. Locked exclusively while running.                                                                                     |
+| `signing_key_path`   | `--signing-key-path` | `CYPHR_SIGNING_KEY_PATH` | The key the server signs receipts and tokens with. Absent means keyless.                                                                               |
+| `audience`           | `--audience`         | `CYPHR_AUDIENCE`         | The name clients must sign into. Absent means logins are refused.                                                                                      |
+| `mode`               | `--mode`             | `CYPHR_MODE`             | `authority` (accepts writes) or `witness` (read-only, syncs from an authority).                                                                        |
+| `log_format`         | `--log-format`       | `CYPHR_LOG_FORMAT`       | `pretty` for a terminal, `json` for a log pipeline.                                                                                                    |
+| `authority_url`      | `--authority-url`    | `CYPHR_AUTHORITY_URL`    | The upstream a witness pulls from.                                                                                                                     |
+| `authority_identity` | —                    | —                        | The upstream's public key, so a witness can verify what it pulls. **TOML only.**                                                                       |
+| `[admission]`        | —                    | —                        | The gate on new principals. **TOML only.**                                                                                                             |
+| `[limits]`           | —                    | —                        | Rate, body size, and commit-count fences. **TOML only.**                                                                                               |
 
 The last three have no flag and no environment variable. If you are
 deploying from a unit file or a container spec that only sets environment,
