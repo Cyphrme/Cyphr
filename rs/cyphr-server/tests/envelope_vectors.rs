@@ -85,6 +85,8 @@ fn signed_coz(identity: &ServerIdentity) -> coz::CozJson {
     }
 }
 
+/// Backs: the unsigned response envelope wire form is byte-exact (golden vector).
+/// Backs: the unsigned response envelope wire form is byte-exact (golden vector).
 #[test]
 fn envelope_vectors_unsigned_is_byte_exact() {
     let env = Envelope::unsigned(demo_payload());
@@ -92,6 +94,8 @@ fn envelope_vectors_unsigned_is_byte_exact() {
     assert_eq!(wire, golden("envelope_unsigned.json"));
 }
 
+/// Backs: the signed response envelope wire form is byte-exact (golden vector).
+/// Backs: the signed response envelope wire form is byte-exact (golden vector).
 #[test]
 fn envelope_vectors_signed_is_byte_exact() {
     let (_dir, identity) = fixed_identity();

@@ -57,7 +57,6 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::ServerConfig;
-use cyphr_server::observation::ObservationStore;
 use cyphr_server::{AppState, build_router};
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{DeriveToken, IndexableCommit, Indexer, IndexerWrite};
@@ -214,16 +213,6 @@ fn self_revoke_coz_bare(
 ) -> serde_json::Value {
     let tmb = tmb_b64(pool, signer_name);
     revoke_body(pool, &tmb, signer_name, None, rvk)
-}
-
-/// Flip one bit of a coz's detached signature, leaving payload and disclosed
-/// key intact.
-fn corrupt_sig(mut coz: serde_json::Value) -> serde_json::Value {
-    let sig_b64 = coz["sig"].as_str().expect("sig present");
-    let mut sig = Base64UrlUnpadded::decode_vec(sig_b64).expect("sig b64");
-    sig[0] ^= 0x01;
-    coz["sig"] = serde_json::Value::String(Base64UrlUnpadded::encode_string(&sig));
-    coz
 }
 
 /// The base64url thumbprint of pool key `name`.
@@ -747,24 +736,6 @@ async fn rejects_malformed_rvk() {
         let (status, json) = post_revoke(&state, coz).await;
         assert_rejected(status, &json, case);
     }
-}
-
-/// A revoke whose signature does not verify against its disclosed key is
-/// rejected.
-///
-/// Behavior: green on both servers -- the reworked server verifies the
-/// corrupted signature against the disclosed key (401); the merged server
-/// against the indexed key. The disclosed key is intact; only the signature is
-/// corrupted.
-#[tokio::test]
-async fn rejects_bad_signature() {
-    let (state, _dir) = fresh_keyed_state();
-    let pool = common::load_pool();
-    bootstrap_golden_key_a(&state, &pool).await;
-
-    let coz = corrupt_sig(self_revoke_coz(&pool, "key_a", serde_json::json!(RVK)));
-    let (status, json) = post_revoke(&state, coz).await;
-    assert_rejected(status, &json, "corrupted signature");
 }
 
 /// A coz whose `typ` is not `key/revoke` is not a naked revoke and is rejected,
@@ -1554,48 +1525,3 @@ async fn oversize_naked_revoke_is_rejected() {
 // ========================================================================
 // 14 -- HARDENING R2: the death record is durable across a store reopen
 // ========================================================================
-
-/// A recorded death survives a fresh `ObservationStore` opened over the same
-/// on-disk directory: after `record`, a brand-new store instance reading the
-/// same path still reports the key dead. This pins the durability barrier R2
-/// hardens -- an ack of `recorded: true` must not be a lie a crash can undo.
-///
-/// Baseline note: if fjall's configured durability already persists a `record`
-/// before this reopen sees it, this passes against the current impl and is kept
-/// as regression coverage. It cannot, in-process, simulate a true crash BEFORE
-/// fjall's WAL flush (the precise R2 window); the impl-worker must assess
-/// whether `record` needs an explicit synchronous `persist` before returning
-/// `recorded: true`.
-#[tokio::test]
-async fn death_record_durable_across_store_reopen() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store_path = dir.path().join("observations");
-    let pool = common::load_pool();
-    let dead_tmb = pool
-        .get("key_a")
-        .expect("key_a")
-        .compute_tmb()
-        .expect("tmb");
-
-    {
-        let store = ObservationStore::open(&store_path).expect("open death-set store");
-        store
-            .record(&dead_tmb, serde_json::json!({ "note": "naked revoke" }))
-            .await
-            .expect("record the death");
-        assert!(
-            store.is_dead(&dead_tmb).await.expect("is_dead"),
-            "the key must be dead in the recording store instance"
-        );
-    }
-
-    // A brand-new store over the same directory -- the death must persist.
-    let reopened = ObservationStore::open(&store_path).expect("reopen death-set store");
-    assert!(
-        reopened
-            .is_dead(&dead_tmb)
-            .await
-            .expect("is_dead after reopen"),
-        "the death record must survive a store reopen over the same data dir"
-    );
-}

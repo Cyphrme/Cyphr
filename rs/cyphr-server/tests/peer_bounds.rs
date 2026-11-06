@@ -55,12 +55,14 @@ fn assert_refused_naming(toml: &str, key: &str) {
     }
 }
 
-/// Claim: a misspelled security setting cannot fall back to a default.
-/// Red if `[admission] polcy = "invite"` leaves the server on open
-/// admission. Lying impl it catches: `deny_unknown_fields` on every struct
-/// but the admission tag enum (the layer the typo defeats). E2E: load path.
+/// Backs: a misspelled security setting cannot fall back to a default; the
+/// config is refused and the error names the typo. One case per table, since
+/// `deny_unknown_fields` is easy to forget on any single struct (admission
+/// tag enum, top level, `[limits]`, inline `RateBucket`, `[authority_identity]`).
+/// Unit: the config loader runs before any server exists, so no HTTP surface
+/// reaches it.
 #[test]
-fn unknown_key_admission_policy_typo_is_refused() {
+fn unknown_keys_are_refused_in_every_config_table() {
     assert_refused_naming(
         "[admission]\npolcy = \"invite\"\ntokens_path = \"/x\"\n",
         "polcy",
@@ -69,35 +71,12 @@ fn unknown_key_admission_policy_typo_is_refused() {
         "[admission]\npolicy = \"invite\"\ntokens_path = \"/x\"\ntokens_pth = \"/y\"\n",
         "tokens_pth",
     );
-}
-
-/// Claim as above, top-level table. Catches an impl that only hardens the
-/// nested tables.
-#[test]
-fn unknown_key_top_level_is_refused() {
     assert_refused_naming("listn = \"127.0.0.1:1\"\n", "listn");
-}
-
-/// Claim as above, `[limits]`. Catches an impl that skips `LimitsConfig`
-/// (its `#[serde(default)]` is the usual place a deny gets forgotten).
-#[test]
-fn unknown_key_limits_is_refused() {
     assert_refused_naming("[limits]\nmax_body_byte = 1\n", "max_body_byte");
-}
-
-/// Claim as above, inline `RateBucket` table.
-#[test]
-fn unknown_key_rate_bucket_is_refused() {
     assert_refused_naming(
         "[limits]\npush = { per_second = 1, burst = 1, bursts = 2 }\n",
         "bursts",
     );
-}
-
-/// Claim as above, `[authority_identity]`: a typo here must not leave the
-/// sync channel half-configured.
-#[test]
-fn unknown_key_authority_identity_is_refused() {
     assert_refused_naming(
         "[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\nalgg = \"x\"\n",
         "algg",

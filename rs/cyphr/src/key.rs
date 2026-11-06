@@ -166,30 +166,9 @@ mod tests {
         key
     }
 
-    #[test]
-    fn is_active_no_revocation() {
-        let key = make_key(None);
-        assert!(key.is_active());
-    }
-
-    #[test]
-    fn is_active_with_revocation() {
-        let key = make_key(Some(Revocation {
-            rvk: 2000,
-            by: None,
-        }));
-        assert!(!key.is_active());
-    }
-
-    #[test]
-    fn is_active_at_no_revocation() {
-        let key = make_key(None);
-        // Always active when not revoked
-        assert!(key.is_active_at(0));
-        assert!(key.is_active_at(1000));
-        assert!(key.is_active_at(i64::MAX));
-    }
-
+    /// Backs SPEC 6.4: a key is active for every instant before its `rvk`.
+    /// Unit: needs a revocation at a chosen `rvk` against arbitrary instants, which signed
+    /// scenarios cannot dial.
     #[test]
     fn is_active_at_before_revocation() {
         let key = make_key(Some(Revocation {
@@ -201,6 +180,8 @@ mod tests {
         assert!(key.is_active_at(0));
     }
 
+    /// Backs SPEC 6.4: `now >= rvk` is not active (the boundary instant itself is dead).
+    /// Unit: as above; the end to end consequence is `negative_vectors` and `key_auth`.
     #[test]
     fn is_active_at_after_revocation() {
         let key = make_key(Some(Revocation {

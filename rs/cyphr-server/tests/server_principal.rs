@@ -62,6 +62,9 @@ fn tmb_of(kp: &coz::KeyPair) -> coz::Thumbprint {
         .expect("thumbprint")
 }
 
+/// Backs: a single-key explicit genesis built client-side and pushed is
+/// established with a PG derived from its genesis key (SPEC 3.7.1), the
+/// shape the server principal itself is created in.
 #[tokio::test]
 async fn single_key_explicit_genesis_establishes_pg() {
     let kp = coz::Alg::Ed25519.generate_keypair();

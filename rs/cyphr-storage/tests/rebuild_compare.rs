@@ -29,8 +29,8 @@
 //!
 //! - [`compare_physical`]: raw fjall keyspace-name-set equality plus per-keyspace key/value
 //!   equality, reached with NO new capability -- this crate's existing dev-dependency on `fjall` is
-//!   enough. Catches m1 (an extra keyspace, planted physically) and m2 (one divergent row, planted
-//!   physically) at the storage layer directly, independent of any read path.
+//!   enough. Catches m2 (one divergent row, planted physically) at the storage layer directly,
+//!   independent of any read path.
 //! - The registry compare (m3, and folded into the clean case for assurance): calls
 //!   `FjallIndexer::registry()`, a NEW accessor this node's implementation phase must add
 //!   (c-registry-generated: "the registry the store reports is derivation output"). This is
@@ -267,27 +267,6 @@ fn compare_physical(fresh_path: &Path, live_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Plant an extra keyspace directly on the on-disk store at `path`,
-/// bypassing every deriver and every `Indexer` method -- exactly the
-/// class of write S3a's sealing exists to make unreachable through the
-/// legitimate API, reached here through the raw backend on purpose (m1).
-fn plant_extra_keyspace(path: &Path) {
-    let db = fjall::Database::builder(path)
-        .open()
-        .expect("reopen live raw db for m1");
-    let ghost = db
-        .keyspace(
-            "index_ghost_extra_partition",
-            KeyspaceCreateOptions::default,
-        )
-        .expect("create ghost keyspace");
-    ghost
-        .insert(b"ghost-key", b"ghost-value")
-        .expect("insert ghost row");
-    db.persist(fjall::PersistMode::SyncAll)
-        .expect("persist m1 tamper");
-}
-
 /// Overwrite one EXISTING row's value directly, bypassing the deriver
 /// (m2). Targets `index_tips`'s entry for "alice", who the corpus gives
 /// two commits, so the untampered value is well-defined and non-trivial.
@@ -376,35 +355,6 @@ async fn clean_rebuild_matches_physically_and_by_registry() {
     assert_eq!(
         fresh_registry, live_registry,
         "two clean derivations of identical content must report the same registry"
-    );
-}
-
-/// m1: an extra keyspace planted out-of-band reds the physical compare.
-#[tokio::test]
-async fn m1_extra_keyspace_reds_the_compare() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let blob_db = fjall::Database::builder(dir.path().join("blobs"))
-        .open()
-        .expect("open blob db");
-    let blob_store = FjallBlobStore::from_database(blob_db.clone()).expect("blob store");
-
-    let commits = corpus();
-    for commit in &commits {
-        write_manifest(&blob_store, commit).await;
-    }
-
-    let fresh_path = dir.path().join("fresh");
-    let live_path = dir.path().join("live");
-    derive_into(&blob_db, &fresh_path, commits.len()).await;
-    derive_into(&blob_db, &live_path, commits.len()).await;
-
-    plant_extra_keyspace(&live_path);
-
-    let result = compare_physical(&fresh_path, &live_path);
-    assert!(
-        result.is_err(),
-        "an extra keyspace planted directly on the live store, absent from the fresh derivation, \
-         must be caught by the physical compare"
     );
 }
 

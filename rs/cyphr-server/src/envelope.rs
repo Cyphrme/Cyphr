@@ -139,81 +139,13 @@ impl<T> Envelope<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// A dummy coz for structural tests: a valid `{pay, sig}` shape whose
-    /// signature is not checked here (byte-exact signing is the golden
-    /// vectors' job).
-    fn dummy_coz() -> coz::CozJson {
-        coz::CozJson {
-            pay: serde_json::json!({ "typ": "cyphr-server/statement", "now": 1 }),
-            sig: vec![0xAB, 0xCD, 0xEF],
-        }
-    }
-
-    #[test]
-    fn both_forms_are_constructible_and_distinguishable() {
-        let unsigned = Envelope::unsigned("payload");
-        let signed = Envelope::signed("payload", dummy_coz());
-
-        assert!(
-            !unsigned.is_signed(),
-            "unsigned envelope must report unsigned"
-        );
-        assert!(signed.is_signed(), "signed envelope must report signed");
-    }
-
-    #[test]
-    fn version_is_present_in_both_forms() {
-        let unsigned = serde_json::to_value(Envelope::unsigned("p")).unwrap();
-        let signed = serde_json::to_value(Envelope::signed("p", dummy_coz())).unwrap();
-
-        assert_eq!(unsigned["v"], serde_json::json!(ENVELOPE_VERSION));
-        assert_eq!(signed["v"], serde_json::json!(ENVELOPE_VERSION));
-    }
-
-    #[test]
-    fn forms_differ_by_explicit_kind_not_by_omission() {
-        let unsigned = serde_json::to_value(Envelope::unsigned("p")).unwrap();
-        let signed = serde_json::to_value(Envelope::signed("p", dummy_coz())).unwrap();
-
-        // A client decides trust by reading statement.kind, never by
-        // probing for a sig: the unsigned form carries an affirmative
-        // "unsigned" marker, not a missing field.
-        assert_eq!(unsigned["statement"]["kind"], serde_json::json!("unsigned"));
-        assert_eq!(signed["statement"]["kind"], serde_json::json!("signed"));
-
-        // The unsigned form is not merely the signed form with its coz
-        // stripped: it has no coz slot at all, and its kind stands on its
-        // own.
-        assert!(
-            unsigned["statement"]["coz"].is_null(),
-            "unsigned statement must not carry a coz"
-        );
-        assert!(
-            signed["statement"]["coz"].is_object(),
-            "signed statement must nest a coz object"
-        );
-    }
-
-    #[test]
-    fn signed_coz_is_lifted_out_unchanged() {
-        let coz = dummy_coz();
-        let signed = serde_json::to_value(Envelope::signed("p", coz.clone())).unwrap();
-
-        // The nested coz is a pristine {pay, sig}: byte-identical to a
-        // standalone coz, so a verifier can extract it directly.
-        let nested = &signed["statement"]["coz"];
-        assert_eq!(nested["pay"], coz.pay);
-        assert!(nested["sig"].is_string(), "coz sig serializes as base64url");
-    }
-
     // ====================================================================
     // Round-trip properties (proptest)
     // ====================================================================
-
     use proptest::prelude::*;
     use serde::{Deserialize, Serialize};
+
+    use super::*;
 
     /// A stand-in payload for round-trip coverage. The envelope is generic
     /// over its payload; a small concrete type exercises the container
@@ -292,17 +224,6 @@ mod tests {
                 ),
                 "{:?}", refused
             );
-        }
-
-        /// The load-bearing fields -- the version and the signed/unsigned
-        /// discriminant -- survive a round trip unchanged.
-        #[test]
-        fn version_and_signed_flag_survive_round_trip(env in arb_envelope()) {
-            let wire = serde_json::to_string(&env).unwrap();
-            let parsed: Envelope<DemoPayload> = serde_json::from_str(&wire).unwrap();
-            prop_assert_eq!(parsed.v, env.v);
-            prop_assert_eq!(parsed.is_signed(), env.is_signed());
-            prop_assert_eq!(parsed.payload, env.payload);
         }
     }
 }

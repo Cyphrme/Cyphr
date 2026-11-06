@@ -1,71 +1,42 @@
-//! `MemoryBlobStore` conformance wrappers.
-//!
-//! Each test delegates to a shared, generic behavior function in
-//! [`super::conformance`] -- the same functions any other `BlobStore`
-//! implementation's own test suite calls, so `MemoryBlobStore` and every
-//! durable backend are held to one behavioral bar, not independently
-//! hand-duplicated ones.
+//! `MemoryBlobStore` tests.
 
 use super::{conformance, *};
 
+/// Backs the `BlobStore` contract (put/get round trip, missing is `None`,
+/// presence, idempotent put, full iteration, size cap) for the in-memory
+/// backend: every shared function in [`super::conformance`], the bar
+/// `FjallBlobStore` is held to as well. Unit: the trait seam is internal;
+/// no end-to-end route names a backend-independent contract.
 #[tokio::test]
-async fn put_get_roundtrip() {
+async fn memory_blob_store_passes_the_shared_conformance_suite() {
     conformance::put_get_roundtrip(&MemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn get_missing_returns_none() {
     conformance::get_missing_returns_none(&MemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn exists_reflects_presence() {
     conformance::exists_reflects_presence(&MemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn put_is_idempotent() {
     conformance::put_is_idempotent(&MemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn iter_returns_all_stored() {
     conformance::iter_returns_all_stored(&MemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn max_blob_size_enforced() {
-    let store = MemoryBlobStore::new().with_max_blob_size(10);
-    conformance::max_blob_size_enforced(&store, 10).await;
+    let capped = MemoryBlobStore::new().with_max_blob_size(10);
+    conformance::max_blob_size_enforced(&capped, 10).await;
 }
 
 // -- Blake3Hash unit tests --
 
+/// Backs I1: blob addresses are 64-char hex BLAKE3 digests; a malformed
+/// address (wrong length, non-hex) is refused rather than parsed. Unit: the
+/// parser is reached end to end only through already-valid manifests.
 #[test]
-fn blake3_hash_display_roundtrip() {
-    let bytes = *blake3::hash(b"test").as_bytes();
-    let hash = Blake3Hash::from_bytes(bytes);
+fn blake3_hash_round_trips_and_rejects_malformed() {
+    let hash = Blake3Hash::from_bytes(*blake3::hash(b"test").as_bytes());
     let hex = hash.to_string();
     assert_eq!(hex.len(), 64, "hex string should be 64 chars");
-    let parsed: Blake3Hash = hex.parse().expect("parse failed");
-    assert_eq!(hash, parsed, "display/parse round-trip failed");
+    assert_eq!(hash, hex.parse().expect("parse failed"));
+    assert!("abcd".parse::<Blake3Hash>().is_err(), "short hex");
+    assert!("z".repeat(64).parse::<Blake3Hash>().is_err(), "non-hex");
 }
 
-#[test]
-fn blake3_hash_parse_invalid_length() {
-    let result = "abcd".parse::<Blake3Hash>();
-    assert!(result.is_err(), "short hex should fail");
-}
-
-#[test]
-fn blake3_hash_parse_invalid_hex() {
-    let result =
-        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".parse::<Blake3Hash>();
-    assert!(result.is_err(), "non-hex chars should fail");
-}
-
-// -- Integration: raw coz-like payloads through BlobStore --
-
+/// Backs I1 (the BLAKE3 content-addressed blob store is the source of
+/// truth): `put` returns exactly the BLAKE3 of the bytes and `get` returns
+/// them unchanged, for coz-shaped payloads. Unit: the conformance suite
+/// does not pin the address function.
 #[tokio::test]
 async fn integration_coz_bytes_roundtrip() {
     let payloads: &[&[u8]] = &[

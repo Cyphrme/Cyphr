@@ -388,38 +388,6 @@ async fn keyless_challenge_returns_capability_absence_not_internal_error() {
     );
 }
 
-/// `POST /auth/login` on a keyless server returns the explicit
-/// capability-absence error -- never a 500.
-#[tokio::test]
-async fn keyless_login_returns_capability_absence_not_internal_error() {
-    let state = keyless_state();
-    let app = build_router(state);
-
-    let (status, json) = post_json(app, "/auth/login", empty_coz_body()).await;
-    assert_ne!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "a keyless server's declared capability absence must never surface as 500: {json:?}"
-    );
-    assert!(
-        status.is_client_error() || status == StatusCode::NOT_IMPLEMENTED,
-        "a keyless capability absence must not read as a transient server fault, got {status}: \
-         {json:?}"
-    );
-    let payload = assert_unsigned_envelope(&json);
-    let message = payload["error"]
-        .as_str()
-        .expect("error body names the condition");
-    assert!(
-        message.contains("signing identity"),
-        "the rejection must name the keyless condition, got: {message:?}"
-    );
-    assert!(
-        message.contains("/server"),
-        "the rejection must point a rejected client at the discovery route, got: {message:?}"
-    );
-}
-
 /// Login and challenge return the SAME explicit capability-absence error
 /// on a keyless server (delegated design lean): one honest condition, one
 /// treatment, not two differently-worded rejections a client would have

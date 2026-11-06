@@ -216,6 +216,9 @@ fn finalize_commit_rejects_mismatched_orphan_leaf() {
     });
 }
 
+/// Backs the Commit Tree (SPEC be0663f section 12.1 EML) surviving a disk drop
+/// and reload: the reopened log yields the same roots for a multi-commit
+/// principal.
 #[test]
 fn principal_commit_tree_survives_disk_drop_and_reload() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");

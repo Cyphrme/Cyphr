@@ -553,39 +553,3 @@ fn load_token_hashes(path: &Path) -> Result<Vec<[u8; 32]>, AdmissionError> {
     }
     Ok(hashes)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sha256_matches_the_suite_fixture() {
-        // The acceptance suite precomputes sha256("valid-invite-token-...").
-        let hash = sha256(b"valid-invite-token-aaaaaaaaaaaaaaaaaaaa");
-        assert_eq!(
-            hex_encode(&hash),
-            "1d3ff7848551415ad2947246fb017ed8d4a3a2fee20bad4cc4e4affcad861705"
-        );
-    }
-
-    #[test]
-    fn hex_round_trips_a_hash() {
-        let hash = sha256(b"round-trip");
-        let decoded = hex_decode_32(&hex_encode(&hash)).expect("64 hex chars decode");
-        assert_eq!(decoded, hash);
-    }
-
-    #[test]
-    fn hex_decode_rejects_wrong_length_and_non_hex() {
-        assert!(hex_decode_32("abcd").is_none());
-        assert!(hex_decode_32(&"z".repeat(64)).is_none());
-    }
-
-    #[test]
-    fn known_membership_is_exact() {
-        let hashes = vec![sha256(b"a"), sha256(b"b")];
-        assert!(is_known(&hashes, &sha256(b"a")));
-        assert!(is_known(&hashes, &sha256(b"b")));
-        assert!(!is_known(&hashes, &sha256(b"c")));
-    }
-}

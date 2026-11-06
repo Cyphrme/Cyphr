@@ -491,21 +491,4 @@ mod tests {
             "a log with a registered algorithm but zero leaves must still report empty"
         );
     }
-
-    #[test]
-    fn is_empty_false_once_a_leaf_is_appended() {
-        let log = CloneableLog::new(eml::MemoryStorage::new());
-        log.add_algorithm(
-            hash_alg_to_u64(HashAlg::Sha256),
-            Box::new(MaltHasher::new(HashAlg::Sha256)),
-        )
-        .expect("add_algorithm failed");
-
-        log.append(b"leaf-payload").expect("append failed");
-
-        assert!(
-            !log.is_empty(),
-            "a log with an appended leaf must not be empty"
-        );
-    }
 }

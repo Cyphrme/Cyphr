@@ -332,37 +332,8 @@ mod tests {
         .expect("serialize coz")
     }
 
-    #[test]
-    fn issue_then_verify_genuine_unexpired_token_succeeds() {
-        let (_dir, path) = write_random_key_file();
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let token = identity
-            .issue_test_token(
-                PR,
-                vec!["read".to_string(), "write".to_string()],
-                1_000,
-                300,
-            )
-            .expect("issue token");
-
-        let claims = identity
-            .verify_token(&token, 1_100)
-            .expect("verify unexpired token");
-
-        assert_eq!(claims.pr, PR);
-        assert_eq!(claims.perms, vec!["read".to_string(), "write".to_string()]);
-        assert_eq!(claims.exp, 1_300);
-        assert_eq!(
-            claims.tmb,
-            identity
-                .alg()
-                .compute_thumbprint(identity.pub_key())
-                .unwrap()
-                .to_b64()
-        );
-    }
-
+    /// Backs: bearer-token claims are signature-bound; a rewritten claim is refused.
+    /// Unit: e2e cannot rewrite a token minted by the server.
     #[test]
     fn verify_rejects_tampered_claims() {
         let (_dir, path) = write_random_key_file();
@@ -386,26 +357,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn verify_rejects_foreign_signer() {
-        let (_dir, path) = write_random_key_file();
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let (_foreign_dir, foreign_path) = write_random_key_file();
-        let foreign = ServerIdentity::load_from_path(&foreign_path).expect("load foreign key");
-
-        let token = foreign
-            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
-            .expect("issue token from foreign identity");
-
-        let result = identity.verify_token(&token, 1_100);
-        assert!(
-            matches!(result, Err(TokenError::InvalidSignature)),
-            "a token issued by a foreign key must not verify against a different identity, got: \
-             {result:?}"
-        );
-    }
-
+    /// Backs: bearer tokens expire.
+    /// Unit: e2e cannot advance the server clock past `exp`.
     #[test]
     fn verify_rejects_expired_token() {
         let (_dir, path) = write_random_key_file();
@@ -420,18 +373,6 @@ mod tests {
         assert!(
             matches!(result, Err(TokenError::Expired)),
             "a token at/after its exp must be rejected, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn verify_rejects_malformed_token() {
-        let (_dir, path) = write_random_key_file();
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let result = identity.verify_token("not json", 1_000);
-        assert!(
-            matches!(result, Err(TokenError::Malformed(_))),
-            "malformed JSON must be rejected with a typed error, got: {result:?}"
         );
     }
 

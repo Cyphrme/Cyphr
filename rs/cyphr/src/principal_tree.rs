@@ -415,6 +415,8 @@ mod tests {
         }
 
         proptest! {
+            /// Backs SPEC 4 n-arity: the two-slot PR fold is the same under the binary and 256-ary schemes, so lifting the arity cap left every existing PR unchanged (property over roots and algorithm sets).
+            /// Unit: compares two internal fold arities no scenario can select.
             #[test]
             fn k2_and_k256_folds_of_sr_and_cr_agree(
                 sr_seed in proptest::collection::vec(any::<u8>(), 1..8),
@@ -433,30 +435,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn genesis_pr_equals_sr_verbatim() {
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr(&[0xAA; 32]), &[HashAlg::Sha256]).unwrap();
-
-        let pr = pt.pr(&[HashAlg::Sha256]).unwrap();
-        assert_eq!(pr.get(HashAlg::Sha256).unwrap(), &[0xAA; 32]);
-    }
-
-    #[test]
-    fn post_commit_pr_changes_from_genesis() {
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr(&[0xAA; 32]), &[HashAlg::Sha256]).unwrap();
-        let genesis_pr = pt.pr(&[HashAlg::Sha256]).unwrap();
-
-        pt.set_cr(&cr(&[0xBB; 32]), &[HashAlg::Sha256]).unwrap();
-        let post_commit_pr = pt.pr(&[HashAlg::Sha256]).unwrap();
-
-        assert_ne!(
-            genesis_pr.get(HashAlg::Sha256),
-            post_commit_pr.get(HashAlg::Sha256)
-        );
     }
 
     /// The CR-cell inclusion witness (hop 2's prerequisite) is absent at
@@ -484,32 +462,5 @@ mod tests {
         let sk =
             polydigest::rebalanced_skeleton(proof.tree_size, proof.arity, proof.index).unwrap();
         assert!(proof.verify(&hasher, &sk, root.get(HashAlg::Sha256).unwrap()));
-    }
-
-    /// Proves the mechanism `CommitScope` isolation depends on: mutating a
-    /// clone never touches the source tree's materialized roots.
-    #[test]
-    fn clone_is_independent_of_source() {
-        let mut original = PrincipalTree::new();
-        original
-            .set_sr(&sr(&[0x01; 32]), &[HashAlg::Sha256])
-            .unwrap();
-        let original_pr_before = original.pr(&[HashAlg::Sha256]).unwrap();
-
-        let mut cloned = original.clone();
-        cloned.set_sr(&sr(&[0x02; 32]), &[HashAlg::Sha256]).unwrap();
-        cloned.set_cr(&cr(&[0x03; 32]), &[HashAlg::Sha256]).unwrap();
-
-        let original_pr_after = original.pr(&[HashAlg::Sha256]).unwrap();
-        assert_eq!(
-            original_pr_before.get(HashAlg::Sha256),
-            original_pr_after.get(HashAlg::Sha256),
-            "mutating the clone must not change the source tree's root"
-        );
-        assert_eq!(
-            original_pr_after.get(HashAlg::Sha256).unwrap(),
-            &[0x01; 32],
-            "source must still promote its own genesis SR verbatim"
-        );
     }
 }

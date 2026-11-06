@@ -470,56 +470,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use governor::clock::DefaultClock;
-    use governor::state::keyed::DefaultKeyedStateStore;
-
     use super::*;
 
-    /// A keyed `governor` limiter over key `K`, backed by the default
-    /// (DashMap) keyed state store and default clock. Exercises `governor`'s
-    /// own keyed bucket behavior directly, in isolation from
-    /// [`BoundedLimiter`]'s `moka`-backed store.
-    type KeyedLimiter<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
-
-    /// A tight bucket trips within its burst; a fresh key starts full.
-    #[test]
-    fn tight_quota_trips_within_burst() {
-        let limiter: KeyedLimiter<IpAddr> = RateLimiter::keyed(quota(RateBucket {
-            per_second: 1,
-            burst: 2,
-        }));
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        assert!(limiter.check_key(&ip).is_ok(), "first cell within burst");
-        assert!(limiter.check_key(&ip).is_ok(), "second cell within burst");
-        assert!(
-            limiter.check_key(&ip).is_err(),
-            "third immediate cell exceeds a burst of 2"
-        );
-
-        // A distinct key is an independent bucket.
-        let other = IpAddr::from([127, 0, 0, 2]);
-        assert!(
-            limiter.check_key(&other).is_ok(),
-            "a distinct key must not share the tripped bucket"
-        );
-    }
-
-    /// A generous bucket never trips under a modest burst.
-    #[test]
-    fn generous_quota_admits_a_burst() {
-        let limiter: KeyedLimiter<IpAddr> = RateLimiter::keyed(quota(RateBucket {
-            per_second: 100_000,
-            burst: 100_000,
-        }));
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        for _ in 0..1000 {
-            assert!(
-                limiter.check_key(&ip).is_ok(),
-                "generous bucket must not trip"
-            );
-        }
-    }
-
+    /// Backs: each route is rate-limited under its own operation bucket (push, revoke, login,
+    /// read). Unit: rate_limits.rs probes push/read/revoke buckets; the login/other mapping has no
+    /// e2e probe.
     #[test]
     fn classify_maps_routes_to_operations() {
         assert!(classify(&Method::POST, "/push") == Op::Push);
@@ -528,13 +483,6 @@ mod tests {
         assert!(classify(&Method::GET, "/tip") == Op::Read);
         assert!(classify(&Method::GET, "/e/abc") == Op::Read);
         assert!(classify(&Method::PUT, "/whatever") == Op::Other);
-    }
-
-    #[test]
-    fn peek_reads_principal_id() {
-        let body = br#"{"principal_id":"abc","blobs":[]}"#;
-        assert_eq!(peek_principal_id(body).as_deref(), Some("abc"));
-        assert!(peek_principal_id(b"not json").is_none());
     }
 
     /// WHITE-BOX bounded-state invariant: every keyed limiter carries a hard

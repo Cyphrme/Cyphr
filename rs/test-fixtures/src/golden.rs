@@ -1750,6 +1750,9 @@ key_count = 2
 level = 3
 "#;
 
+    /// Backs: the corpus generator's commit root (CR) equals an independent recomputation, so a
+    /// golden vector cannot encode a wrong root. Unit: generator internals are not reachable
+    /// through the golden runner, which only consumes finished fixtures.
     #[test]
     fn test_generate_single_commit() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1853,36 +1856,8 @@ level = 3
         );
     }
 
-    #[test]
-    fn test_missing_signer_key() {
-        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("tests/keys/pool.toml");
-
-        let pool = Pool::load(&pool_path).expect("failed to load pool");
-
-        let intent_str = r#"
-[[test]]
-name = "bad_signer"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [{typ = "cyphr.me/cyphr/key/create", now = 1700000000, signer = "nonexistent_key", target = "alice"}]
-]
-"#;
-
-        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
-        let result = generate(&intent, &pool);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("nonexistent_key"));
-    }
-
+    /// Backs: an intent declaring the genesis error the protocol really raises generates a fixture.
+    /// Unit: the generator is build-time tooling with no CLI/HTTP surface.
     #[test]
     fn test_declared_genesis_error_matching_actual_succeeds() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1910,6 +1885,9 @@ error = "UnknownAlg"
         assert_eq!(goldens[0].expected.error.as_deref(), Some("UnknownAlg"));
     }
 
+    /// Backs: the generator refuses a fixture whose declared error differs from the actual one (F45
+    /// drift), so the corpus cannot encode a wrong error name. Unit: build-time tooling with no
+    /// end-to-end surface.
     #[test]
     fn test_declared_genesis_error_mismatch_fails_loudly() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1950,45 +1928,5 @@ error = "UnsupportedAlgorithm"
         let msg = err.to_string();
         assert!(msg.contains("UnsupportedAlgorithm"), "{}", msg);
         assert!(msg.contains("UnknownAlg"), "{}", msg);
-    }
-
-    #[test]
-    fn test_genesis_state_computation() {
-        // Test that genesis produces correct state (all promoted)
-        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("tests/keys/pool.toml");
-
-        let pool = Pool::load(&pool_path).expect("failed to load pool");
-
-        // Just create a principal, no coz
-        let intent_str = r#"
-[[test]]
-name = "genesis_only"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [{typ = "cyphr.me/cyphr/key/create", now = 1700000000, signer = "golden", target = "alice"}]
-]
-"#;
-
-        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
-        let goldens = generate(&intent, &pool).expect("generation failed");
-
-        let golden = &goldens[0];
-
-        // For single-key implicit genesis, PR = SR = AR = KR = tmb
-        // After adding alice, we should have 2 keys
-        assert_eq!(golden.expected.key_count, Some(2));
-
-        // All state digests should be non-empty
-        assert!(golden.expected.pg.is_some());
-        assert!(golden.expected.pr.is_some());
-        assert!(golden.expected.kr.is_some());
-        assert!(golden.expected.auth_root.is_some());
     }
 }

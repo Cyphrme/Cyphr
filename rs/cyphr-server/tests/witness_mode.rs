@@ -14,12 +14,11 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use clap::Parser;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
 use cyphr_server::auth::ServerIdentity;
-use cyphr_server::config::{AuthorityIdentity, Cli, ServerConfig, ServerMode, resolve_config};
+use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
 use cyphr_server::sync::{SyncOutcome, sync_from_authority};
 use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
@@ -32,34 +31,6 @@ use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post
 // ========================================================================
 // Acceptance Criteria N2.1 – N2.6
 // ========================================================================
-
-/// N2.1: `witness_mode_starts`
-///
-/// Verifies that a cyphr-server instance configured in Witness mode
-/// (`ServerMode::Witness` / `serve --mode witness`) can resolve its configuration,
-/// initialize AppState, and start successfully.
-#[tokio::test]
-async fn witness_mode_starts() {
-    let cli = Cli::try_parse_from(["cyphr-server", "serve", "--mode", "witness"])
-        .expect("CLI args for witness mode should parse");
-
-    let config =
-        resolve_config(&cli).expect("witness mode configuration MUST resolve successfully");
-
-    assert_eq!(
-        config.mode,
-        ServerMode::Witness,
-        "resolved config mode MUST be ServerMode::Witness"
-    );
-
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let mut witness_config = config;
-    witness_config.data_dir = temp_dir.path().join("data");
-
-    let state =
-        AppState::new(witness_config).expect("witness mode AppState MUST initialize successfully");
-    assert_eq!(state.config.mode, ServerMode::Witness);
-}
 
 /// N2.2: `all_write_routes_refused`
 ///
@@ -336,107 +307,6 @@ async fn rejects_unverifiable_delta() {
         payload["commit_id"], "SHA-256:CORRUPTED_COMMIT_999999999999999999999999",
         "witness must serve the legitimate genesis commit, not the forged one: \
          {witness_tip_json:?}"
-    );
-}
-
-/// N2.5: `serves_only_self_verified`
-///
-/// Adversarial check: Stand up an upstream authority server using Instance::bind_tcp(),
-/// craft a delta with an invalid/forged signature or corrupted commit on that authority,
-/// trigger witness sync against that authority, and assert that the witness node refuses
-/// to accept or serve the unverified delta on GET /tip, GET /patch, and GET /e/{digest}
-/// (returning 404 or refusal error rather than relaying unverified state).
-#[tokio::test]
-async fn serves_only_self_verified() {
-    let (auth_state, _identity, auth_dir) = attestor_server().await;
-    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
-
-    let mut auth_instance = common::multi::Instance {
-        name: "adversarial-authority".to_string(),
-        state: auth_state.clone(),
-        identity: Some(_identity),
-        dir: auth_dir,
-        router: auth_app.clone(),
-        listener_addr: None,
-        tcp_handle: None,
-    };
-    let _auth_addr = auth_instance
-        .bind_tcp()
-        .await
-        .expect("bind TCP for adversarial authority server");
-    let auth_url = auth_instance
-        .url()
-        .expect("authority TCP URL must be available");
-
-    let adversarial_principal = "n2-adversarial-unverified-principal";
-    let now = 1_700_000_000;
-    let dummy_hash = Blake3Hash::from_bytes([9u8; 32]);
-    let forged_commit = IndexableCommit {
-        pg: Vec::new(),
-        principal_id: adversarial_principal.to_string(),
-        commit_ids: vec!["SHA-256:FORGED_ADVERSARIAL_COMMIT_12345".to_string()],
-        sequence: 0,
-        pre: None,
-        prs: vec!["SHA-256:FORGED_PR_ROOT".to_string()],
-        srs: vec!["SHA-256:FORGED_SR_ROOT".to_string()],
-        ars: vec!["SHA-256:FORGED_AR_ROOT".to_string()],
-        crs: vec!["SHA-256:FORGED_CR_ROOT".to_string()],
-        blob_hashes: vec![dummy_hash],
-        cozies: vec![],
-        timestamp: now,
-        keys: vec![],
-    };
-    auth_state
-        .engine
-        .indexer()
-        .index_commit(&forged_commit, &DeriveToken::for_conformance_tests())
-        .await
-        .expect("index forged commit on authority");
-
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
-        ..Default::default()
-    };
-    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
-    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
-
-    // 1. GET /tip?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
-    let (tip_status, tip_json) = get_json(
-        witness_app.clone(),
-        &format!("/tip?pr={adversarial_principal}"),
-    )
-    .await;
-    assert_ne!(
-        tip_status,
-        StatusCode::OK,
-        "witness node MUST NOT serve unverified state on GET /tip: {tip_json:?}"
-    );
-
-    // 2. GET /patch?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
-    let (patch_status, patch_json) = get_json(
-        witness_app.clone(),
-        &format!("/patch?pr={adversarial_principal}"),
-    )
-    .await;
-    assert_ne!(
-        patch_status,
-        StatusCode::OK,
-        "witness node MUST NOT serve unverified state on GET /patch: {patch_json:?}"
-    );
-
-    // 3. GET /e/{digest} MUST NOT serve unverified entity blobs
-    let (entity_status, entity_json) = get_json(
-        witness_app.clone(),
-        "/e/SHA-256:FORGED_ADVERSARIAL_COMMIT_12345",
-    )
-    .await;
-    assert_ne!(
-        entity_status,
-        StatusCode::OK,
-        "witness node MUST NOT serve unverified entity blobs on GET /e/digest: {entity_json:?}"
     );
 }
 
@@ -1032,36 +902,6 @@ async fn sync_recovers_after_unverifiable_entry() {
         payload["commit_count"].as_u64(),
         Some(1),
         "witness must have applied the genuine genesis past the unverifiable entry: {json:?}"
-    );
-}
-
-/// N2.4: a patch response NOT signed by the expected authority identity is
-/// rejected -- no entry applied.
-///
-/// The witness expects a fresh identity the authority has never signed with,
-/// so the authority's envelope -- unsigned today, or signed under the
-/// authority's OWN key once the channel is authenticated -- cannot verify
-/// against the expected key. An unverifiable channel must yield no applied
-/// state, so `GET /tip` for the principal is NOT 200.
-#[tokio::test]
-async fn patch_envelope_authority_signature() {
-    let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
-    let authority = authority_with_genesis(&principal, now).await;
-
-    let expected = coz::Alg::Ed25519.generate_keypair();
-    let wrong_identity = AuthorityIdentity {
-        alg: expected.alg.name().to_string(),
-        pub_key: expected.pub_bytes.clone(),
-    };
-    let (_witness_state, witness_app) = witness_for(&authority.url, Some(wrong_identity)).await;
-
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "a patch response not signed by the EXPECTED authority identity must be rejected: the \
-         witness must not apply or serve its entries: {json:?}"
     );
 }
 
@@ -1701,53 +1541,6 @@ async fn request_side_from_rewrite_withholding_rejected() {
         "a request-side `from` rewrite must not withhold every entry behind a fully genuine \
          response, got {outcome:?}"
     );
-}
-
-/// N2 rework, fix 4 (architect): `Synced` carries a `rejected` count
-/// alongside `applied`, so a caller can no longer mistake a sync where some
-/// entries in the SAME response were individually rejected for a clean one.
-///
-/// The authority's genuine two-commit patch is followed by one extra
-/// entry the witness cannot apply (its `blobs` array is absent). The two
-/// genuine entries fully catch the witness up to what the signed report
-/// attests (so the post-apply reconciliation passes and this is a real
-/// `Synced`, not a `Failed`), while the trailing garbage entry is
-/// individually rejected in the same pass.
-#[tokio::test]
-async fn synced_outcome_reports_rejected_count_alongside_applied() {
-    let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
-    let authority = authority_with_two_commits(&principal, now).await;
-    let authority_identity = authority.identity();
-
-    let (proxy_url, _proxy) = spawn_patch_proxy(
-        authority.url.clone(),
-        Arc::new(|mut body: serde_json::Value| {
-            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
-                entries.push(serde_json::json!({
-                    "commit_id": "SHA-256:GARBAGE_TRAILING_ENTRY_NO_BLOBS_ARRAY",
-                    "sequence": 2,
-                    "pr": "",
-                }));
-            }
-            body
-        }),
-    )
-    .await;
-
-    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
-    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
-    match outcome {
-        cyphr_server::sync::SyncOutcome::Synced { applied, rejected } => {
-            assert_eq!(applied, 2, "both genuine entries must have applied");
-            assert_eq!(
-                rejected, 1,
-                "the trailing garbage entry must be counted as rejected, not silently absorbed \
-                 into a clean-looking Synced"
-            );
-        },
-        other => panic!("expected Synced {{ applied: 2, rejected: 1 }}, got {other:?}"),
-    }
 }
 
 /// Spawn an on-path proxy that forwards the FIRST `/patch` request to

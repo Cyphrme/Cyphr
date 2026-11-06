@@ -1355,22 +1355,15 @@ mod replay {
         );
     }
 
-    #[tokio::test]
-    async fn replay_victim_transaction_does_not_block_victim_memory() {
-        assert_victim_not_blocked(&mem_engine()).await;
-    }
-
+    /// Backs F-A (see `assert_victim_not_blocked`) on the durable backend, the
+    /// only backend the server runs.
     #[tokio::test]
     async fn replay_victim_transaction_does_not_block_victim_fjall() {
         let dir = tempfile::tempdir().unwrap();
         assert_victim_not_blocked(&fjall_engine(dir.path())).await;
     }
 
-    #[tokio::test]
-    async fn replay_victim_action_resolves_to_both_principals_memory() {
-        assert_action_resolves_to_both(&mem_engine()).await;
-    }
-
+    /// Backs F-B (see `assert_action_resolves_to_both`) on the durable backend.
     #[tokio::test]
     async fn replay_victim_action_resolves_to_both_principals_fjall() {
         let dir = tempfile::tempdir().unwrap();
@@ -1413,15 +1406,8 @@ mod replay {
         );
     }
 
-    #[tokio::test]
-    async fn replay_store_with_one_coz_under_two_principals_restarts_memory() {
-        let first = mem_engine();
-        assert_restart_survives(first, |old| {
-            StorageEngine::new(old.blob_store().clone(), MemoryIndexer::new())
-        })
-        .await;
-    }
-
+    /// Backs F-C (see `assert_restart_survives`): a real close and reopen of the
+    /// durable stores.
     #[tokio::test]
     async fn replay_store_with_one_coz_under_two_principals_restarts_fjall() {
         let dir = tempfile::tempdir().unwrap();

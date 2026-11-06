@@ -734,11 +734,14 @@ async fn push_under_pg_to_be_reports_the_stored_commit(attestor: bool) {
     }
 }
 
+/// Backs: a push under the PG of a principal that added keys before
+/// `principal/create` reports the stored commit, on a keyless server (SPEC 3.7.1).
 #[tokio::test]
 async fn keyless_push_under_pg_to_be_reports_the_stored_commit() {
     push_under_pg_to_be_reports_the_stored_commit(false).await;
 }
 
+/// Backs: the same report-the-stored-commit rule on an attestor server (SPEC 3.7.1).
 #[tokio::test]
 async fn attestor_push_under_pg_to_be_reports_the_stored_commit() {
     push_under_pg_to_be_reports_the_stored_commit(true).await;

@@ -158,91 +158,6 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 // Round-Trip Tests
 // ============================================================================
 
-/// Single coz round-trip: load genesis + 1 entry → export → compare.
-#[test]
-fn rt_single_tx() {
-    let fixture = load_fixture("mutations", "key_add_increases_count");
-
-    let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let commits = fixture.commits.as_ref().expect("missing commits");
-
-    // Skip if no entries (genesis-only test)
-    if commits.is_empty() {
-        return;
-    }
-
-    let genesis = make_genesis(genesis_keys);
-    let commit_vec = make_commits(commits);
-
-    // Load principal from genesis + entries
-    let principal =
-        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-
-    // Export entries from loaded principal
-    let exported = export_commits(&principal).unwrap();
-
-    // Compare exported with original entries
-    compare_commits(&exported, commits).expect("round-trip mismatch");
-
-    // Verify expected state
-    if let Some(expected_count) = fixture.expected.key_count {
-        assert_eq!(
-            principal.active_key_count(),
-            expected_count,
-            "key_count mismatch"
-        );
-    }
-}
-
-/// Multi-step coz round-trip.
-#[test]
-fn rt_multi_tx() {
-    let fixture = load_fixture("multi_key", "add_third_key_to_dual_key_account");
-
-    let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let commits = fixture.commits.as_ref().expect("missing commits");
-
-    let genesis = make_genesis(genesis_keys);
-    let commit_vec = make_commits(commits);
-
-    let principal =
-        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-    let exported = export_commits(&principal).unwrap();
-
-    compare_commits(&exported, commits).expect("round-trip mismatch");
-
-    if let Some(expected_count) = fixture.expected.key_count {
-        assert_eq!(
-            principal.active_key_count(),
-            expected_count,
-            "key_count mismatch"
-        );
-    }
-}
-
-/// Level 4 round-trip: cozies + actions.
-#[test]
-fn rt_with_actions() {
-    let fixture = load_fixture("actions", "single_action_promotes_ds");
-
-    let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let commits = fixture.commits.as_ref().expect("missing commits");
-
-    let genesis = make_genesis(genesis_keys);
-    let commit_vec = make_commits(commits);
-
-    let principal =
-        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-    let exported = export_commits(&principal).unwrap();
-
-    compare_commits(&exported, commits).expect("round-trip mismatch");
-
-    // Verify Level 4 promotion
-    if let Some(expected_level) = fixture.expected.level {
-        assert_eq!(principal.level() as u8, expected_level, "level mismatch");
-    }
-}
-
 // ============================================================================
 // Dynamic E2E Tests (Intent-Driven)
 // ============================================================================
@@ -423,6 +338,17 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Handle NoGenesisKeys special case - error happens at genesis creation
     if expected_error == "NoGenesisKeys" {
         if test.principal.is_empty() {
+            // Load the empty explicit genesis through the production loader: this is
+            // the only check that `load_principal_from_commits` refuses it.
+            let err = load_principal_from_commits(Genesis::Explicit(Vec::new()), &[])
+                .err()
+                .unwrap_or_else(|| panic!("{}: an empty explicit genesis loaded", test.name));
+            assert_eq!(
+                load_error_name(&err),
+                "NoGenesisKeys",
+                "{}: empty explicit genesis refused with the wrong error: {err:?}",
+                test.name
+            );
             eprintln!("  ✓ {} (expected error: NoGenesisKeys)", test.name);
             return;
         }

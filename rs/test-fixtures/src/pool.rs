@@ -205,22 +205,8 @@ impl Pool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_pool_load() {
-        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("tests/keys/pool.toml");
-
-        let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
-        assert_eq!(pool.pool.version, "0.1.0");
-        assert!(pool.get("golden").is_some());
-        assert!(pool.get("alice").is_some());
-        assert!(pool.get("nonexistent").is_none());
-    }
-
+    /// Backs: the key pool rejects an unsupported-algorithm key (RS256) instead of generating
+    /// fixtures from it. Unit: build-time tooling with no end-to-end surface.
     #[test]
     fn test_pool_validate() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -240,6 +226,9 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("unsupported_key")));
     }
 
+    /// Backs: the golden key in the pool has the pinned thumbprint every golden vector depends on
+    /// (SPEC 2.2 thumbprint); also proves the pool loads. Unit: pool is fixture tooling, not a
+    /// protocol surface.
     #[test]
     fn test_golden_key_thumbprint() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

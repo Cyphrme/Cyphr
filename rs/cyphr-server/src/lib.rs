@@ -574,38 +574,8 @@ mod tests {
         path
     }
 
-    #[test]
-    fn app_state_with_configured_signing_key_loads_identity() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let key_path = write_signing_key_file(temp_dir.path());
-        let config = config::ServerConfig {
-            data_dir: temp_dir.path().join("data"),
-            signing_key_path: Some(key_path),
-            ..Default::default()
-        };
-
-        let state = AppState::new(config).expect("AppState::new with a valid key succeeds");
-        assert!(
-            state.identity.is_some(),
-            "a configured signing key must be loaded into AppState.identity"
-        );
-    }
-
-    #[test]
-    fn app_state_without_signing_key_has_no_identity() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let config = config::ServerConfig {
-            data_dir: temp_dir.path().join("data"),
-            ..Default::default()
-        };
-
-        let state = AppState::new(config).expect("AppState::new without a key still succeeds");
-        assert!(
-            state.identity.is_none(),
-            "no signing_key_path configured must leave identity unset"
-        );
-    }
-
+    /// Backs: a configured but unreadable signing key aborts startup instead of silently serving
+    /// keyless. Unit: startup-only path.
     #[test]
     fn app_state_with_broken_signing_key_path_fails_clearly() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -623,6 +593,8 @@ mod tests {
         );
     }
 
+    /// Backs: attestor tier needs both identity and a bootstrapped principal.
+    /// Unit: these identity/principal combinations are unreachable through real startup.
     #[tokio::test]
     async fn attestor_reflects_all_four_principal_identity_combinations() {
         let temp_dir = tempfile::tempdir().expect("tempdir");

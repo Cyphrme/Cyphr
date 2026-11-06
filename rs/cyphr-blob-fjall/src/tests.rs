@@ -12,29 +12,23 @@ use eml::Storage as _;
 
 use super::*;
 
-macro_rules! conformance_test {
-    ($name:ident) => {
-        #[tokio::test]
-        async fn $name() {
-            let (store, _dir) = FjallBlobStore::temp().expect("open temp store");
-            conformance::$name(&store).await;
-        }
-    };
-}
-
-conformance_test!(put_get_roundtrip);
-conformance_test!(get_missing_returns_none);
-conformance_test!(exists_reflects_presence);
-conformance_test!(put_is_idempotent);
-conformance_test!(iter_returns_all_stored);
-
+/// Backs the `BlobStore` contract (put/get round trip, missing is `None`,
+/// presence, idempotent put, full iteration, size cap) for the durable
+/// backend: every shared function in `cyphr_storage::blob::conformance`
+/// against a fresh `FjallBlobStore`. Unit: the trait seam is internal; no
+/// end-to-end route names a backend-independent contract.
 #[tokio::test]
-async fn max_blob_size_enforced() {
+async fn fjall_blob_store_passes_the_shared_conformance_suite() {
+    conformance::put_get_roundtrip(&FjallBlobStore::temp().expect("open").0).await;
+    conformance::get_missing_returns_none(&FjallBlobStore::temp().expect("open").0).await;
+    conformance::exists_reflects_presence(&FjallBlobStore::temp().expect("open").0).await;
+    conformance::put_is_idempotent(&FjallBlobStore::temp().expect("open").0).await;
+    conformance::iter_returns_all_stored(&FjallBlobStore::temp().expect("open").0).await;
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = FjallBlobStore::open(dir.path())
+    let capped = FjallBlobStore::open(dir.path())
         .expect("open")
         .with_max_blob_size(10);
-    conformance::max_blob_size_enforced(&store, 10).await;
+    conformance::max_blob_size_enforced(&capped, 10).await;
 }
 
 /// A durably-reopened `FjallBlobStore` (fresh `Database`, not a clone of the
@@ -258,43 +252,6 @@ async fn scoped_eml_open_accepts_a_principal_id_shaped_prefix() {
 // F11: sanitize_fjall_prefix injectivity
 // ============================================================================
 
-/// The adversarial pair the old blind-substitution scheme (every
-/// disallowed byte → `_`) collided on: a colon-separated `principal_id`
-/// shape and a literal-underscore string of the same length produced the
-/// identical sanitized output.
-#[test]
-fn sanitize_fjall_prefix_colon_vs_literal_underscore_do_not_collide() {
-    assert_ne!(
-        sanitize_fjall_prefix("a:b"),
-        sanitize_fjall_prefix("a_b"),
-        "a colon-separated prefix must not collide with a literal-underscore prefix of the same \
-         shape"
-    );
-}
-
-/// A literal escape marker in the input must not be indistinguishable
-/// from one this function generates itself while escaping some other
-/// disallowed byte.
-#[test]
-fn sanitize_fjall_prefix_literal_escape_marker_does_not_collide_with_generated_escape() {
-    // "$3a" contains a literal '$' followed by literal ASCII "3a" -- byte-
-    // for-byte identical to what encoding a disallowed byte 0x3a (':')
-    // alone would produce. If '$' passed through unescaped, both would
-    // sanitize to "$3a".
-    assert_ne!(
-        sanitize_fjall_prefix("$3a"),
-        sanitize_fjall_prefix(":"),
-        "a literal '$3a' must not collide with the escape sequence generated for ':'"
-    );
-}
-
-/// Two inputs differing only in the position of their disallowed byte must
-/// not collide by virtue of producing the same multiset of output bytes.
-#[test]
-fn sanitize_fjall_prefix_disallowed_byte_position_is_preserved() {
-    assert_ne!(sanitize_fjall_prefix("a:bc"), sanitize_fjall_prefix("ab:c"));
-}
-
 /// Pairwise-distinct check over a curated adversarial corpus: every
 /// distinct input here must sanitize to a distinct output. This is the
 /// `injectivity` regression `sanitize_fjall_prefix`'s doc comment
@@ -319,6 +276,11 @@ fn sanitize_fjall_prefix_is_injective_over_adversarial_corpus() {
         "a$b",
         "a$24b",
         "a:24b",
+        // Each pair below once collided under an earlier scheme: a literal
+        // escape marker, and the position of the disallowed byte.
+        "$3a",
+        "a:bc",
+        "ab:c",
     ];
 
     let sanitized: Vec<String> = corpus.iter().map(|s| sanitize_fjall_prefix(s)).collect();

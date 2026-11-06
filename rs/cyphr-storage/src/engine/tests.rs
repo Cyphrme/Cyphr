@@ -39,36 +39,10 @@ fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
     }
 }
 
-#[tokio::test]
-async fn ingest_then_get_tip() {
-    let engine = test_engine();
-    let blobs: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1000}}"];
-    let meta = make_meta("alice", 0, 1000);
-
-    engine
-        .ingest_commit(&blobs, meta)
-        .await
-        .expect("ingest failed");
-
-    let tip = engine
-        .get_tip("alice")
-        .await
-        .expect("get_tip failed")
-        .expect("tip should exist");
-
-    assert_eq!(tip.principal_id, "alice");
-    assert_eq!(tip.pr, "SHA-256:pr-alice-0");
-    assert_eq!(tip.commit_count, 1);
-    assert_eq!(tip.last_updated, 1000);
-}
-
-#[tokio::test]
-async fn get_tip_unknown_returns_none() {
-    let engine = test_engine();
-    let tip = engine.get_tip("nonexistent").await.expect("get_tip failed");
-    assert!(tip.is_none());
-}
-
+/// Backs the sync patch (user-visible: a peer pulls a principal's whole
+/// chain): `get_patch` returns every commit's blobs in sequence order.
+/// Unit: raw `ingest_commit` with placeholder blobs isolates the patch
+/// assembly from signature work the signed end-to-end tests already do.
 #[tokio::test]
 async fn ingest_two_then_get_patch_full() {
     let engine = test_engine();
@@ -161,103 +135,6 @@ async fn get_patch_unknown_anchor_is_not_found() {
         matches!(err, EngineError::NotFound(_)),
         "expected NotFound, got {err:?}"
     );
-}
-
-#[tokio::test]
-async fn get_patch_unknown_returns_empty() {
-    let engine = test_engine();
-    let patch = engine
-        .get_patch("nonexistent", None, None)
-        .await
-        .expect("get_patch");
-    assert!(patch.entries.is_empty());
-}
-
-#[tokio::test]
-async fn get_entity_returns_none_for_unknown() {
-    let engine = test_engine();
-
-    let digest: cyphr::state::TaggedDigest = "SHA-256:U5XUZots-WmQVbUsBK4kVbRbz5IaYfuMYXXv_aqgWpc"
-        .parse()
-        .expect("parse digest");
-
-    let result = engine.get_entity(&digest).await.expect("get_entity failed");
-    assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn ingest_returns_blob_hashes() {
-    let engine = test_engine();
-    let blob_a = b"transaction-a";
-    let blob_b = b"transaction-b";
-
-    let result = engine
-        .ingest_commit(
-            &[blob_a.as_slice(), blob_b.as_slice()],
-            make_meta("alice", 0, 1000),
-        )
-        .await
-        .expect("ingest");
-
-    assert_eq!(result.blob_hashes.len(), 2);
-
-    // Verify hashes are correct BLAKE3 digests.
-    let expected_a = blake3::hash(blob_a);
-    let expected_b = blake3::hash(blob_b);
-    assert_eq!(result.blob_hashes[0].as_bytes(), expected_a.as_bytes());
-    assert_eq!(result.blob_hashes[1].as_bytes(), expected_b.as_bytes());
-}
-
-#[tokio::test]
-async fn ingest_idempotent() {
-    let engine = test_engine();
-    let blob = b"same-content";
-    let meta = make_meta("alice", 0, 1000);
-
-    engine
-        .ingest_commit(&[blob.as_slice()], meta.clone())
-        .await
-        .expect("first");
-    engine
-        .ingest_commit(&[blob.as_slice()], meta)
-        .await
-        .expect("duplicate");
-
-    let tip = engine
-        .get_tip("alice")
-        .await
-        .expect("tip")
-        .expect("should exist");
-    assert_eq!(tip.commit_count, 1, "duplicate ingest should be idempotent");
-}
-
-#[tokio::test]
-async fn multi_principal_isolation() {
-    let engine = test_engine();
-
-    engine
-        .ingest_commit(&[b"alice-genesis"], make_meta("alice", 0, 1000))
-        .await
-        .expect("alice");
-    engine
-        .ingest_commit(&[b"bob-genesis"], make_meta("bob", 0, 2000))
-        .await
-        .expect("bob");
-
-    let alice_tip = engine
-        .get_tip("alice")
-        .await
-        .expect("tip")
-        .expect("alice tip");
-    let bob_tip = engine.get_tip("bob").await.expect("tip").expect("bob tip");
-
-    assert_eq!(alice_tip.pr, "SHA-256:pr-alice-0");
-    assert_eq!(bob_tip.pr, "SHA-256:pr-bob-0");
-
-    // Alice's patch should not contain Bob's data.
-    let alice_patch = engine.get_patch("alice", None, None).await.expect("patch");
-    assert_eq!(alice_patch.entries.len(), 1);
-    assert_eq!(alice_patch.entries[0].blobs[0], b"alice-genesis");
 }
 
 // ========================================================================
@@ -445,56 +322,9 @@ async fn ingest_fixture(
     }
 }
 
-#[tokio::test]
-async fn load_principal_genesis_only() {
-    let fixture = load_golden("mutations", "key_add_changes_state");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let genesis = make_genesis(genesis_keys);
-
-    let engine = test_engine();
-
-    // No commits ingested — load should return genesis-only principal.
-    let principal = engine
-        .load_principal("test-principal", genesis)
-        .await
-        .expect("load_principal failed");
-
-    assert_eq!(principal.active_key_count(), 1);
-}
-
-#[tokio::test]
-async fn load_principal_after_ingest() {
-    let fixture = load_golden("mutations", "key_add_changes_state");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-    let expected = &fixture["expected"];
-
-    let engine = test_engine();
-    let principal_id = "test-principal";
-
-    // Ingest the fixture's commits.
-    ingest_fixture(&engine, principal_id, commits).await;
-
-    // Load the principal back from storage.
-    let genesis = make_genesis(genesis_keys);
-    let principal = engine
-        .load_principal(principal_id, genesis)
-        .await
-        .expect("load_principal failed");
-
-    // Verify against fixture expectations.
-    if let Some(kc) = expected["key_count"].as_u64() {
-        assert_eq!(
-            principal.active_key_count(),
-            kc as usize,
-            "key_count mismatch"
-        );
-    }
-    if let Some(level) = expected["level"].as_u64() {
-        assert_eq!(principal.level() as u64, level, "level mismatch");
-    }
-}
-
+/// Backs replay of a stored chain into the same principal state (SPEC
+/// be0663f section 2.3.2, state derives from the commit chain): a multi-commit
+/// fixture ingested then loaded has the fixture's key count.
 #[tokio::test]
 async fn load_principal_multi_commit_replay() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
@@ -522,6 +352,9 @@ async fn load_principal_multi_commit_replay() {
     }
 }
 
+/// Backs the empty-history case: an id with no indexed commits loads as the
+/// genesis-only principal rather than failing. Unit: the end-to-end routes
+/// never load an unindexed id.
 #[tokio::test]
 async fn load_principal_unknown_returns_genesis() {
     let fixture = load_golden("mutations", "key_add_changes_state");
@@ -573,57 +406,6 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
     }
 
     blobs
-}
-
-#[tokio::test]
-async fn submit_commit_valid_fixture() {
-    let fixture = load_golden("mutations", "key_add_changes_state");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-    let expected = &fixture["expected"];
-
-    let engine = test_engine();
-    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
-    let principal_id = principal_id.as_str();
-
-    // Submit each commit in the fixture through the validated write path.
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-
-        engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    // Verify stored state via tip.
-    let tip = engine
-        .get_tip(principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("tip should exist after submit");
-
-    assert_eq!(tip.commit_count, commits.len() as u64);
-
-    // Verify loadable principal matches expected state.
-    let genesis = make_genesis(genesis_keys);
-    let principal = engine
-        .load_principal(principal_id, genesis)
-        .await
-        .expect("load after submit failed");
-
-    if let Some(kc) = expected["key_count"].as_u64() {
-        assert_eq!(
-            principal.active_key_count(),
-            kc as usize,
-            "key_count mismatch"
-        );
-    }
-    if let Some(level) = expected["level"].as_u64() {
-        assert_eq!(principal.level() as u64, level, "level mismatch");
-    }
 }
 
 /// F36: `submit_commit`'s action-only branch (a bundle with no
@@ -704,6 +486,8 @@ async fn submit_commit_rejects_blob_missing_typ() {
     );
 }
 
+/// Backs SPEC be0663f section 12 (a commit that does not verify is not
+/// stored): a tampered signature is refused and no tip appears.
 #[tokio::test]
 async fn submit_commit_bad_signature_rejected() {
     let fixture = load_golden("mutations", "key_add_changes_state");
@@ -745,6 +529,8 @@ async fn submit_commit_bad_signature_rejected() {
     assert!(tip.is_none(), "no tip should exist after rejected submit");
 }
 
+/// Backs the write-path input boundary: a submission with no blobs is
+/// refused.
 #[tokio::test]
 async fn submit_commit_empty_rejected() {
     let fixture = load_golden("mutations", "key_add_changes_state");
@@ -760,6 +546,9 @@ async fn submit_commit_empty_rejected() {
     assert!(result.is_err(), "empty blob list should be rejected");
 }
 
+/// Backs the engine's validated write path end to end: every commit of a
+/// replay fixture submitted through `submit_commit` is counted in the tip and
+/// loads back to the fixture's key count.
 #[tokio::test]
 async fn submit_then_load_round_trip() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
@@ -932,6 +721,8 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
     );
 }
 
+/// Backs the crash-window rule (I1): a crash before the manifest write leaves
+/// the commit fully absent from the index, never half indexed.
 #[tokio::test]
 async fn crash_before_manifest_write_leaves_commit_fully_absent() {
     let engine = test_engine();

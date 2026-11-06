@@ -184,6 +184,7 @@ mod clone_independence {
             ..ProptestConfig::default()
         })]
 
+        /// Backs SPEC 15.7.1 / invariant I2: cloning a principal for fork evidence never lets later commits on one branch leak into the other (property over commit sequences).
         #[test]
         fn clone_independence_property(
             // Targets golden deletes on branch A, in order: a random non-empty prefix of a
