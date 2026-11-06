@@ -177,6 +177,7 @@ impl AppError {
                 tracing::error!(error = %err, "internal engine error");
                 Self::internal("internal storage error")
             },
+            EngineError::BranchLimit => Self::conflict(err.to_string()),
             EngineError::Protocol(_) => Self {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),

@@ -76,6 +76,12 @@ pub struct TipResponse {
     pub now: i64,
 }
 
+/// Response for `GET /branches`.
+#[derive(Debug, Serialize)]
+pub struct BranchesResponse {
+    pub branches: Vec<cyphr_storage::engine::BranchTip>,
+}
+
 /// A single commit entry in a patch response.
 #[derive(Debug, Serialize)]
 pub struct PatchEntryResponse {
@@ -251,6 +257,28 @@ pub async fn tip(
         Some(coz) => Ok(Json(Envelope::signed(payload, coz))),
         None => Ok(Json(Envelope::unsigned(payload))),
     }
+}
+
+/// `GET /branches?pr=<PG>` -- every branch head the store holds for the
+/// principal: its canonical tip and each retained rival, a commit that
+/// verified at its `pre` but took a position the chain already held.
+///
+/// A fork is evidence the store keeps, never a state it merges (I2): the
+/// push that produced a rival was refused (409), and `/tip` still reports
+/// the canonical chain alone. Exactly one entry is `canonical`.
+#[tracing::instrument(skip(state))]
+pub async fn branches(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TipQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    witness_sync(&state, &query.pr).await;
+
+    let branches = state
+        .engine
+        .list_branches(&query.pr)
+        .await
+        .map_err(AppError::engine)?;
+    Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
 /// `GET /view?pr=<PG>` -- this peer's signed claim "I hold `pr` at this
