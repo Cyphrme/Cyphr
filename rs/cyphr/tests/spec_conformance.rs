@@ -1377,6 +1377,77 @@ fn s15_9_future_dated_message_is_rejected_by_default() {
 }
 
 // ============================================================================
+// W1: the `now` bound on every entry path
+// ============================================================================
+
+/// Apply the same `now` through both entry paths (a data action and a
+/// `key/create` commit) on a default `Principal`, returning each outcome.
+fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
+    let (g, k2) = (kp(), kp());
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let (pay, sig, czd) = sign(
+        &g,
+        json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
+    );
+    let action = p.verify_and_record_action(&pay, &sig, czd).map(|_| ());
+    let create = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, at)),
+        Some(key_of(&k2)),
+        at,
+    );
+    (action, create)
+}
+
+/// Backs the future-timestamp rule: a `now` beyond the verifier clock plus a
+/// small drift is refused on every entry path, whatever the magnitude.
+/// Scenario, default `Principal`: a data action and a `key/create` commit
+/// dated 2^53 - 1 (the largest in-range value, centuries ahead) and
+/// `i64::MAX` are applied. In-range-but-future must be the typed
+/// `TimestampFuture`; `i64::MAX` is out of range and need only be refused.
+/// Turns red if a far-future `now` is accepted on any path (the SC1-F5 red
+/// covers a day ahead; this covers the extremes, where a clock-plus-drift sum
+/// can also overflow). Unit-level on purpose: the extremes cannot be authored
+/// through the server builder, and the HTTP end-to-end is `now_range.rs`.
+#[test]
+#[ignore = "RED(W1): default clock tolerance disabled, extreme future now accepted"]
+fn now_bound_far_future_is_refused_on_every_entry_path() {
+    let (action, create) = now_outcomes(MAX_SAFE);
+    assert!(
+        matches!(action, Err(Error::TimestampFuture)),
+        "action at 2^53 - 1: {action:?}"
+    );
+    assert!(
+        matches!(create, Err(Error::TimestampFuture)),
+        "key/create at 2^53 - 1: {create:?}"
+    );
+    let (action, create) = now_outcomes(i64::MAX);
+    assert!(action.is_err(), "action at i64::MAX accepted");
+    assert!(create.is_err(), "key/create at i64::MAX accepted");
+}
+
+/// Backs the same rule from the other side: it must not over-reach. Scenario:
+/// a data action and a `key/create` dated at the clock, an hour behind it,
+/// and one second ahead of it (inside any non-zero drift window) are all
+/// accepted. A green characterization that must survive the fix: it turns red
+/// if the bound is made strict (no drift) or two-sided against the clock.
+/// Unit-level on purpose: the window edge has no cheaper scenario.
+#[test]
+fn now_bound_inside_the_drift_window_is_accepted() {
+    let now = unix_now();
+    for (label, at) in [
+        ("at the clock", now),
+        ("an hour behind", now - 3_600),
+        ("1s ahead", now + 1),
+    ] {
+        let (action, create) = now_outcomes(at);
+        action.unwrap_or_else(|e| panic!("action {label}: {e:?}"));
+        create.unwrap_or_else(|e| panic!("key/create {label}: {e:?}"));
+    }
+}
+
+// ============================================================================
 // SPEC 2.2.2 (line 119): b64ut errors on non-canonical encodings
 // ============================================================================
 
