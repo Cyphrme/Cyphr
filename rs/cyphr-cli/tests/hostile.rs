@@ -237,6 +237,13 @@ fn serve(
 /// reverse order. Signatures and digests are untouched, so a canonical
 /// reader sees exactly the victim's history.
 fn reserialized_patch(chain: &[Vec<Vec<u8>>]) -> Vec<u8> {
+    patch_with(chain, false)
+}
+
+/// As [`reserialized_patch`]; with `unsigned_extras`, each blob also gains
+/// an unsigned top-level member and a different `tag` and `now` on its `key`
+/// sidecar, none of which a signature binds.
+fn patch_with(chain: &[Vec<Vec<u8>>], unsigned_extras: bool) -> Vec<u8> {
     let entries: Vec<Value> = chain
         .iter()
         .enumerate()
@@ -244,9 +251,16 @@ fn reserialized_patch(chain: &[Vec<Vec<u8>>]) -> Vec<u8> {
             let blobs: Vec<String> = blobs
                 .iter()
                 .map(|b| {
-                    let Value::Object(m) = serde_json::from_slice::<Value>(b).expect("json") else {
+                    let Value::Object(mut m) = serde_json::from_slice::<Value>(b).expect("json") else {
                         panic!("blob is not an object")
                     };
+                    if unsigned_extras {
+                        m.insert("lm_extra".into(), 1.into());
+                        if let Some(Value::Object(k)) = m.get_mut("key") {
+                            k.insert("tag".into(), "relabelled".into());
+                            k.insert("now".into(), 7.into());
+                        }
+                    }
                     let reversed: serde_json::Map<String, Value> = m.into_iter().rev().collect();
                     Base64UrlUnpadded::encode_string(
                         &serde_json::to_vec_pretty(&Value::Object(reversed)).expect("pretty"),
@@ -394,12 +408,16 @@ fn siblings(store: &Path, prefix: &str) -> Vec<String> {
 /// A victim's own chain, re-served byte-different but signature-equal.
 /// Returns (user, id, hostile peer serving the re-serialized chain).
 fn reserialized_world() -> (User, String, Hostile, Server) {
+    world(false)
+}
+
+fn world(unsigned_extras: bool) -> (User, String, Hostile, Server) {
     let real = Server::start();
     let a = User::new();
     let id = a.new_identity();
     let pushed = a.peer_cmd("push", &id, &real.url);
     assert!(pushed.ok, "setup push: {}", pushed.stderr);
-    let body = reserialized_patch(&real.chain(&id));
+    let body = patch_with(&real.chain(&id), unsigned_extras);
     let peer = Hostile::start(move |_| Reply::Body(body.clone()));
     (a, id, peer, real)
 }
@@ -454,6 +472,59 @@ fn reserialized_chain_does_not_break_rebase() {
     assert!(
         r.ok,
         "rebase over an equal prefix must succeed: {}",
+        r.stderr
+    );
+    assert_eq!(r.json()["rebased"], 0);
+    assert_eq!(a.commit_count(&id), 2, "local history untouched");
+    assert!(
+        siblings(&a.store(), "data.").is_empty(),
+        "no scratch or backup left"
+    );
+}
+
+/// Claim: what a signature does not bind (an extra top-level member, the
+/// `tag` and `now` of a key sidecar) does not make a different commit, so a
+/// peer adding them is serving the same history in verify, fetch and rebase.
+/// Turns red on a comparison of the whole blob (false fork at height 0,
+/// `forked`, and COZ_REUSE from rebase). End-to-end: yes.
+#[test]
+#[ignore = "RED(N16): unsigned blob members make a false fork"]
+fn unsigned_additions_are_not_a_fork_in_verify() {
+    let (a, id, peer, _real) = world(true);
+    let r = a.run(&[
+        "verify",
+        &format!("--identity={id}"),
+        &format!("--peer={}", peer.url),
+    ]);
+    assert!(r.ok, "verify must answer: {}", r.stderr);
+    let v = r.json();
+    assert_eq!(v["verdict"], "Active", "same signed history: {v}");
+    assert!(v.get("evidence").is_none(), "no evidence of a fork: {v}");
+}
+
+#[test]
+#[ignore = "RED(N16): unsigned blob members make a false fork"]
+fn unsigned_additions_are_not_a_fork_in_fetch() {
+    let (a, id, peer, _real) = world(true);
+    a.add_key(&id);
+    let r = a.peer_cmd("fetch", &id, &peer.url);
+    assert!(
+        r.ok,
+        "fetch of the same signed prefix must succeed: {}",
+        r.stderr
+    );
+    assert_eq!(r.json()["fetched"], 0);
+}
+
+#[test]
+#[ignore = "RED(N16): unsigned blob members make a false fork"]
+fn unsigned_additions_do_not_break_rebase() {
+    let (a, id, peer, _real) = world(true);
+    a.add_key(&id);
+    let r = a.peer_cmd("rebase", &id, &peer.url);
+    assert!(
+        r.ok,
+        "rebase over the same signed prefix must succeed: {}",
         r.stderr
     );
     assert_eq!(r.json()["rebased"], 0);
