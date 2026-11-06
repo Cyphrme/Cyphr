@@ -37,7 +37,11 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
     let pid = common::golden_principal_id(pool);
     let body = common::build_genesis_push_body(pool, &pid, NOW);
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
-    assert_eq!(status, StatusCode::CREATED, "bootstrap golden+key_a: {json:?}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "bootstrap golden+key_a: {json:?}"
+    );
 
     let k = pool.get("key_a").expect("key_a");
     let tmb = k.compute_tmb_b64().expect("tmb");
@@ -45,8 +49,13 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
         "alg": k.alg, "now": NOW, "rvk": NOW, "tmb": tmb,
         "typ": "cyphr.me/cyphr/key/revoke",
     });
-    let (sig, _) = coz::sign_json(&serde_json::to_vec(&pay).unwrap(), &k.alg, &prv(k), &pubk(k))
-        .expect("sign revoke");
+    let (sig, _) = coz::sign_json(
+        &serde_json::to_vec(&pay).unwrap(),
+        &k.alg,
+        &prv(k),
+        &pubk(k),
+    )
+    .expect("sign revoke");
     let revoke = serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
@@ -54,7 +63,10 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
     });
     let (status, json) =
         common::post_json(build_router(state.clone()), "/revoke", revoke.to_string()).await;
-    assert!(status.is_success(), "naked revoke of key_a: {status} {json:?}");
+    assert!(
+        status.is_success(),
+        "naked revoke of key_a: {status} {json:?}"
+    );
     (state, dir)
 }
 
@@ -67,12 +79,8 @@ fn pubk(k: &PoolKey) -> Vec<u8> {
 }
 
 fn key_of(k: &PoolKey) -> cyphr::Key {
-    cyphr::Key::new(
-        k.alg.clone(),
-        k.compute_tmb().expect("tmb"),
-        pubk(k),
-    )
-    .expect("key binds its tmb")
+    cyphr::Key::new(k.alg.clone(), k.compute_tmb().expect("tmb"), pubk(k))
+        .expect("key binds its tmb")
 }
 
 /// A commit on `principal`, signed by `signer`, whose one coz is of `typ`
@@ -168,7 +176,9 @@ fn genesis_push(
 }
 
 async fn push(state: &Arc<AppState>, body: String) -> StatusCode {
-    common::post_json(build_router(state.clone()), "/push", body).await.0
+    common::post_json(build_router(state.clone()), "/push", body)
+        .await
+        .0
 }
 
 async fn assert_refused_and_unwritten(state: &Arc<AppState>, status: StatusCode, pid: &str) {
@@ -193,7 +203,8 @@ async fn dead_key_refused_as_key_create_in_a_new_principal() {
     let (state, _dir) = server_with_key_a_dead(&pool).await;
     let (body, ..) = genesis_push(&pool, "bob", "key_a", CREATE);
     let status = push(&state, body).await;
-    assert_refused_and_unwritten(&state, status, &common::implicit_principal_id(&pool, "bob")).await;
+    assert_refused_and_unwritten(&state, status, &common::implicit_principal_id(&pool, "bob"))
+        .await;
 }
 
 /// Claim: as above for `key/replace`: a principal cannot swap onto a dead
@@ -205,8 +216,12 @@ async fn dead_key_refused_as_key_replace_in_a_new_principal() {
     let (state, _dir) = server_with_key_a_dead(&pool).await;
     let (body, ..) = genesis_push(&pool, "alice", "key_a", REPLACE);
     let status = push(&state, body).await;
-    assert_refused_and_unwritten(&state, status, &common::implicit_principal_id(&pool, "alice"))
-        .await;
+    assert_refused_and_unwritten(
+        &state,
+        status,
+        &common::implicit_principal_id(&pool, "alice"),
+    )
+    .await;
 }
 
 /// Claim: the refusal holds for an established principal's LATER commit, not
@@ -218,7 +233,11 @@ async fn dead_key_refused_as_key_create_in_an_existing_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
     let (first, gkey, entry) = genesis_push(&pool, "bob", "key_b", CREATE);
-    assert_eq!(push(&state, first).await, StatusCode::CREATED, "bootstrap bob+key_b");
+    assert_eq!(
+        push(&state, first).await,
+        StatusCode::CREATED,
+        "bootstrap bob+key_b"
+    );
     let pid = common::implicit_principal_id(&pool, "bob");
     let before = state.engine.get_tip(&pid).await.unwrap().expect("tip");
 
@@ -227,10 +246,18 @@ async fn dead_key_refused_as_key_create_in_an_existing_principal() {
         std::slice::from_ref(&entry),
     )
     .expect("replay genesis");
-    let (blobs, _) = intro_commit(replayed, pool.get("bob").unwrap(), pool.get("key_a").unwrap(), CREATE);
+    let (blobs, _) = intro_commit(
+        replayed,
+        pool.get("bob").unwrap(),
+        pool.get("key_a").unwrap(),
+        CREATE,
+    );
     let status = push(&state, body(&pid, &blobs)).await;
 
-    assert!(status.is_client_error(), "a dead key was added to bob: {status}");
+    assert!(
+        status.is_client_error(),
+        "a dead key was added to bob: {status}"
+    );
     let after = state.engine.get_tip(&pid).await.unwrap().expect("tip");
     assert_eq!(after.commit_count, before.commit_count, "bob's chain moved");
 }
@@ -244,6 +271,10 @@ async fn live_key_is_still_introducible_by_create_and_replace() {
     let (state, _dir) = server_with_key_a_dead(&pool).await;
     for (genesis, typ) in [("bob", CREATE), ("alice", REPLACE)] {
         let (body, ..) = genesis_push(&pool, genesis, "key_b", typ);
-        assert_eq!(push(&state, body).await, StatusCode::CREATED, "{genesis} {typ} key_b");
+        assert_eq!(
+            push(&state, body).await,
+            StatusCode::CREATED,
+            "{genesis} {typ} key_b"
+        );
     }
 }

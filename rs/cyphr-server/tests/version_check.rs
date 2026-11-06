@@ -84,7 +84,8 @@ fn restamp(dir: &Path, v: u64) {
 #[test]
 #[ignore = "RED(N13): Envelope deserializes any `v`"]
 fn version_envelope_unknown_is_refused() {
-    let doc = |v: u64| serde_json::json!({"v": v, "payload": {}, "statement": {"kind": "unsigned"}});
+    let doc =
+        |v: u64| serde_json::json!({"v": v, "payload": {}, "statement": {"kind": "unsigned"}});
     serde_json::from_value::<Envelope<serde_json::Value>>(doc(1)).expect("v1 reads");
     for unknown in UNKNOWN {
         let err = serde_json::from_value::<Envelope<serde_json::Value>>(doc(unknown))
@@ -140,7 +141,9 @@ async fn version_server_principal_sidecar_unknown_is_refused() {
         stamped_v(&sidecar).is_some(),
         "the sidecar must be stamped with a numeric `v`"
     );
-    boot().await.expect("a reboot over the current sidecar loads");
+    boot()
+        .await
+        .expect("a reboot over the current sidecar loads");
     for unknown in UNKNOWN {
         set_v(&sidecar, unknown);
         let err = boot()

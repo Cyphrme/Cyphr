@@ -16,7 +16,14 @@ use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
 /// A bundle line as the CLI's `export` writes it.
 fn entry() -> CommitEntry {
-    CommitEntry::new(vec![], vec![], "c".into(), "a".into(), "s".into(), "p".into())
+    CommitEntry::new(
+        vec![],
+        vec![],
+        "c".into(),
+        "a".into(),
+        "s".into(),
+        "p".into(),
+    )
 }
 
 /// Claim: an exported bundle line states the format version it was written
