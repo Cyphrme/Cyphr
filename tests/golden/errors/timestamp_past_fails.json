@@ -71,8 +71,8 @@
         }
       ],
       "commit_id": "",
-      "ar": "",
-      "sr": "",
+      "ar": null,
+      "sr": null,
       "pr": ""
     }
   ],

@@ -145,19 +145,20 @@ impl PrincipalTree {
         self.rebuild()
     }
 
-    /// Write the Commit Root into cell 1, registering any newly active
-    /// algorithms first. Cell 0 (SR) must already be set.
-    ///
-    /// # Errors
-    ///
-    /// `Storage` if cell 0 is unset: the tree is dense, so CR cannot be
-    /// placed before SR.
-    pub fn set_cr(&mut self, cr: &CommitRoot, algs: &[HashAlg]) -> Result<()> {
-        if self.sr.is_none() {
-            return Err(Error::Storage(
-                "principal tree cell 1 (CR) set before cell 0 (SR)".to_string(),
-            ));
+    /// Remove the State Root: a principal with no keys and no data has none
+    /// (SPEC 3.7: an empty component is omitted), and the tree, being
+    /// dense, then promotes the Commit Root to cell 0 and PR is CR.
+    pub fn clear_sr(&mut self, algs: &[HashAlg]) -> Result<()> {
+        for &alg in algs {
+            self.ensure_algorithm(alg);
         }
+        self.sr = None;
+        self.rebuild()
+    }
+
+    /// Write the Commit Root, registering any newly active algorithms
+    /// first. It is cell 1 after an SR, or cell 0 when SR is absent.
+    pub fn set_cr(&mut self, cr: &CommitRoot, algs: &[HashAlg]) -> Result<()> {
         for &alg in algs {
             self.ensure_algorithm(alg);
         }
@@ -190,7 +191,8 @@ impl PrincipalTree {
     pub fn cr_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
         // Without CR, cell 1 may hold a nonce: it must not be proven as CR.
         self.cr.as_ref()?;
-        self.inner.leaf_proof(alg_id, CR_CELL)
+        let cell = if self.sr.is_some() { CR_CELL } else { SR_CELL };
+        self.inner.leaf_proof(alg_id, cell)
     }
 
     /// Generate a self-contained inclusion proof for the State Root, cell 0,

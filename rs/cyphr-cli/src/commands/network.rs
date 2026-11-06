@@ -426,8 +426,8 @@ fn replays(genesis: &Genesis, chain: &[Vec<Vec<u8>>]) -> Result<(), String> {
             cozies,
             keys,
             String::new(),
-            String::new(),
-            String::new(),
+            None,
+            None,
             String::new(),
         ));
     }

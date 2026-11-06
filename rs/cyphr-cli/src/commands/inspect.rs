@@ -74,6 +74,10 @@ fn format_ks(principal: &CliPrincipal) -> String {
     let ks = principal.key_root();
     let hash_alg = principal.hash_alg();
 
+    // A Dead principal has no KR (SPEC 3.7).
+    let Some(ks) = ks else {
+        return "<none>".to_string();
+    };
     ks.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
@@ -86,6 +90,10 @@ fn format_as(principal: &CliPrincipal) -> String {
     let auth_root = principal.auth_root();
     let hash_alg = principal.hash_alg();
 
+    // A Dead principal has no AR (SPEC 3.7).
+    let Some(auth_root) = auth_root else {
+        return "<none>".to_string();
+    };
     auth_root
         .get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)

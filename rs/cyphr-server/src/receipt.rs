@@ -120,18 +120,18 @@ pub const TIP_REPORT_TYP: &str = "cyphr-server/receipt/tip";
 /// attested principal's genesis identifier) -- the two are different
 /// facts that happen to share a SPEC field name.
 ///
-/// `cr` alone is `Option<String>` (#147): a principal that is
+/// `sr`, `ar` and `cr` are `Option<String>`. A principal that is
 /// key-established but has not yet finalized a data commit has no commit
-/// root, and that absence is typed here rather than signaled by handing
-/// `sign_receipt` the empty-string sentinel storage used to hand it --
-/// `None` serializes to JSON `null` on the wire ([`Roots::to_value`]),
-/// never `""`. `pr`/`sr`/`ar` are always present once a principal exists,
-/// so they stay mandatory `String`s.
+/// root (#147); a Dead principal (SPEC 11) has no AR, and no SR unless it
+/// holds data (SPEC 3.7). The absence is typed here rather than signaled by
+/// an empty-string sentinel: `None` serializes to JSON `null` on the wire
+/// ([`Roots::to_value`]), never `""`. `pr` is always present once a
+/// principal exists, so it stays a mandatory `String`.
 #[derive(Debug, Clone)]
 pub struct Roots {
     pub pr: String,
-    pub sr: String,
-    pub ar: String,
+    pub sr: Option<String>,
+    pub ar: Option<String>,
     pub cr: Option<String>,
 }
 
@@ -282,13 +282,17 @@ fn validate(pr: &str, commit_id: &str, roots: &Roots) -> Result<(), ReceiptError
         })?;
     digest("commit_id", commit_id)?;
     digest("roots.pr", &roots.pr)?;
-    digest("roots.sr", &roots.sr)?;
-    digest("roots.ar", &roots.ar)?;
-    // `cr` alone may legitimately be absent (#147): a principal that is
-    // key-established but has not finalized a data commit has no commit
-    // root yet. `Some` still must parse as a `TaggedDigest`.
-    if let Some(cr) = &roots.cr {
-        digest("roots.cr", cr)?;
+    // `sr`, `ar` and `cr` may legitimately be absent (a Dead principal has
+    // no AR; a principal that has not finalized a commit has no CR, #147).
+    // A present value still must parse as a `TaggedDigest`.
+    for (field, root) in [
+        ("roots.sr", &roots.sr),
+        ("roots.ar", &roots.ar),
+        ("roots.cr", &roots.cr),
+    ] {
+        if let Some(root) = root {
+            digest(field, root)?;
+        }
     }
     Ok(())
 }

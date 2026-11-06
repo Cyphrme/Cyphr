@@ -48,16 +48,12 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   53 |
+| `covered`      |   54 |
 | `red-existing` |    0 |
-| `red-new`      |    1 |
+| `red-new`      |    0 |
 | `not-testable` |   12 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
-
-Fixing ids on red rows: `q3` is the last-key
-self-revoke decision (the code allows no revoke of the only key; SPEC allows
-it and leaves the principal Dead).
 
 ## Rows
 
@@ -255,20 +251,29 @@ evaluator: none
 
 ### [sc-l298]
 
-SPEC 3.1, line 298. Disposition: `red-new`.
+SPEC 3.1, line 298. Disposition: `covered`.
 
 - spec-line: 298
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
   - `rs/cyphr/tests/spec_conformance.rs::s3_1_dead_principal_after_last_key_revoke_records_no_action`
-- fails when: a self-revoke of a principal's only key is refused with `NoActiveKeys` (red today). SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. While the code refuses, Mallory who copies Alice's only key keeps it usable after Alice's revoke is refused. The code and the golden vector `errors/last_key_revoke_fails`, plus `principal.rs::self_revoke_last_key_prevented`, encode the opposite; the vector is not flipped here (pending nrd) and the fix regenerates the corpus.
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_are_absent_and_pr_is_cr_without_data`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_state_root_is_the_data_root`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_hash_under_the_pre_commit_algorithm_set`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_key_delete_of_the_last_key_leaves_dead`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_are_final_no_further_commit`
+  - `rs/cyphr/tests/nonce.rs::dead_principal_roots_keep_the_nonces_that_remain`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_revoke_leaves_dead]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/dead_principal_rejects_commit]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_delete_leaves_dead]`
+- fails when: a self-revoke of a principal's only key is refused (it was, with `NoActiveKeys`), or deleting the last key is refused, or the dying commit's roots are not the ruled ones (KR and AR derived from the nonces that remain and absent without any, SR equal to DR or absent, PR equal to CR when SR is absent, hashed under the pre-commit algorithm set), or the Dead principal accepts anything further. SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. Refusing the revoke leaves Mallory, who copied Alice's only key, a usable key after Alice's revoke.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l463]

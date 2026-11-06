@@ -308,8 +308,8 @@ fn principal_digest(byte: u8) -> String {
 fn roots_a() -> Roots {
     Roots {
         pr: digest(0xb1),
-        sr: digest(0xb2),
-        ar: digest(0xb3),
+        sr: Some(digest(0xb2)),
+        ar: Some(digest(0xb3)),
         cr: Some(digest(0xb4)),
     }
 }

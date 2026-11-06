@@ -181,8 +181,8 @@ fn arb_malformed_shape() -> impl Strategy<Value = MalformedShape> {
 fn roots_from(pr: &str, sr: &str, ar: &str, cr: &str) -> Roots {
     Roots {
         pr: pr.to_string(),
-        sr: sr.to_string(),
-        ar: ar.to_string(),
+        sr: Some(sr.to_string()),
+        ar: Some(ar.to_string()),
         cr: if cr.is_empty() {
             None
         } else {
@@ -211,6 +211,60 @@ fn resign_with_field(
     let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
     coz.sig = sig;
     coz
+}
+
+/// A signed report whose `roots` claim lacks `field` entirely.
+fn resign_without_root(
+    identity: &ServerIdentity,
+    mut coz: coz::CozJson,
+    field: &str,
+) -> coz::CozJson {
+    coz.pay["roots"]
+        .as_object_mut()
+        .expect("roots is an object")
+        .remove(field);
+    let pay_bytes = serde_json::to_vec(&coz.pay).expect("serialize restamped pay");
+    let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
+    coz.sig = sig;
+    coz
+}
+
+/// Backs the receipt rule that `sr` and `ar` MAY be `null` for a Dead
+/// principal but must be present: a report signed with `null` roots parses
+/// to absent roots, and one that omits the field is malformed, never read
+/// as absent (indexing a missing JSON key yields `null`). Turns red if
+/// `TipReport::parse` reads a missing `sr` or `ar` as absent, or refuses
+/// `null`. Unit-level: the shape is only reachable by hand-signing a claim.
+#[test]
+fn null_sr_and_ar_are_absent_roots_but_a_missing_field_is_malformed() {
+    let (_dir, identity) = identity_with_seed(0x45);
+    let root = digest_string(&[7u8; 32]);
+    let roots = Roots {
+        pr: root.clone(),
+        sr: None,
+        ar: None,
+        cr: Some(root.clone()),
+    };
+    let report = block_on(receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        principal_digest(&[9u8; 32]),
+        0u64,
+        root,
+        &roots,
+        1,
+        1_700_000_000,
+    ))
+    .expect("a Dead principal's roots are signable");
+    let parsed = TipReport::parse(&report).expect("null roots parse");
+    assert_eq!((parsed.roots.sr, parsed.roots.ar), (None, None));
+    for field in ["sr", "ar"] {
+        let missing = resign_without_root(&identity, report.clone(), field);
+        assert!(
+            TipReport::parse(&missing).is_err(),
+            "a report missing roots.{field} must be malformed"
+        );
+    }
 }
 
 /// The set of verdicts an HONEST pair (conflicting or not) can produce
@@ -462,7 +516,12 @@ proptest! {
         // it. `roots.cr` against `ArrayWrapSelf`/`Number`, and `Null`
         // against every other field, are unaffected and still MUST reject
         // -- only this one field+shape pair is exempted.
-        prop_assume!(!(malformed_field == "roots.cr" && matches!(shape, MalformedShape::Null)));
+        // `roots.sr` and `roots.ar` share the exemption: `null` is how a Dead
+        // principal's absent roots are signed (SPEC 3.7, 11).
+        prop_assume!(
+            !(matches!(malformed_field, "roots.cr" | "roots.sr" | "roots.ar")
+                && matches!(shape, MalformedShape::Null))
+        );
 
         let (_dir, identity) = identity_with_seed(0x44);
         let pr_root = digest_string(&pr_bytes);
@@ -546,11 +605,11 @@ proptest! {
                 (pr.clone(), commit_id.clone())
             },
             "roots.sr" => {
-                roots.sr = malformed_digest.clone();
+                roots.sr = Some(malformed_digest.clone());
                 (pr.clone(), commit_id.clone())
             },
             "roots.ar" => {
-                roots.ar = malformed_digest.clone();
+                roots.ar = Some(malformed_digest.clone());
                 (pr.clone(), commit_id.clone())
             },
             "roots.cr" => {

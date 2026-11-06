@@ -338,6 +338,20 @@ impl AuthTree {
         Ok(node)
     }
 
+    /// AR of a principal whose KT is empty but which holds AT nonces: with
+    /// KR absent the nonces fill the cells from 0 (SPEC 3.7: an empty
+    /// component is omitted), so one nonce is promoted.
+    pub(crate) fn build_nonces_only(nonces: &[&[u8]], algs: &[HashAlg]) -> Result<AuthRoot> {
+        let mut node = Self::new(role_arity(nonces.len()));
+        register_algs(&mut node.inner, algs)?;
+        for (index, payload) in nonce_payloads(nonces, algs)?.into_iter().enumerate() {
+            node.inner
+                .set(index as u64, payload, Vec::new())
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        }
+        node.root(algs)
+    }
+
     /// Build AR-node fresh from `kr` and return its root as [`AuthRoot`].
     pub fn build(kr: &KeyRoot, algs: &[HashAlg]) -> Result<AuthRoot> {
         Self::build_tree(kr, algs)?.root(algs)
@@ -405,6 +419,17 @@ impl StateTree {
         Ok(node)
     }
 
+    /// SR of a principal with no keys: the DR alone, promoted (SPEC 3.7).
+    /// The one cell is cell 0, so the root is the DR verbatim.
+    pub fn build_data_only(dr: &DataRoot, algs: &[HashAlg]) -> Result<StateRoot> {
+        let mut node = Self::new();
+        register_algs(&mut node.inner, algs)?;
+        node.inner
+            .set(PRIMARY_CELL, serialize_digest(&dr.0, algs)?, Vec::new())
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        node.root(algs)
+    }
+
     /// Build SR-node fresh from `ar` and optional `dr`, and return its root
     /// as [`StateRoot`].
     pub fn build(ar: &AuthRoot, dr: Option<&DataRoot>, algs: &[HashAlg]) -> Result<StateRoot> {
@@ -455,22 +480,49 @@ pub fn derive_state_roots(
     dr: Option<&DataRoot>,
     algs: &[HashAlg],
 ) -> Result<(KeyRoot, AuthRoot, StateRoot)> {
-    derive_state_roots_with_nonces(thumbprints, dr, &NonceSets::default(), algs)
+    let (kr, ar, sr) =
+        derive_state_roots_with_nonces(thumbprints, dr, &NonceSets::default(), algs)?;
+    match (kr, ar, sr) {
+        (Some(kr), Some(ar), Some(sr)) => Ok((kr, ar, sr)),
+        _ => Err(Error::NoActiveKeys),
+    }
 }
 
 /// [`derive_state_roots`] with the nonces held at the KT and AT levels. PR
 /// nonces are not an input here: they enter the Principal Tree, above SR.
+///
+/// A principal with no keys (Dead, SPEC 11) has KR and AR only from the
+/// nonces it still holds, and SR is the DR promoted alone when AR is absent
+/// (`None` when there is no data either). `algs` is the set the roots hash
+/// under; for the commit that leaves no key, the caller supplies the set in
+/// force before the commit.
 pub(crate) fn derive_state_roots_with_nonces(
     thumbprints: &[&Thumbprint],
     dr: Option<&DataRoot>,
     nonces: &NonceSets,
     algs: &[HashAlg],
-) -> Result<(KeyRoot, AuthRoot, StateRoot)> {
-    let kr = KeyTree::build_tree_with_nonces(thumbprints, &nonces.at_level(NonceLevel::Kt), algs)?
-        .root(algs)?;
-    let ar = AuthTree::build_tree_with_nonces(&kr, &nonces.at_level(NonceLevel::At), algs)?
-        .root(algs)?;
-    let sr = StateTree::build(&ar, dr, algs)?;
+) -> Result<(Option<KeyRoot>, Option<AuthRoot>, Option<StateRoot>)> {
+    // Each root is built from its components that exist (SPEC 3.7: empty
+    // ones are omitted, a lone one is promoted). A principal with no keys
+    // (Dead, SPEC 11) still holds its nonces, which only `nonce/delete`
+    // removes (10.2), so KR and AR survive as long as a KT or AT nonce does.
+    let kt_nonces = nonces.at_level(NonceLevel::Kt);
+    let at_nonces = nonces.at_level(NonceLevel::At);
+    let kr = if thumbprints.is_empty() && kt_nonces.is_empty() {
+        None
+    } else {
+        Some(KeyTree::build_tree_with_nonces(thumbprints, &kt_nonces, algs)?.root(algs)?)
+    };
+    let ar = match &kr {
+        Some(kr) => Some(AuthTree::build_tree_with_nonces(kr, &at_nonces, algs)?.root(algs)?),
+        None if at_nonces.is_empty() => None,
+        None => Some(AuthTree::build_nonces_only(&at_nonces, algs)?),
+    };
+    let sr = match (&ar, dr) {
+        (Some(ar), dr) => Some(StateTree::build(ar, dr, algs)?),
+        (None, Some(dr)) => Some(StateTree::build_data_only(dr, algs)?),
+        (None, None) => None,
+    };
     Ok((kr, ar, sr))
 }
 

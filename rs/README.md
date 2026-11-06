@@ -86,19 +86,19 @@ principal.record_action(action)?;
 
 ### State Accessors
 
-| Method          | Returns                     | Description                             |
-| --------------- | --------------------------- | --------------------------------------- |
-| `pg()`          | `Option<&PrincipalGenesis>` | Permanent identity (None for L1/L2)     |
-| `pr()`          | `&PrincipalRoot`            | Current principal root (evolves)        |
-| `sr()`          | `Option<&StateRoot>`        | State root = MR(AR, DR?)                |
-| `auth_root()`   | `&AuthRoot`                 | Auth root = MR(KR, RR?)                 |
-| `key_root()`    | `&KeyRoot`                  | Key root = MR(thumbprints)              |
-| `data_root()`   | `Option<&DataRoot>`         | Data root = H(action czds), None if L<4 |
-| `cr()`          | `Option<&CommitRoot>`       | Commit root (MALT of TRs)               |
-| `current_tr()`  | `Option<&TransactionRoot>`  | Transaction root of latest commit       |
-| `level()`       | `Level`                     | Current feature level (L1-L4)           |
-| `hash_alg()`    | `HashAlg`                   | Primary hash algorithm                  |
-| `active_algs()` | `&[HashAlg]`                | Hash algorithms from active keyset      |
+| Method          | Returns                     | Description                              |
+| --------------- | --------------------------- | ---------------------------------------- |
+| `pg()`          | `Option<&PrincipalGenesis>` | Permanent identity (None for L1/L2)      |
+| `pr()`          | `&PrincipalRoot`            | Current principal root (evolves)         |
+| `sr()`          | `Option<&StateRoot>`        | State root = MR(AR?, DR?); None if Dead  |
+| `auth_root()`   | `Option<&AuthRoot>`         | Auth root = MR(KR, RR?); None if Dead    |
+| `key_root()`    | `Option<&KeyRoot>`          | Key root = MR(thumbprints); None if Dead |
+| `data_root()`   | `Option<&DataRoot>`         | Data root = H(action czds), None if L<4  |
+| `cr()`          | `Option<&CommitRoot>`       | Commit root (MALT of TRs)                |
+| `current_tr()`  | `Option<&TransactionRoot>`  | Transaction root of latest commit        |
+| `level()`       | `Level`                     | Current feature level (L1-L4)            |
+| `hash_alg()`    | `HashAlg`                   | Primary hash algorithm                   |
+| `active_algs()` | `&[HashAlg]`                | Hash algorithms from active keyset       |
 
 ### Cozies
 
@@ -126,7 +126,7 @@ match principal.apply_transaction(vtx) {
     Ok(_) => { /* success */ }
     Err(Error::TimestampPast) => { /* timestamp too old */ }
     Err(Error::DuplicateKey) => { /* key already in KR */ }
-    Err(Error::NoActiveKeys) => { /* would leave 0 keys */ }
+    Err(Error::NoActiveKeys) => { /* key/delete would leave 0 keys */ }
     Err(Error::EmptyCommit) => { /* finalized with no cozies */ }
     Err(Error::CommitMismatch) => { /* arrow doesn't match computed state */ }
     Err(e) => { /* other error */ }

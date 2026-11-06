@@ -122,36 +122,54 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         );
     }
 
-    if let Some(ref ks) = expected.kr {
-        // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(ks)
-            .unwrap_or_else(|| panic!("{}: invalid ks format (expected alg:digest)", test_name));
-        let hash_alg = parse_hash_alg(&alg)
-            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_ks = principal
-            .key_root()
-            .get(hash_alg)
-            .map(|b| {
-                use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                Base64UrlUnpadded::encode_string(b)
-            })
-            .unwrap_or_default();
-        assert_eq!(actual_ks, expected_digest, "{}: ks mismatch", test_name);
+    // `null` in the vector is a root the principal must not have (a Dead
+    // principal has no KR or AR, SPEC 3.7); a string is compared by digest.
+    match &expected.kr {
+        Some(Some(ks)) => {
+            let (alg, expected_digest) = parse_alg_digest(ks).unwrap_or_else(|| {
+                panic!("{}: invalid ks format (expected alg:digest)", test_name)
+            });
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_ks = principal
+                .key_root()
+                .and_then(|k| k.get(hash_alg))
+                .map(|b| {
+                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                    Base64UrlUnpadded::encode_string(b)
+                })
+                .unwrap_or_default();
+            assert_eq!(actual_ks, expected_digest, "{}: ks mismatch", test_name);
+        },
+        Some(None) => assert!(
+            principal.key_root().is_none(),
+            "{}: expected no KR",
+            test_name
+        ),
+        None => {},
     }
 
-    if let Some(ref auth_root) = expected.auth_root {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(auth_root)
-            .unwrap_or_else(|| panic!("{}: invalid as format (expected alg:digest)", test_name));
-        let hash_alg = parse_hash_alg(&alg)
-            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_as = principal
-            .auth_root()
-            .get(hash_alg)
-            .map(Base64UrlUnpadded::encode_string)
-            .unwrap_or_default();
-        assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
+    match &expected.auth_root {
+        Some(Some(auth_root)) => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let (alg, expected_digest) = parse_alg_digest(auth_root).unwrap_or_else(|| {
+                panic!("{}: invalid as format (expected alg:digest)", test_name)
+            });
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_as = principal
+                .auth_root()
+                .and_then(|a| a.get(hash_alg))
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
+        },
+        Some(None) => assert!(
+            principal.auth_root().is_none(),
+            "{}: expected no AR",
+            test_name
+        ),
+        None => {},
     }
 
     if let Some(ref pr) = expected.pr {
@@ -184,19 +202,23 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_cr, expected_digest, "{}: cr mismatch", test_name);
     }
 
-    if let Some(ref sr) = expected.sr {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(sr)
-            .unwrap_or_else(|| panic!("{}: invalid sr format (expected alg:digest)", test_name));
-        let hash_alg = parse_hash_alg(&alg)
-            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_sr = principal
-            .sr()
-            .and_then(|sr_val| sr_val.get(hash_alg))
-            .map(Base64UrlUnpadded::encode_string)
-            .unwrap_or_default();
-        assert_eq!(actual_sr, expected_digest, "{}: sr mismatch", test_name);
+    match &expected.sr {
+        Some(Some(sr)) => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let (alg, expected_digest) = parse_alg_digest(sr).unwrap_or_else(|| {
+                panic!("{}: invalid sr format (expected alg:digest)", test_name)
+            });
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_sr = principal
+                .sr()
+                .and_then(|sr_val| sr_val.get(hash_alg))
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(actual_sr, expected_digest, "{}: sr mismatch", test_name);
+        },
+        Some(None) => assert!(principal.sr().is_none(), "{}: expected no SR", test_name),
+        None => {},
     }
 
     if let Some(ref pg) = expected.pg {
@@ -237,7 +259,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
                 .key_root()
-                .get(hash_alg)
+                .and_then(|k| k.get(hash_alg))
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
             assert_eq!(
@@ -255,7 +277,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
                 .auth_root()
-                .get(hash_alg)
+                .and_then(|a| a.get(hash_alg))
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
             assert_eq!(
@@ -297,13 +319,13 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
         "[no-revoke-non-self]" => "MalformedPayload",
-        "[naked-revoke-error]" => "NoActiveKeys",
-        "[no-self-revoke-recovery]" => "NoActiveKeys",
+        // What a Dead principal answers: its revoked key signs nothing.
+        "[no-self-revoke-recovery]" => "KeyRevoked",
         // Authentication
         "[verification-timestamp-order]" => "TimestampPast",
         // Principal Lifecycle
-        "[no-level-1-recovery]" => "NoActiveKeys",
-        "[dead-terminal]" => "NoActiveKeys",
+        "[no-level-1-recovery]" => "KeyRevoked",
+        "[dead-terminal]" => "KeyRevoked",
         // Rust cyphr library conflates UnknownSigner and UnknownTarget into UnknownKey
         "UnknownSigner" => "UnknownKey",
         // Pass through if not a constraint tag

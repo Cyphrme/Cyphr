@@ -93,6 +93,17 @@ pub struct GoldenKey {
     pub tmb: String,
 }
 
+/// Deserialize a field that may be a value, JSON `null`, or missing (the
+/// last by `#[serde(default)]`): `null` reads as `Some(None)`, so a root
+/// recorded as absent is distinct from a root the vector never mentions.
+fn present_or_null<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
 /// Expected state in golden output.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoldenExpected {
@@ -102,12 +113,24 @@ pub struct GoldenExpected {
     /// Expected level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
-    /// Expected key root digest (first variant).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kr: Option<String>,
-    /// Expected auth root digest (first variant).
-    #[serde(rename = "ar", default, skip_serializing_if = "Option::is_none")]
-    pub auth_root: Option<String>,
+    /// Expected key root digest (first variant). Outer `None` is a field
+    /// the vector omits; inner `None` is JSON `null`, a root the principal
+    /// does not have (a Dead principal has no KR, SPEC 3.7).
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kr: Option<Option<String>>,
+    /// Expected auth root digest (first variant); `null` when absent, as
+    /// for `kr`.
+    #[serde(
+        rename = "ar",
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auth_root: Option<Option<String>>,
     /// Expected principal root digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
@@ -120,9 +143,14 @@ pub struct GoldenExpected {
     pub tr: Option<String>,
     /// Expected State Root digest: root of the principal's StateTree
     /// (SPEC §3.7.2); promotes from AR when no Data Root is present,
-    /// otherwise the tree root over AR and DR.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sr: Option<String>,
+    /// otherwise the tree root over AR and DR. `null` when absent (no keys
+    /// and no data), as for `kr`.
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sr: Option<Option<String>>,
     /// Expected data root digest (Level 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dr: Option<String>,
@@ -397,19 +425,12 @@ impl<'a> Generator<'a> {
                 .unwrap_or_default();
             let auth_root = principal
                 .auth_root()
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .unwrap_or_default();
+                .and_then(|a| a.as_multihash().first_variant().ok())
+                .map(Base64UrlUnpadded::encode_string);
             let sr = principal
                 .sr()
-                .map(|s| {
-                    s.as_multihash()
-                        .first_variant()
-                        .map(Base64UrlUnpadded::encode_string)
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
+                .and_then(|s| s.as_multihash().first_variant().ok())
+                .map(Base64UrlUnpadded::encode_string);
             let pr_ = principal
                 .pr()
                 .as_multihash()
@@ -456,8 +477,8 @@ impl<'a> Generator<'a> {
             vec![tx_json],
             keys,
             String::new(), // commit_id placeholder for error tests
-            String::new(), // as placeholder for error tests
-            String::new(), // sr placeholder for error tests
+            None,          // ar placeholder for error tests
+            None,          // sr placeholder for error tests
             String::new(), // pr placeholder for error tests
         )
     }
@@ -705,8 +726,8 @@ impl<'a> Generator<'a> {
                 cozies: vec![],
                 keys: vec![],
                 commit_id: "".to_string(),
-                auth_root: "".to_string(),
-                sr: "".to_string(),
+                auth_root: None,
+                sr: None,
                 pr: "".to_string(),
             });
 
@@ -1003,19 +1024,12 @@ impl<'a> Generator<'a> {
                         .unwrap_or_default();
                     let auth_root = principal
                         .auth_root()
-                        .as_multihash()
-                        .first_variant()
-                        .map(Base64UrlUnpadded::encode_string)
-                        .unwrap_or_default();
+                        .and_then(|a| a.as_multihash().first_variant().ok())
+                        .map(Base64UrlUnpadded::encode_string);
                     let sr = principal
                         .sr()
-                        .map(|s| {
-                            s.as_multihash()
-                                .first_variant()
-                                .map(Base64UrlUnpadded::encode_string)
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default();
+                        .and_then(|s| s.as_multihash().first_variant().ok())
+                        .map(Base64UrlUnpadded::encode_string);
                     let pr_ = principal
                         .pr()
                         .as_multihash()
@@ -1579,19 +1593,19 @@ impl<'a> Generator<'a> {
             .copied()
             .expect("Principal must have at least one active algorithm");
 
-        // Compute state digests with algorithm prefix (alg:digest format)
-        let kr = {
-            let ks_state = principal.key_root();
+        // Compute state digests with algorithm prefix (alg:digest format).
+        // KR and AR are absent for a Dead principal (SPEC 3.7).
+        let kr = principal.key_root().map(|ks_state| {
             ks_state
                 .get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
                 .unwrap_or_default()
-        };
-        let auth_root = principal
-            .auth_root()
-            .get(first_alg)
-            .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
-            .unwrap_or_default();
+        });
+        let auth_root = principal.auth_root().map(|a| {
+            a.get(first_alg)
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
+                .unwrap_or_default()
+        });
         let pr_val = principal
             .pr()
             .get(first_alg)
@@ -1601,10 +1615,11 @@ impl<'a> Generator<'a> {
             cid.get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
-        let sr = principal.sr().and_then(|sr_val| {
+        let sr = principal.sr().map(|sr_val| {
             sr_val
                 .get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
+                .unwrap_or_default()
         });
         let cr = principal.cr().and_then(|cr_val| {
             cr_val
@@ -1630,7 +1645,7 @@ impl<'a> Generator<'a> {
                 .filter_map(|alg| {
                     principal
                         .key_root()
-                        .get(*alg)
+                        .and_then(|k| k.get(*alg))
                         .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
                 })
                 .collect();
@@ -1639,7 +1654,7 @@ impl<'a> Generator<'a> {
                 .filter_map(|alg| {
                     principal
                         .auth_root()
-                        .get(*alg)
+                        .and_then(|a| a.get(*alg))
                         .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
                 })
                 .collect();
@@ -1662,12 +1677,12 @@ impl<'a> Generator<'a> {
             Some(e) => GoldenExpected {
                 key_count: e.key_count.or(Some(key_count)),
                 level: e.level.or(Some(level)),
-                kr: e.kr.clone().or(Some(kr)),
-                auth_root: e.auth_root.clone().or(Some(auth_root)),
+                kr: e.kr.clone().map(Some).or(Some(kr)),
+                auth_root: e.auth_root.clone().map(Some).or(Some(auth_root)),
                 pr: e.pr.clone().or(Some(pr_val)),
                 cr: cr.clone(),
                 tr: e.tr.clone().or(tr),
-                sr: e.sr.clone().or(sr),
+                sr: e.sr.clone().map(Some).or(Some(sr)),
                 dr: dr.clone(),
                 pg: Some(pg.clone()),
                 error: e.error.clone(),
@@ -1685,7 +1700,7 @@ impl<'a> Generator<'a> {
                 pr: Some(pr_val),
                 cr: cr.clone(),
                 tr,
-                sr,
+                sr: Some(sr),
                 dr,
                 pg: Some(pg),
                 error: None,

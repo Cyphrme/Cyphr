@@ -9,6 +9,11 @@
 use super::{conformance, *};
 
 #[tokio::test]
+async fn index_commit_with_absent_roots_reads_back_none() {
+    conformance::index_commit_with_absent_roots_reads_back_none(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
 async fn index_commit_and_get_tip() {
     conformance::index_commit_and_get_tip(&MemoryIndexer::new()).await;
 }

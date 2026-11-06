@@ -84,12 +84,14 @@ pub struct CommitEntry {
     pub keys: Vec<KeyEntry>,
     /// Commit ID (per-commit Merkle root of coz czds).
     pub commit_id: String,
-    /// Auth Root after this commit.
-    pub auth_root: String,
+    /// Auth Root after this commit; `None` when the commit left the
+    /// principal with no key (Dead, SPEC §3.7), written as JSON `null`.
+    pub auth_root: Option<String>,
     /// State Root: root of the principal's StateTree (SPEC §3.7.2);
     /// promotes from AR when no Data Root is present, otherwise the
-    /// tree root over AR and DR.
-    pub sr: String,
+    /// tree root over AR and DR. `None` (JSON `null`) when the commit left
+    /// no key and the principal holds no data.
+    pub sr: Option<String>,
     /// Principal Root after this commit.
     pub pr: String,
 }
@@ -125,10 +127,20 @@ struct Line {
     cozies: Vec<serde_json::Value>,
     keys: Vec<KeyEntry>,
     commit_id: String,
-    #[serde(rename = "ar")]
-    auth_root: String,
-    sr: String,
+    // No `default`: an absent root is `null`, and a missing field is a
+    // malformed line, not an absent root.
+    #[serde(rename = "ar", deserialize_with = "required_nullable")]
+    auth_root: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    sr: Option<String>,
     pr: String,
+}
+
+/// Read a field that must be present but may be `null`.
+fn required_nullable<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    <Option<String> as serde::Deserialize>::deserialize(deserializer)
 }
 
 impl serde::Serialize for CommitEntry {
@@ -161,8 +173,8 @@ impl CommitEntry {
         cozies: Vec<serde_json::Value>,
         keys: Vec<KeyEntry>,
         commit_id: String,
-        auth_root: String,
-        sr: String,
+        auth_root: Option<String>,
+        sr: Option<String>,
         pr: String,
     ) -> Self {
         Self {

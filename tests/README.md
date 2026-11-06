@@ -104,9 +104,9 @@ For each JSON file in `golden/`:
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `key_count`                                      | Number of active keys after all commits                                                                                                                         |
 | `level`                                          | Principal level (1-4) after all commits                                                                                                                         |
-| `kr`                                             | Key Root digest (`alg:base64url`)                                                                                                                               |
-| `ar`                                             | Auth Root digest (`alg:base64url`)                                                                                                                              |
-| `sr`                                             | State Root digest (`alg:base64url`); promotes from AR when no Data Root is present, otherwise the tree root over AR and DR                                      |
+| `kr`                                             | Key Root digest (`alg:base64url`), or `null` when absent (see below)                                                                                            |
+| `ar`                                             | Auth Root digest (`alg:base64url`), or `null` when absent (see below)                                                                                           |
+| `sr`                                             | State Root digest (`alg:base64url`), or `null` when absent (see below); promotes from AR when no Data Root is present, otherwise the tree root over AR and DR   |
 | `pr`                                             | Principal Root digest (`alg:base64url`)                                                                                                                         |
 | `tr`                                             | Commit ID digest of the final commit (`alg:base64url`; accepts legacy alias `ts`)                                                                               |
 | `cr`                                             | Commit Root digest (`alg:base64url`); not yet present in the persisted fixture corpus, exercised by `test_fixtures::golden::tests::test_generate_single_commit` |
@@ -114,6 +114,22 @@ For each JSON file in `golden/`:
 | `pg`                                             | Principal Genesis digest (`alg:base64url`); empty string when there is no prior genesis state                                                                   |
 | `error`                                          | Expected error name, if the last transaction is expected to fail                                                                                                |
 | `multihash_kr` / `multihash_ar` / `multihash_pr` | Per-algorithm KR/AR/PR variants, present for multi-algorithm principals (SPEC §14)                                                                              |
+
+#### Absent roots
+
+A Dead principal (every key revoked, SPEC §3.1 and §11) has no KT, and an
+empty component is omitted from a root (SPEC §3.7). The commit that leaves it
+so has no KR and no AR; its SR is the Data Root alone when it holds data and
+is absent otherwise; its PR is the CR when SR is absent. The hashes of that
+commit use the algorithm set in force before it.
+
+`expected.kr`, `expected.ar` and `expected.sr` write such an absent root as
+JSON `null`. A field that is missing altogether is a malformed vector, not an
+absent root: an implementation must not read a missing field as `null`. An
+implementation checks a `null` by asserting the principal has no such root. In
+a `commits[]` entry `ar` and `sr` follow the same rule: `null` for an absent
+root, and a missing field is malformed. `null` is the only encoding of
+absence.
 
 ### Test Categories
 
