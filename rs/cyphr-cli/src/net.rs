@@ -1,20 +1,13 @@
-//! The CLI's view of a peer: one HTTP carrier behind
-//! [`cyphr_client::Connector`], and the typed ways an exchange can fail.
-//!
-//! The carrier is local rather than [`cyphr_client::HttpConnector`] because
-//! that connector sends a `POST` body without a `content-type`, which the
-//! server refuses for `/push`. Everything else (the patch fetch and its
-//! envelope checks) goes through `cyphr-client` unchanged.
+//! The CLI's view of a peer: one [`cyphr_client::HttpConnector`] with the
+//! bounds a peer deserves, and the typed ways an exchange can fail.
+
+use std::time::Duration;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
-    ChannelBinding, ConnectError, Connector, Method, PatchFailure, Request, verify_patch_body,
+    ConnectError, Connector, HttpConnector, HttpOptions, PatchFailure, Request, verify_patch_body,
 };
 use serde_json::Value;
-
-/// Largest response body accepted from a peer. A peer is untrusted, so an
-/// answer is read as a capped stream instead of being buffered whole.
-pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
 
 /// Why an exchange with a peer failed.
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +44,15 @@ pub enum PeerError {
         /// The cap that was exceeded.
         limit: usize,
     },
+    /// The peer URL is plain `http://` to a host that is not loopback.
+    #[error(
+        "peer {peer} is cleartext http to a non-loopback host; use https, or pass \
+         --allow-cleartext to send it in the clear"
+    )]
+    CleartextRefused {
+        /// The peer's base URL.
+        peer: String,
+    },
     /// The peer's answer is not the expected shape.
     #[error("peer {peer} sent a malformed answer: {reason}")]
     Malformed {
@@ -85,6 +87,7 @@ impl PeerError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Unreachable { .. } => "unreachable",
+            Self::CleartextRefused { .. } => "other",
             Self::Stale { .. } => "stale",
             Self::Malformed { .. } => "malformed",
             Self::TooLarge { .. } => "toolarge",
@@ -102,35 +105,31 @@ impl PeerError {
     }
 }
 
-/// One peer reached over HTTP.
-///
-/// Requests carry a total timeout, follow no redirect (a redirect could
-/// leave the peer the user chose, including for a plaintext host), and read
-/// at most [`MAX_RESPONSE_BYTES`].
+/// One peer reached over HTTP(S). The carrier bounds every request (total
+/// timeout, no redirect, at most [`cyphr_client::MAX_RESPONSE_BYTES`] read) and refuses
+/// cleartext to a non-loopback host unless the user allowed it.
 pub struct Peer {
-    client: reqwest::Client,
+    connector: HttpConnector,
     url: String,
 }
 
 impl Peer {
-    /// A peer at `url` (a base URL such as `http://127.0.0.1:8080`) whose
-    /// requests give up after `timeout_secs`.
+    /// A peer at `url` (a base URL such as `https://peer.example`) whose
+    /// requests give up after `timeout_secs`; `allow_cleartext` permits
+    /// plain `http://` to a non-loopback host.
     ///
     /// # Errors
     ///
-    /// [`PeerError::Unreachable`] when the HTTP client cannot be built; the
-    /// bounds are never silently dropped.
-    pub fn new(url: &str, timeout_secs: u64) -> Result<Self, PeerError> {
+    /// [`PeerError::CleartextRefused`] for cleartext the user has not
+    /// allowed; [`PeerError::Unreachable`] when the HTTP client cannot be
+    /// built. The bounds are never silently dropped.
+    pub fn new(url: &str, timeout_secs: u64, allow_cleartext: bool) -> Result<Self, PeerError> {
         let url = url.trim_end_matches('/').to_owned();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| PeerError::Unreachable {
-                peer: url.clone(),
-                reason: format!("cannot build the HTTP client: {e}"),
-            })?;
-        Ok(Self { client, url })
+        let mut options = HttpOptions::new(Duration::from_secs(timeout_secs));
+        options.allow_cleartext = allow_cleartext;
+        let connector =
+            HttpConnector::connect(&url, &options).map_err(|e| Self::carrier_error(&url, e))?;
+        Ok(Self { connector, url })
     }
 
     /// The peer's base URL, as named by the caller.
@@ -236,57 +235,19 @@ impl Peer {
 
     /// One request/response exchange, with every bound applied.
     async fn send(&self, request: &Request) -> Result<Vec<u8>, PeerError> {
-        let unreachable = |e: reqwest::Error| PeerError::Unreachable {
-            peer: self.url.clone(),
-            reason: e.to_string(),
-        };
-        let url = format!("{}{}", self.url, request.target);
-        let builder = match request.method {
-            Method::Get => self.client.get(url),
-            Method::Post => self
-                .client
-                .post(url)
-                .header("content-type", "application/json")
-                .body(request.body.clone()),
-        };
-        let mut res = builder
-            .header("accept", "application/json")
-            .send()
+        self.connector
+            .exchange(request)
             .await
-            .map_err(unreachable)?;
-        let status = res.status();
-        if !status.is_success() {
-            return Err(PeerError::Status {
-                peer: self.url.clone(),
-                status: status.as_u16(),
-            });
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = res.chunk().await.map_err(unreachable)? {
-            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(PeerError::TooLarge {
-                    peer: self.url.clone(),
-                    limit: MAX_RESPONSE_BYTES,
-                });
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(body)
-    }
-}
-
-/// The `cyphr-client` carrier seam over the same bounded exchange. A
-/// size-cap refusal has no `ConnectError` of its own, so it reads as an
-/// unreachable peer here; the CLI's own calls use the typed path.
-impl Connector for Peer {
-    fn channel_binding(&self) -> Option<&ChannelBinding> {
-        None
+            .map_err(|e| Self::carrier_error(&self.url, e))
     }
 
-    async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
-        self.send(request).await.map_err(|e| match e {
-            PeerError::Status { status, .. } => ConnectError::NonSuccess(status),
-            other => ConnectError::Unreachable(other.to_string()),
-        })
+    fn carrier_error(peer: &str, err: ConnectError) -> PeerError {
+        let peer = peer.to_owned();
+        match err {
+            ConnectError::NonSuccess(status) => PeerError::Status { peer, status },
+            ConnectError::TooLarge { limit } => PeerError::TooLarge { peer, limit },
+            ConnectError::CleartextRefused { .. } => PeerError::CleartextRefused { peer },
+            ConnectError::Unreachable(reason) => PeerError::Unreachable { peer, reason },
+        }
     }
 }

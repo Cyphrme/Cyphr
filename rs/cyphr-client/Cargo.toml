@@ -25,7 +25,12 @@ noise = ["dep:snow", "dep:tokio"]
 [dependencies]
 coz = { workspace = true }
 cyphr = { path = "../cyphr", version = "0.1.0" }
-reqwest = { version = "0.12", default-features = false, optional = true }
+# TLS is rustls with the bundled webpki roots and the `ring` provider (already
+# in the tree through `snow`): no native-tls, openssl or second provider, so
+# a peer is verified the same on every platform.
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls-webpki-roots",
+], optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 snow = { version = "=0.10.0", optional = true }
@@ -43,4 +48,8 @@ tokio = { workspace = true, features = [
   "net",
   "io-util",
   "time",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "ring",
+  "tls12",
 ] }

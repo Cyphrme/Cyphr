@@ -239,6 +239,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 30)]
     pub peer_timeout_secs: u64,
 
+    /// Allow plain http:// to a peer that is not loopback (sent in the clear)
+    #[arg(long)]
+    pub allow_cleartext: bool,
+
     /// Output format
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
     pub output: OutputFormat,
