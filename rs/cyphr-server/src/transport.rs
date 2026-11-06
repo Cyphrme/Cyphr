@@ -34,7 +34,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-use crate::{AppState, build_router};
+use crate::{AppState, build_app_router};
 
 /// Sessions served at once. A further connection waits in the listen
 /// backlog rather than costing a task and a buffer.
@@ -56,6 +56,9 @@ pub enum ServeError {
     /// Binding or accepting on the socket failed.
     #[error("transport listener: {0}")]
     Io(#[from] std::io::Error),
+    /// The application router (admission, fences) could not be built.
+    #[error("application router: {0}")]
+    Router(String),
 }
 
 /// Why one session ended without being served.
@@ -82,21 +85,25 @@ impl SessionError {
     }
 }
 
-/// Serve the application router over Noise on `listener`, running until
-/// the listener fails.
+/// Serve the full application router over Noise on `listener`, running
+/// until the listener fails. The router is [`build_app_router`]: the same
+/// admission gate, rate limits and body limit HTTP has, so the transport
+/// cannot be used to get around one.
 ///
 /// # Errors
 ///
 /// [`ServeError::Keyless`] before anything is accepted when the server has
-/// no attestor capability; [`ServeError::Io`] when accepting fails.
+/// no attestor capability; [`ServeError::Router`] when the application
+/// router cannot be built; [`ServeError::Io`] when accepting fails.
 pub async fn serve_noise(listener: TcpListener, state: Arc<AppState>) -> Result<(), ServeError> {
-    let router = build_router(state.clone());
+    require_attestor(&state)?;
+    let router = build_app_router(state.clone()).map_err(|e| ServeError::Router(e.to_string()))?;
     serve_noise_with(listener, state, router).await
 }
 
-/// [`serve_noise`] with the dispatch router supplied by the caller: the
-/// production entry hands in the full application router (admission and
-/// fences included); a test hands in a hostile one.
+/// [`serve_noise`] with the dispatch router supplied by the caller. The
+/// caller owns what the router enforces: pass [`build_app_router`]'s to
+/// keep the HTTP fences; a test passes a hostile one to play a bad peer.
 ///
 /// # Errors
 ///

@@ -880,3 +880,65 @@ async fn a_naked_revoked_initiator_key_is_refused() {
         .await
         .expect("the principal's other key still opens a session");
 }
+
+// ---- the transport carries the HTTP fences -------------------------------
+
+/// A keyed, bootstrapped server whose configuration `tweak` adjusts before
+/// the principal is established.
+async fn attestor_with(
+    tweak: impl FnOnce(&mut cyphr_server::config::ServerConfig),
+) -> (Arc<AppState>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let mut state = common::keyed_appstate(&dir.path().join("data"), &key_path);
+    tweak(&mut state.config);
+    let identity = state.identity.clone().expect("keyed state has identity");
+    let principal = cyphr_server::auth::principal::ServerPrincipal::bootstrap(
+        &state.engine,
+        identity,
+        &key_path,
+        &state.config.data_dir,
+    )
+    .await
+    .expect("bootstrap the server principal");
+    state.principal = Some(Arc::new(principal));
+    (Arc::new(state), dir)
+}
+
+/// A Level 1 session: a fresh key is its own principal, so it needs no
+/// registration and costs nothing to mint.
+async fn level_one_session(addr: SocketAddr, held: &mut PeerChain) -> NoiseConnector {
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
+    let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
+    NoiseConnector::connect(addr, held, &signer, &tmb.to_b64())
+        .await
+        .expect("a Level 1 session")
+}
+
+/// Claim: the transport serves the same fenced router HTTP does, so it
+/// cannot be used to get around a limit. With `max_body_bytes = 64`, a 4 KiB
+/// push is refused `413` over the transport, exactly as over HTTP, and the
+/// session stays usable.
+///
+/// Turns red if: `serve_noise` dispatches to a router without the body
+/// limit (the push then reaches its handler and answers 400, 401 or 422).
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn the_transport_carries_the_body_limit() {
+    let (state, _dir) = attestor_with(|c| c.limits.max_body_bytes = 64).await;
+    let app = build_router(state.clone());
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+    let conn = level_one_session(addr, &mut held).await;
+
+    let big = Request::post("/push", vec![b'x'; 4096]);
+    let refused = conn.exchange(&big).await;
+    assert!(
+        matches!(refused, Err(ConnectError::NonSuccess(413))),
+        "{refused:?}"
+    );
+    conn.exchange(&Request::get("/server"))
+        .await
+        .expect("the session survives a refused request");
+}
