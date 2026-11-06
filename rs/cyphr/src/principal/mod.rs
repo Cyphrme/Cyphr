@@ -4,7 +4,7 @@
 //!
 //! The type, its shared state ([`PrincipalCore`]) and the one place that
 //! state is assembled live here; behaviour is split by concern:
-//! `genesis` (construction and checkpoint restore), `accessors`
+//! `genesis` (construction and genesis finalization), `accessors`
 //! (read-only views and configuration), `proofs` (inclusion and
 //! consistency proofs), `data` (Level 4 action recording) and `apply`
 //! (transaction application and commit finalization).
@@ -138,14 +138,9 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// Full czd bytes of every transaction coz and data action this
     /// principal has included (SPEC §7.6). Keyed on the whole digest, not a
     /// prefix: czd width follows the signing algorithm (ES384 = 48 bytes).
-    /// Rebuilt by replaying history. LIMIT: a principal restored from a
-    /// checkpoint starts with an empty set, so it accepts reuse of a coz
-    /// included before the checkpoint (restore is test-only today; the
-    /// restore path must carry the set or replay history before it serves).
+    /// Rebuilt by replaying history; there is no checkpoint restore.
     pub(crate) included_czds: HashSet<Vec<u8>>,
-    /// Nonces held at the PR, AT and KT levels (SPEC §10.1). Not carried by
-    /// a checkpoint restore, like `included_czds`: a restored principal
-    /// derives its roots as if it held none.
+    /// Nonces held at the PR, AT and KT levels (SPEC §10.1).
     pub(crate) nonces: NonceSets,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,

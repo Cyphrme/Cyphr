@@ -286,35 +286,6 @@ fn d1_control_honest_key_create_activates_signer() {
         .expect("K2 signs as K2");
 }
 
-/// Backs (D1, checkpoint path): `Principal::from_checkpoint` must refuse a
-/// key whose `tmb` is not `H(pub)`. The honest `auth_root` covers only
-/// `tmb`s, so a swapped `pub` leaves it matching. Red now because the key
-/// set is built from the supplied keys without hashing their `pub`. The
-/// honest checkpoint loads first as a control.
-#[test]
-fn d1_from_checkpoint_rejects_unbound_key() {
-    let g = kp();
-    let k2 = kp();
-    let attacker = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
-    commit_one(
-        &mut p,
-        &g,
-        key_create(&g, &k2.tmb, T),
-        Some(honest(&k2)),
-        T + 1,
-    )
-    .expect("create K2");
-    let ar = p.auth_root().clone();
-
-    Principal::from_checkpoint(None, ar.clone(), vec![honest(&g), honest(&k2)], None)
-        .expect("control: honest checkpoint loads");
-
-    // The checkpoint's key set is built from `Key`s, so a swapped `pub`
-    // cannot be expressed: the forged key is refused at construction.
-    assert_forgery_refused(&attacker, &k2);
-}
-
 // ============================================================================
 // D3 -- revoked keys are never trusted again
 // ============================================================================

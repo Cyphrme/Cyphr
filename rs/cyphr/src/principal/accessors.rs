@@ -165,8 +165,7 @@ impl<S: eml::Storage> Principal<S> {
 
     /// Get a reference to the per-algorithm MALT trees.
     ///
-    /// Used by checkpoint export to persist MALT state for later
-    /// restoration via `Principal::from_checkpoint`.
+    /// Exposes the Commit Tree's root and proof queries.
     pub fn commit_trees(&self) -> &crate::commit_root::CommitTrees<S> {
         &self.commit_trees
     }

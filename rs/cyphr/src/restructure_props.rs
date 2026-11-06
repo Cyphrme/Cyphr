@@ -200,12 +200,10 @@ proptest! {
         }
     }
 
-    /// Claim: every genesis and checkpoint constructor yields the same
-    /// KR, AR, SR and PR (and the same genesis-key list and active-key
-    /// order) for the same keys: `explicit`/`explicit_with_storage`,
-    /// `implicit`/`implicit_with_storage` for a single key, and
-    /// `from_checkpoint`/`from_checkpoint_with_trees` fed the genesis AR,
-    /// with and without a non-empty restored commit log.
+    /// Claim: every genesis constructor yields the same KR, AR, SR and PR
+    /// (and the same genesis-key list and active-key order) for the same
+    /// keys: `explicit`/`explicit_with_storage`, and
+    /// `implicit`/`implicit_with_storage` for a single key.
     /// Turns red if: one constructor's copy of the root derivation, the
     /// Principal Tree assembly, or the key-ledger fill drifts from the
     /// others. Not an end-to-end scenario.
@@ -218,16 +216,9 @@ proptest! {
         let keys: Vec<Key> = names.iter().map(|n| domain_key(pool_key(&pool, n))).collect();
 
         let reference = Principal::explicit(keys.clone()).expect("explicit genesis");
-        let ar = reference.auth_root().clone();
         let mut candidates = vec![
             ("explicit_with_storage", Principal::explicit_with_storage(
                 keys.clone(), eml::MemoryStorage::new()).expect("explicit_with_storage")),
-            ("from_checkpoint", Principal::from_checkpoint(
-                None, ar.clone(), keys.clone(), None).expect("from_checkpoint")),
-            ("from_checkpoint_with_trees", Principal::from_checkpoint_with_trees(
-                None, ar.clone(), keys.clone(),
-                crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()))
-                .expect("from_checkpoint_with_trees")),
         ];
         if keys.len() == 1 {
             candidates.push(("implicit", Principal::implicit(keys[0].clone()).expect("implicit")));
@@ -236,35 +227,6 @@ proptest! {
         }
         for (name, p) in &candidates {
             assert_same_state(name, &reference, p)?;
-        }
-
-        // A committed history exercises the checkpoint constructors'
-        // restored-Commit-Root branch: no actions, so SR = SR-node(AR)
-        // and the checkpoint must reproduce the live PR.
-        let mut live = reference;
-        let genesis = pool_key(&pool, names[0]);
-        let target_name = POOL_NAMES.iter().find(|n| !names.contains(n));
-        if let Some(target_name) = target_name {
-            let target = pool_key(&pool, target_name);
-            let mut scope = live.begin_commit();
-            let (pay, sig, czd) = key_create_pay(genesis, target, T0);
-            scope.verify_and_apply(&pay, &sig, czd, Some(domain_key(target))).expect("applies");
-            scope.finalize_with_software(&software_signer(genesis), T0 + 1, AUTHORITY)
-                .expect("commit finalizes");
-            let keys: Vec<Key> = live.active_keys().cloned().collect();
-            let ar = live.auth_root().clone();
-            let restored = Principal::from_checkpoint(
-                None, ar.clone(), keys.clone(), Some(live.commit_trees().clone()))
-                .expect("from_checkpoint restores trees");
-            let restored_with = Principal::from_checkpoint_with_trees(
-                None, ar, keys, live.commit_trees().clone())
-                .expect("from_checkpoint_with_trees restores trees");
-            for (name, p) in [("from_checkpoint+trees", &restored),
-                              ("from_checkpoint_with_trees+trees", &restored_with)] {
-                prop_assert_eq!(p.pr(), live.pr(), "{} PR", name);
-                prop_assert_eq!(p.cr(), live.cr(), "{} CR", name);
-                prop_assert_eq!(p.sr(), live.sr(), "{} SR", name);
-            }
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Genesis and checkpoint constructors, and the genesis finalization
+//! Genesis constructors, and the genesis finalization
 //! (`principal/create`) that freezes PG.
 
 use coz::Thumbprint;
@@ -6,8 +6,8 @@ use coz::Thumbprint;
 use super::{Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees};
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::semantic_tree::{KeyTree, StateTree, derive_state_roots};
-use crate::state::{AuthRoot, PrincipalGenesis, derive_hash_algs, hash_alg_from_str};
+use crate::semantic_tree::derive_state_roots;
+use crate::state::{PrincipalGenesis, derive_hash_algs, hash_alg_from_str};
 
 // ============================================================================
 // Genesis constructors (default in-memory storage)
@@ -44,43 +44,6 @@ impl Principal<eml::MemoryStorage> {
     /// This is the Level 3+ genesis path.
     pub fn explicit(keys: Vec<Key>) -> Result<Self> {
         Self::explicit_with_storage(keys, eml::MemoryStorage::new())
-    }
-
-    /// Create a principal from a trusted checkpoint.
-    ///
-    /// This is used by storage import when loading from a checkpoint
-    /// rather than replaying full history from genesis.
-    ///
-    /// When `trees` is `Some`, the MALT state is restored from the provided
-    /// `CommitTrees`, enabling proof generation from the checkpoint forward.
-    /// When `trees` is `None`, empty trees are initialized (backward-compatible
-    /// for callers without MALT state).
-    ///
-    /// # Security
-    ///
-    /// The caller must establish trust in the checkpoint before calling this.
-    /// The `pg` is accepted as-is (cannot be computed from checkpoint alone).
-    ///
-    /// # Errors
-    ///
-    /// Returns `NoActiveKeys` if `keys` is empty.
-    /// Returns `UnsupportedAlgorithm` if key algorithm is unknown.
-    pub fn from_checkpoint(
-        pg: Option<PrincipalGenesis>,
-        ar: AuthRoot,
-        keys: Vec<Key>,
-        trees: Option<crate::commit_root::CommitTrees>,
-    ) -> Result<Self> {
-        match trees {
-            Some(t) => Self::restore_checkpoint(pg, ar, keys, t, |_| true),
-            None => Self::restore_checkpoint(
-                pg,
-                ar,
-                keys,
-                crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
-                |_| false,
-            ),
-        }
     }
 }
 
@@ -169,93 +132,5 @@ impl<S: eml::Storage> Principal<S> {
         let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
         let core = PrincipalCore::new(keys, roots, open_commit_trees(storage)?);
         Ok(Self(Some(PrincipalKind::Nascent(core))))
-    }
-
-    /// Create a principal from a trusted checkpoint, with its Commit Tree
-    /// state restored from `trees` — the storage-generic sibling of
-    /// [`Principal::from_checkpoint`].
-    ///
-    /// Unlike `from_checkpoint`, `trees` is not `Option`: a storage backend
-    /// with no `Default` (e.g. `storage_fjall::FjallStorage`) has no
-    /// meaningful "empty" instance to construct in a `None` branch, so the
-    /// caller must always supply an already-constructed `CommitTrees<S>`
-    /// (e.g. via [`crate::commit_root::CommitTrees::open`] against a
-    /// durable backend that may already carry prior state).
-    ///
-    /// # Security
-    ///
-    /// The caller must establish trust in the checkpoint before calling this.
-    /// The `pg` is accepted as-is (cannot be computed from checkpoint alone).
-    ///
-    /// # Errors
-    ///
-    /// Returns `NoActiveKeys` if `keys` is empty.
-    /// Returns `UnsupportedAlgorithm` if key algorithm is unknown.
-    pub fn from_checkpoint_with_trees(
-        pg: Option<PrincipalGenesis>,
-        ar: AuthRoot,
-        keys: Vec<Key>,
-        trees: crate::commit_root::CommitTrees<S>,
-    ) -> Result<Self> {
-        // A restored, non-empty log yields a CR; a genuinely empty one
-        // (e.g. a fresh backend with no prior commits) does not. Decided
-        // by the tree's own emptiness rather than by an `Option` at the
-        // API boundary, as `from_checkpoint` does.
-        Self::restore_checkpoint(pg, ar, keys, trees, |t| !t.is_empty())
-    }
-
-    /// The one checkpoint-restore body behind [`Principal::from_checkpoint`]
-    /// and [`Self::from_checkpoint_with_trees`]. `restore_cr` says whether
-    /// `trees` carries a commit log whose Commit Root enters the Principal
-    /// Tree; the two public constructors decide it differently (an
-    /// explicit `Some` versus a non-empty tree), so it is theirs to pass.
-    /// It is a predicate rather than a `bool` so the tree is inspected
-    /// after the key checks, the order both constructors always had.
-    ///
-    /// # Errors
-    ///
-    /// `NoActiveKeys` if `keys` is empty; `UnsupportedAlgorithm` if the
-    /// first key's algorithm is unknown.
-    fn restore_checkpoint(
-        pg: Option<PrincipalGenesis>,
-        ar: AuthRoot,
-        keys: Vec<Key>,
-        trees: crate::commit_root::CommitTrees<S>,
-        restore_cr: impl FnOnce(&crate::commit_root::CommitTrees<S>) -> bool,
-    ) -> Result<Self> {
-        if keys.is_empty() {
-            return Err(Error::NoActiveKeys);
-        }
-
-        let _ = hash_alg_from_str(keys[0].alg())?;
-
-        // Derive active algorithms from checkpoint keys (SPEC §14)
-        let key_refs: Vec<&Key> = keys.iter().collect();
-        let active_algs = derive_hash_algs(&key_refs);
-
-        // Compute KR from provided keys
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
-        let kr = KeyTree::build(&thumbprints, &active_algs)?;
-
-        let cr = if restore_cr(&trees) {
-            Some(crate::commit_root::commit_root_from_trees(
-                &trees,
-                &active_algs,
-            )?)
-        } else {
-            None
-        };
-
-        // SR: derive_state_roots is not used here because `ar` is
-        // provided by the checkpoint, not derived from `kr`. We enter the
-        // chain at SR-node directly.
-        let sr = StateTree::build(&ar, None, &active_algs)?;
-        let roots = StartingRoots::new(kr, ar, sr, cr, &active_algs)?;
-        let core = PrincipalCore::new(keys, roots, trees);
-
-        Ok(match pg {
-            Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
-            None => Self(Some(PrincipalKind::Nascent(core))),
-        })
     }
 }
