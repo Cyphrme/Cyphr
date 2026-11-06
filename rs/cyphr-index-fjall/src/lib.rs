@@ -17,10 +17,11 @@
 //!   `list_principals` does a full scan)
 //! - `commits` — [`commit_key`] (length-prefixed `principal_id` + big-endian sequence) →
 //!   [`CommitRef`] (ordered range scan by sequence)
-//! - `digests` — tagged-digest or blob-hash string → [`EntityRef`] (point lookup; also backs
-//!   `is_blob_indexed` — one shared partition covers both blob hashes and czds, mirroring
-//!   [`MemoryIndexer`]'s single `digest_index` map, since no `Indexer` method exposes per-coz
-//!   metadata directly and a separate per-coz table would serve nothing)
+//! - `digests` — tagged-digest or blob-hash string → every holder of the digest, a list of
+//!   [`EntityRef`] (point lookup; also backs `is_blob_indexed` — one shared partition covers both
+//!   blob hashes and czds, mirroring [`MemoryIndexer`]'s single `digest_index` map, since no
+//!   `Indexer` method exposes per-coz metadata directly and a separate per-coz table would serve
+//!   nothing)
 //! - `public_keys` — thumbprint bytes → [`PublicKeyInfo`] (point lookup)
 //!
 //! `tips` and `principals` key on the raw `principal_id` bytes directly:
@@ -34,8 +35,9 @@
 //!
 //! - `aliases` — Principal Root variant (tagged digest) → the `principal_id` it names (point
 //!   lookup). Derived from the `pg` variants of the PG-establishing commit, so a principal is
-//!   addressable by its PG in every hash variant (SPEC §3.7.1/§12.1), never by a historical PR;
-//!   first writer wins, and a stored principal id always outranks an alias on read.
+//!   addressable by its PG in every hash variant (SPEC §3.7.1/§12.1), never by a historical PR; an
+//!   alias another principal holds is never re-pointed (the commit is refused), and a stored
+//!   principal id always outranks an alias on read.
 //!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 

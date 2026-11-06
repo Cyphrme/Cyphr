@@ -1345,3 +1345,51 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
         assert_eq!(tip.principal_id, who);
     }
 }
+
+/// Claim: two manifests contesting one PG alias do not fail the rebuild:
+/// the earlier in canonical order (sequence, then principal id) keeps the
+/// alias and the other is quarantined as a conflict, whatever order the
+/// manifests were written in. A unit test: the contest cannot be built from
+/// signed cozes, and `store_blobs_and_manifest` is the only way to write
+/// both manifests past the ingest-time check. Turns red if a contested
+/// alias aborts the rebuild or the winner depends on write order.
+#[tokio::test]
+async fn rebuild_quarantines_a_contested_pg_alias() {
+    use super::{QuarantineReason, QuarantinedManifest};
+    let pg = vec!["SHA-256:contested-pg".to_string()];
+    let mut reports = Vec::new();
+    for order in [["alice", "bob"], ["bob", "alice"]] {
+        let engine = test_engine();
+        for (i, who) in order.iter().enumerate() {
+            let blob = format!("{{\"pay\":{{\"now\":{i}}}}}");
+            let mut meta = make_meta(who, 0, 10);
+            meta.pg = pg.clone();
+            engine
+                .store_blobs_and_manifest(&[blob.as_bytes()], meta)
+                .await
+                .unwrap();
+        }
+        let report = engine
+            .rebuild_index_with_report()
+            .await
+            .expect("rebuild survives");
+        assert_eq!(report.indexed, 1);
+        let q: Vec<&QuarantinedManifest> = report.quarantined.iter().collect();
+        assert_eq!(q.len(), 1, "{report:?}");
+        assert_eq!(q[0].principal_id.as_deref(), Some("bob"));
+        assert!(matches!(q[0].reason, QuarantineReason::Conflict(_)));
+        reports.push(
+            engine
+                .indexer()
+                .get_tip("SHA-256:contested-pg")
+                .await
+                .unwrap()
+                .map(|t| t.principal_id),
+        );
+    }
+    assert_eq!(reports[0], Some("alice".to_string()));
+    assert_eq!(
+        reports[0], reports[1],
+        "the alias winner depends on write order"
+    );
+}
