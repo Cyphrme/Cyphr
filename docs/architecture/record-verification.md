@@ -2,8 +2,10 @@
 
 This page names twelve rules a replay of a principal's record enforces, says
 where each one lives in the code, and binds each to the test that fails when
-the rule breaks. It also lists, per error the core can raise, the claim that
-governs it. Where a claim has no bound test for part of what it says,
+the rule breaks. It also lists, for every error the core can raise, the claim that
+governs it. The page is complete for errors, not for checks: a check that
+raises an error listed under another claim appears, if at all, as a sentence in
+the claim that governs that error. Where a claim has no bound test for part of what it says,
 the page says so. It is a reference: it describes the code at this revision,
 and it records a question for the spec author, a known defect and a deferred
 format decision.
@@ -35,7 +37,7 @@ Two scoping facts come from SPEC, not from this page:
 - The rules range over the auth chain. SPEC §2.3.3 makes the Auth Tree
   append-only, `pre`-chained and replayed from genesis, and the Data Tree
   mutable and chainless. Data content is application-defined, but a data
-  action is a coz and is bound by the coz rules: 2, 3, 5, 8, 9 and 12 apply to
+  action is a coz and is bound by the coz rules: 1, 2, 3, 5, 8, 9 and 12 apply to
   it, and its digest (DR) takes part in rule 7.
 - Tip currency, fork resolution and witness exchange sit above the record.
   They decide whether a view is current and unique, never whether a record is
@@ -89,8 +91,9 @@ Each claim below is a docket claim: a `[kebab-id]` heading followed by a
 claims are bound this way.
 
 The binding is narrower than the rule in places. Each claim ends with what
-its tests do not check, and says which tests carry a control (a variant of the
-scenario that must succeed, so the rejection can only be the rule).
+its tests do not check, and states which tests carry a control (a variant of the
+scenario that must succeed, so the rejection can only be the rule) and which do
+not. Where a claim says nothing about a control, treat the test as having none.
 
 ### Coz shape and signature
 
@@ -119,9 +122,15 @@ coz is rejected, not which error. The error names come from the code:
 absent or different `alg`. The data-action path
 (`verify_and_record_action`) reads `tmb`, `now` and `typ` and returns
 `MalformedPayload` when one is absent, and checks `alg` the same way as
-`verify_coz`; no bound test sends a data action with a field missing. Not
-checked: non-canonical encoding in fields other than `id`, the data-action
-path, and the error type of any of these rejections.
+`verify_coz`; no bound test sends a data action with a field missing. Also
+refused as `MalformedPayload`, with no bound test: a data action that carries
+`pre`, a `typ` the parser does not know, and an `id` on a self-revoke
+(`verify_and_record_action` and `ParsedCoz::parse_kind`). Tests that exercise
+them exist elsewhere: the `t2_f15_*` cases in `tests/e2e/e2e_features.toml`,
+`parse_unknown_typ_fails` in `rs/cyphr/src/parsed_coz.rs`, and the golden
+vector `revoke_non_self_fails`. Not checked: non-canonical encoding in fields
+other than `id`, the data-action path, and the error type of any of these
+rejections.
 
 #### [rv-alg-alignment]
 
@@ -139,7 +148,10 @@ Backed by `d4_action_pay_alg_must_equal_key_alg`,
 `d4_wrong_caller_czd_is_not_recorded_for_actions` and
 `d4_wrong_caller_czd_is_not_recorded_for_commit_cozies`, all in
 `rs/cyphr/tests/key_auth.rs`; the marker sits at the commit-coz test and the
-runner entry runs all six. `d4_control_es256_matching_alg_action_accepted` is
+runner entry runs all six. The bound commit-coz tests send a `key/create`
+through `verify_and_apply`; none sends a `commit/create` finalizer whose `pay.alg`
+differs from its signer's, and the finalizer's `alg` is taken from the stored
+key, so that case has no test. `d4_control_es256_matching_alg_action_accepted` is
 the control for the action path and is not in the runner entry. The rule is
 class C because it compares the coz with the registered key. Not checked by
 these tests: SPEC §2.2.3's statement that digest identifiers in a coz align
@@ -164,9 +176,11 @@ evaluator: test
 Backed by `es256_high_s_signature_is_rejected` and
 `ed25519_non_canonical_s_is_rejected` in `rs/cyphr/tests/negative_vectors.rs`,
 byte-level vectors built from the group orders that assert
-`InvalidSignature`. They cover ES256 and Ed25519 only; no bound test covers
-the encoding rule of another algorithm. They pin the encoding rule. The signature check itself is
-in `verify_coz` and the data-action path. Not bound here: the property test
+`InvalidSignature`. Each has a control: the canonical encoding of the same payload is
+accepted. They cover ES256 and Ed25519 only; no bound test covers the encoding
+rule of another algorithm. Both feed `verify_and_record_action`, so they
+exercise the data-action path only: no bound test exercises `verify_coz` or the
+transaction path, where the same check lives. Not bound here: the property test
 `any_non_verifying_signature_never_commits` in
 `rs/cyphr/tests/signer_seam.rs`. It covers arbitrary bytes and bit flips from a
 faulty signer on the finalize path only, so it does not back this claim for
@@ -291,14 +305,15 @@ position the coz is applied. `CommitScope::verify_and_apply` resolves the
 signer against the key set from before the commit, and also accepts a key that
 an earlier mutation in the same commit added (the projected key set). The code
 makes two exceptions to the active check. A
-`commit/create` coz skips the active check in `apply_transaction_internal`,
-because the finalizer is authorized against the key set from before the
-commit, and an earlier mutation in the same commit may have replaced its
-signer. A self-revoke skips only that inner check; `resolve_signer` in
+`commit/create` coz skips the active check in `apply_transaction_internal`.
+The finalizer is instead resolved by `resolve_signer`, which accepts a key
+active in either the pre-commit key set or the projected one, since an earlier
+mutation in the same commit may have replaced its signer. A self-revoke skips only that inner check; `resolve_signer` in
 `CommitScope::verify_and_apply` still requires its signer to be active. A deleted
 key's action is rejected whether dated after the delete or backdated into the
 key's old active period, and a key that is not active cannot authorize its own
-admission.
+admission. A `key/create` or `key/replace` of a revoked key is refused with
+`KeyRevoked`; only a deleted key may be re-added.
 
 ```claim
 kind: requirement
@@ -375,7 +390,13 @@ evaluator: test
 
 Backed by `s2_3_2_no_operation_changes_the_principal_genesis` in
 `rs/cyphr/tests/spec_conformance.rs`, which asserts `StateMismatch` for the
-second create. The rule is class C because it depends on whether a PG was
+second create. The first `principal/create`, which is accepted before the
+second is refused, is its only control. `principal/create` signed by a key that
+is not a genesis key is refused with `UnknownKey`, and one whose `id` is not the
+current PR with `StateMismatch`; no bound test exercises either. `StateMismatch`
+is also raised for an `id` that is not the current PR on `principal/delete`,
+`freeze/create` and `freeze/delete`; see
+[rv-lifecycle-transitions](#rv-lifecycle-transitions). The rule is class C because it depends on whether a PG was
 already written. Not bound here: that a genesis is well-formed.
 `d1_implicit_genesis_rejects_unbound_key` and its siblings in
 `rs/cyphr/tests/key_auth.rs` pin that a genesis key must bind its own
@@ -422,8 +443,8 @@ replay unchanged. That is a property of the storage engine
 #### [rv-no-coz-reuse]
 
 A transaction coz this principal already included is rejected with the typed
-`CozReuse`, whatever its timestamp or the principal's state, and the first
-inclusion stays authoritative. The check is per principal: another principal
+`CozReuse`, and the first inclusion stays authoritative. The check precedes the
+timestamp and state checks in `apply_transaction_internal`. The check is per principal: another principal
 that shares the keys may apply the same coz. It compares the whole `czd`, so a
 coz signed under a wider digest (ES384) is recognised. The check runs after the
 signer is resolved and the coz is verified (alg, signature, `czd`), so a replay
@@ -449,8 +470,9 @@ rejecter, and a cross-principal control catches a process-global set. The
 property test asserts that replaying a data action changes no state, and it
 accepts `Ok` or `Err`, so the `Ok` return is read from the code and not pinned
 by a test. The server maps the error to a refusal
-(`rs/cyphr-server/tests/coz_reuse.rs`), which this claim does not bind. The set
-is `included_czds` on the principal's core, filled as each coz is applied. It is
+(`rs/cyphr-server/tests/coz_reuse.rs`), which this claim does not bind. Not checked: a replay by a signer that is no longer active (it returns
+`UnknownKey` or `KeyRevoked`), the data-action half's `Ok` return, and any replay through storage. The
+set is `included_czds` on the principal's core, filled as each coz is applied. It is
 not part of any committed root in this code, so a verifier that holds only a
 commitment cannot check reuse without the history.
 
@@ -477,11 +499,13 @@ evaluator: test
 
 Backed by the golden vectors `duplicate_key_fails`, `delete_last_key_fails`,
 `last_key_revoke_fails` and `delete_unknown_key_fails` in
-`tests/golden/errors/`. The marker sits at `test_golden_errors` in
+`tests/golden/errors/`. They cover a duplicate create, deleting or revoking the
+last key, and deleting an unknown key; none covers revoking an unknown key,
+though the code refuses it with `UnknownKey`. The marker sits at `test_golden_errors` in
 `rs/cyphr/tests/golden_fixtures.rs` and the runner entry runs that whole test,
 which runs every vector in the directory, so the binding fails if any error
 vector fails; these four are the part that backs this claim. The vectors are
-byte-exact fixtures that assert the error name. Not checked: that a rejected
+byte-exact fixtures that assert the error name; none has a control. Not checked: that a rejected
 coz leaves the principal unchanged.
 
 #### [rv-key-material]
@@ -522,13 +546,17 @@ which expects `UnknownAlg`, not `UnsupportedAlgorithm`. The marker sits at
 `test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs` and the runner
 entry runs that whole test, so the binding fails if any error vector fails;
 this vector is the part that backs the claim. Not checked: the
-`UnsupportedAlgorithm` refusal. No test that reaches it is known, so the second
-sentence of the claim has no backing.
+`UnsupportedAlgorithm` refusal. Only unit tests outside the core paths reach
+it: `tagged_digest_unknown_algorithm` and
+`compute_dr_errors_on_ambiguous_component_length` in `rs/cyphr/src/state.rs`.
+No bound test does, so the second sentence of the claim has no backing.
 
 #### [rv-digest-wellformed]
 
-A tagged digest string with a bad tag, bad base64 or the wrong length for its
-algorithm is refused, and parsing arbitrary input never panics. A multihash
+A tagged digest string with no `:` separator is refused with `MalformedDigest`,
+one with an unknown algorithm tag with `UnsupportedAlgorithm`, one with invalid
+base64 with `MalformedDigest`, and one with the wrong length for its algorithm
+with `DigestLengthMismatch`; parsing arbitrary input never panics. A multihash
 built from a digest of the wrong length is refused.
 
 ```claim
@@ -540,10 +568,10 @@ Backed by `test_tagged_digest_parsing_roundtrip`,
 `test_tagged_digest_invalid_parsing_does_not_panic` and
 `test_multihash_digest_validation` in `rs/cyphr/tests/properties.rs`, property
 tests over random digests and strings. They assert that a wrong length fails
-and that parsing does not panic; they do not assert the error type
-(`MalformedDigest` for a bad tag or base64, `DigestLengthMismatch` for the
-length). Unit tests in `rs/cyphr/src/state.rs` assert those types. Not checked
-on a coz-borne digest: the path that parses an `arrow` out of a coz.
+and that parsing does not panic; they do not assert the error type. Unit tests
+in `rs/cyphr/src/state.rs` assert the types for a missing separator, an unknown
+tag and a wrong length; no test of any kind was found for invalid base64. Not
+checked on a coz-borne digest: the path that parses an `arrow` out of a coz.
 
 #### [rv-internal-invariants]
 
@@ -597,7 +625,8 @@ skew.
 
 `freeze/create` on a principal that is already frozen is refused with
 `AlreadyFrozen`, and `freeze/delete` on one that is not frozen is refused with
-`NotFrozen`.
+`NotFrozen`. A `principal/delete`, `freeze/create` or `freeze/delete` whose `id`
+is not the current PR is refused with `StateMismatch`.
 
 ```claim
 kind: requirement
@@ -605,7 +634,7 @@ evaluator: none
 ```
 
 Unbound. Unit tests in `rs/cyphr/src/principal/tests/lifecycle.rs` assert both
-errors. They live in the crate's source tree. Binding needs a change whose file
+errors; no test for the `StateMismatch` case was found. They live in the crate's source tree. Binding needs a change whose file
 surface includes that file.
 
 #### [rv-commit-nonempty]
@@ -658,8 +687,9 @@ a change whose file surface includes those files.
 
 Every error the core apply, finalize and record paths can raise has one row,
 naming the claim that governs it. A claim may govern errors raised for several
-rules; the claim's text says which. The table is checked, not trusted:
-`rs/cyphr/tests/record_verification.rs` classifies every `cyphr::Error`
+rules; the claim's text says which. The table is checked for consistency with
+the classification in `rs/cyphr/tests/record_verification.rs`, which is the
+reachability judgement of its author and is not itself proved. That test classifies every `cyphr::Error`
 variant with an exhaustive `match`, and fails if a reachable variant has no
 row, a row names no variant or one classified outside the core paths, a row
 points to a different claim than the classification, or a claim is neither
