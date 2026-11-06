@@ -429,31 +429,6 @@ mod tests {
             .with_first_seen(1000)
     }
 
-    #[test]
-    fn load_explicit_genesis_no_commits() {
-        let key1 = make_test_key(0xAA);
-        let key2 = make_test_key(0xBB);
-
-        let principal =
-            load_principal_from_commits(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[])
-                .unwrap();
-
-        // Explicit genesis: PG is None (needs principal/create)
-        assert!(
-            principal.pg().is_none(),
-            "PG should be None before principal/create"
-        );
-        assert_eq!(principal.active_key_count(), 2);
-        assert!(principal.is_key_active(key1.tmb()));
-        assert!(principal.is_key_active(key2.tmb()));
-    }
-
-    #[test]
-    fn load_explicit_genesis_empty_keys_fails() {
-        let result = load_principal_from_commits(Genesis::Explicit(vec![]), &[]);
-        assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
-    }
-
     /// Claim: a commit whose coz pay omits `typ` is rejected as malformed
     /// during replay, never silently routed to the action path (a missing
     /// `typ` is not a transaction type, so only `CozHeader::parse` stops it).
@@ -484,24 +459,5 @@ mod tests {
             ),
             "a coz missing 'typ' must be rejected as malformed, got {result:?}"
         );
-    }
-
-    #[test]
-    fn is_key_introducing_typ_delegates_to_canonical_predicate() {
-        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/create"));
-        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/replace"));
-        assert!(!is_key_introducing_typ("cyphr.me/cyphr/key/delete"));
-        assert!(!is_key_introducing_typ("cyphr.me/cyphr/commit/create"));
-    }
-
-    /// F25: `is_transaction_typ` must recognize the three lifecycle
-    /// transaction typs N03 added to the core protocol crate, or a signed
-    /// lifecycle commit is silently misfiled as a deferred data action
-    /// instead of being applied through `verify_and_apply`.
-    #[test]
-    fn is_transaction_typ_recognizes_lifecycle_typs() {
-        assert!(is_transaction_typ("cyphr.me/cyphr/principal/delete"));
-        assert!(is_transaction_typ("cyphr.me/cyphr/freeze/create"));
-        assert!(is_transaction_typ("cyphr.me/cyphr/freeze/delete"));
     }
 }

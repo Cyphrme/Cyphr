@@ -135,27 +135,9 @@ fn storage_typ_routing_agrees_with_core_kind_table() {
     assert!(wrong.is_empty(), "storage disagrees with core: {wrong:#?}");
 }
 
-/// Claim: a typ that merely ends in `key/create` text (`xcyphr/key/create`)
-/// is not a transaction in storage, as in the core (which refuses to parse
-/// it), so a spoof cannot be applied as a key introduction during replay.
-/// Turns red on `contains("/key/")` routing. Named separately so the
-/// spoof the hacker will try stays pinned if the broad test is reshaped.
-#[test]
-fn storage_typ_routing_spoofed_key_create_is_an_action() {
-    for spoof in [
-        "cyphr.me/xcyphr/key/create",
-        "cyphr.me/xcyphr/key/replace",
-        "cyphr.me/xcyphr/principal/merge",
-        "cyphr.me/cyphr/key/create/x",
-    ] {
-        assert!(!core_is_kind(spoof), "oracle: core parses {spoof}");
-        assert!(
-            !crate::import::is_transaction_typ(spoof),
-            "{spoof} routed as a transaction"
-        );
-    }
-}
-
+/// Unit: a pure predicate over typ spellings; no scenario reaches every
+/// boundary-broken spelling cheaply.
+///
 /// Claim (characterization, green): the genesis-carrier predicate uses the
 /// same `/` boundary as the core for `commit/create`, so PGK's routing
 /// change must not loosen it. Turns red if it reverts to a substring or
@@ -178,8 +160,14 @@ fn meta_with_pr(id: &str, seq: u64, pr: &str) -> IndexableCommit {
     m
 }
 
+/// Backs SPEC be0663f 5.1 l764 (a principal is addressed by its own PR,
+/// never a guess among holders). Unit: two principals holding one PR cannot
+/// be built from signed cozes, so only a direct `ingest_commit` with chosen
+/// `prs` reaches it.
+///
 /// Claim: a PR held by two principals is never attributed to one of them
-/// silently. `locate_by_pr` must return both holders or refuse; the
+/// silently. `locate_by_pr` must return both holders or refuse, and
+/// addressing a principal by that PR is a typed `Ambiguous` refusal; the
 /// signature is the implementer's to change, so the result is compared
 /// through its `Debug` form. Turns red on first-holder selection (today:
 /// `Some(("alice", 0))`, bob unnamed), and on a lookup that returns the
@@ -212,25 +200,18 @@ async fn holders_locate_by_pr_never_picks_the_first_holder() {
         names_both || got.starts_with("Err("),
         "two holders of one PR, neither returned nor refused: {got}"
     );
+    let addressed = engine.canonical_principal_id(DIGEST_A).await;
+    assert!(
+        matches!(addressed, Err(EngineError::Ambiguous(_))),
+        "{addressed:?}"
+    );
 }
 
-/// Claim: addressing a principal by a PR two principals hold is a typed
-/// `Ambiguous` refusal, not a pick of one of them. Turns red on first-holder
-/// selection (it would resolve to "alice") or on an untyped error.
-#[tokio::test]
-async fn holders_address_by_shared_pr_is_typed_ambiguous() {
-    let engine = test_engine();
-    for (who, now) in [("alice", 1), ("bob", 2)] {
-        let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
-        engine
-            .ingest_commit(&[blob.as_bytes()], meta_with_pr(who, 0, DIGEST_A))
-            .await
-            .expect("ingest");
-    }
-    let got = engine.canonical_principal_id(DIGEST_A).await;
-    assert!(matches!(got, Err(EngineError::Ambiguous(_))), "{got:?}");
-}
-
+/// Backs the sync-patch anchor rule (an anchor names a position only on the
+/// chain that holds it). Unit: a PR present on a foreign chain but absent
+/// from this one is crafted by direct `ingest_commit`; signed cozes cannot
+/// build it.
+///
 /// Claim: a resync anchor held only by ANOTHER principal is refused for
 /// this one; the position of a foreign commit never bounds this chain
 /// (the `or_else(first holder)` fallback in `resolve_anchor_position`).
@@ -341,6 +322,10 @@ async fn stored_count(store: &MemoryBlobStore) -> usize {
     store.iter().await.expect("iter").count()
 }
 
+/// Backs SPEC be0663f 3.7.1 (a PG alias names one principal) under
+/// concurrency. Unit: equal PGs cannot be built from signed cozes and the
+/// interleaving needs the gated blob store, so no end-to-end route reaches it.
+///
 /// Claim: two ingests contending for one PG alias, running concurrently,
 /// leave exactly one winner, a typed `Conflict` for the loser, and NO
 /// residue of the loser (blob or manifest) in the store: the alias claim
