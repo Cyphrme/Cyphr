@@ -301,7 +301,7 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
 /// in `routes.rs`), not reconstructed record state, so it is excluded from
 /// the comparison; every other `/tip` field, the raw `/e/{digest}` bytes,
 /// and the login-issued token's decoded `pr` claim are compared directly.
-/// The literal bearer-token string is not compared (`issue_token` mints a
+/// The literal bearer-token string is not compared (`issue_login_token` mints a
 /// fresh token bound to the real call-time `now`), but the same signed
 /// login request body is replayed against both boots and must succeed
 /// both times and authenticate the same principal both times -- which is
