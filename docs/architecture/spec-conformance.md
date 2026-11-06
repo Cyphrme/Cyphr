@@ -266,6 +266,7 @@ SPEC 3.1, line 298. Disposition: `red-new`.
 - spec-text: - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
+  - `rs/cyphr/tests/spec_conformance.rs::s3_1_dead_principal_after_last_key_revoke_records_no_action`
 - fails when: a self-revoke of a principal's only key is refused with `NoActiveKeys` (red today). SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. While the code refuses, Mallory who copies Alice's only key keeps it usable after Alice's revoke is refused. The code and the golden vector `errors/last_key_revoke_fails`, plus `principal.rs::self_revoke_last_key_prevented`, encode the opposite; the vector is not flipped here (pending nrd) and the fix regenerates the corpus.
 
 ```claim

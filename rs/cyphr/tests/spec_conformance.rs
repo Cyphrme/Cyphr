@@ -1646,3 +1646,58 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
     );
     assert!(r.is_err(), "a dead principal took a key/create: {r:?}");
 }
+
+/// Backs SPEC 11 (Dead: "no transactions or actions are possible") for the
+/// last-key revoke. Scenario: the only key of a principal records a data
+/// action (control: accepted while alive), then self-revokes (must be
+/// accepted), then tries a second action with the same, now revoked, key:
+/// that must be refused and leave every observable counter untouched. A
+/// second principal that kept a key shows the same action shape is still
+/// accepted after a sibling's revoke, so the refusal is the Dead state and
+/// not a blanket action ban. Turns red if the last-key revoke is refused
+/// (today), or if a Dead principal records an action. Catches a lying fix
+/// that gates only the transaction path and leaves actions open, and a
+/// no-op fix that flags Dead without revoking the key. RED: the core returns
+/// `NoActiveKeys` for the revoke. End to end: yes.
+#[test]
+#[ignore = "RED(q3): SPEC 3.1 last-key self-revoke refused"]
+fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
+    let action = |k: &Kp, now: i64| {
+        sign(
+            k,
+            json!({"alg": k.alg, "msg": "hello", "now": now, "tmb": b64(&k.tmb),
+                   "typ": "cyphr.me/comment/create"}),
+        )
+    };
+    let record = |p: &mut Principal, k: &Kp, now: i64| {
+        let (pay, sig, czd) = action(k, now);
+        p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
+    };
+
+    let (mut two, a, b) = two_key_principal();
+    commit_one(
+        &mut two,
+        &b,
+        sign(&b, revoke_pay(&b, T, json!(T))),
+        None,
+        T + 1,
+    )
+    .expect("control: a sibling's revoke is accepted");
+    record(&mut two, &a, T + 2).expect("control: the surviving key still records actions");
+
+    let g = kp();
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    record(&mut p, &g, T).expect("control: the lone key records an action while alive");
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, revoke_pay(&g, T + 1, json!(T + 1))),
+        None,
+        T + 2,
+    );
+    assert!(r.is_ok(), "the only key's self-revoke was refused: {r:?}");
+    let before = snapshot(&p);
+    let r = record(&mut p, &g, T + 3);
+    assert!(r.is_err(), "a dead principal recorded an action: {r:?}");
+    assert_eq!(before, snapshot(&p), "a refused action changed state");
+}
