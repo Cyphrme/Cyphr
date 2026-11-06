@@ -7,11 +7,6 @@
 //! under `cyphr-server/`. The field layout inside `pay` is the implementer's
 //! (C2SP checkpoint shape); these tests locate the tree size and index by
 //! VALUE, not by name, so any layout that signs them passes.
-//!
-//! Every test is `RED(N15b)` until `/view` exists; they fail on an
-//! assertion about the response, not on compilation or setup.
-
-#![allow(unexpected_cfgs)]
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -142,7 +137,6 @@ fn fields_equal(pay: &serde_json::Value, n: u64) -> Vec<String> {
 /// End-to-end scenario: yes (attestor, two pushes over HTTP, signature
 /// checked with the peer's key).
 #[tokio::test]
-#[ignore = "RED(N15b): no /view route serves a signed view statement yet"]
 async fn view_statement_signs_tree_size_and_index_end_to_end() {
     let (state, identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -212,7 +206,6 @@ async fn view_statement_signs_tree_size_and_index_end_to_end() {
 /// across commits; or the two statements carry the same signature.
 /// End-to-end scenario: yes.
 #[tokio::test]
-#[ignore = "RED(N15b): no /view route serves a signed view statement yet"]
 async fn view_statement_advances_with_the_log() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -255,17 +248,14 @@ async fn view_statement_advances_with_the_log() {
 /// size or index: refused. Statement signed by a key not active in that
 /// chain: refused, even though its own signature is valid.
 ///
-/// RED(N15b): `cyphr_client::verify_view_statement` does not exist, so this
-/// test sits behind `cfg(red_n15b)`; the implementation removes the cfg line
-/// and nothing else. The verifier shape pinned here: the response envelope,
-/// the peer principal chain the client replayed, and the principal id, giving
-/// `Ok(_)` or `Err(_)`.
+/// The verifier shape pinned here: the response envelope, the peer principal
+/// chain the client replayed, and the principal id, giving `Ok(_)` or
+/// `Err(_)`.
 ///
 /// Turns red if: a forged size or index is accepted; a statement signed by
 /// an inactive key is accepted; or the genuine statement is refused.
 /// End-to-end scenario: yes (peer over HTTP, chain replayed into a second,
 /// independent engine as in `receipts.rs`).
-#[cfg(red_n15b)] // RED(N15b)
 #[tokio::test]
 async fn client_verifies_view_statement_against_the_active_peer_chain() {
     let (state, _identity, _dir) = attestor_server().await;

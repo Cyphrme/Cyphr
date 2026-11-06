@@ -1,20 +1,9 @@
 //! Receipts and tip attestations sign through a `ReceiptSigner`, and a
 //! signing failure never turns a committed push into an error.
 //!
-//! RED(N15b): the seam these tests use (`receipt::ReceiptSigner`,
-//! `receipt::ReceiptError`, `AppState::with_receipt_signer`, the async
-//! `receipt::commit_receipt` taking `&dyn ReceiptSigner`) does not exist yet,
-//! so the whole file sits behind `cfg(red_n15b)` and holds no test without
-//! it. The implementation removes the `RED(N15b)` cfg line and nothing
-//! else. Red check: `RUSTFLAGS='--cfg red_n15b' cargo test -p cyphr-server
-//! --test receipt_signer` fails to compile on the missing seam.
-//!
 //! The typed reason a signature failed is server-side (`ReceiptError`), not a
 //! wire field: an unsigned statement is unauthenticated, so a client cannot
 //! act on a reason carried in it. The wire shows only `{"kind":"unsigned"}`.
-
-#![allow(unexpected_cfgs)]
-#![cfg(red_n15b)] // RED(N15b)
 
 use std::future::Future;
 use std::pin::Pin;
