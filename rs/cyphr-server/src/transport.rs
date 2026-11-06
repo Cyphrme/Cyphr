@@ -481,3 +481,50 @@ async fn dispatch(
         Err(_) => (500, b"response too large".to_vec()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    /// Claim: the per-address session cap counts an IPv6 /64 as one source
+    /// (RFC 6177: a /64 is one end site), while distinct /64s and distinct
+    /// IPv4 addresses keep separate allowances. Red if admit keys on the
+    /// exact address: 16 addresses of one /64 would then each get a fresh
+    /// allowance and a 17th session would be admitted.
+    ///
+    /// Why a unit test: an end-to-end test cannot bind this many distinct
+    /// source addresses (a client socket gets the loopback address or one
+    /// host address), so only `admit` can be driven with chosen peers.
+    #[test]
+    fn ipv6_sessions_share_a_64_allowance_and_ipv4_does_not() {
+        let slots = Slots::new();
+        let v6 = |net: u16, host: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, net, 0, 0, 0, host));
+
+        // Fill one /64 with one session from each of 16 different addresses.
+        let held: Vec<_> = (0..MAX_SESSIONS_PER_IP as u16)
+            .map(|h| slots.admit(v6(1, h)).expect("within the /64 allowance"))
+            .collect();
+        assert!(
+            slots.admit(v6(1, 999)).is_none(),
+            "a 17th address of the same /64 is refused"
+        );
+        assert!(
+            slots.admit(v6(2, 0)).is_some(),
+            "another /64 is still admitted"
+        );
+
+        // IPv4 stays per full address: a neighbouring address is separate.
+        let v4 = |d: u8| IpAddr::V4(Ipv4Addr::new(192, 0, 2, d));
+        let _a: Vec<_> = (0..MAX_SESSIONS_PER_IP)
+            .map(|_| slots.admit(v4(1)).expect("within the IPv4 allowance"))
+            .collect();
+        assert!(slots.admit(v4(1)).is_none());
+        assert!(slots.admit(v4(2)).is_some());
+
+        // Releasing the /64's sessions frees its bucket.
+        drop(held);
+        assert!(slots.admit(v6(1, 999)).is_some());
+    }
+}
