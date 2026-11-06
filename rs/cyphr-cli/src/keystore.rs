@@ -193,3 +193,60 @@ mod base64url_bytes {
         Base64UrlUnpadded::decode_vec(&s).map_err(de::Error::custom)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored() -> StoredKey {
+        StoredKey {
+            alg: "Ed25519".into(),
+            pub_key: vec![1; 32],
+            prv_key: vec![2; 32],
+            tag: None,
+        }
+    }
+
+    /// Claim: the keystore file states its format version and `open` refuses
+    /// one it does not know, naming the format and the version, before any
+    /// key is read out of it. The current version still round-trips. Turns
+    /// red on a keystore written unstamped, or an `open` that ignores `v`
+    /// (today an extra top-level field is mis-read as a key entry and fails
+    /// as a bare JSON error that names neither). A unit test: the file is
+    /// the unit under claim and no scenario reaches it cheaply.
+    #[test]
+    #[ignore = "RED(N13): the keystore file is unversioned"]
+    fn version_keystore_unknown_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.json");
+        let mut ks = JsonKeyStore::open(&path).unwrap();
+        ks.store("tmb-1", stored()).unwrap();
+        ks.save().unwrap();
+        JsonKeyStore::open(&path)
+            .expect("the current version reopens")
+            .get("tmb-1")
+            .expect("and still holds the key");
+
+        let mut doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(
+            doc["v"].is_u64(),
+            "a saved keystore must be stamped with a numeric `v`: {doc}"
+        );
+        for unknown in [0u64, 99] {
+            doc["v"] = unknown.into();
+            std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+            let msg = JsonKeyStore::open(&path)
+                .err()
+                .unwrap_or_else(|| panic!("keystore v={unknown} was accepted"))
+                .to_string()
+                .to_lowercase();
+            assert!(
+                msg.contains("version")
+                    && msg.contains("keystore")
+                    && msg.contains(&unknown.to_string()),
+                "refusal must name the format and the version: {msg}"
+            );
+        }
+    }
+}
