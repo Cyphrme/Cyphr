@@ -183,6 +183,33 @@ impl Chain<'_> {
     }
 }
 
+impl Chain<'_> {
+    /// A data action of `typ` signed by the genesis key and recorded on the
+    /// local principal; returns its wire blob, to be sent before the commit
+    /// it precedes.
+    fn action(&mut self, typ: &str, now: i64) -> String {
+        let g = self.genesis;
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": g.kp.alg.name(),
+            "now": now,
+            "tmb": g.tmb.to_b64(),
+            "typ": typ,
+        }))
+        .expect("pay json");
+        let (sig, cad) =
+            coz::sign_json(&pay, g.kp.alg.name(), &g.kp.prv_bytes, &g.kp.pub_bytes).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, g.kp.alg.name()).expect("czd");
+        self.principal
+            .verify_and_record_action(&pay, &sig, czd)
+            .expect("action records");
+        let coz: serde_json::Value = serde_json::json!({
+            "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+        });
+        Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"))
+    }
+}
+
 /// A `/patch` body carrying `entries` (one blob list per commit).
 fn patch_body(entries: &[Vec<String>]) -> Vec<u8> {
     let entries: Vec<_> = entries
@@ -503,4 +530,30 @@ async fn revoked_key_in_the_held_chain_is_refused() {
         Err(PeerFailure::KeyNotActive { .. })
     ));
     assert!(held.verify_tip(&tip_envelope(&k2), &pr).is_ok());
+}
+
+/// Claim: a data action whose `typ` merely contains `/freeze/` (here
+/// `app/freeze/status`) is an ACTION, not a transaction, so a chain holding
+/// one follows. Only `/freeze/create` and `/freeze/delete` are lifecycle
+/// transactions, as in the storage replay the server runs.
+///
+/// Turns red if: the classifier treats any `/freeze/` typ as a transaction,
+/// so the action is applied as one and the whole follow is refused.
+/// End-to-end scenario: yes (real chain with an action, replayed).
+#[tokio::test]
+async fn data_action_typed_like_a_freeze_follows() {
+    let g = kp();
+    let k1 = kp();
+    let mut peer = Chain::new(&g);
+    let action = peer.action("cyphr.me/app/freeze/status", 1_700_000_050);
+    let mut c1 = vec![action];
+    c1.extend(peer.commit(&k1, 1_700_000_100));
+    let pipe = Pipe::new(patch_body(&[c1]));
+    let (pr, _) = subject();
+
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe)
+        .await
+        .expect("a chain with an app/freeze/status action follows");
+    assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
 }

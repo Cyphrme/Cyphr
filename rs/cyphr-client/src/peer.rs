@@ -348,15 +348,21 @@ fn claimed_tmb(coz: &coz::CozJson) -> Option<coz::Thumbprint> {
 }
 
 /// Whether `typ` is a transaction (state-changing, committed) as opposed to
-/// an action (recorded). Mirrors the classification `cyphr-storage` applies
-/// when it replays a stored chain; the core has no public replay entry
-/// point, and the client may not depend on the storage crate.
+/// an action (recorded). Identical to the classification `cyphr-storage`
+/// applies when it replays a stored chain: only `/freeze/create` and
+/// `/freeze/delete` are freeze transactions, so an application action such
+/// as `app/freeze/status` stays an action.
+///
+/// This is a second copy of that rule, because the core has no public
+/// replay entry point and the client may not depend on the storage crate.
+/// HA1 replaces both copies with one core function.
 fn is_transaction_typ(typ: &str) -> bool {
     [
         "/key/",
         "/principal/create",
         "/principal/delete",
-        "/freeze/",
+        "/freeze/create",
+        "/freeze/delete",
         "/commit/create",
     ]
     .iter()
