@@ -91,23 +91,33 @@ bearer tokens already apply.
   post-state roots exactly as the tip payload does. Nested so the root
   `pr` (the post-commit Principal Root) never collides with the
   top-level `pr` claim (the genesis identifier) -- the two are different
-  facts that happen to share a SPEC field name. `pr`, `sr`, and `ar` are
-  always tagged digest strings, satisfying SPEC §2.2.3's explicitly-
-  labeled exemption. `cr` (the Commit Root) alone MAY instead be JSON
-  `null`, for a genesis-stage report: a principal that is key-established
-  but has not yet finalized a data commit has no commit root to attest.
-  `null` there means ABSENCE at genesis, not an unknown value or an error
-  -- a verifier MUST accept it as "no commit root yet," never refuse the
-  receipt over it. (The prior implementation signed an empty string for
+  facts that happen to share a SPEC field name. `pr` is always a tagged
+  digest string, satisfying SPEC §2.2.3's explicitly-labeled exemption.
+  `sr`, `ar` and `cr` are tagged digest strings when present and MAY
+  instead be JSON `null`. `cr` (the Commit Root) is `null` for a
+  genesis-stage report: a principal that is key-established but has not
+  yet finalized a data commit has no commit root to attest. `ar` (the Auth
+  Root) is `null` for a Dead principal (SPEC §11: every key revoked or
+  deleted), which has no key tree left to root, unless a nonce remains
+  (SPEC §3.7, §10.2); its `sr` (the State Root) is then the Data Root
+  alone, or `null` when the principal holds no data. `null` means ABSENCE,
+  not an unknown value or an error -- a verifier MUST accept it as "no
+  such root," never refuse the receipt over it. A claim that omits `sr`,
+  `ar` or `cr` altogether is malformed, not an absent root, and the
+  envelope `v` is unchanged: `null` is the only encoding of absence. (The prior implementation signed an empty string for
   this same case, itself not a valid tagged digest string either -- `null`
   corrects the type of an absence that already existed here, not a new
   gap this document is disclosing.) Pinned in
-  `rs/cyphr-server/src/receipt.rs`'s `Roots.cr: Option<String>` and
-  `sign_receipt`; the genesis-stage case is exercised by
+  `rs/cyphr-server/src/receipt.rs`'s `Roots.sr`, `Roots.ar` and `Roots.cr`
+  (each `Option<String>`) and `sign_receipt`; the genesis-stage case is exercised by
   `rs/cyphr-server/tests/receipts.rs`'s
   `commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string`
   and `rs/cyphr-server/tests/receipt_typed_domain.rs`'s
-  `genesis_commit_root_is_accepted`.
+  `genesis_commit_root_is_accepted`; the Dead-principal case by
+  `rs/cyphr-server/tests/dead_attestation.rs`'s
+  `dying_commit_push_and_tip_attest_absent_roots_as_null` and
+  `receipt_typed_domain.rs`'s
+  `null_sr_and_ar_are_absent_roots_but_a_missing_field_is_malformed`.
 
 ### Additional claims (tip reports only)
 
