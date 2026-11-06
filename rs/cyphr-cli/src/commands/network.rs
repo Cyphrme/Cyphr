@@ -568,7 +568,10 @@ pub fn verify(
         "peers_failed": failed,
         "freshness_secs": freshness,
         "stale_view": view_age > freshness,
-        "anchor": {"value": anchor_value, "source": anchor_source},
+        // When the anchor is the identity itself, the "anchor is in the
+        // history" check cannot fail, so it vouches for nothing.
+        "anchor": {"value": anchor_value, "source": anchor_source,
+            "is_identity": bare_digest(&anchor_value) == identity},
         "verdict": if evidence.is_empty() { "Active" } else { "Error" },
     });
     if !evidence.is_empty() {

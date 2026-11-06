@@ -423,6 +423,9 @@ fn reserialized_chain_is_not_a_fork_in_verify() {
         "same history under another encoding: {v}"
     );
     assert!(v.get("evidence").is_none(), "no evidence of a fork: {v}");
+    // The default anchor is the identity itself, so the answer must say its
+    // anchor check is trivially satisfied.
+    assert_eq!(v["anchor"]["is_identity"], true, "anchor provenance: {v}");
 }
 
 /// Claim: fetch from a peer that re-serializes our own history stores
