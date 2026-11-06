@@ -517,7 +517,8 @@ mod tests {
     #[test]
     fn ipv6_sessions_share_a_64_allowance_and_ipv4_does_not() {
         let slots = Slots::new();
-        let v6 = |net: u16, host: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, net, 0, 0, 0, host));
+        let v6 =
+            |net: u16, host: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, net, 0, 0, 0, host));
 
         // Fill one /64 with one session from each of 16 different addresses.
         let held: Vec<_> = (0..MAX_SESSIONS_PER_IP as u16)
