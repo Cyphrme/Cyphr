@@ -465,6 +465,7 @@ fn d4_action_pay_alg_must_equal_key_alg() {
 /// Backs: same `pay.alg == key.alg` rule on the commit path. Red now
 /// because `verify_and_apply` accepts an Ed25519-signed `key/create`
 /// whose pay claims `"alg":"ES256"`.
+// @docket: rv-alg-alignment :: scripts/docket-run rv-alg-alignment
 #[test]
 fn d4_commit_coz_pay_alg_must_equal_key_alg() {
     let g = kp();

@@ -121,6 +121,7 @@ fn replace_s(sig: &[u8], s: &[u8]) -> Vec<u8> {
 // key.rs (ES256 verify, "Coz spec requires low-S only"); BIP-0062 is the cited external practice.
 // Claim C1. Mutation that turns this red: dropping the low-S check in coz-rs verify (coz-rs key.rs)
 // or swapping to a verifier that accepts both S and n-S.
+// @docket: rv-sig-verifies :: scripts/docket-run rv-sig-verifies
 #[test]
 fn es256_high_s_signature_is_rejected() {
     let key = signer("key_a");
@@ -255,6 +256,7 @@ fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
 // Practice: SPEC.md section 6.2 (`key/delete`): "actions signed after it has been removed are
 // ignored"; a deleted key has no authority after its delete commit. Claim C3b. Mutation that turns
 // this red: accepting data actions from a key absent from the current KT.
+// @docket: rv-key-active-gate :: scripts/docket-run rv-key-active-gate
 #[test]
 fn deleted_key_action_dated_after_delete_is_rejected() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
@@ -271,6 +273,7 @@ fn deleted_key_action_dated_after_delete_is_rejected() {
 // to hold a later forged action cannot re-verify. Claim C3c. Mutation that turns this red:
 // excluding the data root (DR) from the state root that `arrow` commits to, or skipping the arrow
 // check in `finalize`.
+// @docket: rv-state-recomputed :: scripts/docket-run rv-state-recomputed
 #[test]
 fn forged_action_spliced_before_delete_commit_breaks_replay() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
