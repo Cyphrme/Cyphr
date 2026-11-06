@@ -360,31 +360,37 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
     );
 }
 
-/// M concurrent submissions for M DISTINCT principals must not interfere
-/// with each other, and should complete meaningfully faster than the same
-/// work forced sequential -- proving the per-principal lock scales with the
-/// number of distinct principals rather than degrading into a single global
-/// choke point.
+/// A write stalled mid-critical-section for one principal must not stop a
+/// write for any DISTINCT principal -- the per-principal lock is not a
+/// global choke point.
+///
+/// Deterministic, no timing comparison: the engine's storage factory is
+/// called by `submit_commit` only AFTER it has taken the principal's write
+/// lock, so parking that factory call for principal A parks A's submission
+/// while it holds A's lock. With A parked, every other principal's
+/// submission must still complete. Under a single global write lock those
+/// submissions would wait on A forever; the timeout is only a liveness
+/// bound that turns that hang into a failure, and is never reached when the
+/// lock is genuinely per-principal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn submit_commit_concurrent_different_principals_do_not_block() {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    /// Parks the storage factory for one principal until released.
+    #[derive(Default)]
+    struct Gate {
+        // (armed, entered, released)
+        state: Mutex<(bool, bool, bool)>,
+        cv: Condvar,
+    }
+
     let pool = load_pool();
-    // Each principal's id is derived from its genesis key (SPEC 3.1), so M
-    // distinct principals need M distinct genesis keys, each signing its own
-    // chain of three `key/create` commits.
-    let signers = [
-        "golden",
-        "alice",
-        "bob",
-        "carol",
-        "diana_es384",
-        "eve_ed25519",
-    ];
-    let m = signers.len();
+    let signers = ["golden", "alice", "bob", "carol"];
     let new_keys = |signer: &str| -> Vec<&'static str> {
         ["key_a", "key_b", "alice", "bob"]
             .into_iter()
             .filter(|k| *k != signer)
-            .take(3)
+            .take(2)
             .collect()
     };
     let genesis_of = |signer: &str| {
@@ -402,106 +408,140 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         .iter()
         .map(|s| implicit_principal_id(&pool, s))
         .collect();
-    // The next key/create commit for `signer`'s principal, signed against
-    // the state the engine currently holds for it.
-    let next_commit = |state: &std::sync::Arc<cyphr_server::AppState>,
-                       idx: usize,
-                       new_key: &'static str,
-                       now: i64| {
-        let state = state.clone();
-        let signer = signers[idx];
-        let pid = principal_ids[idx].clone();
-        let genesis = genesis_of(signer);
-        let pool = &pool;
-        async move {
-            let principal = state
-                .engine
-                .load_principal(&pid, genesis)
-                .await
-                .expect("load principal at its current state");
-            // The engine's principal is storage-backed; replay its commits
-            // onto an in-memory one, which is what the signing helper takes.
-            let entries = cyphr_storage::export_commits(&principal).expect("export commits");
-            let fresh = cyphr_storage::load_principal_from_commits(genesis_of(signer), &entries)
-                .expect("replay commits onto a fresh principal");
-            sign_key_create_commit(fresh, pool, signer, new_key, now)
-        }
+    // Principal A is signers[0]; its storage-factory call is the one parked.
+    // The engine canonicalises ids with an algorithm prefix the helper omits.
+    let parked_id = principal_ids[0].clone();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = fjall::Database::builder(dir.path().join("blobs"))
+        .open()
+        .expect("open fjall db");
+    let gate = Arc::new(Gate::default());
+    let engine = {
+        let gate = gate.clone();
+        let factory_db = db.clone();
+        let parked_id = parked_id.clone();
+        Arc::new(cyphr_storage::engine::StorageEngine::with_storage_factory(
+            cyphr_blob_fjall::FjallBlobStore::from_database(db).expect("blob store"),
+            cyphr_index_fjall::FjallIndexer::open(&dir.path().join("index")).expect("indexer"),
+            move |principal_id: &str| {
+                if principal_id.ends_with(parked_id.as_str()) {
+                    let mut s = gate.state.lock().unwrap();
+                    if s.0 {
+                        s.1 = true;
+                        gate.cv.notify_all();
+                        while !s.2 {
+                            s = gate.cv.wait(s).unwrap();
+                        }
+                    }
+                }
+                cyphr_blob_fjall::open_eml_storage_scoped(factory_db.clone(), principal_id)
+                    .map_err(|e| e.to_string())
+            },
+        ))
     };
 
-    let (state, _dir) = keyless_server();
+    // Bootstrap every principal (gate unarmed), then sign each one's next
+    // commit against its current state.
+    let mut commit1_blobs = Vec::with_capacity(signers.len());
     for (i, signer) in signers.iter().enumerate() {
         let principal = cyphr::Principal::implicit(match genesis_of(signer) {
             cyphr_storage::Genesis::Implicit(k) => k,
             cyphr_storage::Genesis::Explicit(_) => unreachable!("genesis_of builds implicit"),
         })
         .expect("implicit genesis");
-        let commit0_blobs =
+        let commit0 =
             sign_key_create_commit(principal, &pool, signer, new_keys(signer)[0], 1_700_000_100);
-        let commit0_slices: Vec<&[u8]> = commit0_blobs.iter().map(|b| b.as_slice()).collect();
-        state
-            .engine
-            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &commit0_slices)
+        let slices: Vec<&[u8]> = commit0.iter().map(|b| b.as_slice()).collect();
+        engine
+            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &slices)
             .await
             .expect("bootstrap commit 0 failed");
+
+        let loaded = engine
+            .load_principal(&principal_ids[i], genesis_of(signer))
+            .await
+            .expect("load principal at its current state");
+        // The engine's principal is storage-backed; replay its commits onto
+        // an in-memory one, which is what the signing helper takes.
+        let entries = cyphr_storage::export_commits(&loaded).expect("export commits");
+        let fresh = cyphr_storage::load_principal_from_commits(genesis_of(signer), &entries)
+            .expect("replay commits onto a fresh principal");
+        commit1_blobs.push(sign_key_create_commit(
+            fresh,
+            &pool,
+            signer,
+            new_keys(signer)[1],
+            1_700_000_200,
+        ));
     }
 
-    // Concurrent: submit commit 1 for every distinct principal at once.
-    let mut commit1_blobs = Vec::with_capacity(m);
-    for (i, signer) in signers.iter().enumerate() {
-        commit1_blobs.push(next_commit(&state, i, new_keys(signer)[1], 1_700_000_200).await);
+    // Arm the gate and start A's submission; wait until it is parked inside
+    // its critical section (holding A's lock).
+    gate.state.lock().unwrap().0 = true;
+    // Releases the park even if an assertion below panics: a parked worker
+    // thread would otherwise hang the runtime's shutdown instead of failing.
+    struct ReleaseOnDrop(Arc<Gate>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let mut s = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+            s.2 = true;
+            self.0.cv.notify_all();
+        }
     }
-    let concurrent_start = std::time::Instant::now();
-    let mut handles = Vec::with_capacity(m);
-    for (i, signer) in signers.iter().enumerate() {
-        let state = state.clone();
+    let release = ReleaseOnDrop(gate.clone());
+    let submit = |i: usize| {
+        let engine = engine.clone();
         let pid = principal_ids[i].clone();
-        let genesis = genesis_of(signer);
+        let genesis = genesis_of(signers[i]);
         let blobs = commit1_blobs[i].clone();
-        handles.push(tokio::spawn(async move {
+        tokio::spawn(async move {
             let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-            state
-                .engine
-                .submit_commit(&pid, Some(genesis), &slices)
-                .await
-        }));
+            engine.submit_commit(&pid, Some(genesis), &slices).await
+        })
+    };
+    let a = submit(0);
+    {
+        let gate = gate.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut s = gate.state.lock().unwrap();
+            while !s.1 {
+                let (g, t) = gate
+                    .cv
+                    .wait_timeout(s, std::time::Duration::from_secs(20))
+                    .unwrap();
+                s = g;
+                assert!(
+                    !t.timed_out(),
+                    "principal A never reached its storage factory"
+                );
+            }
+        })
+        .await
+        .expect("wait for A to park");
     }
-    for handle in handles {
-        handle
+
+    // With A parked under its lock, every other principal must still land.
+    for i in 1..signers.len() {
+        tokio::time::timeout(std::time::Duration::from_secs(30), submit(i))
             .await
+            .expect(
+                "a distinct principal's submission is blocked behind principal A's write lock -- \
+                 the lock is not per-principal",
+            )
             .unwrap()
             .expect("each distinct principal's submission should succeed independently");
     }
-    let concurrent_elapsed = concurrent_start.elapsed();
-
-    // Sequential baseline: the same M submissions, one at a time (a further
-    // commit, so it isn't rejected as an already-applied duplicate of commit
-    // 1). Signed up front so only submission is timed.
-    let mut commit2_blobs = Vec::with_capacity(m);
-    for (i, signer) in signers.iter().enumerate() {
-        commit2_blobs.push(next_commit(&state, i, new_keys(signer)[2], 1_700_000_300).await);
-    }
-    let sequential_start = std::time::Instant::now();
-    for (i, signer) in signers.iter().enumerate() {
-        let slices: Vec<&[u8]> = commit2_blobs[i].iter().map(|b| b.as_slice()).collect();
-        state
-            .engine
-            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &slices)
-            .await
-            .expect("sequential baseline submission should succeed");
-    }
-    let sequential_elapsed = sequential_start.elapsed();
-
-    // Generous, qualitative margin (not a tight ratio) to avoid flaking
-    // under CI scheduling noise: distinct principals genuinely running in
-    // parallel should beat the same work forced one-at-a-time. A single
-    // global lock masquerading as per-principal would make these roughly
-    // equal instead.
     assert!(
-        concurrent_elapsed < sequential_elapsed,
-        "concurrent submissions for distinct principals ({concurrent_elapsed:?}) should be faster \
-         than the same work forced sequential ({sequential_elapsed:?}) -- a global (not \
-         per-principal) lock would make these roughly equal or concurrent slower"
+        !a.is_finished(),
+        "principal A must still be parked while the others complete"
     );
+
+    // Release A; it must then complete normally.
+    drop(release);
+    a.await
+        .unwrap()
+        .expect("principal A's submission succeeds once released");
 }
 
 // ========================================================================
