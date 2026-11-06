@@ -1211,7 +1211,7 @@ mod replay {
     pub async fn replay_action<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
     ) -> Outcome {
-        replay_action_ordered(e, false, "alice").await
+        replay_action_ordered(e, false, "alice", "cyphr.me/action").await
     }
 
     /// [`replay_action`] with the pushes in either order and the attacker
@@ -1221,6 +1221,7 @@ mod replay {
         e: &StorageEngine<B, I>,
         attacker_first: bool,
         attacker_discloses: &str,
+        typ: &str,
     ) -> Outcome {
         let p = pool();
         let (alice, golden, bob) = (
@@ -1233,7 +1234,7 @@ mod replay {
             alice,
             serde_json::json!({
                 "alg": alice.alg, "msg": "victim says hi", "now": T + 20,
-                "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/action"}),
+                "tmb": alice.compute_tmb_b64().unwrap(), "typ": typ}),
         );
         let act = blob(&apb, &asig, Some(kj(alice)));
         let act_a = blob(&apb, &asig, Some(kj(p.get(attacker_discloses).unwrap())));
@@ -1633,10 +1634,11 @@ async fn rebuild_quarantines_unindexable_manifests() {
 /// (then the served bytes are whatever the first or last replayer chose).
 #[tokio::test]
 async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
+    let typ = "cyphr.me/action";
     let mut served = Vec::new();
     for attacker_first in [false, true] {
         let e = replay::mem_engine();
-        let o = replay::replay_action_ordered(&e, attacker_first, "bob").await;
+        let o = replay::replay_action_ordered(&e, attacker_first, "bob", typ).await;
         assert!(o.victim_push.is_ok(), "{:?}", o.victim_push);
         let holders = e.indexer().resolve_digest_holders(&o.czd).await.unwrap();
         assert_eq!(holders.len(), 2, "both principals hold the action");
@@ -1650,4 +1652,27 @@ async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
         served.push(bytes);
     }
     assert_eq!(served[0], served[1], "/e/{{czd}} depends on arrival order");
+}
+
+/// Claim (SPEC 2.3.2, "data actions require DT commit inclusion"): a new
+/// principal cannot be created by an action-only bundle. The action's
+/// disclosed `key` is not kept (an action is not a genesis carrier), so with
+/// no caller genesis and no `commit/create` in the bundle the push gets a
+/// typed refusal and leaves no principal and no tip. Turns red if a
+/// disclosed key on an action still bootstraps a principal.
+#[tokio::test]
+async fn action_only_bundle_cannot_create_a_principal() {
+    let e = engine();
+    let fx = load_golden("actions", "action_changes_ps");
+    let (_, aid) = genesis_of(&fx);
+    let blobs: Vec<Vec<u8>> = raw_blobs_disclosing_genesis(&fx, &fx["commits"][0])
+        .iter()
+        .map(|b| serde_json::to_vec(b).unwrap())
+        .collect();
+    let err = submit_as_witness(&e, &aid, &blobs)
+        .await
+        .expect_err("refused");
+    assert!(matches!(err, EngineError::MalformedBlob(_)), "{err:?}");
+    assert!(e.get_tip(&aid).await.unwrap().is_none());
+    assert!(principals(&e).await.is_empty());
 }

@@ -1448,3 +1448,59 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
             .any(|q| matches!(q.reason, QuarantineReason::Orphaned(_)))
     );
 }
+
+/// A signed coz blob of `typ` disclosing the pool key `who` in its unsigned
+/// `key` member.
+fn coz_disclosing(typ: &str, who: &str) -> Vec<u8> {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let signer = pool.get("alice").unwrap();
+    let shown = pool.get(who).unwrap();
+    serde_json::to_vec(&serde_json::json!({
+        "pay": {"alg": signer.alg, "now": 1, "tmb": signer.compute_tmb_b64().unwrap(), "typ": typ},
+        "sig": "AAAA",
+        "key": {"alg": shown.alg, "pub": shown.pub_key, "tmb": shown.compute_tmb_b64().unwrap()},
+    }))
+    .unwrap()
+}
+
+/// Claim: the unsigned `key` member survives canonicalization only on the
+/// protocol's own genesis carrier, judged by the protocol predicate (the
+/// typ's authority-qualified suffix), never by substring: an application
+/// typ that merely contains `/commit/create` is an ordinary coz, keeps no
+/// key, and two copies differing only in `key` store as the same bytes.
+/// A unit test: the engine's action classifier is substring-based, so such
+/// a typ cannot be pushed end to end. Turns red if `key` is kept on it.
+#[test]
+#[ignore = "RED(H1F): key kept on any typ containing commit/create"]
+fn canonical_key_is_kept_only_on_the_protocol_genesis_carrier() {
+    let kept = |typ: &str, who: &str| {
+        let bytes = canonical_coz(&coz_disclosing(typ, who), 0).expect("canonical");
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .unwrap()
+            .get("key")
+            .is_some()
+    };
+    assert!(
+        kept("cyphr.me/cyphr/commit/create", "alice"),
+        "the genesis carrier keeps its key"
+    );
+    assert!(
+        kept("cyphr.me/cyphr/key/create", "golden"),
+        "a key-introducing coz keeps its key"
+    );
+    assert!(
+        !kept("example.com/repo/commit/create", "alice"),
+        "an application typ is not a carrier"
+    );
+    assert_eq!(
+        canonical_coz(
+            &coz_disclosing("example.com/repo/commit/create", "alice"),
+            0
+        )
+        .unwrap(),
+        canonical_coz(&coz_disclosing("example.com/repo/commit/create", "bob"), 0).unwrap(),
+        "two copies differing only in key must be one blob",
+    );
+}
