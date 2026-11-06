@@ -1533,12 +1533,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
 
-        let commit = match Self::build_commit(
-            &mut principal,
-            raw_blobs,
-            principal_id,
-            next_seq,
-        ) {
+        let commit = match Self::build_commit(&mut principal, raw_blobs, principal_id, next_seq) {
             Ok(Some(commit)) => commit,
             Ok(None) => {
                 // Action-only bundle: just store blobs in blob store without
@@ -1572,8 +1567,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
-                    self.retain_rival(principal_id, genesis, raw_blobs)
-                        .await?;
+                    self.retain_rival(principal_id, genesis, raw_blobs).await?;
                 }
                 return Err(refused);
             },
@@ -1893,12 +1887,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 self.retention_trials
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let mut candidate = principal.clone();
-                if let Ok(Some(commit)) = Self::build_commit(
-                    &mut candidate,
-                    raw_blobs,
-                    principal_id,
-                    position as u64,
-                ) {
+                if let Ok(Some(commit)) =
+                    Self::build_commit(&mut candidate, raw_blobs, principal_id, position as u64)
+                {
                     return self.keep_branch(raw_blobs, commit).await;
                 }
             }
@@ -2141,7 +2132,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         // The same principal may hold a PR at several positions; only its
         // latest commit can be its current PR.
-        let sequence = located.iter().map(|(_, seq)| *seq).max().unwrap_or_default();
+        let sequence = located
+            .iter()
+            .map(|(_, seq)| *seq)
+            .max()
+            .unwrap_or_default();
         // An established PG is settled from the index alone: no replay,
         // so naming a public current PR cannot amplify into history loads.
         if self.indexer.is_pg_established(&owner).await? {

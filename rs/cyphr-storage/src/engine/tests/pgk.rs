@@ -698,18 +698,26 @@ async fn rekey_no_nonce_principal_is_keyed_by_its_genesis_pr_under_any_spelling(
     assert_eq!(reported, [tmb.clone(), tmb.clone()], "report is the key");
     for e in [&by_tmb, &by_pr] {
         assert_eq!(resolve_one(e, &tmb).await, tmb);
-        assert_eq!(resolve_one(e, &pr).await, tmb, "the PG-to-be reaches the key");
-        assert_eq!(e.get_tip(&pr).await.expect("tip").expect("stored").principal_id, tmb);
+        assert_eq!(
+            resolve_one(e, &pr).await,
+            tmb,
+            "the PG-to-be reaches the key"
+        );
+        assert_eq!(
+            e.get_tip(&pr)
+                .await
+                .expect("tip")
+                .expect("stored")
+                .principal_id,
+            tmb
+        );
         e.rebuild_index_from_scratch().await.expect("reindex");
         assert_eq!(resolve_one(e, &tmb).await, tmb);
         assert_eq!(resolve_one(e, &pr).await, tmb);
     }
 }
 
-async fn resolve_one(
-    engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>,
-    id: &str,
-) -> String {
+async fn resolve_one(engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>, id: &str) -> String {
     engine.canonical_principal_id(id).await.expect("resolve")
 }
 
@@ -733,11 +741,17 @@ async fn rekey_nonce_principal_key_is_its_post_commit_0_pr_and_is_reported() {
     }
     assert_eq!(reported, vec![first.clone(); 3], "report is the key");
     for addr in [&first, &pg] {
-        assert_eq!(engine.canonical_principal_id(addr).await.expect("id"), first);
+        assert_eq!(
+            engine.canonical_principal_id(addr).await.expect("id"),
+            first
+        );
         let tip = engine.get_tip(addr).await.expect("tip").expect("stored");
         assert_eq!((tip.principal_id, tip.commit_count), (first.clone(), 3));
     }
-    assert!(engine.get_tip(&tmb).await.expect("tip").is_none(), "tmb is no key");
+    assert!(
+        engine.get_tip(&tmb).await.expect("tip").is_none(),
+        "tmb is no key"
+    );
 }
 
 /// Claim: a second, different commit 0 of a no-nonce principal, whatever it
@@ -781,7 +795,14 @@ async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
     let engine = test_engine();
     let got = submit(&engine, &tmb, &g, &blobs).await;
     assert!(got.is_err(), "accepted: {got:?}");
-    assert!(engine.indexer().list_principals().await.expect("list").is_empty());
+    assert!(
+        engine
+            .indexer()
+            .list_principals()
+            .await
+            .expect("list")
+            .is_empty()
+    );
 }
 
 /// Principal on `g`: commit 0 inserts `nonce`, commit 1 inserts a second
@@ -793,8 +814,12 @@ fn nonce_principal_with_gap(g: &Kp, nonce: u8) -> (cyphr::Principal, (String, St
     let apply = |p: &mut cyphr::Principal, pay: serde_json::Value, now: i64| {
         let (pay, sig, czd) = signed(g, pay);
         let mut scope = p.begin_commit();
-        scope.verify_and_apply(&pay, &sig, czd, None).expect("apply");
-        scope.finalize_with_software(&soft(g), now, "cyphr.me").expect("finalize");
+        scope
+            .verify_and_apply(&pay, &sig, czd, None)
+            .expect("apply");
+        scope
+            .finalize_with_software(&soft(g), now, "cyphr.me")
+            .expect("finalize");
     };
     let nonce_pay = |n: u8, now: i64| {
         serde_json::json!({
