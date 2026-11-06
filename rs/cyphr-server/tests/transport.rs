@@ -7,13 +7,9 @@
 //! nothing stores a private key.
 //!
 //! Every test is an end-to-end scenario over a real TCP listener and a real
-//! keyed server. The whole file is gated behind `cfg(red_tr1)` because it
-//! names APIs the implementation does not have yet; under the cfg the
-//! binary fails to compile on the base (its red), without it the binary is
-//! empty and the workspace stays green.
+//! keyed server.
 //!
-//! Run: `cd rs && RUSTFLAGS="--cfg red_tr1" cargo test -p cyphr-server \
-//! --test transport`
+//! Run: `cd rs && cargo test -p cyphr-server --test transport`
 //!
 //! APIs assumed (the implement brief provides them):
 //! - `cyphr_client::transport::{NoiseConnector, TransportError}`; `NoiseConnector::connect(addr,
@@ -24,9 +20,6 @@
 //!   supplied by the caller (the test-only hook that lets a peer serve envelope `v=99`).
 //! - The responder signs its statement through `AppState::attestor_signer`, the one accessor every
 //!   server signature goes through.
-
-#![allow(unexpected_cfgs)]
-#![cfg(red_tr1)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,7 +33,7 @@ use cyphr_client::{
     BindingKind, BindingPolicy, ChannelBinding, ConnectError, Connector, PatchFailure,
     PatchRequest, PeerChain, Request, fetch_patch,
 };
-use cyphr_server::transport::{serve_noise, serve_noise_with};
+use cyphr_server::transport::{ServeError, serve_noise, serve_noise_with};
 use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -48,7 +41,8 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    attestor_server, build_genesis_push_body, get_json, golden_principal_id, load_pool, post_json,
+    attestor_server, build_genesis_push_body, get_json, golden_principal_id, keyless_server,
+    load_pool, post_json,
 };
 
 /// The carrier over the in-process router, used only to follow the server
@@ -346,4 +340,165 @@ async fn version_unknown_envelope_over_the_transport_fails_closed() {
         matches!(refused, PatchFailure::UnsupportedVersion { found: 99, .. }),
         "typed UnsupportedVersion expected: {refused:?}"
     );
+}
+
+/// Claim: a keyless server refuses to start the transport listener, typed,
+/// and keeps serving HTTP. It holds no Cyphr key to prove itself with, and
+/// the transport authenticates the server as a principal.
+///
+/// Turns red if: the listener starts on a keyless state, or the refusal is
+/// anything but `ServeError::Keyless`, or the refusal costs the HTTP
+/// router. End-to-end scenario: no. A scenario over the process (next
+/// test) covers the `serve` wiring; this one pins the typed error, which a
+/// process cannot show.
+#[tokio::test]
+async fn keyless_server_refuses_the_transport_listener() {
+    let (state, _dir) = keyless_server();
+    let (listener, _) = listen().await;
+    let refused = serve_noise(listener, state.clone())
+        .await
+        .expect_err("a keyless state must not serve the transport");
+    assert!(matches!(refused, ServeError::Keyless), "{refused:?}");
+
+    let (status, _) = get_json(build_router(state), "/server").await;
+    assert_eq!(status, StatusCode::OK, "HTTP keeps serving");
+}
+
+/// Claim: the `serve` entry point wires the transport the same way: a
+/// keyed process with `transport_listen` set announces the listener and
+/// authenticates a client over it; the same process, keyless, announces no
+/// listener and keeps answering HTTP.
+///
+/// The keyed run is the positive control, so a server that never starts
+/// the transport cannot pass the keyless run vacuously.
+///
+/// Turns red if: the keyed process does not serve the transport, the
+/// keyless process starts one, or either stops serving HTTP. End-to-end
+/// scenario: yes (the shipped binary over loopback).
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_starts_the_transport_only_for_a_keyed_server() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    struct Proc {
+        child: std::process::Child,
+        http: SocketAddr,
+        transport: Option<SocketAddr>,
+        _dir: tempfile::TempDir,
+    }
+    impl Drop for Proc {
+        fn drop(&mut self) {
+            _ = self.child.kill();
+            _ = self.child.wait();
+        }
+    }
+
+    fn start(keyed: bool) -> Proc {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cyphr-server"));
+        cmd.args([
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--transport-listen",
+            "127.0.0.1:0",
+        ])
+        .arg("--data-dir")
+        .arg(dir.path().join("data"));
+        if keyed {
+            cmd.arg("--signing-key-path")
+                .arg(common::write_signing_key(dir.path()));
+        }
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cyphr-server");
+        let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+        let mut addr_after = |prefix: &str| {
+            let line = lines.next()?.ok()?;
+            line.strip_prefix(prefix)?.trim().parse::<SocketAddr>().ok()
+        };
+        let http = addr_after("listening on ").expect("the HTTP address line");
+        // The transport line follows the HTTP line when there is one; a
+        // keyless process prints nothing more, so wait a grace period.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(lines.next().and_then(Result::ok)).ok();
+        });
+        let transport = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .ok()
+            .flatten()
+            .and_then(|l| {
+                l.strip_prefix("transport listening on ")?
+                    .trim()
+                    .parse()
+                    .ok()
+            });
+        Proc {
+            child,
+            http,
+            transport,
+            _dir: dir,
+        }
+    }
+
+    let keyed = start(true);
+    let transport = keyed
+        .transport
+        .expect("a keyed server announces the transport");
+    let http = reqwest::Client::new();
+    let discovery: serde_json::Value = http
+        .get(format!("http://{}/server", keyed.http))
+        .send()
+        .await
+        .expect("GET /server")
+        .json()
+        .await
+        .expect("json");
+    let d = &discovery["payload"];
+    let g = &d["genesis"];
+    let genesis = cyphr::Key::new(
+        g["alg"].as_str().expect("alg").to_string(),
+        coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(g["tmb"].as_str().expect("tmb")).expect("tmb"),
+        ),
+        Base64UrlUnpadded::decode_vec(g["pub"].as_str().expect("pub")).expect("pub"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
+    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis);
+    let pool = load_pool();
+    let pr = golden_principal_id(&pool);
+    let pushed = http
+        .post(format!("http://{}/push", keyed.http))
+        .header("content-type", "application/json")
+        .body(build_genesis_push_body(&pool, &pr, 1_700_000_000))
+        .send()
+        .await
+        .expect("push the client principal");
+    assert_eq!(pushed.status(), StatusCode::CREATED);
+    // The server never acknowledges the initiator statement, so a served
+    // request is what shows both ends authenticated.
+    let conn = NoiseConnector::connect(transport, &mut held, &golden_signer(), &pr)
+        .await
+        .expect("the responder statement verifies");
+    conn.exchange(&Request::get("/server"))
+        .await
+        .expect("the keyed process serves the authenticated client");
+
+    let keyless = start(false);
+    assert_eq!(
+        keyless.transport, None,
+        "a keyless server starts no transport"
+    );
+    let status = http
+        .get(format!("http://{}/server", keyless.http))
+        .send()
+        .await
+        .expect("keyless HTTP")
+        .status();
+    assert!(status.is_success(), "a keyless server keeps serving HTTP");
 }

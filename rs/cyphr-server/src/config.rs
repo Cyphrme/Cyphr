@@ -80,6 +80,11 @@ pub struct ServeArgs {
     #[arg(long, env = "CYPHR_LISTEN")]
     pub listen: Option<String>,
 
+    /// Listen address for the Noise transport (e.g., 127.0.0.1:3100). When
+    /// unset the transport is off. A keyless server refuses it.
+    #[arg(long, env = "CYPHR_TRANSPORT_LISTEN")]
+    pub transport_listen: Option<String>,
+
     /// Data directory for blob and index storage.
     #[arg(long, env = "CYPHR_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
@@ -119,6 +124,11 @@ pub struct ServeArgs {
 pub struct ServerConfig {
     /// Listen address.
     pub listen: String,
+
+    /// Listen address for the principal-authenticated Noise transport
+    /// (`crate::transport`). `None` keeps the transport off.
+    #[serde(default)]
+    pub transport_listen: Option<String>,
 
     /// Data directory.
     pub data_dir: PathBuf,
@@ -386,6 +396,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:3000".into(),
+            transport_listen: None,
             data_dir: PathBuf::from("./data"),
             log_format: LogFormat::Pretty,
             mode: ServerMode::Authority,
@@ -460,6 +471,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     if let Command::Serve(ref args) = cli.command {
         if let Some(ref listen) = args.listen {
             config.listen = listen.clone();
+        }
+        if let Some(ref transport_listen) = args.transport_listen {
+            config.transport_listen = Some(transport_listen.clone());
         }
         if let Some(ref data_dir) = args.data_dir {
             config.data_dir = data_dir.clone();
@@ -641,6 +655,7 @@ mod tests {
             config: config_path,
             command: Command::Serve(ServeArgs {
                 listen: None,
+                transport_listen: None,
                 data_dir: None,
                 log_format: None,
                 mode: None,

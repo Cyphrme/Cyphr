@@ -1,0 +1,284 @@
+//! The server end of the principal-authenticated Noise transport
+//! (`cyphr_client::transport`): the responder, and the same router served
+//! over it.
+//!
+//! A session authenticates both ends as Cyphr principals before a single
+//! request is read. The server speaks first: its statement, signed over the
+//! handshake hash through [`AppState::attestor_signer`] (the one accessor
+//! every server signature goes through), proves it is the principal the
+//! client pinned. The client answers only after verifying that, and its
+//! statement is judged against the chain the server stores for the
+//! principal it names, with the same gates a login passes: the key is
+//! active in that chain, the principal is Active, and the key is not in
+//! the naked-revoke death set. A session whose initiator fails any gate is
+//! closed before it is served.
+//!
+//! The carrier adds no authority of its own: an authenticated session is
+//! dispatched through the same router HTTP uses, so every route keeps its
+//! own checks.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use cyphr_client::Method;
+use cyphr_client::transport::{
+    BindStatement, Channel, HANDSHAKE_TIMEOUT, MAX_MESSAGE, Role, TransportError,
+    assemble_statement, decode_request, encode_response, statement_cad, statement_pay,
+};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
+use tower::ServiceExt;
+
+use crate::{AppState, build_router};
+
+/// Sessions served at once. A further connection waits in the listen
+/// backlog rather than costing a task and a buffer.
+const MAX_SESSIONS: usize = 256;
+
+/// How long an authenticated session may sit without a request before the
+/// server closes it.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Why the transport listener did not run.
+#[derive(Debug, thiserror::Error)]
+pub enum ServeError {
+    /// The server has no attestor capability (no signing identity and
+    /// principal), so it has no Cyphr key to prove itself with. The
+    /// transport authenticates the server as a principal; without one it
+    /// refuses to listen rather than serve an unauthenticated session.
+    #[error("the transport needs a keyed server: no signing identity and principal")]
+    Keyless,
+    /// Binding or accepting on the socket failed.
+    #[error("transport listener: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Why one session ended without being served.
+#[derive(Debug, thiserror::Error)]
+enum SessionError {
+    #[error(transparent)]
+    Transport(#[from] TransportError),
+    #[error("responder statement: {0}")]
+    Sign(String),
+    #[error("initiator refused: {0}")]
+    Initiator(&'static str),
+    #[error("initiator lookup: {0}")]
+    Lookup(String),
+}
+
+/// Serve the application router over Noise on `listener`, running until
+/// the listener fails.
+///
+/// # Errors
+///
+/// [`ServeError::Keyless`] before anything is accepted when the server has
+/// no attestor capability; [`ServeError::Io`] when accepting fails.
+pub async fn serve_noise(listener: TcpListener, state: Arc<AppState>) -> Result<(), ServeError> {
+    let router = build_router(state.clone());
+    serve_noise_with(listener, state, router).await
+}
+
+/// [`serve_noise`] with the dispatch router supplied by the caller: the
+/// production entry hands in the full application router (admission and
+/// fences included); a test hands in a hostile one.
+///
+/// # Errors
+///
+/// As [`serve_noise`].
+pub async fn serve_noise_with(
+    listener: TcpListener,
+    state: Arc<AppState>,
+    router: Router,
+) -> Result<(), ServeError> {
+    require_attestor(&state)?;
+    let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
+    loop {
+        // Closed only by `close()`, which nothing here calls.
+        let Ok(permit) = sessions.clone().acquire_owned().await else {
+            return Ok(());
+        };
+        let (stream, peer) = listener.accept().await?;
+        let (state, router) = (state.clone(), router.clone());
+        tokio::spawn(async move {
+            match session(stream, peer, &state, router).await {
+                Ok(()) => tracing::debug!(%peer, "transport session closed"),
+                Err(err) => tracing::warn!(%peer, %err, "transport session ended"),
+            }
+            drop(permit);
+        });
+    }
+}
+
+/// Bind `addr` and serve `router` over Noise in the background, returning
+/// the bound address and the listener task.
+///
+/// # Errors
+///
+/// [`ServeError::Keyless`] (checked before binding) or [`ServeError::Io`].
+pub async fn spawn_noise(
+    addr: &str,
+    state: Arc<AppState>,
+    router: Router,
+) -> Result<(SocketAddr, JoinHandle<()>), ServeError> {
+    require_attestor(&state)?;
+    let listener = TcpListener::bind(addr).await?;
+    let local = listener.local_addr()?;
+    let handle = tokio::spawn(async move {
+        if let Err(err) = serve_noise_with(listener, state, router).await {
+            tracing::error!(%err, "transport listener stopped");
+        }
+    });
+    Ok((local, handle))
+}
+
+fn require_attestor(state: &AppState) -> Result<(), ServeError> {
+    state.attestor_signer().map(drop).ok_or(ServeError::Keyless)
+}
+
+async fn session(
+    stream: TcpStream,
+    peer: SocketAddr,
+    state: &AppState,
+    router: Router,
+) -> Result<(), SessionError> {
+    let mut channel = Channel::respond(stream).await?;
+    let h = channel.handshake_hash().to_vec();
+
+    let statement = responder_statement(state, &h).await?;
+    channel.send_one(&statement).await?;
+
+    let incoming = tokio::time::timeout(HANDSHAKE_TIMEOUT, channel.recv_one())
+        .await
+        .map_err(|_| TransportError::Timeout)??;
+    authorize_initiator(state, &incoming, &h).await?;
+
+    loop {
+        let message = match tokio::time::timeout(IDLE_TIMEOUT, channel.recv_message()).await {
+            Err(_) => return Ok(()),
+            Ok(Err(TransportError::Io(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(());
+            },
+            Ok(message) => message?,
+        };
+        let (status, body) = match decode_request(&message) {
+            Ok(request) => dispatch(&router, peer, request).await,
+            Err(_) => (400, b"malformed request".to_vec()),
+        };
+        channel
+            .send_message(&encode_response(status, &body))
+            .await?;
+    }
+}
+
+/// The server's own statement: signed through the attestor backend, naming
+/// the server principal and the key that signs.
+async fn responder_statement(state: &AppState, h: &[u8]) -> Result<Vec<u8>, SessionError> {
+    let sign_err = |why: &str| SessionError::Sign(why.to_string());
+    let (principal, _) = state
+        .attestor()
+        .ok_or_else(|| sign_err("the server lost its attestor capability"))?;
+    let signer = state
+        .attestor_signer()
+        .ok_or_else(|| sign_err("the server lost its attestor capability"))?;
+    let (alg, pub_key) = (signer.alg(), signer.pub_key());
+    let tmb = coz::compute_thumbprint_for_alg(alg, pub_key)
+        .ok_or_else(|| sign_err("no thumbprint for the signing key"))?;
+    let now = crate::auth::server_now();
+    let pay = statement_pay(alg, &tmb, principal.pg(), Role::Responder, h, now)?;
+    let cad = statement_cad(alg, &pay)?;
+    let sig = signer
+        .sign(&cad)
+        .await
+        .map_err(|e| SessionError::Sign(e.to_string()))?;
+    // A backend that signs badly would hand every client a refusal; catch
+    // it here, where the cause is named.
+    if coz::verify_json(&pay, &sig, alg, pub_key) != Some(true) {
+        return Err(sign_err(
+            "the signature does not verify under the signing key",
+        ));
+    }
+    Ok(assemble_statement(&pay, &sig)?)
+}
+
+/// Judge the initiator's statement: bound to this session and role, and
+/// signed by a key that is active in the stored chain of the principal it
+/// names.
+async fn authorize_initiator(
+    state: &AppState,
+    incoming: &[u8],
+    h: &[u8],
+) -> Result<(), SessionError> {
+    let statement = BindStatement::parse(incoming)?;
+    statement.expect(Role::Initiator, h)?;
+
+    let pr = statement.pr();
+    let lookup = |e: cyphr_storage::engine::EngineError| SessionError::Lookup(e.to_string());
+    let genesis = state
+        .engine
+        .resolve_genesis(pr, &[])
+        .await
+        .map_err(lookup)?;
+    let principal = state
+        .engine
+        .load_principal(pr, genesis)
+        .await
+        .map_err(lookup)?;
+
+    // `get_key` also returns revoked keys, so activity is its own check.
+    let key = principal
+        .get_key(statement.tmb())
+        .ok_or(SessionError::Initiator("the key is not the principal's"))?;
+    statement.verify(key)?;
+    if !principal.is_key_active(statement.tmb()) {
+        return Err(SessionError::Initiator("the key is not active"));
+    }
+    if principal.lifecycle_state() != cyphr::lifecycle::LifecycleState::Active {
+        return Err(SessionError::Initiator("the principal is not active"));
+    }
+    // Naked revoke (SPEC 6.4) is global by thumbprint and invisible to the chain.
+    if state
+        .observations
+        .is_dead(statement.tmb())
+        .await
+        .map_err(|e| SessionError::Lookup(e.to_string()))?
+    {
+        return Err(SessionError::Initiator("the key was naked-revoked"));
+    }
+    Ok(())
+}
+
+/// Run one decoded request through `router` and return the status and body
+/// of its answer.
+async fn dispatch(
+    router: &Router,
+    peer: SocketAddr,
+    request: cyphr_client::Request,
+) -> (u16, Vec<u8>) {
+    let method = match request.method {
+        Method::Get => axum::http::Method::GET,
+        Method::Post => axum::http::Method::POST,
+    };
+    let built = axum::http::Request::builder()
+        .method(method)
+        .uri(&request.target)
+        .header("accept", "application/json")
+        .header("content-type", "application/json")
+        .body(Body::from(request.body));
+    let mut http = match built {
+        Ok(http) => http,
+        Err(_) => return (400, b"malformed request target".to_vec()),
+    };
+    // The per-IP fence keys on the peer the kernel reports.
+    http.extensions_mut().insert(ConnectInfo(peer));
+    let Ok(response) = router.clone().oneshot(http).await;
+    let status = response.status().as_u16();
+    match axum::body::to_bytes(response.into_body(), MAX_MESSAGE - 2).await {
+        Ok(bytes) => (status, bytes.to_vec()),
+        Err(_) => (500, b"response too large".to_vec()),
+    }
+}
