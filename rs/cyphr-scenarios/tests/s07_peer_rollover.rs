@@ -17,7 +17,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(evidence): N18a"]
+#[ignore = "RED(peer-rollover): N20"]
 async fn s07_peer_rollover() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[
