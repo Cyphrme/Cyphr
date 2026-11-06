@@ -135,6 +135,30 @@ fn now_bound_far_future_is_refused_on_every_entry_path() {
     assert!(create.is_err(), "key/create at i64::MAX accepted");
 }
 
+/// Backs SPEC 6.4: the 2^53 - 1 ceiling holds whatever the clock says.
+/// Scenario: a principal whose injected clock is broken (reads `i64::MAX`)
+/// is offered a data action at 2^53; it is refused, while 2^53 - 1 is
+/// accepted. Turns red if the range ceiling is dropped and only the clock
+/// bounds `now`. Unit-level on purpose: only an injected clock can reach it.
+#[test]
+fn now_bound_range_ceiling_holds_for_a_runaway_clock() {
+    let outcome = |at: i64| {
+        let g = kp();
+        let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+        p.set_clock(|| i64::MAX);
+        let (pay, sig, czd) = sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
+        );
+        p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
+    };
+    outcome(MAX_SAFE).expect("control: 2^53 - 1 is in range");
+    assert!(
+        matches!(outcome(MAX_SAFE + 1), Err(cyphr::Error::TimestampFuture)),
+        "2^53 accepted under a runaway clock"
+    );
+}
+
 /// `body` with every coz (the genesis key's `key/create` and the closing
 /// `commit/create`, both signed by `golden`) re-signed at `now`. One shared
 /// `now` keeps the bundle monotone, so the only defect left in it is the
