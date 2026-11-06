@@ -409,7 +409,18 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// State mutations are applied sequentially to the projected state,
     /// but the cozies are grouped in the Merkle tree.
+    ///
+    /// # Errors
+    ///
+    /// `MixedTransactionTyp` if the cozies do not all carry one identical
+    /// `typ` (SPEC §4.1); nothing is applied in that case.
     pub fn apply_tx(&mut self, vts: Vec<VerifiedCoz>) -> crate::error::Result<()> {
+        let typ_of = |vt: &VerifiedCoz| vt.raw().pay.get("typ").cloned();
+        if let Some(first) = vts.first().map(typ_of) {
+            if vts.iter().any(|vt| typ_of(vt) != first) {
+                return Err(crate::error::Error::MixedTransactionTyp);
+            }
+        }
         let mut tx = Vec::with_capacity(vts.len());
         for vt in vts {
             self.projected.apply_verified_internal(vt.clone())?;

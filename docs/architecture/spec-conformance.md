@@ -48,20 +48,18 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   41 |
+| `covered`      |   46 |
 | `red-existing` |    0 |
-| `red-new`      |    9 |
+| `red-new`      |    4 |
 | `not-testable` |   14 |
 | `out-of-scope` |    8 |
 | `total`        |   72 |
 
 Fixing ids on red rows: `q3` is the last-key
 self-revoke decision (the code allows no revoke of the only key; SPEC allows
-it and leaves the principal Dead). `SC1-F1` (frozen principals reject
-mutations), `SC1-F2` (in-commit `rvk` and `now` bounds), `SC1-F3` (Key Tree
-arity), `SC1-F5` (default future-timestamp tolerance)
-and `SC1-F6` (identical `typ` in a transaction) have no fixing node yet; they
-are tracking ids until one is assigned.
+it and leaves the principal Dead). `SC1-F3` (Key Tree arity) and `SC1-F5`
+(default future-timestamp tolerance) have no fixing node yet; they are
+tracking ids until one is assigned.
 
 ## Rows
 
@@ -223,17 +221,18 @@ evaluator: none
 
 ### [sc-l252]
 
-SPEC 2.3.2, line 252. Disposition: `red-new`.
+SPEC 2.3.2, line 252. Disposition: `covered`.
 
 - spec-line: 252
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: 3. **Lifecycle gate**: The principal's current lifecycle state must permit the
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s11_2_frozen_principal_rejects_key_mutations`
+  - `rs/cyphr/tests/spec_conformance.rs::frozen_principal_rejects_data_actions_until_thawed`
   - `rs/cyphr/src/principal/tests/lifecycle.rs::key_create_on_deleted_principal_is_rejected`
   - `rs/cyphr/src/principal/tests/lifecycle.rs::data_action_on_deleted_principal_is_rejected`
-- fails when: a frozen principal accepts a key mutation (red today: `frozen` is recorded but never consulted by the apply gate), or a deleted principal accepts any transaction or action (green).
+- fails when: a frozen principal accepts a key mutation or a data action (its lifecycle cozies freeze/delete, freeze/create, principal/delete and the commit finalizer are the only transactions it takes), or a deleted principal accepts any transaction or action.
 
 ```claim
 kind: requirement
@@ -266,6 +265,7 @@ SPEC 3.1, line 298. Disposition: `red-new`.
 - spec-text: - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
+  - `rs/cyphr/tests/spec_conformance.rs::s3_1_dead_principal_after_last_key_revoke_records_no_action`
 - fails when: a self-revoke of a principal's only key is refused with `NoActiveKeys` (red today). SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. While the code refuses, Mallory who copies Alice's only key keeps it usable after Alice's revoke is refused. The code and the golden vector `errors/last_key_revoke_fails`, plus `principal.rs::self_revoke_last_key_prevented`, encode the opposite; the vector is not flipped here (pending nrd) and the fix regenerates the corpus.
 
 ```claim
@@ -292,15 +292,15 @@ evaluator: none
 
 ### [sc-l468]
 
-SPEC 4.1, line 468. Disposition: `red-new`.
+SPEC 4.1, line 468. Disposition: `covered`.
 
 - spec-line: 468
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: of PT. All cozies for a particular transaction contain an identical `typ`, which
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s4_1_transaction_cozies_must_share_one_typ`
-- fails when: a transaction holding cozies of different `typ` is applied (red today: `apply_tx` never compares `typ`).
+- fails when: a transaction holding cozies of different `typ` is applied.
 
 ```claim
 kind: requirement
@@ -515,16 +515,16 @@ evaluator: test
 
 ### [sc-l1067]
 
-SPEC 6.4, line 1067. Disposition: `red-new`.
+SPEC 6.4, line 1067. Disposition: `covered`.
 
 - spec-line: 1067
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: > `rvk` and `now` must be a positive integer less than 2^53 – 1
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s6_4_revoke_rvk_must_be_a_positive_bounded_integer`
   - `rs/cyphr/tests/spec_conformance.rs::s6_4_revoke_now_must_be_a_positive_bounded_integer`
-- fails when: an in-commit `key/revoke` with `rvk` of 0, a negative value or 2^53, or `now` of 0 or 2^53, is accepted (red today: both fields are plain `i64`; the naked-revoke path in the server bounds `rvk`).
+- fails when: an in-commit `key/revoke` with `rvk` of 0, a negative value or 2^53, or `now` of 0 or 2^53, is accepted; 2^53-1 is in range for both.
 
 ```claim
 kind: requirement
@@ -533,16 +533,16 @@ evaluator: none
 
 ### [sc-l1069]
 
-SPEC 6.4, line 1069. Disposition: `red-new`.
+SPEC 6.4, line 1069. Disposition: `covered`.
 
 - spec-line: 1069
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: > IEEE754 minus one. Revoke checks must error if `rvk` is not an integer or
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s6_4_revoke_rvk_must_be_a_positive_bounded_integer`
   - `rs/cyphr-server/tests/naked_revoke.rs::rejects_malformed_rvk`
-- fails when: a revoke check accepts a non-integer or oversized `rvk`: green on the naked-revoke path (`rejects_malformed_rvk`), red on the in-commit path.
+- fails when: a revoke check accepts a non-integer or oversized `rvk`: checked on the naked-revoke path (`rejects_malformed_rvk`) and the in-commit path.
 
 ```claim
 kind: requirement
@@ -805,15 +805,16 @@ evaluator: none
 
 ### [sc-l1862]
 
-SPEC 11.2, line 1862. Disposition: `red-new`.
+SPEC 11.2, line 1862. Disposition: `covered`.
 
 - spec-line: 1862
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: unfrozen via `freeze/delete`. No mutations until unfrozen.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s11_2_frozen_principal_rejects_key_mutations`
-- fails when: a frozen principal accepts a key mutation (the same defect as line 252).
+  - `rs/cyphr/tests/spec_conformance.rs::frozen_principal_rejects_data_actions_until_thawed`
+- fails when: a frozen principal accepts a key mutation or a data action (the same gate as line 252).
 
 ```claim
 kind: requirement

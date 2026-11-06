@@ -114,8 +114,8 @@ fn load_pool() -> test_fixtures::Pool {
 /// shares the same underlying durable commit log rather than deep-copying
 /// it (two clones both trying to append "the next commit" collide on the
 /// same leaf position instead of chaining).
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
+fn sign_key_create_commit<S: eml::Storage>(
+    mut principal: cyphr::Principal<S>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
     new_key_name: &str,
@@ -361,8 +361,9 @@ async fn push_with_mismatched_token_pr_rejected() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(
+        .issue_login_token(
             "a-different-principal",
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["write".to_string()],
             real_now(),
             300,
@@ -392,8 +393,9 @@ async fn push_with_matching_token_pr_succeeds() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(
+        .issue_login_token(
             principal_id,
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["read".to_string(), "write".to_string()],
             real_now(),
             300,
@@ -577,5 +579,414 @@ async fn entity_succeeds_with_no_bearer_token() {
         StatusCode::NOT_FOUND,
         "GET /e/{{digest}} must be public: unknown digest is 404, never a 401/403 auth rejection: \
          {json:?}"
+    );
+}
+
+// ========================================================================
+// Session liveness across a key's removal from the chain (#162)
+// ========================================================================
+
+const AUDIENCE: &str = "cyphr.me";
+
+/// An `AppState` with a signing identity AND a login audience, so
+/// `/auth/login` can mint real tokens for `/push` to judge.
+fn state_with_login() -> Arc<AppState> {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let key_path = temp_dir.path().join("signing-key.json");
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let key_file = serde_json::json!({
+        "alg": kp.alg.name(),
+        "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+    });
+    std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();
+    let config = ServerConfig {
+        data_dir: temp_dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: Some(AUDIENCE.to_string()),
+        ..Default::default()
+    };
+    std::mem::forget(temp_dir);
+    Arc::new(AppState::new(config).expect("failed to open AppState with login"))
+}
+
+/// A signed timestamp-flow login body for `signer_name` claiming `pr`.
+/// Mirrors `tests/login.rs::login_body` (a separate integration crate).
+fn login_body(pool: &test_fixtures::Pool, signer_name: &str, pr: &str) -> String {
+    let signer = pool.get(signer_name).expect("signer in pool");
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
+        .expect("signer prv b64");
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("signer pub b64");
+
+    let mut pay = coz::Pay::new();
+    pay.alg = Some(signer.alg.clone());
+    pay.now = Some(real_now());
+    pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
+    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.extra
+        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+
+    let pay_bytes = serde_json::to_vec(&pay).unwrap();
+    let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign login");
+    serde_json::to_string(&coz::CozJson {
+        pay: serde_json::to_value(&pay).unwrap(),
+        sig,
+    })
+    .unwrap()
+}
+
+/// Log in and return the issued bearer token.
+async fn login_token(
+    state: &Arc<AppState>,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    pr: &str,
+) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(login_body(pool, signer_name, pr)))
+        .unwrap();
+    let (status, json) = send(req, build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{signer_name} login: {json:?}");
+    json["payload"]["token"]
+        .as_str()
+        .expect("token in login response")
+        .to_string()
+}
+
+/// A signed "self-revoke `signer_name`" commit onto `principal`, wire-ready
+/// for `submit_commit`. Mirrors `tests/login.rs::sign_key_revoke_commit`.
+fn sign_key_revoke_commit<S: eml::Storage>(
+    mut principal: cyphr::Principal<S>,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    rvk: i64,
+) -> Vec<Vec<u8>> {
+    let signer = pool.get(signer_name).expect("signer key in pool");
+    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
+    let pay_vec = serde_json::to_vec(&serde_json::json!({
+        "alg": signer.alg,
+        "now": rvk,
+        "rvk": rvk,
+        "tmb": signer_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/revoke",
+    }))
+    .unwrap();
+
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).unwrap();
+    let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &prv, &pub_key).expect("sign revoke");
+    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay_vec, &sig, czd, None)
+        .expect("key/revoke verifies against the starting principal");
+    let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&signer_tmb_b64).unwrap());
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &prv, &pub_key, &tmb),
+            rvk,
+            "cyphr.me",
+        )
+        .expect("commit finalizes");
+
+    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
+    entries
+        .last()
+        .expect("at least one commit after finalize")
+        .cozies
+        .iter()
+        .map(|v| serde_json::to_vec(v).expect("cozy serializes"))
+        .collect()
+}
+
+/// A principal holding `golden` + `key_a`, a session token for each, then
+/// `key_a` removed from the chain by a real `key/revoke` commit. Returns
+/// the state, a follow-up `/push` body (a `key_b` add, validly signed by
+/// the surviving `golden`), and the two tokens (revoked key's, survivor's).
+async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
+    let state = state_with_login();
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool);
+    let pid = pid.as_str();
+
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000);
+    let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
+
+    let revoked_token = login_token(&state, &pool, "key_a", pid).await;
+    let survivor_token = login_token(&state, &pool, "golden", pid).await;
+
+    let load = || async {
+        let genesis = state
+            .engine
+            .resolve_genesis(pid, &[])
+            .await
+            .expect("resolve genesis");
+        state
+            .engine
+            .load_principal(pid, genesis)
+            .await
+            .expect("load principal")
+    };
+    let blobs = sign_key_revoke_commit(load().await, &pool, "key_a", 1_700_000_100);
+    let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    state
+        .engine
+        .submit_commit(pid, None, &slices)
+        .await
+        .expect("submit the revoke commit");
+
+    let (followup, _entry) =
+        sign_key_create_commit(load().await, &pool, "golden", "key_b", 1_700_000_200);
+    let followup_body = serde_json::json!({
+        "principal_id": pid,
+        "blobs": followup.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+    })
+    .to_string();
+    (state, followup_body, revoked_token, survivor_token)
+}
+
+/// Backs: a session minted by a key stays live only while that key is in
+/// the chain; the revocation is applied and the surviving sibling key's
+/// session still works (a no-op "refuse every token" gate fails this).
+/// Turns red if: a token is judged by signature and expiry alone.
+/// Characterization (green today). End to end: yes.
+#[tokio::test]
+async fn token_key_survivor_session_outlives_sibling_revoke() {
+    let (state, followup, _revoked, survivor) = revoked_key_session().await;
+    let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the surviving key's session must still authorize its principal's push: {json:?}"
+    );
+}
+
+/// Backs: a removed or revoked key cannot keep a session alive (#162).
+/// Turns red if: the token minted by `key_a` is accepted after `key_a` left
+/// the chain (verify_token checks signature, typ and exp only). Catches
+/// the lying implementation that leaves `verify_token` unchanged. The
+/// follow-up push is otherwise valid (control: the survivor test above).
+/// End to end: yes.
+#[tokio::test]
+async fn token_key_revoked_session_refused_at_push() {
+    let (state, followup, revoked, _survivor) = revoked_key_session().await;
+    let (status, json) = send(push_request(followup, Some(&revoked)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a session whose key was revoked from the chain must be refused: {json:?}"
+    );
+}
+
+/// Backs: signon-token-kind-binding end to end. A message the server
+/// genuinely signed under a different `typ`, naming the target principal
+/// and unexpired, is refused as a bearer token at the route. Turns red if
+/// the `typ` binding is dropped from `verify_token` (the push then
+/// succeeds with 201). Characterization (green today). Complements the
+/// `verify_token` unit test, which cannot see the route. End to end: yes.
+#[tokio::test]
+async fn bearer_refuses_server_signed_non_token() {
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool);
+    let state = state_with_login();
+    let identity = state.identity.as_ref().unwrap();
+
+    let mut pay = coz::Pay::new();
+    pay.alg = Some(identity.alg().name().to_string());
+    pay.now = Some(real_now());
+    pay.tmb = Some(pool.get("golden").unwrap().compute_tmb().unwrap());
+    pay.typ = Some("cyphr-server/auth/not-a-token".to_string());
+    pay.extra
+        .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+    pay.extra
+        .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
+    pay.extra
+        .insert("perms".to_string(), serde_json::json!(["write"]));
+    let pay_json = serde_json::to_vec(&pay).unwrap();
+    let (sig, _cad) = identity.sign(&pay_json).expect("server signs");
+    let forged = serde_json::to_string(&coz::CozJson {
+        pay: serde_json::to_value(&pay).unwrap(),
+        sig,
+    })
+    .unwrap();
+
+    let body = build_genesis_push_body(&pool, &pid, 1_700_000_000);
+    let (status, json) = send(push_request(body, Some(&forged)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a genuine server signature under a non-token typ must not authorize a push: {json:?}"
+    );
+}
+
+/// Backs: a session names a key that is in the chain; a token whose login
+/// key the principal does not hold (a deleted key looks identical to the
+/// chain: absent) is refused as KeyNotActive, not merely as Revoked, and
+/// a token with no login key at all is refused. Turns red if: the
+/// absent-key arm is dropped (a never-held key then authorizes) or a
+/// token without `ltmb` is admitted for an existing principal. End to
+/// end: yes. Control: the survivor test above.
+#[tokio::test]
+async fn token_key_absent_or_missing_is_refused_at_push() {
+    let (state, followup, _revoked, _survivor) = revoked_key_session().await;
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool);
+    let identity = state.identity.as_ref().unwrap();
+    let stranger = coz::Alg::Ed25519
+        .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
+        .expect("thumbprint");
+    let perms = || vec!["write".to_string()];
+
+    let absent = identity
+        .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300)
+        .expect("issue token");
+    // What no login mints: a genuine server-signed bearer token naming no
+    // login key (built by hand; issuance has no such path).
+    let unbound = {
+        let mut pay = coz::Pay::new();
+        pay.alg = Some(identity.alg().name().to_string());
+        pay.now = Some(real_now());
+        pay.tmb = identity.alg().compute_thumbprint(identity.pub_key());
+        pay.typ = Some(cyphr_server::auth::token::BEARER_TOKEN_TYP.to_string());
+        pay.extra
+            .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+        pay.extra
+            .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
+        pay.extra
+            .insert("perms".to_string(), serde_json::json!(perms()));
+        let (sig, _cad) = identity.sign(&serde_json::to_vec(&pay).unwrap()).unwrap();
+        serde_json::to_string(&coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig,
+        })
+        .unwrap()
+    };
+
+    for (label, token, reason) in [
+        ("absent key", absent, "not an active key"),
+        ("no login key", unbound, "names no login key"),
+    ] {
+        let (status, json) = send(
+            push_request(followup.clone(), Some(&token)),
+            build_router(state.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{label}: a session not backed by an active key must be refused: {json:?}"
+        );
+        assert!(
+            json.to_string().contains(reason),
+            "{label}: refused for the wrong reason (want `{reason}`): {json:?}"
+        );
+    }
+}
+
+/// POST a self-signed naked revoke (SPEC 6.4) of pool key `name`, which
+/// discloses its own key, to `/revoke`. Mirrors `tests/naked_revoke.rs`.
+async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &str) {
+    let key = pool.get(name).expect("key in pool");
+    let pay = serde_json::json!({
+        "alg": key.alg,
+        "now": 1_700_000_300,
+        "rvk": 1_700_000_300,
+        "tmb": key.compute_tmb_b64().expect("tmb"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let prv = Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&key.pub_key).unwrap();
+    let (sig, _cad) =
+        coz::sign_json(&serde_json::to_vec(&pay).unwrap(), &key.alg, &prv, &pub_key).unwrap();
+    let body = serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": { "alg": key.alg, "pub": key.pub_key },
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/revoke")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (status, json) = send(req, build_router(state.clone())).await;
+    assert!(
+        status.is_success(),
+        "naked revoke accepted: {status} {json:?}"
+    );
+}
+
+/// Backs: a session lives only while its login key is alive, and a naked
+/// revoke (SPEC 6.4) kills a key globally without touching the chain. The
+/// key that opened a session is naked-revoked after login: its token is
+/// refused at `/push` and by `require_bearer`, while the sibling key's
+/// session (control) still authorizes the same push. Turns red if: the
+/// session check consults the chain only (the death-set is skipped), so
+/// the token keeps working until it expires. End to end: yes.
+#[tokio::test]
+async fn token_key_naked_revoked_session_refused() {
+    let state = state_with_login();
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool);
+    let pid = pid.as_str();
+
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000);
+    let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
+
+    let doomed = login_token(&state, &pool, "key_a", pid).await;
+    let survivor = login_token(&state, &pool, "golden", pid).await;
+    naked_revoke(&state, &pool, "key_a").await;
+
+    let genesis = state.engine.resolve_genesis(pid, &[]).await.unwrap();
+    let principal = state.engine.load_principal(pid, genesis).await.unwrap();
+    let (blobs, _entry) =
+        sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400);
+    let followup = serde_json::json!({
+        "principal_id": pid,
+        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+    })
+    .to_string();
+
+    let (status, json) = send(
+        push_request(followup.clone(), Some(&doomed)),
+        build_router(state.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a naked-revoked key's session must be refused at push: {json:?}"
+    );
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {doomed}").parse().unwrap(),
+    );
+    let identity = state.identity.as_deref().unwrap();
+    let refused = cyphr_server::auth::middleware::require_bearer(
+        &headers,
+        identity,
+        &state.engine,
+        &state.observations,
+        real_now(),
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "a naked-revoked key's session must be refused by require_bearer"
+    );
+
+    let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the sibling key's session must still authorize the push: {json:?}"
     );
 }

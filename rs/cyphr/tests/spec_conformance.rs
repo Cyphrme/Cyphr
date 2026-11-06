@@ -231,7 +231,6 @@ fn lifecycle_pay(signer: &Kp, p: &Principal, suffix: &str, now: i64) -> serde_js
 /// principal while it is frozen. RED: `apply_verified_internal` gates only
 /// `deleted`; `frozen` is recorded and never consulted. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F1): SPEC 2.3.2 frozen principal accepts mutations"]
 fn s11_2_frozen_principal_rejects_key_mutations() {
     let frozen = || {
         let (mut p, a, b) = two_key_principal();
@@ -267,6 +266,23 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
     {
         accepted.push("key/delete");
     }
+    let (mut p, a, _) = frozen();
+    let k4 = kp();
+    if commit_one(
+        &mut p,
+        &a,
+        sign(
+            &a,
+            json!({"alg": a.alg, "id": b64(&k4.tmb), "now": T + 2, "tmb": b64(&a.tmb),
+                   "typ": "cyphr.me/cyphr/key/replace"}),
+        ),
+        Some(key_of(&k4)),
+        T + 3,
+    )
+    .is_ok()
+    {
+        accepted.push("key/replace");
+    }
     let (mut p, _, b) = frozen();
     if commit_one(
         &mut p,
@@ -298,6 +314,51 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
     .expect("control: key/create is accepted once thawed");
 }
 
+/// Backs the freeze scope ruled from SPEC 2.3.2 ("a frozen principal
+/// rejects mutations"), 11 ("No mutations until unfrozen"), 4.1 (a
+/// transaction "results in a mutation of PT") and 14.9: a frozen principal
+/// cannot change at all except by being unfrozen. Scenario: a two-key
+/// principal records a data action (control: accepted while active),
+/// freezes, then a data action signed by an active key is attempted; it
+/// must be refused and leave every observable counter untouched. Then
+/// `freeze/delete` is accepted, the principal is no longer frozen, and the
+/// same action shape is accepted again, so the refusal is the freeze and not
+/// a blanket ban. Turns red if a data action is recorded while frozen, or
+/// if thawing does not restore the principal. End to end: yes.
+#[test]
+fn frozen_principal_rejects_data_actions_until_thawed() {
+    let action = |k: &Kp, now: i64| {
+        sign(
+            k,
+            json!({"alg": k.alg, "msg": "hello", "now": now, "tmb": b64(&k.tmb),
+                   "typ": "cyphr.me/comment/create"}),
+        )
+    };
+    let record = |p: &mut Principal, k: &Kp, now: i64| {
+        let (pay, sig, czd) = action(k, now);
+        p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
+    };
+
+    let (mut p, a, _) = two_key_principal();
+    record(&mut p, &a, T).expect("control: an active principal records an action");
+    let f = sign(&a, lifecycle_pay(&a, &p, "freeze/create", T + 1));
+    commit_one(&mut p, &a, f, None, T + 2).expect("premise: freeze/create applies");
+    assert!(p.is_frozen(), "premise: principal is frozen");
+
+    let before = snapshot(&p);
+    let r = record(&mut p, &a, T + 3);
+    assert!(
+        matches!(r, Err(cyphr::error::Error::Frozen)),
+        "a frozen principal must refuse an action with Frozen: {r:?}"
+    );
+    assert_eq!(before, snapshot(&p), "a refused action changed state");
+
+    let thaw = sign(&a, lifecycle_pay(&a, &p, "freeze/delete", T + 4));
+    commit_one(&mut p, &a, thaw, None, T + 5).expect("freeze/delete is accepted while frozen");
+    assert!(!p.is_frozen(), "freeze/delete must unfreeze the principal");
+    record(&mut p, &a, T + 6).expect("control: the thawed principal records actions again");
+}
+
 // ============================================================================
 // SPEC 6.4 (lines 1067, 1069): rvk and now bounds
 // ============================================================================
@@ -326,7 +387,6 @@ fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::R
 /// RED: in-commit `key/revoke` parses `rvk` as any `i64` and never bounds
 /// it (the naked-revoke path in the server does). End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F2): SPEC 6.4 in-commit rvk unbounded"]
 fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
     let cases = [
         ("zero", json!(0)),
@@ -357,7 +417,6 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
 /// is read as any `i64` and only compared with the principal's latest
 /// timestamp, so zero and 2^53 pass. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F2): SPEC 6.4 now unbounded"]
 fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
     let mut accepted = vec![];
     for (label, now) in [
@@ -1445,7 +1504,7 @@ fn s11_2_dead_principal_accepts_no_transaction_or_action() {
 /// must show nothing of the first transaction, and a fresh commit must still
 /// build. Turns red if any part of a failed commit leaks into the principal.
 /// End to end: yes.
-// @docket: sc-l3350 :: scripts/docket-run sc-l3351
+// @docket: sc-l3350 :: scripts/docket-run sc-l3350
 // @docket: sc-l3353 :: scripts/docket-run sc-l3353
 #[test]
 fn s19_5_failed_commit_leaves_no_partial_state() {
@@ -1490,7 +1549,6 @@ fn s19_5_failed_commit_leaves_no_partial_state() {
 /// Turns red if a transaction of mixed `typ` is applied. RED: `apply_tx`
 /// groups cozies without comparing their `typ`. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F6): SPEC 4.1 mixed-typ transaction accepted"]
 fn s4_1_transaction_cozies_must_share_one_typ() {
     let verified = |p: &Principal, coz: Signed, sidecar: Option<Key>, signer: &Kp| {
         let (pay, sig, czd) = coz;
@@ -1645,4 +1703,59 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
         T + 3,
     );
     assert!(r.is_err(), "a dead principal took a key/create: {r:?}");
+}
+
+/// Backs SPEC 11 (Dead: "no transactions or actions are possible") for the
+/// last-key revoke. Scenario: the only key of a principal records a data
+/// action (control: accepted while alive), then self-revokes (must be
+/// accepted), then tries a second action with the same, now revoked, key:
+/// that must be refused and leave every observable counter untouched. A
+/// second principal that kept a key shows the same action shape is still
+/// accepted after a sibling's revoke, so the refusal is the Dead state and
+/// not a blanket action ban. Turns red if the last-key revoke is refused
+/// (today), or if a Dead principal records an action. Catches a lying fix
+/// that gates only the transaction path and leaves actions open, and a
+/// no-op fix that flags Dead without revoking the key. RED: the core returns
+/// `NoActiveKeys` for the revoke. End to end: yes.
+#[test]
+#[ignore = "RED(q3): SPEC 3.1 last-key self-revoke refused"]
+fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
+    let action = |k: &Kp, now: i64| {
+        sign(
+            k,
+            json!({"alg": k.alg, "msg": "hello", "now": now, "tmb": b64(&k.tmb),
+                   "typ": "cyphr.me/comment/create"}),
+        )
+    };
+    let record = |p: &mut Principal, k: &Kp, now: i64| {
+        let (pay, sig, czd) = action(k, now);
+        p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
+    };
+
+    let (mut two, a, b) = two_key_principal();
+    commit_one(
+        &mut two,
+        &b,
+        sign(&b, revoke_pay(&b, T, json!(T))),
+        None,
+        T + 1,
+    )
+    .expect("control: a sibling's revoke is accepted");
+    record(&mut two, &a, T + 2).expect("control: the surviving key still records actions");
+
+    let g = kp();
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    record(&mut p, &g, T).expect("control: the lone key records an action while alive");
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, revoke_pay(&g, T + 1, json!(T + 1))),
+        None,
+        T + 2,
+    );
+    assert!(r.is_ok(), "the only key's self-revoke was refused: {r:?}");
+    let before = snapshot(&p);
+    let r = record(&mut p, &g, T + 3);
+    assert!(r.is_err(), "a dead principal recorded an action: {r:?}");
+    assert_eq!(before, snapshot(&p), "a refused action changed state");
 }

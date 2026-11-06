@@ -19,7 +19,9 @@ use crate::state::{AuthRoot, PrincipalRoot};
 /// The full typ is constructed at the call site as `{authority}/{suffix}`,
 /// where authority is the deployment domain (e.g., `cyphr.me`).
 ///
-/// Parsers match via `ends_with(suffix)` to remain authority-agnostic.
+/// Parsers match via [`typ::has_suffix`], which stays authority-agnostic but
+/// demands a `/` between the authority and the suffix, so a typ such as
+/// `cyphr.me/xcyphr/key/create` is not read as `key/create`.
 pub mod typ {
     /// `<authority>/cyphr/key/create` - Create a new key (Level 3+)
     pub const KEY_CREATE: &str = "cyphr/key/create";
@@ -46,7 +48,20 @@ pub mod typ {
     /// Canonical predicate: callers MUST use this rather than re-deriving the
     /// same classification from hardcoded typ substrings.
     pub fn is_key_introducing(typ: &str) -> bool {
-        typ.ends_with(KEY_CREATE) || typ.ends_with(KEY_REPLACE)
+        has_suffix(typ, KEY_CREATE) || has_suffix(typ, KEY_REPLACE)
+    }
+
+    /// Returns true if `typ` is exactly `suffix` (SPEC §7.3: with the
+    /// protocol itself as authority) or `<authority>/<suffix>` for a
+    /// non-empty authority. The suffix must start at a path-segment
+    /// boundary, or a foreign segment that merely ends in the suffix text
+    /// would classify.
+    pub fn has_suffix(typ: &str, suffix: &str) -> bool {
+        typ == suffix
+            || typ
+                .strip_suffix(suffix)
+                .and_then(|authority| authority.strip_suffix('/'))
+                .is_some_and(|authority| !authority.is_empty())
     }
 }
 
@@ -175,6 +190,10 @@ impl ParsedCoz {
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
         let kind = Self::parse_kind(pay, typ, &signer)?;
+        // SPEC §6.4: `now` on a revoke has the same range as `rvk`.
+        if matches!(kind, CozKind::SelfRevoke { .. }) && !coz::is_valid_rvk(now) {
+            return Err(Error::MalformedPayload);
+        }
         let arrow = Self::extract_arrow(pay)?;
         Ok(Self {
             kind,
@@ -227,39 +246,44 @@ impl ParsedCoz {
     /// Parse the coz kind from typ and payload fields.
     fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<CozKind> {
         // Check if typ ends with a known coz type
-        if typ.ends_with(typ::KEY_CREATE) {
+        if typ::has_suffix(typ, typ::KEY_CREATE) {
             let id = Self::extract_id(pay)?;
             Ok(CozKind::KeyCreate { id })
-        } else if typ.ends_with(typ::KEY_DELETE) {
+        } else if typ::has_suffix(typ, typ::KEY_DELETE) {
             let id = Self::extract_id(pay)?;
             Ok(CozKind::KeyDelete { id })
-        } else if typ.ends_with(typ::KEY_REPLACE) {
+        } else if typ::has_suffix(typ, typ::KEY_REPLACE) {
             let id = Self::extract_id(pay)?;
             Ok(CozKind::KeyReplace { id })
-        } else if typ.ends_with(typ::KEY_REVOKE) {
+        } else if typ::has_suffix(typ, typ::KEY_REVOKE) {
             // Self-revoke: signer revokes itself. `id` MUST be absent — the
             // signer IS the revoked key. Presence of `id` is a malformed payload.
             // [no-revoke-non-self]: non-self revoke is not permitted at any level.
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
+            // SPEC §6.4: `rvk` is an integer in 1..=2^53-1 (the Coz
+            // reference implementations reject only above 2^53-1).
+            if !coz::is_valid_rvk(rvk) {
+                return Err(Error::MalformedPayload);
+            }
             if Self::try_extract_id(pay).is_some() {
                 return Err(Error::MalformedPayload);
             }
             Ok(CozKind::SelfRevoke { rvk })
-        } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
+        } else if typ::has_suffix(typ, typ::PRINCIPAL_CREATE) {
             // Genesis finalization (SPEC §5.1)
             // `id` is final AS (becomes PR)
             let id = Self::extract_as(pay)?;
             Ok(CozKind::PrincipalCreate { id })
-        } else if typ.ends_with(typ::COMMIT_CREATE) {
+        } else if typ::has_suffix(typ, typ::COMMIT_CREATE) {
             let arrow = Self::extract_arrow(pay)?.ok_or(Error::MalformedPayload)?;
             Ok(CozKind::CommitCreate { arrow })
-        } else if typ.ends_with(typ::PRINCIPAL_DELETE) {
+        } else if typ::has_suffix(typ, typ::PRINCIPAL_DELETE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::PrincipalDelete { id })
-        } else if typ.ends_with(typ::FREEZE_CREATE) {
+        } else if typ::has_suffix(typ, typ::FREEZE_CREATE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::FreezeCreate { id })
-        } else if typ.ends_with(typ::FREEZE_DELETE) {
+        } else if typ::has_suffix(typ, typ::FREEZE_DELETE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::FreezeDelete { id })
         } else {
@@ -773,5 +797,80 @@ mod tests {
         assert!(!typ::is_key_introducing("cyphr.me/cyphr/key/revoke"));
         assert!(!typ::is_key_introducing("cyphr.me/cyphr/principal/create"));
         assert!(!typ::is_key_introducing("cyphr.me/cyphr/commit/create"));
+    }
+
+    /// Backs the typ-classification boundary (SPEC 4.2: typ is
+    /// `<authority>/cyphr/...`). Defect that turns it red: classification by
+    /// bare `ends_with`, so a typ whose last segment merely ends in the
+    /// suffix text (`.../xcyphr/key/create`) is read as `key/create`. Unit
+    /// level because the predicate is a pure function and no scenario
+    /// reaches every spoof shape cheaply. Not end to end. A lying
+    /// implementation that special-cases one spoof string, or that adds the
+    /// boundary to `is_key_introducing` only, is caught by the other test.
+    /// RED: `is_key_introducing` uses `ends_with` with no `/` boundary.
+    #[test]
+    fn typ_boundary_key_introducing_requires_slash_before_suffix() {
+        for spoof in [
+            "cyphr.me/xcyphr/key/create",
+            "cyphr.me/xcyphr/key/replace",
+            "evilcyphr/key/create",
+            "a.b/Xcyphr/key/replace",
+        ] {
+            assert!(
+                !typ::is_key_introducing(spoof),
+                "{spoof} was classified as key-introducing"
+            );
+        }
+        for ok in ["cyphr.me/cyphr/key/create", "a.b/c/cyphr/key/replace"] {
+            assert!(typ::is_key_introducing(ok), "control: {ok} must classify");
+        }
+    }
+
+    /// Backs SPEC §7.3: the bare `cyphr/<noun>/<verb>` (protocol as
+    /// authority) is a valid typ, while an empty authority
+    /// (`/cyphr/key/create`) is not. Turns red if the boundary check
+    /// refuses the bare form or accepts the empty authority. Unit level:
+    /// pure predicate. Not end to end.
+    #[test]
+    fn typ_boundary_bare_protocol_form_accepted_empty_authority_refused() {
+        assert!(typ::is_key_introducing("cyphr/key/create"));
+        assert!(typ::is_key_introducing("cyphr/key/replace"));
+        assert!(!typ::is_key_introducing("/cyphr/key/create"));
+        assert!(!typ::is_key_introducing("/cyphr/key/replace"));
+        assert!(typ::has_suffix("cyphr/key/revoke", typ::KEY_REVOKE));
+        assert!(!typ::has_suffix("/cyphr/key/revoke", typ::KEY_REVOKE));
+    }
+
+    /// Same boundary at the parse site (`ParsedCoz::from_pay`, which every
+    /// applied coz passes through). Each spoofed typ carries a well-formed
+    /// `id` so the only reason to refuse it is the typ; the genuine typ with
+    /// the same payload is the control and must parse to the same kind.
+    /// Turns red if a spoofed suffix parses as `KeyCreate`, `KeyDelete` or
+    /// `KeyReplace`. Only the three kinds needing nothing but `id` are
+    /// exercised: the others could be refused for a missing field, which
+    /// would make the assertion hold by construction. Not end to end.
+    /// RED: `parse_kind` matches by bare `ends_with`.
+    #[test]
+    fn typ_boundary_spoofed_suffix_does_not_parse_as_a_key_coz() {
+        for suffix in [typ::KEY_CREATE, typ::KEY_DELETE, typ::KEY_REPLACE] {
+            let parse = |typ_str: String| {
+                let mut pay = PayBuilder::new()
+                    .typ(typ_str)
+                    .alg("ES256")
+                    .now(1000)
+                    .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+                    .build();
+                pay.extra.insert("id".into(), json!(TEST_ID));
+                let czd = Czd::from_bytes(vec![0; 32]);
+                ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay))
+            };
+            parse(format!("cyphr.me/{suffix}"))
+                .unwrap_or_else(|e| panic!("control: genuine {suffix} must parse: {e:?}"));
+            let spoof = parse(format!("cyphr.me/x{suffix}"));
+            assert!(
+                matches!(spoof, Err(Error::MalformedPayload)),
+                "x{suffix} parsed: {spoof:?}"
+            );
+        }
     }
 }

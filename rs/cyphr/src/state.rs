@@ -2,6 +2,8 @@
 //!
 //! Implements SPEC §7 state calculation semantics.
 
+// Only the test-support oracle `compute_pr` uses it at module level.
+#[cfg(any(test, feature = "test-utils"))]
 use std::collections::BTreeMap;
 
 // `Thumbprint` is only referenced by test-support-only oracle functions
@@ -41,22 +43,6 @@ pub trait StateDigest {
 pub struct KeyRoot(pub crate::multihash::MultihashDigest);
 
 impl StateDigest for KeyRoot {
-    fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
-        &self.0
-    }
-}
-
-/// Commit ID — SPEC §8.5
-///
-/// Digest of coz `czd`s within a single commit.
-/// Previously named `TransactionState`; renamed to reflect its role as
-/// the identity of a commit rather than a state-tree node.
-///
-/// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CommitID(pub crate::multihash::MultihashDigest);
-
-impl StateDigest for CommitID {
     fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
         &self.0
     }
@@ -452,51 +438,6 @@ pub(crate) fn compute_kr(
     Ok(KeyRoot(MultihashDigest::new(variants)?))
 }
 
-/// Compute Commit ID (formerly ParsedCoz State) — SPEC §8.5.
-///
-/// The Commit ID is the Merkle root of the czds within a single commit.
-///
-/// - No cozies: CommitID = None
-/// - Single coz, no nonce: CommitID = czd (implicit promotion)
-/// - Otherwise: CommitID = H(czd₀ ‖ czd₁ ‖ nonce? ‖ ...) — array order, no sort
-pub fn compute_commit_id(
-    czds: &[&Czd],
-    nonce: Option<&[u8]>,
-    algs: &[HashAlg],
-) -> Option<CommitID> {
-    if czds.is_empty() && nonce.is_none() {
-        return None;
-    }
-
-    // Implicit promotion: single czd, no nonce
-    // Store the czd bytes as the digest for all algorithm variants
-    if czds.len() == 1 && nonce.is_none() {
-        let czd_bytes = czds[0].as_bytes();
-        return Some(CommitID(
-            MultihashDigest::from_single(
-                // Use first algorithm for single-variant multihash
-                algs.first().copied().unwrap_or(HashAlg::Sha256),
-                czd_bytes.to_vec(),
-            )
-            .ok()?,
-        ));
-    }
-
-    let mut components: Vec<&[u8]> = czds.iter().map(|c| c.as_bytes()).collect();
-    if let Some(n) = nonce {
-        components.push(n);
-    }
-
-    // Compute hash for each algorithm variant (array order, no sort)
-    let mut variants = BTreeMap::new();
-    for &alg in algs {
-        let digest = hash_concat_bytes(alg, &components);
-        variants.insert(alg, digest.into_boxed_slice());
-    }
-
-    Some(CommitID(MultihashDigest::new(variants).ok()?))
-}
-
 /// A czd tagged with its source hash algorithm.
 ///
 /// Used for cross-algorithm state computation where czds from different
@@ -528,55 +469,6 @@ impl<'a> TaggedCzd<'a> {
             hash_bytes(target, self.czd.as_bytes())
         }
     }
-}
-
-/// Compute Commit ID with cross-algorithm conversion (SPEC §14.2).
-///
-/// Like [`compute_commit_id`], but accepts czds tagged with their source algorithm.
-/// When computing a target hash variant, czds from different algorithms
-/// are converted (re-hashed) to the target algorithm.
-///
-/// - No cozies: CommitID = None
-/// - Single coz, no nonce: CommitID = czd (implicit promotion)
-/// - Otherwise: CommitID = H(converted_czd₀ ‖ converted_czd₁ ‖ nonce? ‖ ...) — array order
-pub fn compute_commit_id_tagged(
-    czds: &[TaggedCzd<'_>],
-    nonce: Option<&[u8]>,
-    algs: &[HashAlg],
-) -> Option<CommitID> {
-    if czds.is_empty() && nonce.is_none() {
-        return None;
-    }
-
-    // Implicit promotion: single czd, no nonce.
-    // Convert the single czd to all active target algorithms.
-    if czds.len() == 1 && nonce.is_none() {
-        let mut variants = BTreeMap::new();
-        for &target_alg in algs {
-            let converted = czds[0].convert_to(target_alg);
-            variants.insert(target_alg, converted.into_boxed_slice());
-        }
-        return Some(CommitID(MultihashDigest::new(variants).ok()?));
-    }
-
-    // Compute hash for each target algorithm variant
-    let mut variants = BTreeMap::new();
-    for &target_alg in algs {
-        // Convert each czd to target algorithm
-        let converted: Vec<Vec<u8>> = czds.iter().map(|tc| tc.convert_to(target_alg)).collect();
-
-        // Add nonce if present
-        let mut components: Vec<&[u8]> = converted.iter().map(|v| v.as_slice()).collect();
-        if let Some(n) = nonce {
-            components.push(n);
-        }
-
-        // Hash in array order (no sort — CommitID preserves coz order)
-        let digest = hash_concat_bytes(target_alg, &components);
-        variants.insert(target_alg, digest.into_boxed_slice());
-    }
-
-    Some(CommitID(MultihashDigest::new(variants).ok()?))
 }
 
 /// Compute Auth Root — SPEC §3.7.
@@ -933,20 +825,6 @@ mod tests {
     }
 
     #[test]
-    fn commit_id_empty_is_none() {
-        let cid = compute_commit_id(&[], None, &[HashAlg::Sha256]);
-        assert!(cid.is_none());
-    }
-
-    #[test]
-    fn commit_id_single_czd_promotion() {
-        let czd = Czd::from_bytes(vec![10; 32]);
-        let cid = compute_commit_id(&[&czd], None, &[HashAlg::Sha256]);
-        let cid_bytes = cid.as_ref().map(|c| c.get(HashAlg::Sha256).unwrap());
-        assert_eq!(cid_bytes.unwrap(), czd.as_bytes());
-    }
-
-    #[test]
     fn as_promotion_from_ks() {
         // Only KS, no RS: AS = KS (the specified algorithm variant)
         let tmb = Thumbprint::from_bytes(vec![1; 32]);
@@ -989,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_algorithm_promotion_dr_commit_id() {
+    fn cross_algorithm_promotion_dr() {
         let czd = Czd::from_bytes(vec![10; 32]); // SHA-256 size
         let active_algs = [HashAlg::Sha256, HashAlg::Sha384];
         let action = crate::action::Action::new(
@@ -1015,21 +893,6 @@ mod tests {
         // For Sha384, it should be the converted (re-hashed) version
         assert_eq!(
             dr_sha384,
-            hash_bytes(HashAlg::Sha384, czd.as_bytes()).as_slice()
-        );
-
-        // 2. CommitID promotion test
-        let tagged = TaggedCzd::new(&czd, HashAlg::Sha256);
-        let commit_id = compute_commit_id_tagged(&[tagged], None, &active_algs).unwrap();
-        assert!(commit_id.0.contains(HashAlg::Sha256));
-        assert!(commit_id.0.contains(HashAlg::Sha384));
-
-        let cid_sha256 = commit_id.0.get(HashAlg::Sha256).unwrap();
-        let cid_sha384 = commit_id.0.get(HashAlg::Sha384).unwrap();
-
-        assert_eq!(cid_sha256, czd.as_bytes());
-        assert_eq!(
-            cid_sha384,
             hash_bytes(HashAlg::Sha384, czd.as_bytes()).as_slice()
         );
     }

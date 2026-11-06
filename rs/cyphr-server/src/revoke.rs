@@ -69,13 +69,11 @@ pub struct VerifiedRevoke {
 }
 
 /// Whether `typ` is a `key/revoke` under some authority segment, e.g.
-/// `cyphr.me/cyphr/key/revoke`. Reuses the core `KEY_REVOKE` constant so the
+/// `cyphr.me/cyphr/key/revoke`, or the bare `cyphr/key/revoke` (SPEC §7.3).
+/// Reuses the core `KEY_REVOKE` constant so the
 /// accepted shape cannot drift from the protocol's.
 fn is_revoke_typ(typ: &str) -> bool {
-    matches!(
-        typ.strip_suffix(cyphr::parsed_coz::typ::KEY_REVOKE),
-        Some(authority) if authority.ends_with('/')
-    )
+    cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE)
 }
 
 /// Parse, validate, and verify a naked-revoke request against its DISCLOSED
@@ -85,8 +83,8 @@ fn is_revoke_typ(typ: &str) -> bool {
 /// Verification order, each a distinct rejection:
 /// 1. the body discloses a `key` (else 400 -- a naked revoke must disclose it);
 /// 2. the payload parses and its `typ` is a `key/revoke`;
-/// 3. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is
-///    NOT checked, so a pre-signed `rvk`=1 is valid;
+/// 3. `rvk` is a integer in 1..=2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is NOT
+///    checked, so a pre-signed `rvk`=1 is valid;
 /// 4. the serialized payload is within `RVK_MAX_SIZE`;
 /// 5. PRESENCE FENCE: the named `tmb` is a key the engine has indexed (`Some`) -- the indexed
 ///    value's CONTENT is never read; `None` (a key this server never saw) is a rejection that
@@ -125,7 +123,7 @@ pub async fn interpret<I: Indexer>(
         .ok_or_else(|| AppError::bad_request("revoke payload has no rvk"))?;
     if !coz::is_valid_rvk(rvk) {
         return Err(AppError::bad_request(format!(
-            "rvk {rvk} is not a positive integer below 2^53-1"
+            "rvk {rvk} is not an integer in 1..=2^53-1"
         )));
     }
 
@@ -194,4 +192,28 @@ pub async fn interpret<I: Indexer>(
         rvk,
         evidence,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_revoke_typ;
+
+    /// Characterization (green): the naked-revoke gate already requires a
+    /// `/` boundary before `cyphr/key/revoke`, the behavior the core
+    /// classifier must match (the core side is the `typ_boundary_*` tests in
+    /// `cyphr::parsed_coz`). Turns red if the gate regresses to a bare
+    /// suffix match. Unit level: the predicate is private and a spoof
+    /// reaching it by HTTP needs a full keyed server for no extra coverage.
+    #[test]
+    fn typ_boundary_naked_revoke_requires_slash_before_suffix() {
+        assert!(is_revoke_typ("cyphr.me/cyphr/key/revoke"));
+        assert!(is_revoke_typ("a.b/c/cyphr/key/revoke"));
+        assert!(!is_revoke_typ("cyphr.me/xcyphr/key/revoke"));
+        assert!(!is_revoke_typ("evilcyphr/key/revoke"));
+        // SPEC §7.3: the bare form (protocol as authority) is valid; an
+        // empty authority is not.
+        assert!(is_revoke_typ("cyphr/key/revoke"));
+        assert!(!is_revoke_typ("/cyphr/key/revoke"));
+        assert!(!is_revoke_typ("cyphr.me/cyphr/key/create"));
+    }
 }
