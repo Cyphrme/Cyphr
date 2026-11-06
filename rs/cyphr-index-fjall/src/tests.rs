@@ -261,3 +261,9 @@ async fn digest_conflict_same_principal_repeat_is_allowed() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     conformance::digest_conflict_same_principal_repeat_is_allowed(&indexer).await;
 }
+
+#[tokio::test]
+async fn digest_conflict_shared_state_roots_are_not_a_conflict() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_conflict_shared_state_roots_are_not_a_conflict(&indexer).await;
+}

@@ -623,8 +623,8 @@ pub async fn digest_conflict_other_principal_is_refused<I: Indexer + IndexerWrit
                 as Box<dyn Fn(&mut IndexableCommit)>,
         ),
         (
-            "commit sr",
-            Box::new(|c: &mut IndexableCommit| c.srs = vec![owned_commit.clone()]),
+            "commit pr",
+            Box::new(|c: &mut IndexableCommit| c.prs = vec![owned_commit.clone()]),
         ),
     ] {
         let mut hostile = make_commit(b, 1, 2000);
@@ -669,4 +669,24 @@ pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + Index
     let digest: TaggedDigest = sr.parse().unwrap();
     let e = indexer.resolve_digest(&digest).await.unwrap().unwrap();
     assert_eq!(e.sequence, Some(1));
+}
+
+/// Control for the digest check: state and auth roots derive from the key
+/// set, so two principals that end on the same keys honestly share them.
+/// Both commits are accepted. Turns red if the conflict check covers SR or
+/// AR and so rejects an honest commit (or lets a stranger block one).
+pub async fn digest_conflict_shared_state_roots_are_not_a_conflict<I: Indexer + IndexerWrite>(
+    indexer: &I,
+) {
+    let token = DeriveToken::for_conformance_tests();
+    let shared = format!("SHA-256:{}", "D".repeat(42) + "A");
+    for id in ["SHA-256:alice-id", "SHA-256:bob-id"] {
+        let mut commit = make_commit(id, 0, 1000);
+        commit.srs = vec![shared.clone()];
+        commit.ars = vec![shared.clone()];
+        indexer
+            .index_commit(&commit, &token)
+            .await
+            .expect("an honest commit sharing SR/AR with another principal");
+    }
 }

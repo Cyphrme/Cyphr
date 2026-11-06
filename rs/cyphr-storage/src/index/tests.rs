@@ -102,3 +102,8 @@ async fn digest_conflict_other_principal_is_refused_memory() {
 async fn digest_conflict_same_principal_repeat_is_allowed_memory() {
     conformance::digest_conflict_same_principal_repeat_is_allowed(&MemoryIndexer::new()).await;
 }
+
+#[tokio::test]
+async fn digest_conflict_shared_state_roots_are_not_a_conflict_memory() {
+    conformance::digest_conflict_shared_state_roots_are_not_a_conflict(&MemoryIndexer::new()).await;
+}

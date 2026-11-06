@@ -118,9 +118,17 @@ pub enum IndexerError {
     Conflict(String),
 }
 
-/// Every digest `commit` claims in the digest table, with the kind of
-/// entity it would name: each coz's blob hash and czd, then each
-/// commit-level variant (commit IDs, PR/SR/AR/CR).
+/// Every digest `commit` claims in the digest table that names one entity
+/// for good, with the kind of entity it would name: each coz's blob hash
+/// and czd, then the commit IDs and the PR and CR variants. These derive
+/// from the signed cozes, so two principals share one only by replaying
+/// the same signed bytes.
+///
+/// SR and AR variants are not claims: they derive from the current key
+/// set and data, so distinct principals honestly reach the same value
+/// (two principals that end on the same keys share an AR). Refusing the
+/// second would reject honest commits and let anyone who knows a
+/// principal's next key set block it by pre-claiming the value.
 pub fn digest_claims(commit: &IndexableCommit) -> Vec<(String, EntityType)> {
     let mut claims = Vec::new();
     for coz in &commit.cozies {
@@ -133,8 +141,6 @@ pub fn digest_claims(commit: &IndexableCommit) -> Vec<(String, EntityType)> {
             .commit_ids
             .iter()
             .chain(&commit.prs)
-            .chain(&commit.srs)
-            .chain(&commit.ars)
             .chain(&commit.crs)
             .map(|v| (v.clone(), EntityType::Commit)),
     );

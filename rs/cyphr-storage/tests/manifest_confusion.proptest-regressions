@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 5a2f1b0f4c61643248274479367b953323a99cc390301480ca1d8d3eb8876343 # shrinks to plan = [None, Some(Hostile { target: 0, sequence: 0, tag: 0, pg_victim: false, escaped_key: false }), None]
