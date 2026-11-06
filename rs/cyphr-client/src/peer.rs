@@ -49,6 +49,7 @@ const ENVELOPE_VERSION: u64 = 1;
 
 /// Why a peer chain was not followed, or a peer statement not accepted.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PeerFailure {
     /// The pinned PG does not derive from the pinned genesis key, so the
     /// key does not root the chain the PG names; nothing is adopted.
