@@ -556,7 +556,9 @@ mod tests {
             "a different mapped IPv4 client has its own allowance"
         );
         assert!(
-            slots.admit(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))).is_none(),
+            slots
+                .admit(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)))
+                .is_none(),
             "a mapped address and its plain IPv4 form are one client"
         );
 
