@@ -180,6 +180,40 @@ struct CommitManifest {
     commit: IndexableCommit,
 }
 
+/// Why a stored manifest was left out of a rebuilt index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuarantineReason {
+    /// The manifest blob is not a well-formed manifest.
+    Malformed(String),
+    /// The manifest names blobs the store does not hold.
+    Unsupported(String),
+    /// The manifest is not bound to the principal it names.
+    Unbound(String),
+    /// Indexing it would re-point an exclusive claim (a PG alias).
+    Conflict(String),
+}
+
+/// A manifest a rebuild left out, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedManifest {
+    /// BLAKE3 hash of the manifest blob.
+    pub manifest: Blake3Hash,
+    /// The principal id the manifest claims, when it parsed far enough.
+    pub principal_id: Option<String>,
+    /// Why it was left out.
+    pub reason: QuarantineReason,
+}
+
+/// What a rebuild did: how many manifests it indexed, and which it
+/// quarantined. A quarantined manifest never fails the rebuild.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuildReport {
+    /// Manifests indexed (including those already indexed).
+    pub indexed: usize,
+    /// Manifests left out, in canonical order.
+    pub quarantined: Vec<QuarantinedManifest>,
+}
+
 /// Produces a fresh, independent `S` instance for a `Principal`'s Commit
 /// Tree, given that principal's `principal_id` as a scoping identifier — see
 /// [`StorageEngine`]'s `storage_factory` field docs.
@@ -766,6 +800,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// is a `HashMap`, genuinely unordered), so sorting here is what makes
     /// that guarantee hold rather than merely happening to hold by luck of
     /// hash placement.
+    #[tracing::instrument(skip(self))]
+    pub async fn rebuild_index_with_report(&self) -> Result<RebuildReport, EngineError> {
+        self.rebuild_index_from_manifests()
+            .await
+            .map(|indexed| RebuildReport {
+                indexed,
+                quarantined: Vec::new(),
+            })
+    }
+
+    /// [`Self::rebuild_index_with_report`] without the report.
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_from_manifests(&self) -> Result<usize, EngineError> {
         let iter = self.blob_store.iter().await?;
