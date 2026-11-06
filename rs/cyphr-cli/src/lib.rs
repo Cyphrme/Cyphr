@@ -81,7 +81,7 @@ pub enum Error {
     BlobEncoding(#[from] std::string::FromUtf8Error),
 
     /// The index names a blob the blob store does not hold.
-    #[error("blob {0} is indexed but missing from the blob store")]
+    #[error("blob {0} not found in the blob store although the index names it")]
     MissingBlob(cyphr_storage::blob::Blake3Hash),
 
     /// The identity has no commits to act on.
