@@ -431,7 +431,13 @@ impl SpentSet {
         let db = self.db.clone();
         let lock = self.reserve_lock.clone();
         tokio::task::spawn_blocking(move || {
-            let _guard = lock.lock().expect("admission reserve lock poisoned");
+            // The mutex guards no data, only mutual exclusion of the
+            // contains/insert pair below, which leaves the store consistent
+            // at every step: a panicked prior holder poisons the lock
+            // without invalidating anything, so recover the guard.
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if tokens.contains_key(hash).map_err(backend)? {
                 return Ok(false);
             }
