@@ -270,7 +270,6 @@ async fn digest_holders_do_not_depend_on_arrival_order() {
 }
 
 #[tokio::test]
-#[ignore = "RED(N13): FjallIndexer silently ignores a rival commit at an indexed position"]
 async fn index_commit_idempotency_is_keyed_by_chain_position() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     conformance::index_commit_idempotency_is_keyed_by_chain_position(&indexer).await;
@@ -361,29 +360,22 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
         .block_on(f)
 }
 
-fn open_error(dir: &std::path::Path) -> String {
-    match FjallIndexer::open(dir) {
-        Err(e) => format!("{e:?}"),
-        Ok(_) => panic!("a store of an unknown schema version opened"),
-    }
-}
-
 /// Backs a-versions for the index: a store stamped with a FUTURE schema
 /// version (a downgrade) is refused at open as a typed `UnsupportedVersion`,
 /// never read as if it were current. Older or missing versions are not
 /// refused: the index is a cache and is rebuilt (see `legacy_store_*`). Turns red on an `open` that
 /// ignores the recorded version. A unit test: the stamp is reachable only here.
 #[test]
-#[ignore = "RED(N13): FjallIndexer::open never reads the schema version"]
 fn version_index_unknown_is_refused() {
     let unknown = 99u64;
     let dir = tempfile::tempdir().expect("tempdir");
     store_stamped_with(dir.path(), unknown);
-    // Typed-variant pin without naming the type: `IndexerError` is
-    // expected to gain `UnsupportedVersion { found, .. }`.
-    let msg = open_error(dir.path());
+    let refused = FjallIndexer::open(dir.path()).err();
     assert!(
-        msg.contains("UnsupportedVersion") && msg.contains(&unknown.to_string()),
-        "v{unknown} must be refused as UnsupportedVersion: {msg}"
+        matches!(
+            refused,
+            Some(IndexerError::UnsupportedVersion { found, .. }) if found == unknown
+        ),
+        "v{unknown} must be refused as UnsupportedVersion: {refused:?}"
     );
 }

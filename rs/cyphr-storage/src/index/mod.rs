@@ -116,6 +116,22 @@ pub enum IndexerError {
     /// principal. Nothing was written. (Digests are never exclusive.)
     #[error("index conflict: {0}")]
     Conflict(String),
+
+    /// The stored index was written by a newer build than this one reads
+    /// (a downgrade). Nothing was read or changed. An OLDER index is not an
+    /// error: the index is a rebuildable cache (I1) and is discarded. The
+    /// text names the variant so the refusal stays identifiable when a
+    /// caller flattens it to a message.
+    #[error(
+        "UnsupportedVersion: index schema version {found} is newer than the supported \
+         {supported}; refusing to read it"
+    )]
+    UnsupportedVersion {
+        /// Version recorded in the store.
+        found: u64,
+        /// Newest version this build reads.
+        supported: u64,
+    },
 }
 
 /// Every `(digest, holder)` pair `commit` contributes to the digest table:
