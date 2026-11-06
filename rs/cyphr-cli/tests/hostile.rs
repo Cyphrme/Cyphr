@@ -467,7 +467,6 @@ fn reserialized_chain_does_not_break_rebase() {
 /// scratch directory behind, so the next rebase is not refused for it, and
 /// the original store is intact. Turns red on a leftover `data.rebase`.
 #[test]
-#[ignore = "RED(N16): a failed rebase leaves its scratch store behind"]
 fn failed_rebase_cleans_up_its_scratch_store() {
     let real = Server::start();
     let a = User::new();

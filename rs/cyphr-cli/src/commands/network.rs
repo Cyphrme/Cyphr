@@ -168,6 +168,27 @@ fn first_divergence(a: &[RawCommit], b: &[Vec<Vec<u8>>]) -> Option<usize> {
     a.iter().zip(b).position(|(x, y)| !same_commit(&x.blobs, y))
 }
 
+/// `path` with `suffix` appended to its final component.
+fn sibling(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
+}
+
+/// Removes the rebase scratch store on every exit path that has not
+/// handed it over, so a failed rebase never blocks the next one.
+struct Scratch(Option<std::path::PathBuf>);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            // Best effort: nothing useful can be done with a failure here,
+            // and the original error is the one worth reporting.
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 /// A local commit's transaction, to be re-signed onto a new tip.
 enum Intent {
     AddKey { id: String, signer: String },
@@ -253,6 +274,8 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     if tmp.exists() {
         return Err(Error::RebaseWorkspace(tmp));
     }
+    // Declared before the engine below so the engine closes its files first.
+    let mut scratch = Scratch(Some(tmp.clone()));
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -312,12 +335,9 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     }
     drop(old);
 
-    let backup = {
-        let mut b = path.clone().into_os_string();
-        b.push(format!(".pre-rebase-{}", current_timestamp()));
-        std::path::PathBuf::from(b)
-    };
+    let backup = sibling(&path, &format!(".pre-rebase-{}", current_timestamp()));
     std::fs::rename(&path, &backup)?;
+    scratch.0 = None;
     std::fs::rename(&tmp, &path)?;
 
     let out = json!({"identity": identity, "peer": peer_url,
