@@ -13,6 +13,7 @@ pub mod config;
 pub mod envelope;
 pub mod error;
 pub mod logging;
+pub mod metrics;
 pub mod observation;
 pub mod rate_limit;
 pub mod receipt;
@@ -92,6 +93,12 @@ pub struct AppState {
     pub derived_roots:
         cyphr_storage::engine::BoundedCache<(String, String), cyphr_storage::engine::DerivedRoots>,
 
+    /// Request, refusal and accepted-push counters behind `GET /metrics`.
+    pub metrics: metrics::Metrics,
+
+    /// Storage write probe behind `GET /healthz`.
+    pub health: metrics::HealthProbe,
+
     /// Per-principal locks for synchronizing witness state sync execution.
     pub sync_locks: std::sync::Arc<
         tokio::sync::Mutex<
@@ -111,6 +118,7 @@ impl AppState {
     /// is a startup error, not a silent fallback to no identity.
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let db = fjall::Database::builder(config.blobs_dir()).open()?;
+        let health = metrics::HealthProbe::open(db.clone(), &config.record_dir())?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
         let indexer = FjallIndexer::open(&config.index_dir())?;
         let engine =
@@ -143,6 +151,8 @@ impl AppState {
             observations,
             http_client,
             derived_roots: cyphr_storage::engine::BoundedCache::new(DERIVED_ROOTS_CACHE_CAPACITY),
+            metrics: metrics::Metrics::default(),
+            health,
             sync_locks,
         })
     }
@@ -243,6 +253,8 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/revoke", axum::routing::post(routes::revoke))
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
+        .route("/healthz", axum::routing::get(routes::healthz))
+        .route("/metrics", axum::routing::get(routes::metrics))
         .route(
             "/auth/challenge",
             axum::routing::post(auth::login::challenge),
@@ -272,6 +284,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
 /// Build the full application router with all routes, admission layer, rate-limiting layer, and
 /// body limit layer.
 pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn std::error::Error>> {
+    let metrics_state = state.clone();
     let admission_config = state.config.admission.clone();
     let admission_record_dir = state.config.record_dir();
     let probe_state = state.clone();
@@ -313,6 +326,12 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
     app = app.layer(rate_limit::layer(&limits, count_probe));
     app = app.layer(axum::extract::DefaultBodyLimit::max(
         limits.max_body_bytes as usize,
+    ));
+    // Outermost, so refusals from the admission, rate-limit and body-limit
+    // layers are counted too.
+    app = app.layer(axum::middleware::from_fn_with_state(
+        metrics_state,
+        metrics::count,
     ));
 
     Ok(app)

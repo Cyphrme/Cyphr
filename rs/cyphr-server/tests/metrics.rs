@@ -113,7 +113,6 @@ async fn scrape(app: &Router) -> (BTreeMap<String, f64>, String) {
 /// that double-counts.
 /// End-to-end: yes (real router, real storage, real signed push).
 #[tokio::test]
-#[ignore = "RED(G6): /metrics does not exist; fallback answers 404"]
 async fn metrics_counters_move_exactly_with_traffic() {
     let (state, _dir) = keyless_server();
     let app = build_app_router(state).expect("router");
@@ -174,7 +173,6 @@ async fn metrics_counters_move_exactly_with_traffic() {
 /// End-to-end: no (property of the exposition over adversarial traffic;
 /// a unit-scale check is enough because the leak is in the label set).
 #[tokio::test]
-#[ignore = "RED(G6): /metrics does not exist; fallback answers 404"]
 async fn metrics_carry_no_identifier_and_bounded_labels() {
     let (state, _dir) = keyless_server();
     let app = build_app_router(state).expect("router");

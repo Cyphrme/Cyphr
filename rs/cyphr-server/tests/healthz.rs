@@ -45,7 +45,6 @@ async fn get_raw(app: &Router, uri: &str) -> (StatusCode, HeaderMap, String) {
 /// auth, or a handler that fails once the peer holds data.
 /// End-to-end: yes (push a principal, then probe).
 #[tokio::test]
-#[ignore = "RED(G6): /healthz does not exist; fallback answers 404"]
 async fn healthz_answers_200_on_a_healthy_peer_that_holds_data() {
     let (state, _dir) = keyless_server();
     let app = build_app_router(state).expect("router");
@@ -81,7 +80,6 @@ async fn healthz_answers_200_on_a_healthy_peer_that_holds_data() {
 /// and a failure body that leaks the data directory path.
 /// End-to-end: yes.
 #[tokio::test]
-#[ignore = "RED(G6): /healthz does not exist; fallback answers 404"]
 async fn healthz_turns_503_when_storage_is_destroyed() {
     let (state, _dir) = keyless_server();
     let record_dir = state.config.record_dir();
