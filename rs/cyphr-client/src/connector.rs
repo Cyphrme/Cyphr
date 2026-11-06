@@ -71,6 +71,22 @@ pub enum ConnectError {
     /// The peer answered with a non-success status.
     #[error("peer answered with status {0}")]
     NonSuccess(u16),
+    /// The peer's answer is longer than the carrier will read.
+    #[error("peer answered with more than {limit} bytes")]
+    TooLarge {
+        /// The cap that was exceeded.
+        limit: usize,
+    },
+    /// The carrier refuses plain `http://` to a host that is not loopback:
+    /// every byte would cross the network readable and forgeable.
+    #[error(
+        "cleartext http to non-loopback host `{host}` is refused; use https, or opt in with \
+         `HttpOptions::allow_cleartext`"
+    )]
+    CleartextRefused {
+        /// The host the URL names.
+        host: String,
+    },
 }
 
 /// The HTTP-shaped verbs a request can carry. Push, evidence and gossip

@@ -141,8 +141,13 @@ pub enum PatchFailure {
 impl From<ConnectError> for PatchFailure {
     fn from(err: ConnectError) -> Self {
         match err {
-            ConnectError::Unreachable(m) => Self::Unreachable(m),
             ConnectError::NonSuccess(s) => Self::NonSuccess(s),
+            // A cap or scheme refusal means no answer was taken from the
+            // peer: reads as unreachable, with the carrier's reason kept.
+            ConnectError::Unreachable(m) => Self::Unreachable(m),
+            other @ (ConnectError::TooLarge { .. } | ConnectError::CleartextRefused { .. }) => {
+                Self::Unreachable(other.to_string())
+            },
         }
     }
 }
