@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{Blake3Hash, MemoryBlobStore};
-use cyphr_storage::engine::{EngineError, StorageEngine, genesis_principal_id};
+use cyphr_storage::engine::{EngineError, QuarantineReason, StorageEngine, genesis_principal_id};
 use cyphr_storage::index::{
     CommitRef, DeriveToken, EntityRef, IndexableCommit, IndexableCoz, Indexer, IndexerError,
     IndexerWrite, MemoryIndexer, PrincipalSummary, PublicKeyInfo, TipState,
@@ -873,11 +873,12 @@ async fn plant_manifest(e: &Engine, commit: &IndexableCommit) {
 
 /// Claim: rebuild binds each principal's manifests to the blobs they name:
 /// a prefixed manifest whose principal id is not the genesis-derived id of
-/// its sequence-0 blobs is refused with a typed error and indexes nothing.
-/// Turns red if: a manifest naming real blobs re-points a principal (here
+/// its sequence-0 blobs is quarantined with a typed reason and indexes nothing, while the rest of
+/// the store rebuilds. Turns red if: a manifest naming real blobs re-points a principal (here
 /// a phantom id) without any replay.
 #[tokio::test]
-async fn rebuild_refuses_manifest_not_bound_to_its_blobs() {
+#[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+async fn rebuild_quarantines_manifest_not_bound_to_its_blobs() {
     let e = engine();
     submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
     let fx = load_golden("mutations", "transaction_sequence_replay");
@@ -901,10 +902,22 @@ async fn rebuild_refuses_manifest_not_bound_to_its_blobs() {
     foreign.cozies[0].blob_hash = genuine;
     plant_manifest(&e, &foreign).await;
 
-    let err = e.rebuild_index_from_scratch().await.expect_err("unbound");
+    let report = e
+        .rebuild_index_with_report()
+        .await
+        .expect("rebuild survives");
+    assert_eq!(report.quarantined.len(), 1, "{report:?}");
+    assert!(matches!(
+        report.quarantined[0].reason,
+        QuarantineReason::Unbound(_)
+    ));
+    assert_eq!(
+        report.quarantined[0].principal_id.as_deref(),
+        Some(phantom.as_str())
+    );
     assert!(
-        matches!(err, EngineError::ManifestUnbound { .. }),
-        "{err:?}"
+        principals(&e).await.iter().any(|p| p.0 != phantom),
+        "the honest principal still rebuilt"
     );
     assert!(e.indexer().get_tip(&phantom).await.unwrap().is_none());
     assert!(principals(&e).await.iter().all(|p| p.0 != phantom));
@@ -1009,4 +1022,583 @@ proptest! {
             Ok(())
         })?;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Replayed cozes (hacker-seat findings F-A, F-B, F-C). SPEC be0663f 7.6 lets
+// principals that share keys reuse a coz, and `key/create` needs no proof of
+// possession, so any principal can add another's public key and replay that
+// principal's signed cozes. Nothing replayed may block, misattribute or brick.
+// ---------------------------------------------------------------------------
+mod replay {
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr_storage::Genesis;
+    use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError, MemoryBlobStore};
+    use cyphr_storage::engine::{EngineError, IngestResult, StorageEngine, genesis_principal_id};
+    use cyphr_storage::index::{Indexer, IndexerWrite, MemoryIndexer};
+
+    const T: i64 = 1_700_000_000;
+
+    fn pool() -> test_fixtures::Pool {
+        let p =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+        test_fixtures::Pool::load(&p).unwrap()
+    }
+    fn dk(pk: &test_fixtures::PoolKey) -> cyphr::Key {
+        cyphr::Key::new(
+            pk.alg.clone(),
+            pk.compute_tmb().unwrap(),
+            Base64UrlUnpadded::decode_vec(&pk.pub_key).unwrap(),
+        )
+        .unwrap()
+    }
+    fn kj(pk: &test_fixtures::PoolKey) -> serde_json::Value {
+        serde_json::json!({"alg": pk.alg, "pub": pk.pub_key, "tmb": pk.compute_tmb_b64().unwrap()})
+    }
+    fn sign(
+        pk: &test_fixtures::PoolKey,
+        mut pay: serde_json::Value,
+    ) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+        pay.as_object_mut().unwrap().sort_keys();
+        let pb = serde_json::to_vec(&pay).unwrap();
+        let prv = Base64UrlUnpadded::decode_vec(pk.prv.as_ref().unwrap()).unwrap();
+        let pubk = Base64UrlUnpadded::decode_vec(&pk.pub_key).unwrap();
+        let (sig, cad) = coz::sign_json(&pb, &pk.alg, &prv, &pubk).unwrap();
+        let czd = coz::czd_for_alg(&cad, &sig, &pk.alg).unwrap();
+        (pb, sig, czd)
+    }
+    fn blob(pb: &[u8], sig: &[u8], key: Option<serde_json::Value>) -> Vec<u8> {
+        let mut o = serde_json::Map::new();
+        o.insert("pay".into(), serde_json::from_slice(pb).unwrap());
+        o.insert("sig".into(), Base64UrlUnpadded::encode_string(sig).into());
+        if let Some(k) = key {
+            o.insert("key".into(), k);
+        }
+        serde_json::to_vec(&o).unwrap()
+    }
+    fn signer(pk: &test_fixtures::PoolKey) -> cyphr::signer::SoftwareSigner {
+        cyphr::signer::SoftwareSigner::new(
+            &pk.alg,
+            &Base64UrlUnpadded::decode_vec(pk.prv.as_ref().unwrap()).unwrap(),
+            &Base64UrlUnpadded::decode_vec(&pk.pub_key).unwrap(),
+            &pk.compute_tmb().unwrap(),
+        )
+    }
+    /// commit/create blob, with the signer's key disclosed (the genesis
+    /// carrier, as a server push / witness sync with no caller genesis needs).
+    fn cc_blob(c: &cyphr::commit::Commit, carrier: &test_fixtures::PoolKey) -> Vec<u8> {
+        let raw = c.commit_tx().0.last().unwrap().raw();
+        let mut v: serde_json::Value = serde_json::to_value(raw).unwrap();
+        v.as_object_mut().unwrap().insert("key".into(), kj(carrier));
+        serde_json::to_vec(&v).unwrap()
+    }
+    pub async fn push<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+        id: &str,
+        blobs: &[Vec<u8>],
+    ) -> Result<IngestResult, EngineError> {
+        let r: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        e.submit_commit(id, None, &r).await
+    }
+
+    /// The attacker principal (bob) adds the victim's (alice) public key.
+    pub async fn attacker_with_victim_key<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+    ) -> (String, cyphr::Principal) {
+        let p = pool();
+        let (bob, alice) = (p.get("bob").unwrap(), p.get("alice").unwrap());
+        let aid = genesis_principal_id(&Genesis::Implicit(dk(bob))).unwrap();
+        let mut client = cyphr::Principal::implicit(dk(bob)).unwrap();
+        let (pb, sig, czd) = sign(
+            bob,
+            serde_json::json!({
+                "alg": bob.alg, "id": alice.compute_tmb_b64().unwrap(), "now": T + 1,
+                "tmb": bob.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
+        );
+        let kc = blob(&pb, &sig, Some(kj(alice)));
+        let mut s = client.begin_commit();
+        s.verify_and_apply(&pb, &sig, czd, Some(dk(alice))).unwrap();
+        let c = s
+            .finalize_with_software(&signer(bob), T + 2, "cyphr.me")
+            .unwrap();
+        let cc = cc_blob(c, bob);
+        push(e, &aid, &[kc, cc])
+            .await
+            .expect("attacker adds the victim's public key");
+        (aid, client)
+    }
+
+    /// What a scenario leaves behind.
+    pub struct Outcome {
+        pub vid: String,
+        pub aid: String,
+        /// The replayed coz's czd.
+        pub czd: cyphr::state::TaggedDigest,
+        /// The victim's own push, made after the attacker replayed first.
+        pub victim_push: Result<IngestResult, EngineError>,
+    }
+
+    fn tagged(czd: &coz::Czd) -> cyphr::state::TaggedDigest {
+        format!(
+            "SHA-256:{}",
+            Base64UrlUnpadded::encode_string(czd.as_bytes())
+        )
+        .parse()
+        .unwrap()
+    }
+
+    /// F-A: the attacker replays the victim's signed `key/create(golden)`
+    /// in its own commit first; the victim then pushes the same coz in its
+    /// own commit.
+    pub async fn replay_transaction<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+    ) -> Outcome {
+        let p = pool();
+        let (alice, golden, bob) = (
+            p.get("alice").unwrap(),
+            p.get("golden").unwrap(),
+            p.get("bob").unwrap(),
+        );
+        let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+        let (vpb, vsig, vczd) = sign(
+            alice,
+            serde_json::json!({
+                "alg": alice.alg, "id": golden.compute_tmb_b64().unwrap(), "now": T + 10,
+                "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
+        );
+        let vkc = blob(&vpb, &vsig, Some(kj(golden)));
+        let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
+        let mut vs = vclient.begin_commit();
+        vs.verify_and_apply(&vpb, &vsig, vczd.clone(), Some(dk(golden)))
+            .unwrap();
+        let vc = vs
+            .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
+            .unwrap();
+        let vcc = cc_blob(vc, alice);
+
+        let (aid, mut aclient) = attacker_with_victim_key(e).await;
+        let mut s = aclient.begin_commit();
+        s.verify_and_apply(&vpb, &vsig, vczd.clone(), Some(dk(golden)))
+            .unwrap();
+        let c = s
+            .finalize_with_software(&signer(bob), T + 12, "cyphr.me")
+            .unwrap();
+        push(e, &aid, &[vkc.clone(), cc_blob(c, bob)])
+            .await
+            .expect("the attacker's replay is accepted");
+        let victim_push = push(e, &vid, &[vkc, vcc]).await;
+        Outcome {
+            vid,
+            aid,
+            czd: tagged(&vczd),
+            victim_push,
+        }
+    }
+
+    /// F-B: the victim commits a signed action; the attacker replays the
+    /// same action in its own commit.
+    pub async fn replay_action<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+    ) -> Outcome {
+        let p = pool();
+        let (alice, golden, bob) = (
+            p.get("alice").unwrap(),
+            p.get("golden").unwrap(),
+            p.get("bob").unwrap(),
+        );
+        let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+        let (apb, asig, aczd) = sign(
+            alice,
+            serde_json::json!({
+                "alg": alice.alg, "msg": "victim says hi", "now": T + 20,
+                "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/action"}),
+        );
+        let act = blob(&apb, &asig, Some(kj(alice)));
+        let (vkpb, vksig, vkczd) = sign(
+            alice,
+            serde_json::json!({
+                "alg": alice.alg, "id": golden.compute_tmb_b64().unwrap(), "now": T + 21,
+                "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
+        );
+        let vkc = blob(&vkpb, &vksig, Some(kj(golden)));
+        let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
+        vclient
+            .verify_and_record_action(&apb, &asig, aczd.clone())
+            .unwrap();
+        let mut vs = vclient.begin_commit();
+        vs.verify_and_apply(&vkpb, &vksig, vkczd, Some(dk(golden)))
+            .unwrap();
+        let vc = vs
+            .finalize_with_software(&signer(alice), T + 22, "cyphr.me")
+            .unwrap();
+        let victim_push = push(e, &vid, &[act.clone(), vkc, cc_blob(vc, alice)]).await;
+
+        let (aid, mut aclient) = attacker_with_victim_key(e).await;
+        let (kpb, ksig, kczd) = sign(
+            bob,
+            serde_json::json!({
+                "alg": bob.alg, "id": golden.compute_tmb_b64().unwrap(), "now": T + 23,
+                "tmb": bob.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
+        );
+        let kc = blob(&kpb, &ksig, Some(kj(golden)));
+        aclient
+            .verify_and_record_action(&apb, &asig, aczd.clone())
+            .unwrap();
+        let mut s = aclient.begin_commit();
+        s.verify_and_apply(&kpb, &ksig, kczd, Some(dk(golden)))
+            .unwrap();
+        let c = s
+            .finalize_with_software(&signer(bob), T + 24, "cyphr.me")
+            .unwrap();
+        push(e, &aid, &[act, kc, cc_blob(c, bob)])
+            .await
+            .expect("the attacker's replay of the action is accepted");
+        Outcome {
+            vid,
+            aid,
+            czd: tagged(&aczd),
+            victim_push,
+        }
+    }
+
+    pub async fn holder_ids<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+        d: &cyphr::state::TaggedDigest,
+    ) -> Vec<String> {
+        e.indexer()
+            .resolve_digest_holders(d)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|h| h.principal_id)
+            .collect()
+    }
+
+    pub fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    type Fjall = StorageEngine<cyphr_blob_fjall::FjallBlobStore, cyphr_index_fjall::FjallIndexer>;
+
+    pub fn fjall_engine(dir: &std::path::Path) -> Fjall {
+        StorageEngine::new(
+            cyphr_blob_fjall::FjallBlobStore::open(&dir.join("blobs")).unwrap(),
+            cyphr_index_fjall::FjallIndexer::open(&dir.join("index")).unwrap(),
+        )
+    }
+
+    type Mem = StorageEngine<MemoryBlobStore, MemoryIndexer>;
+
+    pub fn mem_engine() -> Mem {
+        StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new())
+    }
+
+    /// F-A claim: a coz someone else replayed first does not block the
+    /// victim, and the replayed coz resolves to both principals.
+    pub async fn assert_victim_not_blocked<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+    ) {
+        let o = replay_transaction(e).await;
+        assert!(o.victim_push.is_ok(), "victim refused: {:?}", o.victim_push);
+        assert_eq!(
+            sorted(holder_ids(e, &o.czd).await),
+            sorted(vec![o.vid, o.aid])
+        );
+    }
+
+    /// F-B claim: a replayed action resolves to every principal that
+    /// committed it, never to the replayer alone.
+    pub async fn assert_action_resolves_to_both<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+    ) {
+        let o = replay_action(e).await;
+        assert!(o.victim_push.is_ok(), "victim refused: {:?}", o.victim_push);
+        assert_eq!(
+            sorted(holder_ids(e, &o.czd).await),
+            sorted(vec![o.vid, o.aid])
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    async fn replay_victim_transaction_does_not_block_victim_memory() {
+        assert_victim_not_blocked(&mem_engine()).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    async fn replay_victim_transaction_does_not_block_victim_fjall() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_victim_not_blocked(&fjall_engine(dir.path())).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    async fn replay_victim_action_resolves_to_both_principals_memory() {
+        assert_action_resolves_to_both(&mem_engine()).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    async fn replay_victim_action_resolves_to_both_principals_fjall() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_action_resolves_to_both(&fjall_engine(dir.path())).await;
+    }
+
+    /// F-C claim: a store holding one coz under two principals restarts and
+    /// rebuilds; every principal is served afterwards.
+    pub async fn assert_restart_survives<B: BlobStore, I: Indexer + IndexerWrite>(
+        first: StorageEngine<B, I>,
+        reopen: impl FnOnce(StorageEngine<B, I>) -> StorageEngine<B, I>,
+    ) {
+        let o = replay_transaction(&first).await;
+        let tips = (
+            first.get_tip(&o.aid).await.unwrap().map(|t| t.commit_count),
+            first.get_tip(&o.vid).await.unwrap().map(|t| t.commit_count),
+        );
+        let e = reopen(first);
+        let after = (
+            e.get_tip(&o.aid)
+                .await
+                .expect("attacker served after restart")
+                .map(|t| t.commit_count),
+            e.get_tip(&o.vid)
+                .await
+                .expect("victim served after restart")
+                .map(|t| t.commit_count),
+        );
+        assert_eq!(after, tips, "restart changed what is served");
+        e.rebuild_index_from_scratch()
+            .await
+            .expect("scratch rebuild");
+        assert_eq!(
+            e.get_tip(&o.vid).await.unwrap().map(|t| t.commit_count),
+            tips.1
+        );
+        assert_eq!(
+            sorted(holder_ids(&e, &o.czd).await),
+            sorted(vec![o.vid, o.aid])
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    async fn replay_store_with_one_coz_under_two_principals_restarts_memory() {
+        let first = mem_engine();
+        assert_restart_survives(first, |old| {
+            StorageEngine::new(old.blob_store().clone(), MemoryIndexer::new())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    async fn replay_store_with_one_coz_under_two_principals_restarts_fjall() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        assert_restart_survives(fjall_engine(&path), |old| {
+            drop(old);
+            fjall_engine(&path)
+        })
+        .await;
+    }
+
+    /// A blob store whose `iter` order is a seeded permutation of the
+    /// stored blobs, to show that a rebuild does not depend on it.
+    #[derive(Clone)]
+    pub struct ShuffledBlobs {
+        pub inner: MemoryBlobStore,
+        pub seed: Arc<AtomicU64>,
+    }
+
+    impl BlobStore for ShuffledBlobs {
+        fn put(
+            &self,
+            data: &[u8],
+        ) -> impl Future<Output = Result<Blake3Hash, BlobStoreError>> + Send {
+            self.inner.put(data)
+        }
+
+        fn get(
+            &self,
+            hash: &Blake3Hash,
+        ) -> impl Future<Output = Result<Option<Vec<u8>>, BlobStoreError>> + Send {
+            self.inner.get(hash)
+        }
+
+        fn exists(
+            &self,
+            hash: &Blake3Hash,
+        ) -> impl Future<Output = Result<bool, BlobStoreError>> + Send {
+            self.inner.exists(hash)
+        }
+
+        fn iter(
+            &self,
+        ) -> impl Future<
+            Output = Result<
+                Box<dyn Iterator<Item = Result<Blake3Hash, BlobStoreError>> + Send>,
+                BlobStoreError,
+            >,
+        > + Send {
+            let inner = self.inner.clone();
+            let seed = self.seed.load(Ordering::SeqCst);
+            async move {
+                let mut hashes: Vec<Blake3Hash> = inner.iter().await?.collect::<Result<_, _>>()?;
+                hashes.sort_by_key(|h| {
+                    let mut k = seed.to_le_bytes().to_vec();
+                    k.extend_from_slice(h.as_bytes());
+                    *blake3::hash(&k).as_bytes()
+                });
+                let it: Box<dyn Iterator<Item = Result<Blake3Hash, BlobStoreError>> + Send> =
+                    Box::new(hashes.into_iter().map(Ok));
+                Ok(it)
+            }
+        }
+    }
+
+    async fn snapshot<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+        czd: &cyphr::state::TaggedDigest,
+    ) -> String {
+        let mut out = Vec::new();
+        let mut probes = vec![czd.clone()];
+        let mut principals = e.indexer().list_principals().await.unwrap();
+        principals.sort_by(|a, b| a.principal_id.cmp(&b.principal_id));
+        for p in &principals {
+            out.push(format!(
+                "{p:?} {:?}",
+                e.indexer().get_tip(&p.principal_id).await.unwrap()
+            ));
+            for c in e
+                .indexer()
+                .get_commit_chain(&p.principal_id, None, None)
+                .await
+                .unwrap()
+            {
+                out.push(format!("{c:?}"));
+                for d in [&c.commit_id, &c.pr, &c.sr, &c.ar, &c.cr] {
+                    if let Ok(t) = d.parse::<cyphr::state::TaggedDigest>() {
+                        probes.push(t);
+                    }
+                }
+            }
+        }
+        probes.sort_by_key(|d| d.to_string());
+        probes.dedup();
+        for d in &probes {
+            out.push(format!(
+                "{d} {:?}",
+                e.indexer().resolve_digest_holders(d).await.unwrap()
+            ));
+        }
+        out.join("\n")
+    }
+
+    /// Property: whatever order the blob store lists its blobs in, a scratch
+    /// rebuild gives the same index (tips, chains, and the holders of every
+    /// digest, including the coz stored under two principals), on both
+    /// index backends. Turns red if the index depends on manifest order.
+    #[test]
+    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+    fn order_independent_rebuild_of_a_store_with_a_replayed_coz() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let blobs = MemoryBlobStore::new();
+        let czd = rt.block_on(async {
+            let e = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+            replay_transaction(&e).await.czd
+        });
+        let seed = Arc::new(AtomicU64::new(0));
+        let shuffled = ShuffledBlobs {
+            inner: blobs,
+            seed: seed.clone(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut runner = proptest::test_runner::TestRunner::new(super::config());
+        runner
+            .run(&proptest::prelude::any::<u64>(), |s| {
+                rt.block_on(async {
+                    let mut seen = Vec::new();
+                    for backend in 0..2 {
+                        seed.store(s, Ordering::SeqCst);
+                        let snap = if backend == 0 {
+                            let e = StorageEngine::new(shuffled.clone(), MemoryIndexer::new());
+                            e.rebuild_index_from_scratch()
+                                .await
+                                .expect("memory rebuild");
+                            snapshot(&e, &czd).await
+                        } else {
+                            let sub = dir.path().join(format!("{s}"));
+                            let e = StorageEngine::new(
+                                shuffled.clone(),
+                                cyphr_index_fjall::FjallIndexer::open(&sub).unwrap(),
+                            );
+                            e.rebuild_index_from_scratch().await.expect("fjall rebuild");
+                            snapshot(&e, &czd).await
+                        };
+                        seen.push(snap);
+                    }
+                    proptest::prop_assert_eq!(&seen[0], &seen[1]);
+                    // The reference order: seed 0 on memory.
+                    seed.store(0, Ordering::SeqCst);
+                    let e = StorageEngine::new(shuffled.clone(), MemoryIndexer::new());
+                    e.rebuild_index_from_scratch()
+                        .await
+                        .expect("reference rebuild");
+                    proptest::prop_assert_eq!(&seen[0], &snapshot(&e, &czd).await);
+                    Ok(())
+                })
+            })
+            .unwrap();
+    }
+}
+
+/// Claim: a manifest the rebuild cannot index is quarantined with a typed
+/// reason; it never fails the rebuild or hides the honest manifests beside
+/// it, and the report is the same on every run. Here a prefixed blob that is
+/// not JSON, and a well-formed manifest naming a blob the store does not
+/// hold. Turns red if either aborts the rebuild.
+#[tokio::test]
+#[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
+async fn rebuild_quarantines_unindexable_manifests() {
+    let e = engine();
+    submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
+    let honest = principals(&e).await;
+    let mut garbage = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
+    garbage.extend_from_slice(b"not json");
+    cyphr_storage::blob::BlobStore::put(e.blob_store(), &garbage)
+        .await
+        .unwrap();
+    let mut missing = forged(&fake_digest(0x80), 0, 0x81);
+    missing.blob_hashes = vec![Blake3Hash::from_bytes([0x82; 32])];
+    missing.cozies[0].blob_hash = Blake3Hash::from_bytes([0x82; 32]);
+    plant_manifest(&e, &missing).await;
+
+    let first = e
+        .rebuild_index_with_report()
+        .await
+        .expect("rebuild survives");
+    let again = e.rebuild_index_with_report().await.expect("and again");
+    assert_eq!(first, again, "the report is deterministic");
+    let reasons: Vec<_> = first.quarantined.iter().map(|q| &q.reason).collect();
+    assert_eq!(reasons.len(), 2, "{first:?}");
+    assert!(
+        reasons
+            .iter()
+            .any(|r| matches!(r, QuarantineReason::Malformed(_)))
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|r| matches!(r, QuarantineReason::Unsupported(_)))
+    );
+    assert_eq!(first.indexed, 2, "the honest commits are indexed");
+    assert_eq!(principals(&e).await, honest);
 }

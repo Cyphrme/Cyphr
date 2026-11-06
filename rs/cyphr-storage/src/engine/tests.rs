@@ -1282,3 +1282,67 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
         .expect("the same commit under the genesis-derived id must be accepted");
     assert!(engine.get_tip(&derived).await.unwrap().is_some());
 }
+
+/// Claim: a commit whose PG alias another principal already holds is
+/// refused before anything is written, so a refused push leaves no blob or
+/// manifest behind and a fresh engine on the same blob store serves every
+/// principal. A unit test: two principals claiming one PG cannot be built
+/// from signed cozes. Turns red if the refusal comes after the manifest is
+/// durable (the store then keeps a manifest every rebuild trips over).
+#[tokio::test]
+#[ignore = "RED(H1F): the alias check runs after the manifest is durable"]
+async fn alias_conflict_is_refused_before_anything_is_written() {
+    let blobs = MemoryBlobStore::new();
+    let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    let pg = vec!["SHA-256:contested-pg".to_string()];
+
+    let a0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1}}"];
+    engine
+        .ingest_commit(&a0, make_meta("alice", 0, 1))
+        .await
+        .unwrap();
+    let mut a1 = make_meta("alice", 1, 2);
+    a1.pg = pg.clone();
+    let a1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":2}}"];
+    engine.ingest_commit(&a1b, a1).await.unwrap();
+    let b0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":3}}"];
+    engine
+        .ingest_commit(&b0, make_meta("bob", 0, 3))
+        .await
+        .unwrap();
+
+    let stored = |store: &MemoryBlobStore| {
+        let store = store.clone();
+        async move { store.iter().await.unwrap().count() }
+    };
+    let before = stored(&blobs).await;
+    let mut b1 = make_meta("bob", 1, 4);
+    b1.pg = pg;
+    let b1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":4}}"];
+    let err = engine
+        .ingest_commit(&b1b, b1)
+        .await
+        .expect_err("alias held by alice");
+    assert!(
+        matches!(
+            err,
+            EngineError::Indexer(crate::index::IndexerError::Conflict(_))
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        stored(&blobs).await,
+        before,
+        "a refused commit wrote to the blob store"
+    );
+
+    let reopened = StorageEngine::new(blobs, MemoryIndexer::new());
+    for who in ["alice", "bob"] {
+        let tip = reopened
+            .get_tip(who)
+            .await
+            .expect("a fresh engine heals")
+            .expect("served");
+        assert_eq!(tip.principal_id, who);
+    }
+}

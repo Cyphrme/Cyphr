@@ -93,12 +93,10 @@ async fn alias_conflict_naming_another_principal_is_refused_memory() {
     conformance::alias_conflict_naming_another_principal_is_refused(&MemoryIndexer::new()).await;
 }
 
-
 #[tokio::test]
 async fn digest_conflict_same_principal_repeat_is_allowed_memory() {
     conformance::digest_conflict_same_principal_repeat_is_allowed(&MemoryIndexer::new()).await;
 }
-
 
 #[tokio::test]
 #[ignore = "RED(H1F): a shared digest keeps one holder"]

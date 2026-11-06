@@ -613,7 +613,6 @@ pub async fn digest_conflict_same_principal_repeat_is_allowed<I: Indexer + Index
     assert_eq!(e.sequence, Some(1));
 }
 
-
 fn valid_digest(fill: char) -> String {
     format!("SHA-256:{}", fill.to_string().repeat(42) + "A")
 }
