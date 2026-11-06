@@ -438,6 +438,12 @@ fn key_of(k: &Kp) -> cyphr::Key {
 /// Wire blobs of commit 0 of a principal rooted at `g` that adds `added`;
 /// commit 0's last blob carries the genesis key, as the wire contract needs.
 fn commit0_adding(g: &Kp, added: &Kp) -> Vec<Vec<u8>> {
+    commit0_adding_with_pr(g, added).0
+}
+
+/// [`commit0_adding`] plus the principal's PR after that commit (its key,
+/// and the PG if `principal/create` follows at once).
+fn commit0_adding_with_pr(g: &Kp, added: &Kp) -> (Vec<Vec<u8>>, String) {
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
     let pay = serde_json::json!({
         "alg": g.alg, "id": added.tmb.to_b64(), "now": NOW, "tmb": g.tmb.to_b64(),
@@ -457,9 +463,10 @@ fn commit0_adding(g: &Kp, added: &Kp) -> Vec<Vec<u8>> {
             "cyphr.me",
         )
         .expect("finalize");
+    let pr = p.pr_tagged().expect("pr");
     let entry = &crate::export_commits(&p).expect("export")[0];
     let last = entry.cozies.len() - 1;
-    entry
+    let blobs: Vec<Vec<u8>> = entry
         .cozies
         .iter()
         .enumerate()
@@ -479,7 +486,8 @@ fn commit0_adding(g: &Kp, added: &Kp) -> Vec<Vec<u8>> {
             }
             serde_json::to_vec(&c).expect("blob")
         })
-        .collect()
+        .collect();
+    (blobs, pr)
 }
 
 /// Claim (N13, chain-position idempotency and Fork quarantine at the write
@@ -648,4 +656,168 @@ async fn resolve_all(
         out.push((id, count));
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// keying ruling: key = PR after commit 0; tmb is a lookup; PG is the report
+// ---------------------------------------------------------------------------
+
+async fn submit<B: BlobStore>(
+    engine: &StorageEngine<B, MemoryIndexer, cyphr::eml::MemoryStorage>,
+    claim: &str,
+    g: &Kp,
+    blobs: &[Vec<u8>],
+) -> Result<IngestResult, EngineError> {
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    engine
+        .submit_commit(claim, Some(crate::Genesis::Implicit(key_of(g))), &refs)
+        .await
+}
+
+/// Claim: the storage key is derived from the record (the PR after commit
+/// 0), never from the spelling the push used, so one principal pushed under
+/// its tmb on one server and under its PG-to-be on another gets the same
+/// key, and a reindex from the blobs reproduces it. Turns red when the key
+/// follows the claim (tmb on one engine, the PR on the other).
+#[tokio::test]
+#[ignore = "RED(PGK): the storage key follows the pushed spelling"]
+async fn rekey_key_is_independent_of_the_pushed_spelling_and_survives_reindex() {
+    let pool = load_pool();
+    let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
+    let (blobs, pr) = commit0_adding_with_pr(&g, &k1);
+    assert_ne!(pr, tmb, "premise: commit 0 moves the PR off the bare tmb");
+    let (by_tmb, by_pr) = (test_engine(), test_engine());
+    submit(&by_tmb, &tmb, &g, &blobs).await.expect("under tmb");
+    submit(&by_pr, &pr, &g, &blobs).await.expect("under PR");
+    let (a, b) = (
+        by_tmb.canonical_principal_id(&tmb).await.expect("a"),
+        by_pr.canonical_principal_id(&pr).await.expect("b"),
+    );
+    assert_eq!(a, b, "the key follows the pushed spelling");
+    assert_eq!(a, pr, "before principal/create the reported id is the key");
+    for e in [&by_tmb, &by_pr] {
+        e.rebuild_index_from_scratch().await.expect("reindex");
+        assert_eq!(e.canonical_principal_id(&tmb).await.expect("after"), pr);
+    }
+}
+
+/// Claim: a principal pushed under its PG-to-be is found by its bare
+/// genesis-key tmb while exactly one such principal is stored. Turns red
+/// while the tmb is no address at all (404/None).
+#[tokio::test]
+#[ignore = "RED(PGK): a bare tmb does not resolve by genesis-key lookup"]
+async fn rekey_pushed_under_pg_to_be_resolves_by_unambiguous_bare_tmb() {
+    let pool = load_pool();
+    let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
+    let (blobs, pr) = commit0_adding_with_pr(&g, &k1);
+    let engine = test_engine();
+    submit(&engine, &pr, &g, &blobs).await.expect("under PG-to-be");
+    let by_tmb = engine.get_tip(&tmb).await.expect("tip").expect("stored");
+    let by_pr = engine.get_tip(&pr).await.expect("tip").expect("stored");
+    assert_eq!(by_tmb.commit_id, by_pr.commit_id);
+    assert_eq!(
+        engine.canonical_principal_id(&tmb).await.expect("tmb"),
+        engine.canonical_principal_id(&pr).await.expect("pr"),
+        "the two addresses name different principals"
+    );
+}
+
+/// Claim: a bare tmb shared by two stored principals is a typed
+/// `Ambiguous` refusal, not a pick and not "not found". Turns red on a
+/// first-match or a silent miss.
+#[tokio::test]
+#[ignore = "RED(PGK): an ambiguous bare tmb is not refused"]
+async fn rekey_ambiguous_bare_tmb_is_typed_ambiguous() {
+    let pool = load_pool();
+    let (g, k1, k2) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "alice"));
+    let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
+    let engine = test_engine();
+    for k in [&k1, &k2] {
+        let (blobs, pr) = commit0_adding_with_pr(&g, k);
+        submit(&engine, &pr, &g, &blobs).await.expect("push");
+    }
+    let got = engine.get_tip(&tmb).await;
+    assert!(matches!(got, Err(EngineError::Ambiguous(_))), "{got:?}");
+}
+
+/// Claim: a nonce principal claimed by its bare tmb is refused (the tmb is
+/// the identity of the single-key, no-nonce principal only), and nothing
+/// is stored. Turns red when it is accepted.
+#[tokio::test]
+#[ignore = "RED(PGK): a nonce principal is accepted under the bare tmb"]
+async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
+    let (p, _pg) = nonce_principal(&g, 0x55);
+    let blobs = wire_blobs(&p, 0, &g);
+    let engine = test_engine();
+    let got = submit(&engine, &tmb, &g, &blobs).await;
+    assert!(got.is_err(), "accepted: {got:?}");
+    assert!(engine.indexer().list_principals().await.expect("list").is_empty());
+}
+
+/// Claim: after commits before `principal/create` the key stays the PR
+/// after commit 0, and the reported id becomes the PG once established.
+/// Turns red when the reported id stays the key after `principal/create`.
+#[tokio::test]
+#[ignore = "RED(PGK): the reported id is not the PG once established"]
+async fn rekey_reported_id_is_the_pg_once_established() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (p, pg_after_two) = nonce_principal_with_gap(&g, 0x66);
+    let engine = test_engine();
+    let b0 = wire_blobs(&p, 0, &g);
+    let key = submit(&engine, &pg_after_two.0, &g, &b0)
+        .await
+        .expect("commit 0")
+        .principal_id;
+    let b1 = wire_blobs(&p, 1, &g);
+    submit(&engine, &pg_after_two.0, &g, &b1).await.expect("commit 1");
+    assert_eq!(engine.canonical_principal_id(&key).await.expect("id"), key);
+    let b2 = wire_blobs(&p, 2, &g);
+    submit(&engine, &pg_after_two.0, &g, &b2).await.expect("create");
+    assert_ne!(key, pg_after_two.1, "premise: the PG differs from the key");
+    assert_eq!(
+        engine.canonical_principal_id(&key).await.expect("after"),
+        pg_after_two.1
+    );
+    assert_eq!(
+        engine.canonical_principal_id(&pg_after_two.1).await.expect("by pg"),
+        pg_after_two.1
+    );
+}
+
+/// Principal on `g`: commit 0 inserts `nonce`, commit 1 inserts a second
+/// nonce, commit 2 is `principal/create`. Returns it with (PR after commit
+/// 0, the PG).
+fn nonce_principal_with_gap(g: &Kp, nonce: u8) -> (cyphr::Principal, (String, String)) {
+    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    let soft = |g: &Kp| cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
+    let mut apply = |p: &mut cyphr::Principal, pay: serde_json::Value, now: i64| {
+        let (pay, sig, czd) = signed(g, pay);
+        let mut scope = p.begin_commit();
+        scope.verify_and_apply(&pay, &sig, czd, None).expect("apply");
+        scope.finalize_with_software(&soft(g), now, "cyphr.me").expect("finalize");
+    };
+    let nonce_pay = |n: u8, now: i64| {
+        serde_json::json!({
+            "alg": g.alg,
+            "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32])),
+            "now": now, "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
+        })
+    };
+    apply(&mut p, nonce_pay(nonce, NOW), NOW);
+    let first = p.pr_tagged().expect("pr");
+    apply(&mut p, nonce_pay(nonce.wrapping_add(1), NOW + 1), NOW + 1);
+    let pg = p.pr_tagged().expect("pr");
+    apply(
+        &mut p,
+        serde_json::json!({"alg": g.alg, "id": pg, "now": NOW + 2,
+            "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        NOW + 2,
+    );
+    (p, (first, pg))
 }
