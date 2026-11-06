@@ -3,9 +3,8 @@
 //!
 //! Conventions pinned here: a JSON document carries a top-level integer `v`;
 //! a refusal is a typed `UnsupportedVersion` variant of the format's own
-//! error enum. The enums do not have it yet, so it is pinned by `matches!`
-//! on the error's `Debug` string (variant name plus the offending number)
-//! rather than by naming the variant, which would not compile. An index is a
+//! error enum, pinned by `matches!` on the variant and its offending number
+//! (only the plain-serde path flattens it to a message). An index is a
 //! rebuildable cache (I1), so an OLD or MISSING index version is discarded
 //! and rebuilt from the blob store, never refused; only the blob store's
 //! own legacy layout is refused, naming the offline re-ingest.
@@ -18,7 +17,7 @@ use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::{EngineError, StorageEngine};
 use cyphr_storage::index::{IndexableCommit, IndexableCoz, Indexer, MemoryIndexer};
-use cyphr_storage::{CommitEntry, Genesis};
+use cyphr_storage::{BundleError, CommitEntry, Genesis};
 use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
 type Durable =
@@ -42,7 +41,6 @@ fn entry() -> CommitEntry {
 /// `import` uses. Turns red on a writer that stamps nothing, or a reader that
 /// accepts any `v` (including the unknown 0 and 99).
 #[test]
-#[ignore = "RED(N13): bundle lines carry no version and any `v` is accepted"]
 fn version_bundle_unknown_is_refused() {
     let line = entry().to_json().expect("serialize");
     let mut doc: serde_json::Value = serde_json::from_str(&line).expect("json");
@@ -54,14 +52,18 @@ fn version_bundle_unknown_is_refused() {
     for unknown in [0u64, 99] {
         doc["v"] = unknown.into();
         let text = doc.to_string();
-        let via_json = format!("{:?}", CommitEntry::from_json(&text).err());
+        let via_json = CommitEntry::from_json(&text).err();
+        assert!(
+            matches!(via_json, Some(BundleError::UnsupportedVersion { found, .. }) if found == unknown),
+            "bundle v={unknown} must be refused as UnsupportedVersion: {via_json:?}"
+        );
+        // Through plain serde the typed error is flattened to its message,
+        // which names the variant (no typed path exists across serde).
         let via_serde = format!("{:?}", serde_json::from_str::<CommitEntry>(&text).err());
-        for dbg in [via_json, via_serde] {
-            assert!(
-                dbg.contains("UnsupportedVersion") && dbg.contains(&unknown.to_string()),
-                "bundle v={unknown} must be refused as UnsupportedVersion: {dbg}"
-            );
-        }
+        assert!(
+            via_serde.contains("UnsupportedVersion") && via_serde.contains(&unknown.to_string()),
+            "bundle v={unknown} must be refused as UnsupportedVersion: {via_serde}"
+        );
     }
 }
 
@@ -151,7 +153,6 @@ fn age_index(index_dir: &std::path::Path, version: Option<u64>) {
 /// `open` that serves the old rows (no version check) or refuses the store
 /// instead of rebuilding it. End-to-end over real durable backends.
 #[tokio::test]
-#[ignore = "RED(N13): an old-schema index is opened and served as is"]
 async fn legacy_store_index_is_rebuilt_from_blobs() {
     let fx = golden("freeze_create_transitions_to_frozen");
     let genesis = genesis_of(&fx);

@@ -429,15 +429,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             let genesis = match resolve_local_genesis(principal, keystore) {
                 Ok(genesis) => genesis,
                 Err(_) => {
-                    let parsed_commit = cyphr_storage::CommitEntry {
-                        cozies: commit.cozies.clone(),
-                        keys: commit.keys.clone(),
-                        commit_id: commit.commit_id.clone(),
-                        auth_root: commit.auth_root.clone(),
-                        sr: commit.sr.clone(),
-                        pr: commit.pr.clone(),
-                    };
-                    extract_genesis_from_commits(&[parsed_commit], Some(keystore))?
+                    extract_genesis_from_commits(std::slice::from_ref(commit), Some(keystore))?
                 },
             };
 
@@ -564,7 +556,6 @@ mod tests {
     /// flattens the cause. A unit test: `parse_store` is the CLI's only door
     /// to the store and no cheaper scenario reaches it.
     #[test]
-    #[ignore = "RED(N13): parse_store does not check the index version"]
     fn version_cli_store_future_index_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let index = dir.path().join("index");
