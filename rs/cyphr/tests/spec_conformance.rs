@@ -11,7 +11,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::signer::SoftwareSigner;
-use cyphr::{Error, Key, Principal};
+use cyphr::{Error, Key, Principal, StateDigest};
 use serde_json::json;
 
 const T: i64 = 1_700_000_000;
@@ -676,7 +676,7 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
     let mut keys = vec![key_of(&a)];
     keys.extend((1..256).map(|_| key_of(&kp())));
     let mut p = Principal::explicit(keys).expect("control: 256 keys build");
-    let mut roots = vec![p.key_root().clone()];
+    let mut roots = vec![p.key_root().expect("live KR").clone()];
     let extra: Vec<Kp> = (0..3).map(|_| kp()).collect();
     for (i, k) in extra.iter().enumerate() {
         let now = T + i as i64;
@@ -689,11 +689,11 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
         )
         .unwrap_or_else(|e| panic!("key {} refused: {e:?}", 257 + i));
         assert!(
-            !roots.contains(p.key_root()),
+            !roots.contains(p.key_root().expect("live KR")),
             "key {} did not change the Key Root",
             257 + i
         );
-        roots.push(p.key_root().clone());
+        roots.push(p.key_root().expect("live KR").clone());
     }
     for (step, (i, k)) in extra.iter().enumerate().rev().enumerate() {
         // Commit timestamps must not go backwards, so `now` follows the
@@ -709,7 +709,7 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
         .expect("delete of an added key");
         assert_eq!(
             p.key_root(),
-            &roots[i],
+            Some(&roots[i]),
             "deleting key {} did not restore the Key Root",
             257 + i
         );
@@ -1783,11 +1783,10 @@ proptest! {
 /// accepted and the principal is Dead and takes nothing afterwards. Control:
 /// with two keys the same revoke is accepted. Turns red if the only key's
 /// revoke is refused, which leaves the compromised key live for anyone who
-/// copied it. RED: the core returns `NoActiveKeys`. The golden vector
-/// `errors/last_key_revoke_fails` and `principal.rs::self_revoke_last_key_prevented`
-/// encode the refusal and change with the fix. End to end: yes.
+/// copied it. The golden vectors `lifecycle/last_key_revoke_leaves_dead` and
+/// `lifecycle/dead_principal_rejects_commit` pin the same behaviour for
+/// other implementations. End to end: yes.
 #[test]
-#[ignore = "RED(q3): SPEC 3.1 last-key self-revoke refused"]
 fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
     let (g, k2) = (kp(), kp());
     let mut two = Principal::explicit(vec![key_of(&g), key_of(&k2)]).expect("genesis");
@@ -1827,13 +1826,11 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
 /// that must be refused and leave every observable counter untouched. A
 /// second principal that kept a key shows the same action shape is still
 /// accepted after a sibling's revoke, so the refusal is the Dead state and
-/// not a blanket action ban. Turns red if the last-key revoke is refused
-/// (today), or if a Dead principal records an action. Catches a lying fix
+/// not a blanket action ban. Turns red if the last-key revoke is refused,
+/// or if a Dead principal records an action. Catches a lying fix
 /// that gates only the transaction path and leaves actions open, and a
-/// no-op fix that flags Dead without revoking the key. RED: the core returns
-/// `NoActiveKeys` for the revoke. End to end: yes.
+/// no-op fix that flags Dead without revoking the key. End to end: yes.
 #[test]
-#[ignore = "RED(q3): SPEC 3.1 last-key self-revoke refused"]
 fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
     let action = |k: &Kp, now: i64| {
         sign(
@@ -1873,6 +1870,161 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
     let r = record(&mut p, &g, T + 3);
     assert!(r.is_err(), "a dead principal recorded an action: {r:?}");
     assert_eq!(before, snapshot(&p), "a refused action changed state");
+}
+
+// ============================================================================
+// SPEC 3.7 and 4.2: the roots of the commit that leaves a principal Dead
+// ============================================================================
+
+/// Variants of a root as an alg-to-bytes map, so roots of different types
+/// compare by content.
+fn variants_of(mh: &cyphr::multihash::MultihashDigest) -> BTreeMap<coz::HashAlg, Vec<u8>> {
+    mh.variants()
+        .iter()
+        .map(|(a, d)| (*a, d.to_vec()))
+        .collect()
+}
+
+/// Backs SPEC 3.7 (empty components are omitted; a lone child is promoted)
+/// and 4.2 (the new PR is calculated after the commit). Scenario: a
+/// principal with no data revokes its only key. With no key there is no KT,
+/// so KR and AR are absent; with no DR there is no SR; with no SR the PR is
+/// the promoted CR. The principal, its commit and its PR all say so. Turns
+/// red if any of those roots is fabricated for a keyless principal (a
+/// stale pre-death KR/AR or SR, an empty-set digest), or if PR differs
+/// from CR. End to end: yes.
+#[test]
+fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
+    let g = kp();
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(
+        &mut p,
+        &g,
+        sign(&g, revoke_pay(&g, T, json!(T))),
+        None,
+        T + 1,
+    )
+    .expect("the only key's revoke is accepted");
+    assert!(p.key_root().is_none(), "dead principal has a KR");
+    assert!(p.auth_root().is_none(), "dead principal has an AR");
+    assert!(p.sr().is_none(), "dead principal without data has an SR");
+    let commit = p.commits().last().expect("the dying commit");
+    assert!(commit.auth_root().is_none(), "dying commit carries an AR");
+    assert!(commit.sr().is_none(), "dying commit carries an SR");
+    let cr = p.cr().expect("a commit exists, so CR exists");
+    assert_eq!(
+        variants_of(p.pr().as_multihash()),
+        variants_of(cr.as_multihash()),
+        "PR must be the promoted CR when SR is absent"
+    );
+    assert_eq!(commit.pr(), p.pr());
+}
+
+/// Backs SPEC 3.7 (SR = MR(AR, DR?); a lone child is promoted) for a
+/// keyless principal that holds data. Scenario: a lone key records an
+/// action (Level 4), then revokes itself. AR is absent, so SR is the
+/// promoted DR; KR and AR stay absent; PR is MR(SR, CR), different from
+/// both. Turns red if SR is absent despite data, SR differs from DR, or PR
+/// drops SR. End to end: yes.
+#[test]
+fn dead_principal_roots_state_root_is_the_data_root() {
+    let g = kp();
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let (pay, sig, czd) = sign(
+        &g,
+        json!({"alg": g.alg, "msg": "hi", "now": T, "tmb": b64(&g.tmb),
+               "typ": "cyphr.me/comment/create"}),
+    );
+    p.verify_and_record_action(&pay, &sig, czd).expect("action");
+    commit_one(
+        &mut p,
+        &g,
+        sign(&g, revoke_pay(&g, T + 1, json!(T + 1))),
+        None,
+        T + 2,
+    )
+    .expect("the only key's revoke is accepted");
+    assert!(p.key_root().is_none() && p.auth_root().is_none());
+    let dr = p.data_root().expect("DR survives death");
+    let sr = p.sr().expect("data makes an SR");
+    assert_eq!(
+        variants_of(sr.as_multihash()),
+        variants_of(&dr.0),
+        "SR must equal DR when AR is absent"
+    );
+    let commit = p.commits().last().expect("the dying commit");
+    assert!(commit.auth_root().is_none());
+    assert_eq!(commit.sr(), Some(sr));
+    let cr = p.cr().expect("CR");
+    let pr = variants_of(p.pr().as_multihash());
+    assert_ne!(pr, variants_of(sr.as_multihash()));
+    assert_ne!(pr, variants_of(cr.as_multihash()));
+}
+
+/// Backs SPEC 3.7 as ruled for the dying commit: its roots hash under
+/// the algorithm set in force before the commit, since the post-commit set
+/// is empty. Scenario: an ES256 and an ES384 key each self-revoke
+/// in one commit, leaving no keys. PR, CR
+/// and the commit's PR still carry both SHA-256 and SHA-384 variants. Turns
+/// red if the dying commit hashes under the empty post-commit set (the
+/// commit fails) or under only the signer's algorithm. End to end: yes.
+#[test]
+fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
+    let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
+    let mut p = Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis");
+    let both: BTreeSet<coz::HashAlg> = [coz::HashAlg::Sha256, coz::HashAlg::Sha384]
+        .into_iter()
+        .collect();
+    let algs_of = |mh: &cyphr::multihash::MultihashDigest| -> BTreeSet<coz::HashAlg> {
+        mh.variants().keys().copied().collect()
+    };
+    assert_eq!(algs_of(p.pr().as_multihash()), both, "control: genesis set");
+    let mut scope = p.begin_commit();
+    for (k, now) in [(&a, T), (&b, T + 1)] {
+        let (pay, sig, czd) = sign(k, revoke_pay(k, now, json!(now)));
+        scope
+            .verify_and_apply(&pay, &sig, czd, None)
+            .expect("revoke");
+    }
+    scope
+        .finalize_with_software(&software(&a), T + 2, "cyphr.me")
+        .expect("the dying commit");
+    assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
+    assert_eq!(algs_of(p.pr().as_multihash()), both, "PR algorithm set");
+    let cr = p.cr().expect("CR");
+    assert_eq!(algs_of(cr.as_multihash()), both, "CR algorithm set");
+    let commit = p.commits().last().expect("dying commit");
+    assert_eq!(algs_of(commit.pr().as_multihash()), both);
+}
+
+/// Backs SPEC 11 (Dead is final: no transactions or actions) after the
+/// dying commit finalizes, across the cold path too. Scenario: a Dead
+/// principal (revoked in a commit) refuses a second commit signed by a
+/// still-known key, with the typed revoked-key error, and nothing changes.
+/// Turns red if a Dead principal accepts any further commit. End to end:
+/// yes.
+#[test]
+fn dead_principal_roots_are_final_no_further_commit() {
+    let (g, k2) = (kp(), kp());
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(
+        &mut p,
+        &g,
+        sign(&g, revoke_pay(&g, T, json!(T))),
+        None,
+        T + 1,
+    )
+    .expect("dying commit");
+    let before = snapshot(&p);
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, T + 2)),
+        Some(key_of(&k2)),
+        T + 3,
+    );
+    assert!(matches!(r, Err(Error::KeyRevoked)), "got {r:?}");
+    assert_eq!(before, snapshot(&p));
 }
 
 // ============================================================================

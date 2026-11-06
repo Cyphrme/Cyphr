@@ -33,7 +33,10 @@ fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
         vec![HashAlg::Sha256, HashAlg::Sha512]
     );
 
-    let id = principal.auth_root().clone();
+    let id = principal
+        .auth_root()
+        .expect("a live principal has an AR")
+        .clone();
     let cz = ParsedCoz {
         kind: CozKind::PrincipalCreate { id },
         signer: key_es256.tmb().clone(),
@@ -178,8 +181,20 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
     );
-    assert!(principal.key_root().get(HashAlg::Sha512).is_some());
-    assert!(principal.auth_root().get(HashAlg::Sha512).is_some());
+    assert!(
+        principal
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(HashAlg::Sha512)
+            .is_some()
+    );
+    assert!(
+        principal
+            .auth_root()
+            .expect("a live principal has an AR")
+            .get(HashAlg::Sha512)
+            .is_some()
+    );
     assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
 
     let cz = ParsedCoz {
@@ -195,12 +210,20 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
 
     assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
     assert!(
-        principal.key_root().get(HashAlg::Sha512).is_none(),
+        principal
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(HashAlg::Sha512)
+            .is_none(),
         "KR must not retain a stale SHA-512 variant — KT must be rebuilt with only live \
          algorithms registered, not masked"
     );
     assert!(
-        principal.auth_root().get(HashAlg::Sha512).is_none(),
+        principal
+            .auth_root()
+            .expect("a live principal has an AR")
+            .get(HashAlg::Sha512)
+            .is_none(),
         "AR must not retain a stale SHA-512 variant — AR-node must be rebuilt with only live \
          algorithms registered, not masked"
     );
@@ -209,8 +232,20 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
         "SR must not retain a stale SHA-512 variant — SR-node must be rebuilt with only live \
          algorithms registered, not masked"
     );
-    assert!(principal.key_root().get(HashAlg::Sha256).is_some());
-    assert!(principal.auth_root().get(HashAlg::Sha256).is_some());
+    assert!(
+        principal
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(HashAlg::Sha256)
+            .is_some()
+    );
+    assert!(
+        principal
+            .auth_root()
+            .expect("a live principal has an AR")
+            .get(HashAlg::Sha256)
+            .is_some()
+    );
     assert!(principal.sr().unwrap().get(HashAlg::Sha256).is_some());
 }
 
@@ -286,9 +321,20 @@ fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
     let alg = principal.hash_alg();
     assert_eq!(principal.active_algs(), vec![alg]);
 
-    assert_eq!(principal.key_root().get(alg).unwrap(), tmb_bytes.as_slice());
     assert_eq!(
-        principal.auth_root().get(alg).unwrap(),
+        principal
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(alg)
+            .unwrap(),
+        tmb_bytes.as_slice()
+    );
+    assert_eq!(
+        principal
+            .auth_root()
+            .expect("a live principal has an AR")
+            .get(alg)
+            .unwrap(),
         tmb_bytes.as_slice()
     );
     assert_eq!(
@@ -316,7 +362,10 @@ fn make_principal_create_tx<S: eml::Storage>(
 
     ParsedCoz {
         kind: CozKind::PrincipalCreate {
-            id: principal.auth_root().clone(),
+            id: principal
+                .auth_root()
+                .expect("a live principal has an AR")
+                .clone(),
         },
         signer: key.tmb().clone(),
         now: 2000,

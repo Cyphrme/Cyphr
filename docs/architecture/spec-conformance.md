@@ -48,16 +48,12 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   53 |
+| `covered`      |   55 |
 | `red-existing` |    0 |
-| `red-new`      |    1 |
-| `not-testable` |   12 |
+| `red-new`      |    0 |
+| `not-testable` |   11 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
-
-Fixing ids on red rows: `q3` is the last-key
-self-revoke decision (the code allows no revoke of the only key; SPEC allows
-it and leaves the principal Dead).
 
 ## Rows
 
@@ -239,36 +235,43 @@ evaluator: none
 
 ### [sc-l295]
 
-SPEC 3.1, line 295. Disposition: `not-testable`.
+SPEC 3.1, line 295. Disposition: `covered`.
 
 - spec-line: 295
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: - Single key, never changes
-- tests: none
-- reason: Descriptive of the Level 1 feature set; §3.0 says a principal's level is not an authorization input, so there is no level-based rejection to test. The related last-key self-revoke requirement is line 298.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
+- fails when: a Level 1 principal's lone key can be replaced after it is revoked, so the principal does not stay Dead (a `key/create` by the revoked key is accepted). Reading: §3.0 says a level is not an authorization input, so "never changes" is enforced as the key set only shrinking: the lone key's revoke is the one change, and nothing may follow it. The row is shared with line 298.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l298]
 
-SPEC 3.1, line 298. Disposition: `red-new`.
+SPEC 3.1, line 298. Disposition: `covered`.
 
 - spec-line: 298
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
   - `rs/cyphr/tests/spec_conformance.rs::s3_1_dead_principal_after_last_key_revoke_records_no_action`
-- fails when: a self-revoke of a principal's only key is refused with `NoActiveKeys` (red today). SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. While the code refuses, Mallory who copies Alice's only key keeps it usable after Alice's revoke is refused. The code and the golden vector `errors/last_key_revoke_fails`, plus `principal.rs::self_revoke_last_key_prevented`, encode the opposite; the vector is not flipped here (pending nrd) and the fix regenerates the corpus.
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_are_absent_and_pr_is_cr_without_data`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_state_root_is_the_data_root`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_hash_under_the_pre_commit_algorithm_set`
+  - `rs/cyphr/tests/spec_conformance.rs::dead_principal_roots_are_final_no_further_commit`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_revoke_leaves_dead]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/dead_principal_rejects_commit]`
+- fails when: a self-revoke of a principal's only key is refused (it was, with `NoActiveKeys`), or the dying commit's roots are not the ruled ones (KR and AR absent, SR equal to DR or absent, PR equal to CR when SR is absent, hashed under the pre-commit algorithm set), or the Dead principal accepts anything further. SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. Refusing the revoke leaves Mallory, who copied Alice's only key, a usable key after Alice's revoke.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l463]

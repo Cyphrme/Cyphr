@@ -76,12 +76,18 @@ pub fn export_commits<S: eml::Storage>(
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
         let commit_id = commit.tr().0.tagged_first()?.to_string();
+        // Roots absent after a dying commit (SPEC 3.7) export as the empty
+        // string, the entry's existing absent-root convention.
         let auth_root = commit
             .auth_root()
-            .as_multihash()
-            .tagged_first()?
-            .to_string();
-        let sr = commit.sr().as_multihash().tagged_first()?.to_string();
+            .map(|a| a.as_multihash().tagged_first().map(|t| t.to_string()))
+            .transpose()?
+            .unwrap_or_default();
+        let sr = commit
+            .sr()
+            .map(|s| s.as_multihash().tagged_first().map(|t| t.to_string()))
+            .transpose()?
+            .unwrap_or_default();
         let pr = commit.pr().as_multihash().tagged_first()?.to_string();
 
         commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, pr));

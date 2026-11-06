@@ -49,7 +49,11 @@ impl<S: eml::Storage> Principal<S> {
 
         // Recompute SR-node: cell 0 = AR (unchanged), cell 1 = DR (may have
         // just appeared/changed above).
-        let sr = StateTree::build(&core.ar, core.dr.as_ref(), &active_algs)?;
+        let sr = StateTree::build(
+            core.ar.as_ref().ok_or(Error::NoActiveKeys)?,
+            core.dr.as_ref(),
+            &active_algs,
+        )?;
 
         // Write SR into the Principal Tree (cell 1/CR is untouched) and
         // recompute PR from the tree.

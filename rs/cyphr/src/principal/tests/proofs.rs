@@ -265,8 +265,16 @@ fn key_inclusion_rejects_forged_leaf_at_real_position() {
     path.hops[0].proof.leaf_hash = vec![0xEE; 32];
 
     let hasher = MaltHasher::new(alg);
-    let kr_bytes = principal.key_root().get(alg).unwrap();
-    let ar_bytes = principal.auth_root().get(alg).unwrap();
+    let kr_bytes = principal
+        .key_root()
+        .expect("a live principal has a KR")
+        .get(alg)
+        .unwrap();
+    let ar_bytes = principal
+        .auth_root()
+        .expect("a live principal has an AR")
+        .get(alg)
+        .unwrap();
     let sr_bytes = principal.sr().unwrap().get(alg).unwrap();
     let pr_bytes = principal.pr().get(alg).unwrap();
 
@@ -291,8 +299,20 @@ fn key_inclusion_verifies_through_genesis_promotion_chain() {
     let alg = principal.hash_alg();
 
     // Every intermediate level is a verbatim promotion at genesis.
-    assert_eq!(principal.key_root().get(alg), Some(tmb.as_bytes()));
-    assert_eq!(principal.auth_root().get(alg), Some(tmb.as_bytes()));
+    assert_eq!(
+        principal
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(alg),
+        Some(tmb.as_bytes())
+    );
+    assert_eq!(
+        principal
+            .auth_root()
+            .expect("a live principal has an AR")
+            .get(alg),
+        Some(tmb.as_bytes())
+    );
     assert_eq!(principal.sr().unwrap().get(alg), Some(tmb.as_bytes()));
     assert_eq!(principal.pr().get(alg), Some(tmb.as_bytes()));
 
@@ -370,13 +390,25 @@ fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
     let path_a = principal_a.key_inclusion_proof(alg, &tmb_a).unwrap();
     let path_b = principal_b.key_inclusion_proof(alg, &tmb_b).unwrap();
 
-    let kr_a = principal_a.key_root().get(alg).unwrap();
-    let ar_b = principal_b.auth_root().get(alg).unwrap();
+    let kr_a = principal_a
+        .key_root()
+        .expect("a live principal has a KR")
+        .get(alg)
+        .unwrap();
+    let ar_b = principal_b
+        .auth_root()
+        .expect("a live principal has an AR")
+        .get(alg)
+        .unwrap();
     let sr_b = principal_b.sr().unwrap().get(alg).unwrap();
     let pr_b = principal_b.pr().get(alg).unwrap();
     assert_ne!(
         kr_a,
-        principal_b.key_root().get(alg).unwrap(),
+        principal_b
+            .key_root()
+            .expect("a live principal has a KR")
+            .get(alg)
+            .unwrap(),
         "test fixture requires A and B to have genuinely different KRs"
     );
 

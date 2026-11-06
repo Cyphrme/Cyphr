@@ -27,10 +27,12 @@ pub struct Commit {
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
     /// Transaction Root: Merkle root of coz czds.
     tr: crate::transaction_root::TransactionRoot,
-    /// Auth State at the end of this commit.
-    ar: AuthRoot,
-    /// State Root at the end of this commit.
-    sr: StateRoot,
+    /// Auth Root at the end of this commit; `None` when the commit left no
+    /// key (SPEC 3.7: an empty component is omitted).
+    ar: Option<AuthRoot>,
+    /// State Root at the end of this commit; `None` when the commit left no
+    /// key and the principal holds no data.
+    sr: Option<StateRoot>,
     /// Principal Root at the end of this commit.
     pr: PrincipalRoot,
 }
@@ -44,8 +46,8 @@ impl Commit {
     pub(crate) fn new(
         transactions: Vec<crate::transaction::Transaction>,
         tr: crate::transaction_root::TransactionRoot,
-        ar: AuthRoot,
-        sr: StateRoot,
+        ar: Option<AuthRoot>,
+        sr: Option<StateRoot>,
         pr: PrincipalRoot,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() {
@@ -90,14 +92,16 @@ impl Commit {
         &self.tr
     }
 
-    /// Get the State Root at the end of this commit.
-    pub fn sr(&self) -> &StateRoot {
-        &self.sr
+    /// Get the State Root at the end of this commit; `None` when the commit
+    /// left a principal with no keys and no data.
+    pub fn sr(&self) -> Option<&StateRoot> {
+        self.sr.as_ref()
     }
 
-    /// Get the Auth State at the end of this commit.
-    pub fn auth_root(&self) -> &AuthRoot {
-        &self.ar
+    /// Get the Auth Root at the end of this commit; `None` when the commit
+    /// left a principal with no keys.
+    pub fn auth_root(&self) -> Option<&AuthRoot> {
+        self.ar.as_ref()
     }
 
     /// Get the Principal Root at the end of this commit.
@@ -252,8 +256,8 @@ impl PendingCommit {
     ///
     /// # Arguments
     ///
-    /// * `auth_root` - The computed Auth State after all cozies
-    /// * `sr` - The computed State Root: MR(AR, DR?, embedding?)
+    /// * `ar` - The computed Auth Root after all cozies (`None` if no key remains)
+    /// * `sr` - The computed State Root: MR(AR?, DR?, embedding?) (`None` if neither exists)
     /// * `pr` - The computed Principal Root after all cozies
     /// * `tx_algs` - Explicit transaction algorithm set footprint (extracted from Arrow)
     ///
@@ -263,8 +267,8 @@ impl PendingCommit {
     /// present are finalizers (no mutation content).
     pub fn finalize(
         self,
-        ar: AuthRoot,
-        sr: StateRoot,
+        ar: Option<AuthRoot>,
+        sr: Option<StateRoot>,
         pr: PrincipalRoot,
         tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
@@ -319,16 +323,19 @@ impl PendingCommit {
 pub(crate) fn arrow_digest(
     alg: crate::state::HashAlg,
     pre: &PrincipalRoot,
-    sr: &StateRoot,
+    sr: Option<&StateRoot>,
     tmr: &crate::transaction_root::TransactionMutationRoot,
 ) -> crate::error::Result<Vec<u8>> {
     let pre_bytes = pre.0.arrow_component_bytes(alg)?;
-    let sr_bytes = sr.0.arrow_component_bytes(alg)?;
     let tmr_bytes = tmr.0.arrow_component_bytes(alg)?;
-    Ok(crate::state::hash_sorted_concat_bytes(
-        alg,
-        &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
-    ))
+    // The forward SR is absent when the commit leaves no key and no data;
+    // an empty component is omitted from the root (SPEC 3.7).
+    let sr_bytes = sr.map(|sr| sr.0.arrow_component_bytes(alg)).transpose()?;
+    let mut components = vec![pre_bytes.as_ref(), tmr_bytes.as_ref()];
+    if let Some(sr_bytes) = sr_bytes.as_ref() {
+        components.push(sr_bytes.as_ref());
+    }
+    Ok(crate::state::hash_sorted_concat_bytes(alg, &components))
 }
 
 // ============================================================================
@@ -535,15 +542,14 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Check if a claimed arrow matches the expected arrow for this commit scope.
     pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
         use crate::semantic_tree::derive_state_roots_with_nonces;
-        use crate::state::{compute_dr, derive_hash_algs};
+        use crate::state::compute_dr;
 
         if self.is_empty() {
             return false;
         }
 
         // 1. Recompute projected state roots
-        let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
-        let active_algs = derive_hash_algs(&key_refs);
+        let active_algs = self.projected.active_algs();
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| k.tmb()).collect();
 
@@ -575,7 +581,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         };
 
         // 3. Compute Arrow = MR(pre, sr, tmr)
-        let Ok(computed_digest) = arrow_digest(signer_hash_alg, &self.principal.pr, &sr, &tmr)
+        let Ok(computed_digest) =
+            arrow_digest(signer_hash_alg, &self.principal.pr, sr.as_ref(), &tmr)
         else {
             return false;
         };
@@ -639,8 +646,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
         //    reads the projected state.
-        let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
-        let active_algs = crate::state::derive_hash_algs(&key_refs);
+        let active_algs = self.projected.active_algs();
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| k.tmb()).collect();
 
@@ -662,7 +668,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
         // 2. Compute Arrow = MR(pre, sr, tmr); pre is the previous state's principal root.
-        let arrow = arrow_digest(signer_hash_alg, &self.principal.pr, &sr, &tmr)?;
+        let arrow = arrow_digest(signer_hash_alg, &self.principal.pr, sr.as_ref(), &tmr)?;
         let arrow_tagged = format!(
             "{}:{}",
             signer_hash_alg,
@@ -927,7 +933,7 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let commit = pending.finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256]);
+        let commit = pending.finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256]);
         assert!(
             matches!(commit, Err(crate::error::Error::EmptyCommit)),
             "a finalizer-only commit (no mutation cozies) must be rejected as empty, got \
@@ -966,7 +972,7 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let result = pending.finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256]);
+        let result = pending.finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256]);
         assert!(
             matches!(result, Err(crate::error::Error::MissingCommit)),
             "finalize should fail without finalizer marker"
@@ -983,7 +989,7 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let result = pending.finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256]);
+        let result = pending.finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256]);
         assert!(result.is_err(), "should fail when empty");
     }
 
@@ -1028,8 +1034,8 @@ mod tests {
 
         let commit = pending
             .finalize(
-                auth_root.clone(),
-                sr.clone(),
+                Some(auth_root.clone()),
+                Some(sr.clone()),
                 pr.clone(),
                 &[coz::HashAlg::Sha256],
             )
@@ -1039,8 +1045,8 @@ mod tests {
         assert_eq!(commit.iter_all_cozies().count(), 2);
         assert!(!commit.is_empty());
         assert_eq!(commit.len(), 2);
-        assert_eq!(commit.auth_root(), &auth_root);
-        assert_eq!(commit.sr(), &sr);
+        assert_eq!(commit.auth_root(), Some(&auth_root));
+        assert_eq!(commit.sr(), Some(&sr));
         assert_eq!(commit.pr(), &pr);
         assert_eq!(commit.tr().0.get(HashAlg::Sha256).unwrap().len(), 32);
     }
@@ -1065,7 +1071,7 @@ mod tests {
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
         let commit = pending
-            .finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256])
+            .finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256])
             .unwrap();
         assert_eq!(commit.len(), 3);
 

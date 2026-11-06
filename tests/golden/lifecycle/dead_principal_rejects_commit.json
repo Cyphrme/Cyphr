@@ -1,0 +1,90 @@
+{
+  "name": "dead_principal_rejects_commit",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "now": 1700000000,
+            "rvk": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/key/revoke"
+          },
+          "sig": "aXjzybN1t7NGiygGBlvDBz9nfxC7CvTg2atw8PXCxPszXVlHD6jQVYg76G-N9EafmI3KJD-O4FqiNKzgUnNwMw"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "arrow": "SHA-256:YhpVuHSoh1B_RoCHf6t-L5cOOa74viF9Bdc359_Yrtc",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/commit/create"
+          },
+          "sig": "fxFlu3YKBNUyVL5buKTqgA-HhmMPCXflP2W0a63ckrZsuEGZinNeUE1hM1UpWS1xStZBcTRwdcPUCws45Z0A-Q"
+        }
+      ],
+      "keys": [],
+      "commit_id": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
+      "ar": "",
+      "sr": "",
+      "pr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8"
+    },
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/key/create"
+          },
+          "sig": "6pO_mbPOTSV-581BgKrZzjl1q87f3KvRscjfVxmWs_omJ8KgEkwB_kSLBgZw6LbkDFhUemBIDOkcrQRFhti_-A"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
+          "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+        }
+      ],
+      "commit_id": "",
+      "ar": "",
+      "sr": "",
+      "pr": ""
+    }
+  ],
+  "digests": [
+    "kuipFn-QtK1M6F1KLivfGdiSliRptSRvxF8afDwLky4",
+    "WH2jOhJ13A7kCQnzW2emIZ2Bw1EnAbOFeg5-Ys73dw8",
+    "j0CjxVWs82mEoI7GYNvqXM6l1XS89iGg8qo_9B_jPCE"
+  ],
+  "expected": {
+    "key_count": 0,
+    "level": 3,
+    "kr": null,
+    "ar": null,
+    "pr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
+    "cr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
+    "tr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
+    "sr": null,
+    "pg": "",
+    "error": "KeyRevoked",
+    "deleted": false,
+    "frozen": false
+  }
+}

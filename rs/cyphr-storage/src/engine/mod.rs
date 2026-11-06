@@ -694,18 +694,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .next()
             .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
 
-        let sr_obj = principal
-            .sr()
-            .ok_or_else(|| EngineError::InvalidInput("missing SR".into()))?;
-        let sr = format_multihash_all(sr_obj.as_multihash())?
+        // SR and AR are absent for a Dead principal (SPEC 3.7: an empty
+        // component is omitted); an absent root reads as the empty string,
+        // the same convention as an absent CR below.
+        let sr = format_multihash_opt(principal.sr().map(|s| s.as_multihash()))?
             .into_iter()
             .next()
-            .ok_or_else(|| EngineError::InvalidInput("empty SR".into()))?;
+            .unwrap_or_default();
 
-        let ar = format_multihash_all(principal.auth_root().as_multihash())?
+        let ar = format_multihash_opt(principal.auth_root().map(|a| a.as_multihash()))?
             .into_iter()
             .next()
-            .ok_or_else(|| EngineError::InvalidInput("empty AR".into()))?;
+            .unwrap_or_default();
 
         let cr = match principal.cr() {
             Some(cr_obj) => format_multihash_all(cr_obj.as_multihash())?
@@ -1744,8 +1744,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
                 let commit = scope.finalize()?;
                 let commit_ids = format_multihash_all(&commit.tr().0)?;
-                let ar = format_multihash_all(commit.auth_root().as_multihash())?;
-                let sr = format_multihash_all(commit.sr().as_multihash())?;
+                let ar = format_multihash_opt(commit.auth_root().map(|a| a.as_multihash()))?;
+                let sr = format_multihash_opt(commit.sr().map(|s| s.as_multihash()))?;
                 let pr = format_multihash_all(commit.pr().as_multihash())?;
                 (commit_ids, ar, sr, pr, deferred)
             };
@@ -2514,6 +2514,14 @@ fn format_multihash_all(
     mh.algorithms()
         .map(|alg| Ok(mh.tagged(alg)?.to_string()))
         .collect()
+}
+
+/// [`format_multihash_all`] for a root that may be absent: an absent root
+/// formats to no variants, which readers treat as "no such root".
+fn format_multihash_opt(
+    mh: Option<&cyphr::multihash::MultihashDigest>,
+) -> Result<Vec<String>, EngineError> {
+    mh.map_or_else(|| Ok(Vec::new()), format_multihash_all)
 }
 
 #[cfg(test)]

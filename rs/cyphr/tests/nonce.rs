@@ -175,8 +175,8 @@ struct Roots {
 
 fn roots(p: &Principal) -> Roots {
     Roots {
-        kr: p.key_root().clone(),
-        ar: p.auth_root().clone(),
+        kr: p.key_root().expect("a live principal has a KR").clone(),
+        ar: p.auth_root().expect("a live principal has an AR").clone(),
         sr: p.sr().cloned(),
         keys: p.active_key_count(),
     }
@@ -230,11 +230,24 @@ fn nonce_bytes(seed: u8) -> [u8; 32] {
 fn premise_roots_without_nonce_follow_3_7() {
     let (p, g, a) = base();
     let kr = sha256_of_sorted(&[g.tmb.as_bytes(), a.tmb.as_bytes()]);
-    assert_eq!(sha256_bytes(p.key_root()), kr, "KR = H(sort(tmb...))");
-    assert_eq!(p.auth_root().as_multihash(), p.key_root().as_multihash());
+    assert_eq!(
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
+        kr,
+        "KR = H(sort(tmb...))"
+    );
+    assert_eq!(
+        p.auth_root()
+            .expect("a live principal has an AR")
+            .as_multihash(),
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
+    );
     assert_eq!(
         p.sr().expect("sr").as_multihash(),
-        p.key_root().as_multihash()
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
     );
     assert_eq!(
         &pr_without_embedding(&p),
@@ -349,20 +362,29 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n1, T + 10), None, T + 10);
     assert!(r.is_ok(), "KT nonce/create was refused: {r:?}");
     assert_eq!(
-        sha256_bytes(p.key_root()),
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
         sha256_of_sorted(&[tmbs[0], tmbs[1], &n1]),
         "KR with one nonce"
     );
-    assert_eq!(p.auth_root().as_multihash(), p.key_root().as_multihash());
+    assert_eq!(
+        p.auth_root()
+            .expect("a live principal has an AR")
+            .as_multihash(),
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
+    );
     assert_eq!(
         p.sr().expect("sr").as_multihash(),
-        p.key_root().as_multihash()
+        p.key_root()
+            .expect("a live principal has a KR")
+            .as_multihash()
     );
 
     let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n2, T + 11), None, T + 11);
     assert!(r.is_ok(), "a second KT nonce was refused: {r:?}");
     assert_eq!(
-        sha256_bytes(p.key_root()),
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
         sha256_of_sorted(&[tmbs[0], tmbs[1], &n1, &n2]),
         "KR with two nonces"
     );
@@ -391,7 +413,7 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let r = commit_one(&mut p, &g, delete(Level::Kt, &g, &n1, T + 20), None, T + 20);
     assert!(r.is_ok(), "deleting one of two nonces was refused: {r:?}");
     assert_eq!(
-        sha256_bytes(p.key_root()),
+        sha256_bytes(p.key_root().expect("a live principal has a KR")),
         sha256_of_sorted(&[tmbs[0], tmbs[1], &n2]),
         "KR after deleting N1 must keep N2"
     );
@@ -418,19 +440,21 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
     let (n1, n2) = (nonce_bytes(3), nonce_bytes(4));
     let (mut p, g, _) = base();
     let pre = roots(&p);
-    let kr = sha256_bytes(p.key_root());
+    let kr = sha256_bytes(p.key_root().expect("a live principal has a KR"));
 
     let r = commit_one(&mut p, &g, create(Level::At, &g, &n1, T + 10), None, T + 10);
     assert!(r.is_ok(), "AT nonce/create was refused: {r:?}");
     assert_eq!(roots(&p).kr, pre.kr, "an AT nonce reached KR");
-    let ar = sha256_bytes(p.auth_root());
+    let ar = sha256_bytes(p.auth_root().expect("a live principal has an AR"));
     assert!(
         ar == sha256_of_concat(&[&kr, &n1]) || ar == sha256_of_concat(&[&n1, &kr]),
         "AR is not the hash of KR and the nonce"
     );
     assert_eq!(
         p.sr().expect("sr").as_multihash(),
-        p.auth_root().as_multihash(),
+        p.auth_root()
+            .expect("a live principal has an AR")
+            .as_multihash(),
         "SR promotes AR"
     );
 

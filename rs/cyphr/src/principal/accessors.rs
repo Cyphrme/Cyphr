@@ -35,9 +35,10 @@ impl<S: eml::Storage> Principal<S> {
         self.held_prs.iter().any(|h| h.0.matches(&pr.0))
     }
 
-    /// Get the current Auth State.
-    pub fn auth_root(&self) -> &AuthRoot {
-        &self.ar
+    /// Get the current Auth Root; `None` for a Dead principal, which has
+    /// no keys and so no AR (SPEC 3.7: empty components are omitted).
+    pub fn auth_root(&self) -> Option<&AuthRoot> {
+        self.ar.as_ref()
     }
 
     /// Get the current Principal State as a tagged digest string (alg:digest format).
@@ -66,9 +67,10 @@ impl<S: eml::Storage> Principal<S> {
         ))
     }
 
-    /// Get the current Key State.
-    pub fn key_root(&self) -> &KeyRoot {
-        &self.kr
+    /// Get the current Key Root; `None` for a Dead principal (see
+    /// [`Self::auth_root`]).
+    pub fn key_root(&self) -> Option<&KeyRoot> {
+        self.kr.as_ref()
     }
 
     /// Get the hash algorithm used by this principal.

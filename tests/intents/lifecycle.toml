@@ -101,3 +101,47 @@ tx = [
 # stays Deleted, never becomes Frozen.
 error     = "AlreadyDeleted"
 key_count = 1
+
+# Test: revoking the only key is accepted and leaves the principal Dead
+# (SPEC.md 3.1, 11, 14.1). The dying commit has no KR or AR and, with no
+# data, no SR; PR is the promoted CR (SPEC 3.7). The expected block records
+# the absent roots as JSON null.
+[[test]]
+name      = "last_key_revoke_leaves_dead"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+deleted   = false
+frozen    = false
+key_count = 0
+
+# Test: a Dead principal takes nothing further (SPEC.md 11). The revoked
+# key cannot add a key after its own revoke.
+[[test]]
+name      = "dead_principal_rejects_commit"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "KeyRevoked"
+key_count = 0
