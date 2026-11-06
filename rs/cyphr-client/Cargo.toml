@@ -12,11 +12,15 @@ rust-version.workspace = true
 version                = "0.1.0"
 
 [features]
-default = ["http"]
+default = ["http", "noise"]
 # The HTTP transport. Everything outside `http` is the I/O-free verify core:
 # `cargo tree --no-default-features` must list no async runtime or socket
 # crate.
 http = ["dep:reqwest"]
+# The Noise transport (`transport` module): principal-authenticated sessions
+# over TCP. Pulls the Noise implementation and an async runtime, so it is
+# off the I/O-free verify core's tree.
+noise = ["dep:snow", "dep:tokio"]
 
 [dependencies]
 coz        = { workspace = true }
@@ -24,7 +28,9 @@ cyphr      = { path = "../cyphr", version = "0.1.0" }
 reqwest    = { version = "0.12", default-features = false, optional = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
+snow       = { version = "=0.10.0", optional = true }
 thiserror  = { workspace = true }
+tokio      = { workspace = true, optional = true, features = ["net", "io-util", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "time"] }

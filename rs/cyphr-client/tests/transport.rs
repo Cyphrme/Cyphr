@@ -3,18 +3,14 @@
 //! The client under test is `NoiseConnector`. Against it stands a fake
 //! responder that speaks real Noise NN and then misbehaves in one named
 //! way, so each binding rule is exercised as a typed refusal over a real
-//! socket. The whole file is gated behind `cfg(red_tr1)`: it names APIs the
-//! implementation does not have yet, so under the cfg it fails to compile
-//! on the base (its red); without the cfg the binary is empty and the
-//! workspace stays green.
+//! socket.
 //!
-//! Run: `cd rs && RUSTFLAGS="--cfg red_tr1" cargo test -p cyphr-client \
-//! --test transport`
+//! Run: `cd rs && cargo test -p cyphr-client --test transport`
 //!
 //! Assumptions the implement brief must honour or amend here (a Noise
 //! suite and wire framing are free choices; the fake needs one):
-//! - Noise params `Noise_NN_25519_ChaChaPoly_BLAKE2s`, via the `snow` crate (a dev-dependency of
-//!   this crate, with tokio feature `time`).
+//! - Noise params `Noise_NN_25519_ChaChaPoly_BLAKE2s`, via the `snow` crate (a dependency of
+//!   this crate's `noise` feature).
 //! - Every message, handshake and transport, is one frame: a big-endian `u16` length, then the
 //!   Noise message.
 //! - The responder's first transport message is its statement; the initiator replies with its own,
@@ -24,9 +20,6 @@
 //!   `pr` the PG, `role` `initiator` or `responder`). An empty plaintext is "no statement".
 //! - The pinned responder is a bare pin on an implicit-genesis key; no follow is needed for the
 //!   statement to be judged.
-
-#![allow(unexpected_cfgs)]
-#![cfg(red_tr1)]
 
 use std::time::Duration;
 
