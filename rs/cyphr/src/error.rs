@@ -91,6 +91,17 @@ pub enum Error {
     #[error("principal not frozen")]
     NotFrozen,
 
+    /// A key mutation (`key/create`, `key/delete`, `key/replace`,
+    /// `key/revoke`) signed against a frozen principal (SPEC §2.3.2, §11.2:
+    /// no mutations until unfrozen).
+    #[error("principal frozen: key mutations are rejected until thawed")]
+    Frozen,
+
+    /// A transaction's cozies do not all carry one identical `typ`
+    /// (SPEC §4.1).
+    #[error("transaction cozies do not share one typ")]
+    MixedTransactionTyp,
+
     /// Algorithm not supported.
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),

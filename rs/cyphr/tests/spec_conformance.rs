@@ -231,7 +231,6 @@ fn lifecycle_pay(signer: &Kp, p: &Principal, suffix: &str, now: i64) -> serde_js
 /// principal while it is frozen. RED: `apply_verified_internal` gates only
 /// `deleted`; `frozen` is recorded and never consulted. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F1): SPEC 2.3.2 frozen principal accepts mutations"]
 fn s11_2_frozen_principal_rejects_key_mutations() {
     let frozen = || {
         let (mut p, a, b) = two_key_principal();
@@ -326,7 +325,6 @@ fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::R
 /// RED: in-commit `key/revoke` parses `rvk` as any `i64` and never bounds
 /// it (the naked-revoke path in the server does). End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F2): SPEC 6.4 in-commit rvk unbounded"]
 fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
     let cases = [
         ("zero", json!(0)),
@@ -357,7 +355,6 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
 /// is read as any `i64` and only compared with the principal's latest
 /// timestamp, so zero and 2^53 pass. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F2): SPEC 6.4 now unbounded"]
 fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
     let mut accepted = vec![];
     for (label, now) in [
@@ -1445,7 +1442,7 @@ fn s11_2_dead_principal_accepts_no_transaction_or_action() {
 /// must show nothing of the first transaction, and a fresh commit must still
 /// build. Turns red if any part of a failed commit leaks into the principal.
 /// End to end: yes.
-// @docket: sc-l3350 :: scripts/docket-run sc-l3351
+// @docket: sc-l3350 :: scripts/docket-run sc-l3350
 // @docket: sc-l3353 :: scripts/docket-run sc-l3353
 #[test]
 fn s19_5_failed_commit_leaves_no_partial_state() {
@@ -1490,7 +1487,6 @@ fn s19_5_failed_commit_leaves_no_partial_state() {
 /// Turns red if a transaction of mixed `typ` is applied. RED: `apply_tx`
 /// groups cozies without comparing their `typ`. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F6): SPEC 4.1 mixed-typ transaction accepted"]
 fn s4_1_transaction_cozies_must_share_one_typ() {
     let verified = |p: &Principal, coz: Signed, sidecar: Option<Key>, signer: &Kp| {
         let (pay, sig, czd) = coz;

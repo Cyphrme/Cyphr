@@ -72,10 +72,7 @@ pub struct VerifiedRevoke {
 /// `cyphr.me/cyphr/key/revoke`. Reuses the core `KEY_REVOKE` constant so the
 /// accepted shape cannot drift from the protocol's.
 fn is_revoke_typ(typ: &str) -> bool {
-    matches!(
-        typ.strip_suffix(cyphr::parsed_coz::typ::KEY_REVOKE),
-        Some(authority) if authority.ends_with('/')
-    )
+    cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE)
 }
 
 /// Parse, validate, and verify a naked-revoke request against its DISCLOSED
@@ -85,8 +82,8 @@ fn is_revoke_typ(typ: &str) -> bool {
 /// Verification order, each a distinct rejection:
 /// 1. the body discloses a `key` (else 400 -- a naked revoke must disclose it);
 /// 2. the payload parses and its `typ` is a `key/revoke`;
-/// 3. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is
-///    NOT checked, so a pre-signed `rvk`=1 is valid;
+/// 3. `rvk` is a integer in 1..=2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is NOT
+///    checked, so a pre-signed `rvk`=1 is valid;
 /// 4. the serialized payload is within `RVK_MAX_SIZE`;
 /// 5. PRESENCE FENCE: the named `tmb` is a key the engine has indexed (`Some`) -- the indexed
 ///    value's CONTENT is never read; `None` (a key this server never saw) is a rejection that
@@ -125,7 +122,7 @@ pub async fn interpret<I: Indexer>(
         .ok_or_else(|| AppError::bad_request("revoke payload has no rvk"))?;
     if !coz::is_valid_rvk(rvk) {
         return Err(AppError::bad_request(format!(
-            "rvk {rvk} is not a positive integer below 2^53-1"
+            "rvk {rvk} is not an integer in 1..=2^53-1"
         )));
     }
 

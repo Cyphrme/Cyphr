@@ -239,6 +239,22 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::AlreadyDeleted);
         }
 
+        // SPEC §2.3.2, §11.2: a frozen principal takes no mutations until
+        // thawed. Only key mutations are gated: the freeze/thaw/close
+        // lifecycle cozies manage their own state checks below, and
+        // CommitCreate is the finalizer of the commit that froze.
+        if self.frozen
+            && matches!(
+                &cz.kind,
+                CozKind::KeyCreate { .. }
+                    | CozKind::KeyDelete { .. }
+                    | CozKind::KeyReplace { .. }
+                    | CozKind::SelfRevoke { .. }
+            )
+        {
+            return Err(Error::Frozen);
+        }
+
         match &cz.kind {
             CozKind::KeyCreate { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
