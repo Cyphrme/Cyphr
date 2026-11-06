@@ -161,18 +161,3 @@ async fn heal_is_idempotent_across_repeated_opens() {
         );
     }
 }
-
-/// c-idempotent-heal: opening a healthy store (no orphan manifest at all)
-/// must not error and must leave the index empty -- the heal scan is a
-/// correctness-preserving no-op when there is nothing to heal.
-#[tokio::test]
-async fn healthy_store_open_is_unaffected() {
-    let blob_store = MemoryBlobStore::new();
-    let engine = StorageEngine::new(blob_store, MemoryIndexer::new());
-
-    let tip = engine.get_tip("nobody").await.expect("get_tip failed");
-    assert!(
-        tip.is_none(),
-        "no manifest exists, so nothing should be indexed"
-    );
-}

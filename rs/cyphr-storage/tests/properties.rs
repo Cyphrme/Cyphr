@@ -443,6 +443,8 @@ fn run_engine_recovery_test<B, I>(
 }
 
 proptest! {
+    /// Backs I1 (the index is a rebuildable cache): for random histories, an
+    /// index rebuilt from the in-memory blob store equals the one built at ingest.
     #[test]
     fn test_memory_engine_rebuild_recovery((genesis_key_idx, steps) in test_case_strategy()) {
         let pool = load_pool();
@@ -453,6 +455,8 @@ proptest! {
         run_engine_recovery_test(&pool, intent, engine);
     }
 
+    /// Backs I1 on the durable fjall backends: the same property after real
+    /// on-disk ingest.
     #[test]
     fn test_persistent_engine_rebuild_recovery((genesis_key_idx, steps) in test_case_strategy()) {
         let pool = load_pool();
