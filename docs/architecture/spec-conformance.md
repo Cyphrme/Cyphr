@@ -48,10 +48,10 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   55 |
+| `covered`      |   54 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
-| `not-testable` |   11 |
+| `not-testable` |   12 |
 | `out-of-scope` |    6 |
 | `total`        |   72 |
 
@@ -235,15 +235,14 @@ evaluator: none
 
 ### [sc-l295]
 
-SPEC 3.1, line 295. Disposition: `covered`.
+SPEC 3.1, line 295. Disposition: `not-testable`.
 
 - spec-line: 295
 - source: rule
-- disposition: covered
+- disposition: not-testable
 - spec-text: - Single key, never changes
-- tests:
-  - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
-- fails when: a Level 1 principal's lone key can be replaced after it is revoked, so the principal does not stay Dead (a `key/create` by the revoked key is accepted). Reading: §3.0 says a level is not an authorization input, so "never changes" is enforced as the key set only shrinking: the lone key's revoke is the one change, and nothing may follow it. The row is shared with line 298.
+- tests: none
+- reason: Descriptive of the Level 1 feature set; §3.0 says a principal's level is not an authorization input, so there is no level-based rejection to test. The related last-key self-revoke requirement is line 298.
 
 ```claim
 kind: requirement
