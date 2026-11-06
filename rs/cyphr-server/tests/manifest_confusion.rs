@@ -291,46 +291,38 @@ async fn pushed_coz_cannot_poison_a_scratch_rebuild() {
     w.assert_victim_intact().await;
 }
 
-/// E2E. Claim: a pushed coz cannot plant a PG alias (aliases
-/// were first-writer-wins in `index_commit`, so a forged first writer
-/// owned the name for good). The forged commit claims the victim's PR as
-/// its own `pg` variant; a PR is not an alias (`Indexer::get_tip` docs),
-/// so what the victim's PR string resolves to must be exactly what it
-/// resolved to before the push. That is the victim itself, not nothing: a
-/// principal with no PG yet answers to its current PR as the PG-to-be
-/// (SPEC 3.7.1), with no attack involved. Mutant caught: a fix that
-/// validates `principal_id` but leaves `pg` unchecked.
+/// E2E. Claim: a pushed coz cannot plant a PG alias (aliases were
+/// first-writer-wins in `index_commit`, so a forged first writer owned the
+/// name for good). The forged commit claims a fresh digest as its own `pg`
+/// variant. That digest resolves to nothing before the push (it is no
+/// principal's id, PR or PG), so it must still resolve to nothing after the
+/// push and a rebuild: any answer would come from the alias table. (The
+/// victim's own PR is a poor probe: a principal with no PG answers to its
+/// current PR as the PG-to-be, SPEC 3.7.1, which masks a planted alias.)
+/// Mutant caught: a fix that validates `principal_id` but leaves `pg`
+/// unchecked.
 #[tokio::test]
 async fn pushed_coz_cannot_plant_a_pg_alias_on_rebuild() {
     let w = world().await;
-    let resolves_to = |state: Arc<AppState>, pr: String| async move {
-        state
-            .engine
-            .get_tip(&pr)
-            .await
-            .unwrap()
-            .map(|tip| tip.principal_id)
-    };
-    let resolved_before = resolves_to(w.state.clone(), w.before.pr.clone()).await;
-    assert_eq!(
-        resolved_before.as_deref(),
-        Some(w.before.principal_id.as_str()),
-        "control: the PG-to-be resolves to the victim before any push"
+    let planted = fake_digest(0xD2);
+    assert!(
+        w.state.engine.get_tip(&planted).await.unwrap().is_none(),
+        "control: the probe digest resolves to nothing before the push"
     );
 
     let phantom = fake_digest(0xD0);
     let mut forge = Forge::naming(&phantom, 0xD1);
-    forge.pg = vec![w.before.pr.clone()];
+    forge.pg = vec![planted.clone()];
     w.push_forged(&forge).await;
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
 
-    assert_eq!(
-        resolves_to(w.state.clone(), w.before.pr.clone()).await,
-        resolved_before,
-        "the victim's PR string must not resolve to anyone else"
+    assert!(
+        w.state.engine.get_tip(&planted).await.unwrap().is_none(),
+        "a forged pg must not create an alias: the probe digest resolves to nothing"
     );
     assert!(w.state.engine.get_tip(&phantom).await.unwrap().is_none());
+    w.assert_victim_intact().await;
 }
 
 /// E2E. Claim: a pushed coz cannot redirect the digest index.
