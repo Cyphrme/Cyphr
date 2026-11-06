@@ -368,6 +368,11 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// rebuild scan and by retention, at most [`BRANCH_LIMIT`] per
     /// principal.
     branches: std::sync::Mutex<HashMap<String, Vec<BranchTip>>>,
+    /// Stored commits [`Self::retain_rival`] has replayed, ever. Retention
+    /// is paid by refused bundles, so its cost is the quantity tests pin.
+    retention_replays: std::sync::atomic::AtomicU64,
+    /// Candidate positions [`Self::retain_rival`] has tried a bundle at.
+    retention_trials: std::sync::atomic::AtomicU64,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -387,6 +392,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
             healed: tokio::sync::OnceCell::new(),
             pre_pg_owner: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
             branches: std::sync::Mutex::new(HashMap::new()),
+            retention_replays: std::sync::atomic::AtomicU64::new(0),
+            retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -411,6 +418,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: tokio::sync::OnceCell::new(),
             pre_pg_owner: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
             branches: std::sync::Mutex::new(HashMap::new()),
+            retention_replays: std::sync::atomic::AtomicU64::new(0),
+            retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1299,25 +1308,49 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         storage: T,
         through: Option<u64>,
     ) -> Result<cyphr::Principal<T>, EngineError> {
-        use crate::CommitEntry;
         use crate::import::replay_commits;
 
-        // 1. Construct the principal from genesis (no commits yet).
-        let mut principal = match genesis {
-            crate::Genesis::Implicit(key) => cyphr::Principal::implicit_with_storage(key, storage)?,
+        let mut principal = Self::principal_from_genesis(genesis, storage)?;
+
+        let commit_entries = self.stored_entries(principal_id, through).await?;
+
+        replay_commits(&mut principal, &commit_entries)?;
+
+        Ok(principal)
+    }
+
+    /// A principal holding only its genesis keys, over `storage`.
+    fn principal_from_genesis<T: cyphr::eml::Storage>(
+        genesis: crate::Genesis,
+        storage: T,
+    ) -> Result<cyphr::Principal<T>, EngineError> {
+        match genesis {
+            crate::Genesis::Implicit(key) => {
+                Ok(cyphr::Principal::implicit_with_storage(key, storage)?)
+            },
             crate::Genesis::Explicit(keys) => {
                 if keys.is_empty() {
                     return Err(EngineError::InvalidInput(
                         "genesis requires at least one key".into(),
                     ));
                 }
-                cyphr::Principal::explicit_with_storage(keys, storage)?
+                Ok(cyphr::Principal::explicit_with_storage(keys, storage)?)
             },
-        };
+        }
+    }
 
-        // 2. Get the full commit chain from the indexer.
+    /// The first `through` stored commits (all for `None`) of
+    /// `principal_id` as replayable entries: blobs read and parsed, key
+    /// material taken from each coz's `key` member. No protocol check.
+    async fn stored_entries(
+        &self,
+        principal_id: &str,
+        through: Option<u64>,
+    ) -> Result<Vec<crate::CommitEntry>, EngineError> {
+        use crate::CommitEntry;
+
         let last = match through {
-            Some(0) => return Ok(principal),
+            Some(0) => return Ok(Vec::new()),
             Some(count) => Some(count - 1),
             None => None,
         };
@@ -1326,7 +1359,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .get_commit_chain(principal_id, None, last)
             .await?;
         if chain.is_empty() {
-            return Ok(principal);
+            return Ok(Vec::new());
         }
 
         // 3. For each CommitRef, fetch blobs and build a CommitEntry.
@@ -1374,10 +1407,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             ));
         }
 
-        // 4. Replay commits onto the principal.
-        replay_commits(&mut principal, &commit_entries)?;
-
-        Ok(principal)
+        Ok(commit_entries)
     }
 
     /// Submit a commit for protocol validation and persistence.
@@ -1528,15 +1558,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
-                    self.retain_rival(
-                        principal_id,
-                        genesis,
-                        raw_blobs,
-                        claimed,
-                        unproven_alias,
-                        next_seq,
-                    )
-                    .await?;
+                    self.retain_rival(principal_id, genesis, raw_blobs, claimed, unproven_alias)
+                        .await?;
                 }
                 return Err(refused);
             },
@@ -1834,13 +1857,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// bundle is still refused as the tip by the caller (I2: a fork is
     /// detected, never merged); this only keeps the evidence.
     ///
-    /// Verification is the admission path's own ([`Self::build_commit`]),
-    /// run over the stored prefix at each position, newest first, on a
-    /// private in-memory Commit Tree. A bundle that verifies nowhere (a bad
-    /// signature, a key not active at its `pre`) is not retained. The
-    /// search replays one prefix per position, so a refused bundle costs
-    /// up to quadratic replay in the chain length; it is paid only by
-    /// bundles that already failed at the tip.
+    /// The refusal is attacker-reachable, so the search is bounded:
+    ///
+    /// 1. **Authenticate first, replaying nothing.** Every coz of the bundle must name a key this
+    ///    principal has ever held (its genesis keys and every key a stored coz introduced) and
+    ///    verify under that key's public key. Anyone else costs blob reads only.
+    /// 2. **One forward pass.** The stored chain is replayed once onto a private in-memory Commit
+    ///    Tree. At each position where the bundle's transaction signers are active, a clone of that
+    ///    prefix state tries the bundle through [`Self::build_commit`], the admission path's own
+    ///    verification. At most one replay per stored commit.
+    ///
+    /// A bundle that verifies at no position (a key not active at its
+    /// `pre`, an arrow that fits no state) is not retained. The private
+    /// tree matters: replaying a rival over the principal's durable log
+    /// would hit `DurableLeafMismatch`.
     ///
     /// Caller holds the principal's write lock.
     async fn retain_rival(
@@ -1850,26 +1880,36 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         raw_blobs: &[&[u8]],
         claimed: &str,
         unproven_alias: bool,
-        tip_count: u64,
     ) -> Result<(), EngineError> {
-        for position in (0..tip_count).rev() {
-            let mut prefix = self
-                .replay_onto(
+        use crate::import::replay_commits;
+
+        let entries = self.stored_entries(principal_id, None).await?;
+        let Some(signers) = authenticated_signers(raw_blobs, &genesis, &entries) else {
+            return Ok(());
+        };
+        let mut principal =
+            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())?;
+        for (position, entry) in entries.iter().enumerate() {
+            if signers.iter().all(|t| principal.is_key_active(t)) {
+                self.retention_trials
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut candidate = principal.clone();
+                if let Ok(Some(commit)) = Self::build_commit(
+                    &mut candidate,
+                    raw_blobs,
                     principal_id,
-                    genesis.clone(),
-                    cyphr::eml::MemoryStorage::new(),
-                    Some(position),
-                )
-                .await?;
-            if let Ok(Some(commit)) = Self::build_commit(
-                &mut prefix,
-                raw_blobs,
-                principal_id,
-                claimed,
-                unproven_alias,
-                position,
-            ) {
-                return self.keep_branch(raw_blobs, commit).await;
+                    claimed,
+                    unproven_alias,
+                    position as u64,
+                ) {
+                    return self.keep_branch(raw_blobs, commit).await;
+                }
+            }
+            // The last commit's own state is never a `pre` of a rival.
+            if position + 1 < entries.len() {
+                self.retention_replays
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                replay_commits(&mut principal, std::slice::from_ref(entry))?;
             }
         }
         Ok(())
@@ -1933,6 +1973,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .or_default()
             .push(branch);
         Ok(())
+    }
+
+    /// How many stored commits retention has replayed so far: the cost
+    /// refused bundles have put on this engine. Exposed so a test can pin
+    /// that an unauthenticated bundle costs none.
+    pub fn retention_replays(&self) -> u64 {
+        self.retention_replays
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many positions retention has tried a bundle at so far (the
+    /// positions where the bundle's signers were active).
+    pub fn retention_trials(&self) -> u64 {
+        self.retention_trials
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Every branch head of a principal: the canonical chain's tip
@@ -2230,6 +2285,54 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer.clear(&DeriveToken::new()).await?;
         self.rebuild_index_from_manifests().await
     }
+}
+
+/// The thumbprints that sign the transactions of `raw_blobs`, if every coz
+/// of the bundle is signed by a key the principal has ever held and its
+/// signature verifies under that key; `None` otherwise, or if the bundle
+/// has no transaction. Reads no principal state: `genesis` and the keys the
+/// stored `entries` introduced are the whole key history.
+fn authenticated_signers(
+    raw_blobs: &[&[u8]],
+    genesis: &crate::Genesis,
+    entries: &[crate::CommitEntry],
+) -> Option<Vec<coz::Thumbprint>> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
+    let genesis_keys: &[cyphr::Key] = match genesis {
+        crate::Genesis::Implicit(key) => std::slice::from_ref(key),
+        crate::Genesis::Explicit(keys) => keys,
+    };
+    for key in genesis_keys {
+        history.insert(
+            key.tmb().to_b64(),
+            (key.alg().to_owned(), key.pub_key().to_vec()),
+        );
+    }
+    for key in entries.iter().flat_map(|e| &e.keys) {
+        if let Ok(public) = Base64UrlUnpadded::decode_vec(&key.pub_key) {
+            history.insert(key.tmb.clone(), (key.alg.clone(), public));
+        }
+    }
+
+    let mut signers = Vec::new();
+    for blob in raw_blobs {
+        let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
+        let mut pay = value.get("pay")?.clone();
+        crate::import::canonicalize_value(&mut pay);
+        let header = cyphr::parsed_coz::CozHeader::parse(&pay).ok()?;
+        let sig = Base64UrlUnpadded::decode_vec(value.get("sig")?.as_str()?).ok()?;
+        let (alg, public) = history.get(&header.tmb.to_b64())?;
+        let pay_json = serde_json::to_vec(&pay).ok()?;
+        if coz::verify_json(&pay_json, &sig, alg, public) != Some(true) {
+            return None;
+        }
+        if crate::import::is_transaction_typ(&header.typ) {
+            signers.push(header.tmb);
+        }
+    }
+    (!signers.is_empty()).then_some(signers)
 }
 
 /// Whether `typ` is the protocol's `commit/create` (authority-qualified

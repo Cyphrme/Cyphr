@@ -557,6 +557,93 @@ mod retained {
         }
     }
 
+    /// A principal of `n` commits (golden creates one pool key per commit)
+    /// plus an authenticated rival at position 1, and the rival's blobs.
+    async fn long_chain(n: usize) -> (Fork, Engine, Vec<Vec<u8>>, Vec<cyphr::Principal>) {
+        let f = Fork::new(0);
+        let pool = load_pool();
+        let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+        f.submit(&e, &f.first).await.expect("commit 0");
+        let mut p = f.base.clone();
+        let mut states = vec![p.clone()];
+        let names = ["key_b", "alice", "bob", "diana_es384", "eve_ed25519"];
+        for (i, name) in names.iter().take(n - 1).enumerate() {
+            create_key(&mut p, &f.golden, &kp(&pool, name), NOW + 100 + i as i64);
+            f.submit(&e, &blobs(&p, &f.golden, i + 1))
+                .await
+                .expect("canonical commit");
+            states.push(p.clone());
+        }
+        let mut r = f.base.clone();
+        create_key(&mut r, &f.golden, &kp(&pool, "eve_ed25519"), NOW + 900);
+        let rival = blobs(&r, &f.golden, 1);
+        (f, e, rival, states)
+    }
+
+    /// Backs the cost bound on retention: a refused bundle that is not
+    /// signed by a key this principal has ever had, or whose signature
+    /// does not verify, replays nothing, and an authenticated rival on a
+    /// chain of n commits costs at most n + 1 replays. Turns red if
+    /// retention replays before authenticating (anyone could then make the
+    /// store replay history) or searches positions by replaying a prefix
+    /// for each (quadratic). End to end at the engine seam: yes.
+    #[tokio::test]
+    async fn retention_cost_is_bounded_and_authenticated_first() {
+        const N: usize = 5;
+        let (f, e, rival, states) = long_chain(N).await;
+        let listed = branches(&e, &f.id).await;
+
+        // Unknown signer: carol never held a key of this principal.
+        let pool = load_pool();
+        let carol = kp(&pool, "carol");
+        let mut stranger = cyphr::Principal::implicit(key_of(&carol)).expect("genesis");
+        create_key(&mut stranger, &carol, &kp(&pool, "bob"), NOW + 5);
+        let before = e.retention_replays();
+        assert!(f.submit(&e, &blobs(&stranger, &carol, 0)).await.is_err());
+        assert_eq!(e.retention_replays(), before, "unknown signer was replayed");
+
+        // Failed signature by a real key.
+        let mut bad = rival.clone();
+        let mut coz: serde_json::Value = serde_json::from_slice(&bad[0]).expect("coz");
+        let mut raw =
+            Base64UrlUnpadded::decode_vec(coz["sig"].as_str().expect("sig")).expect("b64");
+        raw[0] ^= 0xff;
+        coz["sig"] = serde_json::Value::String(Base64UrlUnpadded::encode_string(&raw));
+        bad[0] = serde_json::to_vec(&coz).expect("coz bytes");
+        assert!(f.submit(&e, &bad).await.is_err());
+        assert_eq!(e.retention_replays(), before, "bad signature was replayed");
+        assert_eq!(branches(&e, &f.id).await, listed, "refused bundles listed");
+
+        // Authenticated rival: retained, within n + 1 replays.
+        assert!(f.submit(&e, &rival).await.is_err(), "premise: refused");
+        let spent = e.retention_replays() - before;
+        assert!(spent <= N as u64 + 1, "{spent} replays for a chain of {N}");
+        assert_eq!(
+            branches(&e, &f.id).await.iter().filter(|b| !b.3).count(),
+            1,
+            "the authenticated rival is retained"
+        );
+
+        // Only positions where the signer was active are tried: alice
+        // joined at commit 2, so a rival at the tip's position (4, after
+        // commits 0..=3) is tried at positions 3 and 4 and no earlier.
+        let alice = kp(&pool, "alice");
+        let mut late = states[3].clone();
+        create_key(&mut late, &alice, &kp(&pool, "carol"), NOW + 950);
+        let trials = e.retention_trials();
+        assert!(f.submit(&e, &blobs(&late, &f.golden, 4)).await.is_err());
+        assert_eq!(
+            e.retention_trials() - trials,
+            2,
+            "searched inactive positions"
+        );
+        assert_eq!(
+            branches(&e, &f.id).await.iter().filter(|b| !b.3).count(),
+            2,
+            "the late rival is retained"
+        );
+    }
+
     /// Backs a-replay: a retained branch is derivable from blobs alone and
     /// equals the branch as ingested. The rival's tip and roots, derived
     /// independently by applying it to the `Principal` at its `pre`, are
