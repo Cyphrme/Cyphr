@@ -855,3 +855,151 @@ proptest! {
         })?;
     }
 }
+
+/// Store `commit` as an engine-format manifest (prefix plus JSON), the way
+/// the engine's own writer does, bypassing the engine to model a corrupt
+/// or foreign manifest that reached the blob store.
+async fn plant_manifest(e: &Engine, commit: &IndexableCommit) {
+    let mut bytes = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
+    serde_json::to_writer(
+        &mut bytes,
+        &serde_json::json!({"kind": MANIFEST_KIND, "commit": commit}),
+    )
+    .unwrap();
+    cyphr_storage::blob::BlobStore::put(e.blob_store(), &bytes)
+        .await
+        .unwrap();
+}
+
+/// Claim: rebuild binds each principal's manifests to the blobs they name:
+/// a prefixed manifest whose principal id is not the genesis-derived id of
+/// its sequence-0 blobs is refused with a typed error and indexes nothing.
+/// Turns red if: a manifest naming real blobs re-points a principal (here
+/// a phantom id) without any replay.
+#[tokio::test]
+#[ignore = "RED(H1F): rebuild trusts a manifest's principal id"]
+async fn rebuild_refuses_manifest_not_bound_to_its_blobs() {
+    let e = engine();
+    submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
+    let fx = load_golden("mutations", "transaction_sequence_replay");
+    // A genuine coz blob that no manifest owns, so only the binding check
+    // (not the index's digest-conflict check) can refuse the manifest.
+    let genuine = serde_json::to_vec(&raw_blobs(&fx["commits"][0])[0]).unwrap();
+    let genuine = cyphr_storage::blob::BlobStore::put(e.blob_store(), &genuine)
+        .await
+        .unwrap();
+    let phantom = fake_digest(0x70);
+    let mut foreign = forged(&phantom, 0, 0x71);
+    foreign.blob_hashes = vec![genuine];
+    foreign.cozies[0].blob_hash = genuine;
+    plant_manifest(&e, &foreign).await;
+
+    let err = e.rebuild_index_from_scratch().await.expect_err("unbound");
+    assert!(
+        matches!(err, EngineError::ManifestUnbound { .. }),
+        "{err:?}"
+    );
+    assert!(e.indexer().get_tip(&phantom).await.unwrap().is_none());
+    assert!(principals(&e).await.iter().all(|p| p.0 != phantom));
+}
+
+/// Hostile-input shapes for the single-writer property: arbitrary bytes,
+/// and bytes that open with the manifest prefix or a manifest-shaped JSON.
+fn hostile_bytes() -> impl Strategy<Value = Vec<u8>> {
+    prop_oneof![
+        proptest::collection::vec(any::<u8>(), 0..64),
+        proptest::collection::vec(any::<u8>(), 0..32).prop_map(|mut tail| {
+            let mut v = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
+            v.append(&mut tail);
+            v
+        }),
+        Just(format!(r#"{{"kind":"{MANIFEST_KIND}","commit":{{}}}}"#).into_bytes()),
+    ]
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Claim: only the engine's manifest writer ever stores a blob that
+    /// starts with the manifest prefix. Over honest commits plus arbitrary
+    /// hostile submissions on every path that stores caller bytes (a
+    /// transaction bundle and an action-only bundle, each with hostile
+    /// bytes in any slot), the stored prefixed blobs are exactly one per
+    /// accepted commit and every other stored blob is a canonical coz
+    /// (a JSON object of pay, sig and key only). Import and export take no
+    /// blob store, so by type they cannot write one. Turns red if: any
+    /// path stores caller bytes verbatim or writes a prefixed blob.
+    #[test]
+    fn rebuild_prefixed_blobs_only_from_the_manifest_writer(
+        junk in proptest::collection::vec(hostile_bytes(), 1..4),
+        slot in 0usize..3,
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let e = engine();
+            let mut accepted = 0usize;
+            let tx = load_golden("edge_cases", "transaction_replay_order");
+            let (g, id) = genesis_of(&tx);
+            for c in tx["commits"].as_array().unwrap() {
+                let mut blobs: Vec<Vec<u8>> = raw_blobs(c)
+                    .iter()
+                    .map(|b| serde_json::to_vec(b).unwrap())
+                    .collect();
+                for (i, j) in junk.iter().enumerate() {
+                    let at = (slot + i) % (blobs.len() + 1);
+                    blobs.insert(at, j.clone());
+                }
+                if submit(&e, &id, &g, &blobs).await.is_ok() {
+                    accepted += 1;
+                }
+                let clean: Vec<Vec<u8>> = raw_blobs(c)
+                    .iter()
+                    .map(|b| serde_json::to_vec(b).unwrap())
+                    .collect();
+                if submit(&e, &id, &g, &clean).await.is_ok() {
+                    accepted += 1;
+                }
+            }
+            let act = load_golden("actions", "action_changes_ps");
+            let (ag, aid) = genesis_of(&act);
+            let mut blobs: Vec<Vec<u8>> = raw_blobs(&act["commits"][0])
+                .iter()
+                .map(|b| serde_json::to_vec(b).unwrap())
+                .collect();
+            blobs.extend(junk.iter().cloned());
+            let _ = submit(&e, &aid, &ag, &blobs).await;
+            let clean: Vec<Vec<u8>> = raw_blobs(&act["commits"][0])
+                .iter()
+                .map(|b| serde_json::to_vec(b).unwrap())
+                .collect();
+            let _ = submit(&e, &aid, &ag, &clean).await;
+
+            let store = e.blob_store();
+            let hashes: Vec<Blake3Hash> = cyphr_storage::blob::BlobStore::iter(store)
+                .await
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let (mut prefixed, mut wire) = (0usize, 0usize);
+            for h in hashes {
+                let data = cyphr_storage::blob::BlobStore::get(store, &h)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if data.starts_with(cyphr_storage::engine::COMMIT_MANIFEST_PREFIX) {
+                    prefixed += 1;
+                } else {
+                    wire += 1;
+                    let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
+                    prop_assert_eq!(data[0], 0x7b);
+                    for k in v.as_object().unwrap().keys() {
+                        prop_assert!(["pay", "sig", "key"].contains(&k.as_str()), "member {}", k);
+                    }
+                }
+            }
+            prop_assert_eq!(prefixed, accepted);
+            prop_assert!(wire > 0);
+            Ok(())
+        })?;
+    }
+}
