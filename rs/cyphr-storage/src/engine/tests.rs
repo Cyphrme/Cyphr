@@ -1449,6 +1449,60 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
     );
 }
 
+/// Claim: two manifests at one chain position (a partial restore or a crash
+/// left a rival) never fail the rebuild: the canonical-order first is
+/// indexed, the rival is quarantined as fork evidence, and the principal's
+/// later commits are left out so the indexed chain stays a gapless prefix.
+/// Turns red if the rival's `Consistency` error aborts the rebuild (it would
+/// wedge `ensure_healed` on every start) or the chain is not a prefix. A
+/// unit test: a rival manifest cannot be built from signed cozes, and
+/// `store_blobs_and_manifest` is the only way to write both past ingest.
+#[tokio::test]
+async fn rebuild_quarantines_a_rival_manifest_at_one_position() {
+    use super::QuarantineReason;
+    let engine = test_engine();
+    for (seq, now) in [(0u64, 1), (1, 2), (2, 3)] {
+        let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
+        engine
+            .store_blobs_and_manifest(&[blob.as_bytes()], make_meta("alice", seq, now))
+            .await
+            .unwrap();
+    }
+    let mut rival = make_meta("alice", 1, 9);
+    rival.commit_ids = vec!["SHA-256:commit-alice-rival".to_string()];
+    engine
+        .store_blobs_and_manifest(&[b"{\"pay\":{\"now\":9}}"], rival)
+        .await
+        .unwrap();
+
+    let report = engine
+        .rebuild_index_with_report()
+        .await
+        .expect("a rival manifest must not fail the rebuild");
+    let chain = engine
+        .indexer()
+        .get_commit_chain("alice", None, None)
+        .await
+        .unwrap();
+    let seqs: Vec<u64> = chain.iter().map(|c| c.sequence).collect();
+    assert_eq!(seqs, vec![0, 1], "a gapless prefix, got {seqs:?}");
+    assert_eq!(report.quarantined.len(), 2, "{report:?}");
+    assert!(
+        report
+            .quarantined
+            .iter()
+            .any(|q| matches!(q.reason, QuarantineReason::Fork(_))),
+        "the rival must be quarantined as fork evidence: {report:?}"
+    );
+    assert!(
+        report
+            .quarantined
+            .iter()
+            .any(|q| matches!(q.reason, QuarantineReason::Orphaned(_))),
+        "the later commit must be orphaned: {report:?}"
+    );
+}
+
 /// A signed coz blob of `typ` disclosing the pool key `who` in its unsigned
 /// `key` member.
 fn coz_disclosing(typ: &str, who: &str) -> Vec<u8> {
