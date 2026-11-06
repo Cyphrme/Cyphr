@@ -661,7 +661,9 @@ proptest! {
         // Apply-stage verdicts on cozies already included and on a stale
         // one first: they leave both principals untouched and pin the reuse
         // set, floor and revoked set apart from the later commit counter.
-        let probe = |p: &mut Principal, s: &Step| try_apply(p, &kps[s.signer], s.coz.clone(), s.side.clone());
+        let probe = |p: &mut Principal, s: &Step| {
+            try_apply(p, &kps[s.signer], s.coz.clone(), s.side.clone())
+        };
         for s in &plan[..k] {
             prop_assert_eq!(probe(&mut r, s), probe(&mut live, s), "included coz");
         }
