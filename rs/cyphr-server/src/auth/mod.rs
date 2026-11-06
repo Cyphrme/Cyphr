@@ -254,67 +254,9 @@ mod base64url_bytes {
 mod tests {
     use super::*;
 
-    /// Write a genuine keypair to a temp key file and return its path
-    /// alongside the tempdir (kept alive for the caller's duration).
-    fn write_key_file(alg: coz::Alg) -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("signing-key.json");
-        let kp = alg.generate_keypair();
-        let file = KeyFile {
-            v: FILE_FORMAT_VERSION,
-            alg: kp.alg.name().to_string(),
-            pub_key: kp.pub_bytes,
-            prv_key: kp.prv_bytes,
-        };
-        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-        (dir, path)
-    }
-
-    #[test]
-    fn sign_then_verify_with_own_key_succeeds() {
-        let (_dir, path) = write_key_file(coz::Alg::Ed25519);
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let pay = br#"{"typ":"test/sign"}"#;
-        let (sig, _cad) = identity.sign(pay).expect("sign");
-
-        assert_eq!(identity.verify(pay, &sig), Some(true));
-    }
-
-    #[test]
-    fn verify_with_foreign_key_is_rejected() {
-        let (_dir, path) = write_key_file(coz::Alg::Ed25519);
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let (_foreign_dir, foreign_path) = write_key_file(coz::Alg::Ed25519);
-        let foreign = ServerIdentity::load_from_path(&foreign_path).expect("load foreign key");
-
-        let pay = br#"{"typ":"test/sign"}"#;
-        let (sig, _cad) = identity.sign(pay).expect("sign");
-
-        assert_eq!(
-            foreign.verify(pay, &sig),
-            Some(false),
-            "a foreign key must not verify another identity's signature"
-        );
-    }
-
-    #[test]
-    fn load_missing_file_returns_typed_error_not_panic() {
-        let result = ServerIdentity::load_from_path("/nonexistent/signing-key.json");
-        assert!(matches!(result, Err(AuthError::Io(_))));
-    }
-
-    #[test]
-    fn load_malformed_json_returns_typed_error_not_panic() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("signing-key.json");
-        std::fs::write(&path, b"not json").unwrap();
-
-        let result = ServerIdentity::load_from_path(&path);
-        assert!(matches!(result, Err(AuthError::Malformed(_))));
-    }
-
+    /// Backs: a signing-key file whose public half does not match its private half is refused at
+    /// startup (typed error). Unit: startup-only path; the lib test for a broken key path covers
+    /// only the missing file.
     #[test]
     fn load_mismatched_pub_key_returns_typed_error() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -331,22 +273,5 @@ mod tests {
 
         let result = ServerIdentity::load_from_path(&path);
         assert!(matches!(result, Err(AuthError::PublicKeyMismatch)));
-    }
-
-    #[test]
-    fn load_unknown_algorithm_returns_typed_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("signing-key.json");
-        let kp = coz::Alg::Ed25519.generate_keypair();
-        let file = KeyFile {
-            v: FILE_FORMAT_VERSION,
-            alg: "NotAnAlgorithm".to_string(),
-            pub_key: kp.pub_bytes,
-            prv_key: kp.prv_bytes,
-        };
-        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-
-        let result = ServerIdentity::load_from_path(&path);
-        assert!(matches!(result, Err(AuthError::UnknownAlgorithm(_))));
     }
 }

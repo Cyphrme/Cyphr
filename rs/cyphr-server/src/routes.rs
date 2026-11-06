@@ -1279,27 +1279,8 @@ mod push_response_tests {
         (result, tip)
     }
 
-    #[tokio::test]
-    async fn push_response_signs_the_tip_it_is_given() {
-        let (identity, _dir) = identity();
-        let (result, tip) = committed(digest(5));
-        let (env, unavailable) = push_response(
-            &result,
-            &tip,
-            1_700_000_000,
-            Some(&identity as &dyn receipt::ReceiptSigner),
-        )
-        .await;
-        assert!(unavailable.is_none());
-        assert_eq!(env.payload.sequence, 4);
-        assert_eq!(env.payload.commit_id, digest(5));
-        let Statement::Signed(coz) = env.statement else {
-            panic!("an attestor with a signable tip signs the receipt");
-        };
-        assert_eq!(coz.pay["sequence"], serde_json::json!(4));
-        assert_eq!(coz.pay["commit_id"], serde_json::json!(digest(5)));
-    }
-
+    /// Backs: a receipt-signing failure never turns a committed push into an error; the commit is
+    /// reported unsigned. Unit: a non-digest `commit_id` is unreachable through real ingest.
     #[tokio::test]
     async fn push_response_receipt_failure_is_still_a_committed_answer() {
         let (identity, _dir) = identity();

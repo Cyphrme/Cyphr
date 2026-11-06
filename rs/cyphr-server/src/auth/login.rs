@@ -507,200 +507,12 @@ pub async fn login(
 
 #[cfg(test)]
 mod tests {
-    use coz::Pay;
-
     use super::*;
-
-    const AUDIENCE: &str = "cyphr.me";
-
-    /// A freshly generated Ed25519 principal and the private key bytes to
-    /// sign logins for it.
-    struct TestPrincipal {
-        principal: cyphr::Principal,
-        tmb: Thumbprint,
-        alg: String,
-        prv: Vec<u8>,
-        pub_key: Vec<u8>,
-    }
-
-    fn test_principal() -> TestPrincipal {
-        let kp = coz::Alg::Ed25519.generate_keypair();
-        let tmb = coz::Alg::Ed25519
-            .compute_thumbprint(&kp.pub_bytes)
-            .expect("thumbprint");
-        let key = cyphr::Key::new(kp.alg.name().to_string(), tmb.clone(), kp.pub_bytes.clone())
-            .expect("key binds its tmb");
-        let principal = cyphr::Principal::implicit(key).expect("implicit genesis");
-        TestPrincipal {
-            principal,
-            tmb,
-            alg: kp.alg.name().to_string(),
-            prv: kp.prv_bytes,
-            pub_key: kp.pub_bytes,
-        }
-    }
-
-    /// Build a login envelope with the given `typ`, claimed `pr`, optional
-    /// challenge, and `now`, signed by `tp`.
-    fn signed_login(
-        tp: &TestPrincipal,
-        typ: &str,
-        pr: &str,
-        challenge: Option<&str>,
-        now: i64,
-    ) -> coz::CozJson {
-        let mut pay = Pay::new();
-        pay.alg = Some(tp.alg.clone());
-        pay.now = Some(now);
-        pay.tmb = Some(tp.tmb.clone());
-        pay.typ = Some(typ.to_string());
-        pay.extra
-            .insert(field::PR.to_string(), serde_json::Value::String(pr.into()));
-        if let Some(c) = challenge {
-            pay.extra.insert(
-                field::CHALLENGE.to_string(),
-                serde_json::Value::String(c.into()),
-            );
-        }
-
-        let pay_bytes = serde_json::to_vec(&pay).unwrap();
-        let (sig, _cad) = coz::sign_json(&pay_bytes, &tp.alg, &tp.prv, &tp.pub_key).unwrap();
-        let pay_value = serde_json::to_value(&pay).unwrap();
-        coz::CozJson {
-            pay: pay_value,
-            sig,
-        }
-    }
-
-    fn login_typ(audience: &str) -> String {
-        format!("{audience}{LOGIN_TYP_SUFFIX}")
-    }
-
-    // --- parse_login: audience + schema ---
-
-    #[test]
-    fn parse_accepts_matching_audience_timestamp_flow() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let parsed = parse_login(coz, AUDIENCE).expect("valid login parses");
-        assert_eq!(parsed.pr, "pr-x");
-        assert!(parsed.challenge.is_none());
-        assert_eq!(parsed.now, 1000);
-    }
-
-    #[test]
-    fn parse_accepts_challenge_flow() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", Some("nonce"), 1000);
-        let parsed = parse_login(coz, AUDIENCE).expect("valid challenge login parses");
-        assert_eq!(parsed.challenge.as_deref(), Some("nonce"));
-    }
-
-    #[test]
-    fn parse_rejects_different_audience() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ("evil.example"), "pr-x", None, 1000);
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::AudienceMismatch)),
-            "a login for a different audience must be a distinct rejection, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_missing_audience() {
-        let tp = test_principal();
-        // typ is exactly the bare suffix: login-shaped, empty audience.
-        let coz = signed_login(&tp, LOGIN_TYP_SUFFIX, "pr-x", None, 1000);
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::AudienceMissing)),
-            "a login naming no audience must be rejected distinctly, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_non_login_typ() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, "cyphr.me/cyphr/key/create", "pr-x", None, 1000);
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::NotALogin)),
-            "a non-login typ must be NotALogin, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_missing_principal() {
-        let tp = test_principal();
-        let mut pay = Pay::new();
-        pay.alg = Some(tp.alg.clone());
-        pay.now = Some(1000);
-        pay.tmb = Some(tp.tmb.clone());
-        pay.typ = Some(login_typ(AUDIENCE));
-        // no `pr` field
-        let pay_bytes = serde_json::to_vec(&pay).unwrap();
-        let (sig, _cad) = coz::sign_json(&pay_bytes, &tp.alg, &tp.prv, &tp.pub_key).unwrap();
-        let coz = coz::CozJson {
-            pay: serde_json::to_value(&pay).unwrap(),
-            sig,
-        };
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::MissingField("pr"))),
-            "a login without a claimed principal must be rejected, got: {result:?}"
-        );
-    }
-
-    // --- authorize_login: signature + key + lifecycle (Active states) ---
-
-    #[test]
-    fn authorize_accepts_active_key_and_principal() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let parsed = parse_login(coz, AUDIENCE).unwrap();
-        authorize_login(&parsed, &tp.principal).expect("active key on active principal authorizes");
-    }
-
-    #[test]
-    fn authorize_rejects_tampered_signature() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let mut parsed = parse_login(coz, AUDIENCE).unwrap();
-        // Tamper a signed value (not mere whitespace, which coz's
-        // canonicalization would normalize away): flip the claimed pr in
-        // the exact bytes the signature covers.
-        let pos = parsed
-            .pay_bytes
-            .windows(4)
-            .position(|w| w == b"pr-x")
-            .expect("pr value present in signed bytes");
-        parsed.pay_bytes[pos + 3] = b'y';
-        let result = authorize_login(&parsed, &tp.principal);
-        assert!(
-            matches!(result, Err(LoginError::InvalidSignature)),
-            "a payload whose signed bytes no longer match the signature must fail, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn authorize_rejects_key_unknown_to_claimed_principal() {
-        // The claimed principal knows only its own genesis key; a login
-        // signed by a *different* principal's key (active there, not here)
-        // is rejected -- the key-sharing ambiguity in miniature.
-        let claimed = test_principal();
-        let other = test_principal();
-        let coz = signed_login(&other, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let parsed = parse_login(coz, AUDIENCE).unwrap();
-        let result = authorize_login(&parsed, &claimed.principal);
-        assert!(
-            matches!(result, Err(LoginError::KeyNotActive)),
-            "a key not active in the claimed principal must be rejected, got: {result:?}"
-        );
-    }
 
     // --- within_window ---
 
+    /// Backs: SPEC 17.2 timestamp window, exact edges (the e2e tests probe far-out and future-dated
+    /// values only). Unit: e2e cannot place `now` on the one-second boundary.
     #[test]
     fn window_accepts_edges_and_rejects_just_beyond() {
         let server = 1_000_000;
@@ -727,6 +539,8 @@ mod tests {
         ));
     }
 
+    /// Backs: an attacker-chosen extreme `now` is refused, never an arithmetic overflow panic.
+    /// Unit: a JSON `now` this large cannot be signed through the e2e helpers.
     #[test]
     fn window_rejects_extreme_client_now_without_overflow() {
         // client_now is attacker-controlled; a subtract-then-abs would
@@ -738,18 +552,8 @@ mod tests {
 
     // --- ChallengeStore ---
 
-    #[test]
-    fn challenge_is_single_use() {
-        let store = ChallengeStore::new();
-        let c = store.issue(1000);
-        store.consume(&c, 1001).expect("first use succeeds");
-        let result = store.consume(&c, 1002);
-        assert!(
-            matches!(result, Err(LoginError::ChallengeInvalid)),
-            "a consumed challenge must not be reusable, got: {result:?}"
-        );
-    }
-
+    /// Backs: SPEC 17.2 challenge freshness - an expired challenge cannot be redeemed.
+    /// Unit: e2e cannot advance the store clock.
     #[test]
     fn challenge_expires() {
         let store = ChallengeStore::new();
@@ -762,13 +566,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn challenge_unknown_is_rejected() {
-        let store = ChallengeStore::new();
-        let result = store.consume("never-issued", 1000);
-        assert!(matches!(result, Err(LoginError::ChallengeInvalid)));
-    }
-
+    /// Backs: SPEC 17.2 challenges are unguessable single-use nonces.
+    /// Unit: entropy/width is a property of the generator, not observable through one HTTP
+    /// exchange.
     #[test]
     fn issued_challenges_are_distinct_and_256_bit() {
         let store = ChallengeStore::new();

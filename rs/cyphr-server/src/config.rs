@@ -555,40 +555,9 @@ mod tests {
         Cli::try_parse_from(args).expect("valid CLI args")
     }
 
-    #[test]
-    fn serve_with_witness_mode_starts() {
-        let cli = parse(&["cyphr-server", "serve", "--mode", "witness"]);
-        let config =
-            resolve_config(&cli).expect("witness mode configuration MUST resolve successfully");
-        assert_eq!(config.mode, ServerMode::Witness);
-    }
-
-    #[test]
-    fn serve_with_authority_mode_succeeds() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "authority",
-        ]);
-        let config = resolve_config(&cli).expect("authority mode must resolve successfully");
-        assert_eq!(config.mode, ServerMode::Authority);
-    }
-
-    #[test]
-    fn serve_without_signing_key_flag_leaves_it_unset() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-        ]);
-        let config = resolve_config(&cli).expect("resolve succeeds");
-        assert_eq!(config.signing_key_path, None);
-    }
-
+    /// Backs: operator-visible `--signing-key` flag reaches `ServerConfig` (a keyed server is only
+    /// reachable via it). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure
+    /// function.
     #[test]
     fn serve_with_signing_key_flag_resolves_the_path() {
         let cli = parse(&[
@@ -606,6 +575,8 @@ mod tests {
         );
     }
 
+    /// Backs: operator-visible `--audience` flag reaches `ServerConfig` (sign-on audience binding,
+    /// SPEC 17.2). Unit: `serve()` boots a socket; the CLI-to-config resolution is a pure function.
     #[test]
     fn serve_with_audience_flag_resolves_it() {
         let cli = parse(&[
@@ -618,32 +589,6 @@ mod tests {
         ]);
         let config = resolve_config(&cli).expect("resolve succeeds");
         assert_eq!(config.audience, Some("cyphr.me".to_string()));
-    }
-
-    #[test]
-    fn serve_without_audience_flag_leaves_it_unset() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-        ]);
-        let config = resolve_config(&cli).expect("resolve succeeds");
-        assert_eq!(config.audience, None);
-    }
-
-    #[test]
-    fn serve_with_default_mode_succeeds() {
-        // No --mode flag at all: falls back to the compiled default
-        // (Authority), which must not be rejected.
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-        ]);
-        let config = resolve_config(&cli).expect("default mode must resolve successfully");
-        assert_eq!(config.mode, ServerMode::Authority);
     }
 
     /// Build a `Cli` for `serve` pointing at a TOML file carrying the given
@@ -714,21 +659,6 @@ mod tests {
         );
     }
 
-    /// GUARD (green today and after): a `[limits]` table with non-zero caps
-    /// resolves cleanly -- the zero-rejection must reject ONLY the degenerate
-    /// values, never a valid configuration.
-    #[test]
-    fn limits_valid_values_resolve_ok() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(
-            tmp.path(),
-            "[limits]\nmax_body_bytes = 1048576\ncount_quota = 500\n",
-        );
-        let config = resolve_config(&cli).expect("a valid [limits] table must resolve cleanly");
-        assert_eq!(config.limits.max_body_bytes, 1_048_576);
-        assert_eq!(config.limits.count_quota, 500);
-    }
-
     /// A witness pointed at an authority with no `[authority_identity]` is
     /// the fully unauthenticated (K10-disabled) sync path -- a deliberate,
     /// documented backward-compatible mode, so `resolve_config` must still
@@ -752,49 +682,6 @@ mod tests {
             config.witness_authenticated_channel_unconfigured(),
             "a witness with authority_url set and no authority_identity must be flagged"
         );
-    }
-
-    /// GUARD: a witness with no `authority_url` at all (never syncs) must
-    /// not be flagged -- there is no channel to leave unauthenticated.
-    #[test]
-    fn witness_with_no_authority_url_is_not_flagged() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "witness",
-        ]);
-        let config = resolve_config(&cli).expect("witness mode with no authority_url resolves");
-        assert!(
-            !config.witness_authenticated_channel_unconfigured(),
-            "a witness with no authority_url configured has no channel to flag"
-        );
-    }
-
-    /// GUARD: `Authority` mode is never flagged, regardless of the other
-    /// fields -- the check is witness-specific. `authority_url` is set
-    /// here to the SAME value the flagged fixture
-    /// (`witness_with_authority_url_and_no_identity_resolves_but_is_flagged`)
-    /// uses, so `mode` is the only field differing between the two -- with
-    /// `authority_url` left at its default `None`, clause 2
-    /// (`authority_url.is_some()`) was already false on its own, so this
-    /// guard never exercised the `mode` clause it is named for.
-    #[test]
-    fn authority_mode_is_never_flagged() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "authority",
-            "--authority-url",
-            "http://127.0.0.1:1",
-        ]);
-        let config = resolve_config(&cli).expect("authority mode resolves");
-        assert!(!config.witness_authenticated_channel_unconfigured());
     }
 
     /// GUARD: a witness with a correctly configured `authority_identity`

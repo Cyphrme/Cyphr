@@ -275,62 +275,7 @@ mod tests {
 
     // --- bearer_token ---
 
-    #[test]
-    fn bearer_token_extracts_from_authorization_header() {
-        let headers = headers_with_bearer("abc.def");
-        assert_eq!(bearer_token(&headers), Some("abc.def"));
-    }
-
-    #[test]
-    fn bearer_token_none_when_absent() {
-        let headers = HeaderMap::new();
-        assert_eq!(bearer_token(&headers), None);
-    }
-
-    #[test]
-    fn bearer_token_none_when_not_bearer_scheme() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
-        );
-        assert_eq!(bearer_token(&headers), None);
-    }
-
     // --- verify_bearer_if_present ---
-
-    #[test]
-    fn verify_bearer_if_present_ok_none_when_absent() {
-        let identity = test_identity();
-        let headers = HeaderMap::new();
-        let result = verify_bearer_if_present(&headers, &identity, 1_100);
-        assert!(matches!(result, Ok(None)));
-    }
-
-    #[test]
-    fn verify_bearer_if_present_ok_some_for_valid_token() {
-        let identity = test_identity();
-        let token = identity
-            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
-            .expect("issue token");
-        let headers = headers_with_bearer(&token);
-        let result = verify_bearer_if_present(&headers, &identity, 1_100);
-        let claims = result
-            .expect("valid token verifies")
-            .expect("token present");
-        assert_eq!(claims.pr, PR);
-    }
-
-    #[test]
-    fn verify_bearer_if_present_err_for_invalid_token() {
-        let identity = test_identity();
-        let headers = headers_with_bearer("not-a-real-token");
-        let result = verify_bearer_if_present(&headers, &identity, 1_100);
-        assert!(
-            matches!(result, Err(TokenError::Malformed(_))),
-            "got: {result:?}"
-        );
-    }
 
     // --- require_bearer / check_push_admission (paths decided before any
     // chain lookup; the chain re-check and the subject match are covered
@@ -348,6 +293,8 @@ mod tests {
         (state, dir)
     }
 
+    /// Backs: a protected route with no bearer token is refused 401.
+    /// Unit: `require_bearer` has no mounted route that e2e can drive.
     #[tokio::test]
     async fn require_bearer_rejects_missing_token() {
         let identity = test_identity();
@@ -361,24 +308,6 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn require_bearer_rejects_invalid_token() {
-        let identity = test_identity();
-        let (state, _dir) = test_engine();
-        let headers = headers_with_bearer("garbage");
-        assert!(
-            require_bearer(
-                &headers,
-                &identity,
-                &state.engine,
-                &state.observations,
-                1_100
-            )
-            .await
-            .is_err()
-        );
     }
 
     /// A validly signed, unexpired token that names no login key (not
@@ -404,24 +333,8 @@ mod tests {
         assert!(result.is_err(), "a token with no login key must be refused");
     }
 
-    #[tokio::test]
-    async fn check_push_admission_allows_no_token() {
-        let identity = test_identity();
-        let (state, _dir) = test_engine();
-        assert!(
-            check_push_admission(
-                &HeaderMap::new(),
-                Some(&identity),
-                &state.engine,
-                &state.observations,
-                PR,
-                1_100
-            )
-            .await
-            .is_ok()
-        );
-    }
-
+    /// Backs: a push carrying a garbage bearer token is refused rather than treated as tokenless.
+    /// Unit: the e2e suite presents only well-formed tokens.
     #[tokio::test]
     async fn check_push_admission_rejects_invalid_token() {
         let identity = test_identity();
@@ -438,28 +351,6 @@ mod tests {
             )
             .await
             .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn check_push_admission_allows_when_no_identity_configured() {
-        // A token is presented but the server holds no signing identity at
-        // all -- no such token could ever have been genuinely issued by
-        // this server, so the check is skipped rather than rejecting on a
-        // config detail unrelated to the pushed payload's own validity.
-        let (state, _dir) = test_engine();
-        let headers = headers_with_bearer("anything");
-        assert!(
-            check_push_admission(
-                &headers,
-                None,
-                &state.engine,
-                &state.observations,
-                PR,
-                1_100
-            )
-            .await
-            .is_ok()
         );
     }
 }

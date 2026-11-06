@@ -202,6 +202,9 @@ mod tests {
 
     use super::*;
 
+    /// Backs: a stale-`pre` push is a 409 on the wire (SPEC 2.3.2).
+    /// Unit: the HTTP path is `s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put`; this
+    /// pins the status mapping alone.
     #[test]
     fn state_mismatch_maps_to_conflict() {
         let resp =
@@ -209,17 +212,12 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 
+    /// Backs: a commit whose arrow does not match is a 409 on the wire.
+    /// Unit: no HTTP scenario produces `CommitMismatch` without forging a signed commit.
     #[test]
     fn commit_mismatch_maps_to_conflict() {
         let resp =
             AppError::engine(EngineError::Protocol(cyphr::Error::CommitMismatch)).into_response();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn other_protocol_errors_remain_unprocessable_entity() {
-        let resp =
-            AppError::engine(EngineError::Protocol(cyphr::Error::InvalidSignature)).into_response();
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
