@@ -743,7 +743,11 @@ mod retained {
             },
             other => panic!("expected BranchLimit naming the key, got {other:?}"),
         }
-        assert_eq!(blob_count(&e).await, blobs_before, "BranchLimit stored blobs");
+        assert_eq!(
+            blob_count(&e).await,
+            blobs_before,
+            "BranchLimit stored blobs"
+        );
         assert_eq!(
             branches(&e, &f.id).await,
             listed_before,
@@ -804,7 +808,9 @@ mod retained {
             }
         };
         for i in 0..SIGNERS {
-            submit(blobs(&base, &golden, i)).await.expect("shared prefix");
+            submit(blobs(&base, &golden, i))
+                .await
+                .expect("shared prefix");
         }
         let rival = |signer: &Kp, salt: i64| {
             let mut p = base.clone();
@@ -824,7 +830,13 @@ mod retained {
                 salt += 1;
             }
         }
-        let kept = e.list_branches(&id).await.expect("list").iter().filter(|b| !b.canonical).count();
+        let kept = e
+            .list_branches(&id)
+            .await
+            .expect("list")
+            .iter()
+            .filter(|b| !b.canonical)
+            .count();
         assert_eq!(kept, 16, "every key within its quota is retained");
         match submit(rival(&signers[0], salt)).await {
             Err(EngineError::BranchLimit { key }) => {
@@ -844,8 +856,12 @@ mod retained {
         let f = Fork::new(2);
         let (e, _) = f.engine_with(&[0, 1]).await;
         let before = e.retention_trials();
-        f.submit(&e, &f.rivals[0]).await.expect_err("canonical re-push refused");
-        f.submit(&e, &f.rivals[1]).await.expect_err("retained re-push refused");
+        f.submit(&e, &f.rivals[0])
+            .await
+            .expect_err("canonical re-push refused");
+        f.submit(&e, &f.rivals[1])
+            .await
+            .expect_err("retained re-push refused");
         assert_eq!(e.retention_trials(), before, "a held commit was tried");
     }
 
