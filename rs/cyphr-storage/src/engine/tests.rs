@@ -1473,7 +1473,6 @@ fn coz_disclosing(typ: &str, who: &str) -> Vec<u8> {
 /// A unit test: the engine's action classifier is substring-based, so such
 /// a typ cannot be pushed end to end. Turns red if `key` is kept on it.
 #[test]
-#[ignore = "RED(H1F): key kept on any typ containing commit/create"]
 fn canonical_key_is_kept_only_on_the_protocol_genesis_carrier() {
     let kept = |typ: &str, who: &str| {
         let bytes = canonical_coz(&coz_disclosing(typ, who), 0).expect("canonical");

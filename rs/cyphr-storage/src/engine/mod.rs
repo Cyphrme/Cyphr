@@ -1004,7 +1004,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     v.get("key").is_some()
                         && v.pointer("/pay/typ")
                             .and_then(|t| t.as_str())
-                            .is_some_and(|t| t.contains("/commit/create"))
+                            .is_some_and(is_commit_create_typ)
                 })
             }) else {
                 continue;
@@ -1779,7 +1779,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     typ,
                     has_key
                 );
-                if typ.contains("/commit/create") && has_key {
+                if is_commit_create_typ(typ) && has_key {
                     tracing::debug!("genesis_from_raw_blobs: found genesis key in commit/create!");
                     return Self::genesis_from_blob(data);
                 }
@@ -1831,6 +1831,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer.clear(&DeriveToken::new()).await?;
         self.rebuild_index_from_manifests().await
     }
+}
+
+/// Whether `typ` is the protocol's `commit/create` (authority-qualified
+/// suffix, SPEC 7.3), never a substring match: an application typ that
+/// merely contains `/commit/create` is an ordinary coz.
+fn is_commit_create_typ(typ: &str) -> bool {
+    cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::COMMIT_CREATE)
 }
 
 /// Whether `data` parses as the pre-keyspace manifest shape. Parsed, not
@@ -1911,8 +1918,8 @@ fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
         .get("pay")
         .and_then(|p| p.get("typ"))
         .and_then(|t| t.as_str());
-    let keeps_key = typ
-        .is_some_and(|t| crate::import::is_key_introducing_typ(t) || t.contains("/commit/create"));
+    let keeps_key =
+        typ.is_some_and(|t| crate::import::is_key_introducing_typ(t) || is_commit_create_typ(t));
     if let Some(key) = members.get("key").filter(|_| keeps_key) {
         let entry = key_value_to_entry(key)
             .ok_or_else(|| bad("'key' missing required fields (alg, pub, tmb)".into()))?;
