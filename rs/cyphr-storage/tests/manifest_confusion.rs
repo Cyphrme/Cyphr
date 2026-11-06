@@ -877,14 +877,21 @@ async fn plant_manifest(e: &Engine, commit: &IndexableCommit) {
 /// Turns red if: a manifest naming real blobs re-points a principal (here
 /// a phantom id) without any replay.
 #[tokio::test]
-#[ignore = "RED(H1F): rebuild trusts a manifest's principal id"]
 async fn rebuild_refuses_manifest_not_bound_to_its_blobs() {
     let e = engine();
     submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
     let fx = load_golden("mutations", "transaction_sequence_replay");
     // A genuine coz blob that no manifest owns, so only the binding check
     // (not the index's digest-conflict check) can refuse the manifest.
-    let genuine = serde_json::to_vec(&raw_blobs(&fx["commits"][0])[0]).unwrap();
+    let carrier = raw_blobs_disclosing_genesis(&fx, &fx["commits"][0])
+        .into_iter()
+        .find(|b| {
+            b["pay"]["typ"]
+                .as_str()
+                .is_some_and(|t| t.contains("/commit/create"))
+        })
+        .expect("the commit/create genesis carrier");
+    let genuine = serde_json::to_vec(&carrier).unwrap();
     let genuine = cyphr_storage::blob::BlobStore::put(e.blob_store(), &genuine)
         .await
         .unwrap();

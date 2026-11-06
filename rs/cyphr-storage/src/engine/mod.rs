@@ -790,13 +790,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .map_err(|e| EngineError::MalformedBlob(format!("commit manifest {hash}: {e}")))?;
             self.check_manifest_supported(&hash, &manifest.commit)
                 .await?;
-            manifests.push(manifest);
+            manifests.push((hash, manifest));
         }
 
-        manifests.sort_by_key(|m| m.commit.sequence);
+        self.check_principal_binding(&manifests).await?;
+        manifests.sort_by_key(|(_, m)| m.commit.sequence);
 
         let mut count = 0;
-        for manifest in manifests {
+        for (_, manifest) in manifests {
             self.indexer
                 .index_commit(&manifest.commit, &DeriveToken::new())
                 .await?;
@@ -804,6 +805,66 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         Ok(count)
+    }
+
+    /// Bind each principal's manifests to the blobs they name, with no
+    /// replay: the principal's sequence-0 manifest must name blobs whose
+    /// genesis-derived id is the principal id the manifest carries, and
+    /// every later manifest must have that principal's sequence-0
+    /// manifest present. A corrupt or foreign manifest therefore cannot
+    /// re-point a principal id.
+    async fn check_principal_binding(
+        &self,
+        manifests: &[(Blake3Hash, CommitManifest)],
+    ) -> Result<(), EngineError> {
+        let mut firsts: HashMap<&str, &(Blake3Hash, CommitManifest)> = HashMap::new();
+        for entry in manifests {
+            if entry.1.commit.sequence == 0 {
+                firsts.entry(&entry.1.commit.principal_id).or_insert(entry);
+            }
+        }
+        let mut checked: HashMap<&str, ()> = HashMap::new();
+        for (hash, manifest) in manifests {
+            let principal_id = manifest.commit.principal_id.as_str();
+            if checked.insert(principal_id, ()).is_some() {
+                continue;
+            }
+            let unbound = |reason: String| EngineError::ManifestUnbound {
+                manifest: *hash,
+                principal_id: principal_id.to_string(),
+                reason,
+            };
+            let Some((_, first)) = firsts.get(principal_id) else {
+                return Err(unbound("no sequence-0 manifest for the principal".into()));
+            };
+            let mut blobs = Vec::with_capacity(first.commit.blob_hashes.len());
+            for blob in &first.commit.blob_hashes {
+                blobs.push(self.blob_store.get(blob).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!("blob {blob} of a sequence-0 manifest"))
+                })?);
+            }
+            // Only a `commit/create` blob carrying a key is a genesis
+            // carrier (the wire convention). Without one the id cannot be
+            // proven from blobs (an explicit-genesis principal's key set is
+            // never in them), so the manifest is not judged here.
+            let Some(carrier) = blobs.iter().find(|b| {
+                serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|v| {
+                    v.get("key").is_some()
+                        && v.pointer("/pay/typ")
+                            .and_then(|t| t.as_str())
+                            .is_some_and(|t| t.contains("/commit/create"))
+                })
+            }) else {
+                continue;
+            };
+            let derived = Self::genesis_from_blob(carrier)
+                .and_then(|genesis| genesis_principal_id(&genesis))
+                .map_err(|e| unbound(format!("genesis not derivable from its blobs: {e}")))?;
+            if derived != principal_id {
+                return Err(unbound(format!("its blobs derive principal {derived}")));
+            }
+        }
+        Ok(())
     }
 
     /// Refuse a manifest whose commit names blobs the store does not hold:
@@ -1594,6 +1655,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// clearing it first also drops any entry no manifest backs. `clear`
     /// requires a [`DeriveToken`] that only this crate can mint, which is
     /// why the clear lives here rather than at the call site.
+    ///
+    /// Rebuild trusts the engine-written manifests (the prefixed blobs),
+    /// checks only that each names stored blobs and that its principal id
+    /// is bound to its sequence-0 genesis carrier, and does not replay.
+    /// The audit path is to replay each principal from its blobs
+    /// ([`Self::rederive_roots`]) and compare with the rebuilt index; this
+    /// method is the cheap recovery, not the audit.
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_from_scratch(&self) -> Result<usize, EngineError> {
         self.indexer.clear(&DeriveToken::new()).await?;
