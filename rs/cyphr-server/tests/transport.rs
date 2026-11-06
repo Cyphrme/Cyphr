@@ -809,3 +809,60 @@ async fn a_refused_initiator_fails_at_connect_with_its_reason() {
         "{err:?}"
     );
 }
+
+/// Claim: an initiator whose key was naked-revoked (SPEC 6.4, invisible to
+/// the chain) is refused, while the principal's other key still opens a
+/// session. `key_a` works first, so the refusal is the revoke's doing.
+///
+/// Turns red if: the death set is not consulted for the initiator key.
+/// End-to-end scenario: yes (push, naked revoke over HTTP, handshake).
+#[tokio::test]
+async fn a_naked_revoked_initiator_key_is_refused() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let own_principal = push_client_principal(&app).await;
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    NoiseConnector::connect(addr, &mut held, &pool_signer("key_a"), &own_principal)
+        .await
+        .expect("key_a opens a session before the revoke");
+
+    let pool = load_pool();
+    let key_a = pool.get("key_a").expect("key_a");
+    let prv = Base64UrlUnpadded::decode_vec(key_a.prv.as_ref().expect("prv")).expect("prv");
+    let pub_key = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("pub");
+    let pay = serde_json::json!({
+        "alg": key_a.alg,
+        "now": 1_700_000_000,
+        "rvk": 1_700_000_000,
+        "tmb": key_a.compute_tmb_b64().expect("tmb"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let (sig, _) = coz::sign_json(
+        &serde_json::to_vec(&pay).expect("pay"),
+        &key_a.alg,
+        &prv,
+        &pub_key,
+    )
+    .expect("sign");
+    let body = serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": { "alg": key_a.alg, "pub": key_a.pub_key },
+    });
+    let (status, resp) = post_json(app.clone(), "/revoke", body.to_string()).await;
+    assert!(
+        status.is_success(),
+        "naked revoke accepted: {status} {resp:?}"
+    );
+
+    let err = NoiseConnector::connect(addr, &mut held, &pool_signer("key_a"), &own_principal)
+        .await
+        .err()
+        .expect("a naked-revoked key must be refused");
+    assert!(matches!(err, TransportError::Refused { .. }), "{err:?}");
+    NoiseConnector::connect(addr, &mut held, &golden_signer(), &own_principal)
+        .await
+        .expect("the principal's other key still opens a session");
+}
