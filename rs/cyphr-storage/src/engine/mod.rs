@@ -203,6 +203,57 @@ pub const BRANCH_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/branch-manifest/v1\0
 /// [`EngineError::BranchLimit`].
 pub const BRANCH_LIMIT: usize = 16;
 
+/// Retained rivals kept per signing key of one principal. A key that
+/// forked once is already proven to equivocate by its first rival, so a
+/// small quota loses no evidence; it stops a thief, or a since-revoked key
+/// writing back-dated rivals, from filling [`BRANCH_LIMIT`] and starving
+/// rivals signed by the principal's other keys. A thief holding the
+/// owner's only key shares that key's quota.
+pub const BRANCH_PER_KEY: usize = 2;
+
+/// A retained rival as the engine tracks it: the listed [`BranchTip`],
+/// the key that signed its closing `commit/create`, and the stored blobs
+/// the evidence route serves back.
+#[derive(Debug, Clone)]
+struct Retained {
+    tip: BranchTip,
+    signer: String,
+    blobs: Vec<Blake3Hash>,
+}
+
+/// The key that signed a commit: its closing `commit/create` coz, else
+/// the last coz.
+fn commit_signer(commit: &IndexableCommit) -> String {
+    commit
+        .cozies
+        .iter()
+        .rev()
+        .find(|c| is_commit_create_typ(&c.typ))
+        .or(commit.cozies.last())
+        .map(|c| c.tmb.clone())
+        .unwrap_or_default()
+}
+
+/// Whether `signer` may still retain a rival beside `kept`.
+fn has_slot(kept: &[Retained], signer: &str) -> bool {
+    kept.len() < BRANCH_LIMIT && kept.iter().filter(|r| r.signer == signer).count() < BRANCH_PER_KEY
+}
+
+/// A fork of a stored principal: two distinct commits that both verify at
+/// the same `pre`, as the wire blobs of each. One is the canonical commit
+/// at `sequence`, the other a retained rival.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkEvidence {
+    /// The chain position both commits take.
+    pub sequence: u64,
+    /// The Principal Root both extend, tagged; `None` at sequence 0.
+    pub pre: Option<String>,
+    /// The canonical commit's raw coz blobs.
+    pub canonical: Vec<Vec<u8>>,
+    /// The retained rival's raw coz blobs.
+    pub rival: Vec<Vec<u8>>,
+}
+
 /// One branch head of a principal: its canonical chain's tip or a
 /// retained rival, as listed by [`StorageEngine::list_branches`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -369,7 +420,7 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// of the branch manifests in the blob store (I1), filled by the
     /// rebuild scan and by retention, at most [`BRANCH_LIMIT`] per
     /// principal.
-    branches: std::sync::Mutex<HashMap<String, Vec<BranchTip>>>,
+    branches: std::sync::Mutex<HashMap<String, Vec<Retained>>>,
     /// Stored commits [`Self::retain_rival`] has replayed, ever. Retention
     /// is paid by refused bundles, so its cost is the quantity tests pin.
     retention_replays: std::sync::atomic::AtomicU64,
@@ -1073,9 +1124,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         &self,
         mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
         quarantined: &mut Vec<QuarantinedManifest>,
-    ) -> Result<HashMap<String, Vec<BranchTip>>, EngineError> {
+    ) -> Result<HashMap<String, Vec<Retained>>, EngineError> {
         branch_manifests.sort_by_key(|(hash, _)| *hash.as_bytes());
-        let mut kept: HashMap<String, Vec<BranchTip>> = HashMap::new();
+        let mut kept: HashMap<String, Vec<Retained>> = HashMap::new();
         for (hash, manifest) in branch_manifests {
             let commit = manifest.commit;
             let tip = commit.commit_ids.first().cloned().unwrap_or_default();
@@ -1113,21 +1164,27 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let of_principal = kept.entry(commit.principal_id.clone()).or_default();
             if of_principal
                 .iter()
-                .any(|b| b.tip == tip && b.sequence == commit.sequence)
+                .any(|b| b.tip.tip == tip && b.tip.sequence == commit.sequence)
             {
                 continue;
             }
-            if of_principal.len() >= BRANCH_LIMIT {
+            let signer = commit_signer(&commit);
+            if !has_slot(of_principal, &signer) {
                 reject(QuarantineReason::Conflict(format!(
-                    "more than {BRANCH_LIMIT} retained branches"
+                    "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per key, \
+                     {BRANCH_LIMIT} per principal"
                 )));
                 continue;
             }
-            of_principal.push(BranchTip {
-                tip,
-                pre: commit.pre,
-                sequence: commit.sequence,
-                canonical: false,
+            of_principal.push(Retained {
+                tip: BranchTip {
+                    tip,
+                    pre: commit.pre,
+                    sequence: commit.sequence,
+                    canonical: false,
+                },
+                signer,
+                blobs: commit.blob_hashes,
             });
         }
         Ok(kept)
@@ -1568,7 +1625,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
-                    self.retain_rival(principal_id, genesis, raw_blobs).await?;
+                    match self.retain_rival(principal_id, genesis, raw_blobs).await {
+                        Ok(()) => {},
+                        // The one retention outcome that is a refusal in
+                        // its own right: no slot left for this key.
+                        Err(full @ EngineError::BranchLimit { .. }) => return Err(full),
+                        // Retention is best-effort evidence keeping: a
+                        // storage fault must not turn the fork's own
+                        // refusal (409/422) into a 500.
+                        Err(err) => tracing::warn!(
+                            principal = %principal_id,
+                            error = %err,
+                            "could not retain a refused rival; answering the original refusal"
+                        ),
+                    }
                 }
                 return Err(refused);
             },
@@ -1877,6 +1947,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<(), EngineError> {
         use crate::import::replay_commits;
 
+        if self.is_already_stored(principal_id, raw_blobs).await? {
+            return Ok(());
+        }
         let entries = self.stored_entries(principal_id, None).await?;
         let Some(signers) = authenticated_signers(raw_blobs, &genesis, &entries) else {
             return Ok(());
@@ -1904,11 +1977,45 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
+    /// Whether `raw_blobs` are, byte for byte, a commit this engine already
+    /// holds: on the canonical chain or retained as a rival. Such a bundle
+    /// is nobody's rival at any other position, since its arrow binds
+    /// exactly one `pre`, so it settles with no replay and no clone. This
+    /// is the cheap check made before any state is cloned: the arrow binds
+    /// `pre` only through the post-state root, which cannot be recomputed
+    /// without applying the bundle, so a hash identity is the one sound
+    /// filter that needs no state.
+    async fn is_already_stored(
+        &self,
+        principal_id: &str,
+        raw_blobs: &[&[u8]],
+    ) -> Result<bool, EngineError> {
+        let hashes: Vec<Blake3Hash> = raw_blobs
+            .iter()
+            .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
+            .collect();
+        let kept = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .is_some_and(|rs| rs.iter().any(|r| r.blobs == hashes));
+        if kept {
+            return Ok(true);
+        }
+        Ok(self
+            .indexer
+            .get_commit_chain(principal_id, None, None)
+            .await?
+            .iter()
+            .any(|c| c.blob_hashes == hashes))
+    }
+
     /// Store a verified rival `commit` and its blobs behind
     /// [`BRANCH_MANIFEST_PREFIX`] and list it. A rival that is the
     /// canonical commit or an already-kept branch is a no-op; the
-    /// (`BRANCH_LIMIT`+1)th distinct rival is [`EngineError::BranchLimit`]
-    /// and stores nothing.
+    /// rival of a key past [`BRANCH_PER_KEY`], or past [`BRANCH_LIMIT`] in all,
+    /// is [`EngineError::BranchLimit`] and stores nothing.
     async fn keep_branch(
         &self,
         raw_blobs: &[&[u8]],
@@ -1926,6 +2033,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if canonical.first().is_none_or(|c| c.commit_id == tip) {
             return Ok(());
         }
+        let signer = commit_signer(&commit);
         {
             let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
             let of_principal = kept
@@ -1933,12 +2041,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .map_or(&[][..], Vec::as_slice);
             if of_principal
                 .iter()
-                .any(|b| b.tip == tip && b.sequence == commit.sequence)
+                .any(|b| b.tip.tip == tip && b.tip.sequence == commit.sequence)
             {
                 return Ok(());
             }
-            if of_principal.len() >= BRANCH_LIMIT {
-                return Err(EngineError::BranchLimit);
+            if !has_slot(of_principal, &signer) {
+                return Err(EngineError::BranchLimit { key: signer });
             }
         }
         let branch = BranchTip {
@@ -1948,19 +2056,24 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             canonical: false,
         };
         let principal_id = commit.principal_id.clone();
-        self.store_manifest(
-            raw_blobs,
-            commit,
-            BRANCH_MANIFEST_PREFIX,
-            BRANCH_MANIFEST_KIND,
-        )
-        .await?;
+        let (stored, _) = self
+            .store_manifest(
+                raw_blobs,
+                commit,
+                BRANCH_MANIFEST_PREFIX,
+                BRANCH_MANIFEST_KIND,
+            )
+            .await?;
         self.branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .entry(principal_id)
             .or_default()
-            .push(branch);
+            .push(Retained {
+                tip: branch,
+                signer,
+                blobs: stored.blob_hashes,
+            });
         Ok(())
     }
 
@@ -2018,12 +2131,69 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .unwrap_or_else(|p| p.into_inner())
             .get(&principal_id)
         {
-            branches.extend(kept.iter().cloned());
+            branches.extend(kept.iter().map(|r| r.tip.clone()));
         }
         branches.sort_by(|a, b| {
             (a.sequence, !a.canonical, &a.tip).cmp(&(b.sequence, !b.canonical, &b.tip))
         });
         Ok(branches)
+    }
+
+    /// Every fork of a principal the store can prove: for each retained
+    /// rival, the canonical commit it took the position of and the rival
+    /// itself, as wire blobs. A principal that is not stored is
+    /// [`EngineError::NotFound`]; a principal never forked yields none.
+    #[tracing::instrument(skip(self))]
+    pub async fn fork_evidence(
+        &self,
+        principal_id: &str,
+    ) -> Result<(String, Vec<ForkEvidence>), EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        if self.indexer.get_tip(&principal_id).await?.is_none() {
+            return Err(EngineError::NotFound(format!(
+                "principal {principal_id} not found"
+            )));
+        }
+        let rivals = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&principal_id)
+            .cloned()
+            .unwrap_or_default();
+        let mut out = Vec::with_capacity(rivals.len());
+        for rival in rivals {
+            let at = rival.tip.sequence;
+            let chain = self
+                .indexer
+                .get_commit_chain(&principal_id, Some(at), Some(at))
+                .await?;
+            let Some(canonical) = chain.first() else {
+                continue;
+            };
+            out.push(ForkEvidence {
+                sequence: at,
+                pre: rival.tip.pre.clone(),
+                canonical: self.read_blobs(&canonical.blob_hashes).await?,
+                rival: self.read_blobs(&rival.blobs).await?,
+            });
+        }
+        out.sort_by(|a, b| (a.sequence, &a.rival).cmp(&(b.sequence, &b.rival)));
+        Ok((principal_id, out))
+    }
+
+    async fn read_blobs(&self, hashes: &[Blake3Hash]) -> Result<Vec<Vec<u8>>, EngineError> {
+        let mut blobs = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            blobs.push(
+                self.blob_store
+                    .get(hash)
+                    .await?
+                    .ok_or_else(|| EngineError::NotFound(format!("blob {hash} missing")))?,
+            );
+        }
+        Ok(blobs)
     }
 
     /// Resolve genesis for a principal, auto-detecting from stored or submitted data.
