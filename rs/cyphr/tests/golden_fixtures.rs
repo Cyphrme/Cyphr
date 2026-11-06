@@ -319,10 +319,6 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
         "[no-revoke-non-self]" => "MalformedPayload",
-        // Still `NoActiveKeys`: every vector tagged so deletes the last key
-        // (`key/delete`), which is refused. Revoking the last key is
-        // accepted (SPEC 3.1) and is not an error.
-        "[naked-revoke-error]" => "NoActiveKeys",
         // What a Dead principal answers: its revoked key signs nothing.
         "[no-self-revoke-recovery]" => "KeyRevoked",
         // Authentication

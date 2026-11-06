@@ -145,3 +145,22 @@ tx = [
 [test.expected]
 error     = "KeyRevoked"
 key_count = 0
+
+# Test: deleting the only key also leaves the principal Dead (SPEC.md 11.2:
+# Dead is a consequence of any condition that leaves no keys). Same dying
+# roots as a revoke: KR, AR and SR absent, PR the promoted CR.
+[[test]]
+name      = "last_key_delete_leaves_dead"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+deleted   = false
+frozen    = false
+key_count = 0

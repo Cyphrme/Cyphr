@@ -179,22 +179,6 @@ tx = [
 [test.expected]
 error = "[no-revoke-non-self]"
 
-# key/delete of last remaining key should fail with NoActiveKeys
-# (distinct from revoke — tests the delete path specifically)
-[[test]]
-name      = "delete_last_key_fails"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
-  ],
-]
-
-[test.expected]
-error = "NoActiveKeys"
-
 # key/delete of unknown key (key not in principal)
 [[test]]
 name      = "delete_unknown_key_fails"

@@ -1997,6 +1997,58 @@ fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
     assert_eq!(algs_of(commit.pr().as_multihash()), both);
 }
 
+/// Backs SPEC 11.2 ("Dead is a consequence of any condition that leaves the
+/// principal with no keys"): deleting the last key, not only revoking it,
+/// leaves the principal Dead. Scenario: a lone key signs a `key/delete` of
+/// itself; the commit is accepted, the principal is Dead with KR, AR and SR
+/// absent and PR equal to CR, and the deleted key then signs nothing (a
+/// deleted key is unknown, not revoked). Control: with a second key the
+/// same delete is accepted and the principal stays live. Turns red if the
+/// delete is refused (`NoActiveKeys`), or if a Dead principal accepts a
+/// commit. End to end: yes.
+#[test]
+fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
+    let (mut two, a, b) = two_key_principal();
+    commit_one(
+        &mut two,
+        &a,
+        sign(&a, key_delete_pay(&a, &b.tmb, T)),
+        None,
+        T + 1,
+    )
+    .expect("control: deleting one of two keys is accepted");
+    assert_eq!(two.active_key_count(), 1);
+
+    let (g, k2) = (kp(), kp());
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_delete_pay(&g, &g.tmb, T)),
+        None,
+        T + 1,
+    );
+    assert!(r.is_ok(), "deleting the only key was refused: {r:?}");
+    assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
+    assert!(p.key_root().is_none() && p.auth_root().is_none() && p.sr().is_none());
+    let cr = p.cr().expect("CR");
+    assert_eq!(
+        variants_of(p.pr().as_multihash()),
+        variants_of(cr.as_multihash()),
+        "PR must be the promoted CR when SR is absent"
+    );
+    let before = snapshot(&p);
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, T + 2)),
+        Some(key_of(&k2)),
+        T + 3,
+    );
+    assert!(r.is_err(), "a dead principal took a commit: {r:?}");
+    assert_eq!(before, snapshot(&p));
+}
+
 /// Backs SPEC 11 (Dead is final: no transactions or actions) after the
 /// dying commit finalizes, across the cold path too. Scenario: a Dead
 /// principal (revoked in a commit) refuses a second commit signed by a

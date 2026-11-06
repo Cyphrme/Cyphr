@@ -546,8 +546,9 @@ def generate_toml():
             ""
         ])
 
-    # F-03: Permanent Lockout (Errors)
-    # Case 1..5: Revoking/deleting the last active key -> [naked-revoke-error]
+    # F-03: Permanent Lockout
+    # Case 1..5: deleting the last active key is accepted and leaves the
+    # principal Dead (SPEC 11.2), so there is no error to expect.
     for i in range(5):
         toml_lines.extend([
             "[[test]]",
@@ -562,7 +563,7 @@ def generate_toml():
             "]",
             "",
             "[test.expected]",
-            'error     = "[naked-revoke-error]"',
+            'key_count = 0',
             ""
         ])
 

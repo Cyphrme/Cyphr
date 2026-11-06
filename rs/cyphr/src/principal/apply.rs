@@ -44,7 +44,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
@@ -67,7 +66,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub(crate) fn apply_verified_internal(
@@ -293,8 +291,8 @@ impl<S: eml::Storage> Principal<S> {
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
                 self.add_key(key, cz.now);
-                // Use shift_remove directly to bypass NoActiveKeys check
-                // (we just added a key, so this is safe)
+                // The signer is removed outright: it is not a delete of a key
+                // (a key was just added, so the set cannot empty)
                 self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
             },
             CozKind::SelfRevoke { rvk } => {
@@ -608,7 +606,6 @@ impl<S: eml::Storage> Principal<S> {
     /// - `InvalidSignature`: Signature doesn't verify
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
-    /// - `NoActiveKeys`: Would leave principal with no keys
     #[must_use = "coz application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
         &mut self,
@@ -643,15 +640,14 @@ impl<S: eml::Storage> Principal<S> {
         self.core_mut().auth.keys.insert(tmb_b64, key);
     }
 
-    /// Remove a key from the active key set (delete, not revoke).
+    /// Remove a key from the active key set (delete, not revoke). Deleting
+    /// the last key is accepted and leaves the principal Dead (SPEC 11.2:
+    /// Dead is a consequence of any condition that leaves no keys).
     fn remove_key(&mut self, tmb: &Thumbprint) -> Result<()> {
         let tmb_b64 = tmb.to_b64();
         let core = self.core_mut();
         if core.auth.keys.shift_remove(&tmb_b64).is_none() {
             return Err(Error::UnknownKey);
-        }
-        if core.auth.keys.is_empty() {
-            return Err(Error::NoActiveKeys);
         }
         Ok(())
     }
