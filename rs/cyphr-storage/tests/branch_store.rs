@@ -329,6 +329,7 @@ struct Revoked {
     /// The principal after the revocation, position 1.
     canonical: cyphr::Principal,
     /// A rival AT the revocation position, signed while golden was active.
+    #[cfg_attr(not(red_g1), allow(dead_code))]
     theft: Vec<Vec<u8>>,
 }
 
