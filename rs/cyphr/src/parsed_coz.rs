@@ -774,4 +774,66 @@ mod tests {
         assert!(!typ::is_key_introducing("cyphr.me/cyphr/principal/create"));
         assert!(!typ::is_key_introducing("cyphr.me/cyphr/commit/create"));
     }
+
+    /// Backs the typ-classification boundary (SPEC 4.2: typ is
+    /// `<authority>/cyphr/...`). Defect that turns it red: classification by
+    /// bare `ends_with`, so a typ whose last segment merely ends in the
+    /// suffix text (`.../xcyphr/key/create`) is read as `key/create`. Unit
+    /// level because the predicate is a pure function and no scenario
+    /// reaches every spoof shape cheaply. Not end to end. A lying
+    /// implementation that special-cases one spoof string, or that adds the
+    /// boundary to `is_key_introducing` only, is caught by the other test.
+    /// RED: `is_key_introducing` uses `ends_with` with no `/` boundary.
+    #[test]
+    #[ignore = "RED(N08): typ suffix match has no path boundary"]
+    fn typ_boundary_key_introducing_requires_slash_before_suffix() {
+        for spoof in [
+            "cyphr.me/xcyphr/key/create",
+            "cyphr.me/xcyphr/key/replace",
+            "evilcyphr/key/create",
+            "a.b/Xcyphr/key/replace",
+        ] {
+            assert!(
+                !typ::is_key_introducing(spoof),
+                "{spoof} was classified as key-introducing"
+            );
+        }
+        for ok in ["cyphr.me/cyphr/key/create", "a.b/c/cyphr/key/replace"] {
+            assert!(typ::is_key_introducing(ok), "control: {ok} must classify");
+        }
+    }
+
+    /// Same boundary at the parse site (`ParsedCoz::from_pay`, which every
+    /// applied coz passes through). Each spoofed typ carries a well-formed
+    /// `id` so the only reason to refuse it is the typ; the genuine typ with
+    /// the same payload is the control and must parse to the same kind.
+    /// Turns red if a spoofed suffix parses as `KeyCreate`, `KeyDelete` or
+    /// `KeyReplace`. Only the three kinds needing nothing but `id` are
+    /// exercised: the others could be refused for a missing field, which
+    /// would make the assertion hold by construction. Not end to end.
+    /// RED: `parse_kind` matches by bare `ends_with`.
+    #[test]
+    #[ignore = "RED(N08): typ suffix match has no path boundary"]
+    fn typ_boundary_spoofed_suffix_does_not_parse_as_a_key_coz() {
+        for suffix in [typ::KEY_CREATE, typ::KEY_DELETE, typ::KEY_REPLACE] {
+            let parse = |typ_str: String| {
+                let mut pay = PayBuilder::new()
+                    .typ(typ_str)
+                    .alg("ES256")
+                    .now(1000)
+                    .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+                    .build();
+                pay.extra.insert("id".into(), json!(TEST_ID));
+                let czd = Czd::from_bytes(vec![0; 32]);
+                ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay))
+            };
+            parse(format!("cyphr.me/{suffix}"))
+                .unwrap_or_else(|e| panic!("control: genuine {suffix} must parse: {e:?}"));
+            let spoof = parse(format!("cyphr.me/x{suffix}"));
+            assert!(
+                matches!(spoof, Err(Error::MalformedPayload)),
+                "x{suffix} parsed: {spoof:?}"
+            );
+        }
+    }
 }

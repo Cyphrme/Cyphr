@@ -195,3 +195,24 @@ pub async fn interpret<I: Indexer>(
         evidence,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_revoke_typ;
+
+    /// Characterization (green): the naked-revoke gate already requires a
+    /// `/` boundary before `cyphr/key/revoke`, the behavior the core
+    /// classifier must match (the core side is the `typ_boundary_*` tests in
+    /// `cyphr::parsed_coz`). Turns red if the gate regresses to a bare
+    /// suffix match. Unit level: the predicate is private and a spoof
+    /// reaching it by HTTP needs a full keyed server for no extra coverage.
+    #[test]
+    fn typ_boundary_naked_revoke_requires_slash_before_suffix() {
+        assert!(is_revoke_typ("cyphr.me/cyphr/key/revoke"));
+        assert!(is_revoke_typ("a.b/c/cyphr/key/revoke"));
+        assert!(!is_revoke_typ("cyphr.me/xcyphr/key/revoke"));
+        assert!(!is_revoke_typ("evilcyphr/key/revoke"));
+        assert!(!is_revoke_typ("cyphr/key/revoke"));
+        assert!(!is_revoke_typ("cyphr.me/cyphr/key/create"));
+    }
+}
