@@ -40,9 +40,10 @@ use crate::{AppState, build_app_router};
 /// Sessions served at once, across all addresses.
 const MAX_SESSIONS: usize = 256;
 
-/// Sessions one source address may hold at once. A Level 1 key is its own
+/// Sessions one source may hold at once. A Level 1 key is its own
 /// principal, so a peer authenticates for free and the address is the only
-/// scarce thing it has; without this one address could fill every slot.
+/// scarce thing it has; without this one source could fill every slot. A
+/// source is a full IPv4 address or an IPv6 /64 (see [`bucket`]).
 const MAX_SESSIONS_PER_IP: usize = 16;
 
 /// How long an authenticated session may sit without a request before the
@@ -63,6 +64,23 @@ pub struct AuthenticatedPeer {
     /// The Noise handshake hash of this session: the binding the statement
     /// was signed over.
     pub handshake_hash: Vec<u8>,
+}
+
+/// The unit the per-source cap counts. An IPv6 /64 is one end site, one
+/// subscriber (RFC 6177), who can source an address per connection, so it
+/// is bucketed by its /64 prefix. IPv4 keeps the full address: a /24 would
+/// merge unrelated hosts behind one provider's block (and one NAT already
+/// shares an address), and no test here supports the wider bucket.
+fn bucket(ip: IpAddr) -> IpAddr {
+    // A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`;
+    // key it as the IPv4 address it is, or all of them share one /64.
+    match ip.to_canonical() {
+        v4 @ IpAddr::V4(_) => v4,
+        IpAddr::V6(v6) => {
+            let prefix = u128::from(v6) & !u128::from(u64::MAX);
+            IpAddr::V6(prefix.into())
+        },
+    }
 }
 
 /// The session slots: a global pool and a per-address allowance, taken at
@@ -89,6 +107,7 @@ impl Slots {
     }
 
     fn admit(&self, ip: IpAddr) -> Option<Slot> {
+        let ip = bucket(ip);
         let total = self.total.clone().try_acquire_owned().ok()?;
         // A poisoned lock only means another session panicked mid-update of a
         // plain counter map; the counts stay usable.
@@ -479,5 +498,72 @@ async fn dispatch(
     match axum::body::to_bytes(response.into_body(), MAX_MESSAGE - 2).await {
         Ok(bytes) => (status, bytes.to_vec()),
         Err(_) => (500, b"response too large".to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    /// Claim: the per-address session cap counts an IPv6 /64 as one source
+    /// (RFC 6177: a /64 is one end site), while distinct /64s and distinct
+    /// IPv4 addresses keep separate allowances. Red if admit keys on the
+    /// exact address: 16 addresses of one /64 would then each get a fresh
+    /// allowance and a 17th session would be admitted.
+    ///
+    /// Why a unit test: an end-to-end test cannot bind this many distinct
+    /// source addresses (a client socket gets the loopback address or one
+    /// host address), so only `admit` can be driven with chosen peers.
+    #[test]
+    fn ipv6_sessions_share_a_64_allowance_and_ipv4_does_not() {
+        let slots = Slots::new();
+        let v6 =
+            |net: u16, host: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, net, 0, 0, 0, host));
+
+        // Fill one /64 with one session from each of 16 different addresses.
+        let held: Vec<_> = (0..MAX_SESSIONS_PER_IP as u16)
+            .map(|h| slots.admit(v6(1, h)).expect("within the /64 allowance"))
+            .collect();
+        assert!(
+            slots.admit(v6(1, 999)).is_none(),
+            "a 17th address of the same /64 is refused"
+        );
+        assert!(
+            slots.admit(v6(2, 0)).is_some(),
+            "another /64 is still admitted"
+        );
+
+        // IPv4 stays per full address: a neighbouring address is separate.
+        let v4 = |d: u8| IpAddr::V4(Ipv4Addr::new(192, 0, 2, d));
+        let _a: Vec<_> = (0..MAX_SESSIONS_PER_IP)
+            .map(|_| slots.admit(v4(1)).expect("within the IPv4 allowance"))
+            .collect();
+        assert!(slots.admit(v4(1)).is_none());
+        assert!(slots.admit(v4(2)).is_some());
+
+        // A dual-stack `[::]` listener reports IPv4 clients as mapped
+        // `::ffff:a.b.c.d`; they must key as plain IPv4, not share the
+        // ::/64 bucket their common prefix would put them in.
+        let mapped = |d: u8| IpAddr::V6(Ipv4Addr::new(198, 51, 100, d).to_ipv6_mapped());
+        let _m: Vec<_> = (0..MAX_SESSIONS_PER_IP)
+            .map(|_| slots.admit(mapped(1)).expect("within the mapped allowance"))
+            .collect();
+        assert!(slots.admit(mapped(1)).is_none());
+        assert!(
+            slots.admit(mapped(2)).is_some(),
+            "a different mapped IPv4 client has its own allowance"
+        );
+        assert!(
+            slots
+                .admit(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)))
+                .is_none(),
+            "a mapped address and its plain IPv4 form are one client"
+        );
+
+        // Releasing the /64's sessions frees its bucket.
+        drop(held);
+        assert!(slots.admit(v6(1, 999)).is_some());
     }
 }
