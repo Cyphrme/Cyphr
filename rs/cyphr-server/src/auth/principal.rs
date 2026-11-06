@@ -19,7 +19,7 @@ use cyphr_storage::Genesis;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::ServerIdentity;
+use super::{FILE_FORMAT_VERSION, ServerIdentity, document_version, file_v1};
 use crate::config::RECORD_DIR_NAME;
 
 /// `first_seen` stamped on the server's genesis key. Fixed (not wall-clock)
@@ -90,6 +90,11 @@ pub enum ServerPrincipalError {
     /// diagnostic from a doomed re-genesis attempt (issue #175).
     #[error("{0}")]
     MissingSidecar(String),
+
+    /// The genesis record states a format version this build does not read;
+    /// no chain was loaded from it.
+    #[error("server principal genesis record version {found} is not the supported {supported}")]
+    UnsupportedVersion { found: u64, supported: u32 },
 }
 
 /// On-disk record locating the server's own chain between boots.
@@ -102,6 +107,9 @@ pub enum ServerPrincipalError {
 /// recorded here does not change, so the chain remains loadable.
 #[derive(Serialize, Deserialize)]
 struct GenesisRecord {
+    /// Format version; absent in records from before versions (v1).
+    #[serde(default = "file_v1")]
+    v: u32,
     pg: String,
     genesis_key: GenesisKeyRecord,
 }
@@ -208,6 +216,7 @@ impl ServerPrincipal {
             .await?;
 
         let record = GenesisRecord {
+            v: FILE_FORMAT_VERSION,
             pg: pg.clone(),
             genesis_key: GenesisKeyRecord::from_key(&genesis_key),
         };
@@ -233,7 +242,20 @@ impl ServerPrincipal {
         signing_key_path: &Path,
         state_path: &Path,
     ) -> Result<Self, ServerPrincipalError> {
-        let record: GenesisRecord = serde_json::from_slice(&std::fs::read(state_path)?)?;
+        let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(state_path)?)?;
+        let found = document_version(&doc)?;
+        if found != u64::from(FILE_FORMAT_VERSION) {
+            return Err(ServerPrincipalError::UnsupportedVersion {
+                found,
+                supported: FILE_FORMAT_VERSION,
+            });
+        }
+        let stamped = doc.get("v").is_some();
+        let record: GenesisRecord = serde_json::from_value(doc)?;
+        // A record from before versions is v1: rewrite it stamped.
+        if !stamped {
+            std::fs::write(state_path, serde_json::to_vec_pretty(&record)?)?;
+        }
         let genesis_key = record.genesis_key.to_key()?;
 
         // A record with no served chain (e.g. the index was wiped out from

@@ -548,6 +548,15 @@ pub async fn push(
         let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw) else {
             continue;
         };
+        // SPEC §6.4: a dead key is not re-added to any principal either.
+        if state
+            .observations
+            .introduces_dead_key(&parsed)
+            .await
+            .map_err(AppError::observation)?
+        {
+            return Err(AppError::forbidden("push introduces a revoked key"));
+        }
         let Some(tmb_b64) = parsed["pay"]["tmb"].as_str() else {
             continue;
         };

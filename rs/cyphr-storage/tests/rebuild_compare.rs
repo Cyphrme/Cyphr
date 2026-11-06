@@ -317,8 +317,17 @@ fn plant_bogus_registry_entry(path: &Path) {
         .expect("open index_meta");
     let mut partitions: Vec<String> = KNOWN_PARTITIONS.iter().map(|s| s.to_string()).collect();
     partitions.push("index_never_produced_by_any_derivation".to_string());
+    // Keep the version the derivation stamped: an index of any other
+    // version is discarded on open, which would erase the tamper.
+    let stamped: serde_json::Value = serde_json::from_slice(
+        &meta
+            .get(META_KEY)
+            .expect("read registry")
+            .expect("a derived store has a registry"),
+    )
+    .expect("registry json");
     let bogus = RawIndexMeta {
-        version: 1,
+        version: u32::try_from(stamped["version"].as_u64().expect("version")).expect("u32"),
         partitions,
     };
     meta.insert(

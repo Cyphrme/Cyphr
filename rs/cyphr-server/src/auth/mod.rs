@@ -44,6 +44,33 @@ pub enum AuthError {
     /// the stored private key -- the file has drifted or was hand-edited.
     #[error("signing key file's public key does not match its private key")]
     PublicKeyMismatch,
+
+    /// The key file states a format version this build does not read. No
+    /// key was loaded from it.
+    #[error("signing key file version {found} is not the supported {supported}")]
+    UnsupportedVersion { found: u64, supported: u32 },
+}
+
+/// The format version of the signing-key file and the server-principal
+/// sidecar. A file with no `v` predates versions and is v1 (same layout).
+pub(crate) const FILE_FORMAT_VERSION: u32 = 1;
+
+/// The version a JSON document states: absent means v1.
+///
+/// # Errors
+///
+/// [`serde_json::Error`] when `v` is present but not an unsigned integer.
+pub(crate) fn document_version(doc: &serde_json::Value) -> Result<u64, serde_json::Error> {
+    match doc.get("v") {
+        None => Ok(u64::from(FILE_FORMAT_VERSION)),
+        Some(v) => v.as_u64().ok_or_else(|| {
+            <serde_json::Error as serde::de::Error>::custom("`v` is not an unsigned integer")
+        }),
+    }
+}
+
+fn file_v1() -> u32 {
+    FILE_FORMAT_VERSION
 }
 
 /// On-disk shape of a server signing key file: algorithm plus a raw
@@ -60,6 +87,9 @@ pub enum AuthError {
 /// on this type would silently reopen exactly that hole.
 #[derive(Serialize, Deserialize)]
 struct KeyFile {
+    /// Format version; absent in files from before versions (v1).
+    #[serde(default = "file_v1")]
+    v: u32,
     alg: String,
     #[serde(with = "base64url_bytes")]
     pub_key: Vec<u8>,
@@ -98,8 +128,18 @@ impl ServerIdentity {
     /// unrecognized algorithm, an invalid private key, or a public key
     /// that does not match the private key.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, AuthError> {
+        let path = path.as_ref();
         let content = std::fs::read_to_string(path)?;
-        let file: KeyFile = serde_json::from_str(&content)?;
+        let doc: serde_json::Value = serde_json::from_str(&content)?;
+        let found = document_version(&doc)?;
+        if found != u64::from(FILE_FORMAT_VERSION) {
+            return Err(AuthError::UnsupportedVersion {
+                found,
+                supported: FILE_FORMAT_VERSION,
+            });
+        }
+        let stamped = doc.get("v").is_some();
+        let file: KeyFile = serde_json::from_value(doc)?;
 
         let alg = coz::Alg::from_str(&file.alg)
             .ok_or_else(|| AuthError::UnknownAlgorithm(file.alg.clone()))?;
@@ -109,6 +149,12 @@ impl ServerIdentity {
             .ok_or_else(|| AuthError::InvalidPrivateKey(file.alg.clone()))?;
         if derived_pub != file.pub_key {
             return Err(AuthError::PublicKeyMismatch);
+        }
+
+        // A file from before versions is v1: rewrite it stamped, so every
+        // later read is of a versioned file.
+        if !stamped {
+            std::fs::write(path, serde_json::to_vec(&file)?)?;
         }
 
         Ok(Self {
@@ -162,6 +208,7 @@ impl ServerIdentity {
 /// one (see [`principal`]).
 pub(crate) fn write_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthError> {
     let file = KeyFile {
+        v: FILE_FORMAT_VERSION,
         alg: kp.alg.name().to_string(),
         pub_key: kp.pub_bytes.clone(),
         prv_key: kp.prv_bytes.clone(),
@@ -214,6 +261,7 @@ mod tests {
         let path = dir.path().join("signing-key.json");
         let kp = alg.generate_keypair();
         let file = KeyFile {
+            v: FILE_FORMAT_VERSION,
             alg: kp.alg.name().to_string(),
             pub_key: kp.pub_bytes,
             prv_key: kp.prv_bytes,
@@ -274,6 +322,7 @@ mod tests {
         let kp = coz::Alg::Ed25519.generate_keypair();
         let other_kp = coz::Alg::Ed25519.generate_keypair();
         let file = KeyFile {
+            v: FILE_FORMAT_VERSION,
             alg: kp.alg.name().to_string(),
             pub_key: other_kp.pub_bytes, // mismatched on purpose
             prv_key: kp.prv_bytes,
@@ -290,6 +339,7 @@ mod tests {
         let path = dir.path().join("signing-key.json");
         let kp = coz::Alg::Ed25519.generate_keypair();
         let file = KeyFile {
+            v: FILE_FORMAT_VERSION,
             alg: "NotAnAlgorithm".to_string(),
             pub_key: kp.pub_bytes,
             prv_key: kp.prv_bytes,

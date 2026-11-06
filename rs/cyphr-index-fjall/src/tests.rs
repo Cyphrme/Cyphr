@@ -269,6 +269,19 @@ async fn digest_holders_do_not_depend_on_arrival_order() {
     conformance::digest_holders_do_not_depend_on_arrival_order(&forward, &backward).await;
 }
 
+#[tokio::test]
+async fn index_commit_idempotency_is_keyed_by_chain_position() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::index_commit_idempotency_is_keyed_by_chain_position(&indexer).await;
+}
+
+#[tokio::test]
+async fn digest_holders_are_a_duplicate_free_set() {
+    let (forward, _d1) = FjallIndexer::temp().expect("open temp indexer");
+    let (backward, _d2) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::digest_holders_are_a_duplicate_free_set(&forward, &backward).await;
+}
+
 /// An index commit of principal `p<i>` whose coz carries the shared `czd`.
 fn commit_sharing(i: usize, czd: &str) -> cyphr_storage::index::IndexableCommit {
     let mut c = conformance::make_commit(&format!("SHA-256:p{i:04}"), 0, 1000);
@@ -312,54 +325,57 @@ async fn digest_holder_writes_do_not_grow_with_the_holder_count() {
     );
 }
 
-/// Claim: a digest record written before holders were keyed one per entry
-/// (a single `EntityRef`, or a list) still reads, and a new holder merges
-/// with it. Turns red if an old record is lost or unreadable.
-#[tokio::test]
-async fn legacy_digest_records_still_read_and_merge() {
-    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
-    let token = DeriveToken::for_conformance_tests();
-    let (czd_one, czd_list) = (
-        format!("SHA-256:{}", "B".repeat(42) + "A"),
-        format!("SHA-256:{}", "C".repeat(42) + "A"),
-    );
-    let old = |digest: &str, who: &str| cyphr_storage::index::EntityRef {
-        digest: digest.to_string(),
-        blob_hash: cyphr_storage::blob::Blake3Hash::from_bytes([9; 32]),
-        entity_type: cyphr_storage::index::EntityType::Transaction,
-        sequence: Some(0),
-        principal_id: Some(who.to_string()),
-        principal_root: false,
-    };
-    let ks = indexer.keyspaces();
-    ks.digests
-        .insert(
-            czd_one.as_bytes(),
-            serde_json::to_vec(&old(&czd_one, "SHA-256:old")).unwrap(),
-        )
-        .unwrap();
-    ks.digests
-        .insert(
-            czd_list.as_bytes(),
-            serde_json::to_vec(&vec![old(&czd_list, "SHA-256:old")]).unwrap(),
-        )
-        .unwrap();
-    for (i, czd) in [&czd_one, &czd_list].into_iter().enumerate() {
-        indexer
-            .index_commit(&commit_sharing(i + 1, czd), &token)
-            .await
-            .unwrap();
-        let digest: cyphr::state::TaggedDigest = czd.parse().unwrap();
-        let ids: Vec<_> = indexer
-            .resolve_digest_holders(&digest)
-            .await
-            .unwrap()
-            .into_iter()
-            .filter_map(|h| h.principal_id)
-            .collect();
-        assert_eq!(
-            ids,
-            vec!["SHA-256:old".to_string(), format!("SHA-256:p{:04}", i + 1)]
-        );
+// ---------------------------------------------------------------------
+// N13: the index schema version is read and checked at open.
+// ---------------------------------------------------------------------
+
+/// Index a commit into a fresh store at `dir` (stamping the current schema),
+/// close it, then rewrite its `index_meta` record's version to `version`, as
+/// an older or newer build would have left it.
+fn store_stamped_with(dir: &std::path::Path, version: u64) {
+    {
+        let indexer = FjallIndexer::open(dir).expect("open");
+        block_on(indexer.index_commit(
+            &conformance::make_commit("alice", 0, 1000),
+            &DeriveToken::for_conformance_tests(),
+        ))
+        .expect("index");
     }
+    let db = Database::builder(dir).open().expect("raw open");
+    let meta = db
+        .keyspace("index_meta", KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    let raw = meta.get(META_KEY).expect("read").expect("a stamped record");
+    let mut record: serde_json::Value = serde_json::from_slice(&raw).expect("json record");
+    record["version"] = version.into();
+    meta.insert(META_KEY, serde_json::to_vec(&record).unwrap())
+        .expect("rewrite");
+    db.persist(fjall::PersistMode::SyncAll).expect("persist");
+}
+
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime")
+        .block_on(f)
+}
+
+/// Backs a-versions for the index: a store stamped with a FUTURE schema
+/// version (a downgrade) is refused at open as a typed `UnsupportedVersion`,
+/// never read as if it were current. Older or missing versions are not
+/// refused: the index is a cache and is rebuilt (see `legacy_store_*`). Turns red on an `open` that
+/// ignores the recorded version. A unit test: the stamp is reachable only here.
+#[test]
+fn version_index_unknown_is_refused() {
+    let unknown = 99u64;
+    let dir = tempfile::tempdir().expect("tempdir");
+    store_stamped_with(dir.path(), unknown);
+    let refused = FjallIndexer::open(dir.path()).err();
+    assert!(
+        matches!(
+            refused,
+            Some(IndexerError::UnsupportedVersion { found, .. }) if found == unknown
+        ),
+        "v{unknown} must be refused as UnsupportedVersion: {refused:?}"
+    );
 }

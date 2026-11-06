@@ -191,6 +191,9 @@ pub enum QuarantineReason {
     Unbound(String),
     /// Indexing it would re-point an exclusive claim (a PG alias).
     Conflict(String),
+    /// A different commit already holds this manifest's chain position
+    /// `(principal, sequence)`: fork evidence (I2), kept out of the index.
+    Fork(String),
     /// An earlier commit of the same principal was quarantined, so indexing
     /// this one would leave a gap in the chain.
     Orphaned(String),
@@ -822,10 +825,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// **A manifest the index cannot take never fails the rebuild.** It is
     /// quarantined with a typed [`QuarantineReason`] (malformed, naming
-    /// blobs the store lacks, not bound to its principal, or contesting a
-    /// PG alias), and so are that principal's later commits, so no chain
-    /// is indexed with a gap. Backend failures and a manifest-shaped wire
-    /// blob ([`EngineError::LegacyManifest`]) still fail the rebuild.
+    /// blobs the store lacks, not bound to its principal, contesting a
+    /// PG alias, or rivalling a commit already at its chain position), and so are that principal's
+    /// later commits, so no chain is indexed with a gap. Backend failures and a manifest-shaped
+    /// wire blob ([`EngineError::LegacyManifest`]) still fail the rebuild.
     ///
     /// This does not replay: it trusts the engine-written manifests plus
     /// the blob-presence and binding checks. Replay is the audit path
@@ -933,6 +936,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         manifest: hash,
                         principal_id: Some(commit.principal_id.clone()),
                         reason: QuarantineReason::Conflict(why),
+                    });
+                    broken_from
+                        .entry(commit.principal_id.clone())
+                        .or_insert(commit.sequence);
+                },
+                Err(crate::index::IndexerError::Consistency(why)) => {
+                    quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: Some(commit.principal_id.clone()),
+                        reason: QuarantineReason::Fork(why),
                     });
                     broken_from
                         .entry(commit.principal_id.clone())

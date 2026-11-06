@@ -91,6 +91,9 @@ pub enum SyncFailure {
     UpstreamNonSuccess(u16),
     /// The response body did not decode as the expected patch JSON shape.
     MalformedResponse(String),
+    /// The upstream's response envelope states a wire version this build
+    /// does not read; nothing was applied.
+    UnsupportedEnvelopeVersion { found: u64, supported: u64 },
     /// An expected authority identity is configured (K10), but the response
     /// carried no signed statement, or its signature does not verify
     /// against that identity.
@@ -359,6 +362,9 @@ impl From<PatchFailure> for SyncFailure {
             PatchFailure::MalformedResponse(m) => Self::MalformedResponse(m),
             PatchFailure::EnvelopeUnsignedOrMisSigned => Self::EnvelopeUnsignedOrMisSigned,
             PatchFailure::MalformedReport => Self::MalformedReport,
+            PatchFailure::UnsupportedVersion { found, supported } => {
+                Self::UnsupportedEnvelopeVersion { found, supported }
+            },
             PatchFailure::PrincipalMismatch => Self::PrincipalMismatch,
             PatchFailure::Binding(refusal) => Self::ChannelBindingRefused(refusal),
         }

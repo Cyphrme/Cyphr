@@ -27,6 +27,10 @@ use crate::connector::{
 };
 use crate::report::TipReport;
 
+/// The response envelope wire version this client reads
+/// (`docs/specs/http-envelope.md`).
+const ENVELOPE_VERSION: u64 = 1;
+
 /// The authority key a signed statement must verify against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityKey {
@@ -123,6 +127,15 @@ pub enum PatchFailure {
     /// The signed report attests a different principal than requested.
     #[error("signed report attests a different principal")]
     PrincipalMismatch,
+    /// The response envelope states a wire version this client does not
+    /// read; nothing was decoded or applied.
+    #[error("response envelope version {found} is not the supported {supported}")]
+    UnsupportedVersion {
+        /// The version the peer stated.
+        found: u64,
+        /// The one version this client reads.
+        supported: u64,
+    },
 }
 
 impl From<ConnectError> for PatchFailure {
@@ -185,6 +198,18 @@ pub fn verify_patch_body(
 ) -> Result<VerifiedPatch, PatchFailure> {
     let body: Value = serde_json::from_slice(body)
         .map_err(|err| PatchFailure::MalformedResponse(err.to_string()))?;
+
+    // Version first, before any payload is interpreted: a future envelope
+    // may reshape everything below.
+    let found = body.get("v").and_then(Value::as_u64).ok_or_else(|| {
+        PatchFailure::MalformedResponse("v missing or not an integer".to_string())
+    })?;
+    if found != ENVELOPE_VERSION {
+        return Err(PatchFailure::UnsupportedVersion {
+            found,
+            supported: ENVELOPE_VERSION,
+        });
+    }
 
     let entries = body
         .get("payload")
@@ -341,5 +366,35 @@ mod tests {
         // `&`, `=`, and `#` are exactly the bytes an injected extra query
         // parameter or a fragment marker would need.
         assert_eq!(percent_encode_query_value("a&b=c#d"), "a%26b%3Dc%23d");
+    }
+
+    fn patch_body(v: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "v": v,
+            "payload": {"entries": []},
+            "statement": {"kind": "unsigned"},
+        }))
+        .unwrap()
+    }
+
+    /// Claim: a client fails closed on a response envelope version it does
+    /// not know: the typed `UnsupportedVersion`, with nothing handed back to apply, even
+    /// when no authority key is supplied. A known version still decodes.
+    /// Turns red on a reader that ignores `v` (the S10 hostile peer). A unit
+    /// test: the pure entry point the fuzz target drives; the networked form
+    /// is `s10_hostile`, gated on transport.
+    #[test]
+    fn version_patch_envelope_unknown_is_refused() {
+        verify_patch_body(&patch_body(1), "pid", None).expect("v1 decodes");
+        for unknown in [0u64, 99] {
+            let refused = verify_patch_body(&patch_body(unknown), "pid", None).err();
+            assert!(
+                matches!(
+                    refused,
+                    Some(PatchFailure::UnsupportedVersion { found, .. }) if found == unknown
+                ),
+                "envelope v={unknown} must be refused as UnsupportedVersion: {refused:?}"
+            );
+        }
     }
 }

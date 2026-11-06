@@ -21,6 +21,56 @@ use std::path::Path;
 use coz::Thumbprint;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 
+/// Keyspace and key under which a dedicated fjall store records its format
+/// version, as decimal text.
+const META_KEYSPACE: &str = "meta";
+const VERSION_KEY: &str = "format-version";
+
+/// The format version of the death set and the admission spent set. A store
+/// with no recorded version predates versions and is v1 (same layout).
+pub(crate) const STORE_FORMAT_VERSION: u32 = 1;
+
+/// Why a store's recorded format version could not be accepted.
+#[derive(Debug)]
+pub(crate) enum StampError {
+    /// fjall failed reading or writing the record.
+    Backend(String),
+    /// The record is not a decimal number.
+    NotANumber(String),
+    /// The store states a version this build does not read.
+    Unsupported { found: u64 },
+}
+
+/// Check the format version recorded in `db`'s meta keyspace, stamping
+/// [`STORE_FORMAT_VERSION`] when none is recorded (a store from before
+/// versions is v1). Called on open, before any data keyspace is read, so a
+/// store this build cannot interpret is never mis-decoded.
+pub(crate) fn check_store_version(db: &Database) -> Result<(), StampError> {
+    let backend = |e: fjall::Error| StampError::Backend(e.to_string());
+    let meta = db
+        .keyspace(META_KEYSPACE, KeyspaceCreateOptions::default)
+        .map_err(backend)?;
+    match meta.get(VERSION_KEY).map_err(backend)? {
+        Some(raw) => {
+            let text = String::from_utf8_lossy(&raw);
+            let found: u64 = text
+                .trim()
+                .parse()
+                .map_err(|_| StampError::NotANumber(text.into_owned()))?;
+            if found == u64::from(STORE_FORMAT_VERSION) {
+                Ok(())
+            } else {
+                Err(StampError::Unsupported { found })
+            }
+        },
+        None => {
+            meta.insert(VERSION_KEY, STORE_FORMAT_VERSION.to_string())
+                .map_err(backend)?;
+            db.persist(PersistMode::SyncAll).map_err(backend)
+        },
+    }
+}
+
 /// Failures from the death-set store. A store failure is server
 /// infrastructure breaking, never a client error.
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +84,25 @@ pub enum ObservationError {
     /// Serializing a death record failed.
     #[error("death-set serialize: {0}")]
     Serialize(String),
+    /// The store records a format version this build does not read. Nothing
+    /// was read from it: a mis-decoded death set would un-revoke keys.
+    #[error("death set format version {found} is not the supported {supported}")]
+    UnsupportedVersion { found: u64, supported: u32 },
+}
+
+impl From<StampError> for ObservationError {
+    fn from(e: StampError) -> Self {
+        match e {
+            StampError::Backend(m) => Self::Backend(m),
+            StampError::NotANumber(t) => {
+                Self::Backend(format!("recorded format version is not a number: {t:?}"))
+            },
+            StampError::Unsupported { found } => Self::UnsupportedVersion {
+                found,
+                supported: STORE_FORMAT_VERSION,
+            },
+        }
+    }
 }
 
 fn backend(e: fjall::Error) -> ObservationError {
@@ -56,6 +125,7 @@ impl ObservationStore {
     /// domain is independent of theirs and a reindex cannot wipe it).
     pub fn open(path: &Path) -> Result<Self, ObservationError> {
         let db = Database::builder(path).open().map_err(backend)?;
+        check_store_version(&db)?;
         let dead_keys = db
             .keyspace("observations", KeyspaceCreateOptions::default)
             .map_err(backend)?;
@@ -102,6 +172,30 @@ impl ObservationStore {
         })
         .await
         .map_err(|e| ObservationError::Join(e.to_string()))?
+    }
+
+    /// Whether `coz` introduces a dead key: a `key/create` or `key/replace`
+    /// whose `pay.id` names a thumbprint in the death set (SPEC §6.4), so a
+    /// revoked key cannot be re-added to any principal. A coz of another
+    /// type, or one with no decodable `pay.id`, introduces nothing here and
+    /// is left to the engine's own validation.
+    ///
+    /// Like the signer fence, this reads an unverified, client-declared
+    /// field and is compliant only because its outcome is pure refusal.
+    pub async fn introduces_dead_key(
+        &self,
+        coz: &serde_json::Value,
+    ) -> Result<bool, ObservationError> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let pay = &coz["pay"];
+        if !cyphr::parsed_coz::typ::is_key_introducing(pay["typ"].as_str().unwrap_or("")) {
+            return Ok(false);
+        }
+        let Some(Ok(id)) = pay["id"].as_str().map(Base64UrlUnpadded::decode_vec) else {
+            return Ok(false);
+        };
+        self.is_dead(&Thumbprint::from_bytes(id)).await
     }
 
     /// Whether `tmb` is dead (carries a naked-revoke record). A true here
