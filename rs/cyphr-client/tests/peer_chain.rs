@@ -313,7 +313,7 @@ async fn follow_extends_the_chain_and_statements_verify_against_held_keys() {
     let outsider = kp();
     let mut peer = Chain::new(&g);
     let c1 = peer.commit(&k1, 1_700_000_100);
-    let pipe = Pipe::new(patch_body(&[c1.clone()]));
+    let pipe = Pipe::new(patch_body(std::slice::from_ref(&c1)));
     let (pr, pr_tmb) = subject();
 
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
@@ -412,7 +412,7 @@ async fn rival_patch_is_a_fork_and_leaves_the_held_chain_unchanged() {
     let r1 = rival.commit(&rival_key, 1_700_000_150);
     let (pr, _) = subject();
 
-    let pipe = Pipe::new(patch_body(&[c1.clone()]));
+    let pipe = Pipe::new(patch_body(std::slice::from_ref(&c1)));
     let mut held = PeerChain::pin(&honest.pg(), g.domain_key(1_700_000_000));
     held.follow(&pipe)
         .await
