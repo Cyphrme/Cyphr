@@ -53,32 +53,45 @@ fn key_of(k: &Kp) -> cyphr::Key {
     cyphr::Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
 }
 
-/// `signer` creates `new` at `now` and finalizes the commit. Distinct
-/// `new`/`now` give distinct commits at one position.
-fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
-    let pay = serde_json::to_vec(&serde_json::json!({
-        "alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
-        "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"
-    }))
-    .expect("pay");
+/// Apply `pay` signed by `signer` (optionally introducing `sidecar`) and
+/// finalize the commit with `finalizer`.
+fn apply(
+    p: &mut cyphr::Principal,
+    signer: &Kp,
+    finalizer: &Kp,
+    pay: serde_json::Value,
+    sidecar: Option<cyphr::Key>,
+    now: i64,
+) {
+    let pay = serde_json::to_vec(&pay).expect("pay");
     let (sig, cad) = coz::sign_json(&pay, &signer.alg, &signer.prv, &signer.pubb).expect("sign");
     let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
     let mut scope = p.begin_commit();
     scope
-        .verify_and_apply(&pay, &sig, czd, Some(key_of(new)))
+        .verify_and_apply(&pay, &sig, czd, sidecar)
         .expect("apply");
     scope
         .finalize_with_software(
             &cyphr::signer::SoftwareSigner::new(
-                &signer.alg,
-                &signer.prv,
-                &signer.pubb,
-                &signer.tmb,
+                &finalizer.alg,
+                &finalizer.prv,
+                &finalizer.pubb,
+                &finalizer.tmb,
             ),
             now,
             "cyphr.me",
         )
         .expect("finalize");
+}
+
+/// `signer` creates `new` at `now` and finalizes the commit. Distinct
+/// `new`/`now` give distinct commits at one position.
+fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
+    let pay = serde_json::json!({
+        "alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
+        "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"
+    });
+    apply(p, signer, signer, pay, Some(key_of(new)), now);
 }
 
 /// Push body for commit `i` of `p`; commit 0 also embeds the genesis key on
@@ -330,6 +343,64 @@ async fn fork_evidence_is_served_and_verified_offline() {
         EvidenceFailure::ChainTooShort { .. }
     ));
 
+    // Blob counts are bounded: none, or past the bound, is not an item.
+    let mut empty = item.clone();
+    empty["a"]["blobs"] = serde_json::json!([]);
+    assert!(matches!(
+        refused(&empty, &pr.id, &held),
+        EvidenceFailure::Malformed(_)
+    ));
+    let mut flood = item.clone();
+    flood["a"]["blobs"] = serde_json::json!(vec![item["a"]["blobs"][0].clone(); 1025]);
+    assert!(matches!(
+        refused(&flood, &pr.id, &held),
+        EvidenceFailure::Malformed(_)
+    ));
+    let mut one = item.clone();
+    one["a"]["blobs"] = serde_json::json!(vec![item["a"]["blobs"][0].clone(); 1]);
+    one["b"]["blobs"] = serde_json::json!(vec![item["b"]["blobs"][0].clone(); 1024]);
+    assert!(
+        !matches!(refused(&one, &pr.id, &held), EvidenceFailure::Malformed(_)),
+        "a commit at the bound is still an item (refused later, by replay)"
+    );
+
+    // The order of a pay's members on the wire is not signed: the signature
+    // is over the canonical pay, so a re-ordered blob verifies the same.
+    let mut reordered = item.clone();
+    let blobs: Vec<serde_json::Value> = item["a"]["blobs"]
+        .as_array()
+        .expect("blobs")
+        .iter()
+        .map(|b| {
+            let v: serde_json::Value = serde_json::from_slice(
+                &Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("b64"),
+            )
+            .expect("json");
+            let pay = v["pay"].as_object().expect("pay");
+            let backwards: Vec<String> = pay
+                .iter()
+                .rev()
+                .map(|(k, val)| format!("{}:{}", serde_json::json!(k), val))
+                .collect();
+            let text = format!(
+                "{{\"pay\":{{{}}},\"sig\":{}{}}}",
+                backwards.join(","),
+                v["sig"],
+                v.get("key")
+                    .map_or(String::new(), |k| format!(",\"key\":{k}"))
+            );
+            serde_json::json!(Base64UrlUnpadded::encode_string(text.as_bytes()))
+        })
+        .collect();
+    reordered["a"]["blobs"] = serde_json::json!(blobs);
+    verify_principal_fork(
+        &reordered,
+        &pr.id,
+        cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis"),
+        &held,
+    )
+    .expect("member order on the wire is not part of what is signed");
+
     let (status, _) = get_json(app.clone(), "/evidence?pr=probe").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "a malformed id");
     let unknown = common::implicit_principal_id(&pool, "bob");
@@ -491,6 +562,22 @@ async fn peer_equivocation_is_judged_against_one_peers_chain() {
         .expect("one peer, two disagreeing views at one position");
     assert_eq!(proof.signers[0], proof.signers[1], "one key signed both");
 
+    // Tip reports are statements of the same kind: two signed under the one
+    // peer chain that disagree at one position convict it too.
+    let tip_of = |app: &axum::Router| {
+        let app = app.clone();
+        let id = pr.id.clone();
+        async move {
+            let (status, body) = get_json(app, &format!("/tip?pr={id}")).await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
+            body["statement"]["coz"].clone()
+        }
+    };
+    let tips = equivocation_item(&pr.id, &tip_of(&peer.a).await, &tip_of(&peer.b).await);
+    verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&tips, &pg, &chain, None)
+        .expect("two tip reports of one peer that disagree");
+
     let (stranger, _, _dir, _) = attestor(None).await;
     let stranger = build_router(Arc::new(stranger));
     assert_eq!(
@@ -552,6 +639,22 @@ async fn stale_prefix_is_not_evidence() {
     assert!(
         matches!(undecided, EvidenceFailure::NeedsChain),
         "{undecided:?}"
+    );
+
+    // A higher chain that does not hold the higher statement's commit
+    // cannot settle the comparison: no verdict, never a conflict.
+    let c1b = pr.extend(&pr.g, "alice", NOW + 2);
+    assert_eq!(pr.push_commit(&peer.b, &c1b, 1).await, StatusCode::CREATED);
+    let elsewhere = replay_chain(
+        cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis"),
+        &fetch_entries(&peer.b, &pr.id).await,
+    )
+    .expect("the other chain replays");
+    let unbacked = verify_peer_equivocation(&item, &pg, &chain, Some(&elsewhere))
+        .expect_err("the chain does not back the higher statement");
+    assert!(
+        matches!(unbacked, EvidenceFailure::NeedsChain),
+        "{unbacked:?}"
     );
 
     // The same peer key, signing a one-commit chain whose commit is not
@@ -633,4 +736,180 @@ async fn historical_view_survives_the_signing_keys_revocation() {
         "{refused:?}"
     );
     drop((dir_a, dir_b));
+}
+
+/// Claim (`arch-principal-fork-evidence`, at the first position): two
+/// different first commits of one principal are a fork with no ancestor;
+/// the item has `height` 0 and a null `pre`, and the client checks it with
+/// no held commit at all.
+///
+/// Turns red if: a divergent commit 0 is not kept and served, or an item
+/// at height 0 is not accepted. End-to-end scenario: yes.
+#[tokio::test]
+async fn genesis_fork_is_evidence_at_height_zero() {
+    let pr = principal();
+    let (state, _dir) = common::keyless_server();
+    let app = build_router(state);
+    assert_eq!(pr.push_commit(&app, &pr.base, 0).await, StatusCode::CREATED);
+
+    let mut other = cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
+    create_key(&mut other, &pr.g, &kp(&load_pool(), "key_b"), NOW + 5);
+    assert_eq!(pr.push_commit(&app, &other, 0).await, StatusCode::CONFLICT);
+
+    let items = evidence_items(&app, &pr.id).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["height"], 0);
+    assert!(items[0]["pre"].is_null(), "no ancestor at height 0");
+    let genesis = cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
+    verify_principal_fork(&items[0], &pr.id, genesis, &[]).expect("a fork at the first position");
+}
+
+/// A view statement signed by `signer`, claiming the principal `pr` at
+/// `size` with commit id `id` and Principal Root `root`.
+fn crafted_view(
+    signer: &Kp,
+    pr: &str,
+    now: i64,
+    size: u64,
+    id: &str,
+    root: &str,
+) -> serde_json::Value {
+    let pay = serde_json::json!({
+        "alg": signer.alg, "commit_id": id, "index": size - 1, "now": now, "pr": pr,
+        "roots": {"ar": null, "cr": null, "pr": root, "sr": null},
+        "tmb": signer.tmb.to_b64(), "tree_size": size, "typ": "cyphr-server/view",
+    });
+    let (sig, _) = coz::sign_json(
+        &serde_json::to_vec(&pay).expect("pay"),
+        &signer.alg,
+        &signer.prv,
+        &signer.pubb,
+    )
+    .expect("sign");
+    serde_json::json!({"pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig)})
+}
+
+/// Claim (historical form, `arch-finding-never-clears`, and the comparison
+/// rules of `arch-behind-is-not-fork`): the peer's key history is bounded by
+/// signed times, a key is judged at each statement's own time (introduced
+/// by a coz, ended at its `rvk`, its delete, exclusive), and a statement is
+/// evidence only when it verifies, is about the principal asked, and
+/// disagrees in commit id or root. Unit-level on purpose: a running server
+/// cannot be made to delete or self-revoke its own keys, and the exact
+/// boundaries of a signed time need hand-made statements.
+///
+/// Turns red if: a key vouches outside its life (before it was introduced,
+/// at or after its revoke or delete), a tampered statement or one about
+/// another principal passes, agreeing statements convict, or a lower view
+/// whose root differs from the chain's is taken for a prefix.
+#[test]
+fn key_history_bounds_a_key_by_its_signed_times() {
+    const T: i64 = NOW;
+    let pool = load_pool();
+    let (g, a, bob) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "bob"));
+    let mut peer = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    create_key(&mut peer, &g, &a, T);
+    create_key(&mut peer, &a, &bob, T + 10);
+    apply(
+        &mut peer,
+        &a,
+        &a,
+        serde_json::json!({"alg": a.alg, "id": bob.tmb.to_b64(), "now": T + 20,
+                           "tmb": a.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        T + 20,
+    );
+    apply(
+        &mut peer,
+        &g,
+        &a,
+        serde_json::json!({"alg": g.alg, "now": T + 30, "rvk": T + 30,
+                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/revoke"}),
+        None,
+        T + 30,
+    );
+    let history = cyphr_client::evidence::KeyHistory::of(&[key_of(&g)], &peer);
+
+    let pr = Base64UrlUnpadded::encode_string(&[9; 32]);
+    let pg = thumbprint(&pr);
+    let id = |n: u8| format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32]));
+    let item = |x: &serde_json::Value, y: &serde_json::Value| equivocation_item(&pr, x, y);
+    let check = |x: &serde_json::Value, y: &serde_json::Value| {
+        verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&item(x, y), &pg, &history, None)
+    };
+    let other = crafted_view(&a, &pr, T + 40, 2, &id(2), &id(2));
+    let signs = |k: &Kp, now: i64| crafted_view(k, &pr, now, 2, &id(1), &id(1));
+
+    check(&signs(&g, T + 29), &other).expect("golden vouches until its revoke");
+    check(&signs(&g, T + 30), &other).expect_err("not at the instant of its revoke");
+    check(&signs(&bob, T + 15), &other).expect("bob vouches while held");
+    check(&signs(&bob, T + 20), &other).expect_err("not at the instant of its delete");
+    check(&signs(&bob, T + 5), &other).expect_err("not before it was introduced");
+
+    let mut tampered = signs(&a, T + 40);
+    tampered["pay"]["tree_size"] = 3.into();
+    tampered["pay"]["index"] = 2.into();
+    assert!(matches!(
+        check(&tampered, &other),
+        Err(EvidenceFailure::Statement { which: "a", .. })
+    ));
+    let foreign = crafted_view(
+        &a,
+        &Base64UrlUnpadded::encode_string(&[8; 32]),
+        T + 40,
+        2,
+        &id(1),
+        &id(1),
+    );
+    assert!(matches!(
+        check(&foreign, &other),
+        Err(EvidenceFailure::OtherPrincipal)
+    ));
+    let stranger = kp(&pool, "alice");
+    assert!(matches!(
+        check(&signs(&stranger, T + 40), &other),
+        Err(EvidenceFailure::Statement { which: "a", .. })
+    ));
+
+    // At one size: agreement is no conflict; either difference is one.
+    let same = signs(&a, T + 41);
+    assert!(matches!(
+        check(&same, &signs(&a, T + 42)),
+        Err(EvidenceFailure::NotConflicting(_))
+    ));
+    check(&same, &crafted_view(&a, &pr, T + 42, 2, &id(1), &id(7))).expect("same id, other root");
+    check(&same, &crafted_view(&a, &pr, T + 42, 2, &id(7), &id(1))).expect("same root, other id");
+
+    // At different sizes the lower is compared with the higher's own chain,
+    // here the peer principal itself standing in for a principal chain.
+    let tagged = |c: &cyphr::Commit| {
+        let d = c.tr().0.get(cyphr::HashAlg::Sha256).expect("sha256 id");
+        let r = c.pr().0.get(cyphr::HashAlg::Sha256).expect("sha256 pr");
+        (
+            cyphr::state::TaggedDigest::new(cyphr::HashAlg::Sha256, d.to_vec())
+                .expect("id")
+                .to_string(),
+            cyphr::state::TaggedDigest::new(cyphr::HashAlg::Sha256, r.to_vec())
+                .expect("pr")
+                .to_string(),
+        )
+    };
+    let commits: Vec<_> = peer.commits().map(tagged).collect();
+    let run = |lo: &serde_json::Value, hi: &serde_json::Value, chain: Option<&cyphr::Principal>| {
+        verify_peer_equivocation(&item(lo, hi), &pg, &history, chain)
+    };
+    let (hi_id, hi_root) = &commits[3];
+    let hi = crafted_view(&a, &pr, T + 40, 4, hi_id, hi_root);
+    let behind = crafted_view(&a, &pr, T + 40, 2, &commits[1].0, &commits[1].1);
+    assert!(matches!(
+        run(&behind, &hi, Some(&peer)),
+        Err(EvidenceFailure::NotConflicting(_))
+    ));
+    let wrong_root = crafted_view(&a, &pr, T + 40, 2, &commits[1].0, &id(5));
+    run(&wrong_root, &hi, Some(&peer)).expect("the chain's commit with another root is no prefix");
+    let unbacked = crafted_view(&a, &pr, T + 40, 4, &id(6), &id(6));
+    assert!(matches!(
+        run(&behind, &unbacked, Some(&peer)),
+        Err(EvidenceFailure::NeedsChain)
+    ));
 }
