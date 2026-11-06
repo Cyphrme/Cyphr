@@ -76,7 +76,7 @@ impl DeriveToken {
     /// and this constructor is `pub(crate)`) — the engine's derivation
     /// path (`ingest_commit`, `rebuild_index_from_manifests`, `rebuild_index_from_scratch`)
     /// is the intended, and only production, caller.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         DeriveToken(())
     }
 
