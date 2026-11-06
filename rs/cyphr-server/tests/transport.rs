@@ -486,8 +486,7 @@ async fn version_unknown_envelope_over_the_transport_fails_closed() {
         None,
     )
     .await
-    .err()
-    .expect("a v=99 envelope must be refused");
+    .expect_err("a v=99 envelope must be refused");
     assert!(
         matches!(refused, PatchFailure::UnsupportedVersion { found: 99, .. }),
         "typed UnsupportedVersion expected: {refused:?}"
