@@ -161,7 +161,7 @@ impl AppError {
     ///   surface through the protocol layer, not a genuine protocol violation)
     /// - `Protocol` (any other wrapped [`cyphr::Error`]) → 422 Unprocessable Entity (valid JSON,
     ///   invalid protocol)
-    /// - `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `ManifestUnbound`, `Storage` → 500
+    /// - `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
 
@@ -185,7 +185,6 @@ impl AppError {
             | EngineError::Indexer(_)
             | EngineError::Load(_)
             | EngineError::LegacyManifest { .. }
-            | EngineError::ManifestUnbound { .. }
             | EngineError::Storage(_) => {
                 tracing::error!(error = %err, "internal engine error");
                 Self::internal("internal storage error")

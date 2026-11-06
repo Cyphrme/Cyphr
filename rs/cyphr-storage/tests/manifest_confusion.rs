@@ -885,7 +885,6 @@ async fn plant_manifest(e: &Engine, commit: &IndexableCommit) {
 /// the store rebuilds. Turns red if: a manifest naming real blobs re-points a principal (here
 /// a phantom id) without any replay.
 #[tokio::test]
-#[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
 async fn rebuild_quarantines_manifest_not_bound_to_its_blobs() {
     let e = engine();
     submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
@@ -1333,26 +1332,22 @@ mod replay {
     }
 
     #[tokio::test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     async fn replay_victim_transaction_does_not_block_victim_memory() {
         assert_victim_not_blocked(&mem_engine()).await;
     }
 
     #[tokio::test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     async fn replay_victim_transaction_does_not_block_victim_fjall() {
         let dir = tempfile::tempdir().unwrap();
         assert_victim_not_blocked(&fjall_engine(dir.path())).await;
     }
 
     #[tokio::test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     async fn replay_victim_action_resolves_to_both_principals_memory() {
         assert_action_resolves_to_both(&mem_engine()).await;
     }
 
     #[tokio::test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     async fn replay_victim_action_resolves_to_both_principals_fjall() {
         let dir = tempfile::tempdir().unwrap();
         assert_action_resolves_to_both(&fjall_engine(dir.path())).await;
@@ -1395,7 +1390,6 @@ mod replay {
     }
 
     #[tokio::test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     async fn replay_store_with_one_coz_under_two_principals_restarts_memory() {
         let first = mem_engine();
         assert_restart_survives(first, |old| {
@@ -1405,7 +1399,6 @@ mod replay {
     }
 
     #[tokio::test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     async fn replay_store_with_one_coz_under_two_principals_restarts_fjall() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -1513,7 +1506,6 @@ mod replay {
     /// digest, including the coz stored under two principals), on both
     /// index backends. Turns red if the index depends on manifest order.
     #[test]
-    #[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
     fn order_independent_rebuild_of_a_store_with_a_replayed_coz() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -1574,7 +1566,6 @@ mod replay {
 /// not JSON, and a well-formed manifest naming a blob the store does not
 /// hold. Turns red if either aborts the rebuild.
 #[tokio::test]
-#[ignore = "RED(H1F): digests are single-owner and rebuild aborts on one bad manifest"]
 async fn rebuild_quarantines_unindexable_manifests() {
     let e = engine();
     submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;

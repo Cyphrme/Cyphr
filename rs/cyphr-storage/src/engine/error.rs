@@ -44,19 +44,6 @@ pub enum EngineError {
         hash: crate::blob::Blake3Hash,
     },
 
-    /// A stored manifest is not bound to the blobs it names: its principal
-    /// id is not the genesis-derived id of that principal's sequence-0
-    /// blobs. Nothing was indexed.
-    #[error("manifest {manifest} is not bound to principal {principal_id}: {reason}")]
-    ManifestUnbound {
-        /// BLAKE3 hash of the offending manifest blob.
-        manifest: crate::blob::Blake3Hash,
-        /// The principal id the manifest claims.
-        principal_id: String,
-        /// Why the binding failed.
-        reason: String,
-    },
-
     /// The engine's commit-tree storage factory failed to produce a fresh
     /// storage instance for a `Principal`.
     #[error("storage: {0}")]

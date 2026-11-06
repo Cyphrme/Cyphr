@@ -191,6 +191,9 @@ pub enum QuarantineReason {
     Unbound(String),
     /// Indexing it would re-point an exclusive claim (a PG alias).
     Conflict(String),
+    /// An earlier commit of the same principal was quarantined, so indexing
+    /// this one would leave a gap in the chain.
+    Orphaned(String),
 }
 
 /// A manifest a rebuild left out, and why.
@@ -564,11 +567,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         anchor: &TaggedDigest,
     ) -> Result<u64, EngineError> {
-        let entity = self.indexer.resolve_digest(anchor).await?.ok_or_else(|| {
-            EngineError::NotFound(format!(
-                "resync anchor {anchor} not indexed (requested for principal {principal_id})"
-            ))
-        })?;
+        // A digest names a set of holders; the anchor is for this
+        // principal's chain, so take the holder that is this principal.
+        let holders = self.indexer.resolve_digest_holders(anchor).await?;
+        let entity = holders
+            .iter()
+            .find(|h| h.principal_id.as_deref() == Some(principal_id))
+            .or_else(|| holders.first())
+            .ok_or_else(|| {
+                EngineError::NotFound(format!(
+                    "resync anchor {anchor} not indexed (requested for principal {principal_id})"
+                ))
+            })?;
         entity.sequence.map(|seq| seq + 1).ok_or_else(|| {
             EngineError::NotFound(format!(
                 "resync anchor {anchor} carries no chain position (requested for principal \
@@ -752,6 +762,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         blobs: &[&[u8]],
         commit: IndexableCommit,
     ) -> Result<IngestResult, EngineError> {
+        // The one exclusive claim (a PG alias) is checked before the first
+        // durable write: a refused commit must leave no blob or manifest
+        // for a later rebuild to trip over.
+        self.indexer
+            .check_commit(&commit, &DeriveToken::new())
+            .await?;
         let (commit, manifest_hash) = self.store_blobs_and_manifest(blobs, commit).await?;
         let blob_hashes = commit.blob_hashes.clone();
 
@@ -768,55 +784,59 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Scan the blob store for [`CommitManifest`] blobs and (re-)index each
-    /// one, idempotently.
+    /// one, idempotently, returning how many were indexed.
+    /// [`Self::rebuild_index_with_report`] is the same pass with the
+    /// quarantined manifests named.
+    #[tracing::instrument(skip(self))]
+    pub async fn rebuild_index_from_manifests(&self) -> Result<usize, EngineError> {
+        let report = self.rebuild_index_with_report().await?;
+        for q in &report.quarantined {
+            tracing::warn!(
+                manifest = %q.manifest,
+                principal = ?q.principal_id,
+                reason = ?q.reason,
+                "manifest quarantined: left out of the index"
+            );
+        }
+        Ok(report.indexed)
+    }
+
+    /// Scan the blob store for [`CommitManifest`] blobs and (re-)index each
+    /// one, idempotently, quarantining any it cannot index.
     ///
     /// Closes the ingest crash window: a crash between
     /// [`Self::store_blobs_and_manifest`]'s manifest write and
     /// [`Self::ingest_commit`]'s subsequent `indexer.index_commit` call
-    /// leaves a manifest durably stored with no index entry yet -- calling
-    /// this after such a crash (e.g. on the next engine open) completes
-    /// the index write directly from the manifest's already-resolved
-    /// `IndexableCommit`, with no permutation search needed since the
-    /// manifest already carries the resolved order and digests.
+    /// leaves a manifest durably stored with no index entry yet; this
+    /// completes the index write from the manifest's already-resolved
+    /// `IndexableCommit`. It also serves full reconstruction: clearing the
+    /// index and calling this rebuilds every manifest-backed commit from
+    /// the blob store alone (root `AGENTS.md` invariant I1).
     ///
-    /// Also serves full index reconstruction: since every manifest is
-    /// itself blob-store content (root `AGENTS.md` invariant I1), clearing
-    /// the index entirely and calling this rebuilds every manifest-backed
-    /// commit from the blob store alone.
+    /// **The index is a function of the blob set.** Manifests are indexed
+    /// in canonical order (sequence, then principal id, then manifest
+    /// hash), never the blob store's listing order, and every index write
+    /// is order-independent (digests name sets of holders). The one
+    /// exclusive claim is a principal's PG alias: if two manifests contest
+    /// one, the earlier in canonical order wins.
     ///
-    /// `indexer.index_commit` is documented idempotent (a no-op for a
-    /// `commit_id` already indexed), so calling this is always safe,
-    /// whether or not any manifest is actually pending.
+    /// **A manifest the index cannot take never fails the rebuild.** It is
+    /// quarantined with a typed [`QuarantineReason`] (malformed, naming
+    /// blobs the store lacks, not bound to its principal, or contesting a
+    /// PG alias), and so are that principal's later commits, so no chain
+    /// is indexed with a gap. Backend failures and a manifest-shaped wire
+    /// blob ([`EngineError::LegacyManifest`]) still fail the rebuild.
     ///
-    /// Returns the number of manifests found (indexed or already-indexed).
-    ///
-    /// Manifests are indexed in ascending `commit.sequence` order (not the
-    /// blob store's own, unspecified iteration order): each `index_commit`
-    /// call unconditionally overwrites the indexer's per-principal tip
-    /// (last write wins, by design -- see `Indexer::index_commit`), so for a
-    /// principal with more than one commit, tip correctness depends on the
-    /// truly-latest commit being applied last. The blob store's iteration
-    /// order is not guaranteed to correlate with sequence (`MemoryBlobStore`
-    /// is a `HashMap`, genuinely unordered), so sorting here is what makes
-    /// that guarantee hold rather than merely happening to hold by luck of
-    /// hash placement.
+    /// This does not replay: it trusts the engine-written manifests plus
+    /// the blob-presence and binding checks. Replay is the audit path
+    /// ([`Self::rederive_roots`]).
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_with_report(&self) -> Result<RebuildReport, EngineError> {
-        self.rebuild_index_from_manifests()
-            .await
-            .map(|indexed| RebuildReport {
-                indexed,
-                quarantined: Vec::new(),
-            })
-    }
-
-    /// [`Self::rebuild_index_with_report`] without the report.
-    #[tracing::instrument(skip(self))]
-    pub async fn rebuild_index_from_manifests(&self) -> Result<usize, EngineError> {
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
 
-        let mut manifests = Vec::new();
+        let mut quarantined = Vec::new();
+        let mut manifests: Vec<(Blake3Hash, CommitManifest)> = Vec::new();
         for hash in hashes {
             let Some(data) = self.blob_store.get(&hash).await? else {
                 continue;
@@ -831,63 +851,138 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
                 continue;
             };
-            let manifest: CommitManifest = serde_json::from_slice(json)
-                .map_err(|e| EngineError::MalformedBlob(format!("commit manifest {hash}: {e}")))?;
-            self.check_manifest_supported(&hash, &manifest.commit)
-                .await?;
+            let manifest: CommitManifest = match serde_json::from_slice(json) {
+                Ok(m) => m,
+                Err(e) => {
+                    quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: None,
+                        reason: QuarantineReason::Malformed(e.to_string()),
+                    });
+                    continue;
+                },
+            };
+            if let Err(reason) = self
+                .check_manifest_supported(&hash, &manifest.commit)
+                .await?
+            {
+                quarantined.push(QuarantinedManifest {
+                    manifest: hash,
+                    principal_id: Some(manifest.commit.principal_id.clone()),
+                    reason,
+                });
+                continue;
+            }
             manifests.push((hash, manifest));
         }
 
-        self.check_principal_binding(&manifests).await?;
-        manifests.sort_by_key(|(_, m)| m.commit.sequence);
+        manifests.sort_by(|(ha, a), (hb, b)| {
+            (a.commit.sequence, &a.commit.principal_id, ha.as_bytes()).cmp(&(
+                b.commit.sequence,
+                &b.commit.principal_id,
+                hb.as_bytes(),
+            ))
+        });
 
-        let mut count = 0;
-        for (_, manifest) in manifests {
-            self.indexer
-                .index_commit(&manifest.commit, &DeriveToken::new())
-                .await?;
-            count += 1;
+        let unbound = self.unbound_principals(&manifests).await?;
+        // The earliest sequence at which a principal's chain broke; every
+        // later commit of that principal is orphaned.
+        let mut broken_from: HashMap<String, u64> = HashMap::new();
+        for (hash, manifest) in &manifests {
+            if let Some(why) = unbound.get(&manifest.commit.principal_id) {
+                quarantined.push(QuarantinedManifest {
+                    manifest: *hash,
+                    principal_id: Some(manifest.commit.principal_id.clone()),
+                    reason: QuarantineReason::Unbound(why.clone()),
+                });
+                broken_from
+                    .entry(manifest.commit.principal_id.clone())
+                    .or_insert(manifest.commit.sequence);
+            }
         }
 
-        Ok(count)
+        let mut indexed = 0;
+        for (hash, manifest) in manifests {
+            let commit = &manifest.commit;
+            if unbound.contains_key(&commit.principal_id) {
+                continue;
+            }
+            if broken_from
+                .get(&commit.principal_id)
+                .is_some_and(|from| commit.sequence > *from)
+            {
+                quarantined.push(QuarantinedManifest {
+                    manifest: hash,
+                    principal_id: Some(commit.principal_id.clone()),
+                    reason: QuarantineReason::Orphaned(
+                        "an earlier commit of this principal was quarantined".into(),
+                    ),
+                });
+                continue;
+            }
+            match self.indexer.index_commit(commit, &DeriveToken::new()).await {
+                Ok(()) => indexed += 1,
+                Err(crate::index::IndexerError::Conflict(why)) => {
+                    quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: Some(commit.principal_id.clone()),
+                        reason: QuarantineReason::Conflict(why),
+                    });
+                    broken_from
+                        .entry(commit.principal_id.clone())
+                        .or_insert(commit.sequence);
+                },
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        quarantined.sort_by_key(|q| *q.manifest.as_bytes());
+        Ok(RebuildReport {
+            indexed,
+            quarantined,
+        })
     }
 
     /// A corruption detector for principals whose blobs carry their
     /// genesis, not a security boundary. Without replay: if a principal's
-    /// first-met sequence-0 manifest names a `commit/create` blob carrying
-    /// a key, the genesis-derived id of that key must equal the principal
-    /// id the manifests carry, or the whole rebuild is refused.
+    /// first sequence-0 manifest (in canonical order) names a
+    /// `commit/create` blob carrying a key, the genesis-derived id of that
+    /// key must equal the principal id the manifests carry. Returns each
+    /// failing principal with why; they are quarantined.
     ///
     /// Scope: a principal with no such carrier (explicit genesis, whose
     /// key set is never in blobs) is not judged, and when several
-    /// sequence-0 manifests claim one id only the first met is checked.
-    /// The guarantee that a forged manifest cannot re-point a principal
-    /// comes from the manifest keyspace plus the single writer
+    /// sequence-0 manifests claim one id only the first is checked. The
+    /// guarantee that a forged manifest cannot re-point a principal comes
+    /// from the manifest keyspace plus the single writer
     /// ([`COMMIT_MANIFEST_PREFIX`], [`canonical_coz`]), not from this
     /// check.
-    async fn check_principal_binding(
+    async fn unbound_principals(
         &self,
         manifests: &[(Blake3Hash, CommitManifest)],
-    ) -> Result<(), EngineError> {
-        let mut firsts: HashMap<&str, &(Blake3Hash, CommitManifest)> = HashMap::new();
-        for entry in manifests {
-            if entry.1.commit.sequence == 0 {
-                firsts.entry(&entry.1.commit.principal_id).or_insert(entry);
+    ) -> Result<HashMap<String, String>, EngineError> {
+        let mut firsts: HashMap<&str, &CommitManifest> = HashMap::new();
+        for (_, manifest) in manifests {
+            if manifest.commit.sequence == 0 {
+                firsts
+                    .entry(&manifest.commit.principal_id)
+                    .or_insert(manifest);
             }
         }
-        let mut checked: HashMap<&str, ()> = HashMap::new();
-        for (hash, manifest) in manifests {
-            let principal_id = manifest.commit.principal_id.as_str();
-            if checked.insert(principal_id, ()).is_some() {
+        let mut unbound = HashMap::new();
+        let mut principals: Vec<&str> = manifests
+            .iter()
+            .map(|(_, m)| m.commit.principal_id.as_str())
+            .collect();
+        principals.sort_unstable();
+        principals.dedup();
+        for principal_id in principals {
+            let Some(first) = firsts.get(principal_id) else {
+                unbound.insert(
+                    principal_id.to_string(),
+                    "no sequence-0 manifest for the principal".to_string(),
+                );
                 continue;
-            }
-            let unbound = |reason: String| EngineError::ManifestUnbound {
-                manifest: *hash,
-                principal_id: principal_id.to_string(),
-                reason,
-            };
-            let Some((_, first)) = firsts.get(principal_id) else {
-                return Err(unbound("no sequence-0 manifest for the principal".into()));
             };
             let mut blobs = Vec::with_capacity(first.commit.blob_hashes.len());
             for blob in &first.commit.blob_hashes {
@@ -897,8 +992,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             // Only a `commit/create` blob carrying a key is a genesis
             // carrier (the wire convention). Without one the id cannot be
-            // proven from blobs (an explicit-genesis principal's key set is
-            // never in them), so the manifest is not judged here.
+            // proven from blobs, so the manifest is not judged here.
             let Some(carrier) = blobs.iter().find(|b| {
                 serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|v| {
                     v.get("key").is_some()
@@ -909,24 +1003,34 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }) else {
                 continue;
             };
-            let derived = Self::genesis_from_blob(carrier)
-                .and_then(|genesis| genesis_principal_id(&genesis))
-                .map_err(|e| unbound(format!("genesis not derivable from its blobs: {e}")))?;
-            if derived != principal_id {
-                return Err(unbound(format!("its blobs derive principal {derived}")));
+            match Self::genesis_from_blob(carrier).and_then(|g| genesis_principal_id(&g)) {
+                Ok(derived) if derived == principal_id => {},
+                Ok(derived) => {
+                    unbound.insert(
+                        principal_id.to_string(),
+                        format!("its blobs derive principal {derived}"),
+                    );
+                },
+                Err(e) => {
+                    unbound.insert(
+                        principal_id.to_string(),
+                        format!("genesis not derivable from its blobs: {e}"),
+                    );
+                },
             }
         }
-        Ok(())
+        Ok(unbound)
     }
 
-    /// Refuse a manifest whose commit names blobs the store does not hold:
-    /// the index is a cache of the blobs (I1), so a manifest field the
-    /// blobs do not support must not reach it.
+    /// Whether a manifest's commit names blobs the store holds: the index
+    /// is a cache of the blobs (I1), so a manifest field the blobs do not
+    /// support must not reach it. `Ok(Err(reason))` is a manifest to
+    /// quarantine; `Err` is a backend failure.
     async fn check_manifest_supported(
         &self,
         manifest: &Blake3Hash,
         commit: &IndexableCommit,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Result<(), QuarantineReason>, EngineError> {
         if commit.blob_hashes.is_empty()
             || commit.cozies.len() != commit.blob_hashes.len()
             || commit
@@ -935,18 +1039,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .zip(&commit.blob_hashes)
                 .any(|(coz, hash)| coz.blob_hash != *hash)
         {
-            return Err(EngineError::MalformedBlob(format!(
+            return Ok(Err(QuarantineReason::Malformed(format!(
                 "commit manifest {manifest}: cozies and blob hashes disagree"
-            )));
+            ))));
         }
         for hash in &commit.blob_hashes {
             if !self.blob_store.exists(hash).await? {
-                return Err(EngineError::NotFound(format!(
+                return Ok(Err(QuarantineReason::Unsupported(format!(
                     "commit manifest {manifest} names blob {hash}, which is not stored"
-                )));
+                ))));
             }
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     // ========================================================================
@@ -1617,13 +1721,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Ok(digest) = candidate.parse::<cyphr::state::TaggedDigest>() else {
                 continue;
             };
-            if let Some(entity) = self.indexer.resolve_digest(&digest).await? {
-                if entity.entity_type == EntityType::Commit && entity.principal_root {
-                    if let (Some(principal), Some(sequence)) =
-                        (entity.principal_id, entity.sequence)
-                    {
-                        return Ok(Some((principal, sequence)));
-                    }
+            let holders = self.indexer.resolve_digest_holders(&digest).await?;
+            // A PR names one principal; if a digest has several holders,
+            // take the first that is a Principal Root (canonical order).
+            if let Some(entity) = holders
+                .into_iter()
+                .find(|h| h.entity_type == EntityType::Commit && h.principal_root)
+            {
+                if let (Some(principal), Some(sequence)) = (entity.principal_id, entity.sequence) {
+                    return Ok(Some((principal, sequence)));
                 }
             }
         }

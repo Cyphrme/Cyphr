@@ -1290,7 +1290,6 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
 /// from signed cozes. Turns red if the refusal comes after the manifest is
 /// durable (the store then keeps a manifest every rebuild trips over).
 #[tokio::test]
-#[ignore = "RED(H1F): the alias check runs after the manifest is durable"]
 async fn alias_conflict_is_refused_before_anything_is_written() {
     let blobs = MemoryBlobStore::new();
     let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
