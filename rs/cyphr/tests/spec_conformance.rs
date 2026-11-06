@@ -140,6 +140,7 @@ fn create_missing_field(missing: &str) -> cyphr::error::Result<()> {
 /// the control that shows the rejections are about the missing field. Turns
 /// red if a missing field is tolerated (a default substituted, or the field
 /// never read). End to end: yes (sign, verify, apply, finalize).
+// @docket: rv-coz-wellformed :: scripts/docket-run rv-coz-wellformed
 #[test]
 fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
     for missing in ["tmb", "now", "typ"] {
@@ -230,6 +231,7 @@ fn lifecycle_pay(signer: &Kp, p: &Principal, suffix: &str, now: i64) -> serde_js
 /// the freeze, not a general refusal. Turns red if any mutation changes the
 /// principal while it is frozen. RED: `apply_verified_internal` gates only
 /// `deleted`; `frozen` is recorded and never consulted. End to end: yes.
+// @docket: rv-lifecycle-gate :: scripts/docket-run rv-lifecycle-gate
 #[test]
 fn s11_2_frozen_principal_rejects_key_mutations() {
     let frozen = || {
@@ -416,6 +418,7 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
 /// the control. Turns red if an out-of-range `now` is accepted. RED: `now`
 /// is read as any `i64` and only compared with the principal's latest
 /// timestamp, so zero and 2^53 pass. End to end: yes.
+// @docket: rv-timestamp-range :: scripts/docket-run rv-timestamp-range
 #[test]
 fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
     let mut accepted = vec![];
@@ -484,6 +487,7 @@ fn s6_4_one_key_cannot_revoke_another() {
 /// red if the finalizer is accepted anywhere but last. End to end: yes
 /// (verify, apply, finalize through the public scope).
 // @docket: sc-l592 :: scripts/docket-run sc-l592
+// @docket: rv-intra-commit-shape :: scripts/docket-run rv-intra-commit-shape
 #[test]
 fn s4_6_commit_coz_must_be_last_in_txs() {
     let (g, k2) = (kp(), kp());
@@ -1163,6 +1167,7 @@ fn assert_coz_reuse(r: cyphr::error::Result<()>) {
 /// (the cross-principal control then fails first). Mutants caught: a no-op
 /// `Ok` (accepts), `Err(StateMismatch)` (wrong type), a process-global czd
 /// set (control). End to end: yes.
+// @docket: rv-no-coz-reuse :: scripts/docket-run rv-no-coz-reuse
 #[test]
 fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
     let (a, b, c3, k3) = (kp(), kp(), kp(), kp());
@@ -1377,6 +1382,7 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
 /// replace, delete of a genesis key, revoke); its PG is compared after each. Turns red if any
 /// operation changes the recorded PG. End to end: yes.
 // @docket: sc-l240 :: scripts/docket-run sc-l240
+// @docket: rv-genesis-immutable :: scripts/docket-run rv-genesis-immutable
 #[test]
 fn s2_3_2_no_operation_changes_the_principal_genesis() {
     let (mut p, a, b) = two_key_principal();

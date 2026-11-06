@@ -69,6 +69,19 @@ declare -A CLAIMS_INDEX=(
   [sc-l3350]="_claim_sc_l3350"
   [sc-l3353]="_claim_sc_l3353"
 
+  # Record-verification claims (docs/architecture/record-verification.md);
+  # each names the replay-rule tests that close it.
+  [rv-coz-wellformed]="_claim_rv_coz_wellformed"
+  [rv-sig-verifies]="_claim_rv_sig_verifies"
+  [rv-timestamp-range]="_claim_rv_timestamp_range"
+  [rv-arrow-chain]="_claim_rv_arrow_chain"
+  [rv-state-recomputed]="_claim_rv_state_recomputed"
+  [rv-key-active-gate]="_claim_rv_key_active_gate"
+  [rv-lifecycle-gate]="_claim_rv_lifecycle_gate"
+  [rv-genesis-immutable]="_claim_rv_genesis_immutable"
+  [rv-intra-commit-shape]="_claim_rv_intra_commit_shape"
+  [rv-no-coz-reuse]="_claim_rv_no_coz_reuse"
+
   # Self-checks of the zero-test rule itself, run by
   # `docket-run --self-check`; not project claims. The first must FAIL
   # (its test name matches nothing), the second must pass.
@@ -184,6 +197,49 @@ _claim_sc_l3350=(
 )
 _claim_sc_l3353=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s19_5_failed_commit_leaves_no_partial_state -- --exact"
+)
+
+# Record-verification: each array runs the tests its marker's rule rests on.
+_claim_rv_coz_wellformed=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_1_coz_missing_tmb_now_or_typ_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_1_coz_missing_alg_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_2_non_canonical_b64ut_is_rejected -- --exact"
+)
+_claim_rv_sig_verifies=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors es256_high_s_signature_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors ed25519_non_canonical_s_is_rejected -- --exact"
+)
+_claim_rv_timestamp_range=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s6_4_revoke_now_must_be_a_positive_bounded_integer -- --exact"
+)
+_claim_rv_arrow_chain=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test properties test_finalize_commit_rejects_tampered_arrow -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+)
+_claim_rv_state_recomputed=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors forged_action_spliced_before_delete_commit_breaks_replay -- --exact"
+)
+_claim_rv_key_active_gate=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors deleted_key_action_dated_after_delete_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors deleted_key_action_backdated_into_old_active_period_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_inactive_key_cannot_authorize_its_own_admission -- --exact"
+)
+_claim_rv_lifecycle_gate=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_frozen_principal_rejects_key_mutations -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance frozen_principal_rejects_data_actions_until_thawed -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_dead_principal_accepts_no_transaction_or_action -- --exact"
+)
+_claim_rv_genesis_immutable=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_no_operation_changes_the_principal_genesis -- --exact"
+)
+_claim_rv_intra_commit_shape=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s4_6_commit_coz_must_be_last_in_txs -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s4_1_transaction_cozies_must_share_one_typ -- --exact"
+)
+_claim_rv_no_coz_reuse=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_6_reuse_is_typed_and_scoped_to_one_principal -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance multihash_replay_of_an_es384_signed_coz_is_reuse -- --exact"
 )
 
 _claim_selfcheck_zero_tests=(

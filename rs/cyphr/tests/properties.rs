@@ -463,6 +463,7 @@ proptest! {
     /// verification (`verify_and_apply`) must succeed since the tampered
     /// arrow is part of what was actually signed; only `finalize()`'s
     /// independent recomputation must catch the mismatch.
+    // @docket: rv-arrow-chain :: scripts/docket-run rv-arrow-chain
     #[test]
     fn test_finalize_commit_rejects_tampered_arrow(
         genesis_idx in arrow_genesis_idx_strategy(),
