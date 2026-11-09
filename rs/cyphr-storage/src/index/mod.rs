@@ -349,7 +349,9 @@ pub trait IndexerWrite: Send + Sync {
 
     /// Replace the quarantine set: the manifests (blob hash and reason) the
     /// last rebuild from scratch left out after replaying them, which a
-    /// rebuild that does not replay must keep out too.
+    /// rebuild that does not replay must keep out too. It is the last
+    /// replaying verdict, not a ban: ingest does not consult it, so an
+    /// honest manifest re-ingested later is indexed.
     fn set_quarantined(
         &self,
         manifests: &[(Blake3Hash, String)],
