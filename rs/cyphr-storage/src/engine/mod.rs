@@ -63,25 +63,6 @@ pub struct DerivedRoots {
     pub cr: String,
 }
 
-/// Metadata for ingesting a pre-validated commit.
-///
-/// The engine does not validate protocol-level signatures or state
-/// transitions — that responsibility belongs to the protocol layer
-/// (Phase 3b). This struct carries the metadata needed to store
-/// blobs and build an index entry.
-#[derive(Clone, Debug)]
-struct ParsedCozInfo {
-    pay_json: Vec<u8>,
-    sig: Vec<u8>,
-    czd: coz::Czd,
-    typ: String,
-    tmb: String,
-    now: i64,
-    alg: String,
-    new_key: Option<cyphr::Key>,
-    key_info: Option<crate::PublicKeyInfo>,
-}
-
 /// Result from [`StorageEngine::ingest_commit`] and
 /// [`StorageEngine::submit_commit`].
 #[derive(Debug, Clone)]
@@ -288,6 +269,9 @@ pub enum QuarantineReason {
     /// An earlier commit of the same principal was quarantined, so indexing
     /// this one would leave a gap in the chain.
     Orphaned(String),
+    /// Replaying the manifest's blobs onto its principal does not yield the
+    /// commit the manifest records (only a rebuild from scratch replays).
+    Unreplayable(String),
 }
 
 /// A manifest a rebuild left out, and why.
@@ -945,10 +929,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// wire blob ([`EngineError::LegacyManifest`]) still fail the rebuild.
     ///
     /// This does not replay: it trusts the engine-written manifests plus
-    /// the blob-presence and binding checks. Replay is the audit path
-    /// ([`Self::rederive_roots`]).
+    /// the blob-presence and binding checks. The replaying rebuild is
+    /// [`Self::rebuild_index_from_scratch_with_report`].
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_with_report(&self) -> Result<RebuildReport, EngineError> {
+        self.rebuild_pass(false).await
+    }
+
+    /// The rebuild pass. With `replay`, every manifest's blobs are also
+    /// replayed onto its principal from genesis by the admission path
+    /// ([`Self::build_commit`]), and a manifest whose commit the replay
+    /// does not reproduce is quarantined ([`QuarantineReason::Unreplayable`]).
+    async fn rebuild_pass(&self, replay: bool) -> Result<RebuildReport, EngineError> {
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
 
@@ -1056,6 +1048,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         let mut indexed = 0;
+        let mut replays: HashMap<String, Replay> = HashMap::new();
         for (hash, manifest) in manifests {
             let commit = &manifest.commit;
             if unbound.contains_key(&commit.principal_id) {
@@ -1073,6 +1066,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     ),
                 });
                 continue;
+            }
+            if replay {
+                if let Err(why) = self.replay_manifest(&mut replays, commit).await? {
+                    quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: Some(commit.principal_id.clone()),
+                        reason: QuarantineReason::Unreplayable(why),
+                    });
+                    broken_from
+                        .entry(commit.principal_id.clone())
+                        .or_insert(commit.sequence);
+                    continue;
+                }
             }
             match self.indexer.index_commit(commit, &DeriveToken::new()).await {
                 Ok(()) => indexed += 1,
@@ -1243,14 +1249,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Only a `commit/create` blob carrying a key is a genesis
             // carrier (the wire convention). Without one the id cannot be
             // proven from blobs, so the manifest is not judged here.
-            let Some(carrier) = blobs.iter().find(|b| {
-                serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|v| {
-                    v.get("key").is_some()
-                        && v.pointer("/pay/typ")
-                            .and_then(|t| t.as_str())
-                            .is_some_and(is_commit_create_typ)
-                })
-            }) else {
+            let Some(carrier) = genesis_carrier(&blobs) else {
                 continue;
             };
             let genesis = match Self::genesis_from_blob(carrier) {
@@ -1283,6 +1282,65 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
         Ok(unbound)
+    }
+
+    /// Replay `commit`'s blobs onto its principal (`replays` holds each
+    /// principal's state, advanced manifest by manifest in sequence order)
+    /// and compare the commit the admission path builds with the one the
+    /// manifest records. `Ok(Err(why))` is a manifest to quarantine.
+    ///
+    /// A principal whose sequence-0 blobs carry no genesis key (an
+    /// explicit genesis) cannot be replayed from blobs alone; its manifests
+    /// are left to the binding and support checks, as before replay.
+    async fn replay_manifest(
+        &self,
+        replays: &mut HashMap<String, Replay>,
+        commit: &IndexableCommit,
+    ) -> Result<Result<(), String>, EngineError> {
+        let mut blobs = Vec::with_capacity(commit.blob_hashes.len());
+        for hash in &commit.blob_hashes {
+            blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
+                EngineError::NotFound(format!("blob {hash} of a commit manifest"))
+            })?);
+        }
+        let state = match replays.entry(commit.principal_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let state = match genesis_carrier(&blobs) {
+                    None => Replay::CarrierLess,
+                    Some(carrier) => {
+                        match Self::genesis_from_blob(carrier).and_then(|genesis| {
+                            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())
+                        }) {
+                            Ok(principal) => Replay::Principal(Box::new(principal)),
+                            Err(e) => return Ok(Err(format!("genesis does not replay: {e}"))),
+                        }
+                    },
+                };
+                e.insert(state)
+            },
+        };
+        let Replay::Principal(principal) = state else {
+            return Ok(Ok(()));
+        };
+        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        let mut replayed =
+            match Self::build_commit(principal, &refs, &commit.principal_id, commit.sequence) {
+                Ok(Some(replayed)) => replayed,
+                Ok(None) => return Ok(Err("its blobs form no commit".into())),
+                Err(e) => return Ok(Err(format!("its blobs do not replay: {e}"))),
+            };
+        // `store_manifest` fills these in at ingest.
+        replayed.blob_hashes.clone_from(&commit.blob_hashes);
+        for (coz, hash) in replayed.cozies.iter_mut().zip(&commit.blob_hashes) {
+            coz.blob_hash = *hash;
+        }
+        let same = serde_json::to_value(&replayed).ok() == serde_json::to_value(commit).ok();
+        Ok(if same {
+            Ok(())
+        } else {
+            Err("it records a commit its blobs do not yield".into())
+        })
     }
 
     /// Whether a manifest's commit names blobs the store holds: the index
@@ -1662,106 +1720,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         next_seq: u64,
     ) -> Result<Option<IndexableCommit>, EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-        use crate::import::{is_key_introducing_typ, is_transaction_typ};
+        use cyphr::replay::{StoredCoz, WireError};
 
         let active_algs = principal.active_algs().to_vec();
 
-        let mut first_tx_idx = None;
-        for (i, blob_bytes) in raw_blobs.iter().enumerate() {
-            let value: serde_json::Value = serde_json::from_slice(blob_bytes)
-                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
-            let pay = value
-                .get("pay")
-                .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'pay'")))?;
-            let header = cyphr::parsed_coz::CozHeader::parse(pay)
-                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
-            if is_transaction_typ(&header.typ) {
-                first_tx_idx = Some(i);
-                break;
-            }
-        }
-
-        let parse_coz = |blob_bytes: &[u8], i: usize| -> Result<ParsedCozInfo, EngineError> {
-            let value: serde_json::Value = serde_json::from_slice(blob_bytes)
-                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
-
-            let pay = value
-                .get("pay")
-                .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'pay'")))?;
-            let sig_b64 = value
-                .get("sig")
-                .and_then(|s| s.as_str())
-                .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'sig'")))?;
-
-            let sig = Base64UrlUnpadded::decode_vec(sig_b64)
-                .map_err(|_| EngineError::MalformedBlob(format!("blob {i}: invalid sig base64")))?;
-
-            let mut pay_val = pay.clone();
-            crate::import::canonicalize_value(&mut pay_val);
-            let pay_json = serde_json::to_vec(&pay_val)
-                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: pay serialize: {e}")))?;
-
-            let header = cyphr::parsed_coz::CozHeader::parse(pay)
-                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
-            let typ = header.typ;
-
-            let alg_str = pay
-                .get("alg")
-                .and_then(|a| a.as_str())
-                .ok_or_else(|| {
-                    EngineError::MalformedBlob(format!("blob {i}: missing 'alg' in pay"))
-                })?
-                .to_string();
-            let czd = cyphr::compute_czd(&pay_json, &sig, &alg_str).ok_or_else(|| {
-                EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
-            })?;
-
-            let tmb = header.tmb.to_b64();
-            let now = header.now;
-
-            let mut key_info = None;
-            let new_key = if is_key_introducing_typ(&typ) {
-                match value.get("key") {
-                    // A missing sidecar is the protocol layer's to reject
-                    // (`MalformedPayload`); a PRESENT one that is not a
-                    // valid key is reported as such, never swallowed.
-                    None => None,
-                    Some(k) => {
-                        let ke = key_value_to_entry(k).ok_or_else(|| {
-                            EngineError::MalformedBlob(format!(
-                                "blob {i}: 'key' missing required fields (alg, pub, tmb)"
-                            ))
-                        })?;
-                        key_info = Some(crate::PublicKeyInfo {
-                            thumbprint: ke.tmb.clone(),
-                            algorithm: ke.alg.clone(),
-                            public_key: ke.pub_key.clone(),
-                        });
-                        Some(crate::import::key_entry_to_key(&ke).map_err(|e| match e {
-                            // e.g. `TmbMismatch`: a client-facing protocol
-                            // refusal, not an infrastructure failure.
-                            crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
-                            other => EngineError::MalformedBlob(format!("blob {i}: {other}")),
-                        })?)
-                    },
-                }
-            } else {
-                None
-            };
-
-            Ok(ParsedCozInfo {
-                pay_json,
-                sig,
-                czd,
-                typ,
-                tmb,
-                now,
-                alg: alg_str,
-                new_key,
-                key_info,
+        let cozies = raw_blobs
+            .iter()
+            .enumerate()
+            .map(|(i, blob)| {
+                StoredCoz::from_wire(blob).map_err(|e| match e {
+                    // e.g. `TmbMismatch`: a client-facing protocol
+                    // refusal, not an infrastructure failure.
+                    WireError::Key(p) => EngineError::Protocol(p),
+                    other => EngineError::MalformedBlob(format!("blob {i}: {other}")),
+                })
             })
-        };
+            .collect::<Result<Vec<_>, _>>()?;
+        let extracted_keys: Vec<crate::PublicKeyInfo> = cozies
+            .iter()
+            .filter_map(StoredCoz::key)
+            .map(|key| crate::PublicKeyInfo {
+                thumbprint: key.tmb().to_b64(),
+                algorithm: key.alg().to_string(),
+                public_key: Base64UrlUnpadded::encode_string(key.pub_key()),
+            })
+            .collect();
+        let last_timestamp = cozies.last().map_or(0, |c| c.header().now);
 
         // The principal's state BEFORE this bundle: the chain link (`pre`) is
         // the previous commit's PR, and a PG established by this bundle is
@@ -1775,91 +1759,26 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
         let had_pg = principal.pg().is_some();
 
-        let mut parsed_cozies = Vec::with_capacity(raw_blobs.len());
-        let mut last_timestamp: i64 = 0;
-        let mut extracted_keys = Vec::new();
-
-        let digest_info = if let Some(idx) = first_tx_idx {
-            // 4.1 Process pre-actions (before the first transaction).
-            for (i, blob_bytes) in raw_blobs.iter().enumerate().take(idx) {
-                let parsed = parse_coz(blob_bytes, i)?;
-                if let Some(info) = &parsed.key_info {
-                    extracted_keys.push(info.clone());
-                }
-                last_timestamp = parsed.now;
-
-                principal.verify_and_record_action(
-                    &parsed.pay_json,
-                    &parsed.sig,
-                    parsed.czd.clone(),
-                )?;
-                parsed_cozies.push(parsed);
-            }
-
-            // 4.2 Open commit scope and process transactions and deferred actions.
-            let (commit_ids, ar, sr, pr, deferred) = {
-                let mut scope = principal.begin_commit();
-                let mut deferred = Vec::new();
-
-                for (i, blob_bytes) in raw_blobs.iter().enumerate().skip(idx) {
-                    let parsed = parse_coz(blob_bytes, i)?;
-                    if let Some(info) = &parsed.key_info {
-                        extracted_keys.push(info.clone());
-                    }
-                    last_timestamp = parsed.now;
-
-                    if is_transaction_typ(&parsed.typ) {
-                        scope.verify_and_apply(
-                            &parsed.pay_json,
-                            &parsed.sig,
-                            parsed.czd.clone(),
-                            parsed.new_key.clone(),
-                        )?;
-                    } else {
-                        deferred.push(parsed.clone());
-                    }
-                    parsed_cozies.push(parsed);
-                }
-
-                let commit = scope.finalize()?;
+        let replayed = cyphr::replay::replay_bundle(principal, &cozies)
+            .map_err(|e| EngineError::Protocol(e.source))?;
+        let digest_info = match replayed.tr {
+            None => None,
+            Some(_) => {
+                let commit = principal
+                    .commits()
+                    .last()
+                    .ok_or(EngineError::Protocol(cyphr::Error::MissingCommit))?;
                 let commit_ids = format_multihash_all(&commit.tr().0)?;
                 let ar = format_multihash_opt(commit.auth_root().map(|a| a.as_multihash()))?;
                 let sr = format_multihash_opt(commit.sr().map(|s| s.as_multihash()))?;
                 let pr = format_multihash_all(commit.pr().as_multihash())?;
-                (commit_ids, ar, sr, pr, deferred)
-            };
-
-            // 4.3 Process post-actions (after scope is finalized and dropped).
-            for parsed in deferred {
-                principal.verify_and_record_action(&parsed.pay_json, &parsed.sig, parsed.czd)?;
-            }
-
-            // Read after the commit scope's borrow has ended: finalize()
-            // already updated principal's CR (the EML log gained a leaf).
-            let cr = principal
-                .cr()
-                .map(|c| format_multihash_all(c.as_multihash()))
-                .transpose()?
-                .unwrap_or_default();
-
-            Some((commit_ids, ar, sr, pr, cr))
-        } else {
-            // Action-only bundle.
-            for (i, blob_bytes) in raw_blobs.iter().enumerate() {
-                let parsed = parse_coz(blob_bytes, i)?;
-                if let Some(info) = &parsed.key_info {
-                    extracted_keys.push(info.clone());
-                }
-                last_timestamp = parsed.now;
-
-                principal.verify_and_record_action(
-                    &parsed.pay_json,
-                    &parsed.sig,
-                    parsed.czd.clone(),
-                )?;
-                parsed_cozies.push(parsed);
-            }
-            None
+                let cr = principal
+                    .cr()
+                    .map(|c| format_multihash_all(c.as_multihash()))
+                    .transpose()?
+                    .unwrap_or_default();
+                Some((commit_ids, ar, sr, pr, cr))
+            },
         };
 
         if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
@@ -1868,11 +1787,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 _ => Vec::new(),
             };
 
-            let mut cozies = Vec::with_capacity(parsed_cozies.len());
-            for parsed in parsed_cozies {
-                let source_alg = cyphr::state::hash_alg_from_str(&parsed.alg)
+            let mut indexed = Vec::with_capacity(cozies.len());
+            for coz in &cozies {
+                let source_alg = cyphr::state::hash_alg_from_str(coz.alg())
                     .unwrap_or(cyphr::state::HashAlg::Sha256);
-                let tagged = cyphr::state::TaggedCzd::new(&parsed.czd, source_alg);
+                let tagged = cyphr::state::TaggedCzd::new(coz.czd(), source_alg);
 
                 let post_active_algs = active_algs.clone();
                 let primary_alg = post_active_algs.first().copied().unwrap_or(source_alg);
@@ -1882,18 +1801,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     Base64UrlUnpadded::encode_string(&converted)
                 );
 
-                let payload = serde_json::from_slice::<serde_json::Value>(&parsed.pay_json)
-                    .ok()
-                    .and_then(|v| serde_json::to_string(&v).ok());
-
-                cozies.push(IndexableCoz {
+                indexed.push(IndexableCoz {
                     blob_hash: Blake3Hash::from_bytes([0; 32]), // filled in by ingest_commit
                     czd: primary_czd,
-                    typ: parsed.typ,
-                    tmb: parsed.tmb,
-                    alg: parsed.alg,
-                    now: parsed.now,
-                    payload,
+                    typ: coz.header().typ.clone(),
+                    tmb: coz.header().tmb.to_b64(),
+                    alg: coz.alg().to_string(),
+                    now: coz.header().now,
+                    payload: serde_json::to_string(coz.pay()).ok(),
                 });
             }
 
@@ -1907,7 +1822,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 ars: ar,
                 crs: cr,
                 blob_hashes: Vec::new(), // filled in by ingest_commit
-                cozies,
+                cozies: indexed,
                 timestamp: last_timestamp,
                 keys: extracted_keys,
                 pg,
@@ -2458,16 +2373,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// requires a [`DeriveToken`] that only this crate can mint, which is
     /// why the clear lives here rather than at the call site.
     ///
-    /// Rebuild trusts the engine-written manifests (the prefixed blobs),
-    /// checks only that each names stored blobs and that its principal id
-    /// is bound to its sequence-0 genesis carrier, and does not replay.
-    /// The audit path is to replay each principal from its blobs
-    /// ([`Self::rederive_roots`]) and compare with the rebuilt index; this
-    /// method is the cheap recovery, not the audit.
+    /// Unlike the heal pass, this rebuild trusts no manifest it can check:
+    /// each principal is replayed from genesis through the admission path
+    /// ([`Self::build_commit`]), manifest by manifest in sequence order, and
+    /// a manifest recording a commit its blobs do not yield is quarantined
+    /// ([`QuarantineReason::Unreplayable`]) with the rest of its chain. A
+    /// principal whose sequence-0 blobs carry no genesis key (an explicit
+    /// genesis) cannot be replayed from blobs alone and keeps the heal
+    /// pass's support and binding checks only.
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_from_scratch(&self) -> Result<usize, EngineError> {
+        Ok(self.rebuild_index_from_scratch_with_report().await?.indexed)
+    }
+
+    /// [`Self::rebuild_index_from_scratch`], reporting what it quarantined.
+    #[tracing::instrument(skip(self))]
+    pub async fn rebuild_index_from_scratch_with_report(
+        &self,
+    ) -> Result<RebuildReport, EngineError> {
         self.indexer.clear(&DeriveToken::new()).await?;
-        self.rebuild_index_from_manifests().await
+        let report = self.rebuild_pass(true).await?;
+        // This pass is a full heal: without marking it, the first read
+        // would run the trusting heal pass and re-index the manifests this
+        // one quarantined. Already set means a heal ran earlier, which the
+        // clear above has superseded either way.
+        let _already_healed = self.healed.set(());
+        Ok(report)
     }
 }
 
@@ -2512,11 +2443,36 @@ fn authenticated_signers(
         if coz::verify_json(&pay_json, &sig, alg, public) != Some(true) {
             return None;
         }
-        if crate::import::is_transaction_typ(&header.typ) {
+        if cyphr::parsed_coz::typ::is_transaction(&header.typ) {
             signers.push(header.tmb);
         }
     }
     (!signers.is_empty()).then_some(signers)
+}
+
+/// The genesis carrier among a sequence-0 commit's blobs: the
+/// `commit/create` coz carrying a `key` (the wire convention). Without one
+/// the principal's genesis cannot be read from its blobs.
+fn genesis_carrier(blobs: &[Vec<u8>]) -> Option<&[u8]> {
+    blobs
+        .iter()
+        .find(|b| {
+            serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|v| {
+                v.get("key").is_some()
+                    && v.pointer("/pay/typ")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(is_commit_create_typ)
+            })
+        })
+        .map(Vec::as_slice)
+}
+
+/// A principal's state during a replaying rebuild.
+enum Replay {
+    /// Replayed from its genesis carrier up to the last manifest seen.
+    Principal(Box<cyphr::Principal<cyphr::eml::MemoryStorage>>),
+    /// No genesis carrier: not replayable from blobs alone.
+    CarrierLess,
 }
 
 /// Whether `typ` is the protocol's `commit/create` (authority-qualified

@@ -126,7 +126,7 @@ fn storage_typ_routing_agrees_with_core_kind_table() {
     }
     let mut wrong = Vec::new();
     for typ in typ_probe_set() {
-        let storage = crate::import::is_transaction_typ(&typ);
+        let storage = cyphr::parsed_coz::typ::is_transaction(&typ);
         let core = core_is_kind(&typ);
         if storage != core {
             wrong.push(format!("{typ}: storage={storage} core={core}"));

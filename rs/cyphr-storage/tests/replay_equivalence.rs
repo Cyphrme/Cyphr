@@ -1,0 +1,368 @@
+//! Replay equivalence: one stored commit means one thing on every path.
+//!
+//! The core's public replay entry point (`cyphr::replay`), the engine's
+//! ingest (`submit_commit`) and the engine's rebuild from blobs alone
+//! (`rebuild_index_from_scratch`) must reach the same roots for every
+//! chain of the golden corpus, and the rebuild must trust no manifest it
+//! cannot replay (root `AGENTS.md` I1: the blob store is the only source of
+//! truth).
+
+use std::path::PathBuf;
+
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::{StoredCoz, replay_bundle};
+use cyphr_storage::Genesis;
+use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
+use cyphr_storage::engine::{
+    COMMIT_MANIFEST_PREFIX, QuarantineReason, StorageEngine, genesis_principal_id,
+};
+use cyphr_storage::index::{Indexer, MemoryIndexer};
+
+type Engine = StorageEngine<MemoryBlobStore, MemoryIndexer>;
+
+/// One corpus chain, as stored: its genesis and each commit's wire blobs.
+struct Chain {
+    name: String,
+    genesis: Genesis,
+    bundles: Vec<Vec<Vec<u8>>>,
+    expected_pr: String,
+}
+
+fn golden_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden")
+}
+
+fn domain_key(gk: &serde_json::Value) -> cyphr::Key {
+    let field = |f: &str| {
+        Base64UrlUnpadded::decode_vec(gk[f].as_str().expect("key field")).expect("base64url")
+    };
+    cyphr::Key::new(
+        gk["alg"].as_str().expect("alg"),
+        coz::Thumbprint::from_bytes(field("tmb")),
+        field("pub"),
+    )
+    .expect("key binds its tmb")
+}
+
+/// Every corpus chain a fresh principal can replay: vectors that expect an
+/// error or need a setup step no stored chain carries are left out.
+fn corpus() -> Vec<Chain> {
+    let mut chains = Vec::new();
+    let mut categories: Vec<_> = std::fs::read_dir(golden_dir())
+        .expect("golden dir")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir() && !p.ends_with("errors"))
+        .collect();
+    categories.sort();
+    for category in categories {
+        let mut files: Vec<_> = std::fs::read_dir(&category)
+            .expect("category dir")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        files.sort();
+        for path in files {
+            let golden: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+            let (Some(commits), Some(genesis_keys), Some(pr)) = (
+                golden["commits"].as_array(),
+                golden["genesis_keys"].as_array(),
+                golden["expected"]["pr"].as_str(),
+            ) else {
+                continue;
+            };
+            if golden.get("setup").is_some()
+                || golden["expected"].get("error").is_some()
+                || commits.is_empty()
+            {
+                continue;
+            }
+            let keys: Vec<cyphr::Key> = genesis_keys.iter().map(domain_key).collect();
+            let implicit = keys.len() == 1;
+            let genesis = if implicit {
+                Genesis::Implicit(keys[0].clone())
+            } else {
+                Genesis::Explicit(keys)
+            };
+            let bundles = commits
+                .iter()
+                .enumerate()
+                .map(|(i, commit)| wire_blobs(commit, (implicit && i == 0).then_some(genesis_keys)))
+                .collect();
+            chains.push(Chain {
+                name: path.display().to_string(),
+                genesis,
+                bundles,
+                expected_pr: pr.to_string(),
+            });
+        }
+    }
+    chains
+}
+
+/// A golden commit as the wire carries it: each coz `{pay, sig}`, the key a
+/// key-introducing coz adds as its `key` sidecar, and, on the first commit
+/// of an implicit principal, the genesis key on the closing `commit/create`
+/// (the carrier that lets a rebuild derive genesis from blobs).
+fn wire_blobs(
+    commit: &serde_json::Value,
+    carrier: Option<&Vec<serde_json::Value>>,
+) -> Vec<Vec<u8>> {
+    let mut keys = commit["keys"].as_array().into_iter().flatten();
+    let txs = commit["txs"].as_array().expect("txs");
+    txs.iter()
+        .enumerate()
+        .map(|(i, coz)| {
+            let mut coz = coz.clone();
+            let typ = coz["pay"]["typ"].as_str().expect("typ").to_string();
+            if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
+                if let Some(key) = keys.next() {
+                    coz["key"] = key.clone();
+                }
+            }
+            if let Some(genesis_keys) = carrier {
+                if i + 1 == txs.len() {
+                    coz["key"] = genesis_keys[0].clone();
+                }
+            }
+            serde_json::to_vec(&coz).expect("json")
+        })
+        .collect()
+}
+
+fn principal(genesis: &Genesis) -> cyphr::Principal {
+    match genesis {
+        Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone()),
+        Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone()),
+    }
+    .expect("genesis")
+}
+
+/// The id the engine stores `chain` under: the genesis-derived id, or for
+/// a principal whose first commit inserts a nonce, the PR that commit
+/// yields (the bare key does not identify it).
+fn principal_id(chain: &Chain) -> String {
+    let first = &chain.bundles[0];
+    let has_nonce = first.iter().any(|blob| {
+        StoredCoz::from_wire(blob)
+            .is_ok_and(|c| cyphr::parsed_coz::typ::nonce_path(&c.header().typ).is_some())
+    });
+    if !has_nonce {
+        return genesis_principal_id(&chain.genesis).expect("principal id");
+    }
+    let mut p = principal(&chain.genesis);
+    let cozies: Vec<StoredCoz> = first
+        .iter()
+        .map(|b| StoredCoz::from_wire(b).expect("wire coz"))
+        .collect();
+    replay_bundle(&mut p, &cozies).expect("first commit replays");
+    p.pr_tagged().expect("pr")
+}
+
+async fn ingest(engine: &Engine, chain: &Chain) -> String {
+    let id = principal_id(chain);
+    for (i, bundle) in chain.bundles.iter().enumerate() {
+        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, Some(chain.genesis.clone()), &refs)
+            .await
+            .unwrap_or_else(|e| panic!("{}: engine ingests commit {i}: {e}", chain.name));
+    }
+    id
+}
+
+/// Claim: for every chain of the golden corpus, replay through the core's
+/// public entry point, engine ingest, and a rebuild of the index from the
+/// blob store alone all reach the PR the vector records; the engine indexes
+/// each commit's TR under every algorithm the core computed it in (so
+/// mixed-algorithm chains keep every variant), its CR is the core's, and
+/// the rebuilt index equals the one ingest built.
+///
+/// Turns red if: the engine or the core classifies or orders a bundle's
+/// cozies differently from the other; ingest drops a TR variant; or the
+/// rebuild indexes anything other than what ingest did.
+/// End-to-end scenario: yes (the whole corpus through engine ingest and
+/// recovery).
+#[test]
+fn corpus_chains_agree_across_core_ingest_and_rebuild() {
+    let chains = corpus();
+    assert!(chains.len() > 30, "the corpus was found ({})", chains.len());
+    // Each chain has its own store, so they are checked on parallel
+    // threads: the 256-item arity vectors would otherwise serialize the
+    // run (minutes in a debug build).
+    std::thread::scope(|s| {
+        for chain in &chains {
+            s.spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(check_chain(chain));
+            });
+        }
+    });
+}
+
+async fn check_chain(chain: &Chain) {
+    {
+        let mut core = principal(&chain.genesis);
+        for (i, bundle) in chain.bundles.iter().enumerate() {
+            let cozies: Vec<StoredCoz> = bundle
+                .iter()
+                .map(|blob| StoredCoz::from_wire(blob).expect("wire coz"))
+                .collect();
+            replay_bundle(&mut core, &cozies)
+                .unwrap_or_else(|e| panic!("{}: core replays commit {i}: {e}", chain.name));
+        }
+        assert_eq!(
+            core.pr_tagged().expect("pr"),
+            chain.expected_pr,
+            "{}: core replay reaches the recorded PR",
+            chain.name
+        );
+
+        // One store per chain: corpus vectors share genesis keys, so their
+        // principals would collide in one store.
+        let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+        let id = ingest(&engine, chain).await;
+        let tip = engine.get_tip(&id).await.expect("tip");
+        if core.commits().next().is_none() {
+            // Action-only bundles form no commit, so nothing is indexed.
+            assert!(tip.is_none(), "{}: no commit, no tip", chain.name);
+            return;
+        }
+        let tip = tip.expect("a tip");
+        // The tip is the last commit's; actions after it move the core's PR
+        // but form no commit.
+        let last = core.commits().last().expect("a commit");
+        let last_pr = last.pr().0.tagged_first().expect("pr").to_string();
+        assert_eq!(tip.pr, last_pr, "{}: ingest PR", chain.name);
+        let core_cr = core
+            .cr()
+            .map(|cr| cr.as_multihash().tagged_first().expect("cr").to_string());
+        assert_eq!(Some(tip.cr.clone()), core_cr, "{}: ingest CR", chain.name);
+        for commit in core.commits() {
+            let tr = &commit.tr().0;
+            for alg in tr.algorithms() {
+                let digest = tr.tagged(alg).expect("tagged tr");
+                assert!(
+                    engine
+                        .indexer()
+                        .resolve_digest_holders(&digest)
+                        .await
+                        .expect("holders")
+                        .iter()
+                        .any(|h| h.principal_id.as_deref() == Some(id.as_str())),
+                    "{}: TR variant {digest} is indexed",
+                    chain.name
+                );
+            }
+        }
+
+        let before = engine
+            .indexer()
+            .get_commit_chain(&id, None, None)
+            .await
+            .expect("chain");
+        let report = engine
+            .rebuild_index_from_scratch_with_report()
+            .await
+            .expect("rebuild");
+        assert!(
+            report.quarantined.is_empty(),
+            "{}: an honest store rebuilds whole: {:?}",
+            chain.name,
+            report.quarantined
+        );
+        let after = engine
+            .indexer()
+            .get_commit_chain(&id, None, None)
+            .await
+            .expect("chain");
+        assert_eq!(
+            after, before,
+            "{}: the rebuilt index equals the ingest index",
+            chain.name
+        );
+    }
+}
+
+/// Claim: the rebuild from scratch trusts no manifest it cannot replay: a
+/// store whose manifest for a commit records roots its blobs do not yield
+/// (the honest manifest replaced by a forged one naming the same blobs) has
+/// that manifest quarantined, the chain's later commits orphaned, and the
+/// principal's tip is the last commit that replays, never the forged roots.
+///
+/// Turns red if: the rebuild indexes a manifest's recorded roots without
+/// replaying its blobs (the pre-replay rebuild trusted engine-written
+/// manifests).
+/// End-to-end scenario: yes (ingest, forged store, recovery).
+#[tokio::test]
+async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
+    let chain = corpus()
+        .into_iter()
+        .find(|c| c.name.ends_with("transaction_sequence_replay.json"))
+        .expect("a three-commit chain");
+    let honest = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let id = ingest(&honest, &chain).await;
+    let held = honest
+        .indexer()
+        .get_commit_chain(&id, None, None)
+        .await
+        .expect("chain");
+    assert_eq!(held.len(), 3);
+
+    // Copy every blob into a fresh store, replacing the manifest of
+    // commit 1 with one that records a different PR for the same blobs.
+    let forged_store = MemoryBlobStore::new();
+    let mut forged = false;
+    for hash in honest.blob_store().iter().await.expect("iter") {
+        let hash = hash.expect("hash");
+        let data = honest
+            .blob_store()
+            .get(&hash)
+            .await
+            .expect("get")
+            .expect("blob");
+        let data = match data.strip_prefix(COMMIT_MANIFEST_PREFIX) {
+            Some(json) => {
+                let mut manifest: serde_json::Value = serde_json::from_slice(json).expect("json");
+                if manifest["commit"]["sequence"] == 1 {
+                    manifest["commit"]["prs"] = serde_json::json!([held[0].pr]);
+                    forged = true;
+                }
+                [
+                    COMMIT_MANIFEST_PREFIX,
+                    &serde_json::to_vec(&manifest).expect("json"),
+                ]
+                .concat()
+            },
+            None => data,
+        };
+        forged_store.put(&data).await.expect("put");
+    }
+    assert!(forged, "the commit-1 manifest was found");
+
+    let recovered = StorageEngine::new(forged_store, MemoryIndexer::new());
+    let report = recovered
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    let reasons: Vec<_> = report
+        .quarantined
+        .iter()
+        .filter(|q| q.principal_id.as_deref() == Some(id.as_str()))
+        .map(|q| &q.reason)
+        .collect();
+    assert!(
+        reasons
+            .iter()
+            .any(|r| matches!(r, QuarantineReason::Unreplayable(_))),
+        "the forged manifest is quarantined as unreplayable: {reasons:?}"
+    );
+    let tip = recovered.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(
+        (tip.commit_count, tip.pr.as_str()),
+        (1, held[0].pr.as_str()),
+        "the chain is indexed up to the last commit that replays"
+    );
+}
