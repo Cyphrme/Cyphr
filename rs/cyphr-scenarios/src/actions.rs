@@ -482,16 +482,14 @@ impl Client<'_> {
 
     // ---- principal and key lifecycle ----
 
-    /// `cyphr init`, then `cyphr key add`: a new principal whose genesis
-    /// key this device holds and signs with. `init` alone leaves a
-    /// genesis-only state with no commit, which `cyphr push` refuses (there
-    /// is nothing to send, and the CLI issues no `principal/create`), so the
-    /// creation also commits one fresh key the device keeps; a peer can then
-    /// hold the principal.
+    /// `cyphr init --genesis-commit`: a new single-key principal whose
+    /// genesis key this device holds and signs with, published by its
+    /// genesis commit alone (SPEC 5.2: key, principal/create, commit/create,
+    /// no second key).
     pub async fn create_principal(&self) -> ActionResult<Principal> {
-        // ES256, the CLI's default: `cyphr push` refuses an Ed25519
-        // identity (its SHA-512 genesis digest is read as SHA-256).
-        let v = self.cyphr(&["init", "--algo", "ES256"]).await?;
+        let v = self
+            .cyphr(&["init", "--algo", "Ed25519", "--genesis-commit"])
+            .await?;
         let p = Principal(field(&v, "pr")?);
         let key = v["keys"][0]
             .as_str()
@@ -502,7 +500,6 @@ impl Client<'_> {
         let genesis = cli::public_half(cli::key_entry(&self.dev.keystore, &key)?);
         self.h.record_genesis(&p, genesis);
         self.state().signer.insert(p.0.clone(), key);
-        self.add_backup_key(&p).await?;
         Ok(p)
     }
 

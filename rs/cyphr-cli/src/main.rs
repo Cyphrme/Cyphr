@@ -25,9 +25,12 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> cyphr_cli::Result<()> {
     match &cli.command {
-        Commands::Init { algo, key, keys } => {
-            commands::init::run(&cli, algo, key.as_deref(), keys.as_deref())
-        },
+        Commands::Init {
+            algo,
+            key,
+            keys,
+            genesis_commit,
+        } => commands::init::run(&cli, algo, key.as_deref(), keys.as_deref(), *genesis_commit),
         Commands::Key { command } => commands::key::run(&cli, command),
         Commands::Tx { command } => commands::tx::run(&cli, command),
         Commands::Inspect { identity } => commands::inspect::run(&cli, identity),
