@@ -5,8 +5,11 @@
 // is mistaken for evidence.
 //
 // Required capabilities: transport,cli-network,evidence,peer-rollover.
-// Red until they exist: the scenario starts its fresh-keyed peers, then the
-// harness reports the first absent capability.
+// End to end: P1 is rotated with the shipped `cyphr-server rotate-key`, Alice
+// pushes and Bob verifies through the `cyphr` CLI.
+// Turns red if: rotation changes the peer's identity or keeps its key, a
+// client stops following the chain, the rollover reads as evidence, or an
+// old statement can no longer be attributed to the key that signed it.
 
 use std::time::Duration;
 
@@ -17,7 +20,6 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(peer-rollover): N20"]
 async fn s07_peer_rollover() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[
@@ -45,7 +47,7 @@ async fn s07_peer_rollover() {
         ident["payload"]["pub"].as_str().expect("pub"),
         ident["payload"]["tmb"].as_str().expect("tmb"),
     );
-    cyphr_scenarios::signed::verify_statement(&held.0, old_alg, old_pub, old_tmb)
+    cyphr_scenarios::signed::verify_statement(&held.coz, old_alg, old_pub, old_tmb)
         .unwrap_or_else(|why| panic!("the held statement is not signed by P1's old key: {why}"));
 
     h.ok(h.rotate_peer_key("p1").await);
@@ -64,7 +66,9 @@ async fn s07_peer_rollover() {
     );
     assert_eq!(after_ident["payload"]["pg"], h.peer("p1").id.as_str());
 
-    h.ok(alice.commit_data(&pr, "after the rollover").await);
+    // Any new commit shows clients following the chain; a key commit is
+    // one the CLI can sign (it signs no data commit yet).
+    h.ok(alice.add_backup_key(&pr).await);
     let t2 = h
         .ok(alice.push(&pr, &["p1"]).await)
         .accepted("push after rollover");

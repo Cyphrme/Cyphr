@@ -75,6 +75,8 @@ pub enum Proven {
 pub struct ChainView {
     /// The principal at its genesis state, for replays from `pre`.
     pub genesis: Option<Principal<MemoryStorage>>,
+    /// The genesis key the replay started from.
+    pub genesis_key: Option<Key>,
     /// The fetched commits.
     pub entries: Vec<PatchEntry>,
     /// The Principal Root after each commit, tagged.
@@ -94,7 +96,6 @@ impl ChainView {
     pub fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
-        let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
         let first = patch
             .entries
             .first()
@@ -112,14 +113,29 @@ impl ChainView {
             })
             .find_map(|c| genesis_key(&c["key"]))
             .ok_or("the first commit carries no genesis key")?;
-        let genesis = Principal::implicit(key).map_err(|e| format!("genesis: {e}"))?;
+        Self::replay(body, pg, key, patch.entries)
+    }
+
+    /// Replay the chain of a `GET /patch` body for principal `pg` (bare)
+    /// from a genesis key the caller already holds (a peer's own chain,
+    /// whose genesis its `GET /server` states), with the same checks as
+    /// [`ChainView::from_patch`].
+    pub fn from_patch_with_genesis(body: &[u8], pg: &str, key: Key) -> Result<Self, String> {
+        let patch = cyphr_client::verify_patch_body(body, pg, None)
+            .map_err(|e| format!("patch is not a patch: {e}"))?;
+        Self::replay(body, pg, key, patch.entries)
+    }
+
+    fn replay(body: &[u8], pg: &str, key: Key, entries: Vec<PatchEntry>) -> Result<Self, String> {
+        let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+        let genesis = Principal::implicit(key.clone()).map_err(|e| format!("genesis: {e}"))?;
         let derives = genesis
             .pr_tagged()
             .is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
         if !derives {
             return Err("the first commit's genesis key does not derive the principal".into());
         }
-        let chain = replay_chain(genesis.clone(), &patch.entries)
+        let chain = replay_chain(genesis.clone(), &entries)
             .map_err(|e| format!("the patch does not replay from its genesis: {e}"))?;
 
         let tagged = |m: &cyphr::MultihashDigest| -> Vec<String> {
@@ -153,8 +169,7 @@ impl ChainView {
             prs.push(pr);
             commit_ids.push(id);
         }
-        let last_signer = patch
-            .entries
+        let last_signer = entries
             .last()
             .and_then(|e| e.blobs.as_ref().ok())
             .and_then(|blobs| {
@@ -170,7 +185,8 @@ impl ChainView {
             });
         Ok(Self {
             genesis: Some(genesis),
-            entries: patch.entries,
+            genesis_key: Some(key),
+            entries,
             prs,
             commit_ids,
             last_signer,
@@ -178,9 +194,47 @@ impl ChainView {
     }
 }
 
+impl ChainView {
+    /// Every key the replayed chain ever introduced (its genesis key and
+    /// each key sidecar), revoked or not: what a statement signed before a
+    /// rotation is checked against. Each sidecar must bind its thumbprint.
+    pub fn keys_ever(&self) -> Keys {
+        let mut keys = Keys::new();
+        if let Some(g) = &self.genesis_key {
+            keys.insert(
+                g.tmb().to_b64(),
+                (
+                    g.alg().to_owned(),
+                    Base64UrlUnpadded::encode_string(g.pub_key()),
+                ),
+            );
+        }
+        let blobs = self
+            .entries
+            .iter()
+            .filter_map(|e| e.blobs.as_ref().ok())
+            .flatten();
+        for blob in blobs {
+            let Ok(coz) = serde_json::from_slice::<Value>(blob) else {
+                continue;
+            };
+            if let Some(k) = genesis_key(&coz["key"]) {
+                keys.insert(
+                    k.tmb().to_b64(),
+                    (
+                        k.alg().to_owned(),
+                        Base64UrlUnpadded::encode_string(k.pub_key()),
+                    ),
+                );
+            }
+        }
+        keys
+    }
+}
+
 /// A genesis key from a coz `key` sidecar; `Key::new` refuses a thumbprint
 /// that is not the key's own.
-fn genesis_key(k: &Value) -> Option<Key> {
+pub fn genesis_key(k: &Value) -> Option<Key> {
     let b64 = |name: &str| Base64UrlUnpadded::decode_vec(k.get(name)?.as_str()?).ok();
     Key::new(
         k.get("alg")?.as_str()?,
