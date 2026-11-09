@@ -5,6 +5,11 @@
 use std::collections::BTreeMap;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::eml::MemoryStorage;
+use cyphr::state::{HashAlg, TaggedDigest};
+use cyphr::{Key, Principal};
+use cyphr_client::PatchEntry;
+use cyphr_client::evidence::{replay_chain, verify_principal_fork};
 use serde_json::Value;
 
 /// Keys known to the verifier, by thumbprint: `tmb -> (alg, public key)`
@@ -54,42 +59,6 @@ pub fn verify_statement(bytes: &[u8], alg: &str, pub_b64: &str, tmb: &str) -> Re
     Ok(())
 }
 
-/// The tmb that signed the last `.../commit/create` coz of a `GET /patch`
-/// payload, chosen by `typ`, not position, and verified against the keys
-/// the chain has introduced up to and including that entry.
-pub fn commit_signer_from_patch(patch: &Value) -> Result<String, String> {
-    let mut keys = Keys::new();
-    let mut signer = None;
-    for entry in patch["payload"]["entries"].as_array().ok_or("no entries")? {
-        let cozies: Vec<Value> = entry["blobs"]
-            .as_array()
-            .ok_or("entry has no blobs")?
-            .iter()
-            .map(|b| {
-                let raw = Base64UrlUnpadded::decode_vec(b.as_str().ok_or("blob is not a string")?)
-                    .map_err(|e| format!("blob is not base64url: {e}"))?;
-                serde_json::from_slice(&raw).map_err(|e| format!("blob is not json: {e}"))
-            })
-            .collect::<Result<_, String>>()?;
-        for c in &cozies {
-            if let (Some(k), Some(tmb)) = (c.get("key"), c["key"]["tmb"].as_str()) {
-                if let (Some(alg), Some(p)) = (k["alg"].as_str(), k["pub"].as_str()) {
-                    keys.insert(tmb.to_owned(), (alg.to_owned(), p.to_owned()));
-                }
-            }
-        }
-        for c in &cozies {
-            if c["pay"]["typ"]
-                .as_str()
-                .is_some_and(|t| t.ends_with("/commit/create"))
-            {
-                signer = Some(verify(c, &keys)?.tmb);
-            }
-        }
-    }
-    signer.ok_or_else(|| "no commit/create coz in the patch".to_owned())
-}
-
 /// What a served evidence item proves, once verified.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Proven {
@@ -97,65 +66,129 @@ pub enum Proven {
     PeerEquivocation { pg: String, peer: String },
 }
 
-/// What the verifier holds of the principal's chain, read from a peer's
-/// `GET /patch`: the Principal Root and commit id after each commit. An
-/// item is checked against this, never against its own say-so.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What the verifier holds of a principal's chain, read from a peer's
+/// `GET /patch` and REPLAYED, never trusted: every commit is verified by the
+/// core from a genesis that derives the principal, so keys, roots and
+/// commit ids below are what the signatures and the chain support, not
+/// what the peer says about itself.
+#[derive(Default)]
 pub struct ChainView {
+    /// The principal at its genesis state, for replays from `pre`.
+    pub genesis: Option<Principal<MemoryStorage>>,
+    /// The fetched commits.
+    pub entries: Vec<PatchEntry>,
+    /// The Principal Root after each commit, tagged.
     pub prs: Vec<String>,
+    /// The commit id of each commit, tagged.
     pub commit_ids: Vec<String>,
+    /// The key that signed the last commit's closing `commit/create`.
+    pub last_signer: Option<String>,
 }
 
 impl ChainView {
-    /// The chain of a `GET /patch` body (`payload.entries[].{pr, commit_id}`).
-    pub fn from_patch(patch: &Value) -> Self {
-        let col = |field: &str| -> Vec<String> {
-            patch["payload"]["entries"]
+    /// Replay the chain of a `GET /patch` body for principal `pg` (bare).
+    ///
+    /// The genesis key is read from the first commit's sidecar and is only
+    /// accepted if it derives `pg`. A patch that does not replay, or whose
+    /// stated roots or commit ids disagree with the replay, is an error.
+    pub fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
+        let patch = cyphr_client::verify_patch_body(body, pg, None)
+            .map_err(|e| format!("patch is not a patch: {e}"))?;
+        let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+        let first = patch
+            .entries
+            .first()
+            .ok_or("the patch holds no commits")?
+            .blobs
+            .as_ref()
+            .map_err(|e| format!("first commit is undecodable: {e:?}"))?;
+        let key = first
+            .iter()
+            .filter_map(|b| serde_json::from_slice::<Value>(b).ok())
+            .filter(|c| {
+                c["pay"]["typ"]
+                    .as_str()
+                    .is_some_and(|t| t.ends_with("/cyphr/commit/create"))
+            })
+            .find_map(|c| genesis_key(&c["key"]))
+            .ok_or("the first commit carries no genesis key")?;
+        let genesis = Principal::implicit(key).map_err(|e| format!("genesis: {e}"))?;
+        let derives = genesis
+            .pr_tagged()
+            .is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
+        if !derives {
+            return Err("the first commit's genesis key does not derive the principal".into());
+        }
+        let chain = replay_chain(genesis.clone(), &patch.entries)
+            .map_err(|e| format!("the patch does not replay from its genesis: {e}"))?;
+
+        let tagged = |m: &cyphr::MultihashDigest| -> Vec<String> {
+            [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512]
+                .into_iter()
+                .filter_map(|a| {
+                    TaggedDigest::new(a, m.get(a)?.to_vec())
+                        .ok()
+                        .map(|t| t.to_string())
+                })
+                .collect()
+        };
+        let stated_col = |field: &str| -> Vec<String> {
+            stated["payload"]["entries"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|e| e[field].as_str().map(str::to_owned))
+                .map(|e| e[field].as_str().unwrap_or_default().to_owned())
                 .collect()
         };
-        Self {
-            prs: col("pr"),
-            commit_ids: col("commit_id"),
+        let (mut prs, mut commit_ids) = (Vec::new(), Vec::new());
+        for ((c, pr), id) in chain
+            .commits()
+            .zip(stated_col("pr"))
+            .zip(stated_col("commit_id"))
+        {
+            let (held_pr, held_id) = (tagged(&c.pr().0), tagged(&c.tr().0));
+            if !held_pr.contains(&pr) || !held_id.contains(&id) {
+                return Err("a stated root or commit id disagrees with the replay".into());
+            }
+            prs.push(pr);
+            commit_ids.push(id);
         }
-    }
-}
-
-/// The coz objects of a served commit (`{blobs: [base64url coz]}`).
-fn commit_cozies(commit: &Value) -> Result<Vec<Value>, String> {
-    commit["blobs"]
-        .as_array()
-        .filter(|b| !b.is_empty())
-        .ok_or("commit has no blobs")?
-        .iter()
-        .map(|b| {
-            let raw = Base64UrlUnpadded::decode_vec(b.as_str().ok_or("blob is not a string")?)
-                .map_err(|e| format!("blob is not base64url: {e}"))?;
-            serde_json::from_slice(&raw).map_err(|e| format!("blob is not json: {e}"))
+        let last_signer = patch
+            .entries
+            .last()
+            .and_then(|e| e.blobs.as_ref().ok())
+            .and_then(|blobs| {
+                blobs
+                    .iter()
+                    .filter_map(|b| serde_json::from_slice::<Value>(b).ok())
+                    .filter(|c| {
+                        c["pay"]["typ"]
+                            .as_str()
+                            .is_some_and(|t| t.ends_with("/cyphr/commit/create"))
+                    })
+                    .last()
+                    .and_then(|c| c["pay"]["tmb"].as_str().map(str::to_owned))
+            });
+        Ok(Self {
+            genesis: Some(genesis),
+            entries: patch.entries,
+            prs,
+            commit_ids,
+            last_signer,
         })
-        .collect()
+    }
 }
 
-/// Verify one served commit of a fork against the keys the principal's
-/// chain introduced, and return its raw blobs. Every coz must verify, and
-/// the commit must close with a `commit/create` (the typ is matched as an
-/// authority-qualified suffix, never a substring).
-fn verified_commit(commit: &Value, keys: &Keys) -> Result<Vec<Value>, String> {
-    let cozies = commit_cozies(commit)?;
-    for c in &cozies {
-        verify(c, keys)?;
-    }
-    let closes = cozies
-        .last()
-        .and_then(|c| c["pay"]["typ"].as_str())
-        .is_some_and(|t| t.ends_with("/cyphr/commit/create"));
-    if !closes {
-        return Err("a commit must close with a commit/create coz".into());
-    }
-    Ok(cozies)
+/// A genesis key from a coz `key` sidecar; `Key::new` refuses a thumbprint
+/// that is not the key's own.
+fn genesis_key(k: &Value) -> Option<Key> {
+    let b64 = |name: &str| Base64UrlUnpadded::decode_vec(k.get(name)?.as_str()?).ok();
+    Key::new(
+        k.get("alg")?.as_str()?,
+        coz::Thumbprint::from_bytes(b64("tmb")?),
+        b64("pub")?,
+    )
+    .ok()
 }
 
 /// `(size, commit_id, roots)` a peer statement claims: a view statement's
@@ -182,12 +215,10 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
 /// asked about (bare) and `chain` the verifier's own read of its chain.
 ///
 /// A `principal-fork` item (`{pg, height, pre, a, b}`, `a` and `b` each
-/// `{blobs}`) must name `requested`; its `height` must lie on the chain and
-/// its `pre` be the chain's root after the commit before it (the ancestor);
-/// each commit must verify and close with a `commit/create`; the two must
-/// differ. The serving peers' own keys are removed from `keys` first, so a
-/// peer cannot vouch for a fork it fabricated: only keys the principal's
-/// chain introduced count.
+/// `{blobs}`) is checked by [`verify_principal_fork`] against the replayed
+/// `chain`: both commits must replay from the chain's state at `pre`, so
+/// only keys the principal held there vouch (a serving peer's key never
+/// does) and two copies of one commit are not a fork.
 ///
 /// A `peer-equivocation` item (`{pg, peer, a, b}`, statements) must name
 /// `requested`, and both statements must be signed by the accused peer's key.
@@ -213,27 +244,14 @@ pub fn verify_evidence(
     }
     match item["kind"].as_str() {
         Some("principal-fork") => {
-            let mut principal_keys = keys.clone();
-            principal_keys.retain(|tmb, _| !peers.values().any(|p| p == tmb));
-            let height = item["height"]
-                .as_u64()
-                .and_then(|h| usize::try_from(h).ok())
-                .ok_or("a fork needs its height")?;
-            let ancestor = match height.checked_sub(1) {
-                None => None,
-                Some(i) => Some(
-                    chain
-                        .prs
-                        .get(i)
-                        .ok_or_else(|| format!("height {height} is beyond the chain"))?,
-                ),
-            };
-            if item["pre"].as_str() != ancestor.map(String::as_str) {
-                return Err("pre is not the chain's root before the fork".into());
-            }
-            verified_commit(a, &principal_keys)?;
-            verified_commit(b, &principal_keys)?;
-            Ok(Proven::PrincipalFork { pg })
+            // The client's own verifier: replays both commits from `pre` on
+            // the chain read, so only keys the chain held at `pre` count
+            // (a serving peer's key is never among them) and two copies of
+            // one commit are not a fork.
+            let genesis = chain.genesis.clone().ok_or("no chain to replay from")?;
+            let proof = verify_principal_fork(item, requested, genesis, &chain.entries)
+                .map_err(|e| e.to_string())?;
+            Ok(Proven::PrincipalFork { pg: proof.pg })
         },
         Some("peer-equivocation") => {
             let peer = item["peer"]

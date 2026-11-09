@@ -439,143 +439,38 @@ fn harness_statement_verification_catches_forgery() {
     );
 }
 
-// Claim: the resolution signer is chosen by `typ`, not position, and its
-// signature must verify against the chain's keys.
-#[test]
-fn harness_commit_signer_is_chosen_by_typ_and_verified() {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    use cyphr_scenarios::signed::commit_signer_from_patch;
-
-    let (alg, pub_b64, tmb, prv) = keyed();
-    let key = serde_json::json!({"alg": alg, "pub": pub_b64, "tmb": tmb});
-    let blob =
-        |c: &serde_json::Value| Base64UrlUnpadded::encode_string(&serde_json::to_vec(c).unwrap());
-    let mut commit = signed_coz(
-        &alg,
-        &pub_b64,
-        &prv,
-        serde_json::json!({"alg": alg, "tmb": tmb, "typ": "x/cyphr/commit/create"}),
-    );
-    commit["key"] = key.clone();
-    // A later, non-commit coz must not be mistaken for the commit.
-    let action = signed_coz(
-        &alg,
-        &pub_b64,
-        &prv,
-        serde_json::json!({"alg": alg, "tmb": "OTHER", "typ": "x/action"}),
-    );
-    let patch =
-        |blobs: Vec<String>| serde_json::json!({"payload": {"entries": [{"blobs": blobs}]}});
-
-    assert_eq!(
-        commit_signer_from_patch(&patch(vec![blob(&commit), blob(&action)])),
-        Ok(tmb.clone())
-    );
-    let mut forged = commit.clone();
-    forged["pay"]["now"] = 9.into();
-    assert!(
-        commit_signer_from_patch(&patch(vec![blob(&forged)])).is_err(),
-        "mis-signed commit"
-    );
-    assert!(
-        commit_signer_from_patch(&patch(vec![blob(&action)])).is_err(),
-        "no commit/create"
-    );
-}
-
-// Claim: a served evidence item is believed only when it verifies offline.
-// A fork needs two distinct commits closing in a commit/create, signed by
-// keys the principal's chain introduced (never the serving peer's own key),
-// at a height on the chain whose pre is the chain's root before it, naming
-// the requested principal. Peer equivocation needs two statements signed by
-// the accused peer that conflict; a lower statement on the same chain as the
-// higher is a stale prefix and no evidence. (Pure crypto and logic: no
-// scenario reaches a forged item cheaply.)
+// Claim: a served peer-equivocation item is believed only when it verifies
+// offline: two statements signed by the accused peer that conflict; a lower
+// statement on the same chain as the higher is a stale prefix and no
+// evidence. A fork item is never believed without a replayable chain: it is
+// checked by the client's own verifier, so an empty chain or another
+// principal's item is refused (the accepted-fork path is the end-to-end test
+// below). Pure crypto and logic: no scenario reaches a forged statement
+// cheaply.
 #[test]
 fn harness_evidence_items_are_verified_offline() {
     use std::collections::BTreeMap;
 
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
     use cyphr_scenarios::signed::{ChainView, Keys, Proven, verify_evidence};
     use serde_json::{Value, json};
 
-    let (alg, pub_b64, tmb, prv) = keyed();
+    let (alg, _, tmb, _) = keyed();
     let (_, peer_pub, peer_tmb, peer_prv) = keyed();
     let mut keys = Keys::new();
-    keys.insert(tmb.clone(), (alg.clone(), pub_b64.clone()));
     keys.insert(peer_tmb.clone(), (alg.clone(), peer_pub.clone()));
     let peers = BTreeMap::from([("PEER".to_owned(), peer_tmb.clone())]);
     let chain = ChainView {
-        prs: vec!["PR0".into(), "PR1".into(), "PR2".into()],
         commit_ids: vec!["C0".into(), "C1".into(), "C2".into()],
+        ..ChainView::default()
     };
-
-    let blob = |c: &Value| {
-        json!(Base64UrlUnpadded::encode_string(
-            &serde_json::to_vec(c).expect("coz")
-        ))
-    };
-    let commit = |typ: &str, signer: (&str, &str, &[u8]), n: u64| {
-        let c = signed_coz(
-            &alg,
-            signer.1,
-            signer.2,
-            json!({"alg": alg, "tmb": signer.0, "typ": typ, "n": n}),
-        );
-        json!({"blobs": [blob(&c)]})
-    };
-    let own = (tmb.as_str(), pub_b64.as_str(), prv.as_slice());
-    let fork = |a: Value, b: Value, height: u64, pre: Value, pg: &str| json!({"kind": "principal-fork", "pg": pg, "height": height, "pre": pre, "a": a, "b": b});
-    let create = "cyphr.me/cyphr/commit/create";
     let ok = |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain);
 
-    let (a, b) = (commit(create, own, 1), commit(create, own, 2));
-    assert_eq!(
-        ok(&fork(a.clone(), b.clone(), 2, json!("PR1"), "PG")),
-        Ok(Proven::PrincipalFork { pg: "PG".into() })
-    );
-    assert_eq!(
-        ok(&fork(a.clone(), b.clone(), 0, Value::Null, "PG")),
-        Ok(Proven::PrincipalFork { pg: "PG".into() }),
-        "a fork at the first position has no ancestor"
-    );
-    assert!(
-        ok(&fork(a.clone(), a.clone(), 2, json!("PR1"), "PG")).is_err(),
-        "identical commits"
-    );
-    assert!(
-        ok(&fork(a.clone(), b.clone(), 2, json!("PR1"), "OTHER")).is_err(),
-        "another principal"
-    );
-    assert!(
-        ok(&fork(a.clone(), b.clone(), 2, json!("PR0"), "PG")).is_err(),
-        "wrong ancestor"
-    );
-    assert!(
-        ok(&fork(a.clone(), b.clone(), 9, json!("PR1"), "PG")).is_err(),
-        "height off the chain"
-    );
-    let wrong_typ = commit("cyphr.me/cyphr/key/create", own, 3);
-    assert!(
-        ok(&fork(a.clone(), wrong_typ, 2, json!("PR1"), "PG")).is_err(),
-        "no commit/create"
-    );
-    let by_peer = commit(create, (&peer_tmb, &peer_pub, &peer_prv), 4);
-    assert!(
-        ok(&fork(a.clone(), by_peer, 2, json!("PR1"), "PG")).is_err(),
-        "the serving peer's key cannot vouch for a fork"
-    );
-    let mut forged = b.clone();
-    let mut raw: Value = serde_json::from_slice(
-        &Base64UrlUnpadded::decode_vec(forged["blobs"][0].as_str().expect("blob")).expect("b64"),
-    )
-    .expect("json");
-    raw["pay"]["n"] = 7.into();
-    forged["blobs"][0] = blob(&raw);
-    assert!(
-        ok(&fork(a, forged, 2, json!("PR1"), "PG")).is_err(),
-        "mis-signed commit"
-    );
+    let fork = json!({"kind": "principal-fork", "pg": "PG", "height": 0, "pre": null,
+                      "a": {"blobs": ["AA"]}, "b": {"blobs": ["BB"]}});
+    assert!(ok(&fork).is_err(), "no chain to replay a fork from");
+    let mut other = fork.clone();
+    other["pg"] = "OTHER".into();
+    assert!(ok(&other).is_err(), "another principal's item");
 
     let view = |size: u64, id: &str, signer: (&str, &str, &[u8])| {
         signed_coz(
@@ -614,11 +509,135 @@ fn harness_evidence_items_are_verified_offline() {
         ok(&equiv(view(1, "X0", peer), view(3, "X2", peer))).is_err(),
         "higher is not on the chain read"
     );
+    let stranger = (tmb.as_str(), peer_pub.as_str(), peer_prv.as_slice());
     assert!(
-        ok(&equiv(view(2, "C1", own), view(2, "X1", peer))).is_err(),
+        ok(&equiv(view(2, "C1", stranger), view(2, "X1", peer))).is_err(),
         "not the accused peer"
     );
-    let mut other = equiv(view(2, "C1", peer), view(2, "X1", peer));
-    other["peer"] = "NOBODY".into();
-    assert!(ok(&other).is_err(), "unknown peer");
+    let mut unknown = equiv(view(2, "C1", peer), view(2, "X1", peer));
+    unknown["peer"] = "NOBODY".into();
+    assert!(ok(&unknown).is_err(), "unknown peer");
+}
+
+/// A signing key outside any pool.
+struct Signer {
+    alg: String,
+    prv: Vec<u8>,
+    pubb: Vec<u8>,
+    tmb: coz::Thumbprint,
+}
+
+fn signer() -> Signer {
+    let g = coz::Alg::Ed25519.generate_keypair();
+    Signer {
+        alg: g.alg.name().to_owned(),
+        prv: g.prv_bytes.clone(),
+        pubb: g.pub_bytes.clone(),
+        tmb: g.alg.compute_thumbprint(&g.pub_bytes).expect("tmb"),
+    }
+}
+
+fn key_of(k: &Signer) -> cyphr::Key {
+    cyphr::Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
+}
+
+/// `by` creates `new` at `now` and finalizes the commit.
+fn create_key(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i64) {
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": by.alg, "id": new.tmb.to_b64(), "now": now,
+        "tmb": by.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"
+    }))
+    .expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &by.alg, &by.prv, &by.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(new)))
+        .expect("apply");
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&by.alg, &by.prv, &by.pubb, &by.tmb),
+            now,
+            "cyphr.me",
+        )
+        .expect("finalize");
+}
+
+/// The `POST /push` body of commit `i` of `p`: key-introducing cozies carry
+/// their key, and commit 0's closing coz carries the genesis key.
+fn push_body(p: &cyphr::Principal, i: usize, genesis: &Signer, id: &str) -> serde_json::Value {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let commit = p.commits().nth(i).expect("commit");
+    let cozies: Vec<_> = commit.iter_all_cozies().collect();
+    let blobs: Vec<String> = cozies
+        .iter()
+        .enumerate()
+        .map(|(n, vc)| {
+            let mut c = serde_json::to_value(vc.coz().raw()).expect("coz");
+            if let Some(k) = vc.new_key() {
+                c["key"] = serde_json::json!({"alg": k.alg(),
+                    "pub": Base64UrlUnpadded::encode_string(k.pub_key()), "tmb": k.tmb().to_b64()});
+            }
+            if i == 0 && n + 1 == cozies.len() {
+                c["key"] = serde_json::json!({"alg": genesis.alg,
+                    "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
+                    "tmb": genesis.tmb.to_b64()});
+            }
+            Base64UrlUnpadded::encode_string(&serde_json::to_vec(&c).expect("blob"))
+        })
+        .collect();
+    serde_json::json!({"principal_id": id, "blobs": blobs})
+}
+
+// Claim: the oracle verifies a real fork end to end. A principal's key signs
+// two different commits at one position; the peer takes the first, refuses
+// the second as the tip (409) and keeps it; the oracle reads the peer's
+// chain, replays it, fetches `/evidence`, and verifies the served fork with
+// the client's own verifier. A verdict that names that fork as evidence
+// passes. Turns red if the served item does not verify against the replayed
+// chain or the oracle does not see it.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_oracle_verifies_a_served_fork_end_to_end() {
+    use cyphr_scenarios::actions::{Evidence, Principal, Standing};
+    use cyphr_scenarios::oracle::Expect;
+
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let (g, k1, k2, k3) = (signer(), signer(), signer(), signer());
+    let mut base = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let id = g.tmb.to_b64();
+    create_key(&mut base, &g, &k1, 1_700_100_000);
+    let (mut first, mut rival) = (base.clone(), base.clone());
+    create_key(&mut first, &g, &k2, 1_700_100_001);
+    create_key(&mut rival, &g, &k3, 1_700_100_002);
+
+    let addr = h.peer("p1").addr;
+    let push = |p: &cyphr::Principal, i: usize| {
+        let body = push_body(p, i, &g, &id);
+        let http = h.http.clone();
+        async move {
+            http.post(format!("http://{addr}/push"))
+                .json(&body)
+                .send()
+                .await
+                .expect("push")
+                .status()
+        }
+    };
+    assert!(push(&base, 0).await.is_success());
+    assert!(push(&first, 1).await.is_success());
+    assert_eq!(
+        push(&rival, 1).await,
+        reqwest::StatusCode::CONFLICT,
+        "the second commit at the position is refused as the tip"
+    );
+
+    let pr = Principal(id);
+    let view = h.peer_view("p1", &pr).await.expect("held");
+    let age = h.peer_age("p1", &pr).await.expect("age");
+    let mut v = oracle_verdict(&view.tip.0, Standing::Error);
+    v.anchor.id = pr.0.clone();
+    v.freshness.age = Duration::from_secs(age.max(0) as u64);
+    v.evidence = vec![Evidence::PrincipalFork(pr.clone())];
+    h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
 }

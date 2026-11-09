@@ -202,9 +202,7 @@ impl Harness {
                 keys.insert(tmb.clone(), (alg, pub_b64));
                 by_peer.insert(id, tmb);
             }
-            let (chain_keys, view) = self.chain_read(name, p).await;
-            keys.extend(chain_keys);
-            chains.insert((*name).to_owned(), view);
+            chains.insert((*name).to_owned(), self.chain_read(name, p).await);
         }
         let mut out = BTreeSet::new();
         for name in peers {
@@ -259,13 +257,12 @@ impl Harness {
         ))
     }
 
-    /// Keys a peer's chain for `p` has introduced, and the chain's roots and
-    /// commit ids, read from its patch.
-    async fn chain_read(&self, peer: &str, p: &Principal) -> (Keys, signed::ChainView) {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let mut keys = Keys::new();
+    /// A peer's chain for `p`, replayed from its `/patch` (see
+    /// [`signed::ChainView`]). The empty view when the route cannot
+    /// answer; a patch that answers but does not replay fails the scenario.
+    async fn chain_read(&self, peer: &str, p: &Principal) -> signed::ChainView {
         let Some(addr) = self.peers.iter().find(|x| x.name == peer).map(|x| x.addr) else {
-            return (keys, signed::ChainView::default());
+            return signed::ChainView::default();
         };
         let Ok(resp) = self
             .http
@@ -274,28 +271,16 @@ impl Harness {
             .send()
             .await
         else {
-            return (keys, signed::ChainView::default());
+            return signed::ChainView::default();
         };
-        let Ok(bytes) = resp.bytes().await else {
-            return (keys, signed::ChainView::default());
-        };
-        let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-        for entry in v["payload"]["entries"].as_array().into_iter().flatten() {
-            for blob in entry["blobs"].as_array().into_iter().flatten() {
-                let coz: Option<Value> = blob
-                    .as_str()
-                    .and_then(|b| Base64UrlUnpadded::decode_vec(b).ok())
-                    .and_then(|r| serde_json::from_slice(&r).ok());
-                if let Some(k) = coz.as_ref().map(|c| &c["key"]) {
-                    if let (Some(t), Some(a), Some(pk)) =
-                        (k["tmb"].as_str(), k["alg"].as_str(), k["pub"].as_str())
-                    {
-                        keys.insert(t.to_owned(), (a.to_owned(), pk.to_owned()));
-                    }
-                }
-            }
+        if !resp.status().is_success() {
+            return signed::ChainView::default();
         }
-        (keys, signed::ChainView::from_patch(&v))
+        let Ok(bytes) = resp.bytes().await else {
+            return signed::ChainView::default();
+        };
+        signed::ChainView::from_patch(&bytes, p.bare())
+            .unwrap_or_else(|why| panic!("peer `{peer}`'s chain does not replay: {why}"))
     }
 
     /// Seconds since the tip a peer reports was last updated, by the peer's
@@ -335,23 +320,11 @@ impl Harness {
             .collect()
     }
 
-    /// The thumbprint that signed the peer's last `commit/create`, chosen by
-    /// `typ` and verified against the chain's keys. `None` when the patch
-    /// route cannot answer; a signature that fails verification fails the
-    /// scenario. Moves to the branch route once it exists.
+    /// The thumbprint that signed the peer's last `commit/create`, read from
+    /// the replayed chain (so every signature up to it verified). `None`
+    /// when the patch route cannot answer; a patch that does not replay
+    /// fails the scenario.
     async fn last_commit_signer(&self, peer: &str, p: &Principal) -> Option<String> {
-        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
-        let resp = self
-            .http
-            .get(format!("http://{addr}/patch"))
-            .query(&[("pr", p.0.as_str())])
-            .send()
-            .await
-            .ok()?;
-        let v: Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
-        match signed::commit_signer_from_patch(&v) {
-            Ok(tmb) => Some(tmb),
-            Err(why) => panic!("peer `{peer}`'s resolution commit does not verify: {why}"),
-        }
+        self.chain_read(peer, p).await.last_signer
     }
 }
