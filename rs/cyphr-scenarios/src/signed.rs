@@ -161,12 +161,11 @@ impl ChainView {
                 blobs
                     .iter()
                     .filter_map(|b| serde_json::from_slice::<Value>(b).ok())
-                    .filter(|c| {
+                    .rfind(|c| {
                         c["pay"]["typ"]
                             .as_str()
                             .is_some_and(|t| t.ends_with("/cyphr/commit/create"))
                     })
-                    .last()
                     .and_then(|c| c["pay"]["tmb"].as_str().map(str::to_owned))
             });
         Ok(Self {
