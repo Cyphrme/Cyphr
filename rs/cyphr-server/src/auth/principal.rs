@@ -148,6 +148,31 @@ impl GenesisKeyRecord {
     }
 }
 
+/// The point at which [`ServerPrincipal::rotate_through`] stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RotationStep {
+    /// The new key is written and fsynced to `<path>.next`; the chain is
+    /// unchanged.
+    Staged,
+    /// `key/replace` is committed; the key file still holds the retired key.
+    Committed,
+    /// `.next` is renamed over the key file: the rotation is complete.
+    Promoted,
+}
+
+/// What [`ServerPrincipal::reconcile_key_file`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyReconciliation {
+    /// No `.next` beside the key file.
+    Clean,
+    /// A `.next` holding a key the chain has active replaced the key file:
+    /// a rotation committed but did not finish.
+    Adopted,
+    /// A `.next` the chain does not know (an unfinished or failed rotation,
+    /// or an unreadable file) was removed.
+    Discarded,
+}
+
 /// The server acting as its own Cyphr principal.
 ///
 /// Holds the stable PG (the engine `principal_id` under which the chain is
@@ -242,20 +267,7 @@ impl ServerPrincipal {
         signing_key_path: &Path,
         state_path: &Path,
     ) -> Result<Self, ServerPrincipalError> {
-        let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(state_path)?)?;
-        let found = document_version(&doc)?;
-        if found != u64::from(FILE_FORMAT_VERSION) {
-            return Err(ServerPrincipalError::UnsupportedVersion {
-                found,
-                supported: FILE_FORMAT_VERSION,
-            });
-        }
-        let stamped = doc.get("v").is_some();
-        let record: GenesisRecord = serde_json::from_value(doc)?;
-        // A record from before versions is v1: rewrite it stamped.
-        if !stamped {
-            std::fs::write(state_path, serde_json::to_vec_pretty(&record)?)?;
-        }
+        let record = read_record(state_path)?;
         let genesis_key = record.genesis_key.to_key()?;
 
         // A record with no served chain (e.g. the index was wiped out from
@@ -281,6 +293,53 @@ impl ServerPrincipal {
         })
     }
 
+    /// Finish or abandon an interrupted rotation, deciding by the stored
+    /// chain: a `<signing_key_path>.next` whose key the chain has active is
+    /// renamed over the key file; one whose key it does not know is
+    /// removed. Run before the key file is loaded, so a boot always signs
+    /// with the key its chain has active.
+    ///
+    /// A `.next` with no server chain at all (no genesis record) cannot be
+    /// vouched for and is removed.
+    pub async fn reconcile_key_file(
+        engine: &ServerEngine,
+        signing_key_path: &Path,
+        data_dir: &Path,
+    ) -> Result<KeyReconciliation, ServerPrincipalError> {
+        if !super::next_key_path(signing_key_path).exists() {
+            return Ok(KeyReconciliation::Clean);
+        }
+        let state_path = data_dir.join(RECORD_DIR_NAME).join(STATE_FILE);
+        let vouched = if state_path.exists() {
+            let record = read_record(&state_path)?;
+            if engine.get_tip(&record.pg).await?.is_none() {
+                false
+            } else {
+                let principal = engine
+                    .load_principal(
+                        &record.pg,
+                        Genesis::Explicit(vec![record.genesis_key.to_key()?]),
+                    )
+                    .await?;
+                // An unreadable `.next` is a torn staging write; it cannot
+                // be active on any chain.
+                match ServerIdentity::load_from_path(super::next_key_path(signing_key_path)) {
+                    Ok(staged) => principal.is_key_active(&identity_thumbprint(&staged)?),
+                    Err(_) => false,
+                }
+            }
+        } else {
+            false
+        };
+        if vouched {
+            super::promote_staged_key(signing_key_path)?;
+            Ok(KeyReconciliation::Adopted)
+        } else {
+            super::discard_staged_key(signing_key_path)?;
+            Ok(KeyReconciliation::Discarded)
+        }
+    }
+
     /// The server principal's stable tagged PG — the identifier its chain
     /// is served under (`engine.get_tip(pg)`).
     pub fn pg(&self) -> &str {
@@ -296,37 +355,44 @@ impl ServerPrincipal {
     /// Rotate the server's signing key on its own chain: activate
     /// `new_keypair`, retire the current key, leave the PG unchanged.
     ///
-    /// Both halves of the swap are persisted. The chain is extended with a
-    /// `key/replace` (the public truth), then `new_keypair` is written to
-    /// the signing-key file (the private material). Because the current key
-    /// is read fresh from that file each time, a later boot and a
-    /// subsequent rotation both act on the rotated-in key, never a retired
-    /// one. The PG is frozen at genesis and is unaffected.
+    /// Both halves of the swap are persisted, in an order that makes every
+    /// crash point recoverable at the next boot (see
+    /// [`reconcile_key_file`](Self::reconcile_key_file)):
     ///
-    /// The two media cannot be updated atomically, so the order is
-    /// deliberate: the chain (public truth) is committed first, then the key
-    /// file (private material). A crash in the gap leaves the new chain with
-    /// the old key file — which fails loudly at the next boot (load()'s
-    /// active-key check rejects the retired key) and an operator recovers by
-    /// rewriting the file to the rotated-in key. The reverse order — a new
-    /// key file over an unrotated chain — would be a quieter, more confusing
-    /// wreck, so it is avoided. This residual crash window is not closed
-    /// here; it is made loud rather than silent.
+    /// 1. `new_keypair` is written to `<signing_key_path>.next` and fsynced, before the chain knows
+    ///    about it, so the private half of any key the chain activates already exists on disk.
+    /// 2. The chain is extended with a `key/replace` (the public truth).
+    /// 3. `.next` is renamed over the key file and the directory fsynced.
+    ///
+    /// A crash after 1 leaves a `.next` the chain does not know (discarded
+    /// at boot); after 2, a `.next` the chain has active (adopted at boot);
+    /// after 3, nothing to reconcile. The rename is atomic, so the key file
+    /// is always whole: the retired key or the rotated-in one, never a
+    /// torn write. The PG is frozen at genesis and is unaffected.
     ///
     /// This persists the chain and key file only. It does NOT refresh the
     /// running process's live signing identity — the in-memory
     /// `AppState.identity` that login and token issuance read — which stays
     /// on the retired key until the process reloads it from the file (on a
     /// fresh boot, or via [`AppState::rotate_signing_key`](crate::AppState::rotate_signing_key)
-    /// on an owned `AppState`). Nothing in the shipped code invokes a
-    /// rotation on a live server today. Whoever later wires a live rotation
-    /// trigger MUST also refresh the running process's identity view, not
-    /// just the file and chain, or authenticated flows will keep signing
-    /// with the retired key until the next restart.
+    /// on an owned `AppState`).
     pub async fn rotate(
         &self,
         engine: &ServerEngine,
         new_keypair: &coz::KeyPair,
+    ) -> Result<(), ServerPrincipalError> {
+        self.rotate_through(engine, new_keypair, RotationStep::Promoted)
+            .await
+    }
+
+    /// [`rotate`](Self::rotate), stopping after `stop` as if the process
+    /// died there. The seam crash-recovery tests use: a real crash cannot
+    /// be scheduled between two statements of one call.
+    pub async fn rotate_through(
+        &self,
+        engine: &ServerEngine,
+        new_keypair: &coz::KeyPair,
+        stop: RotationStep,
     ) -> Result<(), ServerPrincipalError> {
         // The current active key is whatever the signing-key file holds now
         // — the genesis key on the first rotation, the previously rotated-in
@@ -395,6 +461,11 @@ impl ServerPrincipal {
             })),
         )?;
 
+        super::stage_key_file(&self.signing_key_path, new_keypair)?;
+        if stop == RotationStep::Staged {
+            return Ok(());
+        }
+
         engine
             .submit_commit(
                 &self.pg,
@@ -402,13 +473,36 @@ impl ServerPrincipal {
                 &[&kr_blob, &cc_blob],
             )
             .await?;
+        if stop == RotationStep::Committed {
+            return Ok(());
+        }
 
-        // Persist the private half: the retired key must not remain on disk,
-        // or a later boot would load an inactive key and refuse to start.
-        super::write_key_file(&self.signing_key_path, new_keypair)?;
+        // The retired key must not remain on disk, or a later boot would
+        // load an inactive key and refuse to start.
+        super::promote_staged_key(&self.signing_key_path)?;
 
         Ok(())
     }
+}
+
+/// Read and version-check the genesis record at `state_path`, stamping a
+/// pre-versions record as v1.
+fn read_record(state_path: &Path) -> Result<GenesisRecord, ServerPrincipalError> {
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(state_path)?)?;
+    let found = document_version(&doc)?;
+    if found != u64::from(FILE_FORMAT_VERSION) {
+        return Err(ServerPrincipalError::UnsupportedVersion {
+            found,
+            supported: FILE_FORMAT_VERSION,
+        });
+    }
+    let stamped = doc.get("v").is_some();
+    let record: GenesisRecord = serde_json::from_value(doc)?;
+    // A record from before versions is v1: rewrite it stamped.
+    if !stamped {
+        std::fs::write(state_path, serde_json::to_vec_pretty(&record)?)?;
+    }
+    Ok(record)
 }
 
 /// Sign a canonical pay with `identity`, returning the signature and its

@@ -429,6 +429,35 @@ So a consistent backup today means stopping the server, copying the
 directory, and starting it again. Say that out loud when you plan your
 maintenance window, because it is the one operation that needs downtime.
 
+## Rotating the signing key
+
+`rotate-key` replaces the server's signing key without changing its `pg`.
+Stop the server first (it takes the same exclusive lock as `rebuild-index`),
+then run it with the same data directory and key path you serve with:
+
+```sh
+cyphr-server rotate-key --data-dir ./data --signing-key-path ./signing-key.json
+```
+
+It generates a new key with the current key's algorithm, extends the
+server's own chain with a `key/replace`, and replaces the file at
+`signing_key_path` in place. The key stays where it was and in the same
+format; nothing new is stored. Clients that follow the chain accept
+statements signed by the new key and refuse ones signed by the retired key.
+Start the server again to sign with the new key.
+
+The command is safe to interrupt. It writes the new key to
+`signing-key.json.next` and syncs it to disk before the chain learns about
+it, then renames that file over `signing-key.json` once the chain has
+committed. If the process dies in between, the next `serve` (or
+`rotate-key`) looks at the leftover `.next` beside the key file: a key the
+stored chain has active is moved into place, and one the chain does not
+know is deleted. Either way the server boots with the key its chain has
+active; you never need to repair the key file by hand.
+
+Back up the new key file after a rotation. A backup of the retired key no
+longer matches the chain.
+
 ## Admission: who may create a principal
 
 Admission gates exactly one event — a principal the server has never seen
@@ -1033,7 +1062,7 @@ Named plainly, because finding these out during an incident is worse than
 reading them here:
 
 - **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
-- **No key rotation you can perform.** The capability exists in the codebase and has no command, endpoint, or signal attached to it. A server whose signing key is compromised has no move except a new identity — which breaks every client's pin, because the `pg` changes with the genesis key.
+- **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
 - **No metrics, no health endpoint, no access log by default.**
 - **No backup command.** `cyphr-server export` is listed in `--help` and prints `error: export is not yet implemented`. Consistent backups mean stopping the server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
