@@ -173,7 +173,11 @@ impl User {
 
     /// Create an identity: returns its genesis thumbprint (the identity arg).
     fn new_identity(&self) -> String {
-        let g = self.setup(&["key", "generate", "--algo", "ES256"]);
+        self.new_identity_alg("ES256")
+    }
+
+    fn new_identity_alg(&self, algo: &str) -> String {
+        let g = self.setup(&["key", "generate", "--algo", algo]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
         self.add_key(&tmb);
         tmb
@@ -287,6 +291,25 @@ fn push_stale_is_refused_then_rebased_is_accepted() {
     ]);
     assert!(f.ok, "fetch must succeed: {}", f.stderr);
     assert_eq!(b.commit_count(&id), 3, "genesis commit + B's + rebased A's");
+}
+
+/// Claim: the CLI accepts an identity whose genesis key is not ES256. The
+/// identity digest is the key's thumbprint under that key's own hash
+/// (SHA-384 for ES384, SHA-512 for Ed25519), so it is not 32 bytes, and
+/// push must read it at the width the core reads it (SPEC 2.2.1).
+/// End-to-end: yes (CLI process, real server).
+/// Turns red on: an identity parser that assumes SHA-256, which refuses
+/// Ed25519 and ES384 with "digest length mismatch" before any request.
+/// Red on base: ed25519 and ES384 pushes fail with that error.
+#[test]
+fn push_accepts_ed25519_and_other_key_algorithms() {
+    let server = Server::start();
+    for algo in ["ES256", "ES384", "Ed25519"] {
+        let u = User::new();
+        let id = u.new_identity_alg(algo);
+        accepted(&u.push(&id, &server.url), &format!("{algo} identity push"));
+        assert_eq!(u.commit_count(&id), 1, "{algo}: one genesis commit");
+    }
 }
 
 /// Claim: fetch brings a peer's verified commits into an empty local store.

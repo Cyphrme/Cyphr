@@ -595,9 +595,26 @@ pub fn local_genesis(
 }
 
 /// Parse a base64url principal genesis string into a PrincipalGenesis.
+///
+/// The digest is read under the hash its width names (SHA-256, SHA-384 or
+/// SHA-512), as the core builds it: a genesis key's thumbprint is hashed
+/// with that key's own algorithm, so an Ed25519 identity is 64 bytes.
 pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphr::PrincipalGenesis> {
+    use coz::HashAlg;
+
     let bytes = Base64UrlUnpadded::decode_vec(s)?;
-    Ok(cyphr::PrincipalGenesis::from_bytes(bytes)?)
+    let alg = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512]
+        .into_iter()
+        .find(|a| a.digest_size() == bytes.len())
+        .ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "identity is {} bytes; expected 32, 48 or 64 (SHA-256, SHA-384, SHA-512)",
+                bytes.len()
+            ))
+        })?;
+    Ok(cyphr::PrincipalGenesis(cyphr::MultihashDigest::from_single(
+        alg, bytes,
+    )?))
 }
 
 /// Decode base64url string to bytes.
