@@ -69,6 +69,9 @@ pub enum Probe {
     /// A hostile responder serves this envelope version over the transport
     /// and the client fails closed on it with the typed refusal.
     VersionGate(u64),
+    /// A fresh peer refuses a commit that re-includes an applied
+    /// transaction coz with `COZ_REUSE`, and keeps its tip (SPEC 7.6).
+    CozReuse,
     /// A path under the workspace root exists.
     WorkspacePath(&'static [&'static str]),
     /// No observable surface exists yet; reports absent. The named node
@@ -143,11 +146,11 @@ impl Capability {
             Self::ClientGossip => Probe::Cli(&["gossip", "--help"], None),
             Self::Audit => Probe::Cli(&["audit", "--help"], None),
             Self::Pinning => Probe::Cli(&["watch", "--help"], None),
-            // The observable form is a replayed data action against a running
-            // peer, which needs the push path N09 and N16 provide. (An earlier
-            // probe ran the library's red property; it read "zero tests run" as
-            // present and never touched a binary.)
-            Self::Idempotency => Probe::Pending("N09"),
+            // Observed on a running peer's push path: a replayed transaction
+            // coz is refused as COZ_REUSE. (An earlier probe ran the library's
+            // red property; it read "zero tests run" as present and never
+            // touched a binary.)
+            Self::Idempotency => Probe::CozReuse,
             // Every stored and wire format refuses an unknown `v`; the
             // observable form is a hostile peer serving envelope v=99 to a
             // network client, which the transport now carries.
@@ -225,6 +228,10 @@ impl Probe {
             },
             Probe::VersionGate(v) => crate::transport::client_fails_closed_on_version(*v)
                 .await
+                .map_err(run),
+            Probe::CozReuse => crate::idempotency::replay_on_fresh_peer(h.bins, &h.http)
+                .await
+                .map(|a| a.refused_as_reuse())
                 .map_err(run),
             Probe::WorkspacePath(parts) => {
                 let root = Path::new(env!("CARGO_MANIFEST_DIR"))
