@@ -307,9 +307,9 @@ pub fn verify_principal_fork(
     }
     // The replay is only evidence about `pg` if it starts from the genesis
     // `pg` names (the genesis root, labelled or bare).
-    let derives = base.pr_tagged().is_ok_and(|g| {
-        g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg)
-    });
+    let derives = base
+        .pr_tagged()
+        .is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
     if !derives {
         return Err(EvidenceFailure::GenesisMismatch);
     }
