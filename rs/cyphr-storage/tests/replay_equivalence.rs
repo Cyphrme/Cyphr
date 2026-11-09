@@ -412,3 +412,144 @@ async fn scratch_quarantine_survives_a_restart() {
         "the restart's heal pass keeps the scratch rebuild's quarantine"
     );
 }
+
+/// A pool key that signs: its domain key and raw key material.
+struct Signer {
+    key: cyphr::Key,
+    alg: String,
+    prv: Vec<u8>,
+    pub_key: Vec<u8>,
+}
+
+fn signer(name: &str) -> Signer {
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let pk = pool.get(name).expect("pool key");
+    let decode = |v: &str| Base64UrlUnpadded::decode_vec(v).expect("base64url");
+    let pub_key = decode(&pk.pub_key);
+    Signer {
+        key: cyphr::Key::new(
+            pk.alg.clone(),
+            pk.compute_tmb().expect("tmb"),
+            pub_key.clone(),
+        )
+        .expect("key binds its tmb"),
+        alg: pk.alg.clone(),
+        prv: decode(pk.prv.as_deref().expect("prv")),
+        pub_key,
+    }
+}
+
+impl Signer {
+    /// Sign `pay` (fields already in canonical, sorted order).
+    fn sign(&self, pay: &serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+        let bytes = serde_json::to_vec(pay).expect("pay json");
+        let (sig, cad) = coz::sign_json(&bytes, &self.alg, &self.prv, &self.pub_key).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, &self.alg).expect("czd");
+        (bytes, sig, czd)
+    }
+
+    /// The wire blob of `pay` with an optional `key` sidecar.
+    fn blob(&self, pay: &serde_json::Value, sidecar: Option<&cyphr::Key>) -> Vec<u8> {
+        let (_, sig, _) = self.sign(pay);
+        let mut coz =
+            serde_json::json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) });
+        if let Some(key) = sidecar {
+            coz["key"] = serde_json::json!({
+                "alg": key.alg(),
+                "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
+                "tmb": key.tmb().to_b64(),
+            });
+        }
+        serde_json::to_vec(&coz).expect("json")
+    }
+
+    /// Record a data action on `writer`; returns its wire blob.
+    fn action(&self, writer: &mut cyphr::Principal, now: i64) -> Vec<u8> {
+        let pay = serde_json::json!({
+            "alg": self.alg, "now": now, "tmb": self.key.tmb().to_b64(),
+            "typ": "cyphr.me/app/post/create",
+        });
+        let (bytes, sig, czd) = self.sign(&pay);
+        writer
+            .verify_and_record_action(&bytes, &sig, czd)
+            .expect("action records");
+        self.blob(&pay, None)
+    }
+
+    /// Commit a `key/create` of `new` on `writer`; returns the commit's wire
+    /// blobs, the genesis key carried on its `commit/create` if `carrier`.
+    fn key_create(
+        &self,
+        writer: &mut cyphr::Principal,
+        new: &cyphr::Key,
+        now: i64,
+        carrier: bool,
+    ) -> Vec<Vec<u8>> {
+        let pay = serde_json::json!({
+            "alg": self.alg, "id": new.tmb().to_b64(), "now": now,
+            "tmb": self.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/create",
+        });
+        let (bytes, sig, czd) = self.sign(&pay);
+        let mut scope = writer.begin_commit();
+        scope
+            .verify_and_apply(&bytes, &sig, czd, Some(new.clone().with_first_seen(now)))
+            .expect("key/create applies");
+        let signer =
+            cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pub_key, self.key.tmb());
+        let commit = scope
+            .finalize_with_software(&signer, now, "cyphr.me")
+            .expect("finalizes");
+        let closing = commit
+            .iter_all_cozies()
+            .last()
+            .expect("commit/create")
+            .raw()
+            .pay
+            .clone();
+        vec![
+            self.blob(&pay, Some(new)),
+            self.blob(&closing, carrier.then_some(&self.key)),
+        ]
+    }
+}
+
+/// Claim: engine ingest applies a bundle of data action, transaction, data
+/// action by the order rule (leading actions, then the commit, then the
+/// trailing actions against the post-commit state): a trailing action
+/// signed by the key the bundle's own `key/create` introduced is accepted,
+/// the indexed tip is the commit the writer formed, and replaying the
+/// stored chain reaches the writer's PR.
+///
+/// Turns red if: replay records every data action before the commit scope
+/// (the trailing action's signer is not yet a key: `UnknownKey`).
+/// End-to-end scenario: yes (a real mixed bundle through engine ingest and
+/// a stored-chain replay).
+#[tokio::test]
+async fn action_after_a_transaction_is_judged_after_the_commit() {
+    let golden = signer("golden");
+    let key_a = signer("key_a");
+    let key_b = signer("alice");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let first = golden.key_create(&mut writer, &key_a.key, 1_700_000_100, true);
+    let mut mixed = vec![golden.action(&mut writer, 1_700_000_150)];
+    mixed.extend(golden.key_create(&mut writer, &key_b.key, 1_700_000_200, false));
+    let commit_pr = writer.pr_tagged().expect("pr");
+    mixed.push(key_b.action(&mut writer, 1_700_000_250));
+
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for bundle in [first, mixed] {
+        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .await
+            .expect("the bundle is admitted by the order rule");
+    }
+    let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(
+        (tip.commit_count, tip.pr),
+        (2, commit_pr),
+        "the indexed tip is the writer's commit"
+    );
+}

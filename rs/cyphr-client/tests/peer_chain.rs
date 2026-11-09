@@ -188,7 +188,11 @@ impl Chain<'_> {
     /// local principal; returns its wire blob, to be sent before the commit
     /// it precedes.
     fn action(&mut self, typ: &str, now: i64) -> String {
-        let g = self.genesis;
+        self.action_by(self.genesis, typ, now)
+    }
+
+    /// [`Chain::action`] signed by `g`, a key active in the chain.
+    fn action_by(&mut self, g: &Kp, typ: &str, now: i64) -> String {
         let pay = serde_json::to_vec(&serde_json::json!({
             "alg": g.kp.alg.name(),
             "now": now,
@@ -852,4 +856,41 @@ async fn nonce_golden_chains_follow_to_the_recorded_pr() {
         followed += 1;
     }
     assert!(followed >= 5, "the nonce vectors were found ({followed})");
+}
+
+/// Claim: a bundle carrying a data action, a transaction and a second data
+/// action replays by the order rule: actions before the first transaction
+/// are recorded first, the commit is formed, and actions after it are
+/// recorded against the post-commit state. So the trailing action may be
+/// signed by the key the bundle's own `key/create` introduced, and the
+/// client reaches the PR its writer derived.
+///
+/// Turns red if: replay records every data action before the commit scope
+/// (the trailing action's signer is then not yet a key, `UnknownKey`).
+/// End-to-end scenario: yes (a real mixed bundle served over a carrier).
+#[tokio::test]
+async fn action_after_a_transaction_is_judged_after_the_commit() {
+    let g = kp();
+    let k1 = kp();
+    let k2 = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let lead = peer.action("cyphr.me/app/post/create", 1_700_000_150);
+    let commit = peer.commit(&k2, 1_700_000_200);
+    let trail = peer.action_by(&k2, "cyphr.me/app/post/create", 1_700_000_250);
+    let mut bundle = vec![lead];
+    bundle.extend(commit);
+    bundle.push(trail);
+
+    let pipe = Pipe::new(patch_body(&[c1, bundle]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe)
+        .await
+        .expect("a mixed bundle follows by the order rule");
+    let tip = held.held_tip().expect("tip");
+    assert_eq!(
+        (tip.commits, tip.pr),
+        (2, peer.principal.pr_tagged().expect("pr")),
+        "the client reaches the writer's PR"
+    );
 }
