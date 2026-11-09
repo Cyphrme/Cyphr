@@ -205,10 +205,12 @@ pub const BRANCH_LIMIT: usize = 16;
 
 /// Retained rivals kept per signing key of one principal. A key that
 /// forked once is already proven to equivocate by its first rival, so a
-/// small quota loses no evidence; it stops a thief, or a since-revoked key
-/// writing back-dated rivals, from filling [`BRANCH_LIMIT`] and starving
-/// rivals signed by the principal's other keys. A thief holding the
-/// owner's only key shares that key's quota.
+/// small quota loses no evidence. A principal can therefore hold at most
+/// `min(BRANCH_LIMIT, BRANCH_PER_KEY * active keys)` rivals: a thief who
+/// holds one key cannot starve rivals signed by the principal's other
+/// keys, and shares that key's quota if it is the owner's only key. A
+/// thief who first adds keys to the principal (each a further slot pair)
+/// can still fill [`BRANCH_LIMIT`].
 pub const BRANCH_PER_KEY: usize = 2;
 
 /// A retained rival as the engine tracks it: the listed [`BranchTip`],
