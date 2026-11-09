@@ -612,9 +612,9 @@ pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphr::PrincipalGenesis
                 bytes.len()
             ))
         })?;
-    Ok(cyphr::PrincipalGenesis(cyphr::MultihashDigest::from_single(
-        alg, bytes,
-    )?))
+    Ok(cyphr::PrincipalGenesis(
+        cyphr::MultihashDigest::from_single(alg, bytes)?,
+    ))
 }
 
 /// Decode base64url string to bytes.
