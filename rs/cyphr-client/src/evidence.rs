@@ -86,6 +86,11 @@ pub enum EvidenceFailure {
         /// What is wrong with it.
         what: &'static str,
     },
+    /// The genesis the caller supplied does not derive the principal the
+    /// item is about, so replaying from it proves nothing about that
+    /// principal.
+    #[error("the supplied genesis does not derive the principal")]
+    GenesisMismatch,
     /// The held chain's root at the item's height is not the item's `pre`.
     #[error("the held chain's root at the fork is not the item's pre")]
     PreMismatch,
@@ -270,7 +275,7 @@ pub fn replay_chain(
 /// its genesis state and `entries` its commits as fetched (any peer's
 /// `/patch`; they are replayed, not trusted). The check:
 ///
-/// 1. the item names `pg`;
+/// 1. the item names `pg`, and `base` derives it;
 /// 2. replaying the first `height` held commits reaches the item's `pre`;
 /// 3. each of the two served commits, replayed from a copy of that state, verifies, so each is
 ///    signed by a key active at `pre`;
@@ -299,6 +304,14 @@ pub fn verify_principal_fork(
     };
     if item_pg != pg {
         return Err(EvidenceFailure::OtherPrincipal);
+    }
+    // The replay is only evidence about `pg` if it starts from the genesis
+    // `pg` names (the genesis root, labelled or bare).
+    let derives = base.pr_tagged().is_ok_and(|g| {
+        g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg)
+    });
+    if !derives {
+        return Err(EvidenceFailure::GenesisMismatch);
     }
     let prefix = usize::try_from(height)
         .ok()
@@ -422,26 +435,32 @@ impl KeyHistory {
                 until: None,
             })
             .collect();
-        let mut ends: Vec<(coz::Thumbprint, i64)> = Vec::new();
+        // One pass in chain order: an end closes only the interval of that
+        // key open at that point, so a key deleted and added again keeps
+        // its later interval.
+        let end = |keys: &mut Vec<HeldKey>, tmb: &coz::Thumbprint, at: i64| {
+            if let Some(held) = keys
+                .iter_mut()
+                .rev()
+                .find(|h| h.key.tmb() == tmb && h.until.is_none())
+            {
+                held.until = Some(at);
+            }
+        };
         for vc in chain.iter_all_cozies() {
             let cz = vc.coz();
+            match cz.kind() {
+                cyphr::CozKind::KeyDelete { id } => end(&mut keys, id, cz.now()),
+                cyphr::CozKind::KeyReplace { .. } => end(&mut keys, cz.signer(), cz.now()),
+                cyphr::CozKind::SelfRevoke { rvk } => end(&mut keys, cz.signer(), *rvk),
+                _ => {},
+            }
             if let Some(key) = vc.new_key() {
                 keys.push(HeldKey {
                     key: key.clone(),
                     from: cz.now(),
                     until: None,
                 });
-            }
-            match cz.kind() {
-                cyphr::CozKind::KeyDelete { id } => ends.push((id.clone(), cz.now())),
-                cyphr::CozKind::KeyReplace { .. } => ends.push((cz.signer().clone(), cz.now())),
-                cyphr::CozKind::SelfRevoke { rvk } => ends.push((cz.signer().clone(), *rvk)),
-                _ => {},
-            }
-        }
-        for (tmb, at) in ends {
-            for held in keys.iter_mut().filter(|h| h.key.tmb() == &tmb) {
-                held.until = Some(held.until.map_or(at, |u| u.min(at)));
             }
         }
         Self { keys }

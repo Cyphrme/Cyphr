@@ -314,6 +314,13 @@ async fn fork_evidence_is_served_and_verified_offline() {
         refused(item, &other, &held),
         EvidenceFailure::OtherPrincipal
     ));
+    // A replay from a genesis that does not derive the principal proves
+    // nothing about it.
+    let wrong_genesis = cyphr::Principal::implicit(key_of(&kp(&pool, "key_a"))).expect("genesis");
+    assert!(matches!(
+        verify_principal_fork(item, &pr.id, wrong_genesis, &held),
+        Err(EvidenceFailure::GenesisMismatch)
+    ));
     let mut wrong_pre = item.clone();
     wrong_pre["pre"] = serde_json::json!("SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     assert!(matches!(
@@ -819,6 +826,8 @@ fn key_history_bounds_a_key_by_its_signed_times() {
         None,
         T + 20,
     );
+    // bob is added again after its delete: the later interval is its own.
+    create_key(&mut peer, &a, &bob, T + 25);
     apply(
         &mut peer,
         &g,
@@ -845,6 +854,8 @@ fn key_history_bounds_a_key_by_its_signed_times() {
     check(&signs(&bob, T + 15), &other).expect("bob vouches while held");
     check(&signs(&bob, T + 20), &other).expect_err("not at the instant of its delete");
     check(&signs(&bob, T + 5), &other).expect_err("not before it was introduced");
+    check(&signs(&bob, T + 22), &other).expect_err("not between the delete and the re-add");
+    check(&signs(&bob, T + 27), &other).expect("a key added again vouches in its later interval");
 
     let mut tampered = signs(&a, T + 40);
     tampered["pay"]["tree_size"] = 3.into();
