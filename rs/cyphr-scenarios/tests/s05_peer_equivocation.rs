@@ -17,7 +17,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(evidence): N18a"]
+#[ignore = "RED(client-gossip): G3"]
 async fn s05_peer_equivocation() {
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
     h.require(&[

@@ -51,10 +51,16 @@ pub enum EngineError {
         hash: crate::blob::Blake3Hash,
     },
 
-    /// The principal already has [`BRANCH_LIMIT`](super::BRANCH_LIMIT)
-    /// retained branches, so this fork is refused and nothing of it stored.
-    #[error("branch limit reached: principal already has the maximum retained branches")]
-    BranchLimit,
+    /// A rival signed by `key` is refused and nothing of it stored: `key`
+    /// already holds [`BRANCH_PER_KEY`](super::BRANCH_PER_KEY) retained
+    /// rivals of this principal, or the principal already holds
+    /// [`BRANCH_LIMIT`](super::BRANCH_LIMIT) in all. The per-key quota is
+    /// what stops one key from filling the slots other keys' rivals need.
+    #[error("branch limit reached: no slot left for a rival signed by key {key}")]
+    BranchLimit {
+        /// Thumbprint of the key that signed the refused rival.
+        key: String,
+    },
 
     /// The engine's commit-tree storage factory failed to produce a fresh
     /// storage instance for a `Principal`.

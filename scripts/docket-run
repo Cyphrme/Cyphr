@@ -31,14 +31,17 @@ declare -A CLAIMS_INDEX=(
   # Entries for claims the documents no longer define, and for claims
   # with no test yet, are absent rather than vacuous: `docket run` then
   # reports them absent until their owner writes the test and adds the
-  # entry. Four claims below name a test that does not exist yet; they
-  # FAIL on purpose (see the zero-test rule at the foot of this file).
+  # entry. A claim with several tests lists them all; every one must pass.
   [arch-detection-is-comparison]="_claim_arch_detection_is_comparison"
   [arch-tip-reports-are-material]="_claim_arch_tip_reports_are_material"
   [arch-behind-is-not-fork]="_claim_arch_behind_is_not_fork"
   [arch-signing-stays-stateless]="_claim_arch_signing_stays_stateless"
   [arch-finding-never-clears]="_claim_arch_finding_never_clears"
   [arch-verifier-chooses-peers]="_claim_arch_verifier_chooses_peers"
+  [arch-one-key-equivocation]="_claim_arch_one_key_equivocation"
+  [arch-principal-fork-evidence]="_claim_arch_principal_fork_evidence"
+  [arch-both-branches-kept]="_claim_arch_both_branches_kept"
+  [arch-evidence-is-portable]="_claim_arch_evidence_is_portable"
 
   # Sign-on claims (docs/architecture/path-a-sovereign-sign-on.md); each
   # names the one scenario test that closes it.
@@ -122,16 +125,28 @@ _claim_arch_tip_reports_are_material=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation wrong_typ_pair_is_not_equivocation -- --exact"
 )
 _claim_arch_behind_is_not_fork=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_behind_is_not_fork -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence stale_prefix_is_not_evidence -- --exact"
 )
 _claim_arch_signing_stays_stateless=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation signing_is_unaffected_by_running_a_fork_comparison -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence signing_is_unchanged_by_held_evidence -- --exact"
 )
 _claim_arch_finding_never_clears=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation conflicting_pair_still_proven_after_unrelated_agreement_evaluated -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence historical_view_survives_the_signing_keys_revocation -- --exact"
 )
 _claim_arch_verifier_chooses_peers=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test no_registration register_route_is_gone_and_push_never_dials_out -- --exact"
+)
+_claim_arch_one_key_equivocation=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence peer_equivocation_is_judged_against_one_peers_chain -- --exact"
+)
+_claim_arch_principal_fork_evidence=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence fork_evidence_is_served_and_verified_offline -- --exact"
+)
+_claim_arch_both_branches_kept=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence fork_evidence_is_served_and_verified_offline -- --exact"
+)
+_claim_arch_evidence_is_portable=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test evidence fork_evidence_is_served_and_verified_offline -- --exact"
 )
 
 _claim_signon_honest_refusal=(

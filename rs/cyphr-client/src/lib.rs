@@ -9,6 +9,7 @@
 //! `Connector`.
 
 mod connector;
+pub mod evidence;
 mod patch;
 mod peer;
 mod report;

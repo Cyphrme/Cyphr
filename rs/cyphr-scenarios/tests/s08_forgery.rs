@@ -14,7 +14,7 @@ use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(evidence): N18a"]
+#[ignore = "RED(idempotency): N09"]
 async fn s08_forgery() {
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
     h.require(&[

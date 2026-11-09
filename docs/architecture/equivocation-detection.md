@@ -194,6 +194,15 @@ must be shown to belong to the same server's chain, which may span a key
 rotation. Two views signed by different servers are never evidence
 against either server, whatever they disagree about.
 
+A view is judged against the key the server's chain held at the view's
+own signed time, so a later revocation or rotation does not erase it.
+The cost of that design: the time is the signer's own claim, so whoever
+holds a key the server has since retired can sign two conflicting
+reports dated inside that key's lifetime, and they verify as evidence.
+Such evidence convicts the retired key's holder, not necessarily the
+server's present operator; a verifier that needs to tell the two apart
+needs a time the signer does not choose.
+
 ```claim
 kind: requirement
 evaluator: test
@@ -220,8 +229,9 @@ not present either branch as the principal's state: the principal's
 consensus state is Error (SPEC §15.8). A peer may refuse further writes
 for that principal; it keeps serving both branches and the evidence.
 
-The server does not meet this today: it refuses the second branch with
-`409` and keeps nothing of it.
+The server meets this: it refuses the second branch as the tip (`409`),
+keeps it as a verified branch within a per-key quota, and serves both
+branches at `GET /evidence`.
 
 ```claim
 kind: requirement

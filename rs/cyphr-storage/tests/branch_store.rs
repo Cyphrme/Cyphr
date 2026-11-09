@@ -688,50 +688,266 @@ mod retained {
         }
     }
 
-    /// Backs a-verify: retention is bounded per principal. Rivals are
-    /// pushed until the store answers the typed `EngineError::BranchLimit`;
-    /// the refused one stores nothing and the listing stops growing.
-    /// Turns red if retention is unbounded (no such error within
-    /// `ATTEMPTS`), if it arrives at any count but the 17th rival (the
-    /// canonical one plus `BRANCH_LIMIT` retained non-canonical), or the
-    /// error is untyped. `ATTEMPTS` is a harness ceiling, not the bound.
+    /// A signing key that is not in the pool.
+    fn fresh_kp() -> Kp {
+        let g = coz::Alg::Ed25519.generate_keypair();
+        let tmb = g.alg.compute_thumbprint(&g.pub_bytes).expect("tmb");
+        Kp {
+            alg: g.alg.name().to_owned(),
+            prv: g.prv_bytes.clone(),
+            pubb: g.pub_bytes.clone(),
+            tmb,
+        }
+    }
+
+    impl Fork {
+        /// A valid commit at position 1, signed by `signer` (a key active
+        /// at the fork's `pre`); `salt` makes it distinct.
+        fn rival_by(&self, signer: &Kp, salt: i64) -> Vec<Vec<u8>> {
+            let mut p = self.base.clone();
+            create_key(&mut p, signer, &fresh_kp(), NOW + 1 + salt);
+            blobs(&p, &self.golden, 1)
+        }
+    }
+
+    /// Backs the slot policy (PLAN N18a, per-key quota): one key may retain
+    /// at most `BRANCH_PER_KEY` = 2 rivals of a principal; the next is the
+    /// typed `EngineError::BranchLimit` naming that key, and stores
+    /// nothing. Turns red if the quota is absent (the third rival is
+    /// kept), the refusal does not name the signing key, or a refusal
+    /// stores blobs or a branch. End to end at the engine seam: yes.
     #[tokio::test]
-    async fn retention_is_bounded_by_a_typed_error() {
-        const ATTEMPTS: usize = 100;
-        // Mirrors the brief's API note: `BRANCH_LIMIT = 16` retained
-        // non-canonical branches.
-        const BRANCH_LIMIT: usize = 16;
+    async fn a_key_past_its_quota_is_refused_naming_it() {
+        const BRANCH_PER_KEY: usize = 2;
         let mut f = Fork::new(0);
         let (e, _) = f.engine_with(&[]).await;
-        let mut limit_at = None;
-        for n in 0..ATTEMPTS {
+        // The first rival takes the position; the quota counts rivals
+        // refused as the tip.
+        for n in 0..=BRANCH_PER_KEY {
             f.add_rival(n as i64);
-            let (blobs_before, listed_before) = (blob_count(&e).await, branches(&e, &f.id).await);
-            // The first rival is canonical (Ok); the rest are refused as the
-            // tip yet retained, which is not the bound.
-            if let Err(EngineError::BranchLimit) =
-                f.submit(&e, f.rivals.last().expect("rival")).await
-            {
-                assert_eq!(
-                    blob_count(&e).await,
-                    blobs_before,
-                    "BranchLimit stored blobs"
-                );
-                assert_eq!(
-                    branches(&e, &f.id).await,
-                    listed_before,
-                    "BranchLimit stored a branch"
-                );
-                let non_canonical = listed_before.iter().filter(|b| !b.3).count();
-                assert_eq!(non_canonical, BRANCH_LIMIT, "bound reached off the limit");
-                limit_at = Some(n);
-                break;
-            }
+            f.submit(&e, f.rivals.last().expect("rival"))
+                .await
+                .or_else(|err| match err {
+                    EngineError::Protocol(_) => Ok(()),
+                    other => Err(other),
+                })
+                .expect("within the quota the rival is retained");
+        }
+        let (blobs_before, listed_before) = (blob_count(&e).await, branches(&e, &f.id).await);
+        f.add_rival(BRANCH_PER_KEY as i64 + 1);
+        let refused = f.submit(&e, f.rivals.last().expect("rival")).await;
+        match refused {
+            Err(EngineError::BranchLimit { key }) => {
+                assert_eq!(key, f.golden.tmb.to_b64(), "the refusal names the key")
+            },
+            other => panic!("expected BranchLimit naming the key, got {other:?}"),
         }
         assert_eq!(
-            limit_at,
-            Some(BRANCH_LIMIT + 1),
-            "BranchLimit must answer the rival after canonical + {BRANCH_LIMIT} retained"
+            blob_count(&e).await,
+            blobs_before,
+            "BranchLimit stored blobs"
+        );
+        assert_eq!(
+            branches(&e, &f.id).await,
+            listed_before,
+            "BranchLimit stored a branch"
+        );
+        assert_eq!(
+            listed_before.iter().filter(|b| !b.3).count(),
+            BRANCH_PER_KEY,
+            "exactly the quota is retained"
+        );
+    }
+
+    /// Backs the slot policy: a key that has used up its quota does not
+    /// stop a rival signed by another key of the same principal from being
+    /// retained. Turns red if slots are first-come across keys. End to end
+    /// at the engine seam: yes.
+    #[tokio::test]
+    async fn one_keys_flood_leaves_a_slot_for_another_key() {
+        let mut f = Fork::new(0);
+        let (e, _) = f.engine_with(&[]).await;
+        for n in 0..6 {
+            f.add_rival(n);
+            let _ = f.submit(&e, f.rivals.last().expect("rival")).await;
+        }
+        let key_a = kp(&load_pool(), "key_a");
+        let other = f.rival_by(&key_a, 50);
+        f.submit(&e, &other).await.expect_err("refused as the tip");
+        let listed = e.list_branches(&f.id).await.expect("list_branches");
+        let kept_other = listed.iter().filter(|b| !b.canonical).count();
+        assert_eq!(
+            kept_other, 3,
+            "two of golden's and key_a's rival are retained: {listed:?}"
+        );
+    }
+
+    /// Backs the slot policy: the total ceiling `BRANCH_LIMIT` = 16 holds
+    /// across keys. Eight keys retain two rivals each; a ninth key (within
+    /// its own quota) is refused as `BranchLimit` naming it. Turns red if
+    /// the ceiling is absent or applied per key only. End to end at the
+    /// engine seam: yes.
+    #[tokio::test]
+    async fn the_total_ceiling_holds_across_keys() {
+        const SIGNERS: usize = 9;
+        let golden = kp(&load_pool(), "golden");
+        let signers: Vec<Kp> = (0..SIGNERS).map(|_| fresh_kp()).collect();
+        let mut base = cyphr::Principal::implicit(key_of(&golden)).expect("genesis");
+        let id = base.pr_tagged().expect("id");
+        for (i, k) in signers.iter().enumerate() {
+            create_key(&mut base, &golden, k, NOW + i as i64);
+        }
+        let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+        let genesis = Genesis::Implicit(key_of(&golden));
+        let submit = |b: Vec<Vec<u8>>| {
+            let (e, id, genesis) = (&e, id.clone(), genesis.clone());
+            async move {
+                let refs: Vec<&[u8]> = b.iter().map(Vec::as_slice).collect();
+                e.submit_commit(&id, Some(genesis), &refs).await.map(|_| ())
+            }
+        };
+        for i in 0..SIGNERS {
+            submit(blobs(&base, &golden, i))
+                .await
+                .expect("shared prefix");
+        }
+        let rival = |signer: &Kp, salt: i64| {
+            let mut p = base.clone();
+            create_key(&mut p, signer, &fresh_kp(), NOW + 1000 + salt);
+            blobs(&p, &golden, SIGNERS)
+        };
+        // Signer 0's first rival takes the position; signers 1..=8 then fill
+        // all sixteen slots.
+        submit(rival(&signers[0], 0)).await.expect("canonical");
+        let mut salt = 1;
+        for signer in &signers[1..] {
+            for _ in 0..2 {
+                assert!(matches!(
+                    submit(rival(signer, salt)).await,
+                    Err(EngineError::Protocol(_))
+                ));
+                salt += 1;
+            }
+        }
+        let kept = e
+            .list_branches(&id)
+            .await
+            .expect("list")
+            .iter()
+            .filter(|b| !b.canonical)
+            .count();
+        assert_eq!(kept, 16, "every key within its quota is retained");
+        match submit(rival(&signers[0], salt)).await {
+            Err(EngineError::BranchLimit { key }) => {
+                assert_eq!(key, signers[0].tmb.to_b64(), "the refusal names the key")
+            },
+            other => panic!("expected BranchLimit at the ceiling, got {other:?}"),
+        }
+    }
+
+    /// Backs the cheap check before any clone: a bundle that is, byte for
+    /// byte, a commit the engine already holds (canonical or retained) is
+    /// nobody's rival, so it is answered with no replay trial. Turns red
+    /// if re-pushing a held commit costs retention work. End to end at the
+    /// engine seam: yes (the counters are the engine's cost surface).
+    #[tokio::test]
+    async fn a_held_commit_costs_retention_no_trial() {
+        let f = Fork::new(2);
+        let (e, _) = f.engine_with(&[0, 1]).await;
+        let before = e.retention_trials();
+        f.submit(&e, &f.rivals[0])
+            .await
+            .expect_err("canonical re-push refused");
+        f.submit(&e, &f.rivals[1])
+            .await
+            .expect_err("retained re-push refused");
+        assert_eq!(e.retention_trials(), before, "a held commit was tried");
+    }
+
+    /// A blob store that can be told to fail writes.
+    struct Flaky {
+        inner: MemoryBlobStore,
+        fail_puts: std::sync::atomic::AtomicBool,
+    }
+
+    impl BlobStore for Flaky {
+        async fn put(
+            &self,
+            data: &[u8],
+        ) -> Result<cyphr_storage::blob::Blake3Hash, cyphr_storage::blob::BlobStoreError> {
+            if self.fail_puts.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(cyphr_storage::blob::BlobStoreError::Backend(
+                    "injected write failure".into(),
+                ));
+            }
+            self.inner.put(data).await
+        }
+
+        async fn get(
+            &self,
+            hash: &cyphr_storage::blob::Blake3Hash,
+        ) -> Result<Option<Vec<u8>>, cyphr_storage::blob::BlobStoreError> {
+            self.inner.get(hash).await
+        }
+
+        async fn exists(
+            &self,
+            hash: &cyphr_storage::blob::Blake3Hash,
+        ) -> Result<bool, cyphr_storage::blob::BlobStoreError> {
+            self.inner.exists(hash).await
+        }
+
+        async fn iter(
+            &self,
+        ) -> Result<
+            Box<
+                dyn Iterator<
+                        Item = Result<
+                            cyphr_storage::blob::Blake3Hash,
+                            cyphr_storage::blob::BlobStoreError,
+                        >,
+                    > + Send,
+            >,
+            cyphr_storage::blob::BlobStoreError,
+        > {
+            self.inner.iter().await
+        }
+    }
+
+    /// Backs best-effort retention (PLAN N18a): when keeping a rival hits a
+    /// storage error, the push still answers the fork's own refusal (a
+    /// protocol error, 409/422 at the server), never a storage error (500).
+    /// Turns red if the storage fault replaces the refusal. Engine seam,
+    /// not the server: the server's stores are concrete, so a failing blob
+    /// store can only be injected here.
+    #[tokio::test]
+    async fn a_storage_fault_while_retaining_keeps_the_original_refusal() {
+        let f = Fork::new(2);
+        let e = StorageEngine::new(
+            Flaky {
+                inner: MemoryBlobStore::new(),
+                fail_puts: false.into(),
+            },
+            MemoryIndexer::new(),
+        );
+        let go = |b: &Vec<Vec<u8>>| {
+            let b = b.clone();
+            let e = &e;
+            let (id, g) = (f.id.clone(), f.genesis.clone());
+            async move {
+                let refs: Vec<&[u8]> = b.iter().map(Vec::as_slice).collect();
+                e.submit_commit(&id, Some(g), &refs).await.map(|_| ())
+            }
+        };
+        go(&f.first).await.expect("commit 0");
+        go(&f.rivals[0]).await.expect("canonical");
+        e.blob_store()
+            .fail_puts
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let refused = go(&f.rivals[1]).await;
+        assert!(
+            matches!(refused, Err(EngineError::Protocol(_))),
+            "the original refusal must survive a retention fault: {refused:?}"
         );
     }
 
