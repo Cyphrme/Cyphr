@@ -386,6 +386,42 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
     Ok(app)
 }
 
+/// Finish or abandon a rotation interrupted by a crash, before the key
+/// file is loaded. A no-op (the engine is not even opened) when no
+/// `.next` exists, which is every boot but the one after a crash.
+pub async fn reconcile_key_rotation(
+    config: &config::ServerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(path) = config.signing_key_path.clone() else {
+        return Ok(());
+    };
+    if !auth::next_key_path(&path).exists() {
+        return Ok(());
+    }
+    // `state` holds the store open; it is dropped on return so `serve`
+    // (or the rotation) can take the data directory afterwards.
+    let state = AppState::new(config.clone())?;
+    let outcome = auth::principal::ServerPrincipal::reconcile_key_file(
+        &state.engine,
+        &path,
+        &config.data_dir,
+    )
+    .await?;
+    match outcome {
+        auth::principal::KeyReconciliation::Adopted => {
+            tracing::warn!(path = %path.display(), "completed an interrupted key rotation");
+        },
+        auth::principal::KeyReconciliation::Discarded => {
+            tracing::warn!(
+                path = %path.display(),
+                "discarded a staged key the chain does not know (interrupted rotation)"
+            );
+        },
+        auth::principal::KeyReconciliation::Clean => {},
+    }
+    Ok(())
+}
+
 /// Start the HTTP server with graceful shutdown.
 ///
 /// Binds to `config.listen`, wires routes, and blocks until
@@ -404,6 +440,10 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     // lose the race in practice, not just in principle.
     #[cfg(unix)]
     let signals = UnixShutdownSignals::install()?;
+
+    // Finish or abandon an interrupted `rotate-key` before the key file is
+    // loaded, so the boot signs with the chain's active key.
+    reconcile_key_rotation(&config).await?;
 
     let listen_addr = config.listen.clone();
     let transport_listen = config.transport_listen.clone();

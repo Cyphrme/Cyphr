@@ -6,6 +6,12 @@
 //! **never** `combined_root()`, which folds every registered algorithm's
 //! member root together and would violate per-algorithm isolation.
 //!
+//! The spec (SPEC.md §3.3, §12.2) closes the question: §3.3 promotes the
+//! genesis SR to PR, equal to PG, with no multi-algorithm exception, and the
+//! portable inclusion and TR-to-CR proofs end at per-algorithm roots; a
+//! combined root would match none of them. §12.2 names a binding root only
+//! as the EML's internal combination of its variant trees, never as the PR.
+//!
 //! At genesis (cell 1 absent), the tree holds a single leaf, so `root(alg_id)`
 //! is that leaf's digest verbatim (the spine's structural singleton
 //! promotion — see `cmt::shape::build`). Because [`MaltHasher`]'s `leaf()` is

@@ -214,9 +214,11 @@ pub fn next_key_path(path: &Path) -> PathBuf {
 /// This is step one of a crash-safe key replacement (see [`principal`]): the
 /// new key must be on stable storage before the chain commits to it, or a
 /// crash after the commit could leave a chain whose active private key
-/// exists nowhere. The file is fsynced before returning. It inherits the
-/// live key file's permissions, so the later rename does not widen access
-/// to the private key.
+/// exists nowhere. The file is fsynced before returning. It is created
+/// owner-only (0600) whether or not a live key file exists: the staging
+/// path is the one moment the private key is on disk under a name the
+/// operator did not create, and the later rename carries that mode onto
+/// the live file.
 pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthError> {
     use std::io::Write;
 
@@ -227,10 +229,15 @@ pub(crate) fn stage_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthE
         prv_key: kp.prv_bytes.clone(),
     };
     let next = next_key_path(path);
-    let mut out = std::fs::File::create(&next)?;
-    if let Ok(live) = std::fs::metadata(path) {
-        out.set_permissions(live.permissions())?;
-    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut out = options.open(&next)?;
+    // `mode` applies only when the file is created; a `.next` left by a
+    // torn run keeps its old mode, so narrow it explicitly too.
+    #[cfg(unix)]
+    out.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     out.write_all(&serde_json::to_vec(&file)?)?;
     out.sync_all()?;
     Ok(())
@@ -298,6 +305,34 @@ mod base64url_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Backs: `<key>.next` is created owner-only (0600) when no live key
+    /// file exists to inherit a mode from, and a leftover wider `.next` is
+    /// narrowed. Unit: rotation always reads the live key first, so no
+    /// scenario reaches the no-live-file case; a torn earlier staging
+    /// leaving a wide `.next` is likewise unschedulable end to end.
+    #[cfg(unix)]
+    #[test]
+    fn stage_key_file_is_owner_only_without_a_live_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("signing-key.json");
+        let kp = coz::Alg::Ed25519.generate_keypair();
+        let next = next_key_path(&path);
+        std::fs::write(&next, b"torn").expect("leftover");
+        std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o644)).expect("widen");
+        stage_key_file(&path, &kp).expect("stage");
+        let mode = std::fs::metadata(&next).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let fresh = dir.path().join("other.json");
+        stage_key_file(&fresh, &kp).expect("stage fresh");
+        let mode = std::fs::metadata(next_key_path(&fresh))
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     /// Backs: a signing-key file whose public half does not match its private half is refused at
     /// startup (typed error). Unit: startup-only path; the lib test for a broken key path covers

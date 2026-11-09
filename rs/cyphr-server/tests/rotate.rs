@@ -307,3 +307,65 @@ async fn crash_after_each_rotation_step_boots_with_the_chains_active_key() {
         );
     }
 }
+
+#[cfg(unix)]
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
+}
+
+/// Claim: a rotation leaves the key file owner-only (0600) even when the
+/// operator's was wider, because the staged `<key>.next` is created 0600
+/// and the rename carries that mode.
+///
+/// Turns red if: the rotated key file keeps or gains a wider mode.
+/// End-to-end scenario: yes (real binary rotation).
+#[cfg(unix)]
+#[test]
+fn rotation_leaves_the_key_file_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_guard, data_dir, key_path) = established();
+    std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+        .expect("widen the operator's key file");
+    let out = server_cmd(&data_dir, "rotate-key", &key_path)
+        .output()
+        .expect("run rotate-key");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(mode(&key_path), 0o600, "rotated key file mode");
+}
+
+/// Claim: `rotate-key` on a data directory that never had a keyed boot
+/// refuses with an error telling the operator to start the server once,
+/// and creates no chain (rotating there would mint a genesis as a side
+/// effect of an offline command).
+///
+/// Turns red if: it succeeds, or refuses without the instruction, or
+/// leaves a server principal record behind.
+/// End-to-end scenario: yes (real binary).
+#[tokio::test]
+async fn rotate_key_refuses_a_never_booted_data_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let key_path = write_signing_key(dir.path());
+    let before = key_file_pub(&key_path);
+
+    let out = server_cmd(&data_dir, "rotate-key", &key_path)
+        .output()
+        .expect("run rotate-key");
+    assert!(!out.status.success(), "must refuse");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("start the server once"), "stderr: {stderr}");
+    assert_eq!(key_file_pub(&key_path), before, "key file untouched");
+    assert!(
+        !data_dir
+            .join(cyphr_server::config::RECORD_DIR_NAME)
+            .join("server-principal.json")
+            .exists(),
+        "no server chain may be minted"
+    );
+}
