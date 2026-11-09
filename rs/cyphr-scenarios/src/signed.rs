@@ -203,7 +203,10 @@ impl ChainView {
         if let Some(g) = &self.genesis_key {
             keys.insert(
                 g.tmb().to_b64(),
-                (g.alg().to_owned(), Base64UrlUnpadded::encode_string(g.pub_key())),
+                (
+                    g.alg().to_owned(),
+                    Base64UrlUnpadded::encode_string(g.pub_key()),
+                ),
             );
         }
         let blobs = self

@@ -135,7 +135,8 @@ pub fn put_key(keystore: &Path, tmb: &str, entry: Value) -> ActionResult<()> {
     let mut doc = read_keystore(keystore)?;
     doc.entry("v").or_insert(Value::from(1));
     doc.insert(tmb.to_owned(), entry);
-    let text = serde_json::to_string_pretty(&doc).map_err(|e| ActionError::Failed(e.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(&doc).map_err(|e| ActionError::Failed(e.to_string()))?;
     std::fs::write(keystore, text)
         .map_err(|e| ActionError::Failed(format!("writing {}: {e}", keystore.display())))
 }

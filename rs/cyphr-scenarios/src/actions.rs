@@ -306,7 +306,6 @@ pub struct RelyingParty<'h> {
     h: &'h Harness,
 }
 
-
 /// One person's device: a `cyphr` CLI store plus keystore, and a node name
 /// the fault proxy can partition or take offline.
 pub struct Client<'h> {
@@ -451,9 +450,11 @@ impl Client<'_> {
     }
 
     fn signer(&self, p: &Principal) -> ActionResult<String> {
-        self.state().signer.get(&p.0).cloned().ok_or_else(|| {
-            ActionError::Failed(format!("`{}` holds no key for {}", self.name, p.0))
-        })
+        self.state()
+            .signer
+            .get(&p.0)
+            .cloned()
+            .ok_or_else(|| ActionError::Failed(format!("`{}` holds no key for {}", self.name, p.0)))
     }
 
     fn know(&self, p: &Principal, peers: &[&str]) {
@@ -523,9 +524,7 @@ impl Client<'_> {
     /// proof-of-possession pairing request is N22's, not this.
     pub async fn pair_device(&self, p: &Principal, other: &Client<'_>) -> ActionResult<KeyRef> {
         let s = self.signer(p)?;
-        let v = other
-            .cyphr(&["key", "generate", "--algo", "ES256"])
-            .await?;
+        let v = other.cyphr(&["key", "generate", "--algo", "ES256"]).await?;
         let tmb = field(&v, "tmb")?;
         let public = cli::public_half(cli::key_entry(&other.dev.keystore, &tmb)?);
         cli::put_key(&self.dev.keystore, &tmb, public)?;
@@ -733,7 +732,8 @@ impl Client<'_> {
         let mut args = vec!["verify".to_owned(), "--identity".into(), p.0.clone()];
         if from.is_empty() {
             let path = self.dev.scratch("choices.toml");
-            let peers = serde_json::to_string(&urls).map_err(|e| ActionError::Failed(e.to_string()))?;
+            let peers =
+                serde_json::to_string(&urls).map_err(|e| ActionError::Failed(e.to_string()))?;
             std::fs::write(&path, format!("peers = {peers}\n"))
                 .map_err(|e| ActionError::Failed(format!("writing choices: {e}")))?;
             args.extend(["--choices".into(), path.to_string_lossy().into_owned()]);
@@ -882,7 +882,11 @@ impl Client<'_> {
             400 | 422 => RefusalKind::Malformed,
             401 | 403 => RefusalKind::Unauthorized,
             413 => RefusalKind::TooLarge,
-            _ => return Err(ActionError::Failed(format!("`{to}` /push {status}: {detail}"))),
+            _ => {
+                return Err(ActionError::Failed(format!(
+                    "`{to}` /push {status}: {detail}"
+                )));
+            },
         };
         Ok(PushOutcome::Refused(Refusal { kind, detail }))
     }

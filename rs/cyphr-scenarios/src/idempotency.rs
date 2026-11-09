@@ -107,7 +107,12 @@ fn commit(
     let first = p.commits().count() == 0;
     let mut scope = p.begin_commit();
     scope
-        .verify_and_apply(&pay, &sig, czd, introduces.then(|| key_of(target)).transpose()?)
+        .verify_and_apply(
+            &pay,
+            &sig,
+            czd,
+            introduces.then(|| key_of(target)).transpose()?,
+        )
         .map_err(|e| e.to_string())?;
     scope
         .finalize_with_software(
@@ -147,7 +152,10 @@ fn signed_part(blob: &[u8]) -> Result<Value, String> {
 
 /// Push the fixture chain and then the replay to a fresh peer, and report
 /// what the peer answered. `Err` means the observation could not be made.
-pub async fn replay_on_fresh_peer(bins: &Bins, http: &reqwest::Client) -> Result<ReplayAnswer, String> {
+pub async fn replay_on_fresh_peer(
+    bins: &Bins,
+    http: &reqwest::Client,
+) -> Result<ReplayAnswer, String> {
     let (golden, key_a) = (pool_key(GOLDEN)?, pool_key(KEY_A)?);
     let id = golden.tmb.to_b64();
 
@@ -163,13 +171,21 @@ pub async fn replay_on_fresh_peer(bins: &Bins, http: &reqwest::Client) -> Result
     }
 
     // A throwaway peer, so the probe leaves no principal on a scenario's.
-    let peer = Peer::start(bins, "idempotency-probe", http, Role::Attestor, Limits::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let peer = Peer::start(
+        bins,
+        "idempotency-probe",
+        http,
+        Role::Attestor,
+        Limits::default(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let push = |blobs: &[Vec<u8>]| {
         let body = json!({"principal_id": id,
             "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>()});
-        http.post(format!("http://{}/push", peer.addr)).json(&body).send()
+        http.post(format!("http://{}/push", peer.addr))
+            .json(&body)
+            .send()
     };
     let count = || async {
         let r = http
@@ -187,7 +203,10 @@ pub async fn replay_on_fresh_peer(bins: &Bins, http: &reqwest::Client) -> Result
         let r = push(blobs).await.map_err(|e| e.to_string())?;
         if !r.status().is_success() {
             let status = r.status();
-            return Err(format!("{what} was refused ({status}): {}", r.text().await.unwrap_or_default()));
+            return Err(format!(
+                "{what} was refused ({status}): {}",
+                r.text().await.unwrap_or_default()
+            ));
         }
     }
     let count_before = count().await?;
