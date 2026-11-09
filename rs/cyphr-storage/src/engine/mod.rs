@@ -1741,7 +1741,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 StoredCoz::from_wire(blob).map_err(|e| match e {
                     // e.g. `TmbMismatch`: a client-facing protocol
                     // refusal, not an infrastructure failure.
-                    WireError::Key(p) => EngineError::Protocol(p),
+                    WireError::Key(p) | WireError::Protocol(p) => EngineError::Protocol(p),
                     other => EngineError::MalformedBlob(format!("blob {i}: {other}")),
                 })
             })

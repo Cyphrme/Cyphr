@@ -440,11 +440,12 @@ pub(crate) fn replay_entry(
         .iter()
         .map(|blob| {
             StoredCoz::from_wire(blob).map_err(|e| match e {
-                WireError::Header(source) => EntryRefusal::Replay(source),
+                WireError::Header(source) | WireError::Protocol(source) => {
+                    EntryRefusal::Replay(source)
+                },
                 WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
                 WireError::MissingPay => EntryRefusal::Malformed("no pay"),
                 WireError::BadSig => EntryRefusal::Malformed("sig is not base64url"),
-                WireError::MissingAlg => EntryRefusal::Malformed("no alg"),
                 WireError::UnsupportedAlg(_) => EntryRefusal::Malformed("unsupported algorithm"),
                 WireError::KeyFields | WireError::Key(_) => {
                     EntryRefusal::Malformed("key sidecar is malformed")

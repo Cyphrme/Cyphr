@@ -204,7 +204,9 @@ fn stored_cozies(
                 None
             };
             StoredCoz::new(pay, sig, key).map_err(|e| match e {
-                WireError::Header(p) | WireError::Key(p) => LoadError::Protocol(p),
+                WireError::Header(p) | WireError::Key(p) | WireError::Protocol(p) => {
+                    LoadError::Protocol(p)
+                },
                 _ => LoadError::UnsupportedAlgorithm,
             })
         })
