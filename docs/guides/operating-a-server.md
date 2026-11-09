@@ -455,6 +455,14 @@ stored chain has active is moved into place, and one the chain does not
 know is deleted. Either way the server boots with the key its chain has
 active; you never need to repair the key file by hand.
 
+`<signing-key-path>.next` (here `signing-key.json.next`) is reserved for
+this: the server owns it, creates it owner-only (mode 0600), and deletes
+or renames it at the next `serve` or `rotate-key`. Do not use that name for
+anything else.
+
+`rotate-key` refuses a data directory the server has never booted keyed on:
+start the server once with the key first, stop it, then rotate.
+
 Back up the new key file after a rotation. A backup of the retired key no
 longer matches the chain.
 

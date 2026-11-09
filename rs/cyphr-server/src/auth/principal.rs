@@ -91,6 +91,14 @@ pub enum ServerPrincipalError {
     #[error("{0}")]
     MissingSidecar(String),
 
+    /// An offline command needs an established server principal, and this
+    /// data directory has none: the server was never booted keyed here.
+    #[error(
+        "no server principal in {0}: start the server once with this signing key to establish it, \
+         then stop it and retry"
+    )]
+    NotEstablished(String),
+
     /// The genesis record states a format version this build does not read;
     /// no chain was loaded from it.
     #[error("server principal genesis record version {found} is not the supported {supported}")]
@@ -252,6 +260,20 @@ impl ServerPrincipal {
             genesis_key,
             signing_key_path: signing_key_path.to_path_buf(),
         })
+    }
+
+    /// Refuse unless `data_dir` already holds the server principal's
+    /// sidecar, for offline commands that must not mint a chain as a side
+    /// effect.
+    pub fn require_established(data_dir: &Path) -> Result<(), ServerPrincipalError> {
+        let state_path = data_dir.join(RECORD_DIR_NAME).join(STATE_FILE);
+        if state_path.exists() {
+            Ok(())
+        } else {
+            Err(ServerPrincipalError::NotEstablished(
+                data_dir.display().to_string(),
+            ))
+        }
     }
 
     /// Load an already-established principal recorded at `state_path`.

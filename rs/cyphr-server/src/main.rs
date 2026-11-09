@@ -32,12 +32,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 },
             };
-            // Finish or abandon an interrupted `rotate-key` before the key
-            // file is loaded, so the boot signs with the chain's active key.
-            if let Err(e) = rt.block_on(async {
-                rotate::reconcile(&config).await?;
-                cyphr_server::serve(config).await
-            }) {
+            if let Err(e) = rt.block_on(cyphr_server::serve(config)) {
                 tracing::error!(error = %e, "server exited with error");
                 return ExitCode::FAILURE;
             }
