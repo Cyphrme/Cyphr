@@ -312,6 +312,46 @@ fn push_accepts_ed25519_and_other_key_algorithms() {
     }
 }
 
+/// Claim (SPEC 5.1/5.2, zami be0663f): a single-key principal is
+/// published by its genesis commit alone, with no second key: the genesis
+/// key signs principal/create (id = the future SR) and commit/create. The
+/// server accepts it, and a reader fetching it holds exactly one key and a
+/// PG equal to the identity.
+/// End-to-end: yes (init, push to a real server, fetch by a second user).
+/// Turns red on: an init with no genesis commit (nothing to push), a
+/// genesis commit that also adds a key (two active keys), or a
+/// principal/create whose id is not the SR (the server refuses the push,
+/// or the fetched PG differs from the identity).
+/// Red on base: `init` has no `--genesis-commit`, so the setup fails.
+#[test]
+fn genesis_only_principal_is_published_with_one_key() {
+    let server = Server::start();
+    let a = User::new();
+    let init = a.setup(&["init", "--algo", "Ed25519", "--genesis-commit"]);
+    let id = init["keys"][0].as_str().expect("genesis key").to_owned();
+    accepted(&a.push(&id, &server.url), "genesis-only push");
+
+    let reader = User::new();
+    let f = reader.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "fetch of the genesis-only principal: {}", f.stderr);
+    let seen = reader.setup(&["inspect", &format!("--identity={id}")]);
+    assert_eq!(seen["commit_count"], 1, "genesis commit only: {seen}");
+    assert_eq!(
+        seen["active_keys"].as_array().map(Vec::len),
+        Some(1),
+        "no extra key: {seen}"
+    );
+    assert!(
+        seen["pg"].to_string().contains(&id),
+        "PG is the SR principal/create names, i.e. the identity {id}: {}",
+        seen["pg"]
+    );
+}
+
 /// Claim: fetch brings a peer's verified commits into an empty local store.
 /// End-to-end: yes. Turns red on: a fetch that exits 0 without storing, or
 /// stores unverified/partial history (commit count differs from the peer's).
