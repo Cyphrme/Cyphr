@@ -31,9 +31,10 @@ pub enum Capability {
     PeerRollover,
     RelyingParty,
     SessionBinding,
+    DataCommit,
 }
 
-pub const ALL: [Capability; 17] = [
+pub const ALL: [Capability; 18] = [
     Capability::Transport,
     Capability::CliNetwork,
     Capability::ChoicesFile,
@@ -51,6 +52,7 @@ pub const ALL: [Capability; 17] = [
     Capability::PeerRollover,
     Capability::RelyingParty,
     Capability::SessionBinding,
+    Capability::DataCommit,
 ];
 
 /// How a capability is observed.
@@ -99,6 +101,7 @@ impl Capability {
             Self::PeerRollover => "peer-rollover",
             Self::RelyingParty => "relying-party",
             Self::SessionBinding => "session-binding",
+            Self::DataCommit => "data-commit",
         }
     }
 
@@ -118,9 +121,12 @@ impl Capability {
             Self::Idempotency => "N09",
             Self::VersionCheck => "TR1",
             Self::PeerBackup => "N19",
-            Self::PeerRollover => "N20",
+            Self::PeerRollover => "N20R",
             Self::RelyingParty => "SO2",
             Self::SessionBinding => "SO3",
+            // No node owns a CLI command that signs a data action or a data
+            // commit; the CLI signs only key transactions.
+            Self::DataCommit => "unowned",
         }
     }
 
@@ -162,6 +168,7 @@ impl Capability {
             },
             // Needs a signed-in session and a second connection.
             Self::SessionBinding => Probe::Pending("SO3"),
+            Self::DataCommit => Probe::Pending("unowned"),
         }
     }
 }

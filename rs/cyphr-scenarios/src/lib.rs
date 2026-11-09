@@ -8,6 +8,7 @@ pub mod actions;
 pub mod bins;
 pub mod capability;
 pub mod carrier;
+pub mod cli;
 pub mod faults;
 pub mod harness;
 pub mod idempotency;

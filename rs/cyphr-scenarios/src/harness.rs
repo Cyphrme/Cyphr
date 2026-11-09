@@ -23,6 +23,9 @@ pub struct Harness {
     /// Servers started on request (witnesses); kept alive with the harness.
     extra: Mutex<Vec<Peer>>,
     routes: Mutex<HashMap<(String, String), SocketAddr>>,
+    /// Each principal's genesis public key (a keystore entry), as its
+    /// creator made it: what a person can be handed out of band.
+    genesis: Mutex<HashMap<String, serde_json::Value>>,
 }
 
 /// A client that never reuses connections, so a fault injected between two
@@ -69,7 +72,28 @@ impl Harness {
             max_body_bytes: limits.max_body_bytes,
             extra: Mutex::default(),
             routes: Mutex::default(),
+            genesis: Mutex::default(),
         })
+    }
+
+    /// Remember `p`'s genesis public key (a public-only keystore entry).
+    pub fn record_genesis(&self, p: &Principal, entry: serde_json::Value) {
+        self.genesis
+            .lock()
+            .expect("genesis registry")
+            .insert(p.0.clone(), entry);
+    }
+
+    /// `p`'s genesis public key, as recorded when it was created.
+    pub fn genesis_of(&self, p: &Principal) -> ActionResult<serde_json::Value> {
+        self.genesis
+            .lock()
+            .expect("genesis registry")
+            .get(&p.0)
+            .cloned()
+            .ok_or_else(|| {
+                crate::actions::ActionError::Failed(format!("no client created {}", p.0))
+            })
     }
 
     pub fn peer(&self, name: &str) -> &Peer {
