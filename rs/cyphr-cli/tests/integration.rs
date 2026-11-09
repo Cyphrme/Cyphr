@@ -74,6 +74,42 @@ impl CliTest {
     }
 }
 
+/// Claim: a Level 2 (single key, no principal/create) Ed25519 identity survives export then
+/// import into a fresh store: its identity is the key's SHA-512 thumbprint, read under the key's
+/// own hash (SPEC 2.2.1), not SHA-256.
+/// End-to-end: yes (CLI processes, two stores).
+/// Turns red on: an import that builds the identity's PG as a SHA-256 digest ("digest length
+/// mismatch for SHA-256: expected 32 bytes, got 64").
+#[test]
+fn test_ed25519_level2_export_import_roundtrip() {
+    let cli = CliTest::new();
+    let genesis = cli.run_json(&["key", "generate", "--algo", "Ed25519"]);
+    let tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={tmb}");
+    let signer_arg = format!("--signer={tmb}");
+    let _ = cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+    let export_path = cli.temp_dir.path().join("export.jsonl");
+    let output_path_arg = format!("--output={}", export_path.to_str().unwrap());
+    let _ = cli.run_ok(&["export", &identity_arg, &output_path_arg]);
+
+    let import_uri = format!("file:{}", cli.temp_dir.path().join("import-data").display());
+    let out = Command::new(&cli.binary)
+        .arg("--keystore")
+        .arg(cli.keystore_path())
+        .args(["--store", &import_uri, "--output", "json", "import", "--input"])
+        .arg(&export_path)
+        .output()
+        .expect("import failed to run");
+    assert!(
+        out.status.success(),
+        "Ed25519 import must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).expect("import JSON");
+    assert_eq!(result["identity"], tmb, "imported identity is the key's thumbprint");
+}
+
 /// Backs: user-visible export then import into a fresh store preserves the identity.
 #[test]
 fn test_export_import_roundtrip() {
