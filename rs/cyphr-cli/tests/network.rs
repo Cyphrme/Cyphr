@@ -405,7 +405,11 @@ fn genesis_bundle_carries_key_create_principal_create_commit_create() {
             c["pay"]["typ"].as_str().unwrap_or("").to_owned()
         })
         .collect();
-    let suffixes: Vec<&str> = typs.iter().filter_map(|t| t.rsplit_once("cyphr/")).map(|(_, s)| s).collect();
+    let suffixes: Vec<&str> = typs
+        .iter()
+        .filter_map(|t| t.rsplit_once("cyphr/"))
+        .map(|(_, s)| s)
+        .collect();
     assert_eq!(
         suffixes,
         ["key/create", "principal/create", "commit/create"],

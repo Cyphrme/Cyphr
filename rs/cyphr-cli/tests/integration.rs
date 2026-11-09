@@ -97,7 +97,14 @@ fn test_ed25519_level2_export_import_roundtrip() {
     let out = Command::new(&cli.binary)
         .arg("--keystore")
         .arg(cli.keystore_path())
-        .args(["--store", &import_uri, "--output", "json", "import", "--input"])
+        .args([
+            "--store",
+            &import_uri,
+            "--output",
+            "json",
+            "import",
+            "--input",
+        ])
         .arg(&export_path)
         .output()
         .expect("import failed to run");
@@ -107,7 +114,10 @@ fn test_ed25519_level2_export_import_roundtrip() {
         String::from_utf8_lossy(&out.stderr)
     );
     let result: serde_json::Value = serde_json::from_slice(&out.stdout).expect("import JSON");
-    assert_eq!(result["identity"], tmb, "imported identity is the key's thumbprint");
+    assert_eq!(
+        result["identity"], tmb,
+        "imported identity is the key's thumbprint"
+    );
 }
 
 /// Backs: user-visible export then import into a fresh store preserves the identity.
