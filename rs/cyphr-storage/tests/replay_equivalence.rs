@@ -286,18 +286,11 @@ async fn check_chain(chain: &Chain) {
     }
 }
 
-/// Claim: the rebuild from scratch trusts no manifest it cannot replay: a
-/// store whose manifest for a commit records roots its blobs do not yield
-/// (the honest manifest replaced by a forged one naming the same blobs) has
-/// that manifest quarantined, the chain's later commits orphaned, and the
-/// principal's tip is the last commit that replays, never the forged roots.
-///
-/// Turns red if: the rebuild indexes a manifest's recorded roots without
-/// replaying its blobs (the pre-replay rebuild trusted engine-written
-/// manifests).
-/// End-to-end scenario: yes (ingest, forged store, recovery).
-#[tokio::test]
-async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
+/// Ingest a three-commit corpus chain into an honest store, then copy every
+/// blob into `forged_store`, replacing the manifest of commit 1 with one
+/// that records commit 0's PR for the same blobs. Returns the principal id
+/// and commit 0's PR.
+async fn forge_into(forged_store: &impl BlobStore) -> (String, String) {
     let chain = corpus()
         .into_iter()
         .find(|c| c.name.ends_with("transaction_sequence_replay.json"))
@@ -311,9 +304,6 @@ async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
         .expect("chain");
     assert_eq!(held.len(), 3);
 
-    // Copy every blob into a fresh store, replacing the manifest of
-    // commit 1 with one that records a different PR for the same blobs.
-    let forged_store = MemoryBlobStore::new();
     let mut forged = false;
     for hash in honest.blob_store().iter().await.expect("iter") {
         let hash = hash.expect("hash");
@@ -341,6 +331,23 @@ async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
         forged_store.put(&data).await.expect("put");
     }
     assert!(forged, "the commit-1 manifest was found");
+    (id, held[0].pr.clone())
+}
+
+/// Claim: the rebuild from scratch trusts no manifest it cannot replay: a
+/// store whose manifest for a commit records roots its blobs do not yield
+/// (the honest manifest replaced by a forged one naming the same blobs) has
+/// that manifest quarantined, the chain's later commits orphaned, and the
+/// principal's tip is the last commit that replays, never the forged roots.
+///
+/// Turns red if: the rebuild indexes a manifest's recorded roots without
+/// replaying its blobs (the pre-replay rebuild trusted engine-written
+/// manifests).
+/// End-to-end scenario: yes (ingest, forged store, recovery).
+#[tokio::test]
+async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
+    let forged_store = MemoryBlobStore::new();
+    let (id, held_pr) = forge_into(&forged_store).await;
 
     let recovered = StorageEngine::new(forged_store, MemoryIndexer::new());
     let report = recovered
@@ -362,7 +369,46 @@ async fn forged_manifest_is_quarantined_by_the_scratch_rebuild() {
     let tip = recovered.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(
         (tip.commit_count, tip.pr.as_str()),
-        (1, held[0].pr.as_str()),
+        (1, held_pr.as_str()),
         "the chain is indexed up to the last commit that replays"
+    );
+}
+
+/// Claim: what the scratch rebuild quarantined stays out of the index when
+/// a fresh engine opens on the same durable store: the startup heal pass,
+/// which does not replay, skips the manifests the last scratch rebuild
+/// quarantined instead of trusting them again.
+///
+/// Turns red if: the quarantine set lives only in the rebuilding process,
+/// so the next start's heal pass re-indexes the forged manifest.
+/// End-to-end scenario: yes (forged durable store, scratch rebuild,
+/// restart on the same files).
+#[tokio::test]
+async fn scratch_quarantine_survives_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let open = || {
+        let db = fjall::Database::builder(dir.path().join("db"))
+            .open()
+            .expect("open db");
+        let blobs = cyphr_blob_fjall::FjallBlobStore::from_database(db).expect("blob store");
+        let index =
+            cyphr_index_fjall::FjallIndexer::open(&dir.path().join("index")).expect("open index");
+        StorageEngine::new(blobs, index)
+    };
+
+    let first = open();
+    let (id, held_pr) = forge_into(first.blob_store()).await;
+    first
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    drop(first);
+
+    let restarted = open();
+    let tip = restarted.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(
+        (tip.commit_count, tip.pr.as_str()),
+        (1, held_pr.as_str()),
+        "the restart's heal pass keeps the scratch rebuild's quarantine"
     );
 }

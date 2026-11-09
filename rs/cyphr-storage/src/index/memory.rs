@@ -27,6 +27,8 @@ struct MemoryState {
     aliases: HashMap<String, String>,
     /// Principals whose PG is established (see [`Indexer::is_pg_established`]).
     established: std::collections::HashSet<String>,
+    /// See [`IndexerWrite::set_quarantined`]; survives [`IndexerWrite::clear`].
+    quarantined: Vec<(crate::blob::Blake3Hash, String)>,
 }
 
 impl MemoryState {
@@ -376,5 +378,26 @@ impl IndexerWrite for MemoryIndexer {
         state.aliases.clear();
         state.established.clear();
         Ok(())
+    }
+
+    async fn set_quarantined(
+        &self,
+        manifests: &[(crate::blob::Blake3Hash, String)],
+        _token: &DeriveToken,
+    ) -> Result<(), IndexerError> {
+        self.state
+            .write()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?
+            .quarantined = manifests.to_vec();
+        Ok(())
+    }
+
+    async fn quarantined(&self) -> Result<Vec<(crate::blob::Blake3Hash, String)>, IndexerError> {
+        Ok(self
+            .state
+            .read()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?
+            .quarantined
+            .clone())
     }
 }

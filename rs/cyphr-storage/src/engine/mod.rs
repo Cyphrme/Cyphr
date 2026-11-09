@@ -1049,6 +1049,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
         let mut indexed = 0;
         let mut replays: HashMap<String, Replay> = HashMap::new();
+        // What the last replaying rebuild quarantined: a pass that does
+        // not replay cannot judge those manifests, so it keeps them out.
+        let skip: HashMap<Blake3Hash, String> = if replay {
+            HashMap::new()
+        } else {
+            self.indexer.quarantined().await?.into_iter().collect()
+        };
         for (hash, manifest) in manifests {
             let commit = &manifest.commit;
             if unbound.contains_key(&commit.principal_id) {
@@ -1067,18 +1074,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 });
                 continue;
             }
-            if replay {
-                if let Err(why) = self.replay_manifest(&mut replays, commit).await? {
-                    quarantined.push(QuarantinedManifest {
-                        manifest: hash,
-                        principal_id: Some(commit.principal_id.clone()),
-                        reason: QuarantineReason::Unreplayable(why),
-                    });
-                    broken_from
-                        .entry(commit.principal_id.clone())
-                        .or_insert(commit.sequence);
-                    continue;
-                }
+            let refused = match skip.get(&hash) {
+                Some(why) => Err(format!("quarantined by the last scratch rebuild: {why}")),
+                None if replay => self.replay_manifest(&mut replays, commit).await?,
+                None => Ok(()),
+            };
+            if let Err(why) = refused {
+                quarantined.push(QuarantinedManifest {
+                    manifest: hash,
+                    principal_id: Some(commit.principal_id.clone()),
+                    reason: QuarantineReason::Unreplayable(why),
+                });
+                broken_from
+                    .entry(commit.principal_id.clone())
+                    .or_insert(commit.sequence);
+                continue;
             }
             match self.indexer.index_commit(commit, &DeriveToken::new()).await {
                 Ok(()) => indexed += 1,
@@ -2393,6 +2403,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<RebuildReport, EngineError> {
         self.indexer.clear(&DeriveToken::new()).await?;
         let report = self.rebuild_pass(true).await?;
+        let set: Vec<(Blake3Hash, String)> = report
+            .quarantined
+            .iter()
+            .map(|q| (q.manifest, format!("{:?}", q.reason)))
+            .collect();
+        self.indexer
+            .set_quarantined(&set, &DeriveToken::new())
+            .await?;
         // This pass is a full heal: without marking it, the first read
         // would run the trusting heal pass and re-index the manifests this
         // one quarantined. Already set means a heal ran earlier, which the
@@ -2471,7 +2489,11 @@ fn genesis_carrier(blobs: &[Vec<u8>]) -> Option<&[u8]> {
 enum Replay {
     /// Replayed from its genesis carrier up to the last manifest seen.
     Principal(Box<cyphr::Principal<cyphr::eml::MemoryStorage>>),
-    /// No genesis carrier: not replayable from blobs alone.
+    /// No genesis carrier: not replayable from blobs alone. Kept, not
+    /// refused, because an explicit-genesis principal (the server's own)
+    /// stores no genesis key in its blobs, and refusing it would drop that
+    /// principal from every reindex; GEN0, which stores genesis durably,
+    /// removes this fallback.
     CarrierLess,
 }
 

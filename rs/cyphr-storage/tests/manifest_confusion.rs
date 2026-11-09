@@ -666,6 +666,20 @@ impl IndexerWrite for TipFailsAfterStore {
     fn clear(&self, token: &DeriveToken) -> impl Future<Output = Result<(), IndexerError>> + Send {
         self.inner.clear(token)
     }
+
+    fn set_quarantined(
+        &self,
+        manifests: &[(Blake3Hash, String)],
+        token: &DeriveToken,
+    ) -> impl Future<Output = Result<(), IndexerError>> + Send {
+        self.inner.set_quarantined(manifests, token)
+    }
+
+    fn quarantined(
+        &self,
+    ) -> impl Future<Output = Result<Vec<(Blake3Hash, String)>, IndexerError>> + Send {
+        self.inner.quarantined()
+    }
 }
 
 /// engine-level scenario. Claim: once an action-only bundle's
