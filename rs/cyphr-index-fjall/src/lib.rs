@@ -66,6 +66,11 @@ const SCHEMA_VERSION: u32 = 5;
 /// record.
 const META_KEY: &[u8] = b"index-meta";
 
+/// Key under which the `meta` partition stores the quarantine set
+/// ([`IndexerWrite::set_quarantined`]). Not derivation output, so
+/// [`IndexerWrite::clear`] keeps it.
+const QUARANTINE_KEY: &[u8] = b"quarantine";
+
 /// The set of index partitions this schema version's derivation produces.
 /// Not a claim about what physically exists on disk (a raw, out-of-band
 /// writer could create an extra keyspace, or a corrupted store could be
@@ -579,6 +584,44 @@ impl IndexerWrite for FjallIndexer {
                 // since the clear.
                 ks.meta.remove(META_KEY).map_err(to_backend_err)?;
                 Ok(())
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+
+    fn set_quarantined(
+        &self,
+        manifests: &[(Blake3Hash, String)],
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let meta = self.meta.clone();
+        let encoded = serde_json::to_vec(manifests);
+        async move {
+            let encoded =
+                encoded.map_err(|e| IndexerError::Backend(format!("quarantine set: {e}")))?;
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || {
+                meta.insert(QUARANTINE_KEY, encoded).map_err(to_backend_err)
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+
+    fn quarantined(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<(Blake3Hash, String)>, IndexerError>> + Send
+    {
+        let meta = self.meta.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                match meta.get(QUARANTINE_KEY).map_err(to_backend_err)? {
+                    None => Ok(Vec::new()),
+                    Some(raw) => serde_json::from_slice(&raw).map_err(|e| {
+                        IndexerError::Backend(format!("quarantine set is unreadable: {e}"))
+                    }),
+                }
             })
             .await
             .map_err(join_err)?

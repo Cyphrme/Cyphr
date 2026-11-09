@@ -93,15 +93,6 @@ fn golden_key_to_domain(gk: &test_fixtures::GoldenKey) -> cyphr::Key {
         .expect("key binds its tmb")
 }
 
-fn is_transaction_typ(typ: &str) -> bool {
-    typ.contains("/key/")
-        || typ.contains("/principal/create")
-        || typ.contains("/principal/delete")
-        || typ.contains("/freeze/create")
-        || typ.contains("/freeze/delete")
-        || typ.contains("/commit/create")
-}
-
 fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::intent::TestIntent {
     let pool_keys = POOL_KEYS;
     let genesis_key = pool_keys[genesis_key_idx % pool_keys.len()].to_string();
@@ -264,7 +255,7 @@ fn run_engine_recovery_test<B, I>(
                 .and_then(|p| p.get("typ"))
                 .and_then(|t| t.as_str())
             {
-                is_transaction_typ(typ)
+                cyphr::parsed_coz::typ::is_transaction(typ)
             } else {
                 false
             }

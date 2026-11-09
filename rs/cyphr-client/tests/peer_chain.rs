@@ -188,7 +188,11 @@ impl Chain<'_> {
     /// local principal; returns its wire blob, to be sent before the commit
     /// it precedes.
     fn action(&mut self, typ: &str, now: i64) -> String {
-        let g = self.genesis;
+        self.action_by(self.genesis, typ, now)
+    }
+
+    /// [`Chain::action`] signed by `g`, a key active in the chain.
+    fn action_by(&mut self, g: &Kp, typ: &str, now: i64) -> String {
         let pay = serde_json::to_vec(&serde_json::json!({
             "alg": g.kp.alg.name(),
             "now": now,
@@ -644,5 +648,249 @@ async fn accessors_report_the_held_chain() {
             Err(PeerFailure::KeyNotActive { .. })
         ),
         "a revoked key is not an active key"
+    );
+}
+
+impl Chain<'_> {
+    /// A one-transaction commit of `typ` signed and finalized by the
+    /// genesis key, with `fields` added to the pay. Returns the wire blobs.
+    fn tx(&mut self, typ: &str, fields: serde_json::Value, now: i64) -> Vec<String> {
+        let g = self.genesis;
+        let mut pay = serde_json::json!({
+            "alg": g.kp.alg.name(),
+            "now": now,
+            "tmb": g.tmb.to_b64(),
+            "typ": typ,
+        });
+        let object = pay.as_object_mut().expect("pay object");
+        object.extend(fields.as_object().expect("fields object").clone());
+        // Signed in canonical (sorted) order, the form replay verifies.
+        object.sort_keys();
+        let pay = serde_json::to_vec(&pay).expect("pay json");
+        let (sig, cad) =
+            coz::sign_json(&pay, g.kp.alg.name(), &g.kp.prv_bytes, &g.kp.pub_bytes).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, g.kp.alg.name()).expect("czd");
+        let mut scope = self.principal.begin_commit();
+        scope
+            .verify_and_apply(&pay, &sig, czd, None)
+            .expect("transaction applies");
+        scope
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    g.kp.alg.name(),
+                    &g.kp.prv_bytes,
+                    &g.kp.pub_bytes,
+                    &g.tmb,
+                ),
+                now,
+                "cyphr.me",
+            )
+            .expect("commit finalizes");
+        self.commits += 1;
+        self.principal
+            .commits()
+            .last()
+            .expect("a commit exists")
+            .iter_all_cozies()
+            .map(|cz| {
+                Base64UrlUnpadded::encode_string(&serde_json::to_vec(cz.raw()).expect("coz json"))
+            })
+            .collect()
+    }
+}
+
+/// Claim: `follow` compares every bundle it replays, the action-only
+/// bundles after the last commit included, so a peer that served one
+/// trailing action and later serves a different one in its place is a
+/// `Fork`, and the held chain keeps the first.
+///
+/// Turns red if: `follow` compares only commits, so a rewritten trailing
+/// action (which no commit covers) is adopted silently.
+/// End-to-end scenario: yes (two histories under one PG that differ only
+/// in a trailing action, replayed from a carrier).
+#[tokio::test]
+async fn trailing_action_rewritten_is_a_fork() {
+    let g = kp();
+    let k1 = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let first = peer.action("cyphr.me/app/post/create", 1_700_000_200);
+    let rewrite = peer.action("cyphr.me/app/post/create", 1_700_000_300);
+
+    let pipe = Pipe::new(patch_body(&[c1.clone(), vec![first.clone()]]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe)
+        .await
+        .expect("a chain ending in an action-only bundle follows");
+    let tip = held.held_tip().expect("tip");
+
+    pipe.serve(patch_body(&[c1.clone(), vec![rewrite]]));
+    let forked = held.follow(&pipe).await;
+    assert!(
+        matches!(forked, Err(PeerFailure::Fork { index: 1 })),
+        "a rewritten trailing action is a fork at its bundle: {forked:?}"
+    );
+    assert_eq!(
+        held.held_tip().expect("tip"),
+        tip,
+        "a refused follow leaves the held chain as it was"
+    );
+
+    pipe.serve(patch_body(&[c1, vec![first]]));
+    held.follow(&pipe)
+        .await
+        .expect("the same history still follows after a refused fork");
+}
+
+/// Claim: the client routes `principal/merge` and `principal/merge-ack` as
+/// transactions by the core kind table (SPEC 11.5.1), so a peer chain
+/// holding both follows and the client reaches the PR the peer's own core
+/// derived; the storage engine reaches the same PR for the same kinds
+/// (`replay_equivalence`), so the two paths agree.
+///
+/// Turns red if: the client classifies by a typ list missing the merge
+/// kinds, so a merge is recorded as an action and its commit's arrow
+/// refuses the follow.
+/// End-to-end scenario: yes (real chain with both merge kinds, replayed
+/// from a carrier).
+#[tokio::test]
+async fn merge_and_merge_ack_chain_follows_to_the_peer_pr() {
+    let g = kp();
+    let k1 = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let foreign = digest(9);
+    let own = peer.principal.pr_tagged().expect("pr");
+    let c2 = peer.tx(
+        "cyphr.me/cyphr/principal/merge-ack",
+        serde_json::json!({ "merge_from": [foreign.clone()], "merge_to_pr": own }),
+        1_700_000_200,
+    );
+    let own = peer.principal.pr_tagged().expect("pr");
+    let c3 = peer.tx(
+        "cyphr.me/cyphr/principal/merge",
+        serde_json::json!({ "merge_from": [own], "merge_to_pr": foreign }),
+        1_700_000_300,
+    );
+
+    let pipe = Pipe::new(patch_body(&[c1, c2, c3]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe)
+        .await
+        .expect("a chain with merge kinds follows");
+    let tip = held.held_tip().expect("tip");
+    assert_eq!(
+        (tip.commits, tip.pr),
+        (3, peer.principal.pr_tagged().expect("pr")),
+        "the client replays the merge kinds to the peer's own PR"
+    );
+}
+
+/// Claim: every nonce golden chain (SPEC 10.1, the NE1 vectors under
+/// `tests/golden/mutations/nonce_*`) follows through the client to the PR
+/// the vector records, the PR the engine also reaches for the same vectors
+/// (`replay_equivalence`), so client and storage classify nonce kinds alike.
+///
+/// Turns red if: the client classifies by a typ list missing the nonce
+/// kinds, so a nonce is recorded as an action and the commit's arrow
+/// refuses the follow.
+/// End-to-end scenario: yes (golden chains served over a carrier).
+#[tokio::test]
+async fn nonce_golden_chains_follow_to_the_recorded_pr() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/mutations");
+    let mut followed = 0;
+    for entry in std::fs::read_dir(&dir).expect("golden dir") {
+        let path = entry.expect("dir entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with("nonce_") {
+            continue;
+        }
+        let golden: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read golden")).expect("json");
+        let gk = &golden["genesis_keys"][0];
+        let decode = |f: &str| Base64UrlUnpadded::decode_vec(gk[f].as_str().expect(f)).expect(f);
+        let genesis = cyphr::Key::new(
+            gk["alg"].as_str().expect("alg"),
+            coz::Thumbprint::from_bytes(decode("tmb")),
+            decode("pub"),
+        )
+        .expect("genesis key");
+        let pg = cyphr::Principal::implicit(genesis.clone())
+            .and_then(|p| p.pr_tagged())
+            .expect("pg");
+
+        let entries: Vec<Vec<String>> = golden["commits"]
+            .as_array()
+            .expect("commits")
+            .iter()
+            .map(|commit| {
+                let mut keys = commit["keys"].as_array().into_iter().flatten();
+                commit["txs"]
+                    .as_array()
+                    .expect("txs")
+                    .iter()
+                    .map(|coz| {
+                        let mut coz = coz.clone();
+                        let typ = coz["pay"]["typ"].as_str().expect("typ").to_string();
+                        if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
+                            if let Some(key) = keys.next() {
+                                coz["key"] = key.clone();
+                            }
+                        }
+                        Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"))
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let pipe = Pipe::new(patch_body(&entries));
+        let mut held = PeerChain::pin(&pg, genesis);
+        held.follow(&pipe)
+            .await
+            .unwrap_or_else(|e| panic!("{name} follows: {e}"));
+        assert_eq!(
+            held.held_tip().expect("tip").pr,
+            golden["expected"]["pr"].as_str().expect("expected pr"),
+            "{name}: the client reaches the PR the vector records"
+        );
+        followed += 1;
+    }
+    assert!(followed >= 5, "the nonce vectors were found ({followed})");
+}
+
+/// Claim: a bundle carrying a data action, a transaction and a second data
+/// action replays by the order rule: actions before the first transaction
+/// are recorded first, the commit is formed, and actions after it are
+/// recorded against the post-commit state. So the trailing action may be
+/// signed by the key the bundle's own `key/create` introduced, and the
+/// client reaches the PR its writer derived.
+///
+/// Turns red if: replay records every data action before the commit scope
+/// (the trailing action's signer is then not yet a key, `UnknownKey`).
+/// End-to-end scenario: yes (a real mixed bundle served over a carrier).
+#[tokio::test]
+async fn action_after_a_transaction_is_judged_after_the_commit() {
+    let g = kp();
+    let k1 = kp();
+    let k2 = kp();
+    let mut peer = Chain::new(&g);
+    let c1 = peer.commit(&k1, 1_700_000_100);
+    let lead = peer.action("cyphr.me/app/post/create", 1_700_000_150);
+    let commit = peer.commit(&k2, 1_700_000_200);
+    let trail = peer.action_by(&k2, "cyphr.me/app/post/create", 1_700_000_250);
+    let mut bundle = vec![lead];
+    bundle.extend(commit);
+    bundle.push(trail);
+
+    let pipe = Pipe::new(patch_body(&[c1, bundle]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
+    held.follow(&pipe)
+        .await
+        .expect("a mixed bundle follows by the order rule");
+    let tip = held.held_tip().expect("tip");
+    assert_eq!(
+        (tip.commits, tip.pr),
+        (2, peer.principal.pr_tagged().expect("pr")),
+        "the client reaches the writer's PR"
     );
 }

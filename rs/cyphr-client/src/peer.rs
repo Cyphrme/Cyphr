@@ -33,6 +33,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
+use cyphr::replay::{BundleId, StoredCoz, WireError, replay_bundle};
 use cyphr::{Key, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -61,19 +62,20 @@ pub enum PeerFailure {
         derived: String,
     },
     /// The peer's chain does not extend the held one: it diverges at
-    /// `index`, the first commit whose identity differs.
-    #[error("the peer's chain diverges from the held chain at commit {index}")]
+    /// `index`, the first patch entry (a commit, or an action-only bundle)
+    /// whose replayed identity differs.
+    #[error("the peer's chain diverges from the held chain at entry {index}")]
     Fork {
-        /// The zero-based position of the first differing commit.
+        /// The zero-based position of the first differing entry.
         index: usize,
     },
-    /// The peer offered fewer commits than are already held, every one of
+    /// The peer offered fewer entries than are already held, every one of
     /// them agreeing with the held chain: a stale or rolled-back peer.
-    #[error("the peer offered {offered} commits but {held} are held")]
+    #[error("the peer offered {offered} entries but {held} are held")]
     Behind {
-        /// Commits held.
+        /// Entries held.
         held: usize,
-        /// Commits offered.
+        /// Entries offered.
         offered: usize,
     },
     /// The statement's signing key is not active in the held chain: never
@@ -140,6 +142,9 @@ pub struct PeerChain {
     pg: String,
     genesis: Key,
     pin: Pin,
+    /// The identity of every bundle the held chain replayed, in order,
+    /// action-only bundles included, so a follow can compare them all.
+    bundles: Vec<BundleId>,
     /// Whether a follow has ever completed. A bare pin holds only the
     /// genesis key, which is key bytes and not yet a chain.
     followed: bool,
@@ -179,6 +184,7 @@ impl PeerChain {
             pg: pg.to_string(),
             genesis,
             pin,
+            bundles: Vec::new(),
             followed: false,
         }
     }
@@ -248,7 +254,7 @@ impl PeerChain {
     /// refuses a commit; [`PeerFailure::Fork`] when the patch diverges from
     /// the held chain; [`PeerFailure::Behind`] when it is shorter.
     pub async fn follow<C: Connector>(&mut self, connector: &C) -> Result<(), PeerFailure> {
-        let held = self.chain()?;
+        self.chain()?;
         let patch = fetch_patch(
             connector,
             &PatchRequest {
@@ -264,29 +270,41 @@ impl PeerChain {
         // never the held (already extended) one.
         let mut candidate = Principal::implicit(self.genesis.clone())
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
+        let mut offered = Vec::with_capacity(patch.entries.len());
         for (index, entry) in patch.entries.iter().enumerate() {
             let blobs = entry.blobs.as_ref().map_err(|defect| PeerFailure::Entry {
                 index,
                 defect: *defect,
             })?;
-            apply_commit(&mut candidate, index, blobs)?;
+            offered.push(
+                replay_entry(&mut candidate, blobs).map_err(|refusal| match refusal {
+                    EntryRefusal::Malformed(what) => PeerFailure::Malformed {
+                        commit: index,
+                        what,
+                    },
+                    EntryRefusal::Replay(source) => PeerFailure::Replay {
+                        commit: index,
+                        source,
+                    },
+                })?,
+            );
         }
 
-        let held_count = held.commits().count();
-        let offered_count = candidate.commits().count();
-        for (index, (h, o)) in held.commits().zip(candidate.commits()).enumerate() {
-            if h.tr() != o.tr() || h.pr() != o.pr() {
-                return Err(PeerFailure::Fork { index });
-            }
+        // Every held bundle is compared, the action-only ones after the
+        // last commit included: no commit covers those, so comparing
+        // commits alone would let a peer rewrite them unseen.
+        if let Some(index) = self.bundles.iter().zip(&offered).position(|(h, o)| h != o) {
+            return Err(PeerFailure::Fork { index });
         }
-        if offered_count < held_count {
+        if offered.len() < self.bundles.len() {
             return Err(PeerFailure::Behind {
-                held: held_count,
-                offered: offered_count,
+                held: self.bundles.len(),
+                offered: offered.len(),
             });
         }
 
         self.pin = Pin::Held(Box::new(candidate));
+        self.bundles = offered;
         self.followed = true;
         Ok(())
     }
@@ -401,158 +419,40 @@ fn claimed_tmb(coz: &coz::CozJson) -> Option<coz::Thumbprint> {
         .map(coz::Thumbprint::from_bytes)
 }
 
-/// Whether `typ` is a transaction (state-changing, committed) as opposed to
-/// an action (recorded). Identical to the classification `cyphr-storage`
-/// applies when it replays a stored chain: only `/freeze/create` and
-/// `/freeze/delete` are freeze transactions, so an application action such
-/// as `app/freeze/status` stays an action.
-///
-/// This is a second copy of that rule, because the core has no public
-/// replay entry point and the client may not depend on the storage crate.
-/// HA1 replaces both copies with one core function.
-fn is_transaction_typ(typ: &str) -> bool {
-    [
-        "/key/",
-        "/principal/create",
-        "/principal/delete",
-        "/freeze/create",
-        "/freeze/delete",
-        "/commit/create",
-    ]
-    .iter()
-    .any(|part| typ.contains(part))
+/// Why a fetched entry did not replay: its wire form is malformed, or the
+/// core refused it.
+pub(crate) enum EntryRefusal {
+    /// A static description of the wire defect.
+    Malformed(&'static str),
+    /// The core's refusal, from decoding the pay header or from replay.
+    Replay(cyphr::Error),
 }
 
-/// One decoded coz of a commit: the signed bytes and its optional key
-/// sidecar.
-struct Wire {
-    pay_json: Vec<u8>,
-    sig: Vec<u8>,
-    typ: String,
-    alg: String,
-    key: Option<Key>,
-}
-
-/// Decode one blob (`{pay, sig, key?}` JSON) into the bytes the core
-/// verifies. The pay is re-serialized with sorted keys: the signature is
-/// over the canonical form, whatever order the wire carried.
-fn decode_wire(blob: &[u8], commit: usize) -> Result<Wire, PeerFailure> {
-    let bad = |what| PeerFailure::Malformed { commit, what };
-    let value: Value = serde_json::from_slice(blob).map_err(|_| bad("blob is not JSON"))?;
-    let mut pay = value.get("pay").ok_or_else(|| bad("no pay"))?.clone();
-    sort_keys(&mut pay);
-    let sig = value
-        .get("sig")
-        .and_then(Value::as_str)
-        .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-        .ok_or_else(|| bad("sig is not base64url"))?;
-    let header = cyphr::parsed_coz::CozHeader::parse(&pay)
-        .map_err(|source| PeerFailure::Replay { commit, source })?;
-    let alg = pay
-        .get("alg")
-        .and_then(Value::as_str)
-        .ok_or_else(|| bad("no alg"))?
-        .to_string();
-    // The sidecar is unsigned and read only where a key is introduced;
-    // on any other coz it is never interpreted, so junk there cannot
-    // refuse a chain whose signed content is valid.
-    let key = if cyphr::parsed_coz::typ::is_key_introducing(&header.typ) {
-        value
-            .get("key")
-            .map(|k| sidecar_key(k).ok_or_else(|| bad("key sidecar is malformed")))
-            .transpose()?
-    } else {
-        None
-    };
-    Ok(Wire {
-        pay_json: serde_json::to_vec(&pay).map_err(|_| bad("pay does not serialize"))?,
-        sig,
-        typ: header.typ,
-        alg,
-        key,
-    })
-}
-
-fn sidecar_key(k: &Value) -> Option<Key> {
-    let field = |name| k.get(name).and_then(Value::as_str);
-    let tmb = Base64UrlUnpadded::decode_vec(field("tmb")?).ok()?;
-    let pub_key = Base64UrlUnpadded::decode_vec(field("pub")?).ok()?;
-    // `Key::new` rejects a tmb that is not the thumbprint of the pub.
-    Some(
-        Key::new(field("alg")?, coz::Thumbprint::from_bytes(tmb), pub_key)
-            .ok()?
-            .with_first_seen(k.get("now").and_then(Value::as_i64).unwrap_or(0))
-            .with_tag(field("tag").map(str::to_string)),
-    )
-}
-
-fn sort_keys(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.sort_keys();
-            map.values_mut().for_each(sort_keys);
-        },
-        Value::Array(items) => items.iter_mut().for_each(sort_keys),
-        _ => {},
-    }
-}
-
-/// Replay one commit's blobs onto `principal` through the core's verifying
-/// scope: transactions open the commit scope and finalize it (checking the
-/// arrow); actions are recorded around it, as `cyphr-storage` replays them.
-fn apply_commit(
+/// Decode one entry's wire blobs and replay them onto `principal` through
+/// the core's one replay entry point, returning the bundle's identity.
+/// Shared by [`PeerChain::follow`] and the evidence verifier, so a fetched
+/// entry means one thing on both.
+pub(crate) fn replay_entry(
     principal: &mut Principal<MemoryStorage>,
-    commit: usize,
     blobs: &[Vec<u8>],
-) -> Result<(), PeerFailure> {
-    let replay = |source| PeerFailure::Replay { commit, source };
-    let wires = blobs
+) -> Result<BundleId, EntryRefusal> {
+    let cozies = blobs
         .iter()
-        .map(|blob| decode_wire(blob, commit))
-        .collect::<Result<Vec<_>, _>>()?;
-    if wires.is_empty() {
-        return Err(replay(cyphr::Error::EmptyCommit));
-    }
-    let czd = |w: &Wire| {
-        cyphr::compute_czd(&w.pay_json, &w.sig, &w.alg).ok_or(PeerFailure::Malformed {
-            commit,
-            what: "unsupported algorithm",
+        .map(|blob| {
+            StoredCoz::from_wire(blob).map_err(|e| match e {
+                WireError::Header(source) | WireError::Protocol(source) => {
+                    EntryRefusal::Replay(source)
+                },
+                WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
+                WireError::MissingPay => EntryRefusal::Malformed("no pay"),
+                WireError::BadSig => EntryRefusal::Malformed("sig is not base64url"),
+                WireError::UnsupportedAlg(_) => EntryRefusal::Malformed("unsupported algorithm"),
+                WireError::KeyFields | WireError::Key(_) => {
+                    EntryRefusal::Malformed("key sidecar is malformed")
+                },
+                _ => EntryRefusal::Malformed("malformed coz"),
+            })
         })
-    };
-
-    let first_tx = wires.iter().position(|w| is_transaction_typ(&w.typ));
-    let (pre, rest) = wires.split_at(first_tx.unwrap_or(wires.len()));
-    for w in pre {
-        principal
-            .verify_and_record_action(&w.pay_json, &w.sig, czd(w)?)
-            .map_err(replay)?;
-    }
-
-    let mut deferred = Vec::new();
-    let mut applied = 0usize;
-    let mut scope = principal.begin_commit();
-    for w in rest {
-        if is_transaction_typ(&w.typ) {
-            let key = cyphr::parsed_coz::typ::is_key_introducing(&w.typ)
-                .then(|| w.key.clone())
-                .flatten();
-            scope
-                .verify_and_apply(&w.pay_json, &w.sig, czd(w)?, key)
-                .map_err(replay)?;
-            applied += 1;
-        } else {
-            deferred.push(w);
-        }
-    }
-    if applied > 0 {
-        scope.finalize().map_err(replay)?;
-    } else {
-        drop(scope);
-    }
-    for w in deferred {
-        principal
-            .verify_and_record_action(&w.pay_json, &w.sig, czd(w)?)
-            .map_err(replay)?;
-    }
-    Ok(())
+        .collect::<Result<Vec<_>, _>>()?;
+    replay_bundle(principal, &cozies).map_err(|e| EntryRefusal::Replay(e.source))
 }

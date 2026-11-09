@@ -453,7 +453,7 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
 /// F29: a submitted blob whose pay is missing `typ` must be rejected
 /// outright, not silently misclassified. Before the fix, engine/mod.rs's
 /// hand-rolled extraction defaulted a missing `typ` to `""`, and
-/// `is_transaction_typ("")` is false -- so a coz that was actually a
+/// a transaction check on `""` is false -- so a coz that was actually a
 /// mutation (e.g. a corrupted `key/create`) could be silently routed down
 /// the action-only path instead of being rejected as malformed.
 #[tokio::test]

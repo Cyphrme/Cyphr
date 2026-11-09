@@ -339,11 +339,29 @@ pub trait IndexerWrite: Send + Sync {
         token: &DeriveToken,
     ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
 
-    /// Clear the index, removing all indexed records.
+    /// Clear the index, removing all indexed records. The quarantine set
+    /// ([`Self::set_quarantined`]) is kept: it is the verdict of the last
+    /// replaying rebuild, which only that rebuild rewrites.
     fn clear(
         &self,
         token: &DeriveToken,
     ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
+
+    /// Replace the quarantine set: the manifests (blob hash and reason) the
+    /// last rebuild from scratch left out after replaying them, which a
+    /// rebuild that does not replay must keep out too. It is the last
+    /// replaying verdict, not a ban: ingest does not consult it, so an
+    /// honest manifest re-ingested later is indexed.
+    fn set_quarantined(
+        &self,
+        manifests: &[(Blake3Hash, String)],
+        token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
+
+    /// The quarantine set [`Self::set_quarantined`] last wrote.
+    fn quarantined(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<(Blake3Hash, String)>, IndexerError>> + Send;
 }
 
 #[cfg(test)]
