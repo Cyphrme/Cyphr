@@ -282,12 +282,7 @@ impl PeerChain {
         // Every held bundle is compared, the action-only ones after the
         // last commit included: no commit covers those, so comparing
         // commits alone would let a peer rewrite them unseen.
-        if let Some(index) = self
-            .bundles
-            .iter()
-            .zip(&offered)
-            .position(|(h, o)| h != o)
-        {
+        if let Some(index) = self.bundles.iter().zip(&offered).position(|(h, o)| h != o) {
             return Err(PeerFailure::Fork { index });
         }
         if offered.len() < self.bundles.len() {

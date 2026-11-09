@@ -258,9 +258,11 @@ pub fn replay_bundle<S: eml::Storage>(
     principal: &mut Principal<S>,
     cozies: &[StoredCoz],
 ) -> Result<BundleId, ReplayError> {
-    let at = |i: usize| move |source| ReplayError {
-        coz: Some(i),
-        source,
+    let at = |i: usize| {
+        move |source| ReplayError {
+            coz: Some(i),
+            source,
+        }
     };
     let whole = |source| ReplayError { coz: None, source };
     if cozies.is_empty() {
