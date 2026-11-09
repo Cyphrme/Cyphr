@@ -264,7 +264,7 @@ pub fn replay_chain(
                 commit: index,
                 what: "entry is undecodable",
             })?;
-        apply_commit(&mut base, index, blobs)?;
+        replay_commit(&mut base, index, blobs)?;
     }
     Ok(base)
 }
@@ -332,7 +332,7 @@ pub fn verify_principal_fork(
     let at = prefix.len();
     let branch = |which, blobs: &[Vec<u8>]| -> Result<Commit, EvidenceFailure> {
         let mut copy = state.clone();
-        apply_commit(&mut copy, at, blobs).map_err(|e| match e {
+        replay_commit(&mut copy, at, blobs).map_err(|e| match e {
             EvidenceFailure::Replay { source, .. } => {
                 EvidenceFailure::CommitRefused { which, source }
             },
@@ -591,149 +591,19 @@ pub fn verify_peer_equivocation<H: Storage>(
     })
 }
 
-// ============================================================================
-// Replay (third copy of the rule in `peer.rs` and `cyphr-storage`)
-// ============================================================================
-
-/// Whether `typ` is a transaction (state-changing, committed) as opposed to
-/// an action (recorded). Same classification `cyphr-storage` applies when it
-/// replays a stored chain.
-fn is_transaction_typ(typ: &str) -> bool {
-    [
-        "/key/",
-        "/principal/create",
-        "/principal/delete",
-        "/freeze/create",
-        "/freeze/delete",
-        "/commit/create",
-    ]
-    .iter()
-    .any(|part| typ.contains(part))
-}
-
-struct Wire {
-    pay_json: Vec<u8>,
-    sig: Vec<u8>,
-    typ: String,
-    alg: String,
-    key: Option<Key>,
-}
-
-fn decode_wire(blob: &[u8], commit: usize) -> Result<Wire, EvidenceFailure> {
-    let bad = |what| EvidenceFailure::BadCommit { commit, what };
-    let value: Value = serde_json::from_slice(blob).map_err(|_| bad("blob is not JSON"))?;
-    let mut pay = value.get("pay").ok_or_else(|| bad("no pay"))?.clone();
-    sort_keys(&mut pay);
-    let sig = value
-        .get("sig")
-        .and_then(Value::as_str)
-        .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-        .ok_or_else(|| bad("sig is not base64url"))?;
-    let header = cyphr::parsed_coz::CozHeader::parse(&pay)
-        .map_err(|source| EvidenceFailure::Replay { commit, source })?;
-    let alg = pay
-        .get("alg")
-        .and_then(Value::as_str)
-        .ok_or_else(|| bad("no alg"))?
-        .to_string();
-    // The sidecar is unsigned and read only where a key is introduced.
-    let key = if cyphr::parsed_coz::typ::is_key_introducing(&header.typ) {
-        value
-            .get("key")
-            .map(|k| sidecar_key(k).ok_or_else(|| bad("key sidecar is malformed")))
-            .transpose()?
-    } else {
-        None
-    };
-    Ok(Wire {
-        pay_json: serde_json::to_vec(&pay).map_err(|_| bad("pay does not serialize"))?,
-        sig,
-        typ: header.typ,
-        alg,
-        key,
-    })
-}
-
-fn sidecar_key(k: &Value) -> Option<Key> {
-    let field = |name| k.get(name).and_then(Value::as_str);
-    let tmb = Base64UrlUnpadded::decode_vec(field("tmb")?).ok()?;
-    let pub_key = Base64UrlUnpadded::decode_vec(field("pub")?).ok()?;
-    // `Key::new` rejects a tmb that is not the thumbprint of the pub.
-    Some(
-        Key::new(field("alg")?, coz::Thumbprint::from_bytes(tmb), pub_key)
-            .ok()?
-            .with_first_seen(k.get("now").and_then(Value::as_i64).unwrap_or(0))
-            .with_tag(field("tag").map(str::to_string)),
-    )
-}
-
-fn sort_keys(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.sort_keys();
-            map.values_mut().for_each(sort_keys);
-        },
-        Value::Array(items) => items.iter_mut().for_each(sort_keys),
-        _ => {},
-    }
-}
-
-/// Replay one commit's blobs onto `principal` through the core's verifying
-/// scope: transactions open the commit scope and finalize it (checking the
-/// arrow); actions are recorded around it.
-fn apply_commit(
+/// Replay one entry's blobs onto `principal` through the core's one replay
+/// entry point, as [`PeerChain`](crate::PeerChain) does.
+fn replay_commit(
     principal: &mut Principal<MemoryStorage>,
     commit: usize,
     blobs: &[Vec<u8>],
 ) -> Result<(), EvidenceFailure> {
-    let replay = |source| EvidenceFailure::Replay { commit, source };
-    let wires = blobs
-        .iter()
-        .map(|blob| decode_wire(blob, commit))
-        .collect::<Result<Vec<_>, _>>()?;
-    if wires.is_empty() {
-        return Err(replay(cyphr::Error::EmptyCommit));
-    }
-    let czd = |w: &Wire| {
-        cyphr::compute_czd(&w.pay_json, &w.sig, &w.alg).ok_or(EvidenceFailure::BadCommit {
-            commit,
-            what: "unsupported algorithm",
+    crate::peer::replay_entry(principal, blobs)
+        .map(|_| ())
+        .map_err(|refusal| match refusal {
+            crate::peer::EntryRefusal::Malformed(what) => {
+                EvidenceFailure::BadCommit { commit, what }
+            },
+            crate::peer::EntryRefusal::Replay(source) => EvidenceFailure::Replay { commit, source },
         })
-    };
-
-    let first_tx = wires.iter().position(|w| is_transaction_typ(&w.typ));
-    let (pre, rest) = wires.split_at(first_tx.unwrap_or(wires.len()));
-    for w in pre {
-        principal
-            .verify_and_record_action(&w.pay_json, &w.sig, czd(w)?)
-            .map_err(replay)?;
-    }
-
-    let mut deferred = Vec::new();
-    let mut applied = 0usize;
-    let mut scope = principal.begin_commit();
-    for w in rest {
-        if is_transaction_typ(&w.typ) {
-            let key = cyphr::parsed_coz::typ::is_key_introducing(&w.typ)
-                .then(|| w.key.clone())
-                .flatten();
-            scope
-                .verify_and_apply(&w.pay_json, &w.sig, czd(w)?, key)
-                .map_err(replay)?;
-            applied += 1;
-        } else {
-            deferred.push(w);
-        }
-    }
-    if applied > 0 {
-        scope.finalize().map_err(replay)?;
-    } else {
-        drop(scope);
-    }
-    for w in deferred {
-        principal
-            .verify_and_record_action(&w.pay_json, &w.sig, czd(w)?)
-            .map_err(replay)?;
-    }
-    Ok(())
 }

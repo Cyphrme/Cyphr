@@ -276,7 +276,18 @@ impl PeerChain {
                 index,
                 defect: *defect,
             })?;
-            offered.push(apply_commit(&mut candidate, index, blobs)?);
+            offered.push(
+                replay_entry(&mut candidate, blobs).map_err(|refusal| match refusal {
+                    EntryRefusal::Malformed(what) => PeerFailure::Malformed {
+                        commit: index,
+                        what,
+                    },
+                    EntryRefusal::Replay(source) => PeerFailure::Replay {
+                        commit: index,
+                        source,
+                    },
+                })?,
+            );
         }
 
         // Every held bundle is compared, the action-only ones after the
@@ -408,41 +419,39 @@ fn claimed_tmb(coz: &coz::CozJson) -> Option<coz::Thumbprint> {
         .map(coz::Thumbprint::from_bytes)
 }
 
-/// Decode one commit's wire blobs and replay them onto `principal` through
+/// Why a fetched entry did not replay: its wire form is malformed, or the
+/// core refused it.
+pub(crate) enum EntryRefusal {
+    /// A static description of the wire defect.
+    Malformed(&'static str),
+    /// The core's refusal, from decoding the pay header or from replay.
+    Replay(cyphr::Error),
+}
+
+/// Decode one entry's wire blobs and replay them onto `principal` through
 /// the core's one replay entry point, returning the bundle's identity.
-fn apply_commit(
+/// Shared by [`PeerChain::follow`] and the evidence verifier, so a fetched
+/// entry means one thing on both.
+pub(crate) fn replay_entry(
     principal: &mut Principal<MemoryStorage>,
-    commit: usize,
     blobs: &[Vec<u8>],
-) -> Result<BundleId, PeerFailure> {
+) -> Result<BundleId, EntryRefusal> {
     let cozies = blobs
         .iter()
         .map(|blob| {
             StoredCoz::from_wire(blob).map_err(|e| match e {
-                WireError::Header(source) => PeerFailure::Replay { commit, source },
-                other => PeerFailure::Malformed {
-                    commit,
-                    what: wire_defect(&other),
+                WireError::Header(source) => EntryRefusal::Replay(source),
+                WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
+                WireError::MissingPay => EntryRefusal::Malformed("no pay"),
+                WireError::BadSig => EntryRefusal::Malformed("sig is not base64url"),
+                WireError::MissingAlg => EntryRefusal::Malformed("no alg"),
+                WireError::UnsupportedAlg(_) => EntryRefusal::Malformed("unsupported algorithm"),
+                WireError::KeyFields | WireError::Key(_) => {
+                    EntryRefusal::Malformed("key sidecar is malformed")
                 },
+                _ => EntryRefusal::Malformed("malformed coz"),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    replay_bundle(principal, &cozies).map_err(|e| PeerFailure::Replay {
-        commit,
-        source: e.source,
-    })
-}
-
-/// The static description [`PeerFailure::Malformed`] carries for a wire
-/// defect.
-fn wire_defect(e: &WireError) -> &'static str {
-    match e {
-        WireError::NotJson => "blob is not JSON",
-        WireError::MissingPay => "no pay",
-        WireError::BadSig => "sig is not base64url",
-        WireError::MissingAlg => "no alg",
-        WireError::UnsupportedAlg(_) => "unsupported algorithm",
-        WireError::KeyFields | WireError::Key(_) => "key sidecar is malformed",
-        _ => "malformed coz",
-    }
+    replay_bundle(principal, &cozies).map_err(|e| EntryRefusal::Replay(e.source))
 }
