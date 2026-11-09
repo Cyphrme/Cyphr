@@ -78,6 +78,31 @@ pub mod typ {
         .map(|(_, level, create)| (level, create))
     }
 
+    /// Returns true if `typ` is a transaction kind of the core kind table
+    /// (every [`CozKind`](super::CozKind): key, principal, commit, merge,
+    /// freeze and nonce kinds) rather than a data action.
+    ///
+    /// Canonical predicate: replay routes every coz by it, so no consumer
+    /// keeps a typ list of its own that could drift from the parser.
+    pub fn is_transaction(typ: &str) -> bool {
+        [
+            KEY_CREATE,
+            KEY_DELETE,
+            KEY_REPLACE,
+            KEY_REVOKE,
+            PRINCIPAL_CREATE,
+            PRINCIPAL_DELETE,
+            COMMIT_CREATE,
+            MERGE,
+            MERGE_ACK,
+            FREEZE_CREATE,
+            FREEZE_DELETE,
+        ]
+        .iter()
+        .any(|suffix| has_suffix(typ, suffix))
+            || nonce_path(typ).is_some()
+    }
+
     /// Returns true if `typ` introduces new key material into the Auth State
     /// (`key/create` or `key/replace`).
     ///
