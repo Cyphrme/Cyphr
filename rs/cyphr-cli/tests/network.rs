@@ -173,7 +173,11 @@ impl User {
 
     /// Create an identity: returns its genesis thumbprint (the identity arg).
     fn new_identity(&self) -> String {
-        let g = self.setup(&["key", "generate", "--algo", "ES256"]);
+        self.new_identity_alg("ES256")
+    }
+
+    fn new_identity_alg(&self, algo: &str) -> String {
+        let g = self.setup(&["key", "generate", "--algo", algo]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
         self.add_key(&tmb);
         tmb
@@ -287,6 +291,130 @@ fn push_stale_is_refused_then_rebased_is_accepted() {
     ]);
     assert!(f.ok, "fetch must succeed: {}", f.stderr);
     assert_eq!(b.commit_count(&id), 3, "genesis commit + B's + rebased A's");
+}
+
+/// Claim: the CLI accepts an identity whose genesis key is not ES256. The
+/// identity digest is the key's thumbprint under that key's own hash
+/// (SHA-384 for ES384, SHA-512 for Ed25519), so it is not 32 bytes, and
+/// push must read it at the width the core reads it (SPEC 2.2.1).
+/// End-to-end: yes (CLI process, real server).
+/// Turns red on: an identity parser that assumes SHA-256, which refuses
+/// Ed25519 and ES384 with "digest length mismatch" before any request.
+/// Red on base: ed25519 and ES384 pushes fail with that error.
+#[test]
+fn push_accepts_ed25519_and_other_key_algorithms() {
+    let server = Server::start();
+    for algo in ["ES256", "ES384", "Ed25519"] {
+        let u = User::new();
+        let id = u.new_identity_alg(algo);
+        accepted(&u.push(&id, &server.url), &format!("{algo} identity push"));
+        assert_eq!(u.commit_count(&id), 1, "{algo}: one genesis commit");
+    }
+}
+
+/// Claim (SPEC 5.1/5.2, zami be0663f): a single-key principal is
+/// published by its genesis commit alone, with no second key: the genesis
+/// key signs principal/create (id = the future SR) and commit/create. The
+/// server accepts it, and a reader fetching it holds exactly one key and a
+/// PG equal to the identity.
+/// End-to-end: yes (init, push to a real server, fetch by a second user).
+/// Turns red on: an init with no genesis commit (nothing to push), a
+/// genesis commit that also adds a key (two active keys), or a
+/// principal/create whose id is not the SR (the server refuses the push,
+/// or the fetched PG differs from the identity).
+/// Red on base: `init` has no `--genesis-commit`, so the setup fails.
+#[test]
+fn genesis_only_principal_is_published_with_one_key() {
+    let server = Server::start();
+    let a = User::new();
+    let init = a.setup(&["init", "--algo", "Ed25519", "--genesis-commit"]);
+    let id = init["keys"][0].as_str().expect("genesis key").to_owned();
+    accepted(&a.push(&id, &server.url), "genesis-only push");
+
+    let reader = User::new();
+    let f = reader.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "fetch of the genesis-only principal: {}", f.stderr);
+    let seen = reader.setup(&["inspect", &format!("--identity={id}")]);
+    assert_eq!(seen["commit_count"], 1, "genesis commit only: {seen}");
+    assert_eq!(
+        seen["active_keys"].as_array().map(Vec::len),
+        Some(1),
+        "no extra key: {seen}"
+    );
+    assert!(
+        seen["pg"].to_string().contains(&id),
+        "PG is the SR principal/create names, i.e. the identity {id}: {}",
+        seen["pg"]
+    );
+}
+
+/// Claim (SPEC 5.1 step 1, 7.7 Example 1; zami be0663f 5.2): the single-key
+/// genesis commit is three transactions, key/create of the genesis key,
+/// principal/create, commit/create, and a second client fetching it sees
+/// all three in the genesis bundle with PG equal to the identity.
+/// End-to-end: yes (init, push to a real server, fetch and export by a
+/// second client).
+/// Turns red on: a genesis bundle without the key/create (the key is only
+/// implicit in the principal), or a PG that is not the identity.
+/// Red today: the bundle holds only principal/create and commit/create (the
+/// core refuses to re-add the genesis key), tracked as GEN0.
+#[test]
+#[ignore = "RED(GEN0): SPEC 5.1 step 1, 7.7 Example 1"]
+fn genesis_bundle_carries_key_create_principal_create_commit_create() {
+    let server = Server::start();
+    let a = User::new();
+    let init = a.setup(&["init", "--algo", "Ed25519", "--genesis-commit"]);
+    let id = init["keys"][0].as_str().expect("genesis key").to_owned();
+    accepted(&a.push(&id, &server.url), "genesis push");
+
+    let reader = User::new();
+    let f = reader.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "fetch: {}", f.stderr);
+    let seen = reader.setup(&["inspect", &format!("--identity={id}")]);
+    assert!(
+        seen["pg"].to_string().contains(&id),
+        "PG is the identity {id}: {}",
+        seen["pg"]
+    );
+
+    let out = reader.dir.path().join("bundle.jsonl");
+    reader.setup(&[
+        "export",
+        &format!("--identity={id}"),
+        &format!("--output={}", out.display()),
+    ]);
+    let first = std::fs::read_to_string(&out).expect("bundle");
+    let first: Value =
+        serde_json::from_str(first.lines().next().expect("genesis line")).expect("bundle JSON");
+    // `txs` is the bundle's ordered transaction list; a transaction may be
+    // wrapped in a one-element array (SPEC 5.2 wire format).
+    let typs: Vec<String> = first["txs"]
+        .as_array()
+        .expect("txs")
+        .iter()
+        .map(|c| {
+            let c = c.as_array().and_then(|a| a.first()).unwrap_or(c);
+            c["pay"]["typ"].as_str().unwrap_or("").to_owned()
+        })
+        .collect();
+    let suffixes: Vec<&str> = typs
+        .iter()
+        .filter_map(|t| t.rsplit_once("cyphr/"))
+        .map(|(_, s)| s)
+        .collect();
+    assert_eq!(
+        suffixes,
+        ["key/create", "principal/create", "commit/create"],
+        "genesis commit transactions: {typs:?}"
+    );
 }
 
 /// Claim: fetch brings a peer's verified commits into an empty local store.

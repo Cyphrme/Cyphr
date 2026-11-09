@@ -88,9 +88,12 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let pg = match principal.pg() {
         Some(pg) => pg.clone(),
         None => match &genesis {
-            Genesis::Implicit(k) => {
-                cyphr::PrincipalGenesis::from_bytes(k.tmb().as_bytes().to_vec())?
-            },
+            // The thumbprint is hashed with the key's own algorithm, so the
+            // digest is read under it, not assumed SHA-256.
+            Genesis::Implicit(k) => cyphr::PrincipalGenesis(cyphr::MultihashDigest::from_single(
+                cyphr::state::hash_alg_from_str(k.alg())?,
+                k.tmb().as_bytes().to_vec(),
+            )?),
             Genesis::Explicit(_) => {
                 return Err(Error::ExplicitGenesisWithoutPg);
             },
