@@ -352,6 +352,67 @@ fn genesis_only_principal_is_published_with_one_key() {
     );
 }
 
+/// Claim (SPEC 5.1 step 1, 7.7 Example 1; zami be0663f 5.2): the single-key
+/// genesis commit is three transactions, key/create of the genesis key,
+/// principal/create, commit/create, and a second client fetching it sees
+/// all three in the genesis bundle with PG equal to the identity.
+/// End-to-end: yes (init, push to a real server, fetch and export by a
+/// second client).
+/// Turns red on: a genesis bundle without the key/create (the key is only
+/// implicit in the principal), or a PG that is not the identity.
+/// Red today: the bundle holds only principal/create and commit/create (the
+/// core refuses to re-add the genesis key), tracked as GEN0.
+#[test]
+#[ignore = "RED(GEN0): SPEC 5.1 step 1, 7.7 Example 1"]
+fn genesis_bundle_carries_key_create_principal_create_commit_create() {
+    let server = Server::start();
+    let a = User::new();
+    let init = a.setup(&["init", "--algo", "Ed25519", "--genesis-commit"]);
+    let id = init["keys"][0].as_str().expect("genesis key").to_owned();
+    accepted(&a.push(&id, &server.url), "genesis push");
+
+    let reader = User::new();
+    let f = reader.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "fetch: {}", f.stderr);
+    let seen = reader.setup(&["inspect", &format!("--identity={id}")]);
+    assert!(
+        seen["pg"].to_string().contains(&id),
+        "PG is the identity {id}: {}",
+        seen["pg"]
+    );
+
+    let out = reader.dir.path().join("bundle.jsonl");
+    reader.setup(&[
+        "export",
+        &format!("--identity={id}"),
+        &format!("--output={}", out.display()),
+    ]);
+    let first = std::fs::read_to_string(&out).expect("bundle");
+    let first: Value =
+        serde_json::from_str(first.lines().next().expect("genesis line")).expect("bundle JSON");
+    // `txs` is the bundle's ordered transaction list; a transaction may be
+    // wrapped in a one-element array (SPEC 5.2 wire format).
+    let typs: Vec<String> = first["txs"]
+        .as_array()
+        .expect("txs")
+        .iter()
+        .map(|c| {
+            let c = c.as_array().and_then(|a| a.first()).unwrap_or(c);
+            c["pay"]["typ"].as_str().unwrap_or("").to_owned()
+        })
+        .collect();
+    let suffixes: Vec<&str> = typs.iter().filter_map(|t| t.rsplit_once("cyphr/")).map(|(_, s)| s).collect();
+    assert_eq!(
+        suffixes,
+        ["key/create", "principal/create", "commit/create"],
+        "genesis commit transactions: {typs:?}"
+    );
+}
+
 /// Claim: fetch brings a peer's verified commits into an empty local store.
 /// End-to-end: yes. Turns red on: a fetch that exits 0 without storing, or
 /// stores unverified/partial history (commit count differs from the peer's).
