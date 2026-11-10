@@ -35,7 +35,6 @@ use crate::transaction_root::TransactionRoot;
 /// Why a wire blob is not a stored coz.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-#[non_exhaustive]
 pub enum WireError {
     /// The blob is not a JSON object.
     #[error("blob is not JSON")]
