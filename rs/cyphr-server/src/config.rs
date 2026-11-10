@@ -68,7 +68,8 @@ pub enum Command {
     },
 
     /// Replay every stored chain from the blob store; exits non-zero and
-    /// names each chain that fails.
+    /// names each chain that fails. It rebuilds the index and rewrites the
+    /// quarantine set from the replay (both derived, never the record).
     VerifyAll {
         #[command(flatten)]
         ops: OpsArgs,

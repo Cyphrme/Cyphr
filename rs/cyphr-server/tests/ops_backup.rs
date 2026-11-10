@@ -79,3 +79,67 @@ async fn backup_refuses_a_signing_key_inside_record() {
     assert!(text(&out).1.contains("signing key"), "{:?}", text(&out));
     assert!(!backup.exists(), "nothing is written");
 }
+
+/// Claim: a backup whose source changes during the copy is refused and
+/// leaves nothing behind (the copy is checked against the counts taken
+/// before it). Red when: the torn backup is published. Library-level
+/// because the window cannot be hit through the binary; the real backup
+/// code runs, the hook only writes into the window.
+#[tokio::test]
+async fn backup_whose_source_changes_during_the_copy_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let dest = dir.path().join("snap");
+    let (_, first, second) = golden_chain().await;
+    push_all(&data, vec![first]).await;
+
+    let err = cyphr_server::ops::snapshot::backup_with(
+        &config_at(&data),
+        &dest,
+        push_all(&data, vec![second]),
+    )
+    .await
+    .expect_err("a changed source must refuse");
+    assert!(
+        err.to_string().contains("changed while it was copied"),
+        "{err}"
+    );
+    assert!(!dest.exists());
+    assert!(!dir.path().join("snap.partial").exists());
+}
+
+/// Claim: a restore whose copy fails leaves the original record in place
+/// and serving its tip. Red when: the failed restore leaves the store
+/// replaced or missing. End to end: real binary, an unreadable file in
+/// the backup.
+#[tokio::test]
+async fn failed_restore_leaves_the_original_record_serving() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let backup = dir.path().join("snap");
+    let (_, first, second) = golden_chain().await;
+    push_all(&data, vec![first]).await;
+    let out = server(&data, &["backup"], &[backup.to_str().expect("utf8")]);
+    assert!(out.status.success(), "backup: {:?}", text(&out));
+    push_all(&data, vec![second]).await;
+
+    let victim = std::fs::read_dir(backup.join("record").join("blobs"))
+        .expect("blobs")
+        .map(|e| e.expect("entry").path())
+        .find(|p| p.is_file())
+        .expect("a file in the backup");
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read(&victim).is_ok() {
+        return; // running as a user who ignores file modes: cannot make a copy fail
+    }
+
+    let out = server(&data, &["restore"], &[backup.to_str().expect("utf8")]);
+    assert!(!out.status.success(), "restore must fail");
+    assert!(!data.join("record.pre-restore").exists(), "rolled back");
+    assert_eq!(
+        tips(&data).await[0].1,
+        2,
+        "the original record still serves its tip"
+    );
+}

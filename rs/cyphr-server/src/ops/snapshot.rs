@@ -3,11 +3,16 @@
 //! **Consistency.** `record/` holds every fjall database the server was
 //! told (blobs with the EML keyspaces, observations). Each is opened by
 //! this command first, which takes fjall's exclusive lock (no server is
-//! running) and replays its journal, then closed again before the copy.
-//! Nothing writes to a closed, unlocked directory, so the copy is a
-//! point-in-time image. `index/` is derived (ADR-0002) and is neither
-//! copied nor trusted back: a restore drops it and rebuilds from the
-//! restored blobs (I1).
+//! running) and replays its journal; the commit counts are taken, and the
+//! stores are closed before the copy. The lock cannot be held across the
+//! copy, so a server started mid-copy could tear it. The copy is therefore
+//! checked: it must open and replay cleanly, and hold exactly the commit
+//! counts taken before the copy, or the backup is refused and deleted.
+//! The check detects a torn copy, it does not prevent one: a change that
+//! leaves every commit count as it was would pass it: chain writes always
+//! add a commit, but a write to the observation store (the key death-set)
+//! does not, and is not detected. `index/` is derived (ADR-0002) and is neither copied nor trusted back: a restore drops it
+//! and rebuilds from the restored blobs (I1).
 //!
 //! **Keys.** The copy is of `record/` only. The server's signing key
 //! lives at `signing_key_path`; a backup refuses to run if that file sits
@@ -102,8 +107,20 @@ fn refuse_key_in_record(config: &ServerConfig) -> Result<(), OpsError> {
 }
 
 /// Copy `record/` of the stopped server at `config.data_dir` to `dest`
-/// (which must not exist). The copy appears under `dest` only once whole.
+/// (which must not exist). The copy appears under `dest` only once whole
+/// and verified against the commit counts taken before it.
 pub async fn backup(config: &ServerConfig, dest: &Path) -> Result<BackupReport, OpsError> {
+    backup_with(config, dest, std::future::ready(())).await
+}
+
+/// [`backup`], awaiting `between` after the counts are taken and the store
+/// is closed, before the copy: the window in which a server could start.
+/// Tests write into it.
+pub async fn backup_with(
+    config: &ServerConfig,
+    dest: &Path,
+    between: impl std::future::Future<Output = ()>,
+) -> Result<BackupReport, OpsError> {
     refuse_key_in_record(config)?;
     if dest.exists() {
         return Err(OpsError::Refused(format!(
@@ -115,15 +132,48 @@ pub async fn backup(config: &ServerConfig, dest: &Path) -> Result<BackupReport, 
         let state = open(config)?;
         commit_counts(&state).await?
     };
-    let partial = dest.with_extension("partial");
+    between.await;
+    let mut partial = dest.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
     let _ = std::fs::remove_dir_all(&partial);
-    copy_tree(&config.record_dir(), &partial.join("record"))?;
+    let verified = verify_copy(config, &partial, &counts).await;
+    if let Err(e) = verified {
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(e);
+    }
     std::fs::rename(&partial, dest).map_err(OpsError::io("publishing the backup at", dest))?;
     Ok(BackupReport {
         dest: dest.to_owned(),
         principals: counts.len(),
         commits: counts.values().sum(),
     })
+}
+
+/// Copy `record/` into `partial` and require the copy to open, replay and
+/// hold exactly `expected`.
+async fn verify_copy(
+    config: &ServerConfig,
+    partial: &Path,
+    expected: &BTreeMap<String, u64>,
+) -> Result<(), OpsError> {
+    copy_tree(&config.record_dir(), &partial.join("record"))?;
+    let mut probe = config.clone();
+    probe.data_dir = partial.to_owned();
+    let held = {
+        let state = open(&probe)?;
+        commit_counts(&state).await?
+    };
+    // Opening built a derived index inside the backup; it is not part of it.
+    let _ = std::fs::remove_dir_all(probe.index_dir());
+    if &held != expected {
+        return Err(OpsError::Refused(
+            "the store changed while it was copied (a server started on it?); the backup was \
+             discarded"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Replace `record/` of the stopped server at `config.data_dir` with the
@@ -157,12 +207,29 @@ pub async fn restore(config: &ServerConfig, from: &Path) -> Result<RestoreReport
         (BTreeMap::new(), None)
     };
 
+    // A failed rollback is part of the error: the operator must know where
+    // the displaced record is.
     let put_back = |why: OpsError| {
-        let _ = std::fs::remove_dir_all(&record);
-        if kept.is_some() {
-            let _ = std::fs::rename(&displaced, &record);
+        let mut failed = Vec::new();
+        if let Err(e) = std::fs::remove_dir_all(&record) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                failed.push(format!("removing the partial {}: {e}", record.display()));
+            }
         }
-        why
+        if kept.is_some() {
+            if let Err(e) = std::fs::rename(&displaced, &record) {
+                failed.push(format!("moving {} back: {e}", displaced.display()));
+            }
+        }
+        if failed.is_empty() {
+            why
+        } else {
+            OpsError::Refused(format!(
+                "{why}; the rollback also failed ({}); the replaced record is at {}",
+                failed.join("; "),
+                displaced.display()
+            ))
+        }
     };
     if let Err(e) = copy_tree(&source, &record) {
         return Err(put_back(e));
