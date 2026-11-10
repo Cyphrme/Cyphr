@@ -1650,8 +1650,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // A genesis commit pushed to a principal that has one is a
                 // rival at position 0: its arrow binds the genesis key, not
                 // this tip (SPEC 5.1 step 4), whatever transaction of it the
-                // replay happened to refuse first.
-                let refused = if tip_before.is_some() && is_genesis_bundle(raw_blobs) {
+                // replay happened to refuse first. A replay of the stored
+                // genesis itself stays the reuse it is (SPEC 7.6).
+                let reuse = matches!(refused, EngineError::Protocol(cyphr::Error::CozReuse));
+                let refused = if tip_before.is_some() && !reuse && is_genesis_bundle(raw_blobs) {
                     EngineError::Protocol(cyphr::Error::CommitMismatch)
                 } else {
                     refused
