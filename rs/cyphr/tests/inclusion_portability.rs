@@ -143,7 +143,7 @@ fn build_key_inclusion_material(
     let alg_id = hash_alg_to_u64(alg);
     let tmb_a = Thumbprint::from_bytes(vec![0x01; 32]);
     let tmb_b = Thumbprint::from_bytes(vec![0x02; 32]);
-    let thumbprints = vec![&tmb_a, &tmb_b];
+    let thumbprints = [&tmb_a, &tmb_b];
 
     // Synthetic 32-byte thumbprints: keys of a SHA-256 algorithm.
     let leaves: Vec<_> = thumbprints
