@@ -25,7 +25,8 @@ use serde_json::value::RawValue;
 
 use crate::Error;
 use crate::intent::{
-    ActionIntent, CommitIntent, ExpectedAssertions, Intent, SetupIntent, TestIntent, TxIntent,
+    ActionIntent, CommitIntent, ExpectedAssertions, Intent, PeerIntent, SetupIntent, TestIntent,
+    TxIntent,
 };
 use crate::pool::{Pool, PoolKey};
 
@@ -54,8 +55,21 @@ pub struct Golden {
     /// Coz digests (czd) parallel to all cozies across commits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digests: Option<Vec<String>>,
+    /// The second principal of a two-principal test (a merge, SPEC
+    /// 11.5.1); its commits replay after the test principal's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<GoldenPeer>,
     /// Expected state after execution.
     pub expected: GoldenExpected,
+}
+
+/// The second principal of a two-principal golden test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoldenPeer {
+    /// Genesis key set (key names from pool).
+    pub principal: Vec<String>,
+    /// Commit bundles in application order.
+    pub commits: Vec<CommitEntry>,
 }
 
 /// Setup modifiers for golden test.
@@ -179,6 +193,16 @@ pub struct GoldenExpected {
     /// Expected `Principal::is_frozen()` (SPEC.md §11.1 `Frozen`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<bool>,
+    /// The TX of each transaction of the last commit, in order (SPEC
+    /// 4.6.3 `txs_order`, TX = MR(czd0, czd1?, ...) in the first
+    /// algorithm), stated when the commit holds a transaction of more than
+    /// one coz: a single coz's TX is its czd, which `digests` already pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txs_order: Option<Vec<String>>,
+    /// Expected `merge_status` of the test principal (the source) into its
+    /// peer (the target), SPEC 11.5.1: `None`, `Pending` or `Merged`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_status: Option<String>,
 }
 
 // ============================================================================
@@ -209,6 +233,7 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::DuplicateNonce => "DuplicateNonce",
         Error::UnknownNonce => "UnknownNonce",
         Error::GenesisIncomplete => "GenesisIncomplete",
+        Error::MixedTransactionTyp => "MixedTransactionTyp",
         _ => "UnknownError",
     }
 }
@@ -221,6 +246,27 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
 #[derive(Debug)]
 pub struct Generator<'a> {
     pool: &'a Pool,
+    /// The PRs a merge reference resolves to while a commit is signed:
+    /// the signing principal's after each of its commits (`self:<n>`), and
+    /// the other principal's (`peer:<n>`).
+    refs: std::cell::RefCell<MergeRefs>,
+}
+
+/// The PR histories merge references resolve against (see
+/// [`crate::intent::TxIntent::merge_from`]).
+#[derive(Debug, Default)]
+struct MergeRefs {
+    own: Vec<String>,
+    other: Vec<String>,
+}
+
+/// The PR `principal` held after each of its commits, tagged.
+fn pr_history(principal: &cyphr::Principal) -> Vec<String> {
+    principal
+        .commits()
+        .filter_map(|c| c.pr().as_multihash().tagged_first().ok())
+        .map(|t| t.to_string())
+        .collect()
 }
 
 type SignResult = Result<(String, Vec<u8>, String, coz::Czd, Option<GoldenKey>), Error>;
@@ -228,7 +274,26 @@ type SignResult = Result<(String, Vec<u8>, String, coz::Czd, Option<GoldenKey>),
 impl<'a> Generator<'a> {
     /// Create a new generator with the given key pool.
     pub fn new(pool: &'a Pool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            refs: std::cell::RefCell::default(),
+        }
+    }
+
+    /// The PR a merge reference (`self:<n>`, `peer:<n>`) names.
+    fn resolve_ref(&self, reference: &str) -> Result<String, Error> {
+        let bad = || Error::InvalidIntent {
+            message: format!("merge reference '{reference}': want self:<n> or peer:<n>, n held"),
+        };
+        let (who, n) = reference.split_once(':').ok_or_else(bad)?;
+        let n: usize = n.parse().map_err(|_| bad())?;
+        let refs = self.refs.borrow();
+        let history = match who {
+            "self" => &refs.own,
+            "peer" => &refs.other,
+            _ => return Err(bad()),
+        };
+        history.get(n).cloned().ok_or_else(bad)
     }
 
     /// Format principal state as tagged digest string (alg:digest format).
@@ -262,53 +327,31 @@ impl<'a> Generator<'a> {
             .cloned();
 
         // Create Principal from genesis keys
-        let principal_result = self.create_principal(&test.principal, &test.name);
+        let principal_result =
+            self.create_principal(&test.principal, test.setup.as_ref(), &test.name);
 
-        // Handle genesis-time errors (e.g., UnsupportedAlgorithm)
+        // Genesis-time errors (an unsupported algorithm, a revoked key)
+        // are the vector when the test declares them.
         let mut principal = match principal_result.await {
             Ok(p) => p,
-            Err(e) => {
-                // If we expected an error and got one during genesis, generate
-                // error golden -- but only once the declared string is
-                // confirmed to match the error genesis actually raised, so a
-                // wrong declared expectation fails generation loudly instead
-                // of silently shipping a fixture that encodes it.
-                if let Some(declared) = expected_error {
-                    if let Error::GenesisFailed { source, .. } = e {
-                        let actual = cyphr_error_name(&source);
-                        if declared != actual {
-                            return Err(Error::DeclaredErrorMismatch {
-                                name: test.name.clone(),
-                                declared,
-                                actual,
-                                source,
-                            });
-                        }
-                    }
-                    return Ok(Golden {
-                        name: test.name.clone(),
-                        principal: test.principal.clone(),
-                        setup: None,
-                        genesis_keys: None,
-                        commits: None,
-                        digests: None,
-                        expected: GoldenExpected {
-                            error: Some(declared),
-                            ..Default::default()
-                        },
-                    });
-                }
-                // Otherwise, propagate the error
-                return Err(e);
-            },
+            Err(e) => return self.genesis_error_golden(test, expected_error, e),
         };
-
-        // Apply setup modifiers
-        if let Some(ref setup) = test.setup {
-            self.apply_setup(&mut principal, setup, &test.name)?;
+        if let Err(e) = self.commit_generated_genesis(test, &mut principal).await {
+            return self.genesis_error_golden(test, expected_error, e);
+        }
+        if let (true, Some(declared)) = (test.is_genesis_only(), &expected_error) {
+            return Err(Error::InvalidIntent {
+                message: format!(
+                    "test '{}': declares {declared}, but its genesis succeeds and it has nothing \
+                     else to refuse",
+                    test.name
+                ),
+            });
         }
 
-        self.commit_generated_genesis(test, &mut principal).await?;
+        if let Some(peer) = &test.peer {
+            return self.generate_pair(test, peer, principal).await;
+        }
 
         // Dispatch based on test type
         if test.is_genesis_only() {
@@ -329,27 +372,111 @@ impl<'a> Generator<'a> {
         }
     }
 
-    /// Apply setup modifiers to a principal (e.g., pre-revoke keys).
-    fn apply_setup(
+    /// The vector of a test whose genesis fails with `e`: an error vector
+    /// when the test declares that error -- checked against the error
+    /// genesis actually raised, so a wrong declared expectation fails
+    /// generation loudly instead of shipping a fixture that encodes it --
+    /// and `e` itself otherwise.
+    fn genesis_error_golden(
         &self,
-        principal: &mut cyphr::Principal,
-        setup: &SetupIntent,
-        _test_name: &str,
-    ) -> Result<(), Error> {
-        if let Some(ref key_name) = setup.revoke_key {
-            let rvk_time = setup.revoke_at.unwrap_or(0);
-            let pool_key = self.resolve_key(key_name)?;
-            let tmb = pool_key.compute_tmb()?;
-
-            // Pre-revoke the key (moves from active to revoked set)
-            principal
-                .pre_revoke_key(&tmb, rvk_time)
-                .map_err(|e| Error::Generation {
-                    name: _test_name.to_string(),
-                    reason: format!("pre_revoke_key failed: {}", e),
-                })?;
+        test: &TestIntent,
+        declared: Option<String>,
+        e: Error,
+    ) -> Result<Golden, Error> {
+        let Some(declared) = declared else {
+            return Err(e);
+        };
+        if let Error::GenesisFailed { source, .. } = e {
+            let actual = cyphr_error_name(&source);
+            if declared != actual {
+                return Err(Error::DeclaredErrorMismatch {
+                    name: test.name.clone(),
+                    declared,
+                    actual,
+                    source,
+                });
+            }
         }
-        Ok(())
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
+            genesis_keys: None,
+            commits: None,
+            digests: None,
+            peer: None,
+            expected: GoldenExpected {
+                error: Some(declared),
+                ..Default::default()
+            },
+        })
+    }
+
+    /// Generate a two-principal test (a merge, SPEC 11.5.1): both
+    /// principals commit their genesis, then the test principal's commits
+    /// are signed, then the peer's, each resolving merge references
+    /// against both PR histories so far. The vector states the
+    /// `merge_status` of the test principal (source) into the peer
+    /// (target).
+    async fn generate_pair(
+        &self,
+        test: &TestIntent,
+        peer: &PeerIntent,
+        mut principal: cyphr::Principal,
+    ) -> Result<Golden, Error> {
+        let peer_test = TestIntent {
+            name: format!("{} (peer)", test.name),
+            principal: peer.principal.clone(),
+            commit: peer.commit.clone(),
+            ..TestIntent::default()
+        };
+        let mut other = self
+            .create_principal(&peer.principal, None, &peer_test.name)
+            .await?;
+        self.commit_generated_genesis(&peer_test, &mut other)
+            .await?;
+
+        self.refs.borrow_mut().other = pr_history(&other);
+        for commit in &test.commit {
+            let pre = Self::format_pr_tagged(&principal)?;
+            self.sign_and_apply_commit(&test.name, commit, &mut principal, &pre)
+                .await?;
+        }
+        self.refs.borrow_mut().other = pr_history(&principal);
+        for commit in &peer.commit {
+            let pre = Self::format_pr_tagged(&other)?;
+            self.sign_and_apply_commit(&peer_test.name, commit, &mut other, &pre)
+                .await?;
+        }
+
+        let status = format!("{:?}", cyphr::merge_status(&principal, &other));
+        let mut expected = self.build_expected_from_principal(&principal, test.expected.as_ref());
+        if let Some(declared) = test.expected.as_ref().and_then(|e| e.merge_status.as_ref()) {
+            if *declared != status {
+                return Err(Error::InvalidIntent {
+                    message: format!(
+                        "test '{}': declares merge_status {declared}, the chains give {status}",
+                        test.name
+                    ),
+                });
+            }
+        }
+        expected.merge_status = Some(status);
+        let (commits, digests) = Self::export_principal_commits(&principal)?;
+        let (peer_commits, _) = Self::export_principal_commits(&other)?;
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            setup: None,
+            genesis_keys: self.build_genesis_keys(&test.principal).ok(),
+            commits: Some(commits),
+            digests: Some(digests),
+            peer: Some(GoldenPeer {
+                principal: peer.principal.clone(),
+                commits: peer_commits,
+            }),
+            expected,
+        })
     }
 
     /// Convert SetupIntent to GoldenSetup for output.
@@ -402,11 +529,6 @@ impl<'a> Generator<'a> {
             None if test.commit.is_empty() && test.principal.len() < 2 => return Ok(()),
             None => {},
         }
-        if test.setup.is_some() {
-            return Err(invalid(
-                "setup acts before the genesis commit; state it in-band instead",
-            ));
-        }
         // Every later coz keeps a `now` at or after the genesis's.
         let now = test
             .commit
@@ -422,61 +544,85 @@ impl<'a> Generator<'a> {
         let signer = self.resolve_key(genesis)?.software_signer()?;
         let others = test.principal[1..]
             .iter()
-            .map(|name| self.pool_key_to_cyphr_key(name, &test.name))
+            .map(|name| self.genesis_key(name, test.setup.as_ref(), &test.name))
             .collect::<Result<Vec<_>, _>>()?;
         principal
             .commit_genesis(&signer, &others, now, "cyphr.me")
             .await
-            .map_err(|e| Error::Generation {
+            .map_err(|source| Error::GenesisFailed {
                 name: test.name.clone(),
-                reason: format!("genesis commit: {e}"),
+                source,
             })?;
         Ok(())
     }
 
-    /// Sign the cozies of an error test's last commit and apply them in
-    /// order until one is refused; return them through the refused one.
-    /// The refusal is what the vector pins, so cozies after it are never
-    /// reached. A one-coz commit returns that coz (a refusal the test
-    /// declares may come at finalize or replay instead).
+    /// Sign the cozies of an error test's last commit and apply them
+    /// transaction by transaction until one is refused; return its
+    /// transactions through the refused one. The refusal is what the vector
+    /// pins, so cozies after it are never reached: a coz refused at
+    /// verification ends its transaction there, a transaction refused whole
+    /// (its cozies do not share one `typ`, SPEC 4.1) is returned whole. A
+    /// one-coz commit returns that coz (a refusal the test declares may come
+    /// at finalize or replay instead).
     fn failing_commit(
         &self,
         test: &TestIntent,
         commit: &CommitIntent,
         principal: &mut cyphr::Principal,
         pre: &str,
-    ) -> Result<Vec<GoldenCoz>, Error> {
+    ) -> Result<Vec<Vec<GoldenCoz>>, Error> {
+        self.refs.borrow_mut().own = pr_history(principal);
         let mut scope = principal.begin_commit();
-        let mut cozies = Vec::new();
-        for (i, tx) in commit.tx.iter().flatten().enumerate() {
-            let tx = match test.override_.as_ref().and_then(|o| o.now) {
-                Some(now) if i == 0 => TxIntent { now, ..tx.clone() },
-                _ => tx.clone(),
-            };
-            let own_pr = Self::derived_id(&scope, &tx.typ, pre).map_err(|e| Error::Generation {
-                name: test.name.clone(),
-                reason: format!("{} id: {e}", tx.typ),
-            })?;
-            let (coz, sig, czd) = self.build_golden_coz(&tx, &test.name, Some(&own_pr))?;
-            // A key the core cannot hold (an unsupported algorithm) is
-            // itself the refusal the vector pins.
-            let new_key = match (&coz.key, &tx.target) {
-                (Some(_), Some(target)) => match self.pool_key_to_cyphr_key(target, &test.name) {
-                    Ok(key) => Some(key),
+        let mut txs = Vec::new();
+        let mut first = true;
+        for group in &commit.tx {
+            let mut cozies = Vec::new();
+            let mut verified = Vec::new();
+            let mut refused = false;
+            for tx in group {
+                let tx = match test.override_.as_ref().and_then(|o| o.now) {
+                    Some(now) if first => TxIntent { now, ..tx.clone() },
+                    _ => tx.clone(),
+                };
+                first = false;
+                let own_pr =
+                    Self::derived_id(&scope, &tx.typ, pre).map_err(|e| Error::Generation {
+                        name: test.name.clone(),
+                        reason: format!("{} id: {e}", tx.typ),
+                    })?;
+                let (coz, sig, czd) = self.build_golden_coz(&tx, &test.name, Some(&own_pr))?;
+                // A key the core cannot hold (an unsupported algorithm) is
+                // itself the refusal the vector pins.
+                let new_key = match (&coz.key, &tx.target) {
+                    (Some(_), Some(target)) => {
+                        match self.pool_key_to_cyphr_key(target, &test.name) {
+                            Ok(key) => Some(key),
+                            Err(_) => {
+                                cozies.push(coz);
+                                refused = true;
+                                break;
+                            },
+                        }
+                    },
+                    _ => None,
+                };
+                let pay = coz.pay.get().as_bytes().to_vec();
+                cozies.push(coz);
+                match scope.verify(&pay, &sig, czd, new_key) {
+                    Ok(v) => verified.push(v),
                     Err(_) => {
-                        cozies.push(coz);
+                        refused = true;
                         break;
                     },
-                },
-                _ => None,
-            };
-            let pay = coz.pay.get().as_bytes().to_vec();
-            cozies.push(coz);
-            if scope.verify_and_apply(&pay, &sig, czd, new_key).is_err() {
+                }
+            }
+            refused = refused || scope.apply_tx(verified).is_err();
+            txs.push(cozies);
+            if refused {
                 break;
             }
         }
-        Ok(cozies)
+        Ok(txs)
     }
 
     /// The `id` a coz of kind `typ` names when the intent states none: a
@@ -549,35 +695,49 @@ impl<'a> Generator<'a> {
         Ok((commits, digests))
     }
 
-    /// The commit entry of an error test's failing cozies: each `{pay,
-    /// sig}` with the keys they introduce at commit level. Its state digests
-    /// are placeholders, as the commit never formed.
-    fn cozies_to_commit_entry(cozies: &[GoldenCoz]) -> Result<CommitEntry, Error> {
-        let mut txs = Vec::with_capacity(cozies.len());
+    /// The commit entry of an error test's failing transactions: each coz
+    /// `{pay, sig}`, grouped as signed, with the keys they introduce at
+    /// commit level. Its state digests are placeholders, as the commit never
+    /// formed.
+    fn cozies_to_commit_entry(txs: &[Vec<GoldenCoz>]) -> Result<CommitEntry, Error> {
         let mut keys = Vec::new();
-        for coz in cozies {
-            let pay: Value =
-                serde_json::from_str(coz.pay.get()).map_err(|e| Error::Generation {
-                    name: String::new(),
-                    reason: format!("failing coz pay is not JSON: {e}"),
-                })?;
-            txs.push(serde_json::json!({ "pay": pay, "sig": coz.sig }));
-            keys.extend(coz.key.as_ref().map(|k| KeyEntry {
-                alg: k.alg.clone(),
-                pub_key: k.pub_key.clone(),
-                tmb: k.tmb.clone(),
-                tag: None,
-                now: None,
-            }));
+        let mut entry_txs = Vec::with_capacity(txs.len());
+        for tx in txs {
+            let mut cozies = Vec::with_capacity(tx.len());
+            for coz in tx {
+                cozies.push(Self::coz_value(coz)?);
+                keys.extend(coz.key.as_ref().map(|k| KeyEntry {
+                    alg: k.alg.clone(),
+                    pub_key: k.pub_key.clone(),
+                    tmb: k.tmb.clone(),
+                    tag: None,
+                    now: None,
+                }));
+            }
+            entry_txs.push(cozies);
         }
-        Ok(CommitEntry::new(
-            txs,
+        Ok(CommitEntry {
+            txs: entry_txs,
             keys,
-            String::new(),
-            None,
-            None,
-            String::new(),
-        ))
+            ..CommitEntry::default()
+        })
+    }
+
+    /// The action-only entry of an error test's refused data action.
+    fn action_to_entry(coz: &GoldenCoz) -> Result<CommitEntry, Error> {
+        Ok(CommitEntry {
+            actions: vec![Self::coz_value(coz)?],
+            ..CommitEntry::default()
+        })
+    }
+
+    /// A golden coz as its `{pay, sig}` wire value.
+    fn coz_value(coz: &GoldenCoz) -> Result<Value, Error> {
+        let pay: Value = serde_json::from_str(coz.pay.get()).map_err(|e| Error::Generation {
+            name: String::new(),
+            reason: format!("failing coz pay is not JSON: {e}"),
+        })?;
+        Ok(serde_json::json!({ "pay": pay, "sig": coz.sig }))
     }
 
     /// Create a Principal from its genesis key, the first of `key_names`
@@ -586,18 +746,39 @@ impl<'a> Generator<'a> {
     async fn create_principal(
         &self,
         key_names: &[String],
+        setup: Option<&SetupIntent>,
         test_name: &str,
     ) -> Result<cyphr::Principal, Error> {
         let genesis = key_names.first().ok_or_else(|| Error::InvalidIntent {
             message: format!("test '{}': principal requires at least one key", test_name),
         })?;
-        let key = self.pool_key_to_cyphr_key(genesis, test_name)?;
+        let key = self.genesis_key(genesis, setup, test_name)?;
         cyphr::Principal::implicit(key)
             .await
             .map_err(|source| Error::GenesisFailed {
                 name: test_name.to_string(),
                 source,
             })
+    }
+
+    /// A key genesis is given: the pool key `name`, carrying a revocation
+    /// when `setup` names it revoked at genesis.
+    fn genesis_key(
+        &self,
+        name: &str,
+        setup: Option<&SetupIntent>,
+        test_name: &str,
+    ) -> Result<cyphr::Key, Error> {
+        let key = self.pool_key_to_cyphr_key(name, test_name)?;
+        Ok(match setup {
+            Some(s) if s.revoke_key.as_deref() == Some(name) => {
+                key.with_revocation(cyphr::key::Revocation {
+                    rvk: s.revoke_at.unwrap_or(0),
+                    by: None,
+                })
+            },
+            _ => key,
+        })
     }
 
     /// Convert a pool key name to a cyphr::Key.
@@ -669,9 +850,11 @@ impl<'a> Generator<'a> {
         }
     }
 
-    /// Sign and apply every cozy in `commit_intent`'s transactions to a
-    /// freshly-opened `CommitScope` on `principal`, then finalize with the
-    /// terminal `commit/create` (Arrow) cozy per `choose_commit_signer`.
+    /// Sign and apply every transaction of `commit_intent` to a
+    /// freshly-opened `CommitScope` on `principal`, each as one transaction
+    /// (its cozies verified against the state it meets, then applied
+    /// together, SPEC 4.1, 4.6.2), then finalize with the terminal
+    /// `commit/create` (Arrow) cozy per `choose_commit_signer`.
     ///
     /// `pre` is the Principal Root captured before this commit began (used
     /// only for a `principal/create` cozy's `id` field).
@@ -684,6 +867,7 @@ impl<'a> Generator<'a> {
         principal: &mut cyphr::Principal,
         pre: &str,
     ) -> Result<Vec<String>, Error> {
+        self.refs.borrow_mut().own = pr_history(principal);
         let mut scope = principal.begin_commit();
         let mut first_coz_signer: Option<CozSignerInfo> = None;
         let mut last_new_key_signer: Option<CozSignerInfo> = None;
@@ -691,6 +875,7 @@ impl<'a> Generator<'a> {
         let mut latest_now = i64::MIN;
 
         for tx_group in &commit_intent.tx {
+            let mut verified = Vec::with_capacity(tx_group.len());
             for tx_cz in tx_group {
                 let signer = self.resolve_key(&tx_cz.signer)?;
                 let signer_tmb = signer.compute_tmb_b64()?;
@@ -749,12 +934,14 @@ impl<'a> Generator<'a> {
                     None
                 };
 
-                scope
-                    .verify_and_apply(&pay_vec, &sig_bytes, czd.clone(), new_key)
-                    .map_err(|e| Error::Generation {
-                        name: test_name.to_string(),
-                        reason: format!("failed to verify_and_apply cozy: {}", e),
-                    })?;
+                verified.push(
+                    scope
+                        .verify(&pay_vec, &sig_bytes, czd.clone(), new_key)
+                        .map_err(|e| Error::Generation {
+                            name: test_name.to_string(),
+                            reason: format!("failed to verify cozy: {}", e),
+                        })?,
+                );
 
                 czds.push(czd.to_b64());
                 latest_now = latest_now.max(tx_cz.now);
@@ -769,6 +956,10 @@ impl<'a> Generator<'a> {
                     ));
                 }
             }
+            scope.apply_tx(verified).map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("failed to apply transaction: {}", e),
+            })?;
         }
 
         // Finalize the commit scope using the first signer's credentials, unless that
@@ -813,14 +1004,7 @@ impl<'a> Generator<'a> {
             let genesis_keys = self.build_genesis_keys(&test.principal).ok();
             let (mut commits, digests) = Self::export_principal_commits(principal)?;
 
-            commits.push(crate::CommitEntry {
-                cozies: vec![],
-                keys: vec![],
-                commit_id: "".to_string(),
-                auth_root: None,
-                sr: None,
-                pr: "".to_string(),
-            });
+            commits.push(crate::CommitEntry::default());
 
             return Ok(Golden {
                 name: test.name.clone(),
@@ -829,6 +1013,7 @@ impl<'a> Generator<'a> {
                 genesis_keys,
                 commits: Some(commits),
                 digests: Some(digests),
+                peer: None,
                 expected,
             });
         }
@@ -886,7 +1071,7 @@ impl<'a> Generator<'a> {
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
             commits.push(Self::cozies_to_commit_entry(&failing)?);
-            digests.extend(failing.iter().map(|c| c.czd.clone()));
+            digests.extend(failing.iter().flatten().map(|c| c.czd.clone()));
         }
 
         Ok(Golden {
@@ -896,6 +1081,7 @@ impl<'a> Generator<'a> {
             genesis_keys,
             commits: Some(commits),
             digests: Some(digests),
+            peer: None,
             expected,
         })
     }
@@ -952,7 +1138,7 @@ impl<'a> Generator<'a> {
         if is_error_test {
             // The last commit was not applied - add its failing cozies
             commits.push(Self::cozies_to_commit_entry(&failing)?);
-            digests.extend(failing.iter().map(|c| c.czd.clone()));
+            digests.extend(failing.iter().flatten().map(|c| c.czd.clone()));
         }
 
         Ok(Golden {
@@ -962,6 +1148,7 @@ impl<'a> Generator<'a> {
             genesis_keys,
             commits: Some(commits),
             digests: Some(digests),
+            peer: None,
             expected,
         })
     }
@@ -985,6 +1172,7 @@ impl<'a> Generator<'a> {
             genesis_keys,
             commits: Some(commits),
             digests: Some(digests),
+            peer: None,
             expected,
         })
     }
@@ -1046,7 +1234,7 @@ impl<'a> Generator<'a> {
             {
                 let (coz, _, czd) = self.build_action_coz(action_intent, None, &test.name)?;
                 digests.push(czd.to_b64());
-                action_entries.push(Self::cozies_to_commit_entry(std::slice::from_ref(&coz))?);
+                action_entries.push(Self::action_to_entry(&coz)?);
                 continue;
             }
             if let (true, true, TimelineEvent::Commit(commit_intent)) =
@@ -1110,15 +1298,17 @@ impl<'a> Generator<'a> {
         // The refused action of an error test, which the export lacks.
         commits.extend(action_entries);
         if !failing.is_empty() {
-            digests.extend(failing.iter().map(|c| c.czd.clone()));
+            digests.extend(failing.iter().flatten().map(|c| c.czd.clone()));
             commits.push(Self::cozies_to_commit_entry(&failing)?);
         }
 
         // Sort chronologically by first cozy's timestamp
         commits.sort_by_key(|entry| {
             entry
-                .cozies
-                .first()
+                .actions
+                .iter()
+                .chain(entry.txs.iter().flatten())
+                .next()
                 .and_then(|coz| coz.get("pay"))
                 .and_then(|pay| pay.get("now"))
                 .and_then(|now| now.as_i64())
@@ -1132,6 +1322,7 @@ impl<'a> Generator<'a> {
             genesis_keys,
             commits: Some(commits),
             digests: Some(digests),
+            peer: None,
             expected,
         })
     }
@@ -1191,9 +1382,7 @@ impl<'a> Generator<'a> {
         // For error tests, the action was not applied - add it manually
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
-            commits.push(Self::cozies_to_commit_entry(std::slice::from_ref(
-                &action_coz,
-            ))?);
+            commits.push(Self::action_to_entry(&action_coz)?);
             digests.push(action_coz.czd.clone());
         }
 
@@ -1204,6 +1393,7 @@ impl<'a> Generator<'a> {
             genesis_keys,
             commits: Some(commits),
             digests: Some(digests),
+            peer: None,
             expected,
         })
     }
@@ -1277,9 +1467,7 @@ impl<'a> Generator<'a> {
         if is_error_test && !action_sequence.is_empty() {
             // The last action was not applied - add it from action_sequence
             let failing_coz = action_sequence.last().unwrap();
-            commits.push(Self::cozies_to_commit_entry(std::slice::from_ref(
-                failing_coz,
-            ))?);
+            commits.push(Self::action_to_entry(failing_coz)?);
             digests.push(failing_coz.czd.clone());
         }
 
@@ -1291,7 +1479,7 @@ impl<'a> Generator<'a> {
             let mut seen = std::collections::HashSet::new();
             for coz in &action_sequence {
                 if !seen.insert(coz.czd.clone()) {
-                    commits.push(Self::cozies_to_commit_entry(std::slice::from_ref(coz))?);
+                    commits.push(Self::action_to_entry(coz)?);
                     digests.push(coz.czd.clone());
                 }
             }
@@ -1304,6 +1492,7 @@ impl<'a> Generator<'a> {
             genesis_keys,
             commits: Some(commits),
             digests: Some(digests),
+            peer: None,
             expected,
         })
     }
@@ -1493,11 +1682,11 @@ impl<'a> Generator<'a> {
             || cz.typ.contains("freeze/create")
             || cz.typ.contains("freeze/delete")
             || cz.typ.contains("ds/create");
-        if let Some(raw_id) = cz.target.as_deref().and_then(|t| t.strip_prefix("raw:")) {
-            // `raw:<id>` states the `id` verbatim, for values no pool key's
-            // thumbprint can express (e.g. a nonce of an off-by-one width,
-            // or a `ds/create` naming a DR that is not MR(DT)).
-            fields.insert("id".to_string(), Value::String(raw_id.to_string()));
+        if let Some(id) = &cz.id {
+            // A stated `id`, for values no pool key's thumbprint can
+            // express (e.g. a nonce of an off-by-one width, or a
+            // `ds/create` naming a DR that is not MR(DT)).
+            fields.insert("id".to_string(), Value::String(id.clone()));
         } else if targets_own_pr {
             let pr_val = current_pr.ok_or_else(|| Error::Generation {
                 name: "build_pay_value".to_string(),
@@ -1509,6 +1698,21 @@ impl<'a> Generator<'a> {
             let target = self.resolve_key(target_name)?;
             let target_tmb = target.compute_tmb_b64()?;
             fields.insert("id".to_string(), Value::String(target_tmb));
+        }
+
+        // A merge's claim (SPEC 11.5.1), by reference.
+        if let Some(from) = &cz.merge_from {
+            let from = from
+                .iter()
+                .map(|r| self.resolve_ref(r).map(Value::String))
+                .collect::<Result<Vec<_>, _>>()?;
+            fields.insert("merge_from".to_string(), Value::Array(from));
+        }
+        if let Some(to) = &cz.merge_to_pr {
+            fields.insert(
+                "merge_to_pr".to_string(),
+                Value::String(self.resolve_ref(to)?),
+            );
         }
 
         // msg if present
@@ -1597,12 +1801,12 @@ impl<'a> Generator<'a> {
         let sig_b64 = Base64UrlUnpadded::encode_string(&sig_bytes);
         let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
 
-        // Build embedded key for key/create operations. A nonce's `target`
-        // only lends a value; it is not key material to embed.
+        // The key a key-introducing coz names, for the commit's `keys`
+        // (SPEC 4.6.2); no other coz carries key material.
         let embedded_key = if let Some(target_name) = cz
             .target
             .as_ref()
-            .filter(|t| !t.starts_with("raw:") && !cz.typ.contains("/nonce/"))
+            .filter(|_| cyphr::parsed_coz::typ::is_key_introducing(&cz.typ))
         {
             let target = self.resolve_key(target_name)?;
             Some(GoldenKey {
@@ -1679,6 +1883,18 @@ impl<'a> Generator<'a> {
             .unwrap_or_default();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();
+        let txs_order = principal
+            .commits()
+            .last()
+            .filter(|c| c.transactions().iter().any(|tx| tx.0.len() > 1))
+            .map(|c| {
+                c.transactions()
+                    .iter()
+                    .filter_map(|tx| tx.id(&[first_alg]))
+                    .filter_map(|id| id.get(first_alg).map(|d| (first_alg, d.to_vec())))
+                    .map(|(alg, d)| format!("{alg}:{}", Base64UrlUnpadded::encode_string(&d)))
+                    .collect()
+            });
 
         // Build multihash variants if multiple algorithms active
         let active_algs = principal.active_algs();
@@ -1734,6 +1950,8 @@ impl<'a> Generator<'a> {
                 multihash_pr: multihash_pr.clone(),
                 deleted: e.deleted.or(Some(principal.is_deleted())),
                 frozen: e.frozen.or(Some(principal.is_frozen())),
+                txs_order: txs_order.clone(),
+                merge_status: None,
             },
             None => GoldenExpected {
                 key_count: Some(key_count),
@@ -1752,6 +1970,8 @@ impl<'a> Generator<'a> {
                 multihash_pr,
                 deleted: Some(principal.is_deleted()),
                 frozen: Some(principal.is_frozen()),
+                txs_order,
+                merge_status: None,
             },
         }
     }
@@ -1833,11 +2053,11 @@ level = 3
         // Verify commit has correct structure
         let commit = &commits[1];
         assert_eq!(
-            commit.cozies.len(),
-            2,
-            "commit should have 2 cozies (mutation + commit)"
+            commit.txs.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![1, 1],
+            "commit should have 2 one-coz transactions (mutation + commit)"
         );
-        let cz = &commit.cozies[0];
+        let cz = &commit.txs[0][0];
         let pay = cz.get("pay").expect("cz missing pay");
         assert_eq!(pay["alg"], "ES256");
         assert_eq!(pay["typ"], "cyphr.me/cyphr/key/create");
@@ -1847,7 +2067,7 @@ level = 3
             "mutation cozies must not carry a pre field — only commit/create's arrow does"
         );
 
-        let cz2 = &commit.cozies[1];
+        let cz2 = &commit.txs[1][0];
         let pay2 = cz2.get("pay").expect("commit/create missing pay");
         assert_eq!(pay2["typ"], "cyphr.me/cyphr/commit/create");
         assert!(
@@ -1884,7 +2104,7 @@ level = 3
         // of golden_fixtures.rs's corpus-driven cr equality assertion.
         let generator = Generator::new(&pool);
         let mut principal2 = generator
-            .create_principal(&intent.test[0].principal, &intent.test[0].name)
+            .create_principal(&intent.test[0].principal, None, &intent.test[0].name)
             .await
             .expect("failed to reconstruct principal");
         generator

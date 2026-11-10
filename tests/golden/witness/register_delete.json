@@ -12,8 +12,8 @@
   ],
   "commits": [
     {
-      "v": 1,
-      "txs": [
+      "v": 2,
+      "actions": [
         {
           "pay": {
             "alg": "ES256",
@@ -25,6 +25,7 @@
           "sig": "ovF_BlTIak1dNqidS801krhyIp2qGtdkY1LoDbJPqSsrRXNVjWu3z7q2whWVUtiTWmb63hpr67QtiAYH-XfZFw"
         }
       ],
+      "txs": [],
       "keys": [],
       "commit_id": "",
       "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",

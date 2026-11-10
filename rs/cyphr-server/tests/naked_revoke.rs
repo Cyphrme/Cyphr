@@ -302,15 +302,6 @@ async fn login_status(state: &Arc<AppState>, pool: &Pool, signer: &str, pid: &st
 // key can be exercised at the push gate).
 // ========================================================================
 
-/// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
-fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
 /// Bootstrap `pid` over real HTTP with its genesis commit (SPEC 5.1), in
 /// which `genesis_name` creates itself and `added_name`. `pid` must be that
 /// genesis's PG (`common::genesis_push_id`).
@@ -349,8 +340,9 @@ async fn followup_push_body(
 ) -> String {
     let principal =
         common::genesis_pushed_principal(pool, genesis_name, genesis_added, genesis_now).await;
-    let blobs = common::sign_key_create_commit(principal, pool, signer_name, added_name, now).await;
-    push_body(pid, &blobs)
+    let bundle =
+        common::sign_key_create_commit(principal, pool, signer_name, added_name, now).await;
+    common::push_body(pid, &bundle)
 }
 
 async fn post_push(state: &Arc<AppState>, body: String) -> (StatusCode, serde_json::Value) {
@@ -1246,30 +1238,29 @@ async fn poison_genesis_push_body(
         .expect("genesis key in pool")
         .software_signer()
         .expect("genesis signer");
-    let cozies = principal
+    principal
         .commit_genesis(&signer, &[key(victim_key_name)], now, "cyphr.me")
         .await
-        .expect("the honest genesis commits before the sidecar is swapped");
+        .expect("the honest genesis commits before the key entry is swapped");
+    let mut bundle =
+        cyphr::replay::WireBundle::of_commit(principal.commits().last().expect("genesis"))
+            .expect("bundle");
 
-    // The POISONED sidecar: declared thumbprint = the victim's V, but the
+    // The POISONED key entry: declared thumbprint = the victim's V, but the
     // public key is the attacker's own (whose private key signs the revoke).
     let mut swapped = 0;
-    let blobs: Vec<Vec<u8>> = cozies
-        .into_iter()
-        .map(|mut coz| {
-            if coz["key"]["tmb"].as_str() == Some(victim_tmb.as_str()) {
-                coz["key"]["pub"] = serde_json::json!(attacker.pub_key);
-                swapped += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect();
+    for entry in &mut bundle.keys {
+        if entry.tmb == victim_tmb {
+            entry.pub_key = attacker.pub_key.clone();
+            swapped += 1;
+        }
+    }
     assert_eq!(
         swapped, 1,
-        "exactly the victim key/create's sidecar is swapped"
+        "exactly the victim key/create's key entry is swapped"
     );
 
-    push_body(&attacker_pid, &blobs)
+    common::push_body(&attacker_pid, &bundle)
 }
 
 /// The BLOCKING R1 exploit, mounted end-to-end: an unauthenticated attacker

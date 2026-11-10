@@ -21,7 +21,7 @@ use std::task::{Context, Poll};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::{AlgorithmMetas, MemoryStorage, Storage, WriteOp};
-use cyphr::replay::{StoredCoz, replay_bundle};
+use cyphr::replay::{Bundle, StoredCoz, replay_bundle};
 use cyphr::{Error, Key, Principal};
 
 const T: i64 = 1_700_000_000;
@@ -189,16 +189,6 @@ fn key_create(
     })
 }
 
-fn action(by: &test_fixtures::PoolKey, now: i64) -> serde_json::Value {
-    serde_json::json!({
-        "alg": by.alg,
-        "msg": "hello",
-        "now": now,
-        "tmb": by.compute_tmb_b64().expect("tmb"),
-        "typ": format!("{AUTHORITY}/comment/create"),
-    })
-}
-
 /// A principal of pool key `golden` over a recording store, its genesis
 /// committed (golden creates itself, then `others`).
 async fn genesis(
@@ -239,18 +229,22 @@ fn observed(p: &Principal<Recording>) -> (String, usize, u64) {
 // ============================================================================
 
 /// Claim: no EML leaf exists for a commit the principal has not committed.
-/// Scenario: a stored bundle carries a valid commit (golden creates
-/// `key_a`) followed by a data action whose signature does not verify;
-/// replaying it is refused, and the store sees no write and the principal
-/// keeps its PR, commits and log size. Turns red if: a bundle's trailing
-/// actions are checked after the commit's leaf is written (as when replay
-/// finalized the commit before recording them). End-to-end scenario: yes
-/// (sign, bundle, replay, observe the store).
+/// Scenario: a stored bundle carries a valid transaction (golden creates
+/// `key_a`), then a transaction whose signature does not verify, then the
+/// `commit/create`; replaying it is refused, and the store sees no write and
+/// the principal keeps its PR, commits and log size. Turns red if: a
+/// commit's leaf is written before every transaction of the bundle is
+/// verified (as when a transaction already verified was appended on its
+/// own). A push carries no actions after its transactions (SPEC 4.6.2
+/// `actions` are recorded first), so the refused coz here is a
+/// transaction. End-to-end scenario: yes (sign, bundle, replay, observe the
+/// store).
 #[tokio::test]
 async fn refused_bundle_writes_nothing() {
     let pool = pool();
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
+    let key_b = pool.get("key_b").expect("key_b");
     let (mut p, probe) = genesis(&pool, &[]).await;
 
     // The commit's cozies, signed on a copy so the principal itself is
@@ -276,31 +270,36 @@ async fn refused_bundle_writes_nothing() {
         .finalize_with_software(&golden.software_signer().expect("signer"), T + 2, AUTHORITY)
         .await
         .expect("commit finalizes");
-    let mut bundle: Vec<StoredCoz> = commit
-        .iter_all_cozies()
-        // The sidecar key is kept only on the key-introducing coz.
-        .map(|vc| {
-            StoredCoz::new(&vc.raw().pay, vc.raw().sig.clone(), key_a.key().ok())
-                .expect("stored coz")
-        })
+    let stored = |vc: &cyphr::parsed_coz::VerifiedCoz| {
+        StoredCoz::new(&vc.raw().pay, vc.raw().sig.clone()).expect("stored coz")
+    };
+    let mut txs: Vec<Vec<StoredCoz>> = commit
+        .transactions()
+        .iter()
+        .map(|tx| tx.0.iter().map(stored).collect())
         .collect();
+    let keys = vec![key_a.key().expect("key")];
     // Control: the commit alone replays on a fresh principal.
     let (mut control, _) = genesis(&pool, &[]).await;
-    replay_bundle(&mut control, &bundle)
+    let whole = Bundle::new(Vec::new(), txs.clone(), keys.clone()).expect("bundle");
+    replay_bundle(&mut control, &whole)
         .await
         .expect("control: the commit replays");
 
-    let (apay, mut asig, _) = sign(golden, action(golden, T + 3));
-    asig[0] ^= 0x01;
-    let apay: serde_json::Value = serde_json::from_slice(&apay).expect("pay json");
-    bundle.push(StoredCoz::new(&apay, asig, None).expect("stored coz"));
+    let (bpay, mut bsig, _) = sign(golden, key_create(golden, key_b, T + 1));
+    bsig[0] ^= 0x01;
+    let bpay: serde_json::Value = serde_json::from_slice(&bpay).expect("pay json");
+    let closing = txs.pop().expect("commit/create");
+    txs.push(vec![StoredCoz::new(&bpay, bsig).expect("stored coz")]);
+    txs.push(closing);
+    let bundle = Bundle::new(Vec::new(), txs, keys).expect("bundle");
 
     let before = observed(&p);
     let writes = probe.writes();
     let r = replay_bundle(&mut p, &bundle).await;
     assert!(
         matches!(&r, Err(e) if matches!(e.source, Error::InvalidSignature)),
-        "the bundle must be refused on its trailing action: {r:?}"
+        "the bundle must be refused on its bad transaction: {r:?}"
     );
     assert_eq!(probe.writes(), writes, "a refused bundle wrote to the log");
     assert_eq!(

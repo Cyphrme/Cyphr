@@ -43,7 +43,7 @@ async fn s10_hostile() {
     // limit: one under it (so the limit, not the shape, decides) and one over.
     let push_body = |blob_bytes: u64| {
         let blob = "A".repeat(blob_bytes as usize);
-        format!(r#"{{"principal_id":"SHA-512:AAAA","blobs":["{blob}"]}}"#)
+        format!(r#"{{"principal_id":"SHA-512:AAAA","txs":[["{blob}"]]}}"#)
     };
     let cases: [(&str, String, &[u16]); 3] = [
         ("malformed", "{".to_owned(), &[400, 422]),

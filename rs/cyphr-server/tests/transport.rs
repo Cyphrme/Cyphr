@@ -171,8 +171,9 @@ async fn self_revoke_commit_blobs(
     entries
         .last()
         .expect("a commit after finalize")
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|c| serde_json::to_vec(c).expect("cozy serializes"))
         .collect()
 }
@@ -384,10 +385,9 @@ async fn initiator_key_revoked_in_the_chain_is_refused() {
         .await
         .expect("load the pushed principal");
     let blobs = self_revoke_commit_blobs(principal, "key_a", 1_700_000_100).await;
-    let slices: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     state
         .engine
-        .submit_commit(&own_principal, None, &slices)
+        .submit_commit(&own_principal, None, &common::bundle_of(&blobs))
         .await
         .expect("submit the revoke commit");
 

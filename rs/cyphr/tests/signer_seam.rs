@@ -307,22 +307,25 @@ fn finalize<'a, S: Signer>(
 /// key/create at NOW -> commit at NOW+1), stable across repeated runs (RFC
 /// 6979 / Ed25519 are deterministic). First recorded from the pre-seam
 /// raw-key finalize; re-recorded when every chain gained its genesis
-/// commit, which changes the commit's `pre` and so its bytes.
+/// commit, which changes the commit's `pre` and so its bytes, and again
+/// when TR became the flat MR of the transaction ids (SPEC 3.7.5): the
+/// genesis commit has two mutation transactions, so its TR, and with it
+/// the `pre` this commit's arrow binds, moved.
 const GOLDEN: &[(&str, &str, &str)] = &[
     (
         "golden",
-        "006vWQObsbUlQV6Fhj9EbMp84lH4neXQU0bgu5V_4sA",
-        "jNKkpbdKLzkRwMgOKr4HI-gmk1_ymQmeQ-eICE7Oo1QGzd05VX471uCvsbU3-jMY4SgMohtfwvLYAccefu8tsw",
+        "38bmkp-QLwM-mjje3KV2Wp7kXG71KMqGv1zgl6-TjVc",
+        "KIm8vJ-WNh9z4b445FgwmFRle7Kk5fxjrLxFPnyEgJJgTcGSy3k3wsZH0JzfreI12IA7jFh1O5-qIAwp1vCu_g",
     ),
     (
         "diana_es384",
-        "4bFvJ-O_Z2afd0a1KvG2vwCXbEunAfoXkjXT5IE89hy5j_wX7jp79gy3moMOi4gM",
-        "MwptCH44-mK-s4xjCpjreJ4tvAuF5ZvA3eAwjG9Bmo16vbbBGfKMZpSckrYwyrXfb74AglctquFEBp0vQm3p3Y5j4QmMQvfwZIjRNTiOhoh-5-pn2iDyDoU7TFVGBemv",
+        "7igmbf2sUpFlz5XGkExCCrMmI7kTrkYmBnfVaSeVPPcFB4xKBEwDkOIk8CRS5MlD",
+        "1KCf9ZL0-NGvJdFTL7ecreyoEE4rNvGix2ob30rJ8jih5yTrpktzU8KFX2vrPu_eN9pl0ivhyfrxUijcelbcEPrbGg4Nb5mgdlgJ8TtadEglb1DbD8cOkmWeLVlWCMkS",
     ),
     (
         "eve_ed25519",
-        "7duH24qhxNWDREI7tO3Ix5khgMMxiLKpvxkzmH8XrfAkYC2Vv2VNCX4uNGFlQtDRDJMaCT5rfDOvXF-bc5MVUQ",
-        "QxYs1lWGGtJVdciL_3Jzh52Djy75qlh4XCQSHKlMqkY_teGQU_h-dQTNIwOWfNpVm_z3wjlMjz-z_qeSEM1vCg",
+        "pZdvd_ySMHE8gNIrYsYJ3A5n4Eh0VJMOP6CJEluzFk4tH0UP-XV0uNeQQYT6fdp-whu68P7Hg8VZfVgxXtG6TQ",
+        "zxOONpBdFtV_x1XToPez84zT3nx3qhNQ08gmGqN3esb3qL-Gp_hc2QU95bz8C3KgZB6P8kgJL42pLrCj2U2-AQ",
     ),
 ];
 

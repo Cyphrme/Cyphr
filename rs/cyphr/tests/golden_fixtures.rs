@@ -83,11 +83,40 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::UnknownNonce => "UnknownNonce",
         Error::GenesisIncomplete => "GenesisIncomplete",
         Error::StateMismatch => "StateMismatch",
+        Error::MixedTransactionTyp => "MixedTransactionTyp",
         _ => "UnknownError",
     }
 }
 
 fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: &str) {
+    // SPEC 3.7.5 / 4.6.3 `txs_order`: the TX of each transaction of the
+    // last commit, TX = MR(czd0, czd1?, ...), in the stated algorithm.
+    if let Some(order) = &expected.txs_order {
+        let commit = principal
+            .commits()
+            .last()
+            .unwrap_or_else(|| panic!("{test_name}: txs_order but no commit"));
+        let actual: Vec<String> = commit
+            .transactions()
+            .iter()
+            .zip(order)
+            .map(|(tx, stated)| {
+                let (alg, _) = parse_alg_digest(stated).expect("tagged TX");
+                let alg = parse_hash_alg(&alg).expect("TX algorithm");
+                let id = tx.id(&[alg]).expect("TX");
+                cyphr::state::TaggedDigest::new(alg, id.get(alg).expect("variant").to_vec())
+                    .expect("tagged")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            commit.transactions().len(),
+            order.len(),
+            "{test_name}: txs_order length"
+        );
+        assert_eq!(&actual, order, "{test_name}: txs_order mismatch");
+    }
+
     if let Some(count) = expected.key_count {
         assert_eq!(
             principal.active_key_count(),
@@ -336,8 +365,6 @@ fn resolve_constraint_tag(expected: &str) -> &str {
 }
 
 async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     let content = fs::read_to_string(fixture_path)
         .unwrap_or_else(|e| panic!("failed to read {:?}: {}", fixture_path, e));
     let fixture: Golden = serde_json::from_str(&content)
@@ -363,10 +390,27 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         })
         .collect();
 
-    // Try to convert pool keys to domain keys (may fail for unsupported algs)
+    // Try to convert pool keys to domain keys (may fail for unsupported
+    // algs). A key `setup.revoke_key` names reaches genesis already revoked.
+    let revoked_at = |pk: &PoolKey| {
+        fixture
+            .setup
+            .as_ref()
+            .filter(|s| s.revoke_key.as_deref() == Some(pk.name.as_str()))
+            .map(|s| cyphr::key::Revocation {
+                rvk: s.revoke_at.unwrap_or(0),
+                by: None,
+            })
+    };
     let genesis_keys: Result<Vec<Key>, cyphr::error::Error> = pool_keys
         .iter()
-        .map(|pk| try_pool_key_to_domain(pk))
+        .map(|pk| {
+            let key = try_pool_key_to_domain(pk)?;
+            Ok(match revoked_at(pk) {
+                Some(r) => key.with_revocation(r),
+                None => key,
+            })
+        })
         .collect();
 
     // Handle genesis-time errors (e.g., unsupported algorithm)
@@ -412,204 +456,40 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         },
     };
 
-    // Apply setup modifiers (e.g., pre-revoke keys)
-    if let Some(ref setup) = fixture.setup {
-        if let Some(ref key_name) = setup.revoke_key {
-            let rvk_time = setup.revoke_at.unwrap_or(0);
-            let pool_key = pool
-                .pool
-                .key
-                .iter()
-                .find(|k| k.name == *key_name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}: setup.revoke_key '{}' not found in pool",
-                        fixture.name, key_name
-                    )
-                });
-            let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
-            principal
-                .pre_revoke_key(&tmb, rvk_time)
-                .expect("pre_revoke_key failed");
-        }
-    }
-
     // ========================================================================
-    // Apply commits from fixture using CommitScope (batch processing)
+    // Replay each line through the core's one replay entry point, the path
+    // every consumer of a stored or fetched bundle takes: actions first,
+    // then each transaction of `txs` as one transaction (SPEC 4.6.2).
     // ========================================================================
     if let Some(commits) = &fixture.commits {
         for (ci, commit) in commits.iter().enumerate() {
-            // Collect actions to replay after commit scope finalizes
-            let mut deferred_actions: Vec<(serde_json::Value, Vec<u8>)> = Vec::new();
-
-            let mut scope = principal.begin_commit();
-            let mut applied_tx_count = 0;
-            let mut key_iter = commit.keys.iter();
-
-            for (ti, cz) in commit.cozies.iter().enumerate() {
-                let pay = cz.get("pay").unwrap_or_else(|| {
-                    panic!(
-                        "{}: commit {} cz {} missing pay",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1
-                    )
-                });
-                let sig_b64 = cz.get("sig").and_then(|v| v.as_str()).unwrap_or_else(|| {
-                    panic!(
-                        "{}: commit {} cz {} missing sig",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1
-                    )
-                });
-                let sig = Base64UrlUnpadded::decode_vec(sig_b64).unwrap_or_else(|e| {
-                    panic!(
-                        "{}: commit {} cz {} invalid sig base64: {}",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1,
-                        e
-                    )
-                });
-
-                let pay_json = serde_json::to_vec(pay).unwrap_or_else(|e| {
-                    panic!(
-                        "{}: commit {} cz {} failed to serialize pay: {}",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1,
-                        e
-                    )
-                });
-
-                let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
-                if cyphr::parsed_coz::typ::is_transaction(typ) {
-                    // Consume next key from commit-level keys if key-introducing
-                    let new_key = if typ.contains("/key/create") || typ.contains("/key/replace") {
-                        key_iter.next().map(|ke| {
-                            let pub_bytes = Base64UrlUnpadded::decode_vec(&ke.pub_key)
-                                .expect("invalid key pub base64");
-                            let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb)
-                                .expect("invalid key tmb base64");
-                            Key::new(
-                                ke.alg.clone(),
-                                coz::Thumbprint::from_bytes(tmb_bytes),
-                                pub_bytes,
-                            )
-                            .expect("key binds its tmb")
-                        })
-                    } else {
-                        None
-                    };
-
-                    // Compute czd using the scope's hash algorithm
-                    let alg_str = match scope.principal_hash_alg() {
-                        coz::HashAlg::Sha256 => "ES256",
-                        coz::HashAlg::Sha384 => "ES384",
-                        coz::HashAlg::Sha512 => "ES512",
-                    };
-                    let cad = coz::canonical_hash_for_alg(&pay_json, alg_str, None)
-                        .expect("unsupported alg for cad");
-                    let czd =
-                        coz::czd_for_alg(&cad, &sig, alg_str).expect("unsupported alg for czd");
-
-                    match scope.verify_and_apply(&pay_json, &sig, czd, new_key) {
-                        Ok(()) => {
-                            applied_tx_count += 1;
-                        },
-                        Err(e) => {
-                            if let Some(expected) = expected_error {
-                                assert_eq!(
-                                    error_name(&e),
-                                    expected,
-                                    "{}: wrong error type at commit {} cz {}",
-                                    fixture.name,
-                                    ci + 1,
-                                    ti + 1
-                                );
-                                println!(
-                                    "  ✓ {} (expected error: {}) [commits]",
-                                    fixture.name, expected
-                                );
-                                return;
-                            }
-                            panic!(
-                                "{}: commit {} cz {} failed: {:?}",
-                                fixture.name,
-                                ci + 1,
-                                ti + 1,
-                                e
-                            );
-                        },
-                    }
-                } else {
-                    // Action: defer until after commit scope finalizes
-                    deferred_actions.push((pay.clone(), sig));
-                }
-            }
-
-            // Finalize the commit scope
-            if applied_tx_count > 0 {
-                match scope.finalize().await {
-                    Ok(_) => {},
-                    Err(e) => {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong error on commit {} finalize",
-                                fixture.name,
-                                ci + 1
-                            );
-                            println!(
-                                "  ✓ {} (expected error: {}) [finalize]",
-                                fixture.name, expected
-                            );
-                            return;
-                        }
-                        panic!(
-                            "{}: commit {} finalize failed: {:?}",
+            let replayed = match commit.bundle().map(|b| b.decode()) {
+                Ok(Ok(bundle)) => cyphr::replay::replay_bundle(&mut principal, &bundle)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.source),
+                Ok(Err(e)) => Err(match e.error {
+                    cyphr::replay::WireError::Protocol(p)
+                    | cyphr::replay::WireError::Header(p)
+                    | cyphr::replay::WireError::Key(p) => p,
+                    other => panic!("{}: line {} is malformed: {other}", fixture.name, ci + 1),
+                }),
+                Err(e) => panic!("{}: line {} does not serialize: {e}", fixture.name, ci + 1),
+            };
+            if let Err(e) = replayed {
+                match expected_error {
+                    Some(expected) => {
+                        assert_eq!(
+                            error_name(&e),
+                            expected,
+                            "{}: wrong error at line {}: {e:?}",
                             fixture.name,
-                            ci + 1,
-                            e
+                            ci + 1
                         );
+                        println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                        return;
                     },
-                }
-            } else {
-                drop(scope);
-            }
-
-            // Replay deferred actions on the principal
-            for (pay_val, sig) in deferred_actions {
-                let pay_json =
-                    serde_json::to_vec(&pay_val).expect("failed to serialize action pay");
-                let alg = pay_val
-                    .get("alg")
-                    .and_then(|v| v.as_str())
-                    .expect("action missing alg");
-                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
-                    .expect("unsupported alg for cad");
-                let czd = coz::czd_for_alg(&cad, &sig, alg).expect("unsupported alg for czd");
-
-                match principal.verify_and_record_action(&pay_json, &sig, czd) {
-                    Ok(_) => {},
-                    Err(e) => {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong action error",
-                                fixture.name
-                            );
-                            println!(
-                                "  ✓ {} (expected error: {}) [action]",
-                                fixture.name, expected
-                            );
-                            return;
-                        }
-                        panic!("{}: action failed: {:?}", fixture.name, e);
-                    },
+                    None => panic!("{}: line {} failed: {e:?}", fixture.name, ci + 1),
                 }
             }
         }
@@ -619,6 +499,37 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
             panic!(
                 "{}: expected error '{}' but all commits succeeded",
                 fixture.name, expected
+            );
+        }
+
+        // A two-principal vector: replay the peer the same way, then the
+        // merge status of the test principal (source) into it (SPEC 11.5.1).
+        if let Some(peer) = &fixture.peer {
+            let first = pool
+                .get(&peer.principal[0])
+                .unwrap_or_else(|| panic!("{}: peer key not in pool", fixture.name));
+            let mut other =
+                Principal::implicit(try_pool_key_to_domain(first).expect("peer genesis key"))
+                    .await
+                    .expect("peer genesis");
+            for (ci, commit) in peer.commits.iter().enumerate() {
+                let bundle = commit
+                    .bundle()
+                    .expect("peer line")
+                    .decode()
+                    .expect("peer bundle");
+                cyphr::replay::replay_bundle(&mut other, &bundle)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("{}: peer line {} failed: {e}", fixture.name, ci + 1)
+                    });
+            }
+            let status = format!("{:?}", cyphr::merge_status(&principal, &other));
+            assert_eq!(
+                Some(status.as_str()),
+                fixture.expected.merge_status.as_deref(),
+                "{}: merge_status mismatch",
+                fixture.name
             );
         }
 
@@ -711,4 +622,22 @@ async fn test_golden_witness() {
 #[tokio::test]
 async fn test_golden_key_auth() {
     run_golden_dir("key_auth").await;
+}
+
+/// Transaction grouping vectors (SPEC 3.7.5, 4, 4.1, 4.6.2): the SPEC 4
+/// example as one two-coz transaction pins its TX (`txs_order`) and TR,
+/// the same pair as two transactions pins another TR, and a transaction
+/// mixing `typ`s is refused with `MixedTransactionTyp`. Red if a replay
+/// applies each coz as its own transaction or accepts the mix.
+#[tokio::test]
+async fn test_golden_transaction_grouping() {
+    run_golden_dir("transaction_grouping").await;
+}
+
+/// Merge vectors (SPEC 11.5.1): a merge alone is pending, an ack alone is
+/// no merge, the two with equal fields are merged, and an ack naming
+/// another `merge_from` leaves the merge pending.
+#[tokio::test]
+async fn test_golden_merge() {
+    run_golden_dir("merge").await;
 }

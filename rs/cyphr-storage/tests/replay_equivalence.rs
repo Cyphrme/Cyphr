@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::StateDigest;
-use cyphr::replay::{StoredCoz, replay_bundle};
+use cyphr::replay::{StoredCoz, WireBundle, replay_bundle};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::{
@@ -27,7 +27,7 @@ type Engine = StorageEngine<MemoryBlobStore, MemoryIndexer>;
 struct Chain {
     name: String,
     genesis: Genesis,
-    bundles: Vec<Vec<Vec<u8>>>,
+    bundles: Vec<WireBundle>,
     expected_pr: String,
 }
 
@@ -100,25 +100,24 @@ fn corpus() -> Vec<Chain> {
     chains
 }
 
-/// A golden commit as the wire carries it: each coz `{pay, sig}` and the key
-/// a key-introducing coz adds as its `key` sidecar. A chain's first commit is
-/// its genesis commit, whose `key/create`s disclose its keys, so a rebuild
-/// reads the genesis from these blobs alone.
-fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let mut keys = commit["keys"].as_array().into_iter().flatten();
-    let txs = commit["txs"].as_array().expect("txs");
-    txs.iter()
-        .map(|coz| {
-            let mut coz = coz.clone();
-            let typ = coz["pay"]["typ"].as_str().expect("typ").to_string();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
-                if let Some(key) = keys.next() {
-                    coz["key"] = key.clone();
-                }
-            }
-            serde_json::to_vec(&coz).expect("json")
-        })
-        .collect()
+/// A golden commit line as the wire carries it (SPEC 4.6.2): `txs` by
+/// transaction, the keys they introduce in `keys`, data actions in
+/// `actions`. A chain's first commit is its genesis commit, whose
+/// `key/create`s name its keys, so a rebuild reads the genesis from the
+/// stored record alone.
+fn wire_blobs(commit: &serde_json::Value) -> WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("golden line")
+        .bundle()
+        .expect("bundle")
+}
+
+/// `bundle` decoded and replayed onto `p` through the core's entry point.
+async fn core_replay(
+    p: &mut cyphr::Principal,
+    bundle: &WireBundle,
+) -> Result<cyphr::replay::BundleId, cyphr::replay::ReplayError> {
+    replay_bundle(p, &bundle.decode().expect("wire bundle")).await
 }
 
 async fn principal(genesis: &Genesis) -> cyphr::Principal {
@@ -133,11 +132,7 @@ async fn principal(genesis: &Genesis) -> cyphr::Principal {
 /// PR.
 async fn principal_id(chain: &Chain) -> String {
     let mut p = principal(&chain.genesis).await;
-    let cozies: Vec<StoredCoz> = chain.bundles[0]
-        .iter()
-        .map(|b| StoredCoz::from_wire(b).expect("wire coz"))
-        .collect();
-    replay_bundle(&mut p, &cozies)
+    core_replay(&mut p, &chain.bundles[0])
         .await
         .expect("first commit replays");
     match p.pg() {
@@ -155,9 +150,8 @@ async fn principal_id(chain: &Chain) -> String {
 async fn ingest(engine: &Engine, chain: &Chain) -> String {
     let id = principal_id(chain).await;
     for (i, bundle) in chain.bundles.iter().enumerate() {
-        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&id, Some(chain.genesis.clone()), &refs)
+            .submit_commit(&id, Some(chain.genesis.clone()), bundle)
             .await
             .unwrap_or_else(|e| panic!("{}: engine ingests commit {i}: {e}", chain.name));
     }
@@ -200,11 +194,7 @@ async fn check_chain(chain: &Chain) {
     {
         let mut core = principal(&chain.genesis).await;
         for (i, bundle) in chain.bundles.iter().enumerate() {
-            let cozies: Vec<StoredCoz> = bundle
-                .iter()
-                .map(|blob| StoredCoz::from_wire(blob).expect("wire coz"))
-                .collect();
-            replay_bundle(&mut core, &cozies)
+            core_replay(&mut core, bundle)
                 .await
                 .unwrap_or_else(|e| panic!("{}: core replays commit {i}: {e}", chain.name));
         }
@@ -481,18 +471,10 @@ impl Signer {
         (bytes, sig, czd)
     }
 
-    /// The wire blob of `pay` with an optional `key` sidecar.
-    fn blob(&self, pay: &serde_json::Value, sidecar: Option<&cyphr::Key>) -> Vec<u8> {
+    /// The wire blob `{pay, sig}` of `pay`.
+    fn blob(&self, pay: &serde_json::Value) -> Vec<u8> {
         let (_, sig, _) = self.sign(pay);
-        let mut coz =
-            serde_json::json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) });
-        if let Some(key) = sidecar {
-            coz["key"] = serde_json::json!({
-                "alg": key.alg(),
-                "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
-                "tmb": key.tmb().to_b64(),
-            });
-        }
+        let coz = serde_json::json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) });
         serde_json::to_vec(&coz).expect("json")
     }
 
@@ -506,17 +488,17 @@ impl Signer {
         writer
             .verify_and_record_action(&bytes, &sig, czd)
             .expect("action records");
-        self.blob(&pay, None)
+        self.blob(&pay)
     }
 
     /// Commit a `key/create` of `new` on `writer`; returns the commit's wire
-    /// blobs.
+    /// bundle.
     async fn key_create(
         &self,
         writer: &mut cyphr::Principal,
         new: &cyphr::Key,
         now: i64,
-    ) -> Vec<Vec<u8>> {
+    ) -> WireBundle {
         let pay = serde_json::json!({
             "alg": self.alg, "id": new.tmb().to_b64(), "now": now,
             "tmb": self.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/create",
@@ -532,28 +514,22 @@ impl Signer {
             .finalize_with_software(&signer, now, "cyphr.me")
             .await
             .expect("finalizes");
-        let closing = commit
-            .iter_all_cozies()
-            .last()
-            .expect("commit/create")
-            .raw()
-            .pay
-            .clone();
-        vec![self.blob(&pay, Some(new)), self.blob(&closing, None)]
+        WireBundle::of_commit(commit).expect("bundle")
     }
 }
 
-/// Claim: engine ingest applies a bundle of data action, transaction, data
-/// action by the order rule (leading actions, then the commit, then the
-/// trailing actions against the post-commit state): a trailing action
-/// signed by the key the bundle's own `key/create` introduced is accepted,
-/// the indexed tip is the commit the writer formed, and replaying the
-/// stored chain reaches the writer's PR.
+/// Claim: engine ingest applies the order rule: a push's data actions are
+/// recorded before its transactions (SPEC 4.6.2 `actions`), and an action
+/// pushed after a commit, as an action-only bundle, is judged against the
+/// post-commit state: an action signed by the key the commit's own
+/// `key/create` introduced is accepted, the indexed tip is the commit the
+/// writer formed, and replaying the stored chain reaches the writer's PR.
 ///
-/// Turns red if: replay records every data action before the commit scope
-/// (the trailing action's signer is not yet a key: `UnknownKey`).
-/// End-to-end scenario: yes (a real mixed bundle through engine ingest and
-/// a stored-chain replay).
+/// Turns red if: the leading action is recorded after the commit, or the
+/// following action-only bundle is judged against a state without the
+/// commit (its signer is not yet a key: `UnknownKey`).
+/// End-to-end scenario: yes (a commit with a leading action, then an
+/// action-only push, through engine ingest and a stored-chain replay).
 #[tokio::test]
 async fn action_after_a_transaction_is_judged_after_the_commit() {
     let golden = signer("golden");
@@ -574,22 +550,22 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     let first = golden
         .key_create(&mut writer, &key_a.key, 1_700_000_100)
         .await;
-    let mut mixed = vec![golden.action(&mut writer, 1_700_000_150)];
-    mixed.extend(
-        golden
+    let leading = golden.action(&mut writer, 1_700_000_150);
+    let with_action = WireBundle {
+        actions: vec![leading],
+        ..golden
             .key_create(&mut writer, &key_b.key, 1_700_000_200)
-            .await,
-    );
+            .await
+    };
     let commit_pr = writer.pr_tagged().expect("pr");
-    mixed.push(key_b.action(&mut writer, 1_700_000_250));
+    let after = WireBundle::actions(vec![key_b.action(&mut writer, 1_700_000_250)]);
 
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    for bundle in [genesis_commit, first, mixed] {
-        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+    for bundle in [genesis_commit, first, with_action, after] {
         engine
-            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .submit_commit(&id, Some(genesis.clone()), &bundle)
             .await
             .expect("the bundle is admitted by the order rule");
     }
@@ -598,6 +574,20 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
         (tip.commit_count, tip.pr),
         (3, commit_pr),
         "the indexed tip is the writer's commit"
+    );
+    let loaded = engine
+        .load_principal(&id, genesis)
+        .await
+        .expect("the stored chain replays");
+    assert_eq!(
+        loaded.pr_tagged().expect("pr"),
+        writer.pr_tagged().expect("pr"),
+        "replaying the stored chain reaches the writer's PR"
+    );
+    assert_eq!(
+        history(&loaded),
+        history(&writer),
+        "and the writer's actions"
     );
 }
 
@@ -630,7 +620,7 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
     let mut writer = cyphr::Principal::implicit(golden.key.clone())
         .await
         .expect("genesis");
-    let mut blobs = Vec::new();
+    let mut txs = Vec::new();
     let software =
         |s: &Signer| cyphr::signer::SoftwareSigner::new(&s.alg, &s.prv, &s.pub_key, s.key.tmb());
     let mut scope = writer.begin_commit();
@@ -647,19 +637,27 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
         scope
             .verify_and_apply(&bytes, &sig, czd, Some(new.clone()))
             .expect("genesis key/create applies");
-        blobs.push(by.blob(&pay, Some(new)));
+        txs.push(vec![by.blob(&pay)]);
     }
     let created = scope
         .create_principal(&software(&golden), now, "cyphr.me")
         .await
         .expect("principal/create");
-    blobs.push(serde_json::to_vec(&created).expect("json"));
+    txs.push(vec![serde_json::to_vec(&created).expect("json")]);
     let commit = scope
         .finalize_with_software(&software(&golden), now, "cyphr.me")
         .await
         .expect("genesis commit");
     let closing = commit.commit_tx().0.first().expect("commit/create").raw();
-    blobs.push(serde_json::to_vec(closing).expect("json"));
+    txs.push(vec![serde_json::to_vec(closing).expect("json")]);
+    let blobs = WireBundle {
+        txs,
+        keys: order
+            .iter()
+            .map(|k| cyphr_storage::KeyEntry::of(k))
+            .collect(),
+        ..WireBundle::default()
+    };
 
     let alg = writer.active_algs()[0];
     let pg = writer
@@ -670,9 +668,8 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
         .expect("pg variant");
     let id = format!("{alg}:{}", Base64UrlUnpadded::encode_string(pg));
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     engine
-        .submit_commit(&id, None, &refs)
+        .submit_commit(&id, None, &blobs)
         .await
         .expect("ingest reads the genesis from its blobs");
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
@@ -706,8 +703,8 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
 
 impl Signer {
     /// Commit a `ds/create` naming MR(DT) on `writer`; returns the commit's
-    /// wire blobs.
-    async fn ds_create(&self, writer: &mut cyphr::Principal, now: i64) -> Vec<Vec<u8>> {
+    /// wire bundle.
+    async fn ds_create(&self, writer: &mut cyphr::Principal, now: i64) -> WireBundle {
         let mut scope = writer.begin_commit();
         let id = scope
             .data_tree_id()
@@ -727,14 +724,7 @@ impl Signer {
             .finalize_with_software(&signer, now, "cyphr.me")
             .await
             .expect("finalizes");
-        let closing = commit
-            .iter_all_cozies()
-            .last()
-            .expect("commit/create")
-            .raw()
-            .pay
-            .clone();
-        vec![self.blob(&pay, None), self.blob(&closing, None)]
+        WireBundle::of_commit(commit).expect("bundle")
     }
 
     /// A data action's wire blob, not recorded anywhere.
@@ -743,7 +733,7 @@ impl Signer {
             "alg": self.alg, "msg": msg, "now": now, "tmb": self.key.tmb().to_b64(),
             "typ": "cyphr.me/app/post/create",
         });
-        self.blob(&pay, None)
+        self.blob(&pay)
     }
 }
 
@@ -755,10 +745,9 @@ fn record(writer: &mut cyphr::Principal, blob: &[u8]) {
         .expect("action records");
 }
 
-async fn push(engine: &Engine, id: &str, genesis: &Genesis, bundle: &[Vec<u8>]) {
-    let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+async fn push(engine: &Engine, id: &str, genesis: &Genesis, bundle: &WireBundle) {
     engine
-        .submit_commit(id, Some(genesis.clone()), &refs)
+        .submit_commit(id, Some(genesis.clone()), bundle)
         .await
         .expect("the bundle is accepted");
 }
@@ -812,9 +801,9 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     for bundle in [
         genesis_commit,
-        vec![late.clone(), early.clone()],
+        WireBundle::actions(vec![late.clone(), early.clone()]),
         included,
-        vec![trailing.clone()],
+        WireBundle::actions(vec![trailing.clone()]),
     ] {
         push(&engine, &id, &genesis, &bundle).await;
     }
@@ -868,7 +857,7 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
     let later = golden.unrecorded_action(t + 50, "after the restart");
     record(&mut writer, &later);
     let again = golden.ds_create(&mut writer, t + 60).await;
-    push(&restarted, &id, &genesis, &[later]).await;
+    push(&restarted, &id, &genesis, &WireBundle::actions(vec![later])).await;
     push(&restarted, &id, &genesis, &again).await;
     let tip = restarted.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(
@@ -951,7 +940,7 @@ async fn forged_actions_are_quarantined_by_the_scratch_rebuild() {
     let own = golden.unrecorded_action(t + 20, "its own");
     record(&mut writer, &own);
     let included = golden.ds_create(&mut writer, t + 30).await;
-    push(&engine, &id, &genesis, &[own]).await;
+    push(&engine, &id, &genesis, &WireBundle::actions(vec![own])).await;
     push(&engine, &id, &genesis, &included).await;
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(tip.pr, writer.pr_tagged().expect("pr"));
@@ -1041,6 +1030,8 @@ async fn action_manifest_with_a_transaction_is_malformed() {
     let tx = golden
         .key_create(&mut other, &key_a.key, t + 10)
         .await
+        .txs
+        .remove(0)
         .remove(0);
     let forged = forge_action_manifest(engine.blob_store(), &id, 1, &[tx]).await;
     let malformed = |q: &[cyphr_storage::engine::QuarantinedManifest]| {
@@ -1123,13 +1114,13 @@ async fn actions_at_one_position_rebuild_in_now_order() {
     async fn manifest_order(
         id: &str,
         genesis: &Genesis,
-        commit: &[Vec<u8>],
+        commit: &WireBundle,
         actions: &[Vec<u8>],
     ) -> Vec<[u8; 32]> {
         let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         push(&engine, id, genesis, commit).await;
         for a in actions {
-            push(&engine, id, genesis, std::slice::from_ref(a)).await;
+            push(&engine, id, genesis, &WireBundle::actions(vec![a.clone()])).await;
         }
         let store = engine.blob_store();
         let mut found = Vec::new();
@@ -1174,17 +1165,16 @@ async fn actions_at_one_position_rebuild_in_now_order() {
     let index =
         cyphr_index_fjall::FjallIndexer::open(&dir.path().join("index")).expect("open index");
     let engine = StorageEngine::new(blobs, index);
-    let push_to = async |bundle: &[Vec<u8>]| {
-        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+    let push_to = async |bundle: &WireBundle| {
         engine
-            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .submit_commit(&id, Some(genesis.clone()), bundle)
             .await
             .expect("the bundle is accepted");
     };
     push_to(&commit).await;
     for a in [&early, &late] {
         record(&mut writer, a);
-        push_to(std::slice::from_ref(a)).await;
+        push_to(&WireBundle::actions(vec![a.clone()])).await;
     }
 
     let report = engine
@@ -1215,7 +1205,7 @@ async fn actions_before_the_genesis_commit_are_refused() {
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     let action = golden.unrecorded_action(1_700_000_010, "before any commit");
     let refused = engine
-        .submit_commit(&id, Some(genesis), &[action.as_slice()])
+        .submit_commit(&id, Some(genesis), &WireBundle::actions(vec![action]))
         .await;
     assert!(
         matches!(

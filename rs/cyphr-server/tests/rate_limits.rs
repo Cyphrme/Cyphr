@@ -42,7 +42,6 @@
 
 mod common;
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use tempfile::TempDir;
 
 // A distinct, deterministic `now` per principal keeps genesis blob bytes (and
@@ -221,11 +220,7 @@ async fn genesis_body(principal_id: &str, now: i64) -> String {
 
 /// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
 fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_blobs(pid, blobs)
 }
 
 /// Build a genesis push body AND a valid follow-on push body for the SAME
@@ -433,7 +428,7 @@ async fn request_size_cap_rejects_oversized_body() {
     // A well-formed push envelope whose single blob is 256 KiB of filler: over
     // the 64 KiB cap, under axum's 2 MiB default.
     let filler = "A".repeat(256 * 1024);
-    let oversized = serde_json::json!({ "principal_id": "too-big", "blobs": [filler] }).to_string();
+    let oversized = serde_json::json!({ "principal_id": "too-big", "txs": [[filler]] }).to_string();
     let over = server.post("/push", &oversized).await;
     assert_eq!(
         over.status, 413,

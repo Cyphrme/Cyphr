@@ -38,15 +38,15 @@ async fn server_and_key_create() -> (
         &build_second_commit_push_body(&pool, &id, 1_700_000_100, 1_700_000_200).await,
     )
     .expect("push body");
-    let blob =
-        Base64UrlUnpadded::decode_vec(body["blobs"][0].as_str().expect("blob")).expect("base64url");
+    let blob = Base64UrlUnpadded::decode_vec(body["txs"][0][0].as_str().expect("blob"))
+        .expect("base64url");
     let coz = serde_json::from_slice(&blob).expect("coz json");
     (app, body, coz, dir)
 }
 
 /// `body` with its first blob replaced by `coz`.
 fn with_blob(mut body: serde_json::Value, coz: &serde_json::Value) -> String {
-    body["blobs"][0] =
+    body["txs"][0][0] =
         Base64UrlUnpadded::encode_string(&serde_json::to_vec(coz).expect("json")).into();
     body.to_string()
 }
@@ -61,8 +61,8 @@ fn with_blob(mut body: serde_json::Value, coz: &serde_json::Value) -> String {
 /// End-to-end scenario: yes (HTTP push of a signed commit).
 #[tokio::test]
 async fn key_of_unsupported_alg_is_refused_on_push() {
-    let (app, body, mut coz, _dir) = server_and_key_create().await;
-    coz["key"]["alg"] = "RS256".into();
+    let (app, mut body, coz, _dir) = server_and_key_create().await;
+    body["keys"][0]["alg"] = "RS256".into();
 
     let (status, reply) = post_json(app, "/push", with_blob(body, &coz)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
@@ -115,14 +115,12 @@ async fn pay_of_unsupported_alg_is_unknown_alg_on_push_import_and_replay() {
         Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("pub"),
     )
     .expect("genesis key");
-    let entry = CommitEntry::new(
-        vec![coz],
-        vec![],
-        "SHA-256:c".into(),
-        None,
-        None,
-        "SHA-256:p".into(),
-    );
+    let entry = CommitEntry {
+        txs: vec![vec![coz]],
+        commit_id: "SHA-256:c".into(),
+        pr: "SHA-256:p".into(),
+        ..CommitEntry::default()
+    };
     let imported = load_principal_from_commits(Genesis::Implicit(genesis), &[entry]).await;
     assert!(
         matches!(imported, Err(LoadError::Protocol(cyphr::Error::UnknownAlg))),

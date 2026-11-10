@@ -28,3 +28,35 @@ tx = [
 
 [test.expected]
 error = "KeyRevoked"
+
+# ============================================================================
+# Genesis of a key revoked before it (SPEC 6.4, 7.7)
+# ============================================================================
+#
+# `setup.revoke_key` hands genesis a genesis key that already carries a
+# revocation. Genesis creates every key by `key/create`, the genesis key
+# included (7.7), and a revoked key is never trusted again (6.4), so
+# implicit genesis (one key) and explicit genesis (a genesis key and the
+# keys it creates) refuse it with the same error.
+
+[[test]]
+name      = "implicit_genesis_refuses_revoked_key"
+principal = ["golden"]
+
+[test.setup]
+revoke_at  = 1700000000
+revoke_key = "golden"
+
+[test.expected]
+error = "KeyRevoked"
+
+[[test]]
+name      = "explicit_genesis_refuses_revoked_genesis_key"
+principal = ["golden", "key_a"]
+
+[test.setup]
+revoke_at  = 1700000000
+revoke_key = "golden"
+
+[test.expected]
+error = "KeyRevoked"

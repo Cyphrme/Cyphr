@@ -908,17 +908,23 @@ impl Client<'_> {
         height: u64,
     ) -> ActionResult<PushOutcome> {
         let patch = self.get(to, "/patch", Some(&p.0)).await?;
-        let blobs = usize::try_from(height)
+        let entry = usize::try_from(height)
             .ok()
             .and_then(|h| h.checked_sub(1))
             .and_then(|i| patch["payload"]["entries"].get(i))
-            .map(|e| e["blobs"].clone())
             .ok_or_else(|| ActionError::Failed(format!("`{to}` serves no commit {height}")))?;
+        // The commit's bundle exactly as served: `txs`, `keys`, `actions`.
+        let mut body = serde_json::json!({"principal_id": p.bare()});
+        for field in ["txs", "keys", "actions"] {
+            if let Some(v) = entry.get(field) {
+                body[field] = v.clone();
+            }
+        }
         let resp = self
             .h
             .http
             .post(format!("{}/push", self.url(to).await))
-            .json(&serde_json::json!({"principal_id": p.bare(), "blobs": blobs}))
+            .json(&body)
             .send()
             .await
             .map_err(|e| ActionError::Failed(format!("`{to}` /push: {e}")))?;

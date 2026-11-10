@@ -91,7 +91,8 @@ impl ChainView {
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare).
     ///
     /// The genesis is read from the first commit, the genesis commit (SPEC
-    /// 5.1): the key its first `key/create` discloses, the genesis key; the
+    /// 5.1): the key its first `key/create` names in the bundle's `keys`,
+    /// the genesis key; the
     /// replay adds the rest. It is only accepted if the replay derives
     /// `pg`. A patch that does not replay, or whose stated roots or
     /// commit ids disagree with the replay, is an error.
@@ -102,13 +103,19 @@ impl ChainView {
             .entries
             .first()
             .ok_or("the patch holds no commits")?
-            .blobs
+            .bundle
             .as_ref()
             .map_err(|e| format!("first commit is undecodable: {e:?}"))?;
         let cozies: Vec<Value> = first
+            .txs
             .iter()
+            .flatten()
             .filter_map(|b| serde_json::from_slice::<Value>(b).ok())
             .collect();
+        let named = |c: &Value| {
+            let id = c["pay"]["id"].as_str()?;
+            first.keys.iter().find(|k| k.tmb == id)?.to_key().ok()
+        };
         let typ_is = |c: &Value, suffix: &str| {
             c["pay"]["typ"]
                 .as_str()
@@ -122,7 +129,7 @@ impl ChainView {
             .iter()
             .find(|c| typ_is(c, "/cyphr/key/create"))
             .ok_or("the genesis commit creates no key")
-            .and_then(|c| genesis_key(&c["key"]).ok_or("a genesis key/create discloses no key"))?;
+            .and_then(|c| named(c).ok_or("a genesis key/create discloses no key"))?;
         let genesis = Principal::implicit(key)
             .await
             .map_err(|e| format!("genesis: {e}"))?;
@@ -210,10 +217,12 @@ impl ChainView {
         }
         let last_signer = entries
             .last()
-            .and_then(|e| e.blobs.as_ref().ok())
-            .and_then(|blobs| {
-                blobs
+            .and_then(|e| e.bundle.as_ref().ok())
+            .and_then(|bundle| {
+                bundle
+                    .txs
                     .iter()
+                    .flatten()
                     .filter_map(|b| serde_json::from_slice::<Value>(b).ok())
                     .rfind(|c| {
                         c["pay"]["typ"]
@@ -235,8 +244,8 @@ impl ChainView {
 
 impl ChainView {
     /// Every key the replayed chain ever introduced (its genesis key and
-    /// each key sidecar), revoked or not: what a statement signed before a
-    /// rotation is checked against. Each sidecar must bind its thumbprint.
+    /// each commit's `keys`), revoked or not: what a statement signed before
+    /// a rotation is checked against. Each entry must bind its thumbprint.
     pub fn keys_ever(&self) -> Keys {
         let mut keys = Keys::new();
         if let Some(g) = &self.genesis_key {
@@ -248,16 +257,13 @@ impl ChainView {
                 ),
             );
         }
-        let blobs = self
+        let entries = self
             .entries
             .iter()
-            .filter_map(|e| e.blobs.as_ref().ok())
-            .flatten();
-        for blob in blobs {
-            let Ok(coz) = serde_json::from_slice::<Value>(blob) else {
-                continue;
-            };
-            if let Some(k) = genesis_key(&coz["key"]) {
+            .filter_map(|e| e.bundle.as_ref().ok())
+            .flat_map(|b| &b.keys);
+        for entry in entries {
+            if let Ok(k) = entry.to_key() {
                 keys.insert(
                     k.tmb().to_b64(),
                     (
@@ -307,7 +313,7 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
 /// asked about (bare) and `chain` the verifier's own read of its chain.
 ///
 /// A `principal-fork` item (`{pg, height, pre, a, b}`, `a` and `b` each
-/// `{blobs}`) is checked by [`verify_principal_fork`] against the replayed
+/// a commit bundle) is checked by [`verify_principal_fork`] against the replayed
 /// `chain`: both commits must replay from the chain's state at `pre`, so
 /// only keys the principal held there vouch (a serving peer's key never
 /// does) and two copies of one commit are not a fork.

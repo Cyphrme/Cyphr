@@ -72,13 +72,11 @@ impl<'a> Chain<'a> {
         let mut principal = cyphr::Principal::implicit(genesis.domain_key(1_700_000_000))
             .await
             .expect("implicit genesis");
-        let genesis_commit = principal
+        principal
             .commit_genesis(&genesis.signer(), &[], 1_700_000_000, "cyphr.me")
             .await
-            .expect("genesis commit")
-            .iter()
-            .map(|coz| Base64UrlUnpadded::encode_string(&serde_json::to_vec(coz).expect("json")))
-            .collect();
+            .expect("genesis commit");
+        let genesis_commit = wire_commit(principal.commits().last().expect("genesis commit"));
         Self {
             genesis,
             principal,
@@ -131,26 +129,28 @@ impl<'a> Chain<'a> {
             .await
             .expect("commit finalizes");
 
-        let commit = self.principal.commits().last().expect("a commit exists");
-        let blobs: Vec<serde_json::Value> = commit
-            .iter_all_cozies()
-            .map(|cz| {
-                let mut coz = serde_json::to_value(cz.raw()).expect("coz json");
-                if let Some(key) = cz.new_key() {
-                    coz["key"] = serde_json::json!({
-                        "alg": key.alg(),
-                        "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
-                        "tmb": key.tmb().to_b64(),
-                    });
-                }
-                coz
-            })
-            .collect();
-        blobs
-            .iter()
-            .map(|b| Base64UrlUnpadded::encode_string(&serde_json::to_vec(b).expect("json")))
-            .collect()
+        wire_commit(self.principal.commits().last().expect("a commit exists"))
     }
+}
+
+/// The cozies of `commit` as base64url wire blobs, each introduced key
+/// carried on its coz as a `key` member for [`patch_body`] to move into the
+/// entry's `keys`.
+fn wire_commit(commit: &cyphr::Commit) -> Vec<String> {
+    commit
+        .iter_all_cozies()
+        .map(|cz| {
+            let mut coz = serde_json::to_value(cz.raw()).expect("coz json");
+            if let Some(key) = cz.new_key() {
+                coz["key"] = serde_json::json!({
+                    "alg": key.alg(),
+                    "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
+                    "tmb": key.tmb().to_b64(),
+                });
+            }
+            Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"))
+        })
+        .collect()
 }
 
 impl Chain<'_> {
@@ -234,12 +234,49 @@ impl Chain<'_> {
     }
 }
 
-/// A `/patch` body carrying `entries` (one blob list per commit).
+/// One entry's base64url cozies as the bundle `/patch` serves (SPEC
+/// 4.6.2): its data actions, each transaction coz a transaction of its own,
+/// and every `key` member moved to the entry's `keys`. A coz with no
+/// parseable `key` member keeps its exact bytes. Actions travel before
+/// the transactions, so an action listed after one is a test defect.
+fn entry_bundle(i: usize, blobs: &[String]) -> serde_json::Value {
+    let (mut actions, mut txs, mut keys) =
+        (Vec::new(), Vec::new(), Vec::<serde_json::Value>::new());
+    for blob in blobs {
+        let mut coz: serde_json::Value =
+            serde_json::from_slice(&Base64UrlUnpadded::decode_vec(blob).expect("b64"))
+                .unwrap_or_default();
+        let mut wire = blob.clone();
+        let key = coz.get("key").cloned();
+        if let Some(key) = key.filter(|k| k.get("tmb").is_some() && k.get("pub").is_some()) {
+            coz.as_object_mut().expect("coz object").remove("key");
+            wire = Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"));
+            if !keys.iter().any(|k| k["tmb"] == key["tmb"]) {
+                keys.push(key);
+            }
+        }
+        let is_action = coz["pay"]["typ"]
+            .as_str()
+            .is_some_and(|t| !cyphr::parsed_coz::typ::is_transaction(t));
+        if is_action {
+            assert!(
+                txs.is_empty(),
+                "an entry carries its actions before its transactions"
+            );
+            actions.push(wire);
+        } else {
+            txs.push(vec![wire]);
+        }
+    }
+    serde_json::json!({ "sequence": i, "actions": actions, "txs": txs, "keys": keys })
+}
+
+/// A `/patch` body carrying `entries` (one blob list per bundle).
 fn patch_body(entries: &[Vec<String>]) -> Vec<u8> {
     let entries: Vec<_> = entries
         .iter()
         .enumerate()
-        .map(|(i, blobs)| serde_json::json!({ "sequence": i, "blobs": blobs }))
+        .map(|(i, blobs)| entry_bundle(i, blobs))
         .collect();
     serde_json::to_vec(&serde_json::json!({
         "v": 1,
@@ -582,12 +619,12 @@ async fn data_action_typed_like_a_freeze_follows() {
     assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
 }
 
-/// Claim: the `key` sidecar is read only where a key is introduced; an
-/// unsigned, junk `key` member on any other coz is ignored, never a reason
-/// to refuse a chain whose signed content is valid.
+/// Claim: key material is read only from an entry's `keys` (SPEC 4.6.2);
+/// an unsigned, junk `key` member on a coz is ignored, never a reason to
+/// refuse a chain whose signed content is valid.
 ///
-/// Turns red if: the sidecar is parsed for every blob, so a junk member on
-/// a `commit/create` coz refuses the follow.
+/// Turns red if: a coz's own `key` member is parsed, so a junk member on a
+/// `commit/create` coz refuses the follow.
 /// End-to-end scenario: yes.
 #[tokio::test]
 async fn junk_sidecar_on_a_non_introducing_coz_is_ignored() {
@@ -852,16 +889,26 @@ async fn nonce_golden_chains_follow_to_the_recorded_pr() {
             .expect("commits")
             .iter()
             .map(|commit| {
-                let mut keys = commit["keys"].as_array().into_iter().flatten();
-                commit["txs"]
+                // A golden line's transactions are one coz each; its keys
+                // ride on the cozies that name them for `patch_body`.
+                let keys = commit["keys"].as_array().cloned().unwrap_or_default();
+                commit["actions"]
                     .as_array()
-                    .expect("txs")
-                    .iter()
+                    .into_iter()
+                    .flatten()
+                    .chain(
+                        commit["txs"]
+                            .as_array()
+                            .expect("txs")
+                            .iter()
+                            .flat_map(|tx| tx.as_array().expect("transaction")),
+                    )
                     .map(|coz| {
                         let mut coz = coz.clone();
+                        let id = coz["pay"]["id"].clone();
                         let typ = coz["pay"]["typ"].as_str().expect("typ").to_string();
                         if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
-                            if let Some(key) = keys.next() {
+                            if let Some(key) = keys.iter().find(|k| k["tmb"] == id) {
                                 coz["key"] = key.clone();
                             }
                         }
@@ -886,16 +933,18 @@ async fn nonce_golden_chains_follow_to_the_recorded_pr() {
     assert!(followed >= 5, "the nonce vectors were found ({followed})");
 }
 
-/// Claim: a bundle carrying a data action, a transaction and a second data
-/// action replays by the order rule: actions before the first transaction
-/// are recorded first, the commit is formed, and actions after it are
-/// recorded against the post-commit state. So the trailing action may be
-/// signed by the key the bundle's own `key/create` introduced, and the
-/// client reaches the PR its writer derived.
+/// Claim: bundles replay by the order rule: a bundle's data actions are
+/// recorded before its transactions (SPEC 4.6.2 `actions`), the commit is
+/// formed, and an action served after the commit, in an action-only bundle,
+/// is recorded against the post-commit state. So that action may be signed
+/// by the key the commit's own `key/create` introduced, and the client
+/// reaches the PR its writer derived.
 ///
-/// Turns red if: replay records every data action before the commit scope
-/// (the trailing action's signer is then not yet a key, `UnknownKey`).
-/// End-to-end scenario: yes (a real mixed bundle served over a carrier).
+/// Turns red if: the leading action is recorded after the commit, or the
+/// following action-only bundle is judged against a state without the
+/// commit (its signer is then not yet a key, `UnknownKey`).
+/// End-to-end scenario: yes (a commit with a leading action, then an
+/// action-only bundle, served over a carrier).
 #[tokio::test]
 async fn action_after_a_transaction_is_judged_after_the_commit() {
     let g = kp();
@@ -908,16 +957,15 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     let trail = peer.action_by(&k2, "cyphr.me/app/post/create", 1_700_000_250);
     let mut bundle = vec![lead];
     bundle.extend(commit);
-    bundle.push(trail);
 
-    let pipe = Pipe::new(peer.patch(&[c1, bundle]));
+    let pipe = Pipe::new(peer.patch(&[c1, bundle, vec![trail]]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000)).await;
     held.follow(&pipe)
         .await
-        .expect("a mixed bundle follows by the order rule");
+        .expect("the bundles follow by the order rule");
     let tip = held.held_tip().expect("tip");
     assert_eq!(
-        // The genesis commit, c1 and the mixed bundle's commit.
+        // The genesis commit, c1 and the bundle's commit.
         (tip.commits, tip.pr),
         (3, peer.principal.pr_tagged().expect("pr")),
         "the client reaches the writer's PR"

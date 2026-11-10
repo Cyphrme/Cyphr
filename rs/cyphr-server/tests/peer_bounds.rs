@@ -337,11 +337,7 @@ async fn tip_after_new_commit_is_never_stale() {
         .await
         .expect("replay");
     let blobs = sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_100).await;
-    let body = serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let body = common::push_body(&pid, &blobs);
     let (s, b) = post_json(app.clone(), "/push", body).await;
     assert_eq!(s, StatusCode::CREATED, "second commit: {b:?}");
 

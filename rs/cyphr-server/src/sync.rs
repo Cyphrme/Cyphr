@@ -17,7 +17,7 @@
 //!    report attests -- see [`resulting_tip_matches_report`]. A signature over `pay` says nothing
 //!    about a *separate* plaintext `entries` array, so no per-entry label comparison against that
 //!    same array can ever be sound (a decoy entry that copies its victim's declared
-//!    `sequence`/`commit_id` passes any such check while carrying junk `blobs`). Comparing against
+//!    `sequence`/`commit_id` passes any such check while carrying junk cozies). Comparing against
 //!    what the witness's own storage engine independently verified and produced instead of reading
 //!    the wire body against itself catches every MODIFICATION of a response -- truncation,
 //!    per-principal substitution, and wholesale emptying all leave local state short of, or
@@ -247,8 +247,8 @@ async fn sync_locked(
             continue;
         }
 
-        let raw_blobs = match &entry.blobs {
-            Ok(blobs) => blobs,
+        let bundle = match &entry.bundle {
+            Ok(bundle) => bundle,
             Err(defect) => {
                 // Wedge fix, site 1 (decode failure): a malformed entry
                 // must never make a later, genuine entry unreachable --
@@ -267,17 +267,11 @@ async fn sync_locked(
             },
         };
 
-        let blob_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
-
         // Submit commit to storage engine which verifies commit signatures & roots in memory
         // before persisting. If validation fails, skip this entry and continue: an
         // unverifiable entry (wedge fix, site 2) must not block a later genuine one, for
         // the identical reason as the decode failure above.
-        if let Err(err) = state
-            .engine
-            .submit_commit(principal_id, None, &blob_refs)
-            .await
-        {
+        if let Err(err) = state.engine.submit_commit(principal_id, None, bundle).await {
             warn!(
                 principal_id = %principal_id,
                 sequence = seq,

@@ -81,7 +81,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
 
     // Client-side: build the principal and derive its PG, which for a
     // single-key genesis is the genesis key's own PR (SPEC 5.2).
-    let mut client = cyphr::Principal::implicit(genesis_key)
+    let mut client = cyphr::Principal::implicit(genesis_key.clone())
         .await
         .expect("genesis");
     let pg_tagged = client
@@ -163,7 +163,15 @@ async fn single_key_explicit_genesis_establishes_pg() {
     });
 
     engine
-        .submit_commit(&pg_tagged, Some(genesis), &[&kc_blob, &pc_blob, &cc_blob])
+        .submit_commit(
+            &pg_tagged,
+            Some(genesis),
+            &cyphr::replay::WireBundle {
+                txs: vec![vec![kc_blob], vec![pc_blob], vec![cc_blob]],
+                keys: vec![cyphr_storage::KeyEntry::of(&genesis_key)],
+                ..Default::default()
+            },
+        )
         .await
         .expect("genesis commit submits through the validated write path");
 

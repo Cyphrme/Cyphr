@@ -105,33 +105,12 @@ fn pg_of(p: &cyphr::Principal) -> String {
         .to_string()
 }
 
-/// Push body for commit `i` of `p` under `id`; every `key/create`
-/// discloses the key it creates (SPEC 5.2 TX0).
+/// Push body for line `i` of `p`'s export under `id`, in the wire form
+/// (SPEC 4.6.2): its keys travel in the bundle's `keys`, so commit 0 (the
+/// genesis) reads from its record alone.
 fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
-    let mut blobs: Vec<serde_json::Value> = entries[i].cozies.clone();
-    for c in &mut blobs {
-        if !c["pay"]["typ"]
-            .as_str()
-            .is_some_and(|t| t.ends_with("cyphr/key/create"))
-        {
-            continue;
-        }
-        let key = entries[i]
-            .keys
-            .iter()
-            .find(|k| c["pay"]["id"].as_str() == Some(k.tmb.as_str()))
-            .expect("the commit carries every key it creates");
-        c["key"] = serde_json::json!({"alg": key.alg, "pub": key.pub_key, "tmb": key.tmb});
-    }
-    serde_json::json!({
-        "principal_id": id,
-        "blobs": blobs
-            .iter()
-            .map(|b| Base64UrlUnpadded::encode_string(&serde_json::to_vec(b).expect("blob")))
-            .collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_body(id, &entries[i].bundle().expect("bundle"))
 }
 
 /// The tip payload minus the response's own clock.

@@ -98,6 +98,10 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
 
     let genesis_domain_keys = vec![pool_key_to_domain(key_a), pool_key_to_domain(key_b)];
     let genesis = Genesis::Explicit(genesis_domain_keys.clone());
+    let genesis_keys_entries: Vec<cyphr_storage::KeyEntry> = genesis_domain_keys
+        .iter()
+        .map(cyphr_storage::KeyEntry::of)
+        .collect();
 
     let mut client = cyphr::Principal::implicit(genesis_domain_keys[0].clone())
         .await
@@ -187,11 +191,15 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         .submit_commit(
             principal_id,
             Some(genesis.clone()),
-            &genesis_creates
-                .iter()
-                .chain([&pc_blob, &cc1_blob])
-                .map(Vec::as_slice)
-                .collect::<Vec<_>>(),
+            &cyphr::replay::WireBundle {
+                txs: genesis_creates
+                    .iter()
+                    .chain([&pc_blob, &cc1_blob])
+                    .map(|b| vec![b.clone()])
+                    .collect(),
+                keys: genesis_keys_entries.clone(),
+                ..Default::default()
+            },
         )
         .await
         .expect("genesis commit should submit through the real durable StorageEngine write path");
@@ -204,7 +212,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         "typ": "cyphr.me/cyphr/key/create",
     });
     let (kc_pay_bytes, kc_sig) = sign_pay(key_a, kc_pay);
-    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, Some(pool_key_json(key_c)));
+    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, None);
     let kc_czd = {
         let cad = coz::canonical_hash_for_alg(&kc_pay_bytes, &key_a.alg, None).expect("cad");
         coz::czd_for_alg(&cad, &kc_sig, &key_a.alg).expect("czd")
@@ -230,7 +238,15 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 
     engine
-        .submit_commit(principal_id, Some(genesis), &[&kc_blob, &cc2_blob])
+        .submit_commit(
+            principal_id,
+            Some(genesis),
+            &cyphr::replay::WireBundle {
+                txs: vec![vec![kc_blob], vec![cc2_blob]],
+                keys: vec![serde_json::from_value(pool_key_json(key_c)).expect("key entry")],
+                ..Default::default()
+            },
+        )
         .await
         .expect(
             "a second commit signed on top of a fresh multi-key established genesis must submit \

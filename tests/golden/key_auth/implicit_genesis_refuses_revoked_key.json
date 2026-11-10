@@ -1,0 +1,13 @@
+{
+  "name": "implicit_genesis_refuses_revoked_key",
+  "principal": [
+    "golden"
+  ],
+  "setup": {
+    "revoke_key": "golden",
+    "revoke_at": 1700000000
+  },
+  "expected": {
+    "error": "KeyRevoked"
+  }
+}

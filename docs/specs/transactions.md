@@ -190,7 +190,10 @@ directly from its cozies.
 `VERIFIED: agent-check`
 
 **[tr-computation]**: The Transaction Root (TR) MUST be computed as
-`TR = MR(TMR, TCR)`. TR serves as the commit ID.
+`TR = MR(TXm₀?, TXm₁?, ..., TXc)`: the MR of every transaction's id
+`TX = MR(czd₀, czd₁?, ...)`, in the order the principal gave, the commit
+transaction last (SPEC 3.7.5). TR serves as the commit ID. TMR is not an
+input of TR; it is an input of the arrow, `MR(pre, fwd, TMR)` (SPEC 4.2).
 `VERIFIED: agent-check`
 
 #### Commit Finality

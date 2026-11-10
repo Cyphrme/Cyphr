@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_storage::Genesis;
+use cyphr::replay::WireBundle;
+use cyphr_storage::{Genesis, KeyEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -229,7 +230,7 @@ impl ServerPrincipal {
         // that reads to an operator as store corruption, not a missing,
         // reconstructible file (#175).
         let genesis_key = genesis_key_from_identity(&identity)?;
-        let (pg, blobs) = build_genesis(&identity, &genesis_key).await?;
+        let (pg, bundle) = build_genesis(&identity, &genesis_key).await?;
 
         if engine.get_tip(&pg).await?.is_some() {
             return Err(ServerPrincipalError::MissingSidecar(format!(
@@ -239,12 +240,11 @@ impl ServerPrincipal {
             )));
         }
 
-        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         engine
             .submit_commit(
                 &pg,
                 Some(Genesis::Explicit(vec![genesis_key.clone()])),
-                &blob_refs,
+                &bundle,
             )
             .await?;
 
@@ -475,15 +475,18 @@ impl ServerPrincipal {
             )
             .await?;
         let cc_blob = serde_json::to_vec(commit.commit_tx().0[0].raw())?;
-        let kr_blob = raw_blob(
-            &pay,
-            &sig,
-            Some(json!({
-                "alg": new_keypair.alg.name(),
-                "pub": Base64UrlUnpadded::encode_string(&new_keypair.pub_bytes),
-                "tmb": new_tmb_b64,
-            })),
-        )?;
+        let kr_blob = raw_blob(&pay, &sig)?;
+        let bundle = WireBundle {
+            txs: vec![vec![kr_blob], vec![cc_blob]],
+            keys: vec![KeyEntry {
+                alg: new_keypair.alg.name().to_string(),
+                pub_key: Base64UrlUnpadded::encode_string(&new_keypair.pub_bytes),
+                tmb: new_tmb_b64,
+                tag: None,
+                now: None,
+            }],
+            ..WireBundle::default()
+        };
 
         super::stage_key_file(&self.signing_key_path, new_keypair)?;
         if stop == RotationStep::Staged {
@@ -494,7 +497,7 @@ impl ServerPrincipal {
             .submit_commit(
                 &self.pg,
                 Some(Genesis::Explicit(vec![self.genesis_key.clone()])),
-                &[&kr_blob, &cc_blob],
+                &bundle,
             )
             .await?;
         if stop == RotationStep::Committed {
@@ -567,13 +570,13 @@ fn genesis_key_from_identity(
 
 /// Construct and sign the genesis commit of a single-key explicit genesis
 /// (SPEC 5.2: key/create of the genesis key, principal/create,
-/// commit/create), returning the PG and the wire blobs ready for
-/// `submit_commit`. The key/create discloses the key, so the genesis is
-/// readable from the blobs alone (I1).
+/// commit/create), returning the PG and the wire bundle ready for
+/// `submit_commit`. The bundle's `keys` disclose the key the key/create
+/// names, so the genesis is readable from the record alone (I1).
 async fn build_genesis(
     identity: &ServerIdentity,
     genesis_key: &cyphr::Key,
-) -> Result<(String, Vec<Vec<u8>>), ServerPrincipalError> {
+) -> Result<(String, WireBundle), ServerPrincipalError> {
     let alg = identity.alg().name();
     let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes());
 
@@ -611,13 +614,18 @@ async fn build_genesis(
         .finalize_with_software(&signer, now + 1, CHAIN_AUTHORITY)
         .await?;
 
-    let mut blobs = creates
+    let mut txs = creates
         .iter()
-        .map(serde_json::to_vec)
+        .map(|coz| serde_json::to_vec(coz).map(|b| vec![b]))
         .collect::<Result<Vec<_>, _>>()?;
-    blobs.push(raw_blob(&pc_pay, &pc_sig, None)?);
-    blobs.push(serde_json::to_vec(commit.commit_tx().0[0].raw())?);
-    Ok((pg, blobs))
+    txs.push(vec![raw_blob(&pc_pay, &pc_sig)?]);
+    txs.push(vec![serde_json::to_vec(commit.commit_tx().0[0].raw())?]);
+    let bundle = WireBundle {
+        txs,
+        keys: vec![KeyEntry::of(genesis_key)],
+        ..WireBundle::default()
+    };
+    Ok((pg, bundle))
 }
 
 /// Serialize a pay object with keys sorted, matching the server's
@@ -629,13 +637,8 @@ fn canonical_pay(mut pay: serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(&pay).expect("a serde_json::Value re-serializes")
 }
 
-/// Assemble a wire coz blob (`{pay, sig, key?}`) as `submit_commit` parses
-/// it, embedding key material for a key-introducing coz.
-fn raw_blob(
-    pay_bytes: &[u8],
-    sig: &[u8],
-    embedded_key: Option<serde_json::Value>,
-) -> Result<Vec<u8>, serde_json::Error> {
+/// Assemble a wire coz blob (`{pay, sig}`) as `submit_commit` parses it.
+fn raw_blob(pay_bytes: &[u8], sig: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
     let pay: serde_json::Value = serde_json::from_slice(pay_bytes)?;
     let mut obj = serde_json::Map::new();
     obj.insert("pay".to_string(), pay);
@@ -643,8 +646,5 @@ fn raw_blob(
         "sig".to_string(),
         json!(Base64UrlUnpadded::encode_string(sig)),
     );
-    if let Some(key) = embedded_key {
-        obj.insert("key".to_string(), key);
-    }
     serde_json::to_vec(&serde_json::Value::Object(obj))
 }

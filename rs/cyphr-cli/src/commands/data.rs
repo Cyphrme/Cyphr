@@ -113,7 +113,8 @@ fn action(
         let principal_id = get_principal_id_from_principal(&principal, &keystore)?;
         let genesis = local_genesis(&keystore, identity)?;
         let blob = serde_json::to_vec(&signed.wire())?;
-        block_on(store.submit_commit(&principal_id, genesis, &[blob.as_slice()]))??;
+        let bundle = cyphr::replay::WireBundle::actions(vec![blob]);
+        block_on(store.submit_commit(&principal_id, genesis, &bundle))??;
     }
 
     let out = json!({"identity": identity, "czd": czd, "recorded": !sign_only,
@@ -173,7 +174,8 @@ fn submit(cli: &Cli, identity: &str, peer_url: &str, file: &std::path::Path) -> 
     let wire = cyphr_storage::engine::bare_digest(&get_principal_id(&pg)?).to_owned();
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     let tip = block_on(async {
-        peer.push_commit(&wire, &[blob]).await?;
+        peer.push_commit(&wire, &cyphr::replay::WireBundle::actions(vec![blob]))
+            .await?;
         peer.tip_commit_id(&wire).await
     })??;
     let out = json!({"identity": identity, "peer": peer_url, "status": "accepted", "tip": tip});

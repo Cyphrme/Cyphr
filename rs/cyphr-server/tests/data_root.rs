@@ -10,6 +10,7 @@
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::Principal;
+use cyphr::replay::WireBundle;
 use cyphr::signer::SoftwareSigner;
 use cyphr::state::HashAlg;
 use cyphr_server::build_router;
@@ -31,19 +32,13 @@ struct Signed {
 }
 
 impl Signed {
-    /// The wire blob `{pay, sig, key?}` the push body carries.
+    /// The wire blob `{pay, sig}` the push body carries; a key it
+    /// introduces travels in the bundle's `keys`.
     fn wire(&self) -> Vec<u8> {
-        let mut coz = serde_json::json!({
+        let coz = serde_json::json!({
             "pay": serde_json::from_slice::<serde_json::Value>(&self.pay).expect("pay"),
             "sig": Base64UrlUnpadded::encode_string(&self.sig),
         });
-        if let Some(k) = &self.key {
-            coz["key"] = serde_json::json!({
-                "alg": k.alg(),
-                "pub": Base64UrlUnpadded::encode_string(k.pub_key()),
-                "tmb": k.tmb().to_b64(),
-            });
-        }
         serde_json::to_vec(&coz).expect("coz")
     }
 }
@@ -116,7 +111,7 @@ async fn bundle(
     actions: &[Signed],
     txs: impl Fn(&Principal) -> Vec<Signed>,
     now: i64,
-) -> Vec<Vec<u8>> {
+) -> WireBundle {
     for a in actions {
         p.verify_and_record_action(&a.pay, &a.sig, a.czd.clone())
             .expect("action records");
@@ -132,17 +127,11 @@ async fn bundle(
     let signer = g.software_signer().expect("signer");
     finalize(scope, &signer, now).await;
 
-    let entries = cyphr_storage::export_commits(p).expect("export");
-    let commit = entries.last().expect("a commit");
-    let commit_create = commit.cozies.last().expect("commit/create");
-    actions
-        .iter()
-        .chain(&txs)
-        .map(Signed::wire)
-        .chain(std::iter::once(
-            serde_json::to_vec(commit_create).expect("coz"),
-        ))
-        .collect()
+    let commit = WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle");
+    WireBundle {
+        actions: actions.iter().map(Signed::wire).collect(),
+        ..commit
+    }
 }
 
 async fn finalize(scope: cyphr::CommitScope<'_>, signer: &SoftwareSigner, now: i64) {
@@ -152,12 +141,8 @@ async fn finalize(scope: cyphr::CommitScope<'_>, signer: &SoftwareSigner, now: i
         .expect("commit finalizes");
 }
 
-fn body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+fn body(principal_id: &str, bundle: &WireBundle) -> String {
+    common::push_body(principal_id, bundle)
 }
 
 /// Backs SPEC 4.8.2: "Like all nodes, DT/DR is first set to empty, causing
@@ -216,8 +201,11 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
 
     // 2. A ds/create whose id is not MR(DT) is refused.
     let stale = data_tree_id(&p);
-    let refused = [action(&pool, T + 3, "two"), ds_create(&pool, &stale, T + 4)];
-    let refused: Vec<Vec<u8>> = refused.iter().map(Signed::wire).collect();
+    let refused = WireBundle {
+        actions: vec![action(&pool, T + 3, "two").wire()],
+        txs: vec![vec![ds_create(&pool, &stale, T + 4).wire()]],
+        ..WireBundle::default()
+    };
     let (s, b) = post_json(app.clone(), "/push", body(&id, &refused)).await;
     assert_eq!(
         s,
@@ -295,7 +283,12 @@ async fn ds_create_includes_actions_pushed_alone() {
 
     // The action travels alone; the client records it too.
     let a1 = action(&pool, T + 1, "alone");
-    let (s, b) = post_json(app.clone(), "/push", body(&id, &[a1.wire()])).await;
+    let (s, b) = post_json(
+        app.clone(),
+        "/push",
+        body(&id, &WireBundle::actions(vec![a1.wire()])),
+    )
+    .await;
     assert!(s.is_success(), "action-only push: {s} {b:?}");
     p.verify_and_record_action(&a1.pay, &a1.sig, a1.czd.clone())
         .expect("action records");
@@ -307,8 +300,10 @@ async fn ds_create_includes_actions_pushed_alone() {
         .expect("implicit genesis");
     q.verify_and_record_action(&other.pay, &other.sig, other.czd.clone())
         .expect("action records");
-    let wrong = [ds_create(&pool, &data_tree_id(&q), T + 2)];
-    let wrong: Vec<Vec<u8>> = wrong.iter().map(Signed::wire).collect();
+    let wrong = WireBundle {
+        txs: vec![vec![ds_create(&pool, &data_tree_id(&q), T + 2).wire()]],
+        ..WireBundle::default()
+    };
     let (s, b) = post_json(app.clone(), "/push", body(&id, &wrong)).await;
     assert_eq!(s, StatusCode::CONFLICT, "a foreign DR is refused: {b:?}");
     let (_, before) = get_json(app.clone(), &tip_uri).await;

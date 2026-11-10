@@ -42,6 +42,13 @@ use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+/// A push body: `principal_id` and `bundle` in the wire form (SPEC 4.6.2).
+fn push_body(principal_id: &str, bundle: &cyphr::replay::WireBundle) -> String {
+    let mut body = serde_json::to_value(bundle).expect("bundle serializes");
+    body["principal_id"] = principal_id.into();
+    body.to_string()
+}
+
 // ========================================================================
 // Fixture helpers (mirrored from tests/receipts.rs, which is a separate
 // integration-test crate and cannot be imported here)
@@ -157,11 +164,7 @@ async fn build_foreign_principal_and_push_body(
     .expect("genesis commit");
     let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
-    let body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let body = push_body(&principal_id, &blobs);
 
     (principal, principal_id, body)
 }
@@ -360,21 +363,13 @@ async fn build_fixture() -> PortabilityFixture {
         cyphr_storage::index::MemoryIndexer::new(),
     );
     for entry in entries {
-        let blobs: Vec<Vec<u8>> = entry["blobs"]
-            .as_array()
-            .expect("entry blobs")
-            .iter()
-            .map(|b| {
-                Base64UrlUnpadded::decode_vec(b.as_str().expect("blob is base64url string"))
-                    .expect("valid blob base64")
-            })
-            .collect();
-        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        let blobs: cyphr::replay::WireBundle =
+            serde_json::from_value(entry.clone()).expect("entry bundle");
         local_engine
             .submit_commit(
                 &pinned_server_pg,
                 Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
-                &blob_refs,
+                &blobs,
             )
             .await
             .expect("replay a server-chain commit into the local engine");

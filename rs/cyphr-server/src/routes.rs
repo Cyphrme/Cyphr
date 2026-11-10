@@ -44,16 +44,21 @@ pub struct PatchQuery {
     pub to: Option<u64>,
 }
 
-/// Request body for `POST /push`.
+/// Request body for `POST /push`: the principal and one bundle in the
+/// SPEC 4.6.2 wire form, `{principal_id, txs, keys, actions}`.
+///
+/// `txs` holds the commit's transactions, each an array of `{pay, sig}`
+/// coz envelopes (base64url strings for JSON transport), the commit
+/// transaction last; `keys` the public keys its key-introducing cozies
+/// name; `actions` data actions recorded before the transactions. A bundle
+/// of `actions` alone records them and forms no commit.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     /// Principal genesis identifier.
     pub principal_id: String,
-    /// Raw coz JSON envelopes, base64url-encoded.
-    ///
-    /// Each element is a complete `{pay, sig, key?}` coz envelope
-    /// encoded as a base64url string for JSON transport.
-    pub blobs: Vec<String>,
+    /// The bundle.
+    #[serde(flatten)]
+    pub bundle: cyphr::replay::WireBundle,
 }
 
 // ========================================================================
@@ -90,14 +95,16 @@ pub struct EvidenceResponse {
     pub items: Vec<serde_json::Value>,
 }
 
-/// A single commit entry in a patch response.
+/// A single commit entry in a patch response: its metadata and its bundle
+/// in the push wire form (`txs`, `keys`, `actions`).
 #[derive(Debug, Serialize)]
 pub struct PatchEntryResponse {
     pub commit_id: String,
     pub sequence: u64,
     pub pr: String,
-    /// Raw coz blobs as base64url strings.
-    pub blobs: Vec<String>,
+    /// The commit's bundle, grouped by transaction as accepted.
+    #[serde(flatten)]
+    pub bundle: cyphr::replay::WireBundle,
 }
 
 /// Response for `GET /patch`.
@@ -304,7 +311,7 @@ pub async fn branches(
 /// evidence of, each item self-describing and checkable offline.
 ///
 /// An item is `{kind: "principal-fork", pg, height, pre, a, b}`: two
-/// distinct commits (`a`, `b`, each `{blobs: [base64url coz]}`) that both
+/// distinct commits (`a`, `b`, each a bundle in the push wire form) that both
 /// verify against the principal's state at `pre`, the Principal Root after
 /// commit `height - 1` (`null` at height 0). One of the two is the
 /// canonical commit at `height`. A verifier replays the principal's chain
@@ -320,8 +327,6 @@ pub async fn evidence(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     // A malformed id is the caller's error (400), not an unknown principal
     // (404): the harness probes for this route with an id that is not one.
     if query.pr.parse::<cyphr::state::TaggedDigest>().is_err()
@@ -340,11 +345,6 @@ pub async fn evidence(
         .await
         .map_err(AppError::engine)?;
     let pg = cyphr_storage::engine::bare_digest(&principal).to_string();
-    let blobs = |bundle: &[Vec<u8>]| {
-        serde_json::json!({
-            "blobs": bundle.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-    };
     let items = forks
         .iter()
         .map(|f| {
@@ -353,8 +353,8 @@ pub async fn evidence(
                 "pg": pg,
                 "height": f.sequence,
                 "pre": f.pre,
-                "a": blobs(&f.canonical),
-                "b": blobs(&f.rival),
+                "a": f.canonical,
+                "b": f.rival,
             })
         })
         .collect();
@@ -591,11 +591,7 @@ pub async fn patch(
             commit_id: entry.commit.commit_id,
             sequence: entry.commit.sequence,
             pr: entry.commit.pr,
-            blobs: entry
-                .blobs
-                .iter()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
-                .collect(),
+            bundle: entry.bundle,
         })
         .collect();
 
@@ -678,7 +674,7 @@ pub async fn patch(
     skip(state, headers, request),
     fields(
         principal_id = %request.principal_id,
-        blob_count = request.blobs.len()
+        blob_count = request.bundle.cozies().count()
     )
 )]
 pub async fn push(
@@ -688,7 +684,7 @@ pub async fn push(
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    if request.blobs.is_empty() {
+    if request.bundle.is_empty() {
         return Err(AppError::bad_request("empty commit bundle"));
     }
 
@@ -721,19 +717,6 @@ pub async fn push(
         )));
     }
 
-    // Decode base64url blobs back to raw bytes.
-    let raw_blobs: Vec<Vec<u8>> = request
-        .blobs
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            Base64UrlUnpadded::decode_vec(b)
-                .map_err(|e| AppError::bad_request(format!("blob[{i}]: invalid base64url: {e}")))
-        })
-        .collect::<Result<_, _>>()?;
-
-    let blob_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
-
     // Global key-death gate (SPEC §6.4): a naked-revoked key is refused for
     // every capability, push included. Refuse the bundle if any signing key
     // (`pay.tmb`) is dead. Runs before submit_commit so a dead key is an auth
@@ -748,7 +731,7 @@ pub async fn push(
     // the forger was making anyway. It must NEVER be extended to admit,
     // authorize, or otherwise act on this unverified `tmb`; any such use would
     // trust a value the client fully controls.
-    for raw in &raw_blobs {
+    for raw in request.bundle.cozies() {
         let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw) else {
             continue;
         };
@@ -782,7 +765,7 @@ pub async fn push(
     // state (existing principal) or from the submitted blobs (new principal).
     let result = state
         .engine
-        .submit_commit(&request.principal_id, None, &blob_refs)
+        .submit_commit(&request.principal_id, None, &request.bundle)
         .await
         .map_err(AppError::engine)?;
 
@@ -1099,7 +1082,7 @@ mod commit_count_underflow_tests {
         let mut principal = cyphr::Principal::implicit(golden_key)
             .await
             .expect("genesis");
-        let cozies = principal
+        principal
             .commit_genesis(
                 &cyphr::signer::SoftwareSigner::new(
                     golden_kp.alg.name(),
@@ -1113,16 +1096,12 @@ mod commit_count_underflow_tests {
             )
             .await
             .expect("genesis commits");
-        let blobs: Vec<Vec<u8>> = cozies
-            .iter()
-            .map(|c| serde_json::to_vec(c).expect("cozy serializes"))
-            .collect();
-        let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("genesis PG");
+        let bundle = test_fixtures::bundle::last_commit_bundle(&principal).expect("bundle");
+        let principal_id = test_fixtures::bundle::genesis_id(&bundle).expect("genesis PG");
 
-        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         let ingest = state
             .engine
-            .submit_commit(&principal_id, None, &blob_refs)
+            .submit_commit(&principal_id, None, &bundle)
             .await
             .expect("genesis push succeeds");
         (principal_id, ingest)

@@ -41,12 +41,12 @@ async fn refusals(
         &build_second_commit_push_body(&pool, &id, 1_700_000_100, 1_700_000_200).await,
     )
     .expect("push body");
-    let first =
-        Base64UrlUnpadded::decode_vec(body["blobs"][0].as_str().expect("blob")).expect("base64url");
+    let first = Base64UrlUnpadded::decode_vec(body["txs"][0][0].as_str().expect("blob"))
+        .expect("base64url");
     let mut coz: serde_json::Value = serde_json::from_slice(&first).expect("coz json");
     defect(coz["pay"].as_object_mut().expect("pay"));
     let defective = serde_json::to_vec(&coz).expect("json");
-    body["blobs"][0] = Base64UrlUnpadded::encode_string(&defective).into();
+    body["txs"][0][0] = Base64UrlUnpadded::encode_string(&defective).into();
 
     let replayed = StoredCoz::from_wire(&defective);
     let (status, reply) = post_json(app, "/push", body.to_string()).await;
@@ -58,14 +58,12 @@ async fn refusals(
         Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("pub"),
     )
     .expect("genesis key");
-    let entry = CommitEntry::new(
-        vec![coz],
-        vec![],
-        "SHA-256:c".into(),
-        None,
-        None,
-        "SHA-256:p".into(),
-    );
+    let entry = CommitEntry {
+        txs: vec![vec![coz]],
+        commit_id: "SHA-256:c".into(),
+        pr: "SHA-256:p".into(),
+        ..CommitEntry::default()
+    };
     let imported = load_principal_from_commits(Genesis::Implicit(genesis), &[entry]).await;
     (replayed, status, reply, imported)
 }

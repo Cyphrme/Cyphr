@@ -75,10 +75,19 @@ fn genesis_of(fixture: &serde_json::Value) -> (Genesis, String) {
 fn raw_blobs(commit: &serde_json::Value) -> Vec<serde_json::Value> {
     let keys = commit["keys"].as_array();
     let mut key_idx = 0;
-    commit["txs"]
+    // A line's data actions come first: they are recorded before its
+    // transactions (SPEC 4.6.2).
+    commit["actions"]
         .as_array()
-        .unwrap()
-        .iter()
+        .into_iter()
+        .flatten()
+        .chain(
+            commit["txs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|tx| tx.as_array().unwrap()),
+        )
         .map(|c| {
             let mut coz = c.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
@@ -91,6 +100,38 @@ fn raw_blobs(commit: &serde_json::Value) -> Vec<serde_json::Value> {
             coz
         })
         .collect()
+}
+
+/// The wire bundle (SPEC 4.6.2) a client pushes for the cozies `blobs`,
+/// in order: data actions first (recorded before the transactions), each
+/// transaction coz a transaction of its own, and every disclosed `key`
+/// member moved to the bundle's `keys`. A coz with no `key` member keeps
+/// its exact bytes, so the unsigned members a test adds reach the engine.
+pub fn wire(blobs: &[Vec<u8>]) -> cyphr::replay::WireBundle {
+    let mut bundle = cyphr::replay::WireBundle::default();
+    for blob in blobs {
+        let mut bytes = blob.clone();
+        let mut value: serde_json::Value = serde_json::from_slice(blob).unwrap_or_default();
+        if let Some(entry) = value
+            .get("key")
+            .and_then(|k| serde_json::from_value::<cyphr_storage::KeyEntry>(k.clone()).ok())
+        {
+            value.as_object_mut().unwrap().remove("key");
+            bytes = serde_json::to_vec(&value).unwrap();
+            if !bundle.keys.iter().any(|k| k.tmb == entry.tmb) {
+                bundle.keys.push(entry);
+            }
+        }
+        let is_action = value["pay"]["typ"]
+            .as_str()
+            .is_some_and(|t| !cyphr::parsed_coz::typ::is_transaction(t));
+        if is_action {
+            bundle.actions.push(bytes);
+        } else {
+            bundle.txs.push(vec![bytes]);
+        }
+    }
+    bundle
 }
 
 fn fake_digest(tag: u8) -> String {
@@ -143,9 +184,8 @@ async fn submit(
     genesis: &Genesis,
     blobs: &[Vec<u8>],
 ) -> Result<(), cyphr_storage::engine::EngineError> {
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     engine
-        .submit_commit(id, Some(genesis.clone()), &refs)
+        .submit_commit(id, Some(genesis.clone()), &wire(blobs))
         .await
         .map(|_| ())
 }
@@ -288,8 +328,10 @@ async fn submit_as_witness(
     id: &str,
     blobs: &[Vec<u8>],
 ) -> Result<(), EngineError> {
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-    engine.submit_commit(id, None, &refs).await.map(|_| ())
+    engine
+        .submit_commit(id, None, &wire(blobs))
+        .await
+        .map(|_| ())
 }
 
 /// Wire blobs of a fixture commit with the fixture's genesis key attached
@@ -435,16 +477,16 @@ fn with_extras_on(n: usize, extra: &[(&str, serde_json::Value)]) -> Vec<Vec<u8>>
 async fn submit_reporting(e: &Engine, blobs: &[Vec<u8>]) -> Result<Vec<Blake3Hash>, EngineError> {
     let fx = load_golden("mutations", "transaction_sequence_replay");
     let (g, id) = genesis_of(&fx);
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-    e.submit_commit(&id, Some(g), &refs)
+    e.submit_commit(&id, Some(g), &wire(blobs))
         .await
         .map(|r| r.blob_hashes)
 }
 
 /// Claim: the store holds the canonical coz the signature
 /// covers: unsigned extra top-level members (here `kind`, `commit`, and a
-/// harmless `typ`) are not stored, while `pay`, `sig` and the disclosed
-/// `key` are. Turns red if: any unsigned extra is persisted.
+/// harmless `typ`) are not stored, while `pay` and `sig` are (key material
+/// travels in the bundle's `keys`, never on a coz). Turns red if: any
+/// unsigned extra is persisted.
 #[tokio::test]
 async fn canonical_unsigned_extras_are_not_stored() {
     let e = engine();
@@ -462,9 +504,7 @@ async fn canonical_unsigned_extras_are_not_stored() {
     for stored in stored_blobs(&e, &hashes).await {
         let members: Vec<_> = stored.as_object().unwrap().keys().cloned().collect();
         assert!(
-            members
-                .iter()
-                .all(|m| ["pay", "sig", "key"].contains(&m.as_str())),
+            members.iter().all(|m| ["pay", "sig"].contains(&m.as_str())),
             "stored members: {members:?}"
         );
         assert!(stored.get("pay").is_some() && stored.get("sig").is_some());
@@ -713,17 +753,16 @@ async fn action_only_no_error_after_store() {
         .iter()
         .map(|b| serde_json::to_vec(b).unwrap())
         .collect();
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
 
     armed.store(true, Ordering::SeqCst);
-    let result = e.submit_commit(&id, Some(g), &refs).await;
+    let result = e.submit_commit(&id, Some(g), &wire(&blobs)).await;
 
     assert!(
         stored.load(Ordering::SeqCst),
         "control: the bundle's blobs were stored"
     );
     let result = result.expect("a stored action-only bundle must be reported as stored");
-    assert_eq!(result.blob_hashes.len(), refs.len());
+    assert_eq!(result.blob_hashes.len(), blobs.len());
     assert!(result.manifest_hash.is_none());
 }
 
@@ -888,7 +927,12 @@ async fn plant_manifest(e: &Engine, commit: &IndexableCommit) {
     let mut bytes = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
     serde_json::to_writer(
         &mut bytes,
-        &serde_json::json!({"kind": MANIFEST_KIND, "commit": commit}),
+        &serde_json::json!({
+            "kind": MANIFEST_KIND,
+            "commit": commit,
+            // One coz per transaction, as the honest writer records it.
+            "shape": {"actions": 0, "txs": vec![1; commit.blob_hashes.len()]},
+        }),
     )
     .unwrap();
     cyphr_storage::blob::BlobStore::put(e.blob_store(), &bytes)
@@ -1128,8 +1172,7 @@ mod replay {
         id: &str,
         blobs: &[Vec<u8>],
     ) -> Result<IngestResult, EngineError> {
-        let r: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-        e.submit_commit(id, None, &r).await
+        e.submit_commit(id, None, &super::wire(blobs)).await
     }
 
     /// Push `pk`'s genesis commit at `T` (SPEC 5.1: `pk` creates itself,
@@ -1144,7 +1187,9 @@ mod replay {
         let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, &[], T)
             .await
             .unwrap();
-        push(e, &id, &blobs).await.expect("genesis commit");
+        e.submit_commit(&id, None, &blobs)
+            .await
+            .expect("genesis commit");
         (id, client)
     }
 
@@ -1710,12 +1755,13 @@ async fn action_only_bundle_cannot_create_a_principal() {
     assert!(principals(&e).await.is_empty());
 }
 
-/// F-E claim: whatever sidecar a replayer attaches to a replayed key/create,
-/// one czd stores one blob. The attacker replays the victim's signed
-/// key/create with a sidecar carrying a chosen `tag` and `now` (neither is
-/// signed); the victim's blob and the attacker's are the same blob, and its
-/// sidecar keeps only `alg`, `pub` and `tmb`. Turns red if any unsigned
-/// sidecar member survives canonicalization.
+/// F-E claim: whatever key material a replayer attaches to a replayed
+/// key/create, one czd stores one blob. The attacker replays the victim's
+/// signed key/create with a `keys` entry carrying a chosen `tag` and `now`
+/// (neither is signed); the victim's blob and the attacker's are the same
+/// blob, which holds no key, and the stored key keeps only `alg`, `pub`
+/// and `tmb`. Turns red if any unsigned key member survives
+/// canonicalization.
 #[tokio::test]
 async fn replayed_key_create_sidecar_cannot_split_the_czd() {
     use replay::*;
@@ -1766,12 +1812,13 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
         .unwrap()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&stored).unwrap();
-    let mut members: Vec<_> = v["key"].as_object().unwrap().keys().cloned().collect();
-    members.sort();
-    assert_eq!(
-        members,
-        ["alg", "pub", "tmb"],
-        "unsigned sidecar members kept"
+    assert!(v.get("key").is_none(), "a stored coz holds no key: {v}");
+    let served = e.get_patch(&aid, None, None).await.unwrap();
+    let keys = &served.entries.last().unwrap().bundle.keys;
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(
+        keys[0].tag.is_none() && keys[0].now.is_none(),
+        "unsigned key members kept: {keys:?}"
     );
 }
 
@@ -1831,4 +1878,10 @@ async fn relayed_commit_create_cannot_carry_a_foreign_key() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&stored).unwrap();
     assert!(v.get("key").is_none(), "a foreign key was kept: {v}");
+    let served = e.get_patch(&vid, None, None).await.unwrap();
+    let keys = &served.entries.last().unwrap().bundle.keys;
+    assert!(
+        keys.is_empty(),
+        "a foreign key was kept for the commit: {keys:?}"
+    );
 }

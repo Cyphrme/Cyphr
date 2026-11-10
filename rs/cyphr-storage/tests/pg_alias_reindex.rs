@@ -82,27 +82,10 @@ async fn commit_key_create(p: &mut cyphr::Principal, signer: &Kp, added: &Kp, no
         .expect("finalize");
 }
 
-/// Raw wire blobs of commit `i` of `p`: key-introducing cozies carry the
-/// new key, as the engine's ingest requires, so a stored principal's
-/// genesis is recoverable from its genesis commit's `key/create`s (SPEC
-/// 5.1) and every later key from its own `key/create`.
-fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
-    let entry = &cyphr_storage::export_commits(p).expect("export")[i];
-    let mut key_idx = 0;
-    entry
-        .cozies
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
-                let k = &entry.keys[key_idx];
-                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
-                key_idx += 1;
-            }
-            serde_json::to_vec(&c).expect("blob")
-        })
-        .collect()
+/// The wire bundle of commit `i` of `p` (SPEC 4.6.2): its keys travel in
+/// the bundle's `keys`.
+fn blobs(p: &cyphr::Principal, i: usize) -> cyphr::replay::WireBundle {
+    cyphr::replay::WireBundle::of_commit(p.commits().nth(i).expect("commit")).expect("bundle")
 }
 
 /// A principal whose genesis commit (SPEC 5.1) creates `golden` and then
@@ -183,9 +166,8 @@ where
     let commits = 2;
     for i in 0..commits {
         let raw = blobs(&p, i);
-        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .submit_commit(&id, Some(genesis.clone()), &raw)
             .await
             .unwrap_or_else(|e| panic!("commit {i} of {added:?}: {e}"));
     }
@@ -275,9 +257,8 @@ async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant(
 
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     let raw = blobs(&p, 0);
-    let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
     engine
-        .submit_commit(&id, Some(genesis), &refs)
+        .submit_commit(&id, Some(genesis), &raw)
         .await
         .expect("create in commit 0");
 
@@ -304,9 +285,8 @@ async fn commit_pre_is_the_previous_commits_pr() {
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     for i in 0..3 {
         let raw = blobs(&p, i);
-        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .submit_commit(&id, Some(genesis.clone()), &raw)
             .await
             .unwrap_or_else(|e| panic!("commit {i}: {e}"));
     }
@@ -392,9 +372,8 @@ async fn established_principal_current_pr_is_refused_without_replay() {
     );
     for i in 0..=2 {
         let raw = blobs(&p, i);
-        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .submit_commit(&id, Some(genesis.clone()), &raw)
             .await
             .unwrap_or_else(|e| panic!("commit {i}: {e}"));
     }
@@ -453,9 +432,8 @@ async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
     );
     for i in 0..2 {
         let raw = blobs(&p, i);
-        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&id, None, &refs)
+            .submit_commit(&id, None, &raw)
             .await
             .unwrap_or_else(|e| panic!("commit {i}: {e}"));
     }

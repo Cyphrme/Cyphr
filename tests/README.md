@@ -36,7 +36,7 @@ For each JSON file in `golden/`:
 
 1. **Parse the fixture** — Load the JSON and extract `principal`, `genesis_keys`, `commits`, `digests`, `expected`
 2. **Create Principal** — Use `genesis_keys` to create genesis (full key material provided)
-3. **Apply commits** — For each commit in `commits`, process its `txs` array; verify czd matches `digests[i]`
+3. **Apply commits** — For each line in `commits`, record its `actions`, then apply each transaction of `txs` as one transaction (its cozies verified against the state it meets, then applied together); verify czd matches `digests[i]`
 4. **Verify state** — Assert computed state matches `expected`
 5. **Handle errors** — If `expected.error` is set, verify the last transaction fails with that error
 
@@ -55,12 +55,15 @@ For each JSON file in `golden/`:
   ],
   "commits": [
     {
+      "v": 2,
       "txs": [
-        {
-          "pay": {"typ": "cyphr.me/cyphr/key/create", "now": 1700000000, ...},
-          "sig": "<base64url>",
-          "key": {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
-        }
+        [
+          {
+            "pay": {"typ": "cyphr.me/cyphr/key/create", "now": 1700000000, ...},
+            "sig": "<base64url>"
+          }
+        ],
+        [{"pay": {"typ": "cyphr.me/cyphr/commit/create", ...}, "sig": "<base64url>"}]
       ],
       "keys": [
         {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>", "tag": "...", "now": 0}
@@ -83,6 +86,8 @@ For each JSON file in `golden/`:
     "cr": "<alg:base64url>",
     "dr": "<base64url>",
     "pg": "<alg:base64url>",
+    "txs_order": ["<alg:base64url>"],
+    "merge_status": "Merged",
     "error": "ErrorName"
   }
 }
@@ -90,13 +95,14 @@ For each JSON file in `golden/`:
 
 #### Field Descriptions
 
-| Field          | Description                                                                                               |
-| -------------- | --------------------------------------------------------------------------------------------------------- |
-| `principal`    | Key names from pool (for reference)                                                                       |
-| `genesis_keys` | Full key material for genesis creation                                                                    |
-| `commits`      | Atomic commit bundles, each containing `txs[]`, `keys[]`, and computed `commit_id`/`ar`/`sr`/`pr` digests |
-| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification                                    |
-| `expected`     | Expected state after all commits applied — see Expected State Fields below                                |
+| Field          | Description                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `principal`    | Key names from pool (for reference)                                                                                                                                                                                                                                                                                                                                                                   |
+| `genesis_keys` | Full key material for genesis creation                                                                                                                                                                                                                                                                                                                                                                |
+| `commits`      | Bundle lines (format `v` 2), one per commit or per run of data actions: `txs` (SPEC 4.6.2: a list of transactions, each a list of `{pay, sig}` cozies, the commit transaction last), `keys` (the keys its key-introducing cozies name by `id`), `actions` (data actions, recorded before the transactions; an action-only line holds only these), and the computed `commit_id`/`ar`/`sr`/`pr` digests |
+| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification                                                                                                                                                                                                                                                                                                                                |
+| `peer`         | Two-principal tests only: the second principal's `principal` and `commits`, replayed after the first's                                                                                                                                                                                                                                                                                                |
+| `expected`     | Expected state after all commits applied — see Expected State Fields below                                                                                                                                                                                                                                                                                                                            |
 
 #### Expected State Fields
 
@@ -113,6 +119,8 @@ For each JSON file in `golden/`:
 | `dr`                                             | Data Root digest (Level 4, base64url, single algorithm)                                                                                                         |
 | `pg`                                             | Principal Genesis digest (`alg:base64url`); empty string when there is no prior genesis state                                                                   |
 | `error`                                          | Expected error name, if the last transaction is expected to fail                                                                                                |
+| `txs_order`                                      | The TX of each transaction of the last commit, TX = MR(czd₀, czd₁?, ...) (SPEC 3.7.5, 4.6.3), stated when that commit holds a transaction of more than one coz  |
+| `merge_status`                                   | Two-principal tests: `merge_status` of the principal (source) into its `peer` (target), `None`, `Pending` or `Merged` (SPEC 11.5.1)                             |
 | `multihash_kr` / `multihash_ar` / `multihash_pr` | Per-algorithm KR/AR/PR variants, present for multi-algorithm principals (SPEC §14)                                                                              |
 
 #### Absent roots
@@ -144,13 +152,16 @@ absence.
 | `errors`                  | `golden/errors/`                  | Error condition rejection tests                      |
 | `data_action_constraints` | `golden/data_action_constraints/` | Constraints over data actions                        |
 | `structural_constraints`  | `golden/structural_constraints/`  | Structural validation algorithms                     |
+| `key_auth`                | `golden/key_auth/`                | Revoked keys, at genesis and after                   |
+| `transaction_grouping`    | `golden/transaction_grouping/`    | Multi-coz transactions: TX, TR, one `typ`            |
+| `merge`                   | `golden/merge/`                   | Two-principal merge and ack                          |
 
 ### Setup Modifiers
 
 Some tests require setup before the main operation:
 
-- `setup.revoke_key`: Pre-revoke a key (moves to revoked set before test)
-- `setup.revoke_at`: Timestamp for the pre-revocation
+- `setup.revoke_key`: The genesis key, handed to genesis already carrying a revocation; genesis refuses it (`KeyRevoked`, SPEC 6.4, 7.7)
+- `setup.revoke_at`: Timestamp of that revocation
 
 ### Error Tests
 
@@ -330,15 +341,12 @@ level     = 4
 
 ```toml
 [[test]]
-name      = "revoked_key_fails"
-principal = ["golden", "key_a"]
+name      = "implicit_genesis_refuses_revoked_key"
+principal = ["golden"]
 
 [test.setup]
-revoke_key = "key_a"
-revoke_at  = 1699999999
-
-[[test.commit]]
-tx = [[{now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete"}]]
+revoke_key = "golden"
+revoke_at  = 1700000000
 
 [test.expected]
 error = "KeyRevoked"
@@ -363,23 +371,30 @@ error = "[commit-one-or-more]"
 
 ### Intent Field Reference
 
-| Field                | Type     | Description                                         |
-| -------------------- | -------- | --------------------------------------------------- |
-| `name`               | string   | **Required.** Unique test identifier                |
-| `principal`          | string[] | **Required.** Genesis key names from pool           |
-| `setup.revoke_key`   | string   | Pre-revoke this key before test                     |
-| `setup.revoke_at`    | i64      | Revocation timestamp                                |
-| `commit[]`           | array    | Commit sequence; each contains `tx` (list-of-lists) |
-| `commit.tx[][]`      | array    | Transaction list; each tx is a list of cozies       |
-| `action[]`           | array    | Action sequence (Level 4 data recording)            |
-| `action[].typ`       | string   | Action type (usually `cyphr.me/action`)             |
-| `action[].now`       | i64      | Action timestamp                                    |
-| `action[].signer`    | string   | Action signer key name                              |
-| `action[].msg`       | string   | Action message content                              |
-| `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)         |
-| `expected.key_count` | int      | Expected active key count                           |
-| `expected.level`     | int      | Expected principal level (1-4)                      |
-| `expected.error`     | string   | Expected error name                                 |
+| Field                   | Type     | Description                                                                         |
+| ----------------------- | -------- | ----------------------------------------------------------------------------------- |
+| `name`                  | string   | **Required.** Unique test identifier                                                |
+| `principal`             | string[] | **Required.** Genesis key names from pool                                           |
+| `setup.revoke_key`      | string   | Genesis key revoked before genesis                                                  |
+| `setup.revoke_at`       | i64      | Revocation timestamp                                                                |
+| `commit[]`              | array    | Commit sequence; each contains `tx` (list-of-lists)                                 |
+| `commit.tx[][]`         | array    | Transaction list; each tx is a list of cozies                                       |
+| `tx.target`             | string   | Key name whose thumbprint is the pay `id`                                           |
+| `tx.id`                 | string   | Pay `id` stated verbatim, in place of `target`                                      |
+| `tx.merge_from`         | string[] | Merge `merge_from` by reference, `self:<n>`/`peer:<n>` (a PR held after commit `n`) |
+| `tx.merge_to_pr`        | string   | Merge `merge_to_pr` by the same reference                                           |
+| `peer.principal`        | string[] | Second principal's genesis key names                                                |
+| `peer.commit[]`         | array    | Second principal's commits, after the first's                                       |
+| `action[]`              | array    | Action sequence (Level 4 data recording)                                            |
+| `action[].typ`          | string   | Action type (usually `cyphr.me/action`)                                             |
+| `action[].now`          | i64      | Action timestamp                                                                    |
+| `action[].signer`       | string   | Action signer key name                                                              |
+| `action[].msg`          | string   | Action message content                                                              |
+| `override.tmb`          | string   | Override `tmb` field (for UnknownKey tests)                                         |
+| `expected.key_count`    | int      | Expected active key count                                                           |
+| `expected.level`        | int      | Expected principal level (1-4)                                                      |
+| `expected.error`        | string   | Expected error name                                                                 |
+| `expected.merge_status` | string   | Expected `merge_status` into the peer                                               |
 
 ---
 

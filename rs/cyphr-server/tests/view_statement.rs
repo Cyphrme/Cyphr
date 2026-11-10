@@ -228,18 +228,13 @@ async fn client_verifies_view_statement_against_the_active_peer_chain() {
         cyphr_storage::index::MemoryIndexer::new(),
     );
     for entry in patch["payload"]["entries"].as_array().expect("entries") {
-        let blobs: Vec<Vec<u8>> = entry["blobs"]
-            .as_array()
-            .expect("blobs")
-            .iter()
-            .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("blob b64"))
-            .collect();
-        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        let blobs: cyphr::replay::WireBundle =
+            serde_json::from_value(entry.clone()).expect("entry bundle");
         local
             .submit_commit(
                 &pg,
                 Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
-                &refs,
+                &blobs,
             )
             .await
             .expect("replay a peer-chain commit");
@@ -384,18 +379,13 @@ async fn replay_peer_chain(app: &axum::Router) -> cyphr::Principal<cyphr::eml::M
         cyphr_storage::index::MemoryIndexer::new(),
     );
     for entry in patch["payload"]["entries"].as_array().expect("entries") {
-        let blobs: Vec<Vec<u8>> = entry["blobs"]
-            .as_array()
-            .expect("blobs")
-            .iter()
-            .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("blob b64"))
-            .collect();
-        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        let blobs: cyphr::replay::WireBundle =
+            serde_json::from_value(entry.clone()).expect("entry bundle");
         local
             .submit_commit(
                 &pg,
                 Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
-                &refs,
+                &blobs,
             )
             .await
             .expect("replay a peer-chain commit");

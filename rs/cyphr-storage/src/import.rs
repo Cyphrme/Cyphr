@@ -4,7 +4,6 @@
 //! genesis: one commit per line (SPEC §4.2.1, §7.3.1), or the data actions
 //! recorded between two commits (an action-only line, SPEC 4.8.1).
 
-use coz::Thumbprint;
 use cyphr::{Key, Principal};
 
 use crate::{CommitEntry, KeyEntry};
@@ -158,8 +157,8 @@ pub(crate) async fn replay_commit<S: cyphr::eml::Storage>(
     commit: &CommitEntry,
     commit_idx: usize,
 ) -> Result<(), LoadError> {
-    let cozies = stored_cozies(commit, commit_idx)?;
-    cyphr::replay::replay_bundle(principal, &cozies)
+    let bundle = stored_bundle(commit, commit_idx)?;
+    cyphr::replay::replay_bundle(principal, &bundle)
         .await
         .map_err(|e| {
             let Some(i) = e.coz else {
@@ -173,8 +172,9 @@ pub(crate) async fn replay_commit<S: cyphr::eml::Storage>(
                 },
                 cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                     index,
-                    tmb: cozies
-                        .get(i)
+                    tmb: bundle
+                        .cozies()
+                        .nth(i)
                         .map(|c| c.header().tmb.to_b64())
                         .unwrap_or_default(),
                 },
@@ -184,54 +184,65 @@ pub(crate) async fn replay_commit<S: cyphr::eml::Storage>(
     Ok(())
 }
 
-/// A stored commit's cozies as the core replays them: each key-introducing
-/// coz takes the next entry of the commit's key list, in order.
-fn stored_cozies(
+/// A stored line's bundle as the core replays it: its actions, its
+/// transactions and the keys they introduce.
+fn stored_bundle(
     commit: &CommitEntry,
     commit_idx: usize,
-) -> Result<Vec<cyphr::replay::StoredCoz>, LoadError> {
+) -> Result<cyphr::replay::Bundle, LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    use cyphr::replay::{StoredCoz, WireError};
+    use cyphr::replay::{Bundle, StoredCoz, WireError};
 
-    let mut keys = commit.keys.iter();
-    commit
-        .cozies
-        .iter()
-        .enumerate()
-        .map(|(tx_idx, value)| {
-            let index = commit_idx * 1000 + tx_idx;
-            let pay = value
-                .get("pay")
-                .ok_or(LoadError::MissingTimestamp { index })?;
-            let sig_b64 = value
-                .get("sig")
-                .and_then(|s| s.as_str())
-                .ok_or(LoadError::MissingSig { index })?;
-            let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
-                LoadError::InvalidSignature {
-                    index,
-                    message: "invalid base64 signature".into(),
-                }
+    let mut i = 0;
+    let mut coz = |value: &serde_json::Value| {
+        let index = commit_idx * 1000 + i;
+        i += 1;
+        let pay = value
+            .get("pay")
+            .ok_or(LoadError::MissingTimestamp { index })?;
+        let sig_b64 = value
+            .get("sig")
+            .and_then(|s| s.as_str())
+            .ok_or(LoadError::MissingSig { index })?;
+        let sig =
+            Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| LoadError::InvalidSignature {
+                index,
+                message: "invalid base64 signature".into(),
             })?;
-            let introduces = pay
-                .get("typ")
-                .and_then(|t| t.as_str())
-                .is_some_and(is_key_introducing_typ);
-            let key = if introduces {
-                keys.next().map(key_entry_to_key).transpose()?
-            } else {
-                None
-            };
-            StoredCoz::new(pay, sig, key).map_err(|e| match e {
-                WireError::Header(p) | WireError::Key(p) | WireError::Protocol(p) => {
-                    LoadError::Protocol(p)
-                },
-                // `StoredCoz::new` raises only the variants above; the rest
-                // describe wire framing this path does not read.
-                _ => LoadError::Protocol(cyphr::Error::MalformedPayload),
-            })
-        })
-        .collect()
+        StoredCoz::new(pay, sig).map_err(wire_error)
+    };
+    let actions = commit
+        .actions
+        .iter()
+        .map(&mut coz)
+        .collect::<Result<_, _>>()?;
+    let txs = commit
+        .txs
+        .iter()
+        .map(|tx| tx.iter().map(&mut coz).collect())
+        .collect::<Result<_, _>>()?;
+    let keys = commit
+        .keys
+        .iter()
+        .map(key_entry_to_key)
+        .collect::<Result<_, _>>()?;
+    Bundle::new(actions, txs, keys).map_err(|e| match e.error {
+        WireError::Misplaced | WireError::EmptyTransaction => {
+            LoadError::Protocol(cyphr::Error::MalformedPayload)
+        },
+        other => wire_error(other),
+    })
+}
+
+/// A wire refusal as a load error.
+fn wire_error(e: cyphr::replay::WireError) -> LoadError {
+    use cyphr::replay::WireError;
+    match e {
+        WireError::Header(p) | WireError::Key(p) | WireError::Protocol(p) => LoadError::Protocol(p),
+        // A coz read from a line has its framing checked above; what is
+        // left is a pay the core cannot read.
+        _ => LoadError::Protocol(cyphr::Error::MalformedPayload),
+    }
 }
 
 /// Returns true if a coz type introduces new key material.
@@ -242,29 +253,16 @@ pub(crate) use cyphr::parsed_coz::typ::is_key_introducing as is_key_introducing_
 
 /// Convert a commit-level KeyEntry to a Principal Key.
 pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pub_key = Base64UrlUnpadded::decode_vec(&entry.pub_key).map_err(|e| {
-        LoadError::InvalidKeyMaterial {
-            field: "pub".into(),
-            message: e.to_string(),
-        }
-    })?;
-    let tmb_bytes =
-        Base64UrlUnpadded::decode_vec(&entry.tmb).map_err(|e| LoadError::InvalidKeyMaterial {
-            field: "tmb".into(),
-            message: e.to_string(),
-        })?;
-
+    use cyphr::replay::WireError;
     // The one place stored/wire key material becomes a `Key`: the
     // constructor rejects a tmb that is not the thumbprint of the pub.
-    Ok(Key::new(
-        entry.alg.clone(),
-        Thumbprint::from_bytes(tmb_bytes),
-        pub_key,
-    )?
-    .with_first_seen(entry.now.unwrap_or(0))
-    .with_tag(entry.tag.clone()))
+    entry.to_key().map_err(|e| match e {
+        WireError::Key(p) => LoadError::Protocol(p),
+        other => LoadError::InvalidKeyMaterial {
+            field: "pub/tmb".into(),
+            message: other.to_string(),
+        },
+    })
 }
 
 // ============================================================================
@@ -294,14 +292,14 @@ mod tests {
             "pay": { "alg": "ES256", "tmb": key.tmb().to_b64(), "now": 1000 },
             "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         });
-        let commit = CommitEntry::new(
-            vec![malformed],
-            vec![],
-            "SHA-256:c".into(),
-            Some("SHA-256:a".into()),
-            Some("SHA-256:s".into()),
-            "SHA-256:p".into(),
-        );
+        let commit = CommitEntry {
+            txs: vec![vec![malformed]],
+            commit_id: "SHA-256:c".into(),
+            auth_root: Some("SHA-256:a".into()),
+            sr: Some("SHA-256:s".into()),
+            pr: "SHA-256:p".into(),
+            ..CommitEntry::default()
+        };
 
         let result = load_principal_from_commits(Genesis::Implicit(key), &[commit]).await;
         assert!(

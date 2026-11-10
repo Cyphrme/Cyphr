@@ -56,34 +56,13 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     .expect("key binds its tmb")
 }
 
-/// Build raw coz blobs from a golden fixture's commit, the same shape
-/// `StorageEngine::submit_commit` expects from a real client.
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 async fn submit_all_commits(
@@ -94,10 +73,9 @@ async fn submit_all_commits(
 ) {
     let genesis = Genesis::Implicit(genesis_key.clone());
     for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_refs: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let bundle = build_bundle(commit);
         engine
-            .submit_commit(principal_id, Some(genesis.clone()), &blob_refs)
+            .submit_commit(principal_id, Some(genesis.clone()), &bundle)
             .await
             .expect("submit_commit failed");
     }

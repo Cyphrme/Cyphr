@@ -120,22 +120,26 @@ async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
 // D1 -- storage paths must reject a substituted key sidecar
 // ============================================================================
 
-/// Rewrites blob 0 (the `key/create`'s embedded `key.pub`) of a push body
-/// to `new_pub_b64`, leaving the signed pay, `sig` and the sidecar `tmb`
-/// untouched.
+/// Rewrites the `pub` of the bundle's `keys` entry that transaction 0
+/// (the `key/create`) names to `new_pub_b64`, leaving the signed pay, `sig`
+/// and the entry's `tmb` untouched.
 fn substitute_sidecar_pub(body: &str, new_pub_b64: &str) -> String {
     let mut req: serde_json::Value = serde_json::from_str(body).expect("push body json");
-    let blobs = req["blobs"].as_array_mut().expect("blobs");
-    let raw = Base64UrlUnpadded::decode_vec(blobs[0].as_str().expect("blob str")).expect("b64");
-    let mut coz: serde_json::Value = serde_json::from_slice(&raw).expect("blob json");
+    let raw =
+        Base64UrlUnpadded::decode_vec(req["txs"][0][0].as_str().expect("blob str")).expect("b64");
+    let coz: serde_json::Value = serde_json::from_slice(&raw).expect("blob json");
     assert_eq!(
         coz["pay"]["typ"], "cyphr.me/cyphr/key/create",
-        "premise: blob 0 is the key/create"
+        "premise: transaction 0 is the key/create"
     );
-    coz["key"]["pub"] = serde_json::json!(new_pub_b64);
-    blobs[0] = serde_json::json!(Base64UrlUnpadded::encode_string(
-        &serde_json::to_vec(&coz).expect("blob ser")
-    ));
+    let id = coz["pay"]["id"].as_str().expect("id").to_owned();
+    let entry = req["keys"]
+        .as_array_mut()
+        .expect("keys")
+        .iter_mut()
+        .find(|k| k["tmb"] == id.as_str())
+        .expect("the key/create's key entry");
+    entry["pub"] = serde_json::json!(new_pub_b64);
     req.to_string()
 }
 

@@ -12,6 +12,7 @@
 //! it; the others characterise behaviour that must survive retention.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::StorageEngine;
@@ -114,26 +115,11 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
     cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
 }
 
-/// Wire blobs of commit `i` of `p`: key-introducing cozies carry their key,
-/// so the principal's genesis is recoverable from its genesis commit's
-/// `key/create`s (SPEC 5.1).
-fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
-    let entry = &cyphr_storage::export_commits(p).expect("export")[i];
-    let mut key_idx = 0;
-    entry
-        .cozies
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
-                let k = &entry.keys[key_idx];
-                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
-                key_idx += 1;
-            }
-            serde_json::to_vec(&c).expect("blob")
-        })
-        .collect()
+/// The wire bundle of commit `i` of `p` (SPEC 4.6.2): its keys travel in
+/// `keys`, so the principal's genesis is recoverable from its genesis
+/// commit's `key/create`s (SPEC 5.1).
+fn blobs(p: &cyphr::Principal, i: usize) -> WireBundle {
+    WireBundle::of_commit(p.commits().nth(i).expect("commit")).expect("bundle")
 }
 
 /// The principal with genesis keys `keys` (the first signs), after its
@@ -158,9 +144,9 @@ struct Fork {
     id: String,
     pre: String,
     /// Commit 0, shared by every branch.
-    first: Vec<Vec<u8>>,
+    first: WireBundle,
     /// Rival commits at position 1; each is valid on its own.
-    rivals: Vec<Vec<Vec<u8>>>,
+    rivals: Vec<WireBundle>,
     /// Commit 0's principal state, for building more rivals.
     base: cyphr::Principal,
     golden: Kp,
@@ -208,7 +194,7 @@ impl Fork {
 
     /// A second, divergent genesis commit of the same principal (the same
     /// genesis keys, so the same PG, at another time).
-    async fn second_genesis(&self) -> Vec<Vec<u8>> {
+    async fn second_genesis(&self) -> WireBundle {
         let key_a = kp(&load_pool(), "key_a");
         blobs(&genesis_of(&[&self.golden, &key_a], NOW + 7).await, 0)
     }
@@ -216,10 +202,9 @@ impl Fork {
     async fn submit(
         &self,
         e: &Engine,
-        bundle: &[Vec<u8>],
+        bundle: &WireBundle,
     ) -> Result<(), cyphr_storage::engine::EngineError> {
-        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
-        e.submit_commit(&self.id, Some(self.genesis.clone()), &refs)
+        e.submit_commit(&self.id, Some(self.genesis.clone()), bundle)
             .await
             .map(|_| ())
     }
@@ -310,12 +295,12 @@ async fn unverifiable_rival_is_refused_and_stores_nothing() {
     let tip_before = e.get_tip(&f.id).await.expect("tip").expect("stored");
 
     let mut bad = f.rivals[1].clone();
-    let mut coz: serde_json::Value = serde_json::from_slice(&bad[0]).expect("coz");
+    let mut coz: serde_json::Value = serde_json::from_slice(&bad.txs[0][0]).expect("coz");
     let sig = coz["sig"].as_str().expect("sig").to_string();
     let mut raw = Base64UrlUnpadded::decode_vec(&sig).expect("sig b64");
     raw[0] ^= 0xff;
     coz["sig"] = serde_json::Value::String(Base64UrlUnpadded::encode_string(&raw));
-    bad[0] = serde_json::to_vec(&coz).expect("coz bytes");
+    bad.txs[0][0] = serde_json::to_vec(&coz).expect("coz bytes");
 
     assert!(f.submit(&e, &bad).await.is_err(), "bad signature accepted");
     assert_eq!(
@@ -356,7 +341,7 @@ struct Revoked {
     /// The principal after the revocation, position 1.
     canonical: cyphr::Principal,
     /// A rival AT the revocation position, signed while golden was active.
-    theft: Vec<Vec<u8>>,
+    theft: WireBundle,
 }
 
 async fn revoked() -> Revoked {
@@ -391,12 +376,12 @@ async fn revoked() -> Revoked {
 /// `golden` through `coz` directly. Its arrow cannot match (the state
 /// root after a revoked-key transaction cannot be computed), so the
 /// closing coz is not self-consistent with the swapped transaction.
-async fn after_revocation(r: &Revoked) -> Vec<Vec<u8>> {
+async fn after_revocation(r: &Revoked) -> WireBundle {
     let pool = load_pool();
     let mut q = r.canonical.fork().await.expect("fork");
     create_key(&mut q, &r.key_a, &kp(&pool, "bob"), NOW + 12).await;
     let mut bundle = blobs(&q, 2);
-    let mut coz_v: serde_json::Value = serde_json::from_slice(&bundle[0]).expect("tx coz");
+    let mut coz_v: serde_json::Value = serde_json::from_slice(&bundle.txs[0][0]).expect("tx coz");
     coz_v["pay"]["tmb"] = serde_json::json!(r.f.golden.tmb.to_b64());
     coz_v["pay"]["alg"] = serde_json::json!(r.f.golden.alg);
     let pay = serde_json::to_vec(&coz_v["pay"]).expect("pay");
@@ -406,7 +391,7 @@ async fn after_revocation(r: &Revoked) -> Vec<Vec<u8>> {
     let obj = coz_v.as_object_mut().expect("coz object");
     obj.remove("cad");
     obj.remove("czd");
-    bundle[0] = serde_json::to_vec(&coz_v).expect("coz bytes");
+    bundle.txs[0][0] = serde_json::to_vec(&coz_v).expect("coz bytes");
     bundle
 }
 
@@ -570,7 +555,7 @@ mod retained {
 
     /// A principal of `n` commits (golden creates one pool key per commit)
     /// plus an authenticated rival at position 1, and the rival's blobs.
-    async fn long_chain(n: usize) -> (Fork, Engine, Vec<Vec<u8>>, Vec<cyphr::Principal>) {
+    async fn long_chain(n: usize) -> (Fork, Engine, WireBundle, Vec<cyphr::Principal>) {
         let f = Fork::new(0).await;
         let pool = load_pool();
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
@@ -614,12 +599,12 @@ mod retained {
 
         // Failed signature by a real key.
         let mut bad = rival.clone();
-        let mut coz: serde_json::Value = serde_json::from_slice(&bad[0]).expect("coz");
+        let mut coz: serde_json::Value = serde_json::from_slice(&bad.txs[0][0]).expect("coz");
         let mut raw =
             Base64UrlUnpadded::decode_vec(coz["sig"].as_str().expect("sig")).expect("b64");
         raw[0] ^= 0xff;
         coz["sig"] = serde_json::Value::String(Base64UrlUnpadded::encode_string(&raw));
-        bad[0] = serde_json::to_vec(&coz).expect("coz bytes");
+        bad.txs[0][0] = serde_json::to_vec(&coz).expect("coz bytes");
         assert!(f.submit(&e, &bad).await.is_err());
         assert_eq!(e.retention_replays(), before, "bad signature was replayed");
         assert_eq!(branches(&e, &f.id).await, listed, "refused bundles listed");
@@ -713,7 +698,7 @@ mod retained {
     impl Fork {
         /// A valid commit at position 1, signed by `signer` (a key active
         /// at the fork's `pre`); `salt` makes it distinct.
-        async fn rival_by(&self, signer: &Kp, salt: i64) -> Vec<Vec<u8>> {
+        async fn rival_by(&self, signer: &Kp, salt: i64) -> WireBundle {
             let mut p = self.base.fork().await.expect("fork");
             create_key(&mut p, signer, &fresh_kp(), NOW + 1 + salt).await;
             blobs(&p, 1)
@@ -809,12 +794,9 @@ mod retained {
             create_key(&mut base, &golden, k, NOW + 1 + i as i64).await;
         }
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-        let submit = |b: Vec<Vec<u8>>| {
+        let submit = |b: WireBundle| {
             let (e, id, genesis) = (&e, id.clone(), genesis.clone());
-            async move {
-                let refs: Vec<&[u8]> = b.iter().map(Vec::as_slice).collect();
-                e.submit_commit(&id, Some(genesis), &refs).await.map(|_| ())
-            }
+            async move { e.submit_commit(&id, Some(genesis), &b).await.map(|_| ()) }
         };
         // The genesis commit, then one commit per signer.
         for i in 0..=SIGNERS {
@@ -941,14 +923,11 @@ mod retained {
             },
             MemoryIndexer::new(),
         );
-        let go = |b: &Vec<Vec<u8>>| {
+        let go = |b: &WireBundle| {
             let b = b.clone();
             let e = &e;
             let (id, g) = (f.id.clone(), f.genesis.clone());
-            async move {
-                let refs: Vec<&[u8]> = b.iter().map(Vec::as_slice).collect();
-                e.submit_commit(&id, Some(g), &refs).await.map(|_| ())
-            }
+            async move { e.submit_commit(&id, Some(g), &b).await.map(|_| ()) }
         };
         go(&f.first).await.expect("commit 0");
         go(&f.rivals[0]).await.expect("canonical");

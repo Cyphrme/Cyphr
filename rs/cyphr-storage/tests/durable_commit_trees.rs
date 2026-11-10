@@ -108,7 +108,12 @@ async fn apply_golden_commit<S: eml::Storage>(
     let mut key_idx = 0;
 
     let mut scope = principal.begin_commit();
-    for coz_value in cozies {
+    // The fixture's transactions are one coz each, so applying coz by coz
+    // forms the same transactions.
+    for coz_value in cozies
+        .iter()
+        .flat_map(|tx| tx.as_array().expect("transaction"))
+    {
         let coz = coz_value.clone();
         let pay = coz["pay"].clone();
         let typ = pay["typ"].as_str().unwrap_or("").to_string();
@@ -311,36 +316,13 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
     );
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key
-/// material — the same shape `StorageEngine::submit_commit` expects from a
-/// real client (mirrors `cyphr-server`'s e2e test helper of the same
-/// purpose).
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// c2/c3 (P6c) — `StorageEngine::load_principal`'s NORMAL replay path (not
@@ -394,10 +376,9 @@ fn principal_replay_survives_disk_drop_and_reload() {
             );
 
             for commit in commits {
-                let blobs = build_raw_blobs(commit);
-                let blob_refs: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+                let bundle = build_bundle(commit);
                 engine
-                    .submit_commit(principal_id, Some(genesis.clone()), &blob_refs)
+                    .submit_commit(principal_id, Some(genesis.clone()), &bundle)
                     .await
                     .expect("submit_commit failed");
             }

@@ -125,11 +125,8 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let principal_id = principal_id_derived.as_str();
     let now = 1_700_000_000;
     let push_body = common::build_genesis_push_body(&pool, principal_id, now).await;
-    let pushed_blobs = serde_json::from_str::<serde_json::Value>(&push_body).expect("push body")
-        ["blobs"]
-        .as_array()
-        .expect("blobs")
-        .len();
+    let pushed_blobs =
+        common::wire_cozies(&serde_json::from_str(&push_body).expect("push body")).len();
 
     let state = keyless_state();
     let app = build_router(state);
