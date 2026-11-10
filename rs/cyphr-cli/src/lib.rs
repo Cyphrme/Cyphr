@@ -301,6 +301,13 @@ pub enum Commands {
         command: TxCommands,
     },
 
+    /// Data actions and their inclusion in the Principal Tree
+    Data {
+        /// Data subcommand to execute
+        #[command(subcommand)]
+        command: DataCommands,
+    },
+
     /// Display identity state
     Inspect {
         /// Principal Root (base64url)
@@ -439,6 +446,62 @@ pub enum KeyCommands {
         /// Principal Root (base64url) - if omitted, lists keystore keys
         #[arg(long)]
         identity: Option<String>,
+    },
+}
+
+/// Data subcommands (SPEC 4.8).
+#[derive(Subcommand)]
+pub enum DataCommands {
+    /// Sign a data action and record it in the Data Tree
+    ///
+    /// The action enters DT only; DR enters PR when `data commit` signs a
+    /// `ds/create`. `push` sends recorded actions ahead of the commits.
+    Action {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Thumbprint of the signing key
+        #[arg(long)]
+        signer: String,
+
+        /// Message the `comment/create` action carries
+        #[arg(long)]
+        msg: String,
+
+        /// Sign with this `now` (unix seconds) instead of the clock
+        #[arg(long)]
+        now: Option<i64>,
+
+        /// Print the signed action without recording it locally
+        #[arg(long)]
+        sign_only: bool,
+    },
+
+    /// Include DR = MR(DT) in the Principal Tree by a signed `ds/create`
+    Commit {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Thumbprint of the signing key
+        #[arg(long)]
+        signer: String,
+    },
+
+    /// Send a signed action (the output of `data action`) to a peer
+    Submit {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL
+        #[arg(long)]
+        peer: String,
+
+        /// File holding the signed action JSON
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 

@@ -38,12 +38,20 @@ fn wire_id(identity: &str) -> crate::Result<String> {
     Ok(bare_digest(&get_principal_id(&pg)?).to_owned())
 }
 
-/// `cyphr push`: send the commits the peer lacks.
+/// `cyphr push`: send the commits the peer lacks, each preceded by the data
+/// actions recorded before it (a `ds/create` includes exactly those, SPEC
+/// 4.8.2), then the actions recorded after the last commit.
+///
+/// A peer cannot say which trailing actions it already holds, so those are
+/// sent again on every push; a replayed action is a no-op (SPEC 7.6).
 pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
+    // Loaded ahead of the async block: loading drives its own runtime.
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     let pushed = block_on(async {
         let local = raw_chain(&store, &principal_id).await?;
@@ -66,21 +74,39 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 },
             },
         };
-        for commit in &local[start..] {
+        // Actions recorded when `n` commits existed precede commit `n`.
+        let mut actions = principal
+            .actions()
+            .filter(|a| a.recorded_after() >= start)
+            .map(|a| Ok((a.recorded_after(), serde_json::to_vec(a.raw())?)))
+            .collect::<crate::Result<Vec<_>>>()?
+            .into_iter()
+            .peekable();
+        let mut sent_actions = 0usize;
+        for (i, commit) in local.iter().enumerate().skip(start) {
+            while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
+                peer.push_commit(&wire, &[blob]).await?;
+                sent_actions += 1;
+            }
             peer.push_commit(&wire, &commit.blobs).await?;
+        }
+        for (_, blob) in actions {
+            peer.push_commit(&wire, &[blob]).await?;
+            sent_actions += 1;
         }
         Ok::<_, Error>((
             local.len() - start,
+            sent_actions,
             local.last().map(|c| c.commit_id.clone()),
         ))
     })??;
 
-    let (count, tip) = pushed;
+    let (count, actions, tip) = pushed;
     let status = if count == 0 { "up_to_date" } else { "accepted" };
     let out = json!({"identity": identity, "peer": peer_url, "pushed": count,
-        "tip": tip, "status": status});
+        "actions": actions, "tip": tip, "status": status});
     emit(cli, &out, || {
-        println!("Push {status}: {count} commit(s) sent to {peer_url}");
+        println!("Push {status}: {count} commit(s), {actions} action(s) sent to {peer_url}");
     })
 }
 

@@ -6,6 +6,8 @@ pub mod common;
 pub mod init;
 /// Inspection command.
 pub mod inspect;
+/// Data commands: record an action, include its root, submit.
+pub mod data;
 /// Import/Export commands.
 pub mod io;
 /// Key management commands.

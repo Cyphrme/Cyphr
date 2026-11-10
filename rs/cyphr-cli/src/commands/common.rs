@@ -383,7 +383,12 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 
         let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
 
-        let commits = cyphr_storage::export_commits(principal)?;
+        // Action-only lines form no commit: data actions are stored as their
+        // own bundles when recorded, so only real commits are counted here.
+        let commits: Vec<_> = cyphr_storage::export_commits(principal)?
+            .into_iter()
+            .filter(|line| !line.commit_id.is_empty())
+            .collect();
 
         for commit in commits.iter().skip(stored_count) {
             let mut raw_blobs = Vec::new();

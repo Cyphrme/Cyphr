@@ -33,6 +33,7 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
         } => commands::init::run(&cli, algo, key.as_deref(), keys.as_deref(), *genesis_commit),
         Commands::Key { command } => commands::key::run(&cli, command),
         Commands::Tx { command } => commands::tx::run(&cli, command),
+        Commands::Data { command } => commands::data::run(&cli, command),
         Commands::Inspect { identity } => commands::inspect::run(&cli, identity),
         Commands::Export { identity, output } => commands::io::export(&cli, identity, output),
         Commands::Import { input } => commands::io::import(&cli, input),

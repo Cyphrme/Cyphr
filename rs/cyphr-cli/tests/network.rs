@@ -494,6 +494,73 @@ fn push_fetch_pulls_peer_history() {
     assert_eq!(reader.commit_count(&id), a.commit_count(&id));
 }
 
+// ------------------------------------------------------------------- data
+
+/// Claim (SPEC 4.8.1, 4.8.2): a data action the CLI records and pushes enters
+/// the peer's Data Tree, and DR joins PR only by a signed `ds/create` naming
+/// MR(DT): a `ds/create` over the peer's whole DT is accepted and moves the
+/// tip; one a device signed over a DT that lacks an action the peer holds is
+/// refused and the peer's tip does not move.
+/// End-to-end: yes (two devices of one principal, one real server).
+/// Turns red on: a CLI with no data command (every `data` call fails), a push
+/// that omits the recorded actions (the server's DT is then empty and the
+/// correct `ds/create` is refused), a `data commit` that names a DR other
+/// than MR(DT), or a refusal the CLI reports as success.
+/// Red on base: `data` is an unknown subcommand, so the first `data action`
+/// fails.
+#[test]
+fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
+    let server = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &server.url), "push of the genesis history");
+    let signer = format!("--signer={id}");
+    let ident = format!("--identity={id}");
+    // `push` reports `up_to_date` only when the peer's tip is this device's
+    // last commit, and fails stale when the peer holds any other tip, so it
+    // reads the peer's tip without `verify`, which replays the peer's chain
+    // and cannot yet (the wire carries no actions, #202) for a `ds/create`.
+    let peer_tip = |u: &User| {
+        let v = u.setup(&["push", &ident, &format!("--peer={}", server.url)]);
+        assert_eq!(v["status"], "up_to_date", "the peer must hold the tip: {v}");
+        v["tip"].as_str().expect("tip").to_owned()
+    };
+    let base_tip = peer_tip(&a);
+
+    // A records an action and pushes it alone: DR is not yet in PR, so the
+    // peer's tip stays where it was.
+    a.setup(&["data", "action", &ident, &signer, "--msg=one"]);
+    accepted(&a.push(&id, &server.url), "push of a recorded action");
+    assert_eq!(peer_tip(&a), base_tip, "an action alone moves no tip");
+
+    // The devices part here: B is a copy of A that never learns A's second
+    // action, which A pushes alone.
+    let b = a.clone_identity(&id);
+    a.setup(&["data", "action", &ident, &signer, "--msg=two"]);
+    accepted(&a.push(&id, &server.url), "push of A's second action");
+
+    // B's ds/create names MR(DT) over its one action, but the peer's DT
+    // holds two: the peer refuses it and keeps its tip.
+    b.setup(&["data", "commit", &ident, &signer]);
+    let wrong = b.push(&id, &server.url);
+    assert!(
+        !wrong.ok,
+        "a ds/create naming a DR the peer's DT does not have must be refused"
+    );
+    assert_eq!(peer_tip(&a), base_tip, "a refused ds/create moves no tip");
+
+    // A's ds/create names MR(DT) over every action the peer holds: accepted,
+    // and the peer's tip is the commit A made.
+    let made = a.setup(&["data", "commit", &ident, &signer]);
+    accepted(&a.push(&id, &server.url), "push of the data commit");
+    assert_ne!(peer_tip(&a), base_tip, "the accepted ds/create moves the tip");
+    assert_eq!(
+        peer_tip(&a),
+        made["commit_id"].as_str().expect("commit_id"),
+        "the peer's tip is the commit `data commit` made"
+    );
+}
+
 // ----------------------------------------------------------------- verify
 
 fn verify_args<'a>(id: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
