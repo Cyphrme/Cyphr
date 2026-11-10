@@ -133,7 +133,7 @@ impl ChainView {
         let genesis = Principal::implicit(key)
             .await
             .map_err(|e| format!("genesis: {e}"))?;
-        Self::replay(body, pg, genesis, patch.entries).await
+        Self::replay(body, pg, genesis, fold_actions(patch)).await
     }
 
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare)
@@ -146,7 +146,7 @@ impl ChainView {
         let genesis = Principal::implicit(key)
             .await
             .map_err(|e| format!("genesis: {e}"))?;
-        Self::replay(body, pg, genesis, patch.entries).await
+        Self::replay(body, pg, genesis, fold_actions(patch)).await
     }
 
     async fn replay(
@@ -408,4 +408,23 @@ pub fn evidence_items(status: u16, body: &[u8]) -> Result<Vec<Value>, String> {
         .as_array()
         .cloned()
         .ok_or_else(|| "evidence has no payload.items array".to_owned())
+}
+
+/// A patch's entries with the action-only bundles it serves folded into the
+/// commit each precedes (SPEC 4.8.1, 4.8.2): a `ds/create` includes exactly
+/// the actions recorded before it, so a replay that drops the patch's
+/// `actions` member fails any data commit as a state mismatch.
+fn fold_actions(patch: cyphr_client::VerifiedPatch) -> Vec<PatchEntry> {
+    let mut entries = patch.entries;
+    for held in patch.actions {
+        let Ok(blobs) = held.blobs else { continue };
+        let slot = usize::try_from(held.after)
+            .ok()
+            .and_then(|i| entries.get_mut(i))
+            .and_then(|e| e.bundle.as_mut().ok());
+        if let Some(bundle) = slot {
+            bundle.actions.splice(0..0, blobs);
+        }
+    }
+    entries
 }

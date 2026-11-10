@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 pub mod multi;
+pub mod ops;
 
 use std::path::Path;
 use std::sync::Arc;
