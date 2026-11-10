@@ -258,8 +258,9 @@ impl Connector for RouterConnector {
 /// Claim: grouping is a hash input of TR, CR and PR (SPEC 3.7.5, 4.6.2),
 /// and every layer that carries a bundle keeps it. The SPEC 4 example
 /// pushed as one transaction of two cozies is accepted, its TR is
-/// `MR(MR(MR(czd0, czd1), czd2), czd3)` (TX0 the two-coz transaction, TMR
-/// over TX0 and TX1, then TR over TMR and TCR), `/patch` serves it grouped
+/// `MR(MR(czd0, czd1), czd2, czd3)` (SPEC 3.7.5: TR is the MR of every
+/// transaction's TX in order, the commit transaction last; TX0 the two-coz
+/// transaction), `/patch` serves it grouped
 /// to a following client, a restarted server still serves it grouped (the
 /// manifest records it), and export, import and replay reach the same PR.
 /// The same pair pushed as two transactions is another commit with another
@@ -282,8 +283,7 @@ async fn grouped_transaction_end_to_end() {
     // The TR the grouping yields, from the czds alone.
     let c = czds(&commit);
     let tx0 = sha256(&[&c[0][0], &c[0][1]]);
-    let tmr = sha256(&[&tx0, &c[1][0]]);
-    let expected_tr = format!("SHA-256:{}", b64(&sha256(&[&tmr, &c[2][0]])));
+    let expected_tr = format!("SHA-256:{}", b64(&sha256(&[&tx0, &c[1][0], &c[2][0]])));
     assert_eq!(
         commit.tr().0.tagged_first().unwrap().to_string(),
         expected_tr,
@@ -398,6 +398,56 @@ async fn grouped_transaction_end_to_end() {
         "and another PR"
     );
     drop(dir);
+}
+
+/// Claim: TR is the MR of every transaction's TX, the commit transaction
+/// last (SPEC 3.7.5 `TR = MR(TXm0?, TXm1?, ..., TXc)`), so grouping moves TR
+/// even when a commit has one mutation transaction: two key/replace cozies
+/// as one transaction give `MR(MR(czd0, czd1), czdc)`, the same cozies as
+/// two transactions give `MR(czd0, czd1, czdc)`. Both pushes are accepted
+/// and their TRs differ. Turns red if TR is computed over the TMR (which
+/// promotes a lone mutation transaction and so hides its grouping) or if
+/// any layer flattens the group. End-to-end scenario: yes.
+#[tokio::test]
+async fn one_mutation_transaction_grouping_moves_tr() {
+    let (p, pg, setup) = two_key_principal().await;
+    let replace = |signer, target| Coz {
+        signer,
+        kind: "key/replace",
+        target,
+    };
+    let mut trs = Vec::new();
+    for grouped in [true, false] {
+        let mut q = p.fork().await.expect("fork");
+        let txs = if grouped {
+            vec![vec![replace("golden", "alice"), replace("key_a", "bob")]]
+        } else {
+            vec![
+                vec![replace("golden", "alice")],
+                vec![replace("key_a", "bob")],
+            ]
+        };
+        author(&mut q, &txs, "alice").await.expect("commits");
+        let commit = q.commits().last().unwrap().clone();
+        let c = czds(&commit);
+        let oracle = if grouped {
+            sha256(&[&sha256(&[&c[0][0], &c[0][1]]), &c[1][0]])
+        } else {
+            sha256(&[&c[0][0], &c[1][0], &c[2][0]])
+        };
+        let (state, _dir) = keyless_server();
+        let app = build_router(state);
+        push_all(&app, &pg, &setup).await;
+        let (status, body) = post_json(app, "/push", push_body(&pg, &wire(&commit))).await;
+        assert_eq!(status, StatusCode::CREATED, "push refused: {body}");
+        assert_eq!(
+            body["payload"]["commit_id"],
+            json!(format!("SHA-256:{}", b64(&oracle))),
+            "TR is the flat MR of the transaction ids (grouped: {grouped})"
+        );
+        trs.push(body["payload"]["commit_id"].clone());
+    }
+    assert_ne!(trs[0], trs[1], "grouping must move TR");
 }
 
 /// Claim: SPEC 4.1 "All cozies for a particular transaction contain an
