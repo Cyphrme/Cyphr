@@ -212,11 +212,11 @@ impl PendingCommit {
         };
 
         let tx_roots: Vec<_> = mutations.iter().filter_map(|tx| tx.id(algs)).collect();
+        let tx_refs: Vec<&crate::multihash::MultihashDigest> = tx_roots.iter().collect();
 
-        let tmr = if tx_roots.is_empty() {
+        let tmr = if tx_refs.is_empty() {
             None
         } else {
-            let tx_refs: Vec<&crate::multihash::MultihashDigest> = tx_roots.iter().collect();
             crate::transaction_root::compute_tmr(&tx_refs, algs)
         };
 
@@ -225,7 +225,7 @@ impl PendingCommit {
                 .id(algs)
                 .map(crate::transaction_root::TransactionCommitRoot)
             {
-                let tr = crate::transaction_root::compute_tr(tmr.as_ref(), &tcr, algs);
+                let tr = crate::transaction_root::compute_tr(&tx_refs, &tcr, algs);
                 return (tmr, Some(tcr), tr);
             }
         }
