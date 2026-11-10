@@ -90,10 +90,10 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
         None => match &genesis {
             // The thumbprint is hashed with the key's own algorithm, so the
             // digest is read under it, not assumed SHA-256.
-            Genesis::Implicit(k) => cyphr::PrincipalGenesis(cyphr::MultihashDigest::from_single(
+            Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_digest(
                 cyphr::state::hash_alg_from_str(k.alg())?,
                 k.tmb().as_bytes().to_vec(),
-            )?),
+            )?,
             Genesis::Explicit(_) => {
                 return Err(Error::ExplicitGenesisWithoutPg);
             },

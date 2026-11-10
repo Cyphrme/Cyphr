@@ -556,6 +556,13 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
         arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
     let mut scope1 = principal.begin_commit();
     scope1
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new("ES256", &prv_a, &pub_a, &tmb_a),
+            now,
+            "cyphr.me",
+        )
+        .expect("genesis key/creates");
+    scope1
         .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis");
     scope1

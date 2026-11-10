@@ -46,6 +46,7 @@ fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
         arrow: None,
         raw: dummy_coz_json(),
     };
+    create_genesis_keys(&mut principal, &key_es256, 0x10);
     let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
     principal.apply_verified_internal(vtx).unwrap();
 
@@ -351,6 +352,32 @@ fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
 /// Build an explicit-genesis `principal/create` coz for `key`, signed
 /// against `id` taken from the given principal — the minimal mutation
 /// that drives `establish_pg`'s Nascent → Established transition.
+/// Apply the `key/create` of every genesis key, signed by `signer`, which
+/// a `principal/create` requires first (SPEC 5.1 step 1, 7.7 Example 1).
+fn create_genesis_keys<S: eml::Storage>(principal: &mut Principal<S>, signer: &Key, czd_byte: u8) {
+    use coz::Czd;
+
+    use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
+
+    let keys: Vec<Key> = principal.active_keys().cloned().collect();
+    for (i, key) in keys.into_iter().enumerate() {
+        let cz = ParsedCoz {
+            kind: CozKind::KeyCreate {
+                id: key.tmb().clone(),
+            },
+            signer: signer.tmb().clone(),
+            now: 2000,
+            czd: Czd::from_bytes(vec![czd_byte.wrapping_add(1 + i as u8); 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+        principal
+            .apply_verified_internal(VerifiedCoz::from_transaction_unsafe(cz, Some(key)))
+            .unwrap();
+    }
+}
+
 fn make_principal_create_tx<S: eml::Storage>(
     principal: &Principal<S>,
     key: &Key,
@@ -397,6 +424,7 @@ fn establish_pg_works_for_disk_backed_storage() {
         "PG must be absent before principal/create"
     );
 
+    create_genesis_keys(&mut disk_principal, &key, 0x10);
     let cz = make_principal_create_tx(&disk_principal, &key, 0x44);
     let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
     disk_principal.apply_verified_internal(vtx).unwrap();
@@ -408,6 +436,7 @@ fn establish_pg_works_for_disk_backed_storage() {
     // The equivalent in-memory principal, driven through the identical
     // sequence of operations.
     let mut mem_principal = Principal::explicit(vec![key.clone()]).unwrap();
+    create_genesis_keys(&mut mem_principal, &key, 0x10);
     let mem_cz = make_principal_create_tx(&mem_principal, &key, 0x44);
     let mem_vtx = VerifiedCoz::from_transaction_unsafe(mem_cz, None);
     mem_principal.apply_verified_internal(mem_vtx).unwrap();

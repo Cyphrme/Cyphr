@@ -58,6 +58,17 @@ fn commit_one(
 ) -> cyphr::error::Result<()> {
     let (pay, sig, czd) = parts;
     let mut scope = p.begin_commit();
+    if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
+        v["typ"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("cyphr/principal/create"))
+    }) {
+        scope.create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
+            now,
+            "cyphr.me",
+        )?;
+    }
     scope.verify_and_apply(&pay, &sig, czd, None)?;
     scope
         .finalize_with_software(
@@ -114,6 +125,20 @@ fn pg_of(p: &cyphr::Principal) -> String {
 fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     let mut blobs: Vec<serde_json::Value> = entries[i].cozies.clone();
+    // The genesis key's own key/create discloses it (SPEC 5.2 TX0).
+    for c in &mut blobs {
+        if c["pay"]["typ"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("cyphr/key/create"))
+            && c["pay"]["id"].as_str() == Some(genesis.tmb.to_b64().as_str())
+        {
+            c["key"] = serde_json::json!({
+                "alg": genesis.alg,
+                "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
+                "tmb": genesis.tmb.to_b64(),
+            });
+        }
+    }
     if i == 0 {
         let last = blobs.len() - 1;
         blobs[last]["key"] = serde_json::json!({

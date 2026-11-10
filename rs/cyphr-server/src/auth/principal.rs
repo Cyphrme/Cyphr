@@ -563,9 +563,11 @@ fn genesis_key_from_identity(
     Ok(key.with_first_seen(GENESIS_FIRST_SEEN))
 }
 
-/// Construct and sign the two-coz genesis commit (principal/create +
-/// commit/create) for a single-key explicit genesis, returning the PG and
-/// the wire blobs ready for `submit_commit`.
+/// Construct and sign the genesis commit of a single-key explicit genesis
+/// (SPEC 5.2: key/create of the genesis key, principal/create,
+/// commit/create), returning the PG and the wire blobs ready for
+/// `submit_commit`. The key/create discloses the key, so the genesis is
+/// readable from the blobs alone (I1).
 fn build_genesis(
     identity: &ServerIdentity,
     genesis_key: &cyphr::Key,
@@ -593,22 +595,24 @@ fn build_genesis(
     let pc_czd = coz::czd_for_alg(&pc_cad, &pc_sig, alg)
         .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
 
+    let signer = cyphr::signer::SoftwareSigner::new(
+        alg,
+        identity.prv_key(),
+        identity.pub_key(),
+        genesis_key.tmb(),
+    );
     let mut scope = client.begin_commit();
+    let creates = scope.create_genesis_keys(&signer, now, CHAIN_AUTHORITY)?;
     scope.verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)?;
-    let commit = scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(
-            alg,
-            identity.prv_key(),
-            identity.pub_key(),
-            genesis_key.tmb(),
-        ),
-        now + 1,
-        CHAIN_AUTHORITY,
-    )?;
+    let commit = scope.finalize_with_software(&signer, now + 1, CHAIN_AUTHORITY)?;
 
-    let cc_blob = serde_json::to_vec(commit.commit_tx().0[0].raw())?;
-    let pc_blob = raw_blob(&pc_pay, &pc_sig, None)?;
-    Ok((pg, vec![pc_blob, cc_blob]))
+    let mut blobs = creates
+        .iter()
+        .map(serde_json::to_vec)
+        .collect::<Result<Vec<_>, _>>()?;
+    blobs.push(raw_blob(&pc_pay, &pc_sig, None)?);
+    blobs.push(serde_json::to_vec(commit.commit_tx().0[0].raw())?);
+    Ok((pg, blobs))
 }
 
 /// Serialize a pay object with keys sorted, matching the server's

@@ -390,6 +390,9 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -411,6 +414,9 @@ tx = [
 
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -434,6 +440,9 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -456,6 +465,9 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "diana_es384", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000001, signer = "diana_es384", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -477,6 +489,9 @@ tx = [
 
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000001, signer = "eve_ed25519", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000001, signer = "eve_ed25519", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1683,6 +1698,13 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -1698,6 +1720,13 @@ principal = ["alice"]
 tx = [
   [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -1725,6 +1754,13 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -1746,6 +1782,13 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -1761,6 +1804,13 @@ principal = ["alice"]
 tx = [
   [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -2678,6 +2728,9 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -2865,6 +2918,9 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -2894,6 +2950,9 @@ tx = [
 
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -2977,6 +3036,9 @@ tx = [
 
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -3078,6 +3140,9 @@ tx = [
 
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],

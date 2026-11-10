@@ -530,7 +530,12 @@ fn wire_blobs(p: &cyphr::Principal, i: usize, g: &Kp) -> Vec<Vec<u8>> {
         .enumerate()
         .map(|(n, c)| {
             let mut c = c.clone();
-            if i == 0 && n == last {
+            // The genesis key's own key/create discloses it (SPEC 5.2 TX0).
+            let creates_genesis = c["pay"]["typ"]
+                .as_str()
+                .is_some_and(|t| t.ends_with("cyphr/key/create"))
+                && c["pay"]["id"].as_str() == Some(g.tmb.to_b64().as_str());
+            if (i == 0 && n == last) || creates_genesis {
                 c["key"] = serde_json::json!({
                     "alg": g.alg, "pub": Base64UrlUnpadded::encode_string(&g.pubb),
                     "tmb": g.tmb.to_b64(),
@@ -571,6 +576,9 @@ fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
         "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"});
     let (pay, sig, czd) = signed(g, create);
     let mut scope = p.begin_commit();
+    scope
+        .create_genesis_keys(&soft(g), NOW + 1, "cyphr.me")
+        .expect("genesis key/creates (SPEC 7.7 Example 1)");
     scope
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("create");
@@ -799,6 +807,15 @@ fn nonce_principal_with_gap(g: &Kp, nonce: u8) -> (cyphr::Principal, (String, St
     let apply = |p: &mut cyphr::Principal, pay: serde_json::Value, now: i64| {
         let (pay, sig, czd) = signed(g, pay);
         let mut scope = p.begin_commit();
+        if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
+            v["typ"]
+                .as_str()
+                .is_some_and(|t| t.ends_with("cyphr/principal/create"))
+        }) {
+            scope
+                .create_genesis_keys(&soft(g), now, "cyphr.me")
+                .expect("genesis key/creates (SPEC 7.7 Example 1)");
+        }
         scope
             .verify_and_apply(&pay, &sig, czd, None)
             .expect("apply");

@@ -360,10 +360,9 @@ fn genesis_only_principal_is_published_with_one_key() {
 /// second client).
 /// Turns red on: a genesis bundle without the key/create (the key is only
 /// implicit in the principal), or a PG that is not the identity.
-/// Red today: the bundle holds only principal/create and commit/create (the
-/// core refuses to re-add the genesis key), tracked as GEN0.
+/// Red on base 6c9f48a: the bundle held only principal/create and
+/// commit/create (the core refused to re-add the genesis key).
 #[test]
-#[ignore = "RED(GEN0): SPEC 5.1 step 1, 7.7 Example 1"]
 fn genesis_bundle_carries_key_create_principal_create_commit_create() {
     let server = Server::start();
     let a = User::new();
@@ -414,6 +413,53 @@ fn genesis_bundle_carries_key_create_principal_create_commit_create() {
         suffixes,
         ["key/create", "principal/create", "commit/create"],
         "genesis commit transactions: {typs:?}"
+    );
+}
+
+/// Claim (SPEC 5.3, 7.7 Example 1, zami be0663f): `init --keys a,b
+/// --genesis-commit` publishes a two-key explicit genesis, the genesis key
+/// creating itself and the second key before principal/create, and a
+/// second client fetching it holds both keys under a PG equal to the
+/// identity.
+/// End-to-end: yes (init, push to a real server, fetch by a second user).
+/// Turns red on: a multi-key genesis the CLI refuses to commit, one whose
+/// bundle lacks a key's key/create (the server refuses it), or a server
+/// that cannot read a multi-key genesis from its blobs.
+/// Red on base 6c9f48a: `--genesis-commit` conflicted with `--keys`.
+#[test]
+fn multi_key_genesis_is_published_with_every_key_created() {
+    let server = Server::start();
+    let a = User::new();
+    let k0 = a.setup(&["key", "generate", "--algo", "ES256"])["tmb"]
+        .as_str()
+        .expect("tmb")
+        .to_owned();
+    let k1 = a.setup(&["key", "generate", "--algo", "Ed25519"])["tmb"]
+        .as_str()
+        .expect("tmb")
+        .to_owned();
+    let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
+    let id = init["pr"].as_str().expect("identity").to_owned();
+    accepted(&a.push(&id, &server.url), "multi-key genesis push");
+
+    let reader = User::new();
+    let f = reader.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "fetch of the multi-key genesis: {}", f.stderr);
+    let seen = reader.setup(&["inspect", &format!("--identity={id}")]);
+    assert_eq!(seen["commit_count"], 1, "genesis commit only: {seen}");
+    assert_eq!(
+        seen["active_keys"].as_array().map(Vec::len),
+        Some(2),
+        "both genesis keys: {seen}"
+    );
+    assert!(
+        seen["pg"].to_string().contains(&id),
+        "PG is the identity {id}: {}",
+        seen["pg"]
     );
 }
 
