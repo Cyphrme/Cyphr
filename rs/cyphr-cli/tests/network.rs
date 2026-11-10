@@ -578,6 +578,33 @@ fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
     assert_eq!(verified["tip"], made["commit_id"], "verify reaches the tip");
 }
 
+/// Claim (SPEC 4.8.2): a `ds/create` includes exactly the actions recorded
+/// before it, so one push of a history recorded offline (two actions, then
+/// `data commit`, no push between) must send each action ahead of the commit
+/// that follows it. The peer then accepts, and its tip is the data commit.
+/// End-to-end: yes (a fresh real server).
+/// Turns red if push sends a commit before the actions recorded before it
+/// (`after < i` for `after <= i`): the server meets the `ds/create` with an
+/// empty DT and refuses it as a state mismatch.
+#[test]
+fn data_push_sends_actions_ahead_of_their_ds_create() {
+    let server = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    a.setup(&["data", "action", &ident, &signer, "--msg=one"]);
+    a.setup(&["data", "action", &ident, &signer, "--msg=two"]);
+    let made = a.setup(&["data", "commit", &ident, &signer]);
+
+    let pushed = a.push(&id, &server.url);
+    accepted(&pushed, "one push of actions and their ds/create");
+    assert_eq!(
+        pushed.json()["tip"],
+        made["commit_id"],
+        "the peer's tip is the data commit"
+    );
+}
+
 // ----------------------------------------------------------------- verify
 
 fn verify_args<'a>(id: &'a str, extra: &[&'a str]) -> Vec<&'a str> {

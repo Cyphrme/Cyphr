@@ -234,7 +234,10 @@ impl Peer {
             Ok(_) => Ok(()),
             Err(PeerError::Status { status: 409, .. }) => Err(PeerError::Stale {
                 peer: self.url.clone(),
-                detail: "the peer refused the commit's predecessor (409)".into(),
+                detail: "the peer answered 409: a tip this history does not extend, or a state it \
+                         refuses (a ds/create naming a DR its DT lacks); the transport does not \
+                         carry the peer's message"
+                    .into(),
             }),
             Err(e) => Err(e),
         }

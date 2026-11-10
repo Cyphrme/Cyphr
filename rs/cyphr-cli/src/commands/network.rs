@@ -43,7 +43,9 @@ fn wire_id(identity: &str) -> crate::Result<String> {
 /// 4.8.2), then the actions recorded after the last commit.
 ///
 /// A peer cannot say which trailing actions it already holds, so those are
-/// sent again on every push; a replayed action is a no-op (SPEC 7.6).
+/// sent again on every push, one request per action; a replayed action is a
+/// no-op (SPEC 7.6) and the peer stores it once (content-addressed
+/// manifests). They could be batched later.
 pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
