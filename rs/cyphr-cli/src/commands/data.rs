@@ -10,8 +10,9 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::{Value, json};
 
 use super::common::{
-    block_on, current_timestamp, get_principal_id, get_principal_id_from_principal, local_genesis,
-    load_principal_from_engine, parse_principal_genesis, parse_store, save_principal_to_engine,
+    block_on, current_timestamp, get_principal_id, get_principal_id_from_principal,
+    load_principal_from_engine, local_genesis, parse_principal_genesis, parse_store,
+    save_principal_to_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
 use crate::net::Peer;

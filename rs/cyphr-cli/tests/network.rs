@@ -553,7 +553,11 @@ fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
     // and the peer's tip is the commit A made.
     let made = a.setup(&["data", "commit", &ident, &signer]);
     accepted(&a.push(&id, &server.url), "push of the data commit");
-    assert_ne!(peer_tip(&a), base_tip, "the accepted ds/create moves the tip");
+    assert_ne!(
+        peer_tip(&a),
+        base_tip,
+        "the accepted ds/create moves the tip"
+    );
     assert_eq!(
         peer_tip(&a),
         made["commit_id"].as_str().expect("commit_id"),
