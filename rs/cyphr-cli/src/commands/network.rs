@@ -336,6 +336,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     }
     // Declared before the engine below so the engine closes its files first.
     let mut scratch = Scratch(Some(tmp.clone()));
+    let mut resigned: Vec<Value> = Vec::new();
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -389,8 +390,12 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         let missing = local_actions
             .iter()
             .filter(|(czd, _)| !held.contains(czd))
-            .map(|(_, blob)| {
+            .map(|(czd, blob)| {
                 let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
+                resigned.push(json!({
+                    "czd": Base64UrlUnpadded::encode_string(czd),
+                    "was_now": pay["now"].clone(),
+                }));
                 pay["now"] = now.into();
                 let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
                 let signed = super::data::sign(keystore.get(tmb)?, tmb, pay.clone())?;
@@ -449,13 +454,21 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     sync_dir(&path)?;
 
     let out = json!({"identity": identity, "peer": peer_url,
-        "rebased": local.len() - common, "backup": backup.display().to_string()});
+        "rebased": local.len() - common, "backup": backup.display().to_string(),
+        "resigned_actions": resigned});
     emit(cli, &out, || {
         println!(
             "Rebased {} commit(s); old store kept at {}",
             local.len() - common,
             backup.display()
         );
+        if !resigned.is_empty() {
+            println!(
+                "Re-signed {} action(s) at rebase; original times and czds: {}",
+                resigned.len(),
+                Value::Array(resigned.clone())
+            );
+        }
     })
 }
 

@@ -349,6 +349,12 @@ pub enum Commands {
     /// The store keeps no commit once it is written, so the replay builds a
     /// fresh store beside the old one and swaps them; the old store is kept
     /// as `<store>.pre-rebase-<unix seconds>`.
+    ///
+    /// A local data action the peer lacks is re-signed with the current time
+    /// (an action older than the peer's latest message is refused, SPEC
+    /// 15.9), so its czd changes; the output names each with its original
+    /// `now`. An application that needs the original time keeps it as a
+    /// field of the action's own pay (SPEC 4.8.2).
     Rebase {
         /// Principal Root (base64url)
         #[arg(long)]

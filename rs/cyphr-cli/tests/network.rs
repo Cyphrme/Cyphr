@@ -611,7 +611,8 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
 /// client verifies the result.
 /// End-to-end: yes (two devices of one principal, one real server).
 /// Turns red if rebase rebuilds the store from commits alone: the action is
-/// gone, `data commit` has no DR to include and fails.
+/// gone, `data commit` has no DR to include and fails; or if it re-signs the
+/// action without naming it in `resigned_actions` (never silently).
 #[test]
 fn data_rebase_keeps_local_actions() {
     let server = Server::start();
@@ -628,7 +629,14 @@ fn data_rebase_keeps_local_actions() {
     accepted(&a.push(&id, &server.url), "A's newer commit");
     assert!(!b.push(&id, &server.url).ok, "B is stale");
 
-    b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
+    let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
+    let resigned = rebased["resigned_actions"].as_array().expect("resigned");
+    assert_eq!(
+        resigned.len(),
+        1,
+        "rebase names the re-signed action: {rebased}"
+    );
+    assert!(resigned[0]["was_now"].is_i64() && resigned[0]["czd"].is_string());
     let made = b.setup(&["data", "commit", &ident, &signer]);
     let pushed = b.push(&id, &server.url);
     accepted(&pushed, "push of the rebased history with its ds/create");
