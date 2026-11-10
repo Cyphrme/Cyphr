@@ -302,7 +302,7 @@ fn add_key_to_pool(pool_path: &Path, name: &str, alg: &str) {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     // Load existing pool
-    let mut pool = match test_fixtures::Pool::load(pool_path) {
+    let mut pool = match test_fixtures::Pool::load_declared(pool_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("✗ Failed to load pool '{}': {}", pool_path.display(), e);
@@ -362,7 +362,7 @@ fn add_key_to_pool(pool_path: &Path, name: &str, alg: &str) {
 /// Remove a key from the pool file.
 fn remove_key_from_pool(pool_path: &Path, name: &str) {
     // Load existing pool
-    let mut pool = match test_fixtures::Pool::load(pool_path) {
+    let mut pool = match test_fixtures::Pool::load_declared(pool_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("✗ Failed to load pool '{}': {}", pool_path.display(), e);
