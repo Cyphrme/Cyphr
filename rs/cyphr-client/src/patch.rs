@@ -391,7 +391,7 @@ fn bare_digest(id: &str) -> &str {
 /// Percent-encode `value` for use as one query-string component, escaping
 /// every byte outside RFC 3986's `unreserved` set (`ALPHA` / `DIGIT` / `-` /
 /// `.` / `_` / `~`) as `%XX`.
-fn percent_encode_query_value(value: &str) -> String {
+pub(crate) fn percent_encode_query_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {

@@ -229,6 +229,8 @@ pub struct ForkProof {
     pub height: u64,
     /// The Principal Root both extend; `None` at height 0.
     pub pre: Option<String>,
+    /// The ids of the two commits, in the order the item named them.
+    pub commits: [String; 2],
 }
 
 /// What a verified peer equivocation proves.
@@ -387,10 +389,18 @@ pub async fn verify_principal_fork(
             "the two commits have one id",
         ));
     }
+    let id = |c: &Commit| {
+        c.tr()
+            .0
+            .tagged_first()
+            .map(|d| d.to_string())
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })
+    };
     Ok(ForkProof {
         pg: item_pg,
         height,
         pre,
+        commits: [id(&ca)?, id(&cb)?],
     })
 }
 
@@ -633,12 +643,12 @@ pub fn verify_peer_equivocation<H: Storage>(
 }
 
 /// Whether `g`, a tagged or bare root, names `pg` (bare).
-fn names_pg(pg: &str, g: &str) -> bool {
+pub(crate) fn names_pg(pg: &str, g: &str) -> bool {
     g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg)
 }
 
 /// Whether `principal` has a PG naming `pg` in any of its algorithms.
-fn pg_names(principal: &Principal<MemoryStorage>, pg: &str) -> bool {
+pub(crate) fn pg_names(principal: &Principal<MemoryStorage>, pg: &str) -> bool {
     use cyphr::StateDigest as _;
     principal.pg().is_some_and(|g| {
         let digest = g.as_multihash();

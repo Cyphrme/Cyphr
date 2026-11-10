@@ -116,6 +116,17 @@ pub enum PeerFailure {
         /// The core's refusal.
         source: cyphr::Error,
     },
+    /// The verifier's anchor is a genesis commit id, and the chain the peer
+    /// served opens with a different commit.
+    #[error("the served genesis commit is not the anchored one")]
+    AnchorMismatch,
+    /// The chain the peer served, replayed from the anchor, is not the
+    /// principal asked about.
+    #[error("the served chain does not derive the requested principal {id}")]
+    PrincipalMismatch {
+        /// The principal the verifier asked for.
+        id: String,
+    },
     /// A statement-triggered follow came inside the configured interval of
     /// the previous fetch from this peer, so nothing was fetched.
     #[error("the peer was fetched recently; a statement may follow again in {retry_after_secs}s")]
