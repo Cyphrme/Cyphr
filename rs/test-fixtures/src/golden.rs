@@ -244,16 +244,16 @@ impl<'a> Generator<'a> {
     /// Generate golden test cases from an intent file.
     ///
     /// Each test in the intent becomes a golden test case.
-    pub fn generate(&self, intent: &Intent) -> Result<Vec<Golden>, Error> {
-        intent
-            .test
-            .iter()
-            .map(|test| self.generate_test(test))
-            .collect()
+    pub async fn generate(&self, intent: &Intent) -> Result<Vec<Golden>, Error> {
+        let mut goldens = Vec::with_capacity(intent.test.len());
+        for test in &intent.test {
+            goldens.push(self.generate_test(test).await?);
+        }
+        Ok(goldens)
     }
 
     /// Generate a single golden test case.
-    pub fn generate_test(&self, test: &TestIntent) -> Result<Golden, Error> {
+    pub async fn generate_test(&self, test: &TestIntent) -> Result<Golden, Error> {
         // Check if this is an error test expecting genesis-time failure
         let expected_error = test
             .expected
@@ -265,7 +265,7 @@ impl<'a> Generator<'a> {
         let principal_result = self.create_principal(&test.principal, &test.name);
 
         // Handle genesis-time errors (e.g., UnsupportedAlgorithm)
-        let mut principal = match principal_result {
+        let mut principal = match principal_result.await {
             Ok(p) => p,
             Err(e) => {
                 // If we expected an error and got one during genesis, generate
@@ -308,14 +308,14 @@ impl<'a> Generator<'a> {
             self.apply_setup(&mut principal, setup, &test.name)?;
         }
 
-        self.commit_generated_genesis(test, &mut principal)?;
+        self.commit_generated_genesis(test, &mut principal).await?;
 
         // Dispatch based on test type
         if test.is_genesis_only() {
             self.generate_genesis_only(test, &principal)
         } else if test.has_tx_and_action() {
             // Combined: commits + actions
-            self.generate_tx_and_action(test, &mut principal)
+            self.generate_tx_and_action(test, &mut principal).await
         } else if test.has_action() {
             if test.action.len() > 1 {
                 self.generate_multi_action(test, &mut principal)
@@ -323,9 +323,9 @@ impl<'a> Generator<'a> {
                 self.generate_single_action(test, &mut principal)
             }
         } else if test.commit.len() > 1 {
-            self.generate_multi_commit(test, &mut principal)
+            self.generate_multi_commit(test, &mut principal).await
         } else {
-            self.generate_single_commit(test, &mut principal)
+            self.generate_single_commit(test, &mut principal).await
         }
     }
 
@@ -374,7 +374,7 @@ impl<'a> Generator<'a> {
     /// further key enters by a `key/create` the intent states. A
     /// `principal/create` in any later commit would need a commit before
     /// the genesis, which does not exist.
-    fn commit_generated_genesis(
+    async fn commit_generated_genesis(
         &self,
         test: &TestIntent,
         principal: &mut cyphr::Principal,
@@ -426,6 +426,7 @@ impl<'a> Generator<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         principal
             .commit_genesis(&signer, &others, now, "cyphr.me")
+            .await
             .map_err(|e| Error::Generation {
                 name: test.name.clone(),
                 reason: format!("genesis commit: {e}"),
@@ -582,7 +583,7 @@ impl<'a> Generator<'a> {
     /// Create a Principal from its genesis key, the first of `key_names`
     /// (SPEC 5.1 step 1). Every further key enters by `key/create`: the
     /// generated genesis commit's, or the intent's own.
-    fn create_principal(
+    async fn create_principal(
         &self,
         key_names: &[String],
         test_name: &str,
@@ -591,10 +592,12 @@ impl<'a> Generator<'a> {
             message: format!("test '{}': principal requires at least one key", test_name),
         })?;
         let key = self.pool_key_to_cyphr_key(genesis, test_name)?;
-        cyphr::Principal::implicit(key).map_err(|source| Error::GenesisFailed {
-            name: test_name.to_string(),
-            source,
-        })
+        cyphr::Principal::implicit(key)
+            .await
+            .map_err(|source| Error::GenesisFailed {
+                name: test_name.to_string(),
+                source,
+            })
     }
 
     /// Convert a pool key name to a cyphr::Key.
@@ -674,7 +677,7 @@ impl<'a> Generator<'a> {
     /// only for a `principal/create` cozy's `id` field).
     ///
     /// Returns the base64 czd of each applied cozy, in application order.
-    fn sign_and_apply_commit(
+    async fn sign_and_apply_commit(
         &self,
         test_name: &str,
         commit_intent: &CommitIntent,
@@ -785,6 +788,7 @@ impl<'a> Generator<'a> {
                 coz_now.max(latest_now),
                 "cyphr.me",
             )
+            .await
             .map_err(|e| Error::Generation {
                 name: test_name.to_string(),
                 reason: format!("failed to finalize commit: {}", e),
@@ -794,7 +798,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Generate a single-commit golden test case.
-    fn generate_single_commit(
+    async fn generate_single_commit(
         &self,
         test: &TestIntent,
         principal: &mut cyphr::Principal,
@@ -867,7 +871,8 @@ impl<'a> Generator<'a> {
             // We need valid signatures over intentionally bad data.
             self.failing_commit(test, commit_intent, principal, &current_pr)?
         } else {
-            self.sign_and_apply_commit(&test.name, commit_intent, principal, &current_pr)?;
+            self.sign_and_apply_commit(&test.name, commit_intent, principal, &current_pr)
+                .await?;
             Vec::new()
         };
 
@@ -896,7 +901,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Generate a multi-commit golden test case.
-    fn generate_multi_commit(
+    async fn generate_multi_commit(
         &self,
         test: &TestIntent,
         principal: &mut cyphr::Principal,
@@ -932,7 +937,8 @@ impl<'a> Generator<'a> {
                     })?;
             } else {
                 // Happy path: apply all cozies in all transactions of the commit
-                self.sign_and_apply_commit(&test.name, commit, principal, &pre)?;
+                self.sign_and_apply_commit(&test.name, commit, principal, &pre)
+                    .await?;
             }
         }
 
@@ -988,7 +994,7 @@ impl<'a> Generator<'a> {
     /// Commits and actions are merged into one timeline and applied in
     /// chronological order (by each event's first `now` timestamp), matching
     /// the order in the exported golden fixture.
-    fn generate_tx_and_action(
+    async fn generate_tx_and_action(
         &self,
         test: &TestIntent,
         principal: &mut cyphr::Principal,
@@ -1054,8 +1060,9 @@ impl<'a> Generator<'a> {
                 TimelineEvent::Commit(commit_intent) => {
                     // Apply all cozies in all transactions of the commit
                     let pre = Self::format_pr_tagged(principal)?;
-                    let czds =
-                        self.sign_and_apply_commit(&test.name, commit_intent, principal, &pre)?;
+                    let czds = self
+                        .sign_and_apply_commit(&test.name, commit_intent, principal, &pre)
+                        .await?;
                     digests.extend(czds);
                 },
                 TimelineEvent::Action(action_intent) => {
@@ -1759,10 +1766,10 @@ impl<'a> Generator<'a> {
 /// ```ignore
 /// let pool = Pool::load(Path::new("tests/keys/pool.toml"))?;
 /// let intent = Intent::load(Path::new("tests/intents/genesis.toml"))?;
-/// let goldens = generate(&intent, &pool)?;
+/// let goldens = generate(&intent, &pool).await?;
 /// ```
-pub fn generate(intent: &Intent, pool: &Pool) -> Result<Vec<Golden>, Error> {
-    Generator::new(pool).generate(intent)
+pub async fn generate(intent: &Intent, pool: &Pool) -> Result<Vec<Golden>, Error> {
+    Generator::new(pool).generate(intent).await
 }
 
 #[cfg(test)]
@@ -1789,8 +1796,8 @@ level = 3
     /// Backs: the corpus generator's commit root (CR) equals an independent recomputation, so a
     /// golden vector cannot encode a wrong root. Unit: generator internals are not reachable
     /// through the golden runner, which only consumes finished fixtures.
-    #[test]
-    fn test_generate_single_commit() {
+    #[tokio::test]
+    async fn test_generate_single_commit() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1801,7 +1808,7 @@ level = 3
         let pool = Pool::load(&pool_path).expect("failed to load pool");
         let intent = crate::Intent::from_str(SINGLE_STEP_INTENT).expect("failed to parse intent");
 
-        let goldens = generate(&intent, &pool).expect("generation failed");
+        let goldens = generate(&intent, &pool).await.expect("generation failed");
 
         assert_eq!(goldens.len(), 1);
         let golden = &goldens[0];
@@ -1878,12 +1885,15 @@ level = 3
         let generator = Generator::new(&pool);
         let mut principal2 = generator
             .create_principal(&intent.test[0].principal, &intent.test[0].name)
+            .await
             .expect("failed to reconstruct principal");
         generator
             .commit_generated_genesis(&intent.test[0], &mut principal2)
+            .await
             .expect("failed to commit the genesis");
         generator
             .generate_single_commit(&intent.test[0], &mut principal2)
+            .await
             .expect("failed to regenerate golden");
         let first_alg2 = principal2
             .active_algs()
@@ -1903,8 +1913,8 @@ level = 3
 
     /// Backs: an intent declaring the genesis error the protocol really raises generates a fixture.
     /// Unit: the generator is build-time tooling with no CLI/HTTP surface.
-    #[test]
-    fn test_declared_genesis_error_matching_actual_succeeds() {
+    #[tokio::test]
+    async fn test_declared_genesis_error_matching_actual_succeeds() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1925,7 +1935,9 @@ error = "UnknownAlg"
 "#;
 
         let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
-        let goldens = generate(&intent, &pool).expect("declared error matches actual");
+        let goldens = generate(&intent, &pool)
+            .await
+            .expect("declared error matches actual");
 
         assert_eq!(goldens[0].expected.error.as_deref(), Some("UnknownAlg"));
     }
@@ -1933,8 +1945,8 @@ error = "UnknownAlg"
     /// Backs: the generator refuses a fixture whose declared error differs from the actual one (F45
     /// drift), so the corpus cannot encode a wrong error name. Unit: build-time tooling with no
     /// end-to-end surface.
-    #[test]
-    fn test_declared_genesis_error_mismatch_fails_loudly() {
+    #[tokio::test]
+    async fn test_declared_genesis_error_mismatch_fails_loudly() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1960,7 +1972,7 @@ error = "UnsupportedAlgorithm"
 "#;
 
         let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
-        let result = generate(&intent, &pool);
+        let result = generate(&intent, &pool).await;
 
         let err = result.expect_err(
             "generation must fail loudly when the declared error doesn't match the actual one",

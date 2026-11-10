@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::{Clock, Level, MAX_NOW, Principal, PrincipalKind};
+use super::{Clock, Level, MAX_NOW, Principal, PrincipalKind, PrincipalState};
 use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
@@ -12,7 +12,7 @@ use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
 };
 
-impl<S: eml::Storage> Principal<S> {
+impl PrincipalState {
     /// Get the Principal Genesis, or None if not yet established (L1/L2).
     ///
     /// PG is only set when principal/create is processed (Level 3+, SPEC §5.1).
@@ -127,42 +127,6 @@ impl<S: eml::Storage> Principal<S> {
         self.auth.revoked.contains_key(&tmb.to_b64())
     }
 
-    /// Pre-revoke a key (for test setup).
-    ///
-    /// This moves the key from active to revoked set WITHOUT recomputing state.
-    /// Used for setting up error condition tests where we need a revoked key.
-    ///
-    /// # Errors
-    ///
-    /// Returns `UnknownKey` if the key is not found in the active set.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn pre_revoke_key(&mut self, tmb: &Thumbprint, rvk: i64) -> Result<()> {
-        use crate::error::Error;
-        use crate::key::Revocation;
-
-        let tmb_b64 = tmb.to_b64();
-        let core = self.core_mut();
-        let mut key = core
-            .auth
-            .keys
-            .shift_remove(&tmb_b64)
-            .ok_or(Error::UnknownKey)?;
-        key.set_revocation(Revocation { rvk, by: None });
-        core.auth.revoked.insert(tmb_b64, key);
-        Ok(())
-    }
-
-    /// Make this principal believe it once held `pr`.
-    ///
-    /// Test setup for a forged `principal/merge-ack`: an honest client's
-    /// own verifier refuses an ack naming a PR it never held, so no honest
-    /// client can put such a commit on the wire. A test authors one on a
-    /// copy that believes otherwise and pushes it to the real chain.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn pretend_held(&mut self, pr: PrincipalRoot) {
-        self.core_mut().held_prs.push(pr);
-    }
-
     /// Get all cozies (across all commits).
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
         self.auth.commits.iter().flat_map(|c| c.iter_all_cozies())
@@ -181,13 +145,6 @@ impl<S: eml::Storage> Principal<S> {
     /// Get the current Commit Root (CR).
     pub fn cr(&self) -> Option<&crate::commit_root::CommitRoot> {
         self.cr.as_ref()
-    }
-
-    /// Get a reference to the per-algorithm MALT trees.
-    ///
-    /// Exposes the Commit Tree's root and proof queries.
-    pub fn commit_trees(&self) -> &crate::commit_root::CommitTrees<S> {
-        &self.commit_trees
     }
 
     /// Get the current State Root.
@@ -254,29 +211,6 @@ impl<S: eml::Storage> Principal<S> {
         )
     }
 
-    /// Configure the tolerance for a `now` ahead of the verifier clock.
-    ///
-    /// A `now` greater than `clock() + seconds` is refused with
-    /// `TimestampFuture`. The default is `DEFAULT_MAX_CLOCK_SKEW`; 0 means
-    /// no tolerance, not "unchecked": the bound cannot be turned off.
-    /// Unsigned, so a skew that would refuse a `now` at or before the
-    /// verifier clock cannot be expressed.
-    pub fn set_max_clock_skew(&mut self, seconds: u64) {
-        self.core_mut().max_clock_skew = seconds;
-    }
-
-    /// Install the verifier's time source (Unix seconds).
-    ///
-    /// The default reads the system clock where one exists. On
-    /// wasm32-unknown-unknown the default reads 0 and so refuses every
-    /// `now`: the host must install a clock (for example one over
-    /// `Date.now`) before applying anything. Until it does, a wasm verifier
-    /// cannot replay a peer chain either, since replay applies each coz
-    /// through the same bound.
-    pub fn set_clock(&mut self, clock: Clock) {
-        self.core_mut().clock = clock;
-    }
-
     /// Bound a coz or action `now` (SPEC 6.4, 14.1, 15.9) for every entry
     /// path, commit, action and push alike. Replay needs no exemption: a
     /// chain's past timestamps are below the clock, so only a message from
@@ -306,5 +240,73 @@ impl<S: eml::Storage> Principal<S> {
     /// Get the number of recorded actions.
     pub fn action_count(&self) -> usize {
         self.data.actions.len()
+    }
+}
+
+impl<S: eml::Storage> Principal<S> {
+    /// Pre-revoke a key (for test setup).
+    ///
+    /// This moves the key from active to revoked set WITHOUT recomputing state.
+    /// Used for setting up error condition tests where we need a revoked key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnknownKey` if the key is not found in the active set.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn pre_revoke_key(&mut self, tmb: &Thumbprint, rvk: i64) -> Result<()> {
+        use crate::error::Error;
+        use crate::key::Revocation;
+
+        let tmb_b64 = tmb.to_b64();
+        let core = self.core_mut();
+        let mut key = core
+            .auth
+            .keys
+            .shift_remove(&tmb_b64)
+            .ok_or(Error::UnknownKey)?;
+        key.set_revocation(Revocation { rvk, by: None });
+        core.auth.revoked.insert(tmb_b64, key);
+        Ok(())
+    }
+
+    /// Make this principal believe it once held `pr`.
+    ///
+    /// Test setup for a forged `principal/merge-ack`: an honest client's
+    /// own verifier refuses an ack naming a PR it never held, so no honest
+    /// client can put such a commit on the wire. A test authors one on a
+    /// copy that believes otherwise and pushes it to the real chain.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn pretend_held(&mut self, pr: PrincipalRoot) {
+        self.core_mut().held_prs.push(pr);
+    }
+
+    /// Get a reference to the per-algorithm MALT trees.
+    ///
+    /// Exposes the Commit Tree's root and proof queries.
+    pub fn commit_trees(&self) -> &crate::commit_root::CommitTrees<S> {
+        &self.log
+    }
+
+    /// Configure the tolerance for a `now` ahead of the verifier clock.
+    ///
+    /// A `now` greater than `clock() + seconds` is refused with
+    /// `TimestampFuture`. The default is `DEFAULT_MAX_CLOCK_SKEW`; 0 means
+    /// no tolerance, not "unchecked": the bound cannot be turned off.
+    /// Unsigned, so a skew that would refuse a `now` at or before the
+    /// verifier clock cannot be expressed.
+    pub fn set_max_clock_skew(&mut self, seconds: u64) {
+        self.core_mut().max_clock_skew = seconds;
+    }
+
+    /// Install the verifier's time source (Unix seconds).
+    ///
+    /// The default reads the system clock where one exists. On
+    /// wasm32-unknown-unknown the default reads 0 and so refuses every
+    /// `now`: the host must install a clock (for example one over
+    /// `Date.now`) before applying anything. Until it does, a wasm verifier
+    /// cannot replay a peer chain either, since replay applies each coz
+    /// through the same bound.
+    pub fn set_clock(&mut self, clock: Clock) {
+        self.core_mut().clock = clock;
     }
 }

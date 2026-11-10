@@ -14,7 +14,7 @@ use crate::{Error, PoolKey};
 /// `Generation` if the core refuses the genesis (e.g. `genesis` is not the
 /// principal's genesis key) or a coz does not serialize; as
 /// [`PoolKey::software_signer`] otherwise.
-pub fn genesis_bundle(
+pub async fn genesis_bundle(
     principal: &mut cyphr::Principal,
     genesis: &PoolKey,
     others: &[cyphr::Key],
@@ -26,6 +26,7 @@ pub fn genesis_bundle(
     };
     principal
         .commit_genesis(&genesis.software_signer()?, others, now, "cyphr.me")
+        .await
         .map_err(|e| failed(format!("genesis commit: {e}")))?
         .iter()
         .map(|coz| serde_json::to_vec(coz).map_err(|e| failed(format!("wire coz: {e}"))))

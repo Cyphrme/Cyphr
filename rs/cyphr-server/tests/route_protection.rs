@@ -112,11 +112,10 @@ fn load_pool() -> test_fixtures::Pool {
 /// commit's raw coz blob bytes (wire-ready for `submit_commit`) alongside
 /// its `CommitEntry` -- the latter lets a caller replay this exact commit
 /// onto a fresh `Principal` (via `cyphr_storage::load_principal_from_commits`)
-/// to build a genuinely independent NEXT commit, since `Principal::clone()`
-/// shares the same underlying durable commit log rather than deep-copying
-/// it (two clones both trying to append "the next commit" collide on the
-/// same leaf position instead of chaining).
-fn sign_key_create_commit<S: eml::Storage>(
+/// to build a genuinely independent NEXT commit: a principal over durable
+/// storage has no fork (its store cannot be copied independently), and two
+/// writers of one log would collide on the same leaf position.
+async fn sign_key_create_commit<S: eml::Storage>(
     mut principal: cyphr::Principal<S>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
@@ -170,6 +169,7 @@ fn sign_key_create_commit<S: eml::Storage>(
             now,
             "cyphr.me",
         )
+        .await
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -211,8 +211,8 @@ fn fixture_principal_id(fixture: &serde_json::Value) -> String {
 
 /// The id (the PG, SPEC 3.1) of the standard principal whose genesis
 /// commit `build_genesis_push_body` pushes.
-fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
-    common::golden_principal_id(pool)
+async fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+    common::golden_principal_id(pool).await
 }
 
 /// Bootstrap a principal into the engine via the validated write path
@@ -287,8 +287,12 @@ async fn send(req: Request<Body>, app: axum::Router) -> (StatusCode, serde_json:
 /// commit (SPEC 5.1), in which `golden` creates itself and `key_a`
 /// (`common::build_genesis_push_body`). Shared by the admission-knob tests
 /// below, which only differ in what (if any) bearer token they attach.
-fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    common::build_genesis_push_body(pool, principal_id, now)
+async fn build_genesis_push_body(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+) -> String {
+    common::build_genesis_push_body(pool, principal_id, now).await
 }
 
 fn push_request(body: String, bearer: Option<&str>) -> Request<Body> {
@@ -325,9 +329,9 @@ fn real_now() -> i64 {
 #[tokio::test]
 async fn push_with_mismatched_token_pr_rejected() {
     let pool = load_pool();
-    let principal_id = golden_principal_id(&pool);
+    let principal_id = golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
-    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
+    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = state_with_identity();
     let token = state
@@ -357,9 +361,9 @@ async fn push_with_mismatched_token_pr_rejected() {
 #[tokio::test]
 async fn push_with_matching_token_pr_succeeds() {
     let pool = load_pool();
-    let principal_id = golden_principal_id(&pool);
+    let principal_id = golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
-    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
+    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = state_with_identity();
     let token = state
@@ -397,10 +401,10 @@ async fn push_with_matching_token_pr_succeeds() {
 #[tokio::test]
 async fn push_for_existing_principal_with_no_token_succeeds() {
     let pool = load_pool();
-    let principal_id = golden_principal_id(&pool);
+    let principal_id = golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
 
-    let genesis_body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
+    let genesis_body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = test_state();
     let app = build_router(state);
@@ -416,7 +420,8 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
     // "golden adds key_b" commit chained onto the pushed genesis, with no
     // bearer token.
     let followup_body =
-        common::build_second_commit_push_body(&pool, principal_id, 1_700_000_000, 1_700_000_100);
+        common::build_second_commit_push_body(&pool, principal_id, 1_700_000_000, 1_700_000_100)
+            .await;
 
     let (status, json) = send(push_request(followup_body, None), app).await;
     assert_eq!(
@@ -588,7 +593,7 @@ async fn login_token(
 
 /// A signed "self-revoke `signer_name`" commit onto `principal`, wire-ready
 /// for `submit_commit`. Mirrors `tests/login.rs::sign_key_revoke_commit`.
-fn sign_key_revoke_commit<S: eml::Storage>(
+async fn sign_key_revoke_commit<S: eml::Storage>(
     mut principal: cyphr::Principal<S>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
@@ -621,6 +626,7 @@ fn sign_key_revoke_commit<S: eml::Storage>(
             rvk,
             "cyphr.me",
         )
+        .await
         .expect("commit finalizes");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -640,10 +646,10 @@ fn sign_key_revoke_commit<S: eml::Storage>(
 async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
     let state = state_with_login();
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    let pid = golden_principal_id(&pool).await;
     let pid = pid.as_str();
 
-    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000);
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000).await;
     let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
     assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
 
@@ -662,7 +668,7 @@ async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
             .await
             .expect("load principal")
     };
-    let blobs = sign_key_revoke_commit(load().await, &pool, "key_a", 1_700_000_100);
+    let blobs = sign_key_revoke_commit(load().await, &pool, "key_a", 1_700_000_100).await;
     let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
     state
         .engine
@@ -671,7 +677,7 @@ async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
         .expect("submit the revoke commit");
 
     let (followup, _entry) =
-        sign_key_create_commit(load().await, &pool, "golden", "key_b", 1_700_000_200);
+        sign_key_create_commit(load().await, &pool, "golden", "key_b", 1_700_000_200).await;
     let followup_body = serde_json::json!({
         "principal_id": pid,
         "blobs": followup.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
@@ -722,7 +728,7 @@ async fn token_key_revoked_session_refused_at_push() {
 #[tokio::test]
 async fn bearer_refuses_server_signed_non_token() {
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    let pid = golden_principal_id(&pool).await;
     let state = state_with_login();
     let identity = state.identity.as_ref().unwrap();
 
@@ -745,7 +751,7 @@ async fn bearer_refuses_server_signed_non_token() {
     })
     .unwrap();
 
-    let body = build_genesis_push_body(&pool, &pid, 1_700_000_000);
+    let body = build_genesis_push_body(&pool, &pid, 1_700_000_000).await;
     let (status, json) = send(push_request(body, Some(&forged)), build_router(state)).await;
     assert_eq!(
         status,
@@ -766,7 +772,7 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
     let (state, followup, _revoked, _survivor) = revoked_key_session().await;
     let pool = load_pool();
     // A token's subject is the canonical bare digest.
-    let pid = cyphr_storage::engine::bare_digest(&golden_principal_id(&pool)).to_string();
+    let pid = cyphr_storage::engine::bare_digest(&golden_principal_id(&pool).await).to_string();
     let identity = state.identity.as_ref().unwrap();
     let stranger = coz::Alg::Ed25519
         .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
@@ -863,10 +869,10 @@ async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &
 async fn token_key_naked_revoked_session_refused() {
     let state = state_with_login();
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    let pid = golden_principal_id(&pool).await;
     let pid = pid.as_str();
 
-    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000);
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000).await;
     let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
     assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
 
@@ -877,7 +883,7 @@ async fn token_key_naked_revoked_session_refused() {
     let genesis = state.engine.resolve_genesis(pid, &[]).await.unwrap();
     let principal = state.engine.load_principal(pid, genesis).await.unwrap();
     let (blobs, _entry) =
-        sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400);
+        sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400).await;
     let followup = serde_json::json!({
         "principal_id": pid,
         "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),

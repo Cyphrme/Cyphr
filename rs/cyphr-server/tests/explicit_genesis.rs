@@ -43,13 +43,16 @@ fn principal_create(kp: &coz::KeyPair, id: &str) -> (Vec<u8>, Vec<u8>, coz::Czd)
 
 /// The genesis commit of `kps` (the first is the genesis key) as wire
 /// blobs, and the PG it establishes.
-fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
-    let mut p = cyphr::Principal::implicit(key_of(&kps[0])).expect("genesis");
+async fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
+    let mut p = cyphr::Principal::implicit(key_of(&kps[0]))
+        .await
+        .expect("genesis");
     let others: Vec<cyphr::Key> = kps[1..].iter().map(key_of).collect();
     let signer = signer_of(&kps[0]);
     let mut scope = p.begin_commit();
     let creates = scope
         .create_genesis_keys(&signer, &others, NOW, "cyphr.me")
+        .await
         .expect("genesis key/creates");
     let pg = scope.genesis_id().expect("PG");
     let (pay, sig, czd) = principal_create(&kps[0], &pg);
@@ -58,6 +61,7 @@ fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
         .expect("principal/create after every key/create");
     let commit = scope
         .finalize_with_software(&signer, NOW, "cyphr.me")
+        .await
         .expect("genesis commit");
     let cc = serde_json::to_vec(commit.commit_tx().0[0].raw()).unwrap();
     let mut blobs: Vec<Vec<u8>> = creates
@@ -110,7 +114,7 @@ async fn multi_key_explicit_genesis_is_pushed_and_replayed_from_blobs() {
         coz::Alg::ES256.generate_keypair(),
         coz::Alg::Ed25519.generate_keypair(),
     ];
-    let (pg, blobs) = genesis_bundle(&kps);
+    let (pg, blobs) = genesis_bundle(&kps).await;
     let typs: Vec<String> = blobs.iter().map(|b| typ_suffix(b)).collect();
     assert_eq!(
         typs,
@@ -192,8 +196,8 @@ async fn genesis_omitting_a_key_create_is_refused() {
 
     // Core: no key/create at all, the old two-coz genesis, naming the PG
     // the full genesis reaches.
-    let (pg, _) = genesis_bundle(&kps);
-    let mut p = cyphr::Principal::implicit(key_of(&kps[0])).unwrap();
+    let (pg, _) = genesis_bundle(&kps).await;
+    let mut p = cyphr::Principal::implicit(key_of(&kps[0])).await.unwrap();
     let (pay, sig, czd) = principal_create(&kps[0], &pg);
     let mut scope = p.begin_commit();
     let refused = scope.verify_and_apply(&pay, &sig, czd, None);
@@ -203,7 +207,7 @@ async fn genesis_omitting_a_key_create_is_refused() {
     );
 
     // Server: the second key's key/create dropped from a valid bundle.
-    let (pg, mut blobs) = genesis_bundle(&kps);
+    let (pg, mut blobs) = genesis_bundle(&kps).await;
     blobs.remove(1);
     let (state, _dir) = keyless_server();
     let (status, body) =
@@ -315,7 +319,9 @@ async fn a_created_genesis_key_may_create_the_next() {
         coz::Alg::ES256.generate_keypair(),
     ];
     let keys: Vec<cyphr::Key> = kps.iter().map(key_of).collect();
-    let mut p = cyphr::Principal::implicit(keys[0].clone()).expect("genesis");
+    let mut p = cyphr::Principal::implicit(keys[0].clone())
+        .await
+        .expect("genesis");
     let mut blobs = Vec::new();
     let mut scope = p.begin_commit();
     for (signer, target) in [
@@ -336,6 +342,7 @@ async fn a_created_genesis_key_may_create_the_next() {
         .expect("principal/create after every key/create");
     let commit = scope
         .finalize_with_software(&signer_of(&kps[0]), NOW, "cyphr.me")
+        .await
         .expect("genesis commit");
     let cc = serde_json::to_vec(commit.commit_tx().0[0].raw()).unwrap();
     blobs.push(
@@ -364,7 +371,9 @@ async fn a_first_commit_without_principal_create_is_refused() {
     let kp = coz::Alg::ES256.generate_keypair();
     let key = key_of(&kp);
     let signer = signer_of(&kp);
-    let mut p = cyphr::Principal::implicit(key.clone()).expect("implicit");
+    let mut p = cyphr::Principal::implicit(key.clone())
+        .await
+        .expect("implicit");
     let id = p.pr_tagged().expect("pr");
     let (pay, sig, czd, create) = key_create(&kp, &key);
     let mut scope = p.begin_commit();
@@ -380,7 +389,7 @@ async fn a_first_commit_without_principal_create_is_refused() {
         "sig": Base64UrlUnpadded::encode_string(&cc_sig),
     }))
     .unwrap();
-    let refused = scope.finish_commit(prepared, cc_sig);
+    let refused = scope.finish_commit(prepared, cc_sig).await;
     assert!(
         matches!(refused, Err(cyphr::Error::GenesisIncomplete)),
         "a commit before principal/create: {refused:?}"

@@ -15,7 +15,7 @@ use cyphr::error::Error;
 use cyphr::key::Key;
 
 /// A minimal single-key genesis key, sufficient to reach
-/// `Principal::implicit_with_storage`'s `CommitTrees::open` call.
+/// `Principal::open`'s `CommitTrees::open` call.
 fn genesis_key() -> Key {
     Key::from_pub_key("ES256".to_string(), vec![0u8; 64]).expect("key binds its tmb")
 }
@@ -76,13 +76,13 @@ impl Storage for FailingStorage {
 }
 
 /// ac-storage-error-honest: `CommitTrees::open` (principal.rs's
-/// `implicit_with_storage`, one of the 16 enumerated sites) must surface a
+/// `open`, one of the 16 enumerated sites) must surface a
 /// backend failure as `Error::Storage`, not `Error::UnsupportedAlgorithm` —
 /// the genesis key's algorithm is valid and fully supported; only the
 /// storage backend is broken.
-#[test]
-fn storage_backend_failure_surfaces_as_storage_error() {
-    let result = Principal::implicit_with_storage(genesis_key(), FailingStorage);
+#[tokio::test]
+async fn storage_backend_failure_surfaces_as_storage_error() {
+    let result = Principal::open(genesis_key(), FailingStorage).await;
 
     match result {
         Err(Error::Storage(_)) => {},

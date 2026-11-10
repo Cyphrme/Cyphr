@@ -58,8 +58,10 @@ mod restructure_props;
 
 // Re-exports
 pub use action::Action;
-pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit};
-pub use commit_root::{CommitRoot, CommitTrees, MaltHasher, verify_consistency, verify_inclusion};
+pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit, PreparedCoz, StagedCommit};
+pub use commit_root::{
+    CommitRoot, CommitTrees, ForkStorage, MaltHasher, verify_consistency, verify_inclusion,
+};
 // The full `eml` crate, re-exported so a durable-storage caller (e.g.
 // `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and
 // `eml::MemoryStorage` — the bound and default for `Principal`'s storage
@@ -76,7 +78,7 @@ pub use key::Key;
 pub use merge::{MergeClaim, MergeStatus, merge_status};
 pub use multihash::MultihashDigest;
 pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, compute_czd, verify_coz};
-pub use principal::Principal;
+pub use principal::{Principal, PrincipalState};
 #[cfg(any(test, feature = "test-utils"))]
 pub use state::compute_pr;
 pub use state::{

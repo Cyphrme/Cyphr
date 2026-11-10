@@ -19,14 +19,14 @@ use crate::multihash::MultihashDigest;
 /// algorithms from genesis, so per-algorithm coverage is observable (a
 /// single-algorithm principal cannot distinguish `root(alg_id)` from
 /// `combined_root()`, per `multi_alg_genesis_pg_equals_sr_for_every_algorithm`).
-fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<Key>) {
+async fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<Key>) {
     use coz::Czd;
 
     use crate::parsed_coz::{CozKind, ParsedCoz};
 
     let mut keys = vec![make_test_key(0x01), make_test_key_ed25519(0x02)];
-    let mut principal = Principal::implicit(keys[0].clone()).unwrap();
-    principal.genesis_test(keys[1..].to_vec()).unwrap();
+    let mut principal = Principal::implicit(keys[0].clone()).await.unwrap();
+    principal.genesis_test(keys[1..].to_vec()).await.unwrap();
     let signer = keys[0].tmb().clone();
 
     for i in 0..n_commits {
@@ -46,6 +46,7 @@ fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<K
 
         principal
             .apply_transaction_test(cz, Some(new_key.clone()))
+            .await
             .unwrap();
         keys.push(new_key);
     }
@@ -57,9 +58,9 @@ fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<K
 /// committed transaction, under every active hash algorithm, for a
 /// multi-algorithm principal — proving the transaction is really
 /// included under the *current* Principal Root, not just under some CR.
-#[test]
-fn two_step_verification_accepts_every_commit_every_algorithm() {
-    let (principal, _keys) = build_multi_alg_principal_with_commits(4);
+#[tokio::test]
+async fn two_step_verification_accepts_every_commit_every_algorithm() {
+    let (principal, _keys) = build_multi_alg_principal_with_commits(4).await;
 
     // EML hashes every leaf under every active algorithm, so each commit's
     // TR carries both variants and each is checked against its own tree. The
@@ -76,7 +77,10 @@ fn two_step_verification_accepts_every_commit_every_algorithm() {
                 "commit {i}'s TR has no {alg:?} variant for an active algorithm"
             );
             assert!(
-                principal.verify_transaction_inclusion(alg, i, &tr).unwrap(),
+                principal
+                    .verify_transaction_inclusion(alg, i, &tr)
+                    .await
+                    .unwrap(),
                 "composite verification failed for alg {alg:?} index {i}"
             );
             checked += 1;
@@ -93,9 +97,9 @@ fn two_step_verification_accepts_every_commit_every_algorithm() {
 /// SHA-512 variant stripped is claimed at its real index under SHA-512.
 /// Turns red if verification returns true (a stripped TR hashes to the
 /// null constant, which must never stand in for the real leaf).
-#[test]
-fn stripped_variant_never_verifies() {
-    let (principal, _keys) = build_multi_alg_principal_with_commits(3);
+#[tokio::test]
+async fn stripped_variant_never_verifies() {
+    let (principal, _keys) = build_multi_alg_principal_with_commits(3).await;
     for i in 0..3u64 {
         let full = principal.commits().nth(i as usize).unwrap().tr().0.clone();
         let stripped = MultihashDigest::from_single(
@@ -106,6 +110,7 @@ fn stripped_variant_never_verifies() {
         assert!(
             !principal
                 .verify_transaction_inclusion(HashAlg::Sha512, i, &stripped)
+                .await
                 .unwrap(),
             "a TR without the SHA-512 variant verified at index {i}"
         );
@@ -114,29 +119,31 @@ fn stripped_variant_never_verifies() {
 
 /// c3/a3 — a genuine transaction claimed at the wrong index must be
 /// rejected (not silently accepted, not panic).
-#[test]
-fn two_step_verification_rejects_wrong_index() {
-    let (principal, _keys) = build_multi_alg_principal_with_commits(3);
+#[tokio::test]
+async fn two_step_verification_rejects_wrong_index() {
+    let (principal, _keys) = build_multi_alg_principal_with_commits(3).await;
     let alg = HashAlg::Sha256;
 
     // tr0 genuinely sits at index 0, not 1.
     let tr0 = principal.commits().next().unwrap().tr().0.clone();
     let ok = principal
         .verify_transaction_inclusion(alg, 1, &tr0)
+        .await
         .unwrap();
     assert!(!ok, "wrong index must not verify");
 }
 
 /// c3/a3 — a forged transaction (wrong claimed leaf value) must be
 /// rejected at the claimed index.
-#[test]
-fn two_step_verification_rejects_forged_transaction() {
-    let (principal, _keys) = build_multi_alg_principal_with_commits(3);
+#[tokio::test]
+async fn two_step_verification_rejects_forged_transaction() {
+    let (principal, _keys) = build_multi_alg_principal_with_commits(3).await;
     let alg = HashAlg::Sha256;
 
     let forged = MultihashDigest::from_single(alg, vec![0xEE; 32]).unwrap();
     let ok = principal
         .verify_transaction_inclusion(alg, 0, &forged)
+        .await
         .unwrap();
     assert!(!ok, "forged transaction must not verify");
 }
@@ -149,9 +156,9 @@ fn two_step_verification_rejects_forged_transaction() {
 /// key, under every active hash algorithm, for a multi-algorithm
 /// principal — proving each key's thumbprint is really included under
 /// the *current* Principal Root via KT -> AR-node -> SR-node -> PT.
-#[test]
-fn key_inclusion_accepts_every_active_key_every_algorithm() {
-    let (principal, keys) = build_multi_alg_principal_with_commits(4);
+#[tokio::test]
+async fn key_inclusion_accepts_every_active_key_every_algorithm() {
+    let (principal, keys) = build_multi_alg_principal_with_commits(4).await;
 
     for alg in [HashAlg::Sha256, HashAlg::Sha512] {
         for key in &keys {
@@ -167,9 +174,9 @@ fn key_inclusion_accepts_every_active_key_every_algorithm() {
 /// c3/a3 — a claimed thumbprint that does not name any currently active
 /// key cannot even produce a proof (there is no lexical-sort position to
 /// chain from), so generation itself must reject it.
-#[test]
-fn key_inclusion_rejects_thumbprint_of_inactive_key() {
-    let (principal, _keys) = build_multi_alg_principal_with_commits(2);
+#[tokio::test]
+async fn key_inclusion_rejects_thumbprint_of_inactive_key() {
+    let (principal, _keys) = build_multi_alg_principal_with_commits(2).await;
     let alg = HashAlg::Sha256;
 
     let never_active = Thumbprint::from_bytes(vec![0xEE; 32]);
@@ -185,9 +192,9 @@ fn key_inclusion_rejects_thumbprint_of_inactive_key() {
 /// that same lexical position), must be rejected by verification even
 /// though every other hop and bridge in the chain is untouched and
 /// genuinely valid.
-#[test]
-fn key_inclusion_rejects_forged_leaf_at_real_position() {
-    let (principal, keys) = build_multi_alg_principal_with_commits(2);
+#[tokio::test]
+async fn key_inclusion_rejects_forged_leaf_at_real_position() {
+    let (principal, keys) = build_multi_alg_principal_with_commits(2).await;
     let alg = HashAlg::Sha256;
     let genuine_tmb = keys[0].tmb().clone();
 
@@ -221,11 +228,11 @@ fn key_inclusion_rejects_forged_leaf_at_real_position() {
 /// every "skip" hop without any special-case code, since
 /// [`NodePath::verify`] treats a
 /// zero-sibling skeleton identically to any other.
-#[test]
-fn key_inclusion_verifies_through_genesis_promotion_chain() {
+#[tokio::test]
+async fn key_inclusion_verifies_through_genesis_promotion_chain() {
     let key = make_test_key(0xAA);
     let tmb = key.tmb().clone();
-    let principal = Principal::implicit(key).unwrap();
+    let principal = Principal::implicit(key).await.unwrap();
     let alg = principal.hash_alg();
 
     // Every intermediate level is a verbatim promotion at genesis.
@@ -255,9 +262,9 @@ fn key_inclusion_verifies_through_genesis_promotion_chain() {
 /// crate-internal. It must return exactly the same leaf proof
 /// [`Principal::key_inclusion_proof`] already generates internally, and
 /// that proof must verify standalone against the current PR.
-#[test]
-fn sr_inclusion_proof_matches_hop_four() {
-    let (principal, keys) = build_multi_alg_principal_with_commits(3);
+#[tokio::test]
+async fn sr_inclusion_proof_matches_hop_four() {
+    let (principal, keys) = build_multi_alg_principal_with_commits(3).await;
     let alg = HashAlg::Sha256;
     let tmb = keys[0].tmb().clone();
 
@@ -294,15 +301,15 @@ fn sr_inclusion_proof_matches_hop_four() {
 /// shared a genesis key). `key_inclusion_rejects_forged_leaf_at_real_position`
 /// (above) instead fails in the hop-verify loop before the bridge loop
 /// ever runs, so it does not cover this.
-#[test]
-fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
+#[tokio::test]
+async fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
     let key_a = make_test_key(0xAA);
     let tmb_a = key_a.tmb().clone();
-    let principal_a = Principal::implicit(key_a).unwrap();
+    let principal_a = Principal::implicit(key_a).await.unwrap();
 
     let key_b = make_test_key(0xBB);
     let tmb_b = key_b.tmb().clone();
-    let principal_b = Principal::implicit(key_b).unwrap();
+    let principal_b = Principal::implicit(key_b).await.unwrap();
 
     let alg = principal_a.hash_alg();
     assert_eq!(alg, principal_b.hash_alg());
@@ -367,9 +374,9 @@ fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
 /// Backs SPEC 12.1 (EML log): a consistency proof from every earlier commit count verifies against
 /// the current commit-log root. Unit: no server route or scenario serves consistency proofs, so
 /// only the library API can reach it.
-#[test]
-fn consistency_proof_verifies() {
-    let (principal, _keys) = build_principal_with_commits(5);
+#[tokio::test]
+async fn consistency_proof_verifies() {
+    let (principal, _keys) = build_principal_with_commits(5).await;
 
     let alg = principal.hash_alg();
     let alg_id = crate::commit_root::hash_alg_to_u64(alg);
@@ -377,10 +384,12 @@ fn consistency_proof_verifies() {
     let hasher = MaltHasher::new(alg);
 
     // Build a reference EML log to capture intermediate roots.
-    let mut ref_log =
-        futures::executor::block_on(eml::from_storage(eml::MemoryStorage::new(), Vec::new()))
-            .unwrap();
-    futures::executor::block_on(ref_log.add_algorithm(alg_id, Box::new(MaltHasher::new(alg))))
+    let mut ref_log = eml::from_storage(eml::MemoryStorage::new(), Vec::new())
+        .await
+        .unwrap();
+    ref_log
+        .add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
+        .await
         .unwrap();
     let mut roots = Vec::new();
     for commit in principal.commits() {
@@ -390,14 +399,14 @@ fn consistency_proof_verifies() {
             mapped_variants.insert(a_id, val.clone());
         }
         let tr_bytes = serde_json::to_vec(&mapped_variants).unwrap();
-        futures::executor::block_on(ref_log.append_leaf(&tr_bytes)).unwrap();
+        ref_log.append_leaf(&tr_bytes).await.unwrap();
         roots.push(ref_log.root_for(alg_id).unwrap());
     }
 
     // Verify consistency from each prior size to current.
     let size = principal.commit_trees().tree_size(alg_id).unwrap();
     for old_size in 1..size {
-        let proof = principal.consistency_proof(alg, old_size).unwrap();
+        let proof = principal.consistency_proof(alg, old_size).await.unwrap();
         let old_root = &roots[(old_size - 1) as usize];
         assert!(
             crate::verify_consistency(&hasher, old_size, size, &proof, old_root, &new_root),
@@ -411,17 +420,22 @@ fn consistency_proof_verifies() {
 /// are typed refusals, not panics.
 /// Unit: the server only forwards well-formed requests, so no scenario
 /// reaches these arguments.
-#[test]
-fn proof_requests_out_of_range_are_refused() {
-    let (principal, _keys) = build_principal_with_commits(3);
+#[tokio::test]
+async fn proof_requests_out_of_range_are_refused() {
+    let (principal, _keys) = build_principal_with_commits(3).await;
     let alg = principal.hash_alg();
 
-    assert!(principal.inclusion_proof(alg, 4).is_err());
-    assert!(principal.inclusion_proof(alg, 999).is_err());
-    assert!(principal.consistency_proof(alg, 0).is_err());
-    assert!(principal.consistency_proof(alg, 4).is_err());
+    assert!(principal.inclusion_proof(alg, 4).await.is_err());
+    assert!(principal.inclusion_proof(alg, 999).await.is_err());
+    assert!(principal.consistency_proof(alg, 0).await.is_err());
+    assert!(principal.consistency_proof(alg, 4).await.is_err());
     // SHA-384 was never introduced (all test keys use ES256/SHA-256).
-    assert!(principal.inclusion_proof(HashAlg::Sha384, 0).is_err());
-    assert!(principal.consistency_proof(HashAlg::Sha384, 1).is_err());
+    assert!(principal.inclusion_proof(HashAlg::Sha384, 0).await.is_err());
+    assert!(
+        principal
+            .consistency_proof(HashAlg::Sha384, 1)
+            .await
+            .is_err()
+    );
     assert!(principal.sr_inclusion_proof(HashAlg::Sha384).is_none());
 }

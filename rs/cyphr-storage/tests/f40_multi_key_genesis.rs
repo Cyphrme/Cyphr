@@ -82,7 +82,7 @@ fn commit_tx_raw_blob(commit: &cyphr::commit::Commit, n: usize) -> Vec<u8> {
 /// calls in-process, exactly as `multitenancy.rs` wires it) instead of the
 /// in-memory default — the one combination that regression test could not
 /// cover, since `load_principal`'s replay of commit #1 during the second
-/// call hits fjall's `already_durable` branch in `finalize_commit` (the
+/// call hits fjall's `already_durable` branch in `stage_commit` (the
 /// leaf is already on disk from the first `submit_commit`), not a fresh
 /// append.
 #[tokio::test]
@@ -99,8 +99,9 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let genesis_domain_keys = vec![pool_key_to_domain(key_a), pool_key_to_domain(key_b)];
     let genesis = Genesis::Explicit(genesis_domain_keys.clone());
 
-    let mut client =
-        cyphr::Principal::implicit(genesis_domain_keys[0].clone()).expect("client genesis");
+    let mut client = cyphr::Principal::implicit(genesis_domain_keys[0].clone())
+        .await
+        .expect("client genesis");
     let mut scope1 = client.begin_commit();
     let genesis_creates: Vec<Vec<u8>> = scope1
         .create_genesis_keys(
@@ -118,6 +119,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
             now,
             "cyphr.me",
         )
+        .await
         .expect("genesis key/creates (SPEC 7.7 Example 1)")
         .iter()
         .map(|c| serde_json::to_vec(c).expect("key/create blob"))
@@ -154,6 +156,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
             now + 1,
             "cyphr.me",
         )
+        .await
         .expect("genesis commit should finalize (client side)");
     assert_eq!(
         commit1.len(),
@@ -222,6 +225,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
             now + 3,
             "cyphr.me",
         )
+        .await
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 

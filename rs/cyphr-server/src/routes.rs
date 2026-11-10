@@ -1096,7 +1096,9 @@ mod commit_count_underflow_tests {
         let (golden_key, golden_tmb) = key_of(&golden_kp);
         let (new_key, _) = key_of(&coz::Alg::Ed25519.generate_keypair());
 
-        let mut principal = cyphr::Principal::implicit(golden_key).expect("genesis");
+        let mut principal = cyphr::Principal::implicit(golden_key)
+            .await
+            .expect("genesis");
         let cozies = principal
             .commit_genesis(
                 &cyphr::signer::SoftwareSigner::new(
@@ -1109,6 +1111,7 @@ mod commit_count_underflow_tests {
                 now,
                 "cyphr.me",
             )
+            .await
             .expect("genesis commits");
         let blobs: Vec<Vec<u8>> = cozies
             .iter()

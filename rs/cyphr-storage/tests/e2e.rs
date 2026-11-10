@@ -116,13 +116,14 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 // ============================================================================
 
 /// Runner for a single e2e round-trip test.
-fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+async fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Create generator with pool
     let generator = Generator::new(pool);
 
     // Generate fixture at runtime
     let golden = generator
         .generate_test(test)
+        .await
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
@@ -179,6 +180,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 
     // Load principal from generated entries
     let principal = load_principal_from_commits(genesis, &commit_vec)
+        .await
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Export and compare
@@ -209,13 +211,13 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 }
 
 /// Data-driven e2e test: loads intents, generates at runtime, verifies round-trip.
-#[test]
-fn e2e_dynamic_round_trip() {
+#[tokio::test]
+async fn e2e_dynamic_round_trip() {
     let pool = load_pool();
     let intent = load_e2e_intents("round_trip.toml");
 
     for test in &intent.test {
-        run_e2e_round_trip(&pool, test);
+        run_e2e_round_trip(&pool, test).await;
     }
 }
 
@@ -279,7 +281,7 @@ fn resolve_constraint_tag(expected: &str) -> &str {
 }
 
 /// Runner for a single e2e error test.
-fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+async fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let expected_error = test
         .expected
         .as_ref()
@@ -295,6 +297,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
             // Load the empty explicit genesis through the production loader: this is
             // the only check that `load_principal_from_commits` refuses it.
             let err = load_principal_from_commits(Genesis::Explicit(Vec::new()), &[])
+                .await
                 .err()
                 .unwrap_or_else(|| panic!("{}: an empty explicit genesis loaded", test.name));
             assert_eq!(
@@ -318,6 +321,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Generate fixture at runtime
     let golden = generator
         .generate_test(test)
+        .await
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     if golden.genesis_keys.is_none() {
@@ -343,8 +347,9 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let commit_vec = make_commits(commits);
 
     // Apply setup modifiers (e.g., pre-revoke keys)
-    let mut principal =
-        cyphr::Principal::implicit(genesis.key().expect("genesis key").clone()).expect("genesis");
+    let mut principal = cyphr::Principal::implicit(genesis.key().expect("genesis key").clone())
+        .await
+        .expect("genesis");
 
     if let Some(setup) = &test.setup {
         if let Some(key_name) = &setup.revoke_key {
@@ -365,7 +370,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     }
 
     // Try to load principal - expect failure
-    match load_principal_from_commits(genesis.clone(), &commit_vec) {
+    match load_principal_from_commits(genesis.clone(), &commit_vec).await {
         Ok(_) => {
             panic!(
                 "{}: expected error '{}' but load_principal succeeded",
@@ -386,19 +391,19 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 }
 
 /// Data-driven e2e test: loads error intents and verifies expected errors.
-#[test]
-fn e2e_dynamic_error_conditions() {
+#[tokio::test]
+async fn e2e_dynamic_error_conditions() {
     let pool = load_pool();
     let intent = load_e2e_intents("error_conditions.toml");
 
     for test in &intent.test {
-        run_e2e_error_test(&pool, test);
+        run_e2e_error_test(&pool, test).await;
     }
 }
 
 /// Data-driven e2e test: loads the dynamic feature matrix and executes happy & error paths.
-#[test]
-fn e2e_dynamic_features_matrix() {
+#[tokio::test]
+async fn e2e_dynamic_features_matrix() {
     let pool = load_pool();
     let intent = load_e2e_intents("e2e_features.toml");
     let mut happy_count = 0;
@@ -406,10 +411,10 @@ fn e2e_dynamic_features_matrix() {
 
     for test in &intent.test {
         if test.is_error_test() {
-            run_e2e_error_test(&pool, test);
+            run_e2e_error_test(&pool, test).await;
             error_count += 1;
         } else {
-            run_e2e_round_trip(&pool, test);
+            run_e2e_round_trip(&pool, test).await;
             happy_count += 1;
         }
     }
@@ -424,13 +429,14 @@ fn e2e_dynamic_features_matrix() {
 // ============================================================================
 
 /// Runner for a genesis load test - verifies load_principal produces correct state.
-fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+async fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Create generator with pool
     let generator = Generator::new(pool);
 
     // Generate fixture at runtime
     let golden = generator
         .generate_test(test)
+        .await
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
@@ -441,6 +447,7 @@ fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 
     // Load principal
     let principal = load_principal_from_commits(genesis, &commit_vec)
+        .await
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Verify expected state
@@ -468,13 +475,13 @@ fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 }
 
 /// Data-driven e2e test: loads genesis intents and verifies state.
-#[test]
-fn e2e_dynamic_genesis_load() {
+#[tokio::test]
+async fn e2e_dynamic_genesis_load() {
     let pool = load_pool();
     let intent = load_e2e_intents("genesis_load.toml");
 
     for test in &intent.test {
-        run_e2e_genesis_test(&pool, test);
+        run_e2e_genesis_test(&pool, test).await;
     }
 }
 
@@ -483,13 +490,13 @@ fn e2e_dynamic_genesis_load() {
 // ============================================================================
 
 /// Data-driven e2e test: loads edge case intents and verifies round-trip.
-#[test]
-fn e2e_dynamic_edge_cases() {
+#[tokio::test]
+async fn e2e_dynamic_edge_cases() {
     let pool = load_pool();
     let intent = load_e2e_intents("edge_cases.toml");
 
     for test in &intent.test {
-        run_e2e_round_trip(&pool, test);
+        run_e2e_round_trip(&pool, test).await;
     }
 }
 
@@ -505,8 +512,8 @@ fn e2e_dynamic_edge_cases() {
 ///
 /// This proves the round-trip preserves information needed for deterministic
 /// state derivation across all supported algorithms.
-#[test]
-fn e2e_multihash_round_trip() {
+#[tokio::test]
+async fn e2e_multihash_round_trip() {
     use cyphr::semantic_tree::{AuthTree, KeyTree, StateTree};
     use cyphr::state::compute_pr;
 
@@ -520,6 +527,7 @@ fn e2e_multihash_round_trip() {
         let generator = Generator::new(&pool);
         let golden = generator
             .generate_test(test)
+            .await
             .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
         let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
@@ -534,6 +542,7 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 1: Load principal from serialized commits ---
         let principal = load_principal_from_commits(genesis, &commit_vec)
+            .await
             .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
         // --- Step 2: Verify active_algs contains expected algorithms ---

@@ -297,6 +297,7 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
             make_genesis(&genesis_keys),
             std::slice::from_ref(&commit0_entry),
         )
+        .await
         .expect("replay commit 0 onto a fresh principal");
         let variant_blobs = sign_key_create_commit(
             fresh_principal,
@@ -304,7 +305,8 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
             "golden",
             new_key_name,
             1_700_000_100,
-        );
+        )
+        .await;
         handles.push(tokio::spawn(async move {
             let variant_slices: Vec<&[u8]> = variant_blobs.iter().map(|b| b.as_slice()).collect();
             state
@@ -446,6 +448,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
             cyphr_storage::Genesis::Implicit(k) => k,
             cyphr_storage::Genesis::Explicit(_) => unreachable!("genesis_of builds implicit"),
         })
+        .await
         .expect("implicit genesis");
         // Commit 0 is the principal's genesis commit (SPEC 5.1).
         let commit0 = test_fixtures::bundle::genesis_bundle(
@@ -454,6 +457,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
             &[],
             1_700_000_100,
         )
+        .await
         .expect("genesis commit");
         let slices: Vec<&[u8]> = commit0.iter().map(|b| b.as_slice()).collect();
         engine
@@ -469,14 +473,11 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         // an in-memory one, which is what the signing helper takes.
         let entries = cyphr_storage::export_commits(&loaded).expect("export commits");
         let fresh = cyphr_storage::load_principal_from_commits(genesis_of(signer), &entries)
+            .await
             .expect("replay commits onto a fresh principal");
-        commit1_blobs.push(sign_key_create_commit(
-            fresh,
-            &pool,
-            signer,
-            new_key(signer),
-            1_700_000_200,
-        ));
+        commit1_blobs.push(
+            sign_key_create_commit(fresh, &pool, signer, new_key(signer), 1_700_000_200).await,
+        );
     }
 
     // Arm the gate and start A's submission; wait until it is parked inside
@@ -571,9 +572,9 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
 async fn push_new_principal_happy_path() {
     let pool = load_pool();
     let now = 1_700_000_000;
-    let principal_id = golden_principal_id(&pool);
+    let principal_id = golden_principal_id(&pool).await;
     let body: serde_json::Value =
-        serde_json::from_str(&build_genesis_push_body(&pool, &principal_id, now))
+        serde_json::from_str(&build_genesis_push_body(&pool, &principal_id, now).await)
             .expect("push body");
     let blobs = body["blobs"].as_array().expect("blobs").clone();
     let typs: Vec<String> = blobs

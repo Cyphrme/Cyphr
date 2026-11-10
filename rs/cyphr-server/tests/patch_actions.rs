@@ -89,9 +89,13 @@ fn line(blobs: &[Vec<u8>]) -> CommitEntry {
 async fn fresh_client_replays_a_chain_holding_a_ds_create() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
-    let mut p = Principal::implicit(g.key().expect("golden key")).expect("implicit genesis");
+    let mut p = Principal::implicit(g.key().expect("golden key"))
+        .await
+        .expect("implicit genesis");
     let id = p.pr_tagged().expect("PG");
-    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T).expect("genesis");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
+        .await
+        .expect("genesis");
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     let (s, b) = post_json(app.clone(), "/push", push_body(&id, &genesis)).await;
@@ -126,6 +130,7 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
         .expect("ds/create applies");
     scope
         .finalize_with_software(&g.software_signer().expect("signer"), T + 2, "cyphr.me")
+        .await
         .expect("commit finalizes");
     let commit = cyphr_storage::export_commits(&p).expect("export");
     let commit_create = commit
@@ -165,6 +170,7 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
     }
     let key = g.key().expect("golden key");
     let fresh = load_principal_from_commits(Genesis::Implicit(key), &lines)
+        .await
         .expect("a fresh client replays the served chain");
     assert_eq!(
         fresh.pr_tagged().expect("PR"),

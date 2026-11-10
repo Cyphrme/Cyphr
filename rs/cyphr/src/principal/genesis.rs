@@ -1,7 +1,9 @@
 //! Genesis constructors, and the genesis finalization
 //! (`principal/create`) that freezes PG.
 
-use super::{Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees};
+use super::{
+    Principal, PrincipalCore, PrincipalKind, PrincipalState, StartingRoots, open_commit_trees,
+};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::semantic_tree::{derive_state_roots, key_leaf};
@@ -11,13 +13,10 @@ use crate::state::{PrincipalGenesis, derive_hash_algs};
 // Genesis constructors (default in-memory storage)
 // ============================================================================
 //
-// These are inherent methods on the concrete `Principal<eml::MemoryStorage>`
-// rather than on the generic `impl<S: eml::Storage> Principal<S>` block, so
-// every pre-existing call site that spells the bare `Principal` (which means
-// `Principal<eml::MemoryStorage>` via the type parameter's default) keeps
-// resolving to exactly these signatures with zero source changes. The
-// storage-parameterised sibling, `implicit_with_storage`, lives on the
-// generic impl block below.
+// An inherent method on the concrete `Principal<eml::MemoryStorage>` so the
+// bare `Principal` (the type parameter's default) resolves it without a
+// storage argument. The storage-parameterised constructor, `open`, lives on
+// the generic impl block below.
 impl Principal<eml::MemoryStorage> {
     /// Create a principal from its genesis key: the only constructor;
     /// Levels 1-2 are this with no commit, Level 3+ commit their genesis
@@ -36,12 +35,34 @@ impl Principal<eml::MemoryStorage> {
     /// Returns `KeyRevoked` if the key carries a revocation: every key,
     /// the first included, enters through a `key/create` (SPEC §7.7), and
     /// a revoked key is never trusted again (SPEC §6.4).
-    pub fn implicit(key: Key) -> Result<Self> {
-        Self::implicit_with_storage(key, eml::MemoryStorage::new())
+    pub async fn implicit(key: Key) -> Result<Self> {
+        Self::open(key, eml::MemoryStorage::new()).await
     }
 }
 
-impl<S: eml::Storage> Principal<S> {
+impl PrincipalState {
+    /// The state of the principal of genesis key `key` before any commit:
+    /// `PR = AR = KR = tmb` (SPEC 3.2), with no log. Everything a
+    /// principal at genesis answers without reading storage (its id, its
+    /// keys) reads from this; [`Principal::open`] pairs it with a log.
+    ///
+    /// # Errors
+    ///
+    /// `KeyRevoked` if the key carries a revocation.
+    pub fn genesis(key: Key) -> Result<Self> {
+        if !key.is_active() {
+            return Err(Error::KeyRevoked);
+        }
+        let active_algs = derive_hash_algs(&[&key]);
+
+        // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
+        let (kr, ar, sr) = derive_state_roots(&[key_leaf(&key)], None, &active_algs)?;
+        let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
+        Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore::new(
+            key, roots,
+        )))))
+    }
+
     /// Transition from Nascent to Established by freezing PG.
     ///
     /// This is the only code path that can create an Established principal.
@@ -75,31 +96,24 @@ impl<S: eml::Storage> Principal<S> {
             },
         }
     }
+}
 
-    // ========================================================================
-    // Genesis constructor (explicit storage)
-    // ========================================================================
-
-    /// Create a principal from its genesis key, backed by the given storage
-    /// instance.
+impl<S: eml::Storage> Principal<S> {
+    /// Open the principal of genesis key `key` over `storage`: its state at
+    /// genesis, and its commit log as `storage` holds it (empty for fresh
+    /// storage, a prior session's leaves otherwise, which replay then
+    /// confirms).
     ///
     /// See [`Principal::implicit`] for the SPEC-level contract; this is the
-    /// same construction with the storage backend threaded through
-    /// explicitly instead of defaulting to [`eml::MemoryStorage`].
+    /// same construction with the storage backend named explicitly.
     ///
     /// # Errors
     ///
-    /// `KeyRevoked` if the key carries a revocation.
-    pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
-        if !key.is_active() {
-            return Err(Error::KeyRevoked);
-        }
-        let active_algs = derive_hash_algs(&[&key]);
-
-        // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
-        let (kr, ar, sr) = derive_state_roots(&[key_leaf(&key)], None, &active_algs)?;
-        let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
-        let core = PrincipalCore::new(key, roots, open_commit_trees(storage)?);
-        Ok(Self(Some(PrincipalKind::Nascent(core))))
+    /// `KeyRevoked` if the key carries a revocation; `Storage` if the log
+    /// cannot be read.
+    pub async fn open(key: Key, storage: S) -> Result<Self> {
+        let state = PrincipalState::genesis(key)?;
+        let log = open_commit_trees(storage).await?;
+        Ok(Self { state, log })
     }
 }

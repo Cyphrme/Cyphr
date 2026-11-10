@@ -13,13 +13,24 @@ use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
 
+/// One runtime for every input: the core's replay is async.
+static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+
+fn runtime() -> &'static tokio::runtime::Runtime {
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("tokio runtime")
+    })
+}
+
 fn b64(bytes: &[u8]) -> String {
     <coz::base64ct::Base64UrlUnpadded as coz::base64ct::Encoding>::encode_string(bytes)
 }
 
-fn genesis() -> Option<cyphr::Principal<MemoryStorage>> {
+async fn genesis() -> Option<cyphr::Principal<MemoryStorage>> {
     let key = cyphr::Key::from_pub_key("Ed25519", vec![7; 32]).ok()?;
-    cyphr::Principal::implicit(key).ok()
+    cyphr::Principal::implicit(key).await.ok()
 }
 
 // Mode 0 feeds an arbitrary JSON item to the parser and both verifiers.
@@ -70,11 +81,13 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let _ = EvidenceItem::parse(&item);
-    let Some(base) = genesis() else {
-        return;
-    };
-    let history = KeyHistory::of(&[], &base);
-    let _ = verify_principal_fork(&item, &b64(&[7; 32]), base, &[]);
-    let pr = coz::Thumbprint::from_bytes(vec![7; 32]);
-    let _ = verify_peer_equivocation::<MemoryStorage>(&item, &pr, &history, None);
+    runtime().block_on(async {
+        let Some(base) = genesis().await else {
+            return;
+        };
+        let history = KeyHistory::of(&[], &base);
+        let _ = verify_principal_fork(&item, &b64(&[7; 32]), base, &[]).await;
+        let pr = coz::Thumbprint::from_bytes(vec![7; 32]);
+        let _ = verify_peer_equivocation::<MemoryStorage>(&item, &pr, &history, None);
+    });
 });

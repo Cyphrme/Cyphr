@@ -87,7 +87,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         // Genesis state - verify by reconstructing from keystore
         let keystore = JsonKeyStore::open(&cli.keystore)?;
         let key = load_key_from_keystore(&keystore, identity)?;
-        let principal = cyphr::Principal::implicit(key)?;
+        let principal = cyphr::PrincipalState::genesis(key)?;
 
         // Verify PG matches (L1 has no PG)
         if let Some(pg) = principal.pg() {

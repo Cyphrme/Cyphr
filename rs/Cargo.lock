@@ -582,6 +582,7 @@ dependencies = [
  "tempfile",
  "test-fixtures",
  "thiserror 2.0.17",
+ "tokio",
 ]
 
 [[package]]
@@ -937,6 +938,7 @@ dependencies = [
  "coz-rs",
  "serde_json",
  "test-fixtures",
+ "tokio",
  "toml",
 ]
 
@@ -2637,6 +2639,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+ "tokio",
  "toml",
 ]
 

@@ -107,8 +107,8 @@ fn fresh_keyed_state() -> (Arc<AppState>, TempDir) {
 /// and `key_a` are genuinely active keys of this exact principal AND indexed
 /// globally. Returns the principal's genesis-derived id (SPEC 3.1).
 async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool) -> String {
-    let pid = common::golden_principal_id(pool);
-    let body = common::build_genesis_push_body(pool, &pid, RVK);
+    let pid = common::golden_principal_id(pool).await;
+    let body = common::build_genesis_push_body(pool, &pid, RVK).await;
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
@@ -322,7 +322,7 @@ async fn bootstrap_via_push(
     added_name: &str,
     now: i64,
 ) {
-    let body = common::build_genesis_push_body_with(pool, genesis_name, added_name, pid, now);
+    let body = common::build_genesis_push_body_with(pool, genesis_name, added_name, pid, now).await;
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
@@ -337,7 +337,7 @@ async fn bootstrap_via_push(
 /// `signer_name`, chained onto the genesis commit. The signing key
 /// `signer_name` is the one the push gate must death-check.
 #[allow(clippy::too_many_arguments)]
-fn followup_push_body(
+async fn followup_push_body(
     pool: &Pool,
     pid: &str,
     genesis_name: &str,
@@ -348,8 +348,8 @@ fn followup_push_body(
     now: i64,
 ) -> String {
     let principal =
-        common::genesis_pushed_principal(pool, genesis_name, genesis_added, genesis_now);
-    let blobs = common::sign_key_create_commit(principal, pool, signer_name, added_name, now);
+        common::genesis_pushed_principal(pool, genesis_name, genesis_added, genesis_now).await;
+    let blobs = common::sign_key_create_commit(principal, pool, signer_name, added_name, now).await;
     push_body(pid, &blobs)
 }
 
@@ -536,7 +536,7 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
     // Attack: try to overwrite index[V] -> attacker (alice) pub via a fresh
     // attacker principal's unauthenticated genesis push with a swapped sidecar
     // pub. `alice` is a distinct key whose private half the attacker holds.
-    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK);
+    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK).await;
     let (pstatus, pjson) = post_push(&state, body).await;
     assert!(
         pstatus.is_client_error(),
@@ -873,7 +873,7 @@ async fn revoked_key_refused_at_login_sibling_survives() {
 async fn revoked_key_refused_at_push() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = common::golden_principal_id(&pool);
+    let pid = common::golden_principal_id(&pool).await;
     let pid = pid.as_str();
     bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
@@ -895,7 +895,8 @@ async fn revoked_key_refused_at_push() {
         "key_a",
         "carol",
         RVK + 100,
-    );
+    )
+    .await;
     let (status, json) = post_push(&state, body).await;
     assert!(
         status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
@@ -922,7 +923,7 @@ async fn revoked_key_refused_at_push() {
 async fn sibling_key_still_pushes_after_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = common::golden_principal_id(&pool);
+    let pid = common::golden_principal_id(&pool).await;
     let pid = pid.as_str();
     bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
@@ -943,7 +944,8 @@ async fn sibling_key_still_pushes_after_revoke() {
         "golden",
         "carol",
         RVK + 100,
-    );
+    )
+    .await;
     let (status, json) = post_push(&state, body).await;
     assert_eq!(
         status,
@@ -972,8 +974,8 @@ async fn sibling_key_still_pushes_after_revoke() {
 async fn revoked_key_dead_globally_across_principals() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid1 = common::genesis_push_id(&pool, "golden", "key_a");
-    let pid2 = common::genesis_push_id(&pool, "bob", "key_a");
+    let pid1 = common::genesis_push_id(&pool, "golden", "key_a").await;
+    let pid2 = common::genesis_push_id(&pool, "bob", "key_a").await;
     let (pid1, pid2) = (pid1.as_str(), pid2.as_str());
 
     // Two independent principals, distinct genesis keys, both holding key_a.
@@ -1220,14 +1222,14 @@ async fn poison_index_directly(
 /// rewritten on the wire, which is the only place the attack remains
 /// expressible. The push names the genesis's own PG, so only the server's
 /// key-binding check stands between this body and the index.
-fn poison_genesis_push_body(
+async fn poison_genesis_push_body(
     pool: &Pool,
     genesis_name: &str,
     victim_key_name: &str,
     attacker_key_name: &str,
     now: i64,
 ) -> String {
-    let attacker_pid = common::genesis_push_id(pool, genesis_name, victim_key_name);
+    let attacker_pid = common::genesis_push_id(pool, genesis_name, victim_key_name).await;
     let victim_tmb = tmb_b64(pool, victim_key_name);
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
     let key = |name: &str| {
@@ -1236,7 +1238,9 @@ fn poison_genesis_push_body(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::implicit(key(genesis_name)).expect("genesis");
+    let mut principal = cyphr::Principal::implicit(key(genesis_name))
+        .await
+        .expect("genesis");
     let signer = pool
         .get(genesis_name)
         .expect("genesis key in pool")
@@ -1244,6 +1248,7 @@ fn poison_genesis_push_body(
         .expect("genesis signer");
     let cozies = principal
         .commit_genesis(&signer, &[key(victim_key_name)], now, "cyphr.me")
+        .await
         .expect("the honest genesis commits before the sidecar is swapped");
 
     // The POISONED sidecar: declared thumbprint = the victim's V, but the
@@ -1306,7 +1311,7 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
     // `pub` is swapped. `alice` is a distinct key whose private half the
     // attacker holds (to sign the forge). The attacker principal's id is its
     // genesis-derived id, so the refusal below is for the swapped sidecar.
-    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK);
+    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK).await;
     let (pstatus, pjson) = post_push(&state, body).await;
     assert!(
         pstatus.is_client_error(),

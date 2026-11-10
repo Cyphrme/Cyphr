@@ -133,7 +133,7 @@ proptest! {
 
     /// Claim: for any valid commit history, the Arrow the write path
     /// signs into `commit/create` (`CommitScope::prepare_commit`) is the
-    /// Arrow `Principal::finalize_commit` recomputes and accepts, and the
+    /// Arrow `PrincipalState::stage_commit` recomputes and accepts, and the
     /// Arrow `CommitScope::matches_arrow` accepts for the same scope.
     /// Turns red if: any one of the three Arrow computations diverges
     /// (component order, variant selection, fold, or digest), because
@@ -146,13 +146,14 @@ proptest! {
     fn arrow_written_equals_arrow_verified(
         (genesis_idx, order, plans) in history_strategy(),
     ) {
+        block_on(async move {
         let pool = pool();
         let genesis_name = ["golden", "diana_es384", "eve_ed25519"][genesis_idx];
         let genesis = pool_key(&pool, genesis_name);
         let mut targets = order.into_iter().filter(|n| *n != genesis_name);
         let mut active: Vec<&test_fixtures::PoolKey> = vec![genesis];
-        let mut principal = Principal::implicit(domain_key(genesis)).expect("genesis");
-        principal.genesis_test(Vec::new()).expect("genesis commit");
+        let mut principal = Principal::implicit(domain_key(genesis)).await.expect("genesis");
+        principal.genesis_test(Vec::new()).await.expect("genesis commit");
         let mut now = T0;
 
         for plan in plans {
@@ -161,7 +162,7 @@ proptest! {
                 let (pay, sig, czd) = action_pay(genesis, now);
                 principal.verify_and_record_action(&pay, &sig, czd).expect("action records");
             }
-            let mut shadow = principal.clone();
+            let mut shadow = principal.fork().await.expect("fork");
             let mut scope = principal.begin_commit();
             let mut shadow_scope = shadow.begin_commit();
             for _ in 0..plan.adds {
@@ -184,6 +185,7 @@ proptest! {
             now += 1;
             let written = scope
                 .finalize_with_software(&software_signer(finalizer), now, AUTHORITY)
+                .await
                 .map_err(|e| TestCaseError::fail(format!(
                     "finalize rejected the arrow prepare_commit wrote \
                      (finalizer {}): {e:?}", finalizer.name)))?
@@ -199,7 +201,18 @@ proptest! {
                 finalizer.name
             );
         }
+        Ok::<(), TestCaseError>(())
+        })?;
     }
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }
 
 /// Which refusal a signer lookup produced, so results from different call
@@ -222,8 +235,8 @@ fn refusal<T>(r: crate::error::Result<T>) -> Option<&'static str> {
 /// reports a revoked key as unknown, or skips the revoked set).
 /// Exhaustive over the pool rather than sampled: the domain is six keys.
 /// Not an end-to-end scenario.
-#[test]
-fn signer_lookup_refuses_alike_at_every_site() {
+#[tokio::test]
+async fn signer_lookup_refuses_alike_at_every_site() {
     let pool = pool();
     let genesis = pool_key(&pool, "golden");
     let revoked = pool_key(&pool, "key_a");
@@ -231,8 +244,13 @@ fn signer_lookup_refuses_alike_at_every_site() {
     let unknowns = ["bob", "diana_es384", "eve_ed25519"];
 
     // golden + key_a + alice active, then key_a moved to the revoked set.
-    let mut principal = Principal::implicit(domain_key(genesis)).expect("genesis");
-    principal.genesis_test(Vec::new()).expect("genesis commit");
+    let mut principal = Principal::implicit(domain_key(genesis))
+        .await
+        .expect("genesis");
+    principal
+        .genesis_test(Vec::new())
+        .await
+        .expect("genesis commit");
     for (i, target) in [revoked, filler].into_iter().enumerate() {
         let now = T0 + 2 * i as i64;
         let mut scope = principal.begin_commit();
@@ -242,6 +260,7 @@ fn signer_lookup_refuses_alike_at_every_site() {
             .expect("applies");
         scope
             .finalize_with_software(&software_signer(genesis), now + 1, AUTHORITY)
+            .await
             .expect("commit finalizes");
     }
     principal
@@ -262,13 +281,13 @@ fn signer_lookup_refuses_alike_at_every_site() {
         let mut sites: Vec<(&str, Option<&str>)> = Vec::new();
 
         let (pay, sig, czd) = action_pay(probe, now);
-        let mut p = principal.clone();
+        let mut p = principal.fork().await.expect("fork");
         sites.push((
             "verify_and_record_action",
             refusal(p.verify_and_record_action(&pay, &sig, czd.clone())),
         ));
 
-        let mut p = principal.clone();
+        let mut p = principal.fork().await.expect("fork");
         let action = crate::action::Action::new(
             "cyphr.me/comment/create".into(),
             tmb.clone(),
@@ -280,29 +299,30 @@ fn signer_lookup_refuses_alike_at_every_site() {
                 sig: vec![],
             },
         );
-        sites.push(("record_action", refusal(p.record_action(action))));
+        sites.push((
+            "record_action",
+            refusal(p.state_mut().record_action(action)),
+        ));
 
         let target = pool_key(&pool, "carol");
         let (pay, sig, czd) = key_create_pay(probe, target, now);
-        let mut p = principal.clone();
+        let mut p = principal.fork().await.expect("fork");
         sites.push((
             "verify_and_apply_transaction",
-            refusal(p.verify_and_apply_transaction(
-                &pay,
-                &sig,
-                czd.clone(),
-                Some(domain_key(target)),
-            )),
+            refusal(
+                p.verify_and_apply_transaction(&pay, &sig, czd.clone(), Some(domain_key(target)))
+                    .await,
+            ),
         ));
 
-        let mut p = principal.clone();
+        let mut p = principal.fork().await.expect("fork");
         let mut scope = p.begin_commit();
         sites.push((
             "CommitScope::verify_and_apply",
             refusal(scope.verify_and_apply(&pay, &sig, czd.clone(), Some(domain_key(target)))),
         ));
 
-        let mut p = principal.clone();
+        let mut p = principal.fork().await.expect("fork");
         let mut scope = p.begin_commit();
         let parsed = crate::parsed_coz::ParsedCoz {
             kind: crate::parsed_coz::CozKind::KeyCreate {
@@ -330,7 +350,7 @@ fn signer_lookup_refuses_alike_at_every_site() {
 
         // prepare_commit needs a non-empty scope: one genuine mutation
         // signed by the genesis key, then the probe as finalizer.
-        let mut p = principal.clone();
+        let mut p = principal.fork().await.expect("fork");
         let mut scope = p.begin_commit();
         let (gpay, gsig, gczd) = key_create_pay(genesis, target, now);
         scope

@@ -158,7 +158,7 @@ async fn pin(http: &Http) -> (PeerChain, String) {
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
     let pg = d["pg"].as_str().expect("pg").to_string();
-    (PeerChain::pin(&pg, genesis), pg)
+    (PeerChain::pin(&pg, genesis).await, pg)
 }
 
 /// The server's signed `/tip` for its own chain.

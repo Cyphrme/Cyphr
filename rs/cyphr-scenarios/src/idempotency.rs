@@ -89,7 +89,7 @@ fn key_of(k: &PoolSigner) -> Result<cyphr::Key, String> {
 
 /// One commit by `by` of `typ` over `target`, applied to `p`, as wire blobs:
 /// key-introducing cozies carry their key.
-fn commit(
+async fn commit(
     p: &mut Principal,
     by: &PoolSigner,
     typ: &str,
@@ -118,6 +118,7 @@ fn commit(
             T,
             "cyphr.me",
         )
+        .await
         .map_err(|e| e.to_string())?;
     let last = p.commits().last().ok_or("no commit")?;
     last.iter_all_cozies()
@@ -150,7 +151,9 @@ pub async fn replay_on_fresh_peer(
     let (golden, key_a) = (pool_key(GOLDEN)?, pool_key(KEY_A)?);
     let id = golden.tmb.to_b64();
 
-    let mut p = Principal::implicit(key_of(&golden)?).map_err(|e| e.to_string())?;
+    let mut p = Principal::implicit(key_of(&golden)?)
+        .await
+        .map_err(|e| e.to_string())?;
     // Every chain begins with its genesis commit (SPEC 5.1).
     let genesis = p
         .commit_genesis(
@@ -159,12 +162,13 @@ pub async fn replay_on_fresh_peer(
             T,
             "cyphr.me",
         )
+        .await
         .map_err(|e| e.to_string())?
         .iter()
         .map(|c| serde_json::to_vec(c).map_err(|e| e.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
-    let c0 = commit(&mut p, &golden, "cyphr.me/cyphr/key/create", &key_a, true)?;
-    let c1 = commit(&mut p, &golden, "cyphr.me/cyphr/key/delete", &key_a, false)?;
+    let c0 = commit(&mut p, &golden, "cyphr.me/cyphr/key/create", &key_a, true).await?;
+    let c1 = commit(&mut p, &golden, "cyphr.me/cyphr/key/delete", &key_a, false).await?;
     let replay: Vec<Vec<u8>> = REPLAY_BLOBS
         .iter()
         .map(|b| Base64UrlUnpadded::decode_vec(b).map_err(|e| e.to_string()))

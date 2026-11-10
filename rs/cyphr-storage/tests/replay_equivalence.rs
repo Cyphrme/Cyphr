@@ -121,21 +121,25 @@ fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn principal(genesis: &Genesis) -> cyphr::Principal {
-    cyphr::Principal::implicit(genesis.key().expect("genesis key").clone()).expect("genesis")
+async fn principal(genesis: &Genesis) -> cyphr::Principal {
+    cyphr::Principal::implicit(genesis.key().expect("genesis key").clone())
+        .await
+        .expect("genesis")
 }
 
 /// The id the engine stores `chain` under, derived by the core alone: the
 /// PG its genesis commit establishes (a nonce in it is part of the PG). A
 /// chain of data actions alone forms no commit and is keyed by its genesis
 /// PR.
-fn principal_id(chain: &Chain) -> String {
-    let mut p = principal(&chain.genesis);
+async fn principal_id(chain: &Chain) -> String {
+    let mut p = principal(&chain.genesis).await;
     let cozies: Vec<StoredCoz> = chain.bundles[0]
         .iter()
         .map(|b| StoredCoz::from_wire(b).expect("wire coz"))
         .collect();
-    replay_bundle(&mut p, &cozies).expect("first commit replays");
+    replay_bundle(&mut p, &cozies)
+        .await
+        .expect("first commit replays");
     match p.pg() {
         Some(pg) => {
             let alg = p.active_algs()[0];
@@ -149,7 +153,7 @@ fn principal_id(chain: &Chain) -> String {
 }
 
 async fn ingest(engine: &Engine, chain: &Chain) -> String {
-    let id = principal_id(chain);
+    let id = principal_id(chain).await;
     for (i, bundle) in chain.bundles.iter().enumerate() {
         let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
         engine
@@ -194,13 +198,14 @@ fn corpus_chains_agree_across_core_ingest_and_rebuild() {
 
 async fn check_chain(chain: &Chain) {
     {
-        let mut core = principal(&chain.genesis);
+        let mut core = principal(&chain.genesis).await;
         for (i, bundle) in chain.bundles.iter().enumerate() {
             let cozies: Vec<StoredCoz> = bundle
                 .iter()
                 .map(|blob| StoredCoz::from_wire(blob).expect("wire coz"))
                 .collect();
             replay_bundle(&mut core, &cozies)
+                .await
                 .unwrap_or_else(|e| panic!("{}: core replays commit {i}: {e}", chain.name));
         }
         assert_eq!(
@@ -506,7 +511,7 @@ impl Signer {
 
     /// Commit a `key/create` of `new` on `writer`; returns the commit's wire
     /// blobs.
-    fn key_create(
+    async fn key_create(
         &self,
         writer: &mut cyphr::Principal,
         new: &cyphr::Key,
@@ -525,6 +530,7 @@ impl Signer {
             cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pub_key, self.key.tmb());
         let commit = scope
             .finalize_with_software(&signer, now, "cyphr.me")
+            .await
             .expect("finalizes");
         let closing = commit
             .iter_all_cozies()
@@ -553,7 +559,9 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     let golden = signer("golden");
     let key_a = signer("key_a");
     let key_b = signer("alice");
-    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let genesis_commit = test_fixtures::bundle::genesis_bundle(
         &mut writer,
@@ -561,10 +569,17 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
         &[],
         1_700_000_050,
     )
+    .await
     .expect("genesis commit");
-    let first = golden.key_create(&mut writer, &key_a.key, 1_700_000_100);
+    let first = golden
+        .key_create(&mut writer, &key_a.key, 1_700_000_100)
+        .await;
     let mut mixed = vec![golden.action(&mut writer, 1_700_000_150)];
-    mixed.extend(golden.key_create(&mut writer, &key_b.key, 1_700_000_200));
+    mixed.extend(
+        golden
+            .key_create(&mut writer, &key_b.key, 1_700_000_200)
+            .await,
+    );
     let commit_pr = writer.pr_tagged().expect("pr");
     mixed.push(key_b.action(&mut writer, 1_700_000_250));
 
@@ -612,7 +627,9 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
     );
 
     let now = 1_700_000_000;
-    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
     let mut blobs = Vec::new();
     let software =
         |s: &Signer| cyphr::signer::SoftwareSigner::new(&s.alg, &s.prv, &s.pub_key, s.key.tmb());
@@ -634,10 +651,12 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
     }
     let created = scope
         .create_principal(&software(&golden), now, "cyphr.me")
+        .await
         .expect("principal/create");
     blobs.push(serde_json::to_vec(&created).expect("json"));
     let commit = scope
         .finalize_with_software(&software(&golden), now, "cyphr.me")
+        .await
         .expect("genesis commit");
     let closing = commit.commit_tx().0.first().expect("commit/create").raw();
     blobs.push(serde_json::to_vec(closing).expect("json"));
@@ -688,7 +707,7 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
 impl Signer {
     /// Commit a `ds/create` naming MR(DT) on `writer`; returns the commit's
     /// wire blobs.
-    fn ds_create(&self, writer: &mut cyphr::Principal, now: i64) -> Vec<Vec<u8>> {
+    async fn ds_create(&self, writer: &mut cyphr::Principal, now: i64) -> Vec<Vec<u8>> {
         let mut scope = writer.begin_commit();
         let id = scope
             .data_tree_id()
@@ -706,6 +725,7 @@ impl Signer {
             cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pub_key, self.key.tmb());
         let commit = scope
             .finalize_with_software(&signer, now, "cyphr.me")
+            .await
             .expect("finalizes");
         let closing = commit
             .iter_all_cozies()
@@ -765,13 +785,16 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
     let golden = signer("golden");
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let t = 1_700_000_000;
-    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
     let genesis_commit = test_fixtures::bundle::genesis_bundle(
         &mut writer,
         pool.get("golden").expect("golden"),
         &[],
         t,
     )
+    .await
     .expect("genesis commit");
     // Two actions travel in one bundle, the later one first.
     let (early, late) = (
@@ -780,7 +803,7 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
     );
     record(&mut writer, &early);
     record(&mut writer, &late);
-    let included = golden.ds_create(&mut writer, t + 30);
+    let included = golden.ds_create(&mut writer, t + 30).await;
     let trailing = golden.unrecorded_action(t + 40, "after the ds/create");
     record(&mut writer, &trailing);
 
@@ -826,6 +849,7 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
         genesis.clone(),
         &cyphr_storage::export_commits(&writer).expect("export"),
     )
+    .await
     .expect("the export imports");
     assert_eq!(lines(&imported), history, "export and import");
 
@@ -843,7 +867,7 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
     let restarted = StorageEngine::new(copy, MemoryIndexer::new());
     let later = golden.unrecorded_action(t + 50, "after the restart");
     record(&mut writer, &later);
-    let again = golden.ds_create(&mut writer, t + 60);
+    let again = golden.ds_create(&mut writer, t + 60).await;
     push(&restarted, &id, &genesis, &[later]).await;
     push(&restarted, &id, &genesis, &again).await;
     let tip = restarted.get_tip(&id).await.expect("tip").expect("a tip");
@@ -876,13 +900,16 @@ async fn forged_actions_are_quarantined_by_the_scratch_rebuild() {
     let (golden, alice) = (signer("golden"), signer("alice"));
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let t = 1_700_000_000;
-    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
     let genesis_commit = test_fixtures::bundle::genesis_bundle(
         &mut writer,
         pool.get("golden").expect("golden"),
         &[],
         t,
     )
+    .await
     .expect("genesis commit");
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
@@ -923,7 +950,7 @@ async fn forged_actions_are_quarantined_by_the_scratch_rebuild() {
 
     let own = golden.unrecorded_action(t + 20, "its own");
     record(&mut writer, &own);
-    let included = golden.ds_create(&mut writer, t + 30);
+    let included = golden.ds_create(&mut writer, t + 30).await;
     push(&engine, &id, &genesis, &[own]).await;
     push(&engine, &id, &genesis, &included).await;
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
@@ -993,13 +1020,16 @@ async fn action_manifest_with_a_transaction_is_malformed() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let t = 1_700_000_000;
-    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
     let genesis_commit = test_fixtures::bundle::genesis_bundle(
         &mut writer,
         pool.get("golden").expect("golden"),
         &[],
         t,
     )
+    .await
     .expect("genesis commit");
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
@@ -1007,8 +1037,11 @@ async fn action_manifest_with_a_transaction_is_malformed() {
     push(&engine, &id, &genesis, &genesis_commit).await;
 
     // A signed key/create by the principal's own key: a transaction.
-    let mut other = writer.clone();
-    let tx = golden.key_create(&mut other, &key_a.key, t + 10).remove(0);
+    let mut other = writer.fork().await.expect("fork");
+    let tx = golden
+        .key_create(&mut other, &key_a.key, t + 10)
+        .await
+        .remove(0);
     let forged = forge_action_manifest(engine.blob_store(), &id, 1, &[tx]).await;
     let malformed = |q: &[cyphr_storage::engine::QuarantinedManifest]| {
         q.iter()
@@ -1070,14 +1103,17 @@ async fn actions_at_one_position_rebuild_in_now_order() {
     let t = 1_700_000_000;
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
-    let fresh = || {
-        let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let fresh = async || {
+        let mut writer = cyphr::Principal::implicit(golden.key.clone())
+            .await
+            .expect("genesis");
         let commit = test_fixtures::bundle::genesis_bundle(
             &mut writer,
             pool.get("golden").expect("golden"),
             &[],
             t,
         )
+        .await
         .expect("genesis commit");
         (writer, commit)
     };
@@ -1120,7 +1156,7 @@ async fn actions_at_one_position_rebuild_in_now_order() {
     for i in 0..64 {
         let early = golden.unrecorded_action(t + 10, &format!("early {i}"));
         let late = golden.unrecorded_action(t + 20, &format!("late {i}"));
-        let (_, commit) = fresh();
+        let (_, commit) = fresh().await;
         let order = manifest_order(&id, &genesis, &commit, &[early.clone(), late.clone()]).await;
         if order[1] < order[0] {
             pair = Some((early, late));
@@ -1129,7 +1165,7 @@ async fn actions_at_one_position_rebuild_in_now_order() {
     }
     let (early, late) = pair.expect("a pair whose manifest hashes sort against now");
 
-    let (mut writer, commit) = fresh();
+    let (mut writer, commit) = fresh().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let db = fjall::Database::builder(dir.path().join("db"))
         .open()
@@ -1156,7 +1192,7 @@ async fn actions_at_one_position_rebuild_in_now_order() {
         .await
         .expect("rebuild");
     assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
-    let included = golden.ds_create(&mut writer, t + 30);
+    let included = golden.ds_create(&mut writer, t + 30).await;
     push_to(&included).await;
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(tip.pr, writer.pr_tagged().expect("pr"));

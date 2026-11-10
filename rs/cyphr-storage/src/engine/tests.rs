@@ -51,11 +51,11 @@ async fn ingest_two_then_get_patch_full() {
     let blob_1 = b"{\"pay\":{\"now\":2000},\"typ\":\"cyphr/key/create\"}";
 
     engine
-        .ingest_commit(&[blob_0.as_slice()], make_meta("alice", 0, 1000))
+        .ingest_metadata(&[blob_0.as_slice()], make_meta("alice", 0, 1000))
         .await
         .expect("first ingest");
     engine
-        .ingest_commit(&[blob_1.as_slice()], make_meta("alice", 1, 2000))
+        .ingest_metadata(&[blob_1.as_slice()], make_meta("alice", 1, 2000))
         .await
         .expect("second ingest");
 
@@ -98,7 +98,7 @@ async fn get_patch_with_range() {
             meta.prs = vec![anchor.to_string()];
         }
         engine
-            .ingest_commit(&[blob.as_bytes()], meta)
+            .ingest_metadata(&[blob.as_bytes()], meta)
             .await
             .expect("ingest");
     }
@@ -119,7 +119,7 @@ async fn get_patch_with_range() {
 async fn get_patch_unknown_anchor_is_not_found() {
     let engine = test_engine();
     engine
-        .ingest_commit(&[b"alice-genesis"], make_meta("alice", 0, 1000))
+        .ingest_metadata(&[b"alice-genesis"], make_meta("alice", 0, 1000))
         .await
         .expect("ingest");
 
@@ -316,7 +316,7 @@ async fn ingest_fixture(
         };
 
         engine
-            .ingest_commit(&blob_slices, meta)
+            .ingest_metadata(&blob_slices, meta)
             .await
             .unwrap_or_else(|e| panic!("ingest commit {seq} failed: {e}"));
     }
@@ -694,9 +694,13 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
     // rebuild replays every manifest and quarantines placeholder blobs.
     let pool = load_pool();
     let golden = pool.get("golden").expect("golden");
-    let mut principal = cyphr::Principal::implicit(pool_key_to_domain(golden)).unwrap();
+    let mut principal = cyphr::Principal::implicit(pool_key_to_domain(golden))
+        .await
+        .unwrap();
     let alice = principal.pr_tagged().unwrap();
-    let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, &[], 1000).unwrap();
+    let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, &[], 1000)
+        .await
+        .unwrap();
     let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     engine
         .submit_commit(&alice, None, &refs)
@@ -777,7 +781,7 @@ async fn manifest_retains_ingest_order_without_search() {
     ];
 
     let result = engine
-        .ingest_commit(
+        .ingest_metadata(
             &[blob_a.as_slice(), blob_b.as_slice(), blob_c.as_slice()],
             meta,
         )
@@ -938,8 +942,9 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     // Client-side principal: the sole source of truth for what a correctly
     // behaving signer computes as `pre`/arrow at each step. Never reloaded
     // via replay — mirrors a long-lived client session.
-    let mut client =
-        cyphr::Principal::implicit(genesis_domain_keys[0].clone()).expect("client genesis");
+    let mut client = cyphr::Principal::implicit(genesis_domain_keys[0].clone())
+        .await
+        .expect("client genesis");
     let mut scope1 = client.begin_commit();
     use coz::base64ct::Encoding as _;
     let genesis_creates: Vec<Vec<u8>> = scope1
@@ -958,6 +963,7 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
             now,
             "cyphr.me",
         )
+        .await
         .expect("genesis key/creates (SPEC 7.7 Example 1)")
         .iter()
         .map(|c| serde_json::to_vec(c).expect("key/create blob"))
@@ -1001,6 +1007,7 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
             now + 1,
             "cyphr.me",
         )
+        .await
         .expect("genesis commit should finalize (client side)");
     assert_eq!(
         commit1.len(),
@@ -1061,6 +1068,7 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
             now + 3,
             "cyphr.me",
         )
+        .await
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 
@@ -1129,16 +1137,16 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
 
     let a0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1}}"];
     engine
-        .ingest_commit(&a0, make_meta("alice", 0, 1))
+        .ingest_metadata(&a0, make_meta("alice", 0, 1))
         .await
         .unwrap();
     let mut a1 = make_meta("alice", 1, 2);
     a1.pg = pg.clone();
     let a1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":2}}"];
-    engine.ingest_commit(&a1b, a1).await.unwrap();
+    engine.ingest_metadata(&a1b, a1).await.unwrap();
     let b0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":3}}"];
     engine
-        .ingest_commit(&b0, make_meta("bob", 0, 3))
+        .ingest_metadata(&b0, make_meta("bob", 0, 3))
         .await
         .unwrap();
 
@@ -1151,7 +1159,7 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
     b1.pg = pg;
     let b1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":4}}"];
     let err = engine
-        .ingest_commit(&b1b, b1)
+        .ingest_metadata(&b1b, b1)
         .await
         .expect_err("alias held by alice");
     assert!(

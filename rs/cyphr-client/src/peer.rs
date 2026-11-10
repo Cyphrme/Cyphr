@@ -162,8 +162,8 @@ impl PeerChain {
     /// genesis key alone cannot match it: such a peer can never be pinned
     /// and fails closed with `PinMismatch`.
     #[must_use]
-    pub fn pin(pg: &str, genesis: Key) -> Self {
-        let pin = match Principal::implicit(genesis.clone()) {
+    pub async fn pin(pg: &str, genesis: Key) -> Self {
+        let pin = match Principal::implicit(genesis.clone()).await {
             Ok(principal) => match principal.pr_tagged() {
                 Ok(derived) if matches_pg(pg, &derived) => Pin::Held(Box::new(principal)),
                 Ok(derived) => Pin::Mismatch {
@@ -269,6 +269,7 @@ impl PeerChain {
         // The replay root is a fresh principal from the pinned genesis,
         // never the held (already extended) one.
         let mut candidate = Principal::implicit(self.genesis.clone())
+            .await
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
         let mut offered = Vec::with_capacity(patch.entries.len());
         for (index, entry) in patch.entries.iter().enumerate() {
@@ -276,8 +277,8 @@ impl PeerChain {
                 index,
                 defect: *defect,
             })?;
-            offered.push(
-                replay_entry(&mut candidate, blobs).map_err(|refusal| match refusal {
+            offered.push(replay_entry(&mut candidate, blobs).await.map_err(
+                |refusal| match refusal {
                     EntryRefusal::Malformed(what) => PeerFailure::Malformed {
                         commit: index,
                         what,
@@ -286,8 +287,8 @@ impl PeerChain {
                         commit: index,
                         source,
                     },
-                })?,
-            );
+                },
+            )?);
         }
 
         // Every held bundle is compared, the action-only ones after the
@@ -432,7 +433,7 @@ pub(crate) enum EntryRefusal {
 /// the core's one replay entry point, returning the bundle's identity.
 /// Shared by [`PeerChain::follow`] and the evidence verifier, so a fetched
 /// entry means one thing on both.
-pub(crate) fn replay_entry(
+pub(crate) async fn replay_entry(
     principal: &mut Principal<MemoryStorage>,
     blobs: &[Vec<u8>],
 ) -> Result<BundleId, EntryRefusal> {
@@ -453,5 +454,7 @@ pub(crate) fn replay_entry(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    replay_bundle(principal, &cozies).map_err(|e| EntryRefusal::Replay(e.source))
+    replay_bundle(principal, &cozies)
+        .await
+        .map_err(|e| EntryRefusal::Replay(e.source))
 }

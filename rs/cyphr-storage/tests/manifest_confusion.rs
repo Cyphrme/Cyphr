@@ -1140,8 +1140,10 @@ mod replay {
         pk: &test_fixtures::PoolKey,
     ) -> (String, cyphr::Principal) {
         let id = genesis_principal_id(&Genesis::Implicit(dk(pk))).unwrap();
-        let mut client = cyphr::Principal::implicit(dk(pk)).unwrap();
-        let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, &[], T).unwrap();
+        let mut client = cyphr::Principal::implicit(dk(pk)).await.unwrap();
+        let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, &[], T)
+            .await
+            .unwrap();
         push(e, &id, &blobs).await.expect("genesis commit");
         (id, client)
     }
@@ -1164,6 +1166,7 @@ mod replay {
         s.verify_and_apply(&pb, &sig, czd, Some(dk(alice))).unwrap();
         let c = s
             .finalize_with_software(&signer(bob), T + 2, "cyphr.me")
+            .await
             .unwrap();
         let cc = cc_blob(c);
         push(e, &aid, &[kc, cc])
@@ -1216,6 +1219,7 @@ mod replay {
             .unwrap();
         let vc = vs
             .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
+            .await
             .unwrap();
         let vcc = cc_blob(vc);
 
@@ -1225,6 +1229,7 @@ mod replay {
             .unwrap();
         let c = s
             .finalize_with_software(&signer(bob), T + 12, "cyphr.me")
+            .await
             .unwrap();
         push(e, &aid, &[vkc.clone(), cc_blob(c)])
             .await
@@ -1285,6 +1290,7 @@ mod replay {
             .unwrap();
         let vc = vs
             .finalize_with_software(&signer(alice), T + 22, "cyphr.me")
+            .await
             .unwrap();
         let vbundle = vec![act, vkc, cc_blob(vc)];
 
@@ -1304,6 +1310,7 @@ mod replay {
             .unwrap();
         let c = s
             .finalize_with_software(&signer(bob), T + 24, "cyphr.me")
+            .await
             .unwrap();
         let abundle = vec![act_a, kc, cc_blob(c)];
 
@@ -1736,6 +1743,7 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
         .unwrap();
     let vc = vs
         .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
+        .await
         .unwrap();
     let victim = push(&e, &vid, &[honest, cc_blob(vc)]).await.unwrap();
 
@@ -1745,6 +1753,7 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
         .unwrap();
     let c = s
         .finalize_with_software(&signer(bob), T + 12, "cyphr.me")
+        .await
         .unwrap();
     let attacker = push(&e, &aid, &[evil, cc_blob(c)]).await.unwrap();
 
@@ -1794,6 +1803,7 @@ async fn relayed_commit_create_cannot_carry_a_foreign_key() {
         .unwrap();
     let c = s
         .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
+        .await
         .unwrap();
     push(&e, &vid, &[x, cc_blob(c)]).await.unwrap();
 
@@ -1808,6 +1818,7 @@ async fn relayed_commit_create_cannot_carry_a_foreign_key() {
     s.verify_and_apply(&dpb, &dsig, dczd, None).unwrap();
     let c = s
         .finalize_with_software(&signer(alice), T + 21, "cyphr.me")
+        .await
         .unwrap();
     let mut relayed_cc: serde_json::Value = serde_json::from_slice(&cc_blob(c)).unwrap();
     relayed_cc["key"] = kj(bob);

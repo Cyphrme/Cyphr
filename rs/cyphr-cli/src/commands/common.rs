@@ -269,7 +269,7 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     }
 
     let genesis_key = load_key_from_keystore(keystore, principal.genesis_key())?;
-    let genesis_principal = cyphr::Principal::<cyphr::eml::MemoryStorage>::implicit(genesis_key)?;
+    let genesis_principal = cyphr::PrincipalState::genesis(genesis_key)?;
     Ok(genesis_principal
         .pr()
         .as_multihash()

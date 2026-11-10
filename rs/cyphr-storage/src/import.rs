@@ -113,17 +113,17 @@ pub enum LoadError {
 /// // Ignored: requires file_store context not available in doc-test
 /// let genesis = Genesis::Implicit(my_key);
 /// let commits = file_store.get_commits(&pr)?;
-/// let principal = load_principal_from_commits(genesis, &commits)?;
+/// let principal = load_principal_from_commits(genesis, &commits).await?;
 /// ```
-pub fn load_principal_from_commits(
+pub async fn load_principal_from_commits(
     genesis: Genesis,
     commits: &[CommitEntry],
 ) -> Result<Principal, LoadError> {
     let key = genesis.key().ok_or(LoadError::NoGenesisKeys)?;
-    let mut principal = Principal::implicit(key.clone())?;
+    let mut principal = Principal::implicit(key.clone()).await?;
 
     // Replay commits
-    replay_commits(&mut principal, commits)?;
+    replay_commits(&mut principal, commits).await?;
 
     Ok(principal)
 }
@@ -141,44 +141,46 @@ pub(crate) fn canonicalize_value(val: &mut serde_json::Value) {
     }
 }
 
-pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
+pub(crate) async fn replay_commits<S: cyphr::eml::Storage>(
     principal: &mut Principal<S>,
     commits: &[CommitEntry],
 ) -> Result<(), LoadError> {
     for (commit_idx, commit) in commits.iter().enumerate() {
-        replay_commit(principal, commit, commit_idx)?;
+        replay_commit(principal, commit, commit_idx).await?;
     }
     Ok(())
 }
 
 /// Replay one bundle line, the `commit_idx`-th of its history (which only
 /// numbers the cozies an error names).
-pub(crate) fn replay_commit<S: cyphr::eml::Storage>(
+pub(crate) async fn replay_commit<S: cyphr::eml::Storage>(
     principal: &mut Principal<S>,
     commit: &CommitEntry,
     commit_idx: usize,
 ) -> Result<(), LoadError> {
     let cozies = stored_cozies(commit, commit_idx)?;
-    cyphr::replay::replay_bundle(principal, &cozies).map_err(|e| {
-        let Some(i) = e.coz else {
-            return LoadError::Protocol(e.source);
-        };
-        let index = commit_idx * 1000 + i;
-        match e.source {
-            cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
-                index,
-                message: "signature verification failed".into(),
-            },
-            cyphr::Error::UnknownKey => LoadError::UnknownSigner {
-                index,
-                tmb: cozies
-                    .get(i)
-                    .map(|c| c.header().tmb.to_b64())
-                    .unwrap_or_default(),
-            },
-            other => LoadError::Protocol(other),
-        }
-    })?;
+    cyphr::replay::replay_bundle(principal, &cozies)
+        .await
+        .map_err(|e| {
+            let Some(i) = e.coz else {
+                return LoadError::Protocol(e.source);
+            };
+            let index = commit_idx * 1000 + i;
+            match e.source {
+                cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                    index,
+                    message: "signature verification failed".into(),
+                },
+                cyphr::Error::UnknownKey => LoadError::UnknownSigner {
+                    index,
+                    tmb: cozies
+                        .get(i)
+                        .map(|c| c.header().tmb.to_b64())
+                        .unwrap_or_default(),
+                },
+                other => LoadError::Protocol(other),
+            }
+        })?;
     Ok(())
 }
 
@@ -285,8 +287,8 @@ mod tests {
     /// Turns red if replay stops parsing the header strictly. Not an
     /// end-to-end scenario: it needs a malformed commit no honest write path
     /// produces, so only a direct replay reaches it.
-    #[test]
-    fn replay_rejects_commit_missing_typ() {
+    #[tokio::test]
+    async fn replay_rejects_commit_missing_typ() {
         let key = make_test_key(0xAA);
         let malformed = serde_json::json!({
             "pay": { "alg": "ES256", "tmb": key.tmb().to_b64(), "now": 1000 },
@@ -301,7 +303,7 @@ mod tests {
             "SHA-256:p".into(),
         );
 
-        let result = load_principal_from_commits(Genesis::Implicit(key), &[commit]);
+        let result = load_principal_from_commits(Genesis::Implicit(key), &[commit]).await;
         assert!(
             matches!(
                 result,

@@ -24,22 +24,19 @@ async fn server_and_key_create() -> (
     tempfile::TempDir,
 ) {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
+    let id = golden_principal_id(&pool).await;
     let (state, _identity, dir) = attestor_server().await;
     let app = build_router(state);
     let (status, _) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &id, 1_700_000_100),
+        build_genesis_push_body(&pool, &id, 1_700_000_100).await,
     )
     .await;
     assert!(status.is_success(), "genesis push lands: {status}");
-    let body: serde_json::Value = serde_json::from_str(&build_second_commit_push_body(
-        &pool,
-        &id,
-        1_700_000_100,
-        1_700_000_200,
-    ))
+    let body: serde_json::Value = serde_json::from_str(
+        &build_second_commit_push_body(&pool, &id, 1_700_000_100, 1_700_000_200).await,
+    )
     .expect("push body");
     let blob =
         Base64UrlUnpadded::decode_vec(body["blobs"][0].as_str().expect("blob")).expect("base64url");
@@ -126,7 +123,7 @@ async fn pay_of_unsupported_alg_is_unknown_alg_on_push_import_and_replay() {
         None,
         "SHA-256:p".into(),
     );
-    let imported = load_principal_from_commits(Genesis::Implicit(genesis), &[entry]);
+    let imported = load_principal_from_commits(Genesis::Implicit(genesis), &[entry]).await;
     assert!(
         matches!(imported, Err(LoadError::Protocol(cyphr::Error::UnknownAlg))),
         "import rules an unsupported alg UnknownAlg: {imported:?}"

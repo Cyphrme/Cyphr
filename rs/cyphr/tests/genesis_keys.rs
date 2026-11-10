@@ -53,11 +53,11 @@ fn key_of(k: &Kp) -> Key {
 /// refusal `key/create` gives a revoked tmb (SPEC be0663f 7.7 and 6.4).
 /// Turns red if genesis accepts it or refuses with another error. Not
 /// end-to-end: no scenario reaches the constructor's check more cheaply.
-#[test]
-fn genesis_refuses_pre_revoked_key() {
+#[tokio::test]
+async fn genesis_refuses_pre_revoked_key() {
     let g = pool_key("golden");
     let revoked = key_of(&g).with_revocation(cyphr::key::Revocation { rvk: T, by: None });
-    let r = Principal::implicit(revoked).map(|_| ());
+    let r = Principal::implicit(revoked).await.map(|_| ());
     assert!(
         matches!(r, Err(cyphr::Error::KeyRevoked)),
         "genesis of a pre-revoked key: expected Err(KeyRevoked), got {r:?}"

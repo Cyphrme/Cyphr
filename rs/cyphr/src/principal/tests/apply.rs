@@ -20,11 +20,11 @@ use super::*;
 
 /// Backs the key model (`first_seen` is the adding coz's `now`, never caller-supplied).
 /// Unit: the golden vectors compare roots and counts, not per-key metadata.
-#[test]
-fn key_add_sets_first_seen_from_tx_now() {
+#[tokio::test]
+async fn key_add_sets_first_seen_from_tx_now() {
     let key1 = make_test_key(0x11);
-    let mut principal = Principal::implicit(key1.clone()).unwrap();
-    principal.genesis_test(Vec::new()).unwrap();
+    let mut principal = Principal::implicit(key1.clone()).await.unwrap();
+    principal.genesis_test(Vec::new()).await.unwrap();
 
     let mut key2 = make_test_key(0x22);
     key2.set_first_seen(0); // Caller may not set this
@@ -35,6 +35,7 @@ fn key_add_sets_first_seen_from_tx_now() {
 
     principal
         .apply_transaction_test(cz, Some(key2.clone()))
+        .await
         .unwrap();
 
     // New key's first_seen should be set from cz.now
@@ -52,11 +53,11 @@ fn key_add_sets_first_seen_from_tx_now() {
 
 /// Backs the key model (`last_used` is the signer's latest coz `now`) on the commit path.
 /// Unit: the golden vectors compare roots and counts, not per-key metadata.
-#[test]
-fn transaction_updates_signer_last_used() {
+#[tokio::test]
+async fn transaction_updates_signer_last_used() {
     let key1 = make_test_key(0x11);
-    let mut principal = Principal::implicit(key1.clone()).unwrap();
-    principal.genesis_test(Vec::new()).unwrap();
+    let mut principal = Principal::implicit(key1.clone()).await.unwrap();
+    principal.genesis_test(Vec::new()).await.unwrap();
     // The genesis commit is the key's first use.
     assert_eq!(principal.get_key(key1.tmb()).unwrap().last_used(), Some(1));
 
@@ -77,7 +78,10 @@ fn transaction_updates_signer_last_used() {
         arrow: None,
         raw: dummy_coz_json(),
     };
-    principal.apply_transaction_test(cz, Some(key2)).unwrap();
+    principal
+        .apply_transaction_test(cz, Some(key2))
+        .await
+        .unwrap();
 
     // Signer's last_used should now be 5000
     assert_eq!(
@@ -88,10 +92,10 @@ fn transaction_updates_signer_last_used() {
 
 /// Backs the key model (`last_used`) on the data-action path.
 /// Unit: as above.
-#[test]
-fn action_updates_signer_last_used() {
+#[tokio::test]
+async fn action_updates_signer_last_used() {
     let key = make_test_key(0xAA);
-    let mut principal = Principal::implicit(key.clone()).unwrap();
+    let mut principal = Principal::implicit(key.clone()).await.unwrap();
 
     assert!(principal.get_key(key.tmb()).unwrap().last_used().is_none());
 
@@ -100,7 +104,7 @@ fn action_updates_signer_last_used() {
     // Our test helper uses now=3000, let's verify that
     assert_eq!(action.now, 3000);
 
-    principal.record_action(action).unwrap();
+    principal.state_mut().record_action(action).unwrap();
 
     assert_eq!(
         principal.get_key(key.tmb()).unwrap().last_used(),

@@ -87,10 +87,10 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id_owned = golden_principal_id(&pool).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let (push_status, push_envelope) = post_json(app, "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
@@ -123,10 +123,10 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id_owned = golden_principal_id(&pool).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_100;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
@@ -182,7 +182,7 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 /// layer's own half of the contract directly, the same no-live-server,
 /// no-push pattern the golden-vector tests below already use for `Roots`.
 /// (A genuinely empty `cr` was checked NOT to be reachable via an ordinary
-/// genesis push in this codebase today: `Principal::finalize_commit`
+/// genesis push in this codebase today: `PrincipalState::stage_commit`
 /// unconditionally appends a leaf and writes a real `cr` for every
 /// finalized commit, key-only or not -- confirmed empirically while
 /// drafting this suite. The one reachable path found,
@@ -256,10 +256,10 @@ async fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_str
 #[tokio::test]
 async fn keyless_push_and_tip_responses_stay_unsigned() {
     let pool = load_pool();
-    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id_owned = golden_principal_id(&pool).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_200;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -288,10 +288,10 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     );
 
     let pool = load_pool();
-    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id_owned = golden_principal_id(&pool).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_300;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let app = build_router(Arc::new(state));
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
@@ -357,10 +357,10 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id_owned = golden_principal_id(&pool).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_400;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
     assert_eq!(
@@ -390,6 +390,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // Step 2: the genesis key is a HINT, made trustless by re-deriving the
     // PG from it alone -- never trusting discovery's `pg` claim directly.
     let client = cyphr::Principal::implicit(genesis_key.clone())
+        .await
         .expect("the published genesis key reconstructs the genesis");
     let derived_pg = client
         .pr_tagged()

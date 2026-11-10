@@ -335,7 +335,7 @@ fn resolve_constraint_tag(expected: &str) -> &str {
     }
 }
 
-fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
+async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let content = fs::read_to_string(fixture_path)
@@ -393,7 +393,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         .into_iter()
         .next()
         .unwrap_or_else(|| panic!("{}: no genesis key", fixture.name));
-    let principal_res = Principal::implicit(genesis_key);
+    let principal_res = Principal::implicit(genesis_key).await;
 
     let mut principal = match principal_res {
         Ok(p) => p,
@@ -551,7 +551,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
 
             // Finalize the commit scope
             if applied_tx_count > 0 {
-                match scope.finalize() {
+                match scope.finalize().await {
                     Ok(_) => {},
                     Err(e) => {
                         if let Some(expected) = expected_error {
@@ -635,7 +635,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     );
 }
 
-fn run_golden_dir(subdir: &str) {
+async fn run_golden_dir(subdir: &str) {
     let pool = load_pool();
     let dir = golden_dir().join(subdir);
 
@@ -648,7 +648,7 @@ fn run_golden_dir(subdir: &str) {
     for entry in fs::read_dir(&dir).expect("failed to read dir") {
         let path = entry.expect("failed to read entry").path();
         if path.extension().is_some_and(|ext| ext == "json") {
-            run_golden_test(&path, &pool);
+            run_golden_test(&path, &pool).await;
             count += 1;
         }
     }
@@ -659,56 +659,56 @@ fn run_golden_dir(subdir: &str) {
 // Tests - one per category
 // ============================================================================
 
-#[test]
-fn test_golden_mutations() {
-    run_golden_dir("mutations");
+#[tokio::test]
+async fn test_golden_mutations() {
+    run_golden_dir("mutations").await;
 }
 
-#[test]
-fn test_golden_multi_key() {
-    run_golden_dir("multi_key");
+#[tokio::test]
+async fn test_golden_multi_key() {
+    run_golden_dir("multi_key").await;
 }
 
-#[test]
-fn test_golden_algorithm_diversity() {
-    run_golden_dir("algorithm_diversity");
+#[tokio::test]
+async fn test_golden_algorithm_diversity() {
+    run_golden_dir("algorithm_diversity").await;
 }
 
-#[test]
-fn test_golden_edge_cases() {
-    run_golden_dir("edge_cases");
+#[tokio::test]
+async fn test_golden_edge_cases() {
+    run_golden_dir("edge_cases").await;
 }
 
-#[test]
-fn test_golden_actions() {
-    run_golden_dir("actions");
+#[tokio::test]
+async fn test_golden_actions() {
+    run_golden_dir("actions").await;
 }
 
-#[test]
-fn test_golden_state_computation() {
-    run_golden_dir("state_computation");
+#[tokio::test]
+async fn test_golden_state_computation() {
+    run_golden_dir("state_computation").await;
 }
 
 // @docket: rv-timestamp-monotone :: scripts/docket-run rv-timestamp-monotone
 // @docket: rv-key-set :: scripts/docket-run rv-key-set
 // @docket: rv-alg-support :: scripts/docket-run rv-alg-support
-#[test]
-fn test_golden_errors() {
-    run_golden_dir("errors");
+#[tokio::test]
+async fn test_golden_errors() {
+    run_golden_dir("errors").await;
 }
 
-#[test]
-fn test_golden_lifecycle() {
-    run_golden_dir("lifecycle");
+#[tokio::test]
+async fn test_golden_lifecycle() {
+    run_golden_dir("lifecycle").await;
 }
 
-#[test]
-fn test_golden_witness() {
-    run_golden_dir("witness");
+#[tokio::test]
+async fn test_golden_witness() {
+    run_golden_dir("witness").await;
 }
 
 /// Key-authentication vectors (SPEC 6.4): a revoked key is never re-added.
-#[test]
-fn test_golden_key_auth() {
-    run_golden_dir("key_auth");
+#[tokio::test]
+async fn test_golden_key_auth() {
+    run_golden_dir("key_auth").await;
 }

@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::Principal;
+use super::{Principal, PrincipalState};
 use crate::error::{Error, Result};
 use crate::multihash::MultihashDigest;
 use crate::nonce::NonceLevel;
@@ -106,13 +106,14 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT.
     /// - Propagates [`malt::Error`] for empty tree or out-of-bounds index.
-    pub fn inclusion_proof(&self, alg: HashAlg, index: u64) -> Result<crate::InclusionProof> {
+    pub async fn inclusion_proof(&self, alg: HashAlg, index: u64) -> Result<crate::InclusionProof> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-        if !self.commit_trees.has_algorithm(alg_id) {
+        if !self.log.has_algorithm(alg_id) {
             return Err(Error::UnsupportedAlgorithm(alg.to_string()));
         }
-        self.commit_trees
+        self.log
             .inclusion_proof(alg_id, index)
+            .await
             .map_err(|e| Error::Storage(e.to_string()))
     }
 
@@ -127,35 +128,19 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT.
     /// - Propagates [`Error`] for invalid old_size.
-    pub fn consistency_proof(
+    pub async fn consistency_proof(
         &self,
         alg: HashAlg,
         old_size: u64,
     ) -> Result<crate::ConsistencyProof> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-        if !self.commit_trees.has_algorithm(alg_id) {
+        if !self.log.has_algorithm(alg_id) {
             return Err(Error::UnsupportedAlgorithm(alg.to_string()));
         }
-        self.commit_trees
+        self.log
             .consistency_proof(alg_id, old_size)
+            .await
             .map_err(|e| Error::Storage(e.to_string()))
-    }
-
-    /// Generate an inclusion proof for this principal's current State Root
-    /// (SR), as PT cell 0's payload, in the Principal Root (PR), for hash
-    /// algorithm `alg` — hop 4 of [`Self::key_inclusion_proof`]'s 4-hop
-    /// KT -> AR-node -> SR-node -> PT chain, exposed standalone because
-    /// [`Self::pt`](#structfield.pt) is crate-internal: a portable verifier
-    /// ([`crate::inclusion::verify_key_inclusion`]) that never owns this
-    /// `Principal` still needs hop 4's material to assemble the chain
-    /// itself (issue #19).
-    ///
-    /// Returns `None` if `alg` has no PT registration, mirroring
-    /// [`crate::principal_tree::PrincipalTree::sr_inclusion_proof`].
-    #[must_use]
-    pub fn sr_inclusion_proof(&self, alg: HashAlg) -> Option<polydigest::LeafProof> {
-        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-        self.pt.sr_inclusion_proof(alg_id)
     }
 
     /// Verify that transaction `tr`, claimed at commit `index`, is really
@@ -181,7 +166,7 @@ impl<S: eml::Storage> Principal<S> {
     ///   CR yet (a genesis principal has nothing to chain through PT cell 1 — there is no valid
     ///   `index` to call this with).
     /// - Propagates [`Error`] for an out-of-bounds commit `index`.
-    pub fn verify_transaction_inclusion(
+    pub async fn verify_transaction_inclusion(
         &self,
         alg: HashAlg,
         index: u64,
@@ -190,9 +175,9 @@ impl<S: eml::Storage> Principal<S> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
 
         // Hop 1 material: tr's claimed inclusion in CR.
-        let hop1_proof = self.inclusion_proof(alg, index)?;
+        let hop1_proof = self.inclusion_proof(alg, index).await?;
         let tree_size = self
-            .commit_trees
+            .log
             .tree_size(alg_id)
             .map_err(|e| Error::Storage(e.to_string()))?;
         let cr = self
@@ -229,6 +214,25 @@ impl<S: eml::Storage> Principal<S> {
                 pr_root: pr_bytes,
             },
         ))
+    }
+}
+
+impl PrincipalState {
+    /// Generate an inclusion proof for this principal's current State Root
+    /// (SR), as PT cell 0's payload, in the Principal Root (PR), for hash
+    /// algorithm `alg` — hop 4 of [`Self::key_inclusion_proof`]'s 4-hop
+    /// KT -> AR-node -> SR-node -> PT chain, exposed standalone because
+    /// [`Self::pt`](#structfield.pt) is crate-internal: a portable verifier
+    /// ([`crate::inclusion::verify_key_inclusion`]) that never owns this
+    /// `Principal` still needs hop 4's material to assemble the chain
+    /// itself (issue #19).
+    ///
+    /// Returns `None` if `alg` has no PT registration, mirroring
+    /// [`crate::principal_tree::PrincipalTree::sr_inclusion_proof`].
+    #[must_use]
+    pub fn sr_inclusion_proof(&self, alg: HashAlg) -> Option<polydigest::LeafProof> {
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        self.pt.sr_inclusion_proof(alg_id)
     }
 
     /// Prove that the currently active key with thumbprint `tmb` is

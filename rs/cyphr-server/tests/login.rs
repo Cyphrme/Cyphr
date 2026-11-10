@@ -244,13 +244,16 @@ async fn bootstrap_active_with_key(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::implicit(key(genesis_name)).expect("genesis");
+    let mut principal = cyphr::Principal::implicit(key(genesis_name))
+        .await
+        .expect("genesis");
     let blobs = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get(genesis_name).expect("genesis key in pool"),
         &[key(add_key)],
         1_700_000_000,
     )
+    .await
     .expect("genesis commit");
     let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
@@ -301,7 +304,7 @@ async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
 /// pattern), but for `key/revoke`: no new key is introduced, the signer revokes
 /// itself (`rvk`, no `id` -- SPEC's self-revoke shape), so the mechanism
 /// differs enough not to share a body with the create case.
-fn sign_key_revoke_commit<S: eml::Storage>(
+async fn sign_key_revoke_commit<S: eml::Storage>(
     mut principal: cyphr::Principal<S>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
@@ -341,6 +344,7 @@ fn sign_key_revoke_commit<S: eml::Storage>(
             rvk,
             "cyphr.me",
         )
+        .await
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -379,7 +383,7 @@ async fn bootstrap_active_then_revoke(
         .load_principal(principal_id, genesis)
         .await
         .expect("load principal");
-    let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100);
+    let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100).await;
     let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
     state
         .engine

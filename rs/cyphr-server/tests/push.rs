@@ -58,7 +58,7 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
 
     let pool = load_pool();
     let now = 1_700_100_000;
-    let push_body = build_genesis_push_body(&pool, NON_CANONICAL_PRINCIPAL_ID, now);
+    let push_body = build_genesis_push_body(&pool, NON_CANONICAL_PRINCIPAL_ID, now).await;
 
     let (status1, body1) = post_json(app.clone(), "/push", push_body.clone()).await;
     assert_ne!(
@@ -113,9 +113,9 @@ async fn push_with_canonical_principal_id_is_accepted_and_receipted() {
 
     let pool = load_pool();
     // SPEC 3.1, 5.1: the id is the genesis commit's PG, not a free choice.
-    let principal_id = golden_principal_id(&pool);
+    let principal_id = golden_principal_id(&pool).await;
     let now = 1_700_100_100;
-    let push_body = build_genesis_push_body(&pool, &principal_id, now);
+    let push_body = build_genesis_push_body(&pool, &principal_id, now).await;
 
     let (status, body) = post_json(app, "/push", push_body).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");

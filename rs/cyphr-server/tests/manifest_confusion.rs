@@ -145,11 +145,11 @@ async fn world() -> World {
     let pool = load_pool();
     let (state, dir) = keyless_server();
     let app = build_router(state.clone());
-    let victim = golden_principal_id(&pool);
+    let victim = golden_principal_id(&pool).await;
     let (s, b) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &victim, 1_700_000_000),
+        build_genesis_push_body(&pool, &victim, 1_700_000_000).await,
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "victim genesis push: {b:?}");
@@ -170,7 +170,7 @@ impl World {
     /// Index principals other than the attacker's own, which the crafted
     /// push legitimately creates when it is accepted.
     async fn others(&self) -> Vec<(String, String, u64)> {
-        let attacker = genesis_push_id(&self.pool, "alice", "carol");
+        let attacker = genesis_push_id(&self.pool, "alice", "carol").await;
         let mut p = principals(&self.state).await;
         p.retain(|x| !x.0.ends_with(cyphr_storage::engine::bare_digest(&attacker)));
         p
@@ -180,9 +180,10 @@ impl World {
     /// signed genesis carrying `forge`. Returns the status; a fix may
     /// refuse (4xx) or accept (201), but never anything else.
     async fn push_forged(&self, forge: &Forge) -> StatusCode {
-        let attacker = genesis_push_id(&self.pool, "alice", "carol");
+        let attacker = genesis_push_id(&self.pool, "alice", "carol").await;
         let honest =
-            build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001);
+            build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001)
+                .await;
         let (s, b) = post_json(
             self.app.clone(),
             "/push",
@@ -198,10 +199,11 @@ impl World {
 
     /// The victim's own first-blob hash helper for attacker-controlled
     /// content: the attacker's honest key/create blob (raw, as stored).
-    fn attacker_blob_hash(&self) -> Blake3Hash {
-        let attacker = genesis_push_id(&self.pool, "alice", "carol");
+    async fn attacker_blob_hash(&self) -> Blake3Hash {
+        let attacker = genesis_push_id(&self.pool, "alice", "carol").await;
         let body =
-            build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001);
+            build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001)
+                .await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let raw = Base64UrlUnpadded::decode_vec(v["blobs"][0].as_str().unwrap()).unwrap();
         Blake3Hash::from_bytes(*blake3::hash(&raw).as_bytes())
@@ -345,7 +347,7 @@ async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
 
     let mut forge = Forge::naming(&fake_digest(0xE0), 0xE1);
     forge.commit_id = w.before.commit_id.clone();
-    forge.blob_hash = w.attacker_blob_hash();
+    forge.blob_hash = w.attacker_blob_hash().await;
     w.push_forged(&forge).await;
 
     w.state.engine.rebuild_index_from_manifests().await.unwrap();
@@ -377,11 +379,11 @@ async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
 #[tokio::test]
 async fn rebuild_recovers_exactly_the_honest_manifests() {
     let w = world().await;
-    let other = genesis_push_id(&w.pool, "alice", "carol");
+    let other = genesis_push_id(&w.pool, "alice", "carol").await;
     let (s, b) = post_json(
         w.app.clone(),
         "/push",
-        build_genesis_push_body_with(&w.pool, "alice", "carol", &other, 1_700_000_100),
+        build_genesis_push_body_with(&w.pool, "alice", "carol", &other, 1_700_000_100).await,
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "second honest principal: {b:?}");

@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 use serde_json::Value;
 
 use super::common::{
-    CliPrincipal, current_timestamp, generate_key, load_key_from_keystore,
+    CliPrincipal, block_on, current_timestamp, generate_key, load_key_from_keystore,
     load_principal_from_engine, parse_store, save_principal_to_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
@@ -204,16 +204,13 @@ pub(crate) fn apply_key_create(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
             .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
-    scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(
-            &signer_stored.alg,
-            &signer_stored.prv_key,
-            &signer_stored.pub_key,
-            &tmb,
-        ),
-        now,
-        authority,
-    )?;
+    let signer = cyphr::signer::SoftwareSigner::new(
+        &signer_stored.alg,
+        &signer_stored.prv_key,
+        &signer_stored.pub_key,
+        &tmb,
+    );
+    block_on(scope.finalize_with_software(&signer, now, authority))??;
     Ok(())
 }
 
@@ -275,16 +272,13 @@ pub(crate) fn apply_key_revoke(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
             .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
-    scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(
-            &signer_stored.alg,
-            &signer_stored.prv_key,
-            &signer_stored.pub_key,
-            &tmb,
-        ),
-        now,
-        authority,
-    )?;
+    let signer = cyphr::signer::SoftwareSigner::new(
+        &signer_stored.alg,
+        &signer_stored.prv_key,
+        &signer_stored.pub_key,
+        &tmb,
+    );
+    block_on(scope.finalize_with_software(&signer, now, authority))??;
     Ok(())
 }
 

@@ -5,10 +5,11 @@
 //! Claims backed here:
 //! - F1 (green): branches built on FRESH ancestors both finalize to different PRs, and a linear
 //!   replayer rejects the second branch.
-//! - F2 (green): branches built on CLONES of one ancestor must do the same; each clone owns its
+//! - F2 (green): branches built on FORKS of one ancestor must do the same; each fork owns its
 //!   commit log.
-//! - `clone_independence_*` (green): a public clone is fully independent of its source, and a
-//!   durable-storage principal cannot be publicly cloned at all (rather than silently sharing).
+//! - `clone_independence_property` and `fork_only_over_independent_storage` (green): a fork is
+//!   fully independent of its source, and a principal is copied only by fork over storage that
+//!   copies independently (never `Clone`, never over a durable store).
 //! - `commit_scope_records_to_own_principal_*` (green guard): the fix must not detach a commit
 //!   scope from the principal it was opened on.
 
@@ -49,7 +50,7 @@ fn domain_key(s: &Signer) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of<S: cyphr::eml::Storage>(
+async fn genesis_of<S: cyphr::eml::Storage>(
     mut p: Principal<S>,
     k: &Signer,
     others: &[Key],
@@ -60,6 +61,7 @@ fn genesis_of<S: cyphr::eml::Storage>(
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -78,7 +80,7 @@ fn delete_pay(signer: &Signer, target: &Signer, now: i64) -> (Vec<u8>, Vec<u8>, 
 
 /// One commit on `p`: `signer` deletes `target`. Returns the commit's cozies
 /// as a peer would receive them, or the finalize error.
-fn delete_commit<S: eml::Storage>(
+async fn delete_commit<S: eml::Storage>(
     p: &mut Principal<S>,
     signer: &Signer,
     target: &Signer,
@@ -87,11 +89,18 @@ fn delete_commit<S: eml::Storage>(
     let (b, s, c) = delete_pay(signer, target, now);
     let mut scope = p.begin_commit();
     scope.verify_and_apply(&b, &s, c, None)?;
-    scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv, &signer.pub_key, &signer.tmb),
-        now,
-        "cyphr.me",
-    )?;
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &signer.alg,
+                &signer.prv,
+                &signer.pub_key,
+                &signer.tmb,
+            ),
+            now,
+            "cyphr.me",
+        )
+        .await?;
     Ok(p.commits()
         .last()
         .expect("commit recorded")
@@ -108,41 +117,50 @@ fn delete_commit<S: eml::Storage>(
         .collect())
 }
 
-fn replay(p: &mut Principal, wire: &Wire) -> Result<String, Error> {
+async fn replay(p: &mut Principal, wire: &Wire) -> Result<String, Error> {
     let mut scope = p.begin_commit();
     for (b, s, c) in wire {
         scope.verify_and_apply(b, s, c.clone(), None)?;
     }
-    scope.finalize().map(|c| format!("{:?}", c.pr()))
+    scope.finalize().await.map(|c| format!("{:?}", c.pr()))
 }
 
 // Practice: SPEC.md section 15.7.1 and section 15.8: on a fork "witnesses hold both branches and the principal's consensus state is Error" until resolved; with root AGENTS.md invariant I2 ("a fork is detected, never merged"), each conflicting commit must verify independently against the shared ancestor.
 // Claim F1. Mutation that turns this red: a commit verifier that depends on state outside the
 // ancestor plus the commit's cozies, or one that accepts the second branch on top of the first.
-#[test]
-fn fork_branches_verify_from_fresh_ancestors() {
+#[tokio::test]
+async fn fork_branches_verify_from_fresh_ancestors() {
     let (g, a) = (signer("golden"), signer("key_a"));
-    let fresh = || {
+    let fresh = async || {
         genesis_of(
-            Principal::implicit(domain_key(&g)).expect("ancestor"),
+            Principal::implicit(domain_key(&g)).await.expect("ancestor"),
             &g,
             &[domain_key(&a)],
         )
+        .await
     };
 
     // Branch A: golden deletes key_a. Branch B: key_a deletes golden. Same pre.
-    let wire_a = delete_commit(&mut fresh(), &g, &a, 1_700_000_100).expect("branch A builds");
-    let wire_b = delete_commit(&mut fresh(), &a, &g, 1_700_000_101).expect("branch B builds");
+    let wire_a = delete_commit(&mut fresh().await, &g, &a, 1_700_000_100)
+        .await
+        .expect("branch A builds");
+    let wire_b = delete_commit(&mut fresh().await, &a, &g, 1_700_000_101)
+        .await
+        .expect("branch B builds");
 
     // A peer holding only the ancestor verifies each branch independently.
-    let ra = replay(&mut fresh(), &wire_a).expect("branch A verifies from ancestor");
-    let rb = replay(&mut fresh(), &wire_b).expect("branch B verifies from ancestor");
+    let ra = replay(&mut fresh().await, &wire_a)
+        .await
+        .expect("branch A verifies from ancestor");
+    let rb = replay(&mut fresh().await, &wire_b)
+        .await
+        .expect("branch B verifies from ancestor");
     assert_ne!(ra, rb, "conflicting commits reach different PRs");
 
     // A linear replayer that has applied A rejects B: key_a is already gone.
-    let mut linear = fresh();
-    replay(&mut linear, &wire_a).expect("A applies");
-    let r = replay(&mut linear, &wire_b);
+    let mut linear = fresh().await;
+    replay(&mut linear, &wire_a).await.expect("A applies");
+    let r = replay(&mut linear, &wire_b).await;
     assert!(
         matches!(r, Err(Error::UnknownKey)),
         "expected Err(UnknownKey), got {r:?}"
@@ -151,40 +169,45 @@ fn fork_branches_verify_from_fresh_ancestors() {
 
 // Practice: SPEC.md section 15.7.1 and section 15.8: witnesses must be able to hold both branches
 // of a fork, and root AGENTS.md invariant I2 requires the fork be detected, so deriving the
-// branches by cloning the ancestor must not couple them. Claim F2. Mutation that
-// turns this red: `Principal::clone` sharing one commit log `Arc` between the clones.
-#[test]
-fn fork_branches_from_cloned_ancestor() {
+// branches by forking the ancestor must not couple them. Claim F2. Mutation that
+// turns this red: `Principal::fork` sharing one commit log store between the forks.
+#[tokio::test]
+async fn fork_branches_from_cloned_ancestor() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let ancestor = genesis_of(
-        Principal::implicit(domain_key(&golden)).expect("ancestor"),
+        Principal::implicit(domain_key(&golden))
+            .await
+            .expect("ancestor"),
         &golden,
         &[domain_key(&key_a)],
-    );
+    )
+    .await;
 
-    let mut a = ancestor.clone();
-    let ra = delete_commit(&mut a, &golden, &key_a, 1_700_000_100);
-    assert!(ra.is_ok(), "branch A on a clone of the ancestor: {ra:?}");
+    let mut a = ancestor.fork().await.expect("fork");
+    let ra = delete_commit(&mut a, &golden, &key_a, 1_700_000_100).await;
+    assert!(ra.is_ok(), "branch A on a fork of the ancestor: {ra:?}");
 
-    let mut b = ancestor.clone();
+    let mut b = ancestor.fork().await.expect("fork");
     let (bytes, sig, czd) = delete_pay(&key_a, &golden, 1_700_000_101);
     let mut scope = b.begin_commit();
     scope
         .verify_and_apply(&bytes, &sig, czd, None)
         .expect("branch B coz applies");
-    let r = scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(&key_a.alg, &key_a.prv, &key_a.pub_key, &key_a.tmb),
-        1_700_000_101,
-        "cyphr.me",
-    );
-    assert!(r.is_ok(), "branch from a cloned ancestor: {r:?}");
+    let r = scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &key_a.prv, &key_a.pub_key, &key_a.tmb),
+            1_700_000_101,
+            "cyphr.me",
+        )
+        .await;
+    assert!(r.is_ok(), "branch from a forked ancestor: {r:?}");
 }
 
 // ---------------------------------------------------------------------------------------------
-// G0 acceptance: clone independence
+// G0 acceptance: fork independence
 // ---------------------------------------------------------------------------------------------
 
-/// Observable state of a principal that a sibling clone must never perturb.
+/// Observable state of a principal that a sibling fork must never perturb.
 fn snapshot<S: eml::Storage>(p: &Principal<S>) -> (String, String, Vec<String>) {
     (
         format!("{:?}", p.pr()),
@@ -198,11 +221,12 @@ mod clone_independence {
 
     use super::*;
 
-    // Claim: a public clone is fully independent of its source: commits applied to one never
+    // Claim: a fork is fully independent of its source: commits applied to one never
     // appear in the other's PR, CR or commit list, and the untouched side can still commit its
     // own next commit (property over random valid commit sequences, both directions).
-    // Defect that turns it red: any shared mutable state between clones, such as a commit log `Arc`
-    // shared by `Principal::clone`, which would perturb the untouched clone's CR and next commit.
+    // Defect that turns it red: any shared mutable state between forks, such as a commit log
+    // store shared by `Principal::fork`, which would perturb the untouched fork's CR and next
+    // commit.
     // End-to-end scenario: no, a property test for an invariant.
     proptest! {
         #![proptest_config(ProptestConfig {
@@ -212,7 +236,7 @@ mod clone_independence {
             ..ProptestConfig::default()
         })]
 
-        /// Backs SPEC 15.7.1 / invariant I2: cloning a principal for fork evidence never lets later commits on one branch leak into the other (property over commit sequences).
+        /// Backs SPEC 15.7.1 / invariant I2: forking a principal for fork evidence never lets later commits on one branch leak into the other (property over commit sequences).
         #[test]
         fn clone_independence_property(
             // Targets golden deletes on branch A, in order: a random non-empty prefix of a
@@ -220,77 +244,102 @@ mod clone_independence {
             order in Just(vec!["key_a", "alice", "bob"]).prop_shuffle(),
             take in 1usize..=3,
         ) {
+            block_on(async move {
             let golden = signer("golden");
             let key_a = signer("key_a");
             let targets: Vec<Signer> = order[..take].iter().map(|n| signer(n)).collect();
             let mut keys = vec![domain_key(&golden), domain_key(&key_a)];
             keys.extend(["alice", "bob"].iter().map(|n| domain_key(&signer(n))));
             let ancestor = genesis_of(
-                Principal::implicit(keys[0].clone()).expect("ancestor"),
+                Principal::implicit(keys[0].clone()).await.expect("ancestor"),
                 &golden,
                 &keys[1..],
-            );
+            ).await;
 
-            let mut a = ancestor.clone();
-            let mut b = ancestor.clone();
+            let mut a = ancestor.fork().await.expect("fork");
+            let mut b = ancestor.fork().await.expect("fork");
             let before = snapshot(&ancestor);
             prop_assert_eq!(snapshot(&b), before.clone());
 
             // Apply the sequence to A only.
             for (i, t) in targets.iter().enumerate() {
                 delete_commit(&mut a, &golden, t, 1_700_000_100 + i as i64)
-                    .expect("A's commit sequence is valid");
+                    .await.expect("A's commit sequence is valid");
             }
             // The genesis commit precedes the sequence on every branch.
             prop_assert_eq!(a.commits().count(), take + 1);
 
             // B and the ancestor itself are untouched by A's commits.
-            prop_assert_eq!(snapshot(&b), before.clone(), "A's commits leaked into clone B");
+            prop_assert_eq!(snapshot(&b), before.clone(), "A's commits leaked into fork B");
             prop_assert_eq!(snapshot(&ancestor), before.clone(), "A's commits leaked into the source");
 
             // B can still commit its own next commit, and A does not see it.
             let a_after = snapshot(&a);
             delete_commit(&mut b, &key_a, &golden, 1_700_000_500)
-                .expect("B can still commit after A committed on a clone of the same ancestor");
+                .await.expect("B can still commit after A committed on a fork of the same ancestor");
             prop_assert_eq!(b.commits().count(), 2);
             prop_assert_ne!(snapshot(&b).0, a_after.0.clone(), "branches reached the same PR");
             prop_assert_eq!(snapshot(&a), a_after, "B's commit leaked into A");
+                Ok::<(), TestCaseError>(())
+            })?;
         }
     }
 
-    /// Autoref probe: `Probe::<T>::IS_CLONE` is `true` iff `T: Clone`, decided at compile time for
-    /// a concrete `T` (the inherent const shadows the trait default only when the bound holds).
+    /// Autoref probe: `Probe::<T>::IS_CLONE` is `true` iff `T: Clone`, and
+    /// `Probe::<T>::IS_FORK` iff `T: ForkStorage`, decided at compile time for a concrete `T`
+    /// (the inherent const shadows the trait default only when the bound holds).
     struct Probe<T>(std::marker::PhantomData<T>);
-    // Never named: the trait exists only so `Probe::<T>::IS_CLONE` resolves to this default.
+    // Never named: the traits exist only so the probe consts resolve to these defaults.
     #[allow(dead_code)]
     trait NotClone {
         const IS_CLONE: bool = false;
     }
     impl<T> NotClone for Probe<T> {}
+    // Resolved for no probed type by design: no principal is `Clone`.
+    #[allow(dead_code)]
     impl<T: Clone> Probe<T> {
         const IS_CLONE: bool = true;
     }
+    #[allow(dead_code)]
+    trait NotFork {
+        const IS_FORK: bool = false;
+    }
+    impl<T> NotFork for Probe<T> {}
+    impl<T: cyphr::ForkStorage> Probe<T> {
+        const IS_FORK: bool = true;
+    }
 
-    // Claim: cloning a durable-storage principal must fail at compile time rather than silently
-    // share one Fjall-backed log (brief Reserved halt predicate; FjallStorage has no copy
-    // primitive in eml 0.11). Expressed at runtime via a compile-time trait probe because the
-    // package has no trybuild dependency and Cargo.toml is outside this node's file surface.
-    // Defect that turns it red: `Principal<S>: Clone` for every `S: eml::Storage`.
-    // The in-memory principal must stay publicly Clone (F2 and the property above need it).
+    // Claim: a principal is copied only where its storage copies into an independent store:
+    // `Principal` is never `Clone`, and `Principal::fork` exists only over `ForkStorage`, which
+    // the in-memory store implements and the durable Fjall store does not (a copy of a Fjall
+    // handle would be a second writer of one on-disk log). Expressed at runtime via a
+    // compile-time trait probe because the package has no trybuild dependency.
+    // Defect that turns it red: `Principal<S>: Clone` for any `S`, or `ForkStorage` for
+    // `FjallStorage`.
     // End-to-end scenario: no, a type-level invariant has no scenario that reaches it.
     #[test]
-    fn clone_independence_durable_principal_not_publicly_clone() {
+    fn fork_only_over_independent_storage() {
         // Constants by design; the const-assert lint would suggest a build-time error instead,
         // which would break compilation of the whole file rather than fail this one test.
         #[allow(clippy::assertions_on_constants)]
         let () = assert!(
-            Probe::<Principal>::IS_CLONE,
-            "the in-memory principal must stay publicly Clone"
+            !Probe::<Principal>::IS_CLONE,
+            "the in-memory principal must not be Clone: it is copied by fork"
         );
         #[allow(clippy::assertions_on_constants)]
         let () = assert!(
             !Probe::<Principal<storage_fjall::FjallStorage>>::IS_CLONE,
             "Principal<FjallStorage> must not be Clone: a clone would share one durable log"
+        );
+        #[allow(clippy::assertions_on_constants)]
+        let () = assert!(
+            Probe::<cyphr::eml::MemoryStorage>::IS_FORK,
+            "the in-memory store must fork, so in-memory principals can"
+        );
+        #[allow(clippy::assertions_on_constants)]
+        let () = assert!(
+            !Probe::<storage_fjall::FjallStorage>::IS_FORK,
+            "FjallStorage must not fork: its copy would share one durable log"
         );
     }
 }
@@ -300,27 +349,37 @@ mod clone_independence {
 // new PR. Green guard (c-scope), not red on the base: it fails only if the fix detaches the scope
 // from its principal (e.g. scope projects onto a now-independent clone and forgets to write back).
 // End-to-end scenario: yes (build, sign, finalize, observe).
-#[test]
-fn commit_scope_records_to_own_principal_memory_and_durable() {
+#[tokio::test]
+async fn commit_scope_records_to_own_principal_memory_and_durable() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let others = [domain_key(&key_a)];
 
     let mut mem = genesis_of(
-        Principal::implicit(domain_key(&golden)).expect("memory principal"),
+        Principal::implicit(domain_key(&golden))
+            .await
+            .expect("memory principal"),
         &golden,
         &others,
-    );
+    )
+    .await;
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage_fjall::FjallStorage::open(dir.path()).expect("open fjall");
     let mut disk = genesis_of(
-        Principal::implicit_with_storage(domain_key(&golden), storage).expect("durable principal"),
+        Principal::open(domain_key(&golden), storage)
+            .await
+            .expect("durable principal"),
         &golden,
         &others,
-    );
+    )
+    .await;
 
     let (mem_pr, disk_pr) = (format!("{:?}", mem.pr()), format!("{:?}", disk.pr()));
-    delete_commit(&mut mem, &golden, &key_a, 1_700_000_100).expect("memory commit");
-    delete_commit(&mut disk, &golden, &key_a, 1_700_000_100).expect("durable commit");
+    delete_commit(&mut mem, &golden, &key_a, 1_700_000_100)
+        .await
+        .expect("memory commit");
+    delete_commit(&mut disk, &golden, &key_a, 1_700_000_100)
+        .await
+        .expect("durable commit");
 
     for (name, count, cr, pr, before) in [
         (
@@ -353,4 +412,13 @@ fn commit_scope_records_to_own_principal_memory_and_durable() {
         format!("{:?}", disk.pr()),
         "same ancestor and commit give the same PR regardless of storage"
     );
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }

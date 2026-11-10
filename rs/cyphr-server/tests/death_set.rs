@@ -34,8 +34,8 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
     let key = common::write_signing_key(dir.path());
     let state = Arc::new(common::keyed_appstate(&dir.path().join("data"), &key));
 
-    let pid = common::golden_principal_id(pool);
-    let body = common::build_genesis_push_body(pool, &pid, NOW);
+    let pid = common::golden_principal_id(pool).await;
+    let body = common::build_genesis_push_body(pool, &pid, NOW).await;
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
@@ -86,7 +86,7 @@ fn key_of(k: &PoolKey) -> cyphr::Key {
 /// A commit on `principal`, signed by `signer`, whose one coz is of `typ`
 /// (`key/create` or `key/replace`) and introduces `target`. Returns the wire
 /// blobs (the introduced key embedded on its coz).
-fn intro_commit(
+async fn intro_commit(
     mut principal: cyphr::Principal,
     signer: &PoolKey,
     target: &PoolKey,
@@ -119,6 +119,7 @@ fn intro_commit(
             NOW,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 
     let entry = cyphr_storage::export_commits(&principal)
@@ -163,7 +164,7 @@ const REPLACER: &str = "carol";
 /// then replaces itself with `target`, before the `principal/create`.
 /// Returns the push body, the principal's id (its PG) and the principal
 /// after that genesis commit.
-fn genesis_push(
+async fn genesis_push(
     pool: &Pool,
     genesis: &str,
     target: &str,
@@ -178,9 +179,12 @@ fn genesis_push(
             .collect()
     };
     if typ == CREATE {
-        let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+        let mut p = cyphr::Principal::implicit(key_of(g))
+            .await
+            .expect("genesis");
         let blobs = wire(
             p.commit_genesis(&signer_of(g), &[key_of(t)], NOW, "cyphr.me")
+                .await
                 .expect("genesis commit"),
         );
         let pid = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
@@ -188,10 +192,13 @@ fn genesis_push(
     }
 
     let r = pool.get(REPLACER).expect("replacer key");
-    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    let mut p = cyphr::Principal::implicit(key_of(g))
+        .await
+        .expect("genesis");
     let mut scope = p.begin_commit();
     let mut cozies = scope
         .create_genesis_keys(&signer_of(g), &[key_of(r)], NOW, "cyphr.me")
+        .await
         .expect("genesis key/creates");
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": r.alg,
@@ -215,10 +222,12 @@ fn genesis_push(
     cozies.push(
         scope
             .create_principal(&signer_of(g), NOW, "cyphr.me")
+            .await
             .expect("principal/create"),
     );
     let commit = scope
         .finalize_with_software(&signer_of(g), NOW, "cyphr.me")
+        .await
         .expect("finalize");
     cozies.push(
         serde_json::to_value(commit.commit_tx().0.first().expect("commit/create").raw())
@@ -252,7 +261,7 @@ async fn assert_refused_and_unwritten(state: &Arc<AppState>, status: StatusCode,
 async fn dead_key_refused_as_key_create_in_a_new_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (body, pid, _) = genesis_push(&pool, "bob", "key_a", CREATE);
+    let (body, pid, _) = genesis_push(&pool, "bob", "key_a", CREATE).await;
     let status = push(&state, body).await;
     assert_refused_and_unwritten(&state, status, &pid).await;
 }
@@ -263,7 +272,7 @@ async fn dead_key_refused_as_key_create_in_a_new_principal() {
 async fn dead_key_refused_as_key_replace_in_a_new_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (body, pid, _) = genesis_push(&pool, "alice", "key_a", REPLACE);
+    let (body, pid, _) = genesis_push(&pool, "alice", "key_a", REPLACE).await;
     let status = push(&state, body).await;
     assert_refused_and_unwritten(&state, status, &pid).await;
 }
@@ -275,7 +284,7 @@ async fn dead_key_refused_as_key_replace_in_a_new_principal() {
 async fn dead_key_refused_as_key_create_in_an_existing_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (first, pid, bob) = genesis_push(&pool, "bob", "key_b", CREATE);
+    let (first, pid, bob) = genesis_push(&pool, "bob", "key_b", CREATE).await;
     assert_eq!(
         push(&state, first).await,
         StatusCode::CREATED,
@@ -288,7 +297,8 @@ async fn dead_key_refused_as_key_create_in_an_existing_principal() {
         pool.get("bob").unwrap(),
         pool.get("key_a").unwrap(),
         CREATE,
-    );
+    )
+    .await;
     let status = push(&state, body(&pid, &blobs)).await;
 
     assert!(
@@ -307,7 +317,7 @@ async fn live_key_is_still_introducible_by_create_and_replace() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
     for (genesis, typ) in [("bob", CREATE), ("alice", REPLACE)] {
-        let (body, ..) = genesis_push(&pool, genesis, "key_b", typ);
+        let (body, ..) = genesis_push(&pool, genesis, "key_b", typ).await;
         assert_eq!(
             push(&state, body).await,
             StatusCode::CREATED,

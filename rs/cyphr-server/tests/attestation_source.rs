@@ -77,12 +77,12 @@ async fn roots_derive_from_blobs() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id = common::golden_principal_id(&pool);
+    let principal_id = common::golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
     let now = 1_700_000_000;
 
     // 1. Establish valid principal via genesis push.
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (status, push_res) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         status,
@@ -142,11 +142,11 @@ async fn roots_derive_from_blobs() {
 
     // 4. POST /push under corrupted index MUST NOT return a commit receipt signed over corrupted
     //    index values.
-    let push_principal = common::genesis_push_id(&pool, "alice", "key_a");
+    let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
     let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt =
-        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
 
     let (push_status, push_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
     if push_status == StatusCode::CREATED {
@@ -186,12 +186,12 @@ async fn stale_index_fails_attestation() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id = common::golden_principal_id(&pool);
+    let principal_id = common::golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
     let now = 1_700_000_000;
 
     // 1. Initial valid push.
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (status, push_res) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         status,
@@ -224,11 +224,11 @@ async fn stale_index_fails_attestation() {
     );
 
     // 4. POST /push with stale/corrupted index MUST FAIL attestation.
-    let push_principal = common::genesis_push_id(&pool, "alice", "key_a");
+    let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
     let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt =
-        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
     let (push_status, push_body_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     let is_signed_corrupt_push = push_status == StatusCode::CREATED
@@ -258,12 +258,12 @@ async fn failure_is_typed_not_silent() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id = common::golden_principal_id(&pool);
+    let principal_id = common::golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
     let now = 1_700_000_000;
 
     // 1. Initial valid push.
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (status, push_res) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         status,
@@ -306,11 +306,11 @@ async fn failure_is_typed_not_silent() {
     );
 
     // 4. POST /push under corrupted index must also fail with a typed error message.
-    let push_principal = common::genesis_push_id(&pool, "alice", "key_a");
+    let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
     let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt =
-        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
     let (push_status, push_res_body) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     assert!(

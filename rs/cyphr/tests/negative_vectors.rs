@@ -47,13 +47,14 @@ fn domain_key(s: &Signer) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &Signer, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &Signer, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
         others,
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -137,8 +138,8 @@ fn replace_s(sig: &[u8], s: &[u8]) -> Vec<u8> {
 // Claim C1. Mutation that turns this red: dropping the low-S check in coz-rs verify (coz-rs key.rs)
 // or swapping to a verifier that accepts both S and n-S.
 // @docket: rv-sig-verifies :: scripts/docket-run rv-sig-verifies
-#[test]
-fn es256_high_s_signature_is_rejected() {
+#[tokio::test]
+async fn es256_high_s_signature_is_rejected() {
     let key = signer("key_a");
     assert_eq!(key.alg, "ES256", "fixture precondition");
     let golden = signer("golden");
@@ -154,10 +155,13 @@ fn es256_high_s_signature_is_rejected() {
     };
 
     let mut p = genesis_of(
-        Principal::implicit(domain_key(&golden)).expect("principal"),
+        Principal::implicit(domain_key(&golden))
+            .await
+            .expect("principal"),
         &golden,
         &[domain_key(&key)],
-    );
+    )
+    .await;
 
     // Control: the low-S encoding of the same signature is accepted, so the
     // rejection below can only come from the high-S rule.
@@ -178,8 +182,8 @@ fn es256_high_s_signature_is_rejected() {
 // Practice: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.7 section 5.1.7 (Verify) requires 0 <= s < L, rejecting s + L, which would otherwise give a second valid encoding of one signature (the czd covers sig).
 // Claim C2. Mutation that turns this red: building ed25519-dalek with the `legacy_compatibility`
 // feature, or any verifier that reduces s mod L before checking.
-#[test]
-fn ed25519_non_canonical_s_is_rejected() {
+#[tokio::test]
+async fn ed25519_non_canonical_s_is_rejected() {
     let key = signer("eve_ed25519");
     assert_eq!(key.alg, "Ed25519", "fixture precondition");
     let golden = signer("golden");
@@ -190,10 +194,13 @@ fn ed25519_non_canonical_s_is_rejected() {
     assert_ne!(bumped.as_slice(), s, "s + L differs from s");
 
     let mut p = genesis_of(
-        Principal::implicit(domain_key(&golden)).expect("principal"),
+        Principal::implicit(domain_key(&golden))
+            .await
+            .expect("principal"),
         &golden,
         &[domain_key(&key)],
-    );
+    )
+    .await;
 
     // s + L is the same scalar mod L, so only the canonicality check can
     // distinguish it from the genuine signature.
@@ -231,12 +238,15 @@ fn ds_create(golden: &Signer, scope: &cyphr::CommitScope<'_>) -> Signed {
 /// Principal {golden, key_a}; key_a signs a genuine action at t=10; at
 /// t=100 golden includes it into DR (`ds/create`) and deletes key_a in one
 /// commit. Returns the principal with key_a deleted.
-fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
+async fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
     let mut p = genesis_of(
-        Principal::implicit(domain_key(golden)).expect("principal"),
+        Principal::implicit(domain_key(golden))
+            .await
+            .expect("principal"),
         golden,
         &[domain_key(key_a)],
-    );
+    )
+    .await;
     record(&mut p, action(key_a, 1_700_000_010, "genuine")).expect("genuine action accepted");
     let (pay, sig, czd) = sign(
         golden,
@@ -262,6 +272,7 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
             1_700_000_100,
             "cyphr.me",
         )
+        .await
         .expect("delete commit finalizes");
     assert!(!p.is_key_active(&key_a.tmb), "key_a deleted");
     p
@@ -271,10 +282,10 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
 // Claim C3a. Mutation that turns this red: making `verify_and_record_action` check the signer
 // against the key's historical active periods by the payload `now` instead of current KT
 // membership.
-#[test]
-fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
+#[tokio::test]
+async fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
-    let mut p = principal_with_deleted_key(&golden, &key_a);
+    let mut p = principal_with_deleted_key(&golden, &key_a).await;
     // The genuine pre-delete action is still recorded after the delete.
     let count = p.action_count();
     assert_eq!(count, 1, "genuine pre-delete action stays recorded");
@@ -294,10 +305,10 @@ fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
 // ignored"; a deleted key has no authority after its delete commit. Claim C3b. Mutation that turns
 // this red: accepting data actions from a key absent from the current KT.
 // @docket: rv-key-active-gate :: scripts/docket-run rv-key-active-gate
-#[test]
-fn deleted_key_action_dated_after_delete_is_rejected() {
+#[tokio::test]
+async fn deleted_key_action_dated_after_delete_is_rejected() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
-    let mut p = principal_with_deleted_key(&golden, &key_a);
+    let mut p = principal_with_deleted_key(&golden, &key_a).await;
     let r = record(&mut p, action(&key_a, 1_700_000_200, "after delete"));
     assert!(
         matches!(r, Err(Error::UnknownKey)),
@@ -310,19 +321,22 @@ fn deleted_key_action_dated_after_delete_is_rejected() {
 // cannot re-verify. Claim C3c. Mutation that turns this red: not checking a `ds/create`'s `id`
 // against the Data Tree it is applied to.
 // @docket: rv-state-recomputed :: scripts/docket-run rv-state-recomputed
-#[test]
-fn forged_action_spliced_before_delete_commit_breaks_replay() {
+#[tokio::test]
+async fn forged_action_spliced_before_delete_commit_breaks_replay() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
-    let honest = principal_with_deleted_key(&golden, &key_a);
+    let honest = principal_with_deleted_key(&golden, &key_a).await;
     let cozies = honest.commits().last().expect("delete commit").all_cozies();
 
     // Control: an honest replay without the forged action finalizes, so the
     // failure below comes only from the spliced action.
     let mut honest_replay = genesis_of(
-        Principal::implicit(domain_key(&golden)).expect("principal"),
+        Principal::implicit(domain_key(&golden))
+            .await
+            .expect("principal"),
         &golden,
         &[domain_key(&key_a)],
-    );
+    )
+    .await;
     record(&mut honest_replay, action(&key_a, 1_700_000_010, "genuine")).expect("genuine");
     let mut scope = honest_replay.begin_commit();
     for vc in &cozies {
@@ -332,15 +346,18 @@ fn forged_action_spliced_before_delete_commit_breaks_replay() {
             .verify_and_apply(&bytes, &raw.sig, vc.czd().clone(), None)
             .expect("coz applies");
     }
-    scope.finalize().expect("honest replay finalizes");
+    scope.finalize().await.expect("honest replay finalizes");
 
     // Replayer: the same genesis and genuine action, plus a forged action
     // dated inside key_a's active period, inserted before the delete commit.
     let mut p = genesis_of(
-        Principal::implicit(domain_key(&golden)).expect("principal"),
+        Principal::implicit(domain_key(&golden))
+            .await
+            .expect("principal"),
         &golden,
         &[domain_key(&key_a)],
-    );
+    )
+    .await;
     record(&mut p, action(&key_a, 1_700_000_010, "genuine")).expect("genuine");
     record(
         &mut p,

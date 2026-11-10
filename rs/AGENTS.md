@@ -108,17 +108,14 @@ test that backs no stated claim.
 
 ## Known traps (updated 2026-07-08; fix, don't inherit)
 
-- **`CloneableLog` concurrency assumption.** `block_on` under a `Mutex`
-  (`cyphr/src/commit_root.rs`); sound only because every engine call
-  builds a fresh `Principal`. A shared, long-lived `Principal` across
-  concurrent tasks would violate this -- resolved externally, not by
-  changing `CloneableLog` itself: `StorageEngine::submit_commit` now
-  holds a per-principal async lock across its whole critical section
-  (`F3`/`F24`, mitigated), so the server's real access pattern never
-  exercises concurrent calls against the same live `Principal`. The
-  assumption above is still true of `CloneableLog` in isolation --
-  don't drive it directly from concurrent tasks without an equivalent
-  guard.
+- **One writer per principal log.** A `Principal` owns its commit log
+  outright (`cyphr/src/commit_root.rs`, `CommitTrees`): no alias, no lock
+  in the core, and no `Clone` (a copy is `fork()`, only over storage that
+  copies independently). Two `Principal`s opened over one durable store
+  are still two writers of it; `StorageEngine::submit_commit` serializes
+  them with a per-principal async lock across its whole critical section
+  (`F3`/`F24`). Don't open the same durable principal from concurrent
+  tasks without an equivalent guard.
 - **Trust-boundary parsing is multiplied.** Coz header extraction /
   czd computation are hand-rolled in ~4/10 places (engine, reindex,
   import, CLI) with silent defaults. Don't add a fifth — the campaign

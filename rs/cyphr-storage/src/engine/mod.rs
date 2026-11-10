@@ -401,6 +401,27 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedCache<K, V> {
     }
 }
 
+// Compile-time proof that the engine's write path is `Send` for every
+// backend, so the server's multi-threaded runtime can drive it over the
+// durable store: a `!Send` value held across one of its awaits fails here.
+const _: () = {
+    fn assert_send<T: Send>(_: &T) {}
+    #[allow(dead_code)]
+    fn submit_commit_is_send<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage>(
+        engine: &StorageEngine<B, I, S>,
+    ) {
+        assert_send(&engine.submit_commit("", None, &[]));
+    }
+};
+
+/// A pushed bundle verified into the commit it forms, nothing yet written:
+/// the commit's index record and the staged core commit whose log append
+/// follows the blob store's record of it ([`StorageEngine::ingest_commit`]).
+pub(crate) struct StagedBuild<'p, T: cyphr::eml::Storage> {
+    commit: IndexableCommit,
+    staged: cyphr::replay::StagedBundle<'p, T>,
+}
+
 /// Coordinated storage engine joining blob and index layers.
 ///
 /// Generic over backend implementations. Use `MemoryBlobStore` +
@@ -431,9 +452,9 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     ///
     /// Keyed-mutex map: each `principal_id` gets its own
     /// `tokio::sync::Mutex`, so concurrent writers for the *same* principal
-    /// serialize (making [`CloneableLog`](cyphr::commit_root::CloneableLog)'s
-    /// documented fresh-Principal-per-call assumption hold by construction)
-    /// while writers for *different* principals never contend. The outer
+    /// serialize (each submit opens the principal's one durable log, so two
+    /// at once would be two writers of it) while writers for *different*
+    /// principals never contend. The outer
     /// `std::sync::Mutex` only ever guards the fast, non-blocking
     /// get-or-insert into the map itself, never the write critical section.
     ///
@@ -908,17 +929,41 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// let _ = engine.ingest_commit(blobs, commit).await;
     /// # }
     /// ```
+    pub(crate) async fn ingest_commit<T: cyphr::eml::Storage>(
+        &self,
+        blobs: &[&[u8]],
+        build: StagedBuild<'_, T>,
+    ) -> Result<IngestResult, EngineError> {
+        let StagedBuild { commit, staged } = build;
+        self.ingest(blobs, commit, Some(staged)).await
+    }
+
+    /// [`Self::ingest_commit`] of index metadata built by hand, with no
+    /// core commit behind it (unit tests of the indexing path).
+    #[cfg(test)]
+    pub(crate) async fn ingest_metadata(
+        &self,
+        blobs: &[&[u8]],
+        commit: IndexableCommit,
+    ) -> Result<IngestResult, EngineError> {
+        self.ingest::<cyphr::eml::MemoryStorage>(blobs, commit, None)
+            .await
+    }
+
+    /// Store blobs and manifest, then the commit-log append (when there is
+    /// a core commit), then the index: the I1 order.
     #[tracing::instrument(
-        skip(self, blobs),
+        skip(self, blobs, commit, staged),
         fields(
             principal_id = %commit.principal_id,
             blob_count = blobs.len()
         )
     )]
-    pub(crate) async fn ingest_commit(
+    async fn ingest<T: cyphr::eml::Storage>(
         &self,
         blobs: &[&[u8]],
         commit: IndexableCommit,
+        staged: Option<cyphr::replay::StagedBundle<'_, T>>,
     ) -> Result<IngestResult, EngineError> {
         // The one exclusive claim (a PG alias) is checked before the first
         // durable write: a refused commit must leave no blob or manifest
@@ -943,6 +988,23 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .await?;
         let (commit, manifest_hash) = self.store_blobs_and_manifest(blobs, commit).await?;
         let blob_hashes = commit.blob_hashes.clone();
+
+        // The blob store now records the commit (I1), so its commit-log
+        // append may follow: the log is never ahead of the record. The log
+        // is a cache of that record, so a failed append does not unmake the
+        // commit: the push still succeeds, and the next load repairs the
+        // log by replaying the manifest's commit onto it (as after a crash
+        // here).
+        if let Some(Err(e)) = match staged {
+            Some(staged) => Some(staged.commit().await),
+            None => None,
+        } {
+            tracing::warn!(
+                principal = %commit.principal_id,
+                error = %e,
+                "commit stored but its log append failed; the next load replays it"
+            );
+        }
 
         self.indexer
             .index_commit(&commit, &DeriveToken::new())
@@ -1237,7 +1299,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             let actions = histories.get(principal_id).and_then(|h| h.get(&tip));
             for bundle in actions.into_iter().flatten() {
-                if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies) {
+                if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies).await {
                     refused_actions.push((bundle.manifest, e.to_string()));
                 }
             }
@@ -1513,7 +1575,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // The key is a function of the record (I1: not of what a
             // manifest claims), so that one commit is replayed, not the
             // chain ([`record_key`]).
-            let derived = record_key(&genesis, &blobs);
+            let derived = record_key(&genesis, &blobs).await;
             // Strict by decision: the project is pre-1.0 with nothing
             // deployed, so a store keyed by a PG-to-be exists only in test
             // runs and needs no lenient branch.
@@ -1558,26 +1620,37 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 let Some(genesis) = disclosed_genesis(&blobs) else {
                     return Ok(Err("its first commit discloses no genesis".into()));
                 };
-                match genesis.and_then(|genesis| {
-                    Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())
-                }) {
+                let opened = match genesis {
+                    Ok(genesis) => {
+                        Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())
+                            .await
+                    },
+                    Err(e) => Err(e),
+                };
+                match opened {
                     Ok(principal) => e.insert(principal),
                     Err(e) => return Ok(Err(format!("genesis does not replay: {e}"))),
                 }
             },
         };
         for bundle in actions {
-            if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies) {
+            if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies).await {
                 refused.push((bundle.manifest, e.to_string()));
             }
         }
         let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-        let mut replayed =
-            match Self::build_commit(principal, &refs, &commit.principal_id, commit.sequence) {
-                Ok(Some(replayed)) => replayed,
-                Ok(None) => return Ok(Err("its blobs form no commit".into())),
-                Err(e) => return Ok(Err(format!("its blobs do not replay: {e}"))),
-            };
+        let StagedBuild {
+            commit: mut replayed,
+            staged,
+        } = match Self::build_commit(principal, &refs, &commit.principal_id, commit.sequence).await
+        {
+            Ok(Some(build)) => build,
+            Ok(None) => return Ok(Err("its blobs form no commit".into())),
+            Err(e) => return Ok(Err(format!("its blobs do not replay: {e}"))),
+        };
+        if let Err(e) = staged.commit().await {
+            return Ok(Err(format!("its blobs do not replay: {e}")));
+        }
         // `store_manifest` fills these in at ingest.
         replayed.blob_hashes.clone_from(&commit.blob_hashes);
         for (coz, hash) in replayed.cozies.iter_mut().zip(&commit.blob_hashes) {
@@ -1665,7 +1738,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: crate::Genesis,
     ) -> Result<cyphr::Principal<S>, EngineError> {
         let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
-        self.replay_onto(principal_id, genesis, storage, None).await
+        let replayed = self.replay_onto(principal_id, genesis, storage, None).await;
+        if let Err(EngineError::Load(crate::import::LoadError::Protocol(
+            cyphr::Error::DurableLeafMismatch(leaf),
+        ))) = &replayed
+        {
+            // Only a log written before the two-phase commit can hold a
+            // leaf ahead of its commit: the log is a cache of the blob
+            // store (I1), so rebuilding it from the blobs repairs it.
+            tracing::warn!(
+                principal = %principal_id,
+                leaf,
+                "legacy commit log: leaf written ahead of its commit; rebuild the log"
+            );
+        }
+        replayed
     }
 
     /// Replay the first `through` stored commits (all of them for `None`)
@@ -1690,16 +1777,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<cyphr::Principal<T>, EngineError> {
         use crate::import::replay_commit;
 
-        let mut principal = Self::principal_from_genesis(genesis, storage)?;
+        let mut principal = Self::principal_from_genesis(genesis, storage).await?;
 
         let commit_entries = self.stored_entries(principal_id, through).await?;
         let actions = self.action_history(principal_id).await?;
 
         for (position, entry) in commit_entries.iter().enumerate() {
-            replay_actions_at(&mut principal, &actions, position as u64)?;
-            replay_commit(&mut principal, entry, position)?;
+            replay_actions_at(&mut principal, &actions, position as u64).await?;
+            replay_commit(&mut principal, entry, position).await?;
         }
-        replay_actions_at(&mut principal, &actions, commit_entries.len() as u64)?;
+        replay_actions_at(&mut principal, &actions, commit_entries.len() as u64).await?;
 
         Ok(principal)
     }
@@ -1733,17 +1820,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// A principal holding only its genesis key, over `storage`.
-    fn principal_from_genesis<T: cyphr::eml::Storage>(
+    async fn principal_from_genesis<T: cyphr::eml::Storage>(
         genesis: crate::Genesis,
         storage: T,
     ) -> Result<cyphr::Principal<T>, EngineError> {
         let key = genesis
             .key()
             .ok_or_else(|| EngineError::InvalidInput("genesis requires at least one key".into()))?;
-        Ok(cyphr::Principal::implicit_with_storage(
-            key.clone(),
-            storage,
-        )?)
+        Ok(cyphr::Principal::open(key.clone(), storage).await?)
     }
 
     /// The first `through` stored commits (all for `None`) of
@@ -1870,7 +1954,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     (None, Some(given)) => given,
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
-                let key = record_key(&genesis, raw_blobs);
+                let key = record_key(&genesis, raw_blobs).await;
                 let names_key = key
                     .as_ref()
                     .is_some_and(|key| claimed == key || claimed == bare_digest(key));
@@ -1904,8 +1988,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
 
-        let commit = match Self::build_commit(&mut principal, raw_blobs, principal_id, next_seq) {
-            Ok(Some(commit)) => commit,
+        let build = match Self::build_commit(&mut principal, raw_blobs, principal_id, next_seq)
+            .await
+        {
+            Ok(Some(build)) => build,
             Ok(None) => {
                 // Action-only bundle: no commit is formed and nothing is
                 // indexed, but its actions are in DT from now on, so every
@@ -1966,7 +2052,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 return Err(refused);
             },
         };
-        self.ingest_commit(raw_blobs, commit).await
+        self.ingest_commit(raw_blobs, build).await
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],
@@ -2004,18 +2090,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Verify `raw_blobs` against `principal`'s current state and build the
-    /// commit they would form at `next_seq`, without touching storage.
-    /// `Ok(None)` is an action-only bundle: it forms no commit.
+    /// commit they would form at `next_seq`, staged: nothing is written,
+    /// to storage or to the principal's commit log, until the caller
+    /// commits the returned [`StagedBuild`]. `Ok(None)` is an action-only
+    /// bundle: it forms no commit (its actions are recorded on
+    /// `principal`, in memory).
     ///
-    /// Synchronous and storage-free so a refused fork can be re-verified
-    /// against an earlier state ([`Self::retain_rival`]) by the same code
-    /// that admits a tip.
-    fn build_commit<T: cyphr::eml::Storage>(
-        principal: &mut cyphr::Principal<T>,
+    /// Storage-free so a refused fork can be re-verified against an earlier
+    /// state ([`Self::retain_rival`]) by the same code that admits a tip.
+    async fn build_commit<'p, T: cyphr::eml::Storage>(
+        principal: &'p mut cyphr::Principal<T>,
         raw_blobs: &[&[u8]],
         principal_id: &str,
         next_seq: u64,
-    ) -> Result<Option<IndexableCommit>, EngineError> {
+    ) -> Result<Option<StagedBuild<'p, T>>, EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use cyphr::replay::{StoredCoz, WireError};
 
@@ -2056,11 +2144,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
         let had_pg = principal.pg().is_some();
 
-        let replayed = cyphr::replay::replay_bundle(principal, &cozies)
+        let staged = cyphr::replay::stage_bundle(principal, &cozies)
+            .await
             .map_err(|e| EngineError::Protocol(e.source))?;
-        let digest_info = match replayed.tr {
+        let principal = match &staged {
+            cyphr::replay::StagedBundle::Actions(_) => None,
+            cyphr::replay::StagedBundle::Commit { staged, .. } => Some(staged.state()),
+        };
+        let digest_info = match principal {
             None => None,
-            Some(_) => {
+            Some(principal) => {
                 let commit = principal
                     .commits()
                     .last()
@@ -2078,7 +2171,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             },
         };
 
-        if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
+        if let (Some((commit_ids, ar, sr, pr, cr)), Some(principal)) = (digest_info, principal) {
             let pg = match principal.pg() {
                 Some(pg) if !had_pg => format_multihash_all(pg.as_multihash())?,
                 _ => Vec::new(),
@@ -2124,7 +2217,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pg,
             };
 
-            Ok(Some(commit))
+            Ok(Some(StagedBuild { commit, staged }))
         } else {
             Ok(None)
         }
@@ -2169,26 +2262,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
         let actions = self.action_history(principal_id).await?;
         let mut principal =
-            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())?;
+            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
         for (position, entry) in entries.iter().enumerate() {
             // A rival at this position competes with a commit admitted
             // over the actions accepted before it.
-            replay_actions_at(&mut principal, &actions, position as u64)?;
+            replay_actions_at(&mut principal, &actions, position as u64).await?;
             if signers.iter().all(|t| principal.is_key_active(t)) {
                 self.retention_trials
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let mut candidate = principal.clone();
-                if let Ok(Some(commit)) =
+                // Verified on a fork and never committed: the staged build
+                // is dropped, and only its manifest is kept.
+                let mut candidate = principal.fork().await?;
+                if let Ok(Some(build)) =
                     Self::build_commit(&mut candidate, raw_blobs, principal_id, position as u64)
+                        .await
                 {
-                    return self.keep_branch(raw_blobs, commit).await;
+                    return self.keep_branch(raw_blobs, build.commit).await;
                 }
             }
             // The last commit's own state is never a `pre` of a rival.
             if position + 1 < entries.len() {
                 self.retention_replays
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                replay_commits(&mut principal, std::slice::from_ref(entry))?;
+                replay_commits(&mut principal, std::slice::from_ref(entry)).await?;
             }
         }
         Ok(())
@@ -2675,13 +2771,14 @@ fn is_commit_create_typ(typ: &str) -> bool {
 
 /// Record the action-only bundles `history` holds at `position` onto
 /// `principal`, through the core's replay entry point.
-fn replay_actions_at<T: cyphr::eml::Storage>(
+async fn replay_actions_at<T: cyphr::eml::Storage>(
     principal: &mut cyphr::Principal<T>,
     history: &ActionHistory,
     position: u64,
 ) -> Result<(), EngineError> {
     for bundle in history.get(&position).into_iter().flatten() {
         cyphr::replay::replay_bundle(principal, &bundle.cozies)
+            .await
             .map_err(|e| crate::import::LoadError::Protocol(e.source))?;
     }
     Ok(())
@@ -2745,14 +2842,18 @@ fn replay_entry(
 
 /// The principal `raw_blobs` replay to as its first bundle, or `None`
 /// when they do not replay from `genesis`.
-fn replay_first(
+async fn replay_first(
     genesis: &crate::Genesis,
     raw_blobs: &[impl AsRef<[u8]>],
 ) -> Option<cyphr::Principal> {
     let blobs: Vec<Vec<u8>> = raw_blobs.iter().map(|b| b.as_ref().to_vec()).collect();
-    let mut principal = cyphr::Principal::implicit(genesis.key()?.clone()).ok()?;
+    let mut principal = cyphr::Principal::implicit(genesis.key()?.clone())
+        .await
+        .ok()?;
     let entry = replay_entry(&blobs, "", "").ok()?;
-    crate::import::replay_commits(&mut principal, &[entry]).ok()?;
+    crate::import::replay_commits(&mut principal, &[entry])
+        .await
+        .ok()?;
     Some(principal)
 }
 
@@ -2764,10 +2865,10 @@ fn replay_first(
 /// unique PG"). A bundle of data actions alone forms no commit: a Level 1/2
 /// principal is keyed by its genesis PR. `None` when the bundle does not
 /// replay.
-fn record_key(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<String> {
+async fn record_key(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<String> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let principal = replay_first(genesis, raw_blobs)?;
+    let principal = replay_first(genesis, raw_blobs).await?;
     let Some(pg) = principal.pg() else {
         return (principal.commits().next().is_none())
             .then(|| genesis_principal_id(genesis).ok())
@@ -2920,7 +3021,7 @@ pub fn bare_digest(id: &str) -> &str {
 /// protocol error genesis construction raises.
 pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
     let key = genesis.key().ok_or(cyphr::Error::NoActiveKeys)?;
-    Ok(cyphr::Principal::implicit(key.clone())?.pr_tagged()?)
+    Ok(cyphr::PrincipalState::genesis(key.clone())?.pr_tagged()?)
 }
 
 /// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.

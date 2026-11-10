@@ -117,11 +117,11 @@ async fn metrics_counters_move_exactly_with_traffic() {
     let (state, _dir) = keyless_server();
     let app = build_app_router(state).expect("router");
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
+    let id = golden_principal_id(&pool).await;
 
     let (before, _) = scrape(&app).await;
 
-    let good = build_genesis_push_body(&pool, &id, 1_700_100_000);
+    let good = build_genesis_push_body(&pool, &id, 1_700_100_000).await;
     assert_eq!(push(&app, good.clone()).await, StatusCode::CREATED);
     assert_eq!(push(&app, "garbage".into()).await, StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -177,12 +177,16 @@ async fn metrics_carry_no_identifier_and_bounded_labels() {
     let (state, _dir) = keyless_server();
     let app = build_app_router(state).expect("router");
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
+    let id = golden_principal_id(&pool).await;
     let golden = pool.get("golden").expect("golden key");
     let marker = "LEAKMARKER-8f3a1c";
 
     assert_eq!(
-        push(&app, build_genesis_push_body(&pool, &id, 1_700_100_000)).await,
+        push(
+            &app,
+            build_genesis_push_body(&pool, &id, 1_700_100_000).await
+        )
+        .await,
         StatusCode::CREATED
     );
     for uri in [

@@ -98,13 +98,14 @@ fn honest(k: &Kp) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb),
         others,
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -171,7 +172,7 @@ fn action(
 
 /// One finalized commit by `signer` applying a single signed coz plus an
 /// optional sidecar key. Returns the apply/finalize outcome.
-fn commit_one(
+async fn commit_one(
     p: &mut Principal,
     signer: &Kp,
     coz_parts: (Vec<u8>, Vec<u8>, coz::Czd),
@@ -187,6 +188,7 @@ fn commit_one(
             now,
             "cyphr.me",
         )
+        .await
         .map(|_| ())
 }
 
@@ -210,16 +212,19 @@ fn d1_implicit_genesis_rejects_unbound_key() {
 /// Backs: `key/create` with `id = victim tmb` and sidecar `pub = attacker`
 /// is rejected. Red now because `verify_and_apply` only compares
 /// `id == key.tmb`, never `key.tmb == H(key.pub)`.
-#[test]
-fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
+#[tokio::test]
+async fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
     let attacker = kp();
     let mut p = genesis_of(
-        Principal::implicit(honest(&g)).expect("honest genesis"),
+        Principal::implicit(honest(&g))
+            .await
+            .expect("honest genesis"),
         &g,
         &[],
-    );
+    )
+    .await;
     let before = snapshot(&p);
     assert_forgery_refused(&attacker, &victim);
 
@@ -231,7 +236,8 @@ fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
         key_create(&g, &victim.tmb, T),
         Some(honest(&attacker)),
         T + 1,
-    );
+    )
+    .await;
     assert!(
         r.is_err(),
         "key/create id=victim tmb with pub=attacker was accepted and finalized"
@@ -248,16 +254,19 @@ fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
 
 /// Backs: same binding for `key/replace`. Red now for the same reason as
 /// the `key/create` case.
-#[test]
-fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
+#[tokio::test]
+async fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
     let attacker = kp();
     let mut p = genesis_of(
-        Principal::implicit(honest(&g)).expect("honest genesis"),
+        Principal::implicit(honest(&g))
+            .await
+            .expect("honest genesis"),
         &g,
         &[],
-    );
+    )
+    .await;
     let before = snapshot(&p);
     assert_forgery_refused(&attacker, &victim);
 
@@ -267,7 +276,8 @@ fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
         key_replace(&g, &victim.tmb, T),
         Some(honest(&attacker)),
         T + 1,
-    );
+    )
+    .await;
     assert!(
         r.is_err(),
         "key/replace id=victim tmb with pub=attacker was accepted and finalized"
@@ -278,11 +288,16 @@ fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
 /// Control (passes today and must keep passing): an honest `key/create`
 /// activates K2, and K2's own signature is accepted. Without this, the
 /// D1 rejections above could be satisfied by rejecting everything.
-#[test]
-fn d1_control_honest_key_create_activates_signer() {
+#[tokio::test]
+async fn d1_control_honest_key_create_activates_signer() {
     let g = kp();
     let k2 = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     commit_one(
         &mut p,
         &g,
@@ -290,6 +305,7 @@ fn d1_control_honest_key_create_activates_signer() {
         Some(honest(&k2)),
         T + 1,
     )
+    .await
     .expect("honest key/create");
     assert!(p.is_key_active(&k2.tmb));
     let (apay, asig, aczd) = action(&k2, &k2.tmb, T + 2, "Ed25519");
@@ -302,8 +318,13 @@ fn d1_control_honest_key_create_activates_signer() {
 // ============================================================================
 
 /// genesis g, `key/create` K2, K2 self-revokes. Returns the principal.
-fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
-    let mut p = genesis_of(Principal::implicit(honest(g)).expect("genesis"), g, &[]);
+async fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
+    let mut p = genesis_of(
+        Principal::implicit(honest(g)).await.expect("genesis"),
+        g,
+        &[],
+    )
+    .await;
     commit_one(
         &mut p,
         g,
@@ -311,8 +332,11 @@ fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
         Some(honest(k2)),
         T + 1,
     )
+    .await
     .expect("create K2");
-    commit_one(&mut p, k2, self_revoke(k2, T + 2), None, T + 3).expect("K2 self-revoke");
+    commit_one(&mut p, k2, self_revoke(k2, T + 2), None, T + 3)
+        .await
+        .expect("K2 self-revoke");
     assert!(p.is_key_revoked(&k2.tmb) && !p.is_key_active(&k2.tmb));
     p
 }
@@ -320,11 +344,11 @@ fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
 /// Backs SPEC 6.4 ("never trusted again") and 6.2 (re-add is for deleted
 /// keys only): `key/create` of a revoked tmb is rejected. Red now because
 /// the revoked key is accepted back as active.
-#[test]
-fn d3_revoked_key_cannot_be_readded_by_key_create() {
+#[tokio::test]
+async fn d3_revoked_key_cannot_be_readded_by_key_create() {
     let g = kp();
     let k2 = kp();
-    let mut p = principal_with_revoked_k2(&g, &k2);
+    let mut p = principal_with_revoked_k2(&g, &k2).await;
     let before = snapshot(&p);
 
     let r = commit_one(
@@ -333,7 +357,8 @@ fn d3_revoked_key_cannot_be_readded_by_key_create() {
         key_create(&g, &k2.tmb, T + 4),
         Some(honest(&k2)),
         T + 5,
-    );
+    )
+    .await;
     assert!(
         matches!(r, Err(cyphr::error::Error::KeyRevoked)),
         "key/create of a revoked key must fail with KeyRevoked, got {r:?}"
@@ -343,11 +368,11 @@ fn d3_revoked_key_cannot_be_readded_by_key_create() {
 
 /// Backs SPEC 6.4 for `key/replace`: replacing onto a revoked tmb is
 /// rejected. Red now for the same reason as the `key/create` case.
-#[test]
-fn d3_revoked_key_cannot_be_readded_by_key_replace() {
+#[tokio::test]
+async fn d3_revoked_key_cannot_be_readded_by_key_replace() {
     let g = kp();
     let k2 = kp();
-    let mut p = principal_with_revoked_k2(&g, &k2);
+    let mut p = principal_with_revoked_k2(&g, &k2).await;
     let before = snapshot(&p);
 
     let r = commit_one(
@@ -356,7 +381,8 @@ fn d3_revoked_key_cannot_be_readded_by_key_replace() {
         key_replace(&g, &k2.tmb, T + 4),
         Some(honest(&k2)),
         T + 5,
-    );
+    )
+    .await;
     assert!(
         matches!(r, Err(cyphr::error::Error::KeyRevoked)),
         "key/replace onto a revoked key must fail with KeyRevoked, got {r:?}"
@@ -367,11 +393,11 @@ fn d3_revoked_key_cannot_be_readded_by_key_replace() {
 /// Backs SPEC 6.4 end to end: whatever the re-add does, the revoked key
 /// must neither be active nor able to sign afterwards. Red now because the
 /// re-add succeeds and K2's action is then accepted.
-#[test]
-fn d3_revoked_key_cannot_sign_after_readd_attempt() {
+#[tokio::test]
+async fn d3_revoked_key_cannot_sign_after_readd_attempt() {
     let g = kp();
     let k2 = kp();
-    let mut p = principal_with_revoked_k2(&g, &k2);
+    let mut p = principal_with_revoked_k2(&g, &k2).await;
 
     let _ = commit_one(
         &mut p,
@@ -379,7 +405,8 @@ fn d3_revoked_key_cannot_sign_after_readd_attempt() {
         key_create(&g, &k2.tmb, T + 4),
         Some(honest(&k2)),
         T + 5,
-    );
+    )
+    .await;
 
     assert!(
         p.is_key_revoked(&k2.tmb) && !p.is_key_active(&k2.tmb),
@@ -396,11 +423,16 @@ fn d3_revoked_key_cannot_sign_after_readd_attempt() {
 
 /// Control (SPEC 6.2: re-add of a DELETED key is permitted; must keep
 /// passing so the D3 fix does not over-reject).
-#[test]
-fn d3_control_deleted_key_may_be_readded() {
+#[tokio::test]
+async fn d3_control_deleted_key_may_be_readded() {
     let g = kp();
     let k2 = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     commit_one(
         &mut p,
         &g,
@@ -408,8 +440,11 @@ fn d3_control_deleted_key_may_be_readded() {
         Some(honest(&k2)),
         T + 1,
     )
+    .await
     .expect("create");
-    commit_one(&mut p, &g, key_delete(&g, &k2.tmb, T + 2), None, T + 3).expect("delete");
+    commit_one(&mut p, &g, key_delete(&g, &k2.tmb, T + 2), None, T + 3)
+        .await
+        .expect("delete");
     commit_one(
         &mut p,
         &g,
@@ -417,6 +452,7 @@ fn d3_control_deleted_key_may_be_readded() {
         Some(honest(&k2)),
         T + 5,
     )
+    .await
     .expect("re-add of a deleted key is permitted by SPEC 6.2");
     assert!(p.is_key_active(&k2.tmb));
 }
@@ -428,10 +464,15 @@ fn d3_control_deleted_key_may_be_readded() {
 /// Backs: an Ed25519-signed action claiming `"alg":"ES256"` is rejected
 /// and not recorded. Red now because `verify_and_record_action` verifies
 /// with the key's alg and never compares it to `pay.alg`.
-#[test]
-fn d4_action_pay_alg_must_equal_key_alg() {
+#[tokio::test]
+async fn d4_action_pay_alg_must_equal_key_alg() {
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, czd) = action(&g, &g.tmb, T, "ES256");
 
     let before = snapshot(&p);
@@ -448,18 +489,23 @@ fn d4_action_pay_alg_must_equal_key_alg() {
 /// because `verify_and_apply` accepts an Ed25519-signed `key/create`
 /// whose pay claims `"alg":"ES256"`.
 // @docket: rv-alg-alignment :: scripts/docket-run rv-alg-alignment
-#[test]
-fn d4_commit_coz_pay_alg_must_equal_key_alg() {
+#[tokio::test]
+async fn d4_commit_coz_pay_alg_must_equal_key_alg() {
     let g = kp();
     let k2 = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let parts = sign(
         &g,
         json!({"alg": "ES256", "id": b64(&k2.tmb), "now": T, "tmb": b64(&g.tmb),
                "typ": "cyphr.me/cyphr/key/create"}),
     );
 
-    let r = commit_one(&mut p, &g, parts, Some(honest(&k2)), T + 1);
+    let r = commit_one(&mut p, &g, parts, Some(honest(&k2)), T + 1).await;
     assert!(
         r.is_err(),
         "key/create with pay.alg=ES256 signed by an Ed25519 key accepted"
@@ -470,10 +516,15 @@ fn d4_commit_coz_pay_alg_must_equal_key_alg() {
 /// must be the one recomputed from the signed bytes, or the call must
 /// fail. Red now because the bogus czd is stored verbatim as the action's
 /// identity.
-#[test]
-fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
+#[tokio::test]
+async fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, true_czd) = action(&g, &g.tmb, T, "Ed25519");
     let bogus = coz::Czd::from_bytes(vec![7u8; CZD_LEN]);
     assert_ne!(bogus.as_bytes(), true_czd.as_bytes(), "premise");
@@ -492,11 +543,16 @@ fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
 /// Backs: a wrong caller czd on the commit path is never recorded in the
 /// committed coz. Red now because `verify_and_apply` stores the caller's
 /// czd.
-#[test]
-fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
+#[tokio::test]
+async fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
     let g = kp();
     let k2 = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, true_czd) = key_create(&g, &k2.tmb, T);
     let bogus = coz::Czd::from_bytes(vec![7u8; CZD_LEN]);
     assert_ne!(bogus.as_bytes(), true_czd.as_bytes(), "premise");
@@ -507,7 +563,8 @@ fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
         (pay, sig, bogus.clone()),
         Some(honest(&k2)),
         T + 1,
-    );
+    )
+    .await;
     if r.is_ok() {
         assert!(
             p.iter_all_cozies().count() > 0,
@@ -530,10 +587,15 @@ fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
 
 /// Control: an ES256 action whose `pay.alg` matches its key is accepted, so
 /// the ES256 rejections below cannot be an artifact of the setup.
-#[test]
-fn d4_control_es256_matching_alg_action_accepted() {
+#[tokio::test]
+async fn d4_control_es256_matching_alg_action_accepted() {
     let g = golden_es256();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, czd) = action(&g, &g.tmb, T, "ES256");
     p.verify_and_record_action(&pay, &sig, czd)
         .expect("ES256 action with matching pay.alg");
@@ -543,10 +605,15 @@ fn d4_control_es256_matching_alg_action_accepted() {
 /// Backs: an ES256-signed action claiming `"alg":"Ed25519"` is rejected and
 /// not recorded. Red now because `pay.alg` is never compared to the key's
 /// alg.
-#[test]
-fn d4_es256_action_pay_alg_must_equal_key_alg() {
+#[tokio::test]
+async fn d4_es256_action_pay_alg_must_equal_key_alg() {
     let g = golden_es256();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, czd) = action(&g, &g.tmb, T, "Ed25519");
     let before = snapshot(&p);
 
@@ -560,11 +627,16 @@ fn d4_es256_action_pay_alg_must_equal_key_alg() {
 
 /// Backs: same rule on the commit path for an ES256 signer. Red now because
 /// `verify_and_apply` ignores `pay.alg`.
-#[test]
-fn d4_es256_commit_coz_pay_alg_must_equal_key_alg() {
+#[tokio::test]
+async fn d4_es256_commit_coz_pay_alg_must_equal_key_alg() {
     let g = golden_es256();
     let k2 = kp();
-    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(honest(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let before = snapshot(&p);
     let parts = sign(
         &g,
@@ -572,7 +644,7 @@ fn d4_es256_commit_coz_pay_alg_must_equal_key_alg() {
                "typ": "cyphr.me/cyphr/key/create"}),
     );
 
-    let r = commit_one(&mut p, &g, parts, Some(honest(&k2)), T + 1);
+    let r = commit_one(&mut p, &g, parts, Some(honest(&k2)), T + 1).await;
     assert!(
         r.is_err(),
         "key/create with pay.alg=Ed25519 signed by an ES256 key accepted"

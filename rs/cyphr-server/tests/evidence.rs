@@ -55,7 +55,7 @@ fn key_of(k: &Kp) -> cyphr::Key {
 
 /// Apply `pay` signed by `signer` (optionally introducing `sidecar`) and
 /// finalize the commit with `finalizer`.
-fn apply(
+async fn apply(
     p: &mut cyphr::Principal,
     signer: &Kp,
     finalizer: &Kp,
@@ -81,23 +81,26 @@ fn apply(
             now,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 }
 
 /// `signer` creates `new` at `now` and finalizes the commit. Distinct
 /// `new`/`now` give distinct commits at one position.
-fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
+async fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
     let pay = serde_json::json!({
         "alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
         "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"
     });
-    apply(p, signer, signer, pay, Some(key_of(new)), now);
+    apply(p, signer, signer, pay, Some(key_of(new)), now).await;
 }
 
 /// A principal over the genesis `keys` (the first signs) after its genesis
 /// commit (SPEC 5.1) at `now`.
-fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
-    let mut p = cyphr::Principal::implicit(key_of(keys[0])).expect("genesis");
+async fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
+    let mut p = cyphr::Principal::implicit(key_of(keys[0]))
+        .await
+        .expect("genesis");
     let others: Vec<cyphr::Key> = keys[1..].iter().map(|k| key_of(k)).collect();
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(
@@ -110,6 +113,7 @@ fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
         now,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -204,8 +208,12 @@ async fn peer_chain(
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let base = cyphr::Principal::implicit(genesis_key.clone()).expect("peer genesis");
-    let chain = replay_chain(base, &fetch_entries(app, &pg).await).expect("the peer chain replays");
+    let base = cyphr::Principal::implicit(genesis_key.clone())
+        .await
+        .expect("peer genesis");
+    let chain = replay_chain(base, &fetch_entries(app, &pg).await)
+        .await
+        .expect("the peer chain replays");
     let history = cyphr_client::evidence::KeyHistory::of(&[genesis_key], &chain);
     (chain, history)
 }
@@ -235,12 +243,13 @@ struct Pr {
     base: cyphr::Principal,
 }
 
-fn principal() -> Pr {
+async fn principal() -> Pr {
     let pool = load_pool();
     let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
-    let base = genesis_commit(&[&g, &a], NOW);
+    let base = genesis_commit(&[&g, &a], NOW).await;
     // The bare spelling of the PG, which names the evidence's `pg`.
     let id = golden_principal_id(&pool)
+        .await
         .split_once(':')
         .expect("labelled PG")
         .1
@@ -251,20 +260,22 @@ fn principal() -> Pr {
 impl Pr {
     /// The principal before its genesis commit: what a client replays the
     /// fetched chain onto.
-    fn genesis(&self) -> cyphr::Principal {
-        cyphr::Principal::implicit(key_of(&self.g)).expect("genesis")
+    async fn genesis(&self) -> cyphr::Principal {
+        cyphr::Principal::implicit(key_of(&self.g))
+            .await
+            .expect("genesis")
     }
 
     /// Another genesis commit of the same principal (same genesis keys,
     /// same PG), made at `now`.
-    fn other_genesis(&self, now: i64) -> cyphr::Principal {
-        genesis_commit(&[&self.g, &self.a], now)
+    async fn other_genesis(&self, now: i64) -> cyphr::Principal {
+        genesis_commit(&[&self.g, &self.a], now).await
     }
 
     /// The principal after a second commit by `signer` creating `new`.
-    fn extend(&self, signer: &Kp, new: &str, now: i64) -> cyphr::Principal {
-        let mut p = self.base.clone();
-        create_key(&mut p, signer, &kp(&load_pool(), new), now);
+    async fn extend(&self, signer: &Kp, new: &str, now: i64) -> cyphr::Principal {
+        let mut p = self.base.fork().await.expect("fork");
+        create_key(&mut p, signer, &kp(&load_pool(), new), now).await;
         p
     }
 
@@ -299,7 +310,7 @@ async fn evidence_items(app: &axum::Router, pr: &str) -> Vec<serde_json::Value> 
 // @docket: arch-evidence-is-portable :: scripts/docket-run arch-evidence-is-portable
 #[tokio::test]
 async fn fork_evidence_is_served_and_verified_offline() {
-    let pr = principal();
+    let pr = principal().await;
     let (state, _dir) = common::keyless_server();
     let app = build_router(state);
     let pool = load_pool();
@@ -310,8 +321,8 @@ async fn fork_evidence_is_served_and_verified_offline() {
         "a principal never forked has no evidence"
     );
 
-    let canonical = pr.extend(&pr.g, "key_b", NOW + 1);
-    let rival = pr.extend(&pr.g, "alice", NOW + 2);
+    let canonical = pr.extend(&pr.g, "key_b", NOW + 1).await;
+    let rival = pr.extend(&pr.g, "alice", NOW + 2).await;
     assert_eq!(
         pr.push_commit(&app, &canonical, 1).await,
         StatusCode::CREATED
@@ -326,31 +337,36 @@ async fn fork_evidence_is_served_and_verified_offline() {
     assert_eq!(items.len(), 1, "{items:?}");
     let item = &items[0];
     let held = fetch_entries(&app, &pr.id).await;
-    let genesis = || pr.genesis();
+    let genesis = async || pr.genesis().await;
 
-    let proof = verify_principal_fork(item, &pr.id, genesis(), &held)
+    let proof = verify_principal_fork(item, &pr.id, genesis().await, &held)
+        .await
         .expect("the client verifies the fork from the chain it fetched");
     assert_eq!((proof.pg.as_str(), proof.height), (pr.id.as_str(), 1));
 
-    let refused = |item: &serde_json::Value, pg: &str, held: &[cyphr_client::PatchEntry]| {
-        verify_principal_fork(item, pg, genesis(), held).expect_err("must be refused")
+    let refused = async |item: &serde_json::Value, pg: &str, held: &[cyphr_client::PatchEntry]| {
+        verify_principal_fork(item, pg, genesis().await, held)
+            .await
+            .expect_err("must be refused")
     };
     let other = common::implicit_principal_id(&pool, "key_a");
     assert!(matches!(
-        refused(item, &other, &held),
+        refused(item, &other, &held).await,
         EvidenceFailure::OtherPrincipal
     ));
     // A replay from a genesis that does not derive the principal proves
     // nothing about it.
-    let wrong_genesis = cyphr::Principal::implicit(key_of(&kp(&pool, "key_a"))).expect("genesis");
+    let wrong_genesis = cyphr::Principal::implicit(key_of(&kp(&pool, "key_a")))
+        .await
+        .expect("genesis");
     assert!(matches!(
-        verify_principal_fork(item, &pr.id, wrong_genesis, &held),
+        verify_principal_fork(item, &pr.id, wrong_genesis, &held).await,
         Err(EvidenceFailure::GenesisMismatch)
     ));
     let mut wrong_pre = item.clone();
     wrong_pre["pre"] = serde_json::json!("SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     assert!(matches!(
-        refused(&wrong_pre, &pr.id, &held),
+        refused(&wrong_pre, &pr.id, &held).await,
         EvidenceFailure::PreMismatch
     ));
     let mut tampered = item.clone();
@@ -362,17 +378,17 @@ async fn fork_evidence_is_served_and_verified_offline() {
         &serde_json::to_vec(&raw).expect("blob"),
     ));
     assert!(matches!(
-        refused(&tampered, &pr.id, &held),
+        refused(&tampered, &pr.id, &held).await,
         EvidenceFailure::CommitRefused { which: "b", .. }
     ));
     let mut twin = item.clone();
     twin["b"] = twin["a"].clone();
     assert!(matches!(
-        refused(&twin, &pr.id, &held),
+        refused(&twin, &pr.id, &held).await,
         EvidenceFailure::NotConflicting(_)
     ));
     assert!(matches!(
-        refused(item, &pr.id, &[]),
+        refused(item, &pr.id, &[]).await,
         EvidenceFailure::ChainTooShort { .. }
     ));
 
@@ -380,20 +396,23 @@ async fn fork_evidence_is_served_and_verified_offline() {
     let mut empty = item.clone();
     empty["a"]["blobs"] = serde_json::json!([]);
     assert!(matches!(
-        refused(&empty, &pr.id, &held),
+        refused(&empty, &pr.id, &held).await,
         EvidenceFailure::Malformed(_)
     ));
     let mut flood = item.clone();
     flood["a"]["blobs"] = serde_json::json!(vec![item["a"]["blobs"][0].clone(); 1025]);
     assert!(matches!(
-        refused(&flood, &pr.id, &held),
+        refused(&flood, &pr.id, &held).await,
         EvidenceFailure::Malformed(_)
     ));
     let mut one = item.clone();
     one["a"]["blobs"] = serde_json::json!(vec![item["a"]["blobs"][0].clone(); 1]);
     one["b"]["blobs"] = serde_json::json!(vec![item["b"]["blobs"][0].clone(); 1024]);
     assert!(
-        !matches!(refused(&one, &pr.id, &held), EvidenceFailure::Malformed(_)),
+        !matches!(
+            refused(&one, &pr.id, &held).await,
+            EvidenceFailure::Malformed(_)
+        ),
         "a commit at the bound is still an item (refused later, by replay)"
     );
 
@@ -426,7 +445,8 @@ async fn fork_evidence_is_served_and_verified_offline() {
         })
         .collect();
     reordered["a"]["blobs"] = serde_json::json!(blobs);
-    verify_principal_fork(&reordered, &pr.id, pr.genesis(), &held)
+    verify_principal_fork(&reordered, &pr.id, pr.genesis().await, &held)
+        .await
         .expect("member order on the wire is not part of what is signed");
 
     let (status, _) = get_json(app.clone(), "/evidence?pr=probe").await;
@@ -446,7 +466,7 @@ async fn fork_evidence_is_served_and_verified_offline() {
 /// served item does not verify. End-to-end scenario: yes.
 #[tokio::test]
 async fn slots_one_key_cannot_crowd_out_another() {
-    let pr = principal();
+    let pr = principal().await;
     let (state, _dir) = common::keyless_server();
     let app = build_router(state);
     let pool = load_pool();
@@ -456,7 +476,7 @@ async fn slots_one_key_cannot_crowd_out_another() {
     // rest are over its quota.
     let flood = ["key_b", "alice", "bob", "carol", "eve_ed25519"];
     for (n, new) in flood.iter().enumerate() {
-        let rival = pr.extend(&pr.g, new, NOW + 1 + n as i64);
+        let rival = pr.extend(&pr.g, new, NOW + 1 + n as i64).await;
         let status = pr.push_commit(&app, &rival, 1).await;
         assert_eq!(
             status,
@@ -476,15 +496,17 @@ async fn slots_one_key_cannot_crowd_out_another() {
 
     // key_a, another key active at the same pre, still gets its slot.
     let key_a = kp(&pool, "key_a");
-    let theirs = pr.extend(&key_a, "diana_es384", NOW + 50);
+    let theirs = pr.extend(&key_a, "diana_es384", NOW + 50).await;
     assert_eq!(pr.push_commit(&app, &theirs, 1).await, StatusCode::CONFLICT);
     let items = evidence_items(&app, &pr.id).await;
     assert_eq!(items.len(), 3, "the second key's rival is kept: {items:?}");
 
     let held = fetch_entries(&app, &pr.id).await;
     for item in &items {
-        let genesis = pr.genesis();
-        verify_principal_fork(item, &pr.id, genesis, &held).expect("every served item verifies");
+        let genesis = pr.genesis().await;
+        verify_principal_fork(item, &pr.id, genesis, &held)
+            .await
+            .expect("every served item verifies");
     }
 }
 
@@ -499,18 +521,18 @@ async fn slots_one_key_cannot_crowd_out_another() {
 // @docket: arch-signing-stays-stateless :: scripts/docket-run arch-signing-stays-stateless
 #[tokio::test]
 async fn signing_is_unchanged_by_held_evidence() {
-    let pr = principal();
+    let pr = principal().await;
     let (state, identity, _dir, _) = attestor(None).await;
     let app = build_router(Arc::new(state));
     assert_eq!(pr.push_commit(&app, &pr.base, 0).await, StatusCode::CREATED);
-    let canonical = pr.extend(&pr.g, "key_b", NOW + 1);
+    let canonical = pr.extend(&pr.g, "key_b", NOW + 1).await;
     assert_eq!(
         pr.push_commit(&app, &canonical, 1).await,
         StatusCode::CREATED
     );
 
     let before = view_of(&app, &pr.id).await;
-    let rival = pr.extend(&pr.g, "alice", NOW + 2);
+    let rival = pr.extend(&pr.g, "alice", NOW + 2).await;
     assert_eq!(pr.push_commit(&app, &rival, 1).await, StatusCode::CONFLICT);
     assert_eq!(
         evidence_items(&app, &pr.id).await.len(),
@@ -570,11 +592,11 @@ async fn split_peer(pr: &Pr) -> SplitPeer {
 // @docket: arch-one-key-equivocation :: scripts/docket-run arch-one-key-equivocation
 #[tokio::test]
 async fn peer_equivocation_is_judged_against_one_peers_chain() {
-    let pr = principal();
+    let pr = principal().await;
     let peer = split_peer(&pr).await;
     let (c1a, c1b) = (
-        pr.extend(&pr.g, "key_b", NOW + 1),
-        pr.extend(&pr.g, "alice", NOW + 2),
+        pr.extend(&pr.g, "key_b", NOW + 1).await,
+        pr.extend(&pr.g, "alice", NOW + 2).await,
     );
     assert_eq!(pr.push_commit(&peer.a, &c1a, 1).await, StatusCode::CREATED);
     assert_eq!(pr.push_commit(&peer.b, &c1b, 1).await, StatusCode::CREATED);
@@ -638,18 +660,19 @@ async fn peer_equivocation_is_judged_against_one_peers_chain() {
 // @docket: arch-behind-is-not-fork :: scripts/docket-run arch-behind-is-not-fork
 #[tokio::test]
 async fn stale_prefix_is_not_evidence() {
-    let pr = principal();
+    let pr = principal().await;
     let peer = split_peer(&pr).await;
     let pg = thumbprint(&pr.id);
     let (_, chain) = peer_chain(&peer.a).await;
     let old = view_of(&peer.a, &pr.id).await;
 
-    let c1 = pr.extend(&pr.g, "key_b", NOW + 1);
+    let c1 = pr.extend(&pr.g, "key_b", NOW + 1).await;
     assert_eq!(pr.push_commit(&peer.a, &c1, 1).await, StatusCode::CREATED);
     let new = view_of(&peer.a, &pr.id).await;
 
     // The higher view's own principal chain, as the client fetched it.
-    let higher = replay_chain(pr.genesis(), &fetch_entries(&peer.a, &pr.id).await)
+    let higher = replay_chain(pr.genesis().await, &fetch_entries(&peer.a, &pr.id).await)
+        .await
         .expect("the principal chain replays");
 
     let item = equivocation_item(&pr.id, &old, &new);
@@ -668,9 +691,10 @@ async fn stale_prefix_is_not_evidence() {
 
     // A higher chain that does not hold the higher statement's commit
     // cannot settle the comparison: no verdict, never a conflict.
-    let c1b = pr.extend(&pr.g, "alice", NOW + 2);
+    let c1b = pr.extend(&pr.g, "alice", NOW + 2).await;
     assert_eq!(pr.push_commit(&peer.b, &c1b, 1).await, StatusCode::CREATED);
-    let elsewhere = replay_chain(pr.genesis(), &fetch_entries(&peer.b, &pr.id).await)
+    let elsewhere = replay_chain(pr.genesis().await, &fetch_entries(&peer.b, &pr.id).await)
+        .await
         .expect("the other chain replays");
     let unbacked = verify_peer_equivocation(&item, &pg, &chain, Some(&elsewhere))
         .expect_err("the chain does not back the higher statement");
@@ -683,7 +707,7 @@ async fn stale_prefix_is_not_evidence() {
     // the higher chain's first: not a prefix, so evidence.
     let (third, _, _dir, _) = attestor(Some(&peer.key)).await;
     let third = build_router(Arc::new(third));
-    let other = pr.other_genesis(NOW + 9);
+    let other = pr.other_genesis(NOW + 9).await;
     assert_eq!(pr.push_commit(&third, &other, 0).await, StatusCode::CREATED);
     let short = view_of(&third, &pr.id).await;
     let forked = equivocation_item(&pr.id, &short, &new);
@@ -703,7 +727,7 @@ async fn stale_prefix_is_not_evidence() {
 // @docket: arch-finding-never-clears :: scripts/docket-run arch-finding-never-clears
 #[tokio::test]
 async fn historical_view_survives_the_signing_keys_revocation() {
-    let pr = principal();
+    let pr = principal().await;
     let (a, _, dir_a, key_a) = attestor(None).await;
     let (b, _, dir_b, _) = attestor(Some(&key_a)).await;
     let a = Arc::new(a);
@@ -711,8 +735,8 @@ async fn historical_view_survives_the_signing_keys_revocation() {
     for app in [&app_a, &app_b] {
         assert_eq!(pr.push_commit(app, &pr.base, 0).await, StatusCode::CREATED);
     }
-    let c1a = pr.extend(&pr.g, "key_b", NOW + 1);
-    let c1b = pr.extend(&pr.g, "alice", NOW + 2);
+    let c1a = pr.extend(&pr.g, "key_b", NOW + 1).await;
+    let c1b = pr.extend(&pr.g, "alice", NOW + 2).await;
     assert_eq!(pr.push_commit(&app_a, &c1a, 1).await, StatusCode::CREATED);
     assert_eq!(pr.push_commit(&app_b, &c1b, 1).await, StatusCode::CREATED);
     let (va, vb) = (view_of(&app_a, &pr.id).await, view_of(&app_b, &pr.id).await);
@@ -769,12 +793,12 @@ async fn historical_view_survives_the_signing_keys_revocation() {
 /// `GenesisMismatch`) from a genesis that does not derive the principal. End-to-end scenario: yes.
 #[tokio::test]
 async fn genesis_fork_is_evidence_at_height_zero() {
-    let pr = principal();
+    let pr = principal().await;
     let (state, _dir) = common::keyless_server();
     let app = build_router(state);
     assert_eq!(pr.push_commit(&app, &pr.base, 0).await, StatusCode::CREATED);
 
-    let other = pr.other_genesis(NOW + 5);
+    let other = pr.other_genesis(NOW + 5).await;
     let status = push(&app, wire(&other, 0, &pr.id)).await;
     assert_eq!(status.0, StatusCode::CONFLICT, "{:?}", status.1);
 
@@ -782,14 +806,17 @@ async fn genesis_fork_is_evidence_at_height_zero() {
     assert_eq!(items.len(), 1, "{items:?}");
     assert_eq!(items[0]["height"], 0);
     assert!(items[0]["pre"].is_null(), "no ancestor at height 0");
-    verify_principal_fork(&items[0], &pr.id, pr.genesis(), &[])
+    verify_principal_fork(&items[0], &pr.id, pr.genesis().await, &[])
+        .await
         .expect("a fork at the first position");
     // With no held commit, a genesis that is not this principal's is still
     // refused as such, not as a rival that fails to replay.
     let pool = load_pool();
-    let wrong_genesis = cyphr::Principal::implicit(key_of(&kp(&pool, "key_a"))).expect("genesis");
+    let wrong_genesis = cyphr::Principal::implicit(key_of(&kp(&pool, "key_a")))
+        .await
+        .expect("genesis");
     assert!(matches!(
-        verify_principal_fork(&items[0], &pr.id, wrong_genesis, &[]),
+        verify_principal_fork(&items[0], &pr.id, wrong_genesis, &[]).await,
         Err(EvidenceFailure::GenesisMismatch)
     ));
 }
@@ -799,12 +826,15 @@ async fn genesis_fork_is_evidence_at_height_zero() {
 /// `principal/create` and the `commit/create`, made at `now`; and its PG,
 /// bare. Two nonces on one key give two principals with one genesis key
 /// and different PGs (SPEC 5.1: "a nonce embedding for a unique PG").
-fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String) {
+async fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String) {
     let signer = cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
-    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    let mut p = cyphr::Principal::implicit(key_of(g))
+        .await
+        .expect("genesis");
     let mut scope = p.begin_commit();
     scope
         .create_genesis_keys(&signer, &[], now, "cyphr.me")
+        .await
         .expect("genesis key/create");
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": g.alg,
@@ -820,9 +850,11 @@ fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String) {
     let pg = scope.genesis_id().expect("PG");
     scope
         .create_principal(&signer, now, "cyphr.me")
+        .await
         .expect("principal/create");
     scope
         .finalize_with_software(&signer, now, "cyphr.me")
+        .await
         .expect("genesis commit");
     let bare = pg.split_once(':').expect("labelled PG").1.to_string();
     (p, bare)
@@ -845,8 +877,12 @@ fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String) {
 async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
-    let (_, honest_pg) = nonce_genesis(&g, 1, NOW);
-    let genesis = || cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let (_, honest_pg) = nonce_genesis(&g, 1, NOW).await;
+    let genesis = async || {
+        cyphr::Principal::implicit(key_of(&g))
+            .await
+            .expect("genesis")
+    };
     let relabel = |item: &serde_json::Value| {
         let mut item = item.clone();
         item["pg"] = serde_json::json!(honest_pg);
@@ -854,7 +890,7 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     };
 
     // Height 1: the sibling forks after its genesis commit.
-    let (sibling, sibling_pg) = nonce_genesis(&g, 2, NOW);
+    let (sibling, sibling_pg) = nonce_genesis(&g, 2, NOW).await;
     assert_ne!(sibling_pg, honest_pg, "premise: the nonces give two PGs");
     let (state, _dir) = common::keyless_server();
     let app = build_router(state);
@@ -862,10 +898,10 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
         push(&app, wire(&sibling, 0, &sibling_pg)).await.0,
         StatusCode::CREATED
     );
-    let mut canonical = sibling.clone();
-    create_key(&mut canonical, &g, &kp(&pool, "key_b"), NOW + 1);
-    let mut rival = sibling.clone();
-    create_key(&mut rival, &g, &kp(&pool, "alice"), NOW + 2);
+    let mut canonical = sibling.fork().await.expect("fork");
+    create_key(&mut canonical, &g, &kp(&pool, "key_b"), NOW + 1).await;
+    let mut rival = sibling.fork().await.expect("fork");
+    create_key(&mut rival, &g, &kp(&pool, "alice"), NOW + 2).await;
     assert_eq!(
         push(&app, wire(&canonical, 1, &sibling_pg)).await.0,
         StatusCode::CREATED
@@ -877,18 +913,19 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     let items = evidence_items(&app, &sibling_pg).await;
     assert_eq!(items.len(), 1, "{items:?}");
     let held = fetch_entries(&app, &sibling_pg).await;
-    verify_principal_fork(&items[0], &sibling_pg, genesis(), &held)
+    verify_principal_fork(&items[0], &sibling_pg, genesis().await, &held)
+        .await
         .expect("control: the fork is evidence against the sibling");
     assert!(matches!(
-        verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis(), &held),
+        verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis().await, &held).await,
         Err(EvidenceFailure::GenesisMismatch)
     ));
 
     // Height 0: two rival genesis commits of the sibling.
     let (state, _dir) = common::keyless_server();
     let app = build_router(state);
-    let (first, _) = nonce_genesis(&g, 2, NOW);
-    let (second, _) = nonce_genesis(&g, 2, NOW + 5);
+    let (first, _) = nonce_genesis(&g, 2, NOW).await;
+    let (second, _) = nonce_genesis(&g, 2, NOW + 5).await;
     assert_eq!(
         push(&app, wire(&first, 0, &sibling_pg)).await.0,
         StatusCode::CREATED
@@ -900,10 +937,11 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     let items = evidence_items(&app, &sibling_pg).await;
     assert_eq!(items.len(), 1, "{items:?}");
     assert_eq!(items[0]["height"], 0);
-    verify_principal_fork(&items[0], &sibling_pg, genesis(), &[])
+    verify_principal_fork(&items[0], &sibling_pg, genesis().await, &[])
+        .await
         .expect("control: the genesis fork is evidence against the sibling");
     assert!(matches!(
-        verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis(), &[]),
+        verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis().await, &[]).await,
         Err(EvidenceFailure::GenesisMismatch)
     ));
 }
@@ -946,14 +984,14 @@ fn crafted_view(
 /// at or after its revoke or delete), a tampered statement or one about
 /// another principal passes, agreeing statements convict, or a lower view
 /// whose root differs from the chain's is taken for a prefix.
-#[test]
-fn key_history_bounds_a_key_by_its_signed_times() {
+#[tokio::test]
+async fn key_history_bounds_a_key_by_its_signed_times() {
     const T: i64 = NOW;
     let pool = load_pool();
     let (g, a, bob) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "bob"));
     // The genesis commit creates golden and key_a at T.
-    let mut peer = genesis_commit(&[&g, &a], T);
-    create_key(&mut peer, &a, &bob, T + 10);
+    let mut peer = genesis_commit(&[&g, &a], T).await;
+    create_key(&mut peer, &a, &bob, T + 10).await;
     apply(
         &mut peer,
         &a,
@@ -962,9 +1000,10 @@ fn key_history_bounds_a_key_by_its_signed_times() {
                            "tmb": a.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
         None,
         T + 20,
-    );
+    )
+    .await;
     // bob is added again after its delete: the later interval is its own.
-    create_key(&mut peer, &a, &bob, T + 25);
+    create_key(&mut peer, &a, &bob, T + 25).await;
     apply(
         &mut peer,
         &g,
@@ -973,7 +1012,8 @@ fn key_history_bounds_a_key_by_its_signed_times() {
                            "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/revoke"}),
         None,
         T + 30,
-    );
+    )
+    .await;
     let history = cyphr_client::evidence::KeyHistory::of(&[key_of(&g), key_of(&a)], &peer);
 
     let pr = Base64UrlUnpadded::encode_string(&[9; 32]);

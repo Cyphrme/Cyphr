@@ -232,14 +232,10 @@ pub fn load_pool() -> test_fixtures::Pool {
 /// `signer_name` (must have a known private key in `pool`). Returns the new
 /// commit's raw coz blob bytes, wire-ready for `submit_commit`.
 ///
-/// Takes `principal` by value rather than `&Principal` + internal `.clone()`
-/// deliberately: `Principal::clone()` shares the underlying `CloneableLog`'s
-/// `Arc<Mutex<Log<S>>>>`, not a deep copy, so cloning one shared starting
-/// principal for N variants would have all N append to the SAME commit tree.
-/// Each call site must instead build its own independent `Principal` (e.g. via
-/// a fresh `load_principal_from_commits` call) to get genuinely independent,
-/// mutually-exclusive alternative "next commits".
-pub fn sign_key_create_commit(
+/// Takes `principal` by value: the commit is made on it. A caller wanting
+/// several mutually-exclusive alternative "next commits" from one state
+/// passes a [`cyphr::Principal::fork`] of it to each call.
+pub async fn sign_key_create_commit(
     mut principal: cyphr::Principal,
     pool: &test_fixtures::Pool,
     signer_name: &str,
@@ -297,6 +293,7 @@ pub fn sign_key_create_commit(
             now,
             "cyphr.me",
         )
+        .await
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -344,7 +341,7 @@ pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> String {
 
 /// The principal [`build_genesis_push_body_with`] pushes and its genesis
 /// commit's blobs: `genesis_name` creates itself, then `new_key_name`.
-fn genesis_push(
+async fn genesis_push(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
@@ -356,13 +353,16 @@ fn genesis_push(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::implicit(key(genesis_name)).expect("genesis");
+    let mut principal = cyphr::Principal::implicit(key(genesis_name))
+        .await
+        .expect("genesis");
     let blobs = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get(genesis_name).expect("genesis key in pool"),
         &[key(new_key_name)],
         now,
     )
+    .await
     .expect("genesis commit");
     (principal, blobs)
 }
@@ -371,30 +371,30 @@ fn genesis_push(
 /// [`build_genesis_push_body_with`] builds for `genesis_name` and
 /// `new_key_name`. The PG is the state the genesis keys root, whatever
 /// the commit's time.
-pub fn genesis_push_id(
+pub async fn genesis_push_id(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
 ) -> String {
-    let (_, blobs) = genesis_push(pool, genesis_name, new_key_name, 1);
+    let (_, blobs) = genesis_push(pool, genesis_name, new_key_name, 1).await;
     test_fixtures::bundle::genesis_id(&blobs).expect("genesis PG")
 }
 
 /// The id of the standard test principal, the one `build_genesis_push_body`
 /// builds: `golden` with `key_a`.
-pub fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
-    genesis_push_id(pool, "golden", "key_a")
+pub async fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+    genesis_push_id(pool, "golden", "key_a").await
 }
 
 /// The principal [`build_genesis_push_body_with`] pushes, after its genesis
 /// commit: the state a test signs its next commit on.
-pub fn genesis_pushed_principal(
+pub async fn genesis_pushed_principal(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
     now: i64,
 ) -> cyphr::Principal {
-    genesis_push(pool, genesis_name, new_key_name, now).0
+    genesis_push(pool, genesis_name, new_key_name, now).await.0
 }
 
 /// Build a brand-new principal's genesis push HTTP body: its genesis
@@ -403,14 +403,14 @@ pub fn genesis_pushed_principal(
 /// Every `key/create` discloses its key, so the principal reads from the
 /// blobs alone. Its id is [`genesis_push_id`]; pass that as
 /// `principal_id` unless the test deliberately pushes under another one.
-pub fn build_genesis_push_body_with(
+pub async fn build_genesis_push_body_with(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
     principal_id: &str,
     now: i64,
 ) -> String {
-    let (_, blobs) = genesis_push(pool, genesis_name, new_key_name, now);
+    let (_, blobs) = genesis_push(pool, genesis_name, new_key_name, now).await;
     serde_json::json!({
         "principal_id": principal_id,
         "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
@@ -419,21 +419,25 @@ pub fn build_genesis_push_body_with(
 }
 
 /// The standard genesis push: `golden` with `key_a`.
-pub fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    build_genesis_push_body_with(pool, "golden", "key_a", principal_id, now)
+pub async fn build_genesis_push_body(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+) -> String {
+    build_genesis_push_body_with(pool, "golden", "key_a", principal_id, now).await
 }
 
 /// Build a second commit push HTTP body for the standard principal
 /// ([`build_genesis_push_body`] pushed at `genesis_now`), introducing
 /// `key_b`, signed by `golden`.
-pub fn build_second_commit_push_body(
+pub async fn build_second_commit_push_body(
     pool: &test_fixtures::Pool,
     principal_id: &str,
     genesis_now: i64,
     now: i64,
 ) -> String {
-    let principal = genesis_pushed_principal(pool, "golden", "key_a", genesis_now);
-    let blobs = sign_key_create_commit(principal, pool, "golden", "key_b", now);
+    let principal = genesis_pushed_principal(pool, "golden", "key_a", genesis_now).await;
+    let blobs = sign_key_create_commit(principal, pool, "golden", "key_b", now).await;
 
     serde_json::json!({
         "principal_id": principal_id,

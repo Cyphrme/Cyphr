@@ -57,10 +57,10 @@ async fn two_instances_are_independent() {
 
     // 2. Data & Storage engine isolation: push principal to inst0
     let pool = load_pool();
-    let principal_id_derived = common::golden_principal_id(&pool);
+    let principal_id_derived = common::golden_principal_id(&pool).await;
     let principal_id = principal_id_derived.as_str();
     let now = current_unix_timestamp();
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let (push_status, push_resp) = inst0.post("/push", push_body.clone()).await;
     assert_eq!(
@@ -214,10 +214,10 @@ async fn signed_statements_carry_freshness() {
     let identity = inst.identity.as_ref().unwrap();
 
     let pool = load_pool();
-    let principal_id_derived = common::golden_principal_id(&pool);
+    let principal_id_derived = common::golden_principal_id(&pool).await;
     let principal_id = principal_id_derived.as_str();
     let start_time = current_unix_timestamp();
-    let push_body = build_genesis_push_body(&pool, principal_id, start_time);
+    let push_body = build_genesis_push_body(&pool, principal_id, start_time).await;
 
     let (push_status, push_resp) = inst.post("/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);

@@ -134,7 +134,7 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 /// hop generation), its id (the PG) and the wire body, because the prover
 /// phase needs the resulting `Principal` object itself, not just its wire
 /// bytes.
-fn build_foreign_principal_and_push_body(
+async fn build_foreign_principal_and_push_body(
     pool: &test_fixtures::Pool,
     now: i64,
 ) -> (cyphr::Principal, String, String) {
@@ -144,13 +144,16 @@ fn build_foreign_principal_and_push_body(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::implicit(key("golden")).expect("genesis");
+    let mut principal = cyphr::Principal::implicit(key("golden"))
+        .await
+        .expect("genesis");
     let blobs = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get("golden").expect("golden key in pool"),
         &[key("key_a")],
         now,
     )
+    .await
     .expect("genesis commit");
     let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
@@ -255,7 +258,7 @@ async fn build_fixture() -> PortabilityFixture {
     let now = 1_700_100_000;
     // ---- PROVER: materialize the foreign principal and push it ----
     let (foreign_principal, principal_id, push_body) =
-        build_foreign_principal_and_push_body(&pool, now);
+        build_foreign_principal_and_push_body(&pool, now).await;
     let principal_id = principal_id.as_str();
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
@@ -331,6 +334,7 @@ async fn build_fixture() -> PortabilityFixture {
     .with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
 
     let client = cyphr::Principal::implicit(genesis_key.clone())
+        .await
         .expect("the published genesis key reconstructs the genesis");
     let derived_server_pg = client
         .pr_tagged()

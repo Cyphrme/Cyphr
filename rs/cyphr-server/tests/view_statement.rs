@@ -34,18 +34,18 @@ const OTHER_TYPS: [&str; 3] = [
 /// Push bodies for two successive commits of the standard principal: its
 /// genesis commit (`golden` creates itself and `key_a`, SPEC 5.1), then a
 /// `key/create` of `key_b` signed by `golden` on that genesis state.
-fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, String) {
+async fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, String) {
     let genesis_now = 1_700_000_000;
-    let first = build_genesis_push_body(pool, pr, genesis_now);
-    let second = build_second_commit_push_body(pool, pr, genesis_now, 1_700_000_100);
+    let first = build_genesis_push_body(pool, pr, genesis_now).await;
+    let second = build_second_commit_push_body(pool, pr, genesis_now, 1_700_000_100).await;
     (first, second)
 }
 
 /// The standard principal's id (its PG) as the bare digest the view
 /// verifier takes (`verify_view_statement` parses an unlabelled
 /// base64url digest); the server addresses the same principal by it.
-fn standard_pr(pool: &test_fixtures::Pool) -> String {
-    let pg = golden_principal_id(pool);
+async fn standard_pr(pool: &test_fixtures::Pool) -> String {
+    let pg = golden_principal_id(pool).await;
     pg.rsplit_once(':')
         .map_or(pg.clone(), |(_, d)| d.to_string())
 }
@@ -80,9 +80,9 @@ async fn view_statement_signs_tree_size_and_index_end_to_end() {
     let (state, identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
-    let pr = standard_pr(&pool);
+    let pr = standard_pr(&pool).await;
 
-    let (first, second) = two_commit_bodies(&pool, &pr);
+    let (first, second) = two_commit_bodies(&pool, &pr).await;
     for body in [first, second] {
         let (status, resp) = post_json(app.clone(), "/push", body).await;
         assert_eq!(status, StatusCode::CREATED, "{resp:?}");
@@ -149,9 +149,9 @@ async fn view_statement_advances_with_the_log() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
-    let pr = standard_pr(&pool);
+    let pr = standard_pr(&pool).await;
 
-    let (first_body, second_body) = two_commit_bodies(&pool, &pr);
+    let (first_body, second_body) = two_commit_bodies(&pool, &pr).await;
     let (status, body) = post_json(app.clone(), "/push", first_body).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
     let (status, first) = get_json(app.clone(), &format!("/view?pr={pr}")).await;
@@ -200,8 +200,8 @@ async fn client_verifies_view_statement_against_the_active_peer_chain() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
-    let pr = standard_pr(&pool);
-    let (first, second) = two_commit_bodies(&pool, &pr);
+    let pr = standard_pr(&pool).await;
+    let (first, second) = two_commit_bodies(&pool, &pr).await;
     for body in [first, second] {
         let (status, resp) = post_json(app.clone(), "/push", body).await;
         assert_eq!(status, StatusCode::CREATED, "{resp:?}");
@@ -353,8 +353,8 @@ async fn rotated_attestor(
 
     let app = build_router(Arc::new(state));
     let pool = load_pool();
-    let pr = standard_pr(&pool);
-    let (first, second) = two_commit_bodies(&pool, &pr);
+    let pr = standard_pr(&pool).await;
+    let (first, second) = two_commit_bodies(&pool, &pr).await;
     for body in [first, second] {
         let (status, resp) = post_json(app.clone(), "/push", body).await;
         assert_eq!(status, StatusCode::CREATED, "{resp:?}");
@@ -553,7 +553,9 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
         let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
         cyphr::Key::new(kp.alg.name().to_string(), tmb, kp.pub_bytes.clone()).expect("key")
     };
-    let mut chain = cyphr::Principal::implicit(key_of(&active_kp)).expect("chain");
+    let mut chain = cyphr::Principal::implicit(key_of(&active_kp))
+        .await
+        .expect("chain");
 
     // The chain begins with its genesis commit (SPEC 5.1): the active key
     // creates itself and the other key, then the principal.
@@ -573,6 +575,7 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
             1_700_000_050,
             "cyphr.me",
         )
+        .await
         .expect("genesis commit");
 
     // The revoked key revokes itself (SPEC 6.4) in a commit it finalizes.
@@ -611,6 +614,7 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
             1_700_000_101,
             "cyphr.me",
         )
+        .await
         .expect("revoke commit finalizes");
     assert!(chain.is_key_revoked(&tmb) && !chain.is_key_active(&tmb));
     assert!(

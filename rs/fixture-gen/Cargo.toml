@@ -15,4 +15,5 @@ clap.workspace       = true
 coz.workspace        = true
 serde_json.workspace = true
 test-fixtures        = { path = "../test-fixtures" }
+tokio.workspace      = true
 toml.workspace       = true

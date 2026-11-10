@@ -178,7 +178,7 @@ async fn holders_patch_anchor_held_only_by_another_principal_is_refused() {
     for seq in 0..3u64 {
         let blob = format!("{{\"pay\":{{\"now\":{seq}}}}}");
         engine
-            .ingest_commit(
+            .ingest_metadata(
                 &[blob.as_bytes()],
                 make_meta("alice", seq, 1000 + seq as i64),
             )
@@ -186,7 +186,7 @@ async fn holders_patch_anchor_held_only_by_another_principal_is_refused() {
             .expect("ingest alice");
     }
     engine
-        .ingest_commit(
+        .ingest_metadata(
             &[b"{\"pay\":{\"now\":9}}"],
             meta_with_pr("bob", 0, DIGEST_A),
         )
@@ -304,7 +304,7 @@ async fn alias_race_equal_pg_ingests_leave_one_winner_and_no_residue() {
         MemoryIndexer::new(),
     );
     control
-        .ingest_commit(&[b"{\"pay\":{\"now\":1}}"], meta_claiming_pg("alice"))
+        .ingest_metadata(&[b"{\"pay\":{\"now\":1}}"], meta_claiming_pg("alice"))
         .await
         .expect("control ingest");
     let one_winner_blobs = stored_count(&control_blobs).await;
@@ -319,8 +319,8 @@ async fn alias_race_equal_pg_ingests_leave_one_winner_and_no_residue() {
         MemoryIndexer::new(),
     );
     let (a, b) = tokio::join!(
-        engine.ingest_commit(&[b"{\"pay\":{\"now\":1}}"], meta_claiming_pg("alice")),
-        engine.ingest_commit(&[b"{\"pay\":{\"now\":2}}"], meta_claiming_pg("bob")),
+        engine.ingest_metadata(&[b"{\"pay\":{\"now\":1}}"], meta_claiming_pg("alice")),
+        engine.ingest_metadata(&[b"{\"pay\":{\"now\":2}}"], meta_claiming_pg("bob")),
     );
     let (winner, loser) = match (&a, &b) {
         (Ok(_), Err(e)) | (Err(e), Ok(_)) => ("one", e),
@@ -409,9 +409,12 @@ fn wire_blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
 /// 5.1: `g` creates itself, then the principal), its wire blobs and its PR
 /// after that commit. Its PG, and so its key, is the bare-tmb id whatever
 /// `now` is; distinct `now` values give distinct commits at position 0.
-fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, Vec<Vec<u8>>, String) {
-    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, Vec<Vec<u8>>, String) {
+    let mut p = cyphr::Principal::implicit(key_of(g))
+        .await
+        .expect("genesis");
     p.commit_genesis(&soft(g), &[], now, "cyphr.me")
+        .await
         .expect("genesis commit");
     let blobs = wire_blobs(&p, 0);
     let pr = p.pr_tagged().expect("pr");
@@ -433,7 +436,7 @@ async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
     let genesis = crate::Genesis::Implicit(key_of(&g));
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = test_engine();
-    let (_, honest, _) = genesis_commit(&g, NOW);
+    let (_, honest, _) = genesis_commit(&g, NOW).await;
     let refs: Vec<&[u8]> = honest.iter().map(Vec::as_slice).collect();
     engine
         .submit_commit(&id, Some(genesis.clone()), &refs)
@@ -441,7 +444,7 @@ async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
         .expect("honest commit 0");
     let before = engine.get_tip(&id).await.expect("tip").expect("stored");
 
-    let (_, rival, _) = genesis_commit(&g, NOW + 5);
+    let (_, rival, _) = genesis_commit(&g, NOW + 5).await;
     assert_ne!(rival, honest, "premise: the rival is another commit");
     let refs: Vec<&[u8]> = rival.iter().map(Vec::as_slice).collect();
     let refused = engine
@@ -468,7 +471,7 @@ async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
 /// PG includes the nonce), followed by `later` commits each inserting one
 /// more nonce. Returns it with its key (the PR after the genesis commit)
 /// and its PG.
-fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, String) {
+async fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, String) {
     let nonce_pay = |n: u8, now: i64| {
         serde_json::json!({
             "alg": g.alg,
@@ -476,10 +479,13 @@ fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, S
             "now": now, "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
         })
     };
-    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    let mut p = cyphr::Principal::implicit(key_of(g))
+        .await
+        .expect("genesis");
     let mut scope = p.begin_commit();
     scope
         .create_genesis_keys(&soft(g), &[], NOW, "cyphr.me")
+        .await
         .expect("genesis key/create");
     let (pay, sig, czd) = signed(g, nonce_pay(nonce, NOW));
     scope
@@ -488,9 +494,11 @@ fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, S
     let pg = scope.genesis_id().expect("PG");
     scope
         .create_principal(&soft(g), NOW, "cyphr.me")
+        .await
         .expect("principal/create");
     scope
         .finalize_with_software(&soft(g), NOW, "cyphr.me")
+        .await
         .expect("finalize genesis");
     let post_genesis = p.pr_tagged().expect("pr");
     for n in 1..=later {
@@ -502,6 +510,7 @@ fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, S
             .expect("nonce");
         scope
             .finalize_with_software(&soft(g), now, "cyphr.me")
+            .await
             .expect("finalize");
     }
     (p, post_genesis, pg)
@@ -523,7 +532,10 @@ async fn rekey_nonce_siblings_stay_distinct_through_a_reindex() {
     let g = kp(&pool, "golden");
     let tmb_id = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let engine = test_engine();
-    let built = [nonce_principal(&g, 0x11, 1), nonce_principal(&g, 0x22, 1)];
+    let built = [
+        nonce_principal(&g, 0x11, 1).await,
+        nonce_principal(&g, 0x22, 1).await,
+    ];
     assert_ne!(built[0].2, built[1].2, "control: nonces must differ the PG");
     assert_ne!(built[0].2, tmb_id, "control: a PG is not the key's tmb");
 
@@ -595,7 +607,7 @@ async fn rekey_no_nonce_principal_is_keyed_by_its_genesis_pr_under_any_spelling(
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let bare = bare_digest(&tmb).to_string();
-    let (_, blobs, pr) = genesis_commit(&g, NOW);
+    let (_, blobs, pr) = genesis_commit(&g, NOW).await;
     assert_ne!(pr, tmb, "premise: commit 0 moves the PR off the bare tmb");
     let (by_tmb, by_bare) = (test_engine(), test_engine());
     let reported = [
@@ -642,7 +654,7 @@ async fn rekey_nonce_principal_is_keyed_and_reported_by_its_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (p, post_genesis, pg) = nonce_principal(&g, 0x66, 2);
+    let (p, post_genesis, pg) = nonce_principal(&g, 0x66, 2).await;
     assert_ne!(
         post_genesis, pg,
         "premise: the PG differs from the post-genesis PR"
@@ -678,10 +690,10 @@ async fn rekey_divergent_no_nonce_commit_0_is_refused_as_a_fork() {
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let engine = test_engine();
-    let (_, first, _) = genesis_commit(&g, NOW);
+    let (_, first, _) = genesis_commit(&g, NOW).await;
     submit(&engine, &tmb, &first).await.expect("first");
     let before = engine.get_tip(&tmb).await.expect("tip").expect("stored");
-    let (_, rival, rival_pr) = genesis_commit(&g, NOW + 5);
+    let (_, rival, rival_pr) = genesis_commit(&g, NOW + 5).await;
     for claim in [&tmb, &rival_pr] {
         let got = submit(&engine, claim, &rival).await;
         assert!(got.is_err(), "rival accepted under {claim}: {got:?}");
@@ -703,7 +715,7 @@ async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (p, ..) = nonce_principal(&g, 0x55, 0);
+    let (p, ..) = nonce_principal(&g, 0x55, 0).await;
     let engine = test_engine();
     let got = submit(&engine, &tmb, &wire_blobs(&p, 0)).await;
     assert!(got.is_err(), "accepted: {got:?}");

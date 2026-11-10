@@ -9,7 +9,7 @@
 //!
 //! `StorageEngine::load_principal` reconstructs a principal by full replay
 //! from genesis: for each historical commit it calls
-//! `Principal::finalize_commit`, which unconditionally appends that
+//! `PrincipalState::stage_commit`, which unconditionally appends that
 //! commit's TR to the live `CommitTrees`. That is correct and cheap for the
 //! in-memory-only default (`eml::MemoryStorage`), where a freshly
 //! constructed genesis principal's tree always starts empty. It is **not**
@@ -99,7 +99,7 @@ fn canonicalize(val: &mut serde_json::Value) {
 /// commits carry no pre-actions, only transactions). Returns `finalize()`'s
 /// result rather than panicking on it, so callers can assert on error paths
 /// (e.g. the orphan-leaf guard test below).
-fn apply_golden_commit<S: eml::Storage>(
+async fn apply_golden_commit<S: eml::Storage>(
     principal: &mut cyphr::Principal<S>,
     commit: &serde_json::Value,
 ) -> cyphr::error::Result<()> {
@@ -139,19 +139,18 @@ fn apply_golden_commit<S: eml::Storage>(
             .verify_and_apply(&pay_json, &sig, czd, new_key)
             .expect("verify_and_apply failed");
     }
-    scope.finalize()?;
+    scope.finalize().await?;
     Ok(())
 }
 
 /// F31 / F-A regression (blocker from Fable's pre-merge review of PR #6):
-/// `finalize_commit`'s `already_durable` branch must not silently adopt an
-/// orphan leaf's TR as the new commit's CR. This reproduces the exact
-/// crash-window invariant end to end through `finalize_commit` — a foreign
-/// leaf occupies the position the next commit would take in the durable
-/// EML log, while `core.auth.commits` has NOT advanced past it (precisely
-/// what a crash between a prior `finalize_commit`'s durable EML append and
-/// its index write leaves behind) — without needing an actual process
-/// crash or reload to produce that state.
+/// replay's `already_durable` branch must not silently adopt an orphan
+/// leaf's TR as a commit's CR. A principal now writes its log only in the
+/// one write that commits it, so an orphan (a leaf with no commit behind
+/// it) exists only in a log written before the two-phase commit; this test
+/// plants one with a second writer of the same durable store, then replays
+/// the chain over it: the commit that meets the orphan is refused with
+/// `DurableLeafMismatch` rather than deriving CR from the orphan.
 #[test]
 fn finalize_commit_rejects_mismatched_orphan_leaf() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
@@ -169,43 +168,46 @@ fn finalize_commit_rejects_mismatched_orphan_leaf() {
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let db = fjall::Database::builder(&db_path).open().expect("open db");
-        let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+        let open = || cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
 
-        let mut principal =
-            cyphr::Principal::implicit_with_storage(keys[0].clone(), eml_storage).unwrap();
+        // The first two commits, written live: real leaves at 0 and 1.
+        {
+            let mut principal = cyphr::Principal::open(keys[0].clone(), open())
+                .await
+                .unwrap();
+            apply_golden_commit(&mut principal, &commits[0])
+                .await
+                .expect("commit 0 finalize failed");
+            apply_golden_commit(&mut principal, &commits[1])
+                .await
+                .expect("commit 1 finalize failed");
+            assert_eq!(principal.commit_trees().global_size(), 2);
+        }
 
-        // Apply the first two commits live and normally — real leaves at
-        // durable positions 0 and 1.
-        apply_golden_commit(&mut principal, &commits[0]).expect("commit 0 finalize failed");
-        apply_golden_commit(&mut principal, &commits[1]).expect("commit 1 finalize failed");
-        assert_eq!(principal.commit_trees().global_size(), 2);
+        // Plant the legacy orphan: a FOREIGN leaf (commit 0's payload, a
+        // genuinely different commit's TR) at the position the 3rd commit
+        // would occupy, written by another writer of the same store.
+        {
+            let mut log = CommitTrees::open(open()).await.expect("reopen log");
+            let orphan_leaf = log.get_leaf(0).await.expect("read leaf 0");
+            log.append(&orphan_leaf).await.expect("append orphan leaf");
+            assert_eq!(log.global_size(), 3);
+        }
+
+        // Replay the chain over the store. Commits 0 and 1 find their own
+        // leaves (the already-durable path); commit 2 finds the orphan at
+        // index 2 and must hard-error rather than derive CR from it.
+        let mut principal = cyphr::Principal::open(keys[0].clone(), open())
+            .await
+            .unwrap();
+        apply_golden_commit(&mut principal, &commits[0])
+            .await
+            .expect("commit 0 replays");
+        apply_golden_commit(&mut principal, &commits[1])
+            .await
+            .expect("commit 1 replays");
         assert_eq!(principal.commits().count(), 2);
-
-        // Simulate the crash window: durably append a FOREIGN leaf
-        // (reusing commit 0's own already-stored payload — a genuinely
-        // different commit's TR) at the position the 3rd commit would
-        // occupy, without advancing `core.auth.commits` past it.
-        let orphan_leaf = principal
-            .commit_trees()
-            .get_leaf(0)
-            .expect("read leaf 0 for orphan simulation");
-        principal
-            .commit_trees()
-            .append(&orphan_leaf)
-            .expect("append orphan leaf");
-        assert_eq!(principal.commit_trees().global_size(), 3);
-        assert_eq!(
-            principal.commits().count(),
-            2,
-            "auth.commits must NOT have advanced past the orphan leaf"
-        );
-
-        // Submit the real 3rd commit through the normal API. leaf_index
-        // (2) is < global_size (3), so finalize_commit takes the
-        // already_durable branch — the guard must detect the leaf at
-        // index 2 is NOT this commit's own TR and hard-error, rather than
-        // silently deriving CR from the orphan.
-        let result = apply_golden_commit(&mut principal, &commits[2]);
+        let result = apply_golden_commit(&mut principal, &commits[2]).await;
         match result {
             Err(cyphr::Error::DurableLeafMismatch(idx)) => assert_eq!(idx, 2),
             other => panic!(
@@ -250,11 +252,14 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
             .await
             .expect("blob put");
 
-        let mut principal =
-            cyphr::Principal::implicit_with_storage(keys[0].clone(), eml_storage).unwrap();
+        let mut principal = cyphr::Principal::open(keys[0].clone(), eml_storage)
+            .await
+            .unwrap();
 
         for commit in commits {
-            apply_golden_commit(&mut principal, commit).expect("finalize failed");
+            apply_golden_commit(&mut principal, commit)
+                .await
+                .expect("finalize failed");
         }
 
         let cr = principal.cr().cloned();
@@ -278,8 +283,9 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
             cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
         let eml_storage =
             cyphr_blob_fjall::open_eml_storage(db.clone()).expect("reopen eml storage");
-        let trees: CommitTrees<FjallStorage> =
-            CommitTrees::open(eml_storage).expect("reconstruct commit tree from disk");
+        let trees: CommitTrees<FjallStorage> = CommitTrees::open(eml_storage)
+            .await
+            .expect("reconstruct commit tree from disk");
 
         let restored_cr = cyphr::commit_root::commit_root_from_trees(&trees, &algs)
             .expect("commit root from reopened trees");

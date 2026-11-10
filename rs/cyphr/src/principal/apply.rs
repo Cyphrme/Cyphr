@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::Principal;
+use super::{Principal, PrincipalState};
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
@@ -25,7 +25,7 @@ impl<S: eml::Storage> Principal<S> {
     /// let mut scope = principal.begin_commit();
     /// scope.apply(vtx1)?;
     /// scope.apply(vtx2)?;
-    /// let commit = scope.finalize()?;
+    /// let commit = scope.finalize().await?;
     /// ```
     pub fn begin_commit(&mut self) -> CommitScope<'_, S> {
         CommitScope::new(self)
@@ -45,10 +45,13 @@ impl<S: eml::Storage> Principal<S> {
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
     /// - `DuplicateKey`: Adding key already in KS
     /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
-    pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
+    pub async fn apply_transaction(
+        &mut self,
+        vtx: crate::parsed_coz::VerifiedCoz,
+    ) -> Result<&Commit> {
         let mut scope = self.begin_commit();
         scope.apply(vtx)?;
-        scope.finalize()
+        scope.finalize().await
     }
 
     /// Commit this principal's genesis (SPEC 5.1-5.3), signed by `signer`,
@@ -56,54 +59,38 @@ impl<S: eml::Storage> Principal<S> {
     /// in order, the `principal/create` and the `commit/create`. A
     /// single-key genesis passes no `others`.
     ///
+    /// The async convenience over the scope's prepare, sign, finish steps
+    /// ([`CommitScope::create_genesis_keys`],
+    /// [`CommitScope::create_principal`] and
+    /// [`CommitScope::finalize_with_signer`]): every signature goes through
+    /// [`Signer::sign`](crate::signer::Signer::sign). The future is `Send`
+    /// only when the signer's is.
+    ///
     /// Returns the commit's wire cozies in order; each `key/create`
     /// discloses its key, so the genesis reads from the cozies alone.
     ///
     /// # Errors
     ///
-    /// As [`CommitScope::create_genesis_keys`],
-    /// [`CommitScope::create_principal`] and
-    /// [`CommitScope::finalize_with_software`]; `UnknownKey` when `signer`
-    /// is not the genesis key or the genesis is already committed.
-    pub fn commit_genesis(
+    /// `Signer` if signing fails; otherwise as the steps above, e.g.
+    /// `UnknownKey` when `signer` is not the genesis key or the genesis is
+    /// already committed.
+    pub async fn commit_genesis<K: crate::signer::Signer + ?Sized>(
         &mut self,
-        signer: &crate::signer::SoftwareSigner,
+        signer: &K,
         others: &[Key],
         now: i64,
         authority: &str,
     ) -> Result<Vec<serde_json::Value>> {
         let mut scope = self.begin_commit();
-        let mut cozies = scope.create_genesis_keys(signer, others, now, authority)?;
-        cozies.push(scope.create_principal(signer, now, authority)?);
-        let commit = scope.finalize_with_software(signer, now, authority)?;
+        let mut cozies = scope
+            .create_genesis_keys(signer, others, now, authority)
+            .await?;
+        cozies.push(scope.create_principal(signer, now, authority).await?);
+        let commit = scope.finalize_with_signer(signer, now, authority).await?;
         let closing = commit.commit_tx().0.first().ok_or(Error::MissingCommit)?;
         let closing = serde_json::to_value(closing.raw()).map_err(|_| Error::MalformedPayload)?;
         cozies.push(closing);
         Ok(cozies)
-    }
-
-    // ========================================================================
-    // ParsedCoz application (internal)
-    // ========================================================================
-
-    /// Apply a verified coz to mutate principal state (internal).
-    ///
-    /// Called by `CommitScope::apply()`. This mutates the principal eagerly;
-    /// the commit scope holds `&mut self` preventing external observation
-    /// of intermediate state.
-    ///
-    /// # Errors
-    ///
-    /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
-    /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `DuplicateKey`: Adding key already in KS
-    /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
-    pub(crate) fn apply_verified_internal(
-        &mut self,
-        vtx: crate::parsed_coz::VerifiedCoz,
-    ) -> Result<()> {
-        self.apply_transaction_internal(vtx)?;
-        Ok(())
     }
 
     /// Apply a coz without prior signature verification (test-only).
@@ -113,12 +100,12 @@ impl<S: eml::Storage> Principal<S> {
     /// computed arrow and pushes it to `commit_tx`. This mirrors the
     /// protocol structure per SPEC §4.4.
     #[cfg(test)]
-    pub(crate) fn apply_transaction_test(
+    pub(crate) async fn apply_transaction_test(
         &mut self,
         cz: crate::parsed_coz::ParsedCoz,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
-        self.commit_test(vec![(cz, new_key)])
+        self.commit_test(vec![(cz, new_key)]).await
     }
 
     /// Commit the genesis without signatures (test-only): the genesis key
@@ -127,7 +114,7 @@ impl<S: eml::Storage> Principal<S> {
     /// dummy keys that cannot sign, so they reach an established principal
     /// through this rather than through a signed genesis commit.
     #[cfg(test)]
-    pub(crate) fn genesis_test(&mut self, others: Vec<Key>) -> Result<&Commit> {
+    pub(crate) async fn genesis_test(&mut self, others: Vec<Key>) -> Result<&Commit> {
         use crate::parsed_coz::{CozKind, ParsedCoz};
         use crate::state::AuthRoot;
 
@@ -161,7 +148,7 @@ impl<S: eml::Storage> Principal<S> {
             cozies.push((coz(kind, 0xF0 - i as u8), Some(key)));
         }
         // `id` is the future SR the creates leave (SPEC 5.1 step 3).
-        let mut projected = self.share();
+        let mut projected = self.state.clone();
         for (cz, key) in &cozies {
             projected.apply_verified_internal(
                 crate::parsed_coz::VerifiedCoz::from_transaction_unsafe(cz.clone(), key.clone()),
@@ -169,13 +156,13 @@ impl<S: eml::Storage> Principal<S> {
         }
         let id = AuthRoot(projected.genesis_pr()?.0);
         cozies.push((coz(CozKind::PrincipalCreate { id }, 0xF1), None));
-        self.commit_test(cozies)
+        self.commit_test(cozies).await
     }
 
     /// Apply `cozies` without signature verification and close them with
     /// a synthetic `commit/create` (test-only).
     #[cfg(test)]
-    fn commit_test(
+    async fn commit_test(
         &mut self,
         cozies: Vec<(crate::parsed_coz::ParsedCoz, Option<Key>)>,
     ) -> Result<&Commit> {
@@ -188,7 +175,7 @@ impl<S: eml::Storage> Principal<S> {
         for (cz, new_key) in cozies {
             // Apply mutation eagerly (same as apply_verified_internal)
             let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
-            self.apply_verified_internal(mutation_vtx)?;
+            self.state.apply_verified_internal(mutation_vtx)?;
             // Push mutation coz to transactions (no arrow)
             pending.push_tx(crate::transaction::Transaction(vec![
                 VerifiedCoz::from_transaction_unsafe(cz.clone(), None),
@@ -200,7 +187,7 @@ impl<S: eml::Storage> Principal<S> {
         // KT → AR-node → SR-node from post-mutation key set (local, does not
         // mutate self). DR is refreshed to the current active_algs rather
         // than trusting the cached value, which may predate a key of a new
-        // algorithm (see finalize_commit's identical refresh).
+        // algorithm (see stage_commit's identical refresh).
         let active_algs = self.active_algs();
         let leaves: Vec<_> = self.auth.keys.values().map(key_leaf).collect();
         let dr = self.data.included_root(&active_algs)?;
@@ -242,7 +229,89 @@ impl<S: eml::Storage> Principal<S> {
         let commit_vtx = VerifiedCoz::from_transaction_unsafe(commit_coz, None);
         pending.push_tx(crate::transaction::Transaction(vec![commit_vtx]));
 
-        self.finalize_commit(pending)
+        self.finalize_test(pending).await
+    }
+
+    /// Stage `pending` on this principal's own state (its cozies already
+    /// applied there) and commit it (test-only): the unit tests' way to
+    /// finalize a commit assembled by hand.
+    #[cfg(test)]
+    pub(crate) async fn finalize_test(&mut self, pending: PendingCommit) -> Result<&Commit> {
+        let mut state = self.state.clone();
+        let staged = state.stage_commit(pending, &self.log).await?;
+        self.adopt(state, staged).await
+    }
+
+    /// Verify signature and apply a coz as an atomic commit.
+    ///
+    /// This is the primary method for processing incoming single-coz
+    /// commits. It verifies the signature, parses the coz, applies
+    /// the mutation, and finalizes the commit in one call.
+    ///
+    /// For multi-coz commits, use `begin_commit()` with manual
+    /// scope control.
+    ///
+    /// # Arguments
+    ///
+    /// * `pay_json` - Raw JSON bytes of the Pay object
+    /// * `sig` - Signature bytes
+    /// * `czd` - Coz digest for this coz
+    /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidSignature`: Signature doesn't verify
+    /// - `UnknownKey`: Signer not in active key set
+    /// - `MalformedPayload`: Missing required fields
+    #[must_use = "coz application may fail; handle the Result"]
+    pub async fn verify_and_apply_transaction(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        new_key: Option<Key>,
+    ) -> Result<&Commit> {
+        use crate::parsed_coz::verify_coz;
+
+        // Parse Pay to get signer thumbprint
+        let pay: coz::Pay =
+            serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+        let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
+
+        // Signer must be an ACTIVE key (not revoked)
+        let signer_key = self.active_signer(signer_tmb)?;
+
+        // Verify signature and parse coz
+        let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
+
+        // Apply as single-cz atomic commit
+        self.apply_transaction(vtx).await
+    }
+}
+
+impl PrincipalState {
+    // ========================================================================
+    // ParsedCoz application (internal)
+    // ========================================================================
+
+    /// Apply a verified coz to mutate principal state (internal).
+    ///
+    /// Called by `CommitScope::apply()`. This mutates the principal eagerly;
+    /// the commit scope holds `&mut self` preventing external observation
+    /// of intermediate state.
+    ///
+    /// # Errors
+    ///
+    /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
+    /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
+    /// - `DuplicateKey`: Adding key already in KS
+    /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
+    pub(crate) fn apply_verified_internal(
+        &mut self,
+        vtx: crate::parsed_coz::VerifiedCoz,
+    ) -> Result<()> {
+        self.apply_transaction_internal(vtx)?;
+        Ok(())
     }
 
     /// The genesis signer rule. Before the genesis commit has created a
@@ -319,7 +388,7 @@ impl<S: eml::Storage> Principal<S> {
         // FreezeCreate, and FreezeDelete manage their own deleted/frozen PRE
         // checks in their match arms below (untouched by this gate).
         // CommitCreate is conditionally exempted (F35 narrowing): it is the
-        // mandatory finalizer every commit must carry (finalize_commit
+        // mandatory finalizer every commit must carry (stage_commit
         // rejects a commit whose last cozy lacks the arrow) and its own arm
         // is a pure no-op that grants no mutation power (principal.rs, the
         // CommitCreate match arm below). CommitScope applies cozies
@@ -331,7 +400,7 @@ impl<S: eml::Storage> Principal<S> {
         // necessity holds only for THIS SAME, still-open commit:
         // `deleted_pending` is true exactly while such a commit is open
         // (set by the PrincipalDelete arm, cleared at the end of a
-        // successful `finalize_commit`), so a commit/create in a LATER,
+        // successful `stage_commit`), so a commit/create in a LATER,
         // separately-finalized commit against an already-deleted principal
         // -- where `deleted` is true but `deleted_pending` is false -- is
         // not exempted. Every other variant has no such mandatory-
@@ -565,12 +634,27 @@ impl<S: eml::Storage> Principal<S> {
         Ok(())
     }
 
-    /// Finalize a commit with proper state recomputation.
+    /// Stage a commit: verify it and compute every state digest, the
+    /// commit-log append among them, with nothing written.
     ///
-    /// This is called by `CommitScope::finalize()` with the accumulated
-    /// `PendingCommit`. Recomputes all state digests and appends the
-    /// finalized commit to the auth ledger.
-    pub(crate) fn finalize_commit(&mut self, pending: PendingCommit) -> Result<&Commit> {
+    /// Called on a commit scope's projected state with the accumulated
+    /// `PendingCommit` and the principal's live log. On success this state
+    /// holds the finalized commit (pushed to the auth ledger, PR, SR, CR
+    /// and the rest recomputed), and the returned [`polydigest::Staged`]
+    /// carries the log write that makes it durable: the algorithm
+    /// activations this commit needs and its leaf, applied together by one
+    /// `Storage::apply` or not at all. `None` means the log already holds
+    /// this commit's leaf (replay over a durable log), so there is nothing
+    /// to write. The caller adopts this state only after that write.
+    ///
+    /// Async only for the replay path, which reads the stored leaf and the
+    /// historical root; root reads for a new leaf come from the staged
+    /// frontier.
+    pub(crate) async fn stage_commit<S: eml::Storage>(
+        &mut self,
+        pending: PendingCommit,
+        log: &crate::commit_root::CommitTrees<S>,
+    ) -> Result<Option<polydigest::Staged<S>>> {
         if pending.is_finalizer_only() {
             return Err(Error::EmptyCommit);
         }
@@ -667,63 +751,66 @@ impl<S: eml::Storage> Principal<S> {
             }
         }
 
-        // Ensure all active algorithms are registered in the unified EML Log.
         let algs = active_algs.clone();
-        for &alg in &algs {
-            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-            if !core.commit_trees.has_algorithm(alg_id) {
-                let hasher = Box::new(crate::commit_root::MaltHasher::new(alg));
-                core.commit_trees
-                    .add_algorithm(alg_id, hasher)
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-            }
-        }
 
         // This commit's 0-based position in the append-only commit
-        // sequence. For a live/first-time commit this always equals the
-        // durable log's current leaf count (each call appends exactly one
-        // leaf in lockstep with `core.auth.commits`), so `already_durable`
-        // is always false on that path — replay is the only path where a
-        // durable log opened via `CommitTrees::open` can already carry
-        // this leaf from a prior session.
+        // sequence. For a live commit this always equals the log's leaf
+        // count (each commit appends exactly one leaf in lockstep with
+        // `auth.commits`), so `already_durable` is false on that path;
+        // replay over a durable log opened with `CommitTrees::open` is the
+        // only path where the log can already carry this leaf.
         let leaf_index = core.auth.commits.len() as u64;
-        let already_durable = leaf_index < core.commit_trees.global_size();
+        let already_durable = leaf_index < log.global_size();
 
-        // Serialize this commit's TR once — used both to append a fresh
+        // Serialize this commit's TR once — used both to stage a fresh
         // leaf and, on the already_durable path, as the value to
         // byte-compare a pre-existing leaf against.
         let serialized = crate::commit_root::commit_leaf(&tr.0, &active_algs)?;
 
-        let cr = if already_durable {
-            // A prior durable session already appended a leaf at this
-            // position — re-appending would duplicate it. But a crash
-            // between a prior `finalize_commit`'s durable EML append and
-            // its index write can leave an ORPHAN leaf here instead of
-            // this commit's own TR: byte-compare before trusting it,
-            // rather than silently deriving CR from whatever leaf already
-            // occupies the position.
-            let stored = core
-                .commit_trees
+        let (cr, staged) = if already_durable {
+            // The log already holds a leaf at this position: re-appending
+            // would duplicate it. The log is written only after the blob
+            // store records the commit, in the same write as its algorithm
+            // activations, so a leaf here is this commit's own TR with its
+            // algorithms registered. A different leaf, or an active
+            // algorithm the log never registered, is `DurableLeafMismatch`:
+            // reachable only for logs written before the two-phase commit,
+            // when the EML could run ahead of the committed principal.
+            if algs
+                .iter()
+                .any(|&alg| !log.has_algorithm(crate::commit_root::hash_alg_to_u64(alg)))
+            {
+                return Err(Error::DurableLeafMismatch(leaf_index));
+            }
+            let stored = log
                 .get_leaf(leaf_index)
+                .await
                 .map_err(|e| Error::Storage(e.to_string()))?;
             if stored != serialized {
                 return Err(Error::DurableLeafMismatch(leaf_index));
             }
-
-            // Read the historical root as of this leaf's position instead.
-            crate::commit_root::commit_root_from_trees_at(
-                &core.commit_trees,
-                &algs,
-                leaf_index + 1,
-            )?
+            // Read the historical root as of this leaf's position.
+            let cr =
+                crate::commit_root::commit_root_from_trees_at(log, &algs, leaf_index + 1).await?;
+            (cr, None)
         } else {
-            // Append current TR once to the unified EML Log.
-            core.commit_trees
-                .append(&serialized)
+            // Stage every algorithm activation and the leaf in one batch,
+            // so they reach storage together or not at all, and read CR
+            // from the staged frontier before anything is written.
+            let mut staged = log.stage();
+            for &alg in &algs {
+                let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+                if !log.has_algorithm(alg_id) {
+                    staged
+                        .add_algorithm(alg_id, Box::new(crate::commit_root::MaltHasher::new(alg)))
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                }
+            }
+            staged
+                .append_leaf(&serialized)
                 .map_err(|e| Error::Storage(e.to_string()))?;
-
-            // Assemble CR from the EML Log for all active algorithms.
-            crate::commit_root::commit_root_from_trees(&core.commit_trees, &algs)?
+            let cr = crate::commit_root::commit_root_from_staged(&staged, &algs)?;
+            (cr, Some(staged))
         };
 
         // Write SR into cell 0 and CR into cell 1 of the Principal Tree, and
@@ -736,60 +823,13 @@ impl<S: eml::Storage> Principal<S> {
 
         core.auth.commits.push(commit);
 
-        // This commit is now durably finalized: any principal/delete it
+        // This commit is finalized on this state: any principal/delete it
         // carried is no longer "this commit's own pending delete" for a
         // future commit's CommitCreate exemption (skip_deleted_check).
         core.deleted_pending = false;
         core.genesis_pending = false;
 
-        // The borrow is safe: we just pushed, so last() is guaranteed Some.
-        core.auth.commits.last().ok_or(Error::EmptyCommit)
-    }
-
-    /// Verify signature and apply a coz as an atomic commit.
-    ///
-    /// This is the primary method for processing incoming single-coz
-    /// commits. It verifies the signature, parses the coz, applies
-    /// the mutation, and finalizes the commit in one call.
-    ///
-    /// For multi-coz commits, use `begin_commit()` with manual
-    /// scope control.
-    ///
-    /// # Arguments
-    ///
-    /// * `pay_json` - Raw JSON bytes of the Pay object
-    /// * `sig` - Signature bytes
-    /// * `czd` - Coz digest for this coz
-    /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
-    ///
-    /// # Errors
-    ///
-    /// - `InvalidSignature`: Signature doesn't verify
-    /// - `UnknownKey`: Signer not in active key set
-    /// - `MalformedPayload`: Missing required fields
-    #[must_use = "coz application may fail; handle the Result"]
-    pub fn verify_and_apply_transaction(
-        &mut self,
-        pay_json: &[u8],
-        sig: &[u8],
-        czd: coz::Czd,
-        new_key: Option<Key>,
-    ) -> Result<&Commit> {
-        use crate::parsed_coz::verify_coz;
-
-        // Parse Pay to get signer thumbprint
-        let pay: coz::Pay =
-            serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
-        let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
-
-        // Signer must be an ACTIVE key (not revoked)
-        let signer_key = self.active_signer(signer_tmb)?;
-
-        // Verify signature and parse coz
-        let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
-
-        // Apply as single-cz atomic commit
-        self.apply_transaction(vtx)
+        Ok(staged)
     }
 
     /// Add a key to the active key set.

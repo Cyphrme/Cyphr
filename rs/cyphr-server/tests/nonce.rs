@@ -56,14 +56,16 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
 /// `g`'s principal: the genesis commit (SPEC 5.1) is `g`'s self
 /// `key/create`, a `nonce/create` at the KT root, then `principal/create`
 /// at the resulting PR; commit 1 is `g` creating `next`.
-fn principal_with_nonce(
+async fn principal_with_nonce(
     g: &Kp,
     next: &Kp,
     nonce: &[u8; 32],
 ) -> cyphr::error::Result<cyphr::Principal> {
-    let mut p = cyphr::Principal::implicit(key_of(g))?;
+    let mut p = cyphr::Principal::implicit(key_of(g)).await?;
     let mut scope = p.begin_commit();
-    scope.create_genesis_keys(&signer_of(g), &[], NOW, "cyphr.me")?;
+    scope
+        .create_genesis_keys(&signer_of(g), &[], NOW, "cyphr.me")
+        .await?;
     let (pay, sig, czd) = sign(
         g,
         serde_json::json!({
@@ -74,8 +76,12 @@ fn principal_with_nonce(
         }),
     );
     scope.verify_and_apply(&pay, &sig, czd, None)?;
-    scope.create_principal(&signer_of(g), NOW, "cyphr.me")?;
-    scope.finalize_with_software(&signer_of(g), NOW, "cyphr.me")?;
+    scope
+        .create_principal(&signer_of(g), NOW, "cyphr.me")
+        .await?;
+    scope
+        .finalize_with_software(&signer_of(g), NOW, "cyphr.me")
+        .await?;
 
     let (pay, sig, czd) = sign(
         g,
@@ -84,7 +90,9 @@ fn principal_with_nonce(
     );
     let mut scope = p.begin_commit();
     scope.verify_and_apply(&pay, &sig, czd, Some(key_of(next).with_first_seen(NOW + 1)))?;
-    scope.finalize_with_software(&signer_of(g), NOW + 1, "cyphr.me")?;
+    scope
+        .finalize_with_software(&signer_of(g), NOW + 1, "cyphr.me")
+        .await?;
     Ok(p)
 }
 
@@ -164,11 +172,12 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let next = kp(&pool, "key_a");
-    let build = |nonce: &[u8; 32]| {
+    let build = async |nonce: &[u8; 32]| {
         principal_with_nonce(&g, &next, nonce)
+            .await
             .unwrap_or_else(|e| panic!("nonce/create must apply in a genesis commit: {e:?}"))
     };
-    let (a, b) = (build(&[0x11; 32]), build(&[0x22; 32]));
+    let (a, b) = (build(&[0x11; 32]).await, build(&[0x22; 32]).await);
     let (pg_a, pg_b) = (pg_of(&a), pg_of(&b));
     assert_ne!(pg_a, pg_b, "different nonces must give different PGs");
     let (id_a, id_b) = (pg_a.clone(), pg_b.clone());
@@ -238,8 +247,12 @@ async fn identical_nonce_principal_pushed_twice_is_one_principal() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let next = kp(&pool, "key_a");
-    let a = principal_with_nonce(&g, &next, &[0x33; 32]).expect("a");
-    let sibling = principal_with_nonce(&g, &next, &[0x44; 32]).expect("sibling");
+    let a = principal_with_nonce(&g, &next, &[0x33; 32])
+        .await
+        .expect("a");
+    let sibling = principal_with_nonce(&g, &next, &[0x44; 32])
+        .await
+        .expect("sibling");
     let pg_a = pg_of(&a);
     assert_ne!(
         pg_a,

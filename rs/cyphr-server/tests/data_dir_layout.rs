@@ -334,10 +334,10 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     let app = build_app_router(state.clone()).expect("failed to build app router");
 
     let pool = common::load_pool();
-    let principal_id = common::golden_principal_id(&pool);
+    let principal_id = common::golden_principal_id(&pool).await;
     let principal_id = principal_id.as_str();
     let push_now = 1_700_000_000;
-    let push_body = common::build_genesis_push_body(&pool, principal_id, push_now);
+    let push_body = common::build_genesis_push_body(&pool, principal_id, push_now).await;
     let (push_status, push_json) = common::post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         push_status,

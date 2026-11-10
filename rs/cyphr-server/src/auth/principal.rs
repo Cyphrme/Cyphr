@@ -229,7 +229,7 @@ impl ServerPrincipal {
         // that reads to an operator as store corruption, not a missing,
         // reconstructible file (#175).
         let genesis_key = genesis_key_from_identity(&identity)?;
-        let (pg, blobs) = build_genesis(&identity, &genesis_key)?;
+        let (pg, blobs) = build_genesis(&identity, &genesis_key).await?;
 
         if engine.get_tip(&pg).await?.is_some() {
             return Err(ServerPrincipalError::MissingSidecar(format!(
@@ -462,16 +462,18 @@ impl ServerPrincipal {
 
         let mut scope = principal.begin_commit();
         scope.verify_and_apply(&pay, &sig, czd, Some(new_key))?;
-        let commit = scope.finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(
-                alg,
-                current.prv_key(),
-                current.pub_key(),
-                &signer_tmb,
-            ),
-            now + 1,
-            CHAIN_AUTHORITY,
-        )?;
+        let commit = scope
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    alg,
+                    current.prv_key(),
+                    current.pub_key(),
+                    &signer_tmb,
+                ),
+                now + 1,
+                CHAIN_AUTHORITY,
+            )
+            .await?;
         let cc_blob = serde_json::to_vec(commit.commit_tx().0[0].raw())?;
         let kr_blob = raw_blob(
             &pay,
@@ -568,14 +570,14 @@ fn genesis_key_from_identity(
 /// commit/create), returning the PG and the wire blobs ready for
 /// `submit_commit`. The key/create discloses the key, so the genesis is
 /// readable from the blobs alone (I1).
-fn build_genesis(
+async fn build_genesis(
     identity: &ServerIdentity,
     genesis_key: &cyphr::Key,
 ) -> Result<(String, Vec<Vec<u8>>), ServerPrincipalError> {
     let alg = identity.alg().name();
     let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes());
 
-    let mut client = cyphr::Principal::implicit(genesis_key.clone())?;
+    let mut client = cyphr::Principal::implicit(genesis_key.clone()).await?;
     let signer = cyphr::signer::SoftwareSigner::new(
         alg,
         identity.prv_key(),
@@ -584,7 +586,9 @@ fn build_genesis(
     );
     let now = super::server_now();
     let mut scope = client.begin_commit();
-    let creates = scope.create_genesis_keys(&signer, &[], now, CHAIN_AUTHORITY)?;
+    let creates = scope
+        .create_genesis_keys(&signer, &[], now, CHAIN_AUTHORITY)
+        .await?;
     // The PG is the state the genesis key's own `key/create` reaches —
     // independent of timestamps, so it is the same every time this key
     // bootstraps.
@@ -603,7 +607,9 @@ fn build_genesis(
         .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
 
     scope.verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)?;
-    let commit = scope.finalize_with_software(&signer, now + 1, CHAIN_AUTHORITY)?;
+    let commit = scope
+        .finalize_with_software(&signer, now + 1, CHAIN_AUTHORITY)
+        .await?;
 
     let mut blobs = creates
         .iter()
