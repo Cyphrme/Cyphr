@@ -3,12 +3,11 @@
 use coz::Thumbprint;
 
 use super::Principal;
-use crate::action::Action;
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::semantic_tree::derive_state_roots_with_nonces;
-use crate::state::{HashAlg, PrincipalGenesis, compute_dr};
+use crate::state::{HashAlg, PrincipalGenesis};
 
 impl<S: eml::Storage> Principal<S> {
     /// Begin a new commit scope.
@@ -198,8 +197,7 @@ impl<S: eml::Storage> Principal<S> {
         // algorithm (see finalize_commit's identical refresh).
         let active_algs = self.active_algs();
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
-        let action_refs: Vec<&Action> = self.data.actions.iter().collect();
-        let dr = compute_dr(&action_refs, None, &active_algs)?;
+        let dr = self.data.included_root(&active_algs)?;
         let (_kr, _ar, sr) =
             derive_state_roots_with_nonces(&thumbprints, dr.as_ref(), &self.nonces, &active_algs)?;
 
@@ -353,7 +351,8 @@ impl<S: eml::Storage> Principal<S> {
             | CozKind::NonceDelete { .. }
             | CozKind::Merge(_)
             | CozKind::MergeAck(_)
-            | CozKind::PrincipalCreate { .. } => false,
+            | CozKind::PrincipalCreate { .. }
+            | CozKind::DataRootCreate { .. } => false,
         };
         if self.deleted && !skip_deleted_check {
             return Err(Error::AlreadyDeleted);
@@ -379,7 +378,8 @@ impl<S: eml::Storage> Principal<S> {
             | CozKind::NonceDelete { .. }
             | CozKind::Merge(_)
             | CozKind::MergeAck(_)
-            | CozKind::PrincipalCreate { .. } => false,
+            | CozKind::PrincipalCreate { .. }
+            | CozKind::DataRootCreate { .. } => false,
         };
         if self.frozen && !frozen_exempt {
             return Err(Error::Frozen);
@@ -540,6 +540,21 @@ impl<S: eml::Storage> Principal<S> {
                 }
                 self.core_mut().frozen = false;
             },
+            CozKind::DataRootCreate { id } => {
+                // SPEC 4.8.2: `id` is the computed new DR = MR(DT), over
+                // every action recorded so far. Matching one variant
+                // suffices, as for every tagged `id` (all variants name the
+                // same content); DR itself is folded into SR at finalize.
+                // A stale or foreign DR is the same refusal as any other
+                // `id` that names a state the principal is not in.
+                let core = self.core_mut();
+                let algs = core.active_algs();
+                let dt = core.data.tree_root(&algs)?;
+                if !dt.is_some_and(|dt| id.0.matches(&dt.0)) {
+                    return Err(Error::StateMismatch);
+                }
+                core.data.include_all();
+            },
         }
 
         // Update signer's last_used timestamp
@@ -615,15 +630,14 @@ impl<S: eml::Storage> Principal<S> {
         core.tr = Some(tr.clone());
 
         // Refresh DR's algorithm coverage to the post-mutation active_algs
-        // before folding it into SR-node. DR was cached by record_action
-        // under whatever active_algs were live at the time; a key of a NEW
+        // before folding it into SR-node. DR was last computed under
+        // whatever active_algs were live at its `ds/create`; a key of a NEW
         // algorithm added since then would otherwise leave DR missing that
         // algorithm's variant, and StateTree::build's cell payload would hit
         // MultihashDigest::get_or_err's `MissingVariant` error for the new
-        // algorithm (unlike the old flat formula, which had no per-algorithm
-        // variant to be missing in the first place).
-        let actions: Vec<&Action> = core.data.actions.iter().collect();
-        core.dr = compute_dr(&actions, None, &active_algs)?;
+        // algorithm. Only the actions a `ds/create` included count
+        // (SPEC 4.8.2): ones recorded since are in DT, not yet in DR.
+        core.dr = core.data.included_root(&active_algs)?;
 
         // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.

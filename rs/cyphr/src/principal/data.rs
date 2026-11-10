@@ -3,11 +3,13 @@
 use super::Principal;
 use crate::action::Action;
 use crate::error::{Error, Result};
-use crate::semantic_tree::StateTree;
-use crate::state::{PrincipalRoot, compute_dr};
+use crate::state::PrincipalRoot;
 
 impl<S: eml::Storage> Principal<S> {
-    /// Record an action to the Data State (Level 4+).
+    /// Record an action in the Data Tree (Level 4+).
+    ///
+    /// The action enters DT only: DR, and so SR and PR, change when a
+    /// `ds/create` includes it (SPEC 4.8.2).
     ///
     /// This is internal-only. External code must use `verify_and_record_action`
     /// which enforces signature verification.
@@ -31,34 +33,12 @@ impl<S: eml::Storage> Principal<S> {
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
 
-        let active_algs = self.active_algs();
         let core = self.core_mut();
-
-        // Update latest timestamp
         if action.now > core.latest_timestamp {
             core.latest_timestamp = action.now;
         }
-
-        // Record action
         core.included_czds.insert(action.czd.as_bytes().to_vec());
         core.data.actions.push(action);
-
-        // Recompute DS
-        let actions: Vec<&Action> = core.data.actions.iter().collect();
-        core.dr = compute_dr(&actions, None, &active_algs)?;
-
-        // Recompute SR-node: cell 0 = AR (unchanged), cell 1 = DR (may have
-        // just appeared/changed above).
-        let sr = StateTree::build(
-            core.ar.as_ref().ok_or(Error::NoActiveKeys)?,
-            core.dr.as_ref(),
-            &active_algs,
-        )?;
-
-        // Write SR into the Principal Tree (cell 1/CR is untouched) and
-        // recompute PR from the tree.
-        core.pr = core.write_pt_sr(&sr, &active_algs)?;
-        core.held_prs.push(core.pr.clone());
 
         Ok(&self.pr)
     }
@@ -122,7 +102,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         // SPEC §2.3.2, §11: a frozen principal changes only by being
-        // unfrozen, and a data action changes DR and PR.
+        // unfrozen, and a data action changes DT.
         if self.frozen {
             return Err(Error::Frozen);
         }

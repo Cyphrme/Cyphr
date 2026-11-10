@@ -415,7 +415,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 /// content address.
 #[tokio::test]
 async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
-    let fixture = load_golden("actions", "single_action_promotes_ds");
+    let fixture = load_golden("actions", "action_alone_leaves_pr");
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
     assert_eq!(
@@ -458,7 +458,7 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
 /// the action-only path instead of being rejected as malformed.
 #[tokio::test]
 async fn submit_commit_rejects_blob_missing_typ() {
-    let fixture = load_golden("actions", "single_action_promotes_ds");
+    let fixture = load_golden("actions", "action_alone_leaves_pr");
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let genesis = make_genesis(genesis_keys);
 

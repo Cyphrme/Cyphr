@@ -84,7 +84,7 @@ fn corpus() -> Vec<Chain> {
             } else {
                 Genesis::Explicit(keys)
             };
-            let bundles = commits.iter().map(wire_blobs).collect();
+            let bundles = carried(commits.iter().map(wire_blobs).collect());
             chains.push(Chain {
                 name: path.display().to_string(),
                 genesis,
@@ -115,6 +115,33 @@ fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
             serde_json::to_vec(&coz).expect("json")
         })
         .collect()
+}
+
+/// The bundles as a client carries them: a vector records each data action
+/// as its own entry, but the engine replays only bundles that form a
+/// commit, so actions that a later commit's `ds/create` includes (SPEC
+/// 4.8.2) travel ahead of that commit's transactions, the order the replay
+/// rule records them in. Actions after the last commit stay on their own.
+fn carried(entries: Vec<Vec<Vec<u8>>>) -> Vec<Vec<Vec<u8>>> {
+    let forms_commit = |bundle: &[Vec<u8>]| {
+        bundle
+            .iter()
+            .any(|b| StoredCoz::from_wire(b).expect("wire coz").is_transaction())
+    };
+    let mut bundles = Vec::new();
+    let mut pending: Vec<Vec<u8>> = Vec::new();
+    for entry in entries {
+        if forms_commit(&entry) {
+            pending.extend(entry);
+            bundles.push(std::mem::take(&mut pending));
+        } else {
+            pending.extend(entry);
+        }
+    }
+    if !pending.is_empty() {
+        bundles.push(pending);
+    }
+    bundles
 }
 
 fn principal(genesis: &Genesis) -> cyphr::Principal {
@@ -221,8 +248,8 @@ async fn check_chain(chain: &Chain) {
             return;
         }
         let tip = tip.expect("a tip");
-        // The tip is the last commit's; actions after it move the core's PR
-        // but form no commit.
+        // The tip is the last commit's; actions after it are in DT only and
+        // form no commit.
         let last = core.commits().last().expect("a commit");
         let last_pr = last.pr().0.tagged_first().expect("pr").to_string();
         assert_eq!(tip.pr, last_pr, "{}: ingest PR", chain.name);

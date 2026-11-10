@@ -81,11 +81,39 @@ pub struct AuthLedger {
     pub commits: Vec<Commit>,
 }
 
-/// Data ledger holding actions (Level 4+).
+/// Data ledger holding actions (Level 4+): the Data Tree (DT).
+///
+/// A data action is recorded in DT at once, but DR enters the Principal
+/// Tree only when a `ds/create` includes it (SPEC 4.8.2). `included` marks
+/// how much of DT the last `ds/create` covered, so DR can be rehashed under
+/// a new algorithm set without taking in actions recorded since.
 #[derive(Debug, Clone, Default)]
 pub struct DataLedger {
-    /// All recorded actions.
+    /// All recorded actions, in recording order.
     pub actions: Vec<Action>,
+    /// How many of `actions` (a prefix, in recording order) the last
+    /// `ds/create` included into DR.
+    pub(crate) included: usize,
+}
+
+impl DataLedger {
+    /// MR(DT) over every recorded action: the `id` a `ds/create` names.
+    pub(crate) fn tree_root(&self, algs: &[HashAlg]) -> Result<Option<DataRoot>> {
+        let actions: Vec<&Action> = self.actions.iter().collect();
+        crate::state::compute_dr(&actions, None, algs)
+    }
+
+    /// The DR the Principal Tree holds: MR over the actions the last
+    /// `ds/create` included, `None` before any.
+    pub(crate) fn included_root(&self, algs: &[HashAlg]) -> Result<Option<DataRoot>> {
+        let actions: Vec<&Action> = self.actions.iter().take(self.included).collect();
+        crate::state::compute_dr(&actions, None, algs)
+    }
+
+    /// Include all of DT into DR.
+    pub(crate) fn include_all(&mut self) {
+        self.included = self.actions.len();
+    }
 }
 
 // ============================================================================
@@ -149,8 +177,8 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) commit_trees: crate::commit_root::CommitTrees<S>,
     /// Principal Tree (PT): the `EpochTree` backing PR. Cell 0 = SR, cell 1 =
     /// CR. The source of truth for PR; `sr`/`cr` below are a cache mirroring
-    /// its cell contents (kept in lockstep by [`PrincipalCore::write_pt_sr`]
-    /// and [`PrincipalCore::write_pt_sr_cr`]) so existing accessors
+    /// its cell contents (kept in lockstep by
+    /// [`PrincipalCore::write_pt_sr_cr`]) so existing accessors
     /// (`Principal::sr()`/`cr()`) don't need to deserialize a cell payload on
     /// every call.
     pub(crate) pt: PrincipalTree,
@@ -601,8 +629,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
     /// promoted to PR, which is PG).
     pub(crate) fn genesis_pr(&self) -> Result<PrincipalRoot> {
         let algs = self.active_algs();
-        let actions: Vec<&Action> = self.data.actions.iter().collect();
-        let dr = crate::state::compute_dr(&actions, None, &algs)?;
+        let dr = self.data.included_root(&algs)?;
         let tmbs: Vec<&Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
         let (_, _, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
             &tmbs,
@@ -626,22 +653,11 @@ impl<S: eml::Storage> PrincipalCore<S> {
         algs
     }
 
-    /// Write a new State Root into the Principal Tree's cell 0, leaving
-    /// cell 1 (Commit Root) untouched, and return the recomputed Principal
-    /// Root. Used outside commit finalization (e.g. `record_action`), where
-    /// only SR changes.
-    fn write_pt_sr(&mut self, sr: &StateRoot, algs: &[HashAlg]) -> Result<PrincipalRoot> {
-        self.pt.set_sr(sr, algs)?;
-        self.pt
-            .set_nonces(&self.nonces.at_level(NonceLevel::Pr), algs)?;
-        self.sr = Some(sr.clone());
-        self.pt.pr(algs)
-    }
-
     /// Write a new State Root into cell 0 (or remove it, when the commit
     /// left none) and Commit Root into the next cell, and return the
-    /// recomputed Principal Root. Used at commit finalization, where both
-    /// SR and CR change together.
+    /// recomputed Principal Root. Used at commit finalization, the only
+    /// place SR changes (a data action reaches SR only through a
+    /// `ds/create`).
     fn write_pt_sr_cr(
         &mut self,
         sr: Option<&StateRoot>,

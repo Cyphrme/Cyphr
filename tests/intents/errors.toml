@@ -159,6 +159,31 @@ typ    = "cyphr.me/action"
 error = "KeyRevoked"
 
 # ============================================================================
+# ds/create naming a DR that is not MR(DT) fails with StateMismatch
+# (SPEC 4.8.2: the id is the computed new DR)
+# ============================================================================
+
+[[test]]
+name      = "ds_create_wrong_id_fails"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Recorded action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[test.expected]
+error = "StateMismatch"
+
+# ============================================================================
 # Duplicate key test
 # Adding key already in KS fails with DuplicateKey
 # ============================================================================

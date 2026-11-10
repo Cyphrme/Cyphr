@@ -541,7 +541,6 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Check if a claimed arrow matches the expected arrow for this commit scope.
     pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
         use crate::semantic_tree::derive_state_roots_with_nonces;
-        use crate::state::compute_dr;
 
         if self.is_empty() {
             return false;
@@ -555,8 +554,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
         // finalize_commit's identical refresh for the full rationale).
-        let action_refs: Vec<&crate::action::Action> = self.projected.data.actions.iter().collect();
-        let Ok(dr) = compute_dr(&action_refs, None, &active_algs) else {
+        let Ok(dr) = self.projected.data.included_root(&active_algs) else {
             return false;
         };
 
@@ -629,7 +627,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
-        use crate::state::{compute_dr, hash_alg_from_str};
+        use crate::state::hash_alg_from_str;
 
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -653,8 +651,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
         // finalize_commit's identical refresh for the full rationale).
-        let action_refs: Vec<&crate::action::Action> = self.projected.data.actions.iter().collect();
-        let dr = compute_dr(&action_refs, None, &active_algs)?;
+        let dr = self.projected.data.included_root(&active_algs)?;
 
         let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
             &thumbprints,
@@ -889,6 +886,32 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .unwrap_or_else(|| self.projected.hash_alg());
         let bytes = pg.0.get_or_err(alg)?;
         Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+    }
+
+    /// The `id` a `ds/create` applied now must name (SPEC 4.8.2): the
+    /// computed DR = MR(DT) over every action recorded so far, tagged
+    /// `alg:digest` like [`genesis_id`](Self::genesis_id). `None` while DT
+    /// is empty.
+    ///
+    /// # Errors
+    ///
+    /// As [`compute_dr`](crate::state::compute_dr).
+    pub fn data_tree_id(&self) -> crate::error::Result<Option<String>> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let algs = self.projected.active_algs();
+        let Some(dt) = self.projected.data.tree_root(&algs)? else {
+            return Ok(None);
+        };
+        let alg = algs
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.projected.hash_alg());
+        let bytes = dt.0.get_or_err(alg)?;
+        Ok(Some(format!(
+            "{alg}:{}",
+            Base64UrlUnpadded::encode_string(bytes)
+        )))
     }
 
     /// Sign with `signer` and apply the `principal/create` that closes a

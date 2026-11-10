@@ -293,7 +293,9 @@ impl<S: eml::Storage> Principal<S> {
         Ok(())
     }
 
-    /// Get the current Data State (None if no actions).
+    /// The DR the Principal Tree holds: `None` until a `ds/create`
+    /// includes the Data Tree (SPEC 4.8.2), and unchanged by actions
+    /// recorded since the last one.
     pub fn data_root(&self) -> Option<&DataRoot> {
         self.dr.as_ref()
     }

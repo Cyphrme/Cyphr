@@ -228,7 +228,7 @@ async fn crafted_action_blob_cannot_invent_a_principal() {
     let before = e.get_tip(&victim).await.unwrap().unwrap();
     let phantom = fake_digest(0x20);
 
-    let fx = load_golden("actions", "action_changes_ps");
+    let fx = load_golden("actions", "action_alone_leaves_pr");
     let (ag, aid) = genesis_of(&fx);
     let blobs = craft(raw_blobs(&fx["commits"][0]), &forged(&phantom, 0, 0x21));
     let _accepted_or_refused = submit(&e, &aid, &ag, &blobs).await;
@@ -371,7 +371,7 @@ async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
     let (_, victim) = submit_honest(&e, &victim_fx).await;
     let before = principals(&e).await;
 
-    let fx = load_golden("actions", "action_changes_ps");
+    let fx = load_golden("actions", "action_alone_leaves_pr");
     let (_, aid) = genesis_of(&fx);
     let mut hostile = forged(&aid, 0, 0x40);
     hostile.pg = vec![victim.clone(), fake_digest(0x41)];
@@ -707,7 +707,7 @@ async fn action_only_no_error_after_store() {
             stored: stored.clone(),
         },
     );
-    let fx = load_golden("actions", "action_changes_ps");
+    let fx = load_golden("actions", "action_alone_leaves_pr");
     let (g, id) = genesis_of(&fx);
     let blobs: Vec<Vec<u8>> = raw_blobs(&fx["commits"][0])
         .iter()
@@ -1009,7 +1009,7 @@ proptest! {
                     accepted += 1;
                 }
             }
-            let act = load_golden("actions", "action_changes_ps");
+            let act = load_golden("actions", "action_alone_leaves_pr");
             let (ag, aid) = genesis_of(&act);
             let mut blobs: Vec<Vec<u8>> = raw_blobs(&act["commits"][0])
                 .iter()
@@ -1687,7 +1687,7 @@ async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
 #[tokio::test]
 async fn action_only_bundle_cannot_create_a_principal() {
     let e = engine();
-    let fx = load_golden("actions", "action_changes_ps");
+    let fx = load_golden("actions", "action_alone_leaves_pr");
     let (_, aid) = genesis_of(&fx);
     let blobs: Vec<Vec<u8>> = raw_blobs_disclosing_genesis(&fx, &fx["commits"][0])
         .iter()
