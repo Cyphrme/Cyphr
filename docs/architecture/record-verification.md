@@ -297,10 +297,9 @@ Backed by `forged_action_spliced_before_delete_commit_breaks_replay` in
 commit twice, once without and once with a forged action inserted before it;
 every coz verifies on its own, the honest replay (the control) finalizes, and
 the forged one fails with `StateMismatch` at the `ds/create`, before the
-`arrow` is reached (it would fail there with `CommitMismatch` if the commit
-carried no `ds/create`). Rule 6 pins `pre`; this rule pins the forward state,
-DR included. Not checked by a named test: a root-by-root comparison of replayed SR, AR, KR, CR and PR with
-roots a server published.
+`arrow` is reached. Rule 6 pins `pre`; this rule pins the forward state, DR
+included. Not checked by a named test: a root-by-root comparison of replayed
+SR, AR, KR, CR and PR with roots a server published.
 
 ### Authorization and lifecycle
 
