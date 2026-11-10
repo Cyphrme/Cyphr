@@ -5,6 +5,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -63,6 +64,7 @@ pub struct Peer {
     pub data_dir: PathBuf,
     launch: Launch,
     stdout: Arc<Mutex<Vec<String>>>,
+    backups: AtomicUsize,
     // `kill_on_drop` reaps the process if a scenario panics. `None` while
     // the peer is stopped.
     child: tokio::sync::Mutex<Option<Child>>,
@@ -211,6 +213,7 @@ impl Peer {
             data_dir,
             launch,
             stdout,
+            backups: AtomicUsize::new(0),
             child: tokio::sync::Mutex::new(Some(child)),
             _dir: dir,
         })
@@ -319,6 +322,55 @@ impl Peer {
             .to_owned();
         self.restart(bins).await?;
         Ok(tmb)
+    }
+
+    /// Stop the peer, run one offline `cyphr-server` operator command on
+    /// its data (never given the signing key), and start it again.
+    async fn offline(
+        &self,
+        bins: &Bins,
+        what: &'static str,
+        args: &[&std::ffi::OsStr],
+    ) -> Result<String, PeerError> {
+        let fail = |reason: String| PeerError::Command {
+            name: self.name.clone(),
+            what,
+            reason,
+        };
+        self.stop().await?;
+        let out = Command::new(&bins.server)
+            .arg("--config")
+            .arg(&self.launch.config)
+            .arg(what)
+            .args(args)
+            .arg("--data-dir")
+            .arg(&self.data_dir)
+            .output()
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        if !out.status.success() {
+            return Err(fail(String::from_utf8_lossy(&out.stderr).into_owned()));
+        }
+        self.restart(bins).await?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Snapshot the peer's data with `cyphr-server backup`; returns the
+    /// backup's path.
+    pub async fn backup(&self, bins: &Bins) -> Result<PathBuf, PeerError> {
+        // Beside the data directory, in the peer's own temp dir.
+        let dest = self.data_dir.with_file_name(format!(
+            "backup-{}",
+            self.backups.fetch_add(1, Ordering::Relaxed)
+        ));
+        self.offline(bins, "backup", &[dest.as_os_str()]).await?;
+        Ok(dest)
+    }
+
+    /// Put a backup back with `cyphr-server restore`; returns the command's
+    /// report, which states the window the restore lost.
+    pub async fn restore(&self, bins: &Bins, from: &Path) -> Result<String, PeerError> {
+        self.offline(bins, "restore", &[from.as_os_str()]).await
     }
 
     /// The Noise transport address the peer announced on stdout, waiting

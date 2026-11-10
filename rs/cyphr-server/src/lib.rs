@@ -22,6 +22,7 @@ pub mod gossip;
 pub mod logging;
 pub mod metrics;
 pub mod observation;
+pub mod ops;
 pub mod rate_limit;
 pub mod receipt;
 pub mod revoke;
