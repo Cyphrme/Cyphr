@@ -794,6 +794,120 @@ async fn genesis_fork_is_evidence_at_height_zero() {
     ));
 }
 
+/// `g`'s principal whose genesis commit (SPEC 5.1) is `g`'s self
+/// `key/create`, a KT-level `nonce/create` of `nonce`, the
+/// `principal/create` and the `commit/create`, made at `now`; and its PG,
+/// bare. Two nonces on one key give two principals with one genesis key
+/// and different PGs (SPEC 5.1: "a nonce embedding for a unique PG").
+fn nonce_genesis(g: &Kp, nonce: u8, now: i64) -> (cyphr::Principal, String) {
+    let signer = cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
+    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    let mut scope = p.begin_commit();
+    scope
+        .create_genesis_keys(&signer, &[], now, "cyphr.me")
+        .expect("genesis key/create");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": g.alg,
+        "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[nonce; 32])),
+        "now": now, "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
+    }))
+    .expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &g.alg, &g.prv, &g.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &g.alg).expect("czd");
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("nonce/create");
+    let pg = scope.genesis_id().expect("PG");
+    scope
+        .create_principal(&signer, now, "cyphr.me")
+        .expect("principal/create");
+    scope
+        .finalize_with_software(&signer, now, "cyphr.me")
+        .expect("genesis commit");
+    let bare = pg.split_once(':').expect("labelled PG").1.to_string();
+    (p, bare)
+}
+
+/// Claim (`arch-principal-fork-evidence`, SPEC 5.1 nonce siblings): a fork
+/// of one principal is never evidence against another that shares its
+/// genesis key. Two principals on key `golden` differ only by a genesis
+/// nonce, so their PGs differ. The sibling's real fork, served by the
+/// server, relabelled to name the other PG, is refused `GenesisMismatch`
+/// by a client replaying from the shared genesis key: at height 1 (the
+/// sibling's genesis commit held as the prefix) and at height 0 (two rival
+/// genesis commits of the sibling).
+///
+/// Turns red if: the client accepts a fork whose replayed genesis commit,
+/// or either height-0 rival, establishes a PG other than the one the item
+/// names, which would be a false equivocation finding against an honest
+/// principal. End-to-end scenario: yes.
+#[tokio::test]
+async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (_, honest_pg) = nonce_genesis(&g, 1, NOW);
+    let genesis = || cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let relabel = |item: &serde_json::Value| {
+        let mut item = item.clone();
+        item["pg"] = serde_json::json!(honest_pg);
+        item
+    };
+
+    // Height 1: the sibling forks after its genesis commit.
+    let (sibling, sibling_pg) = nonce_genesis(&g, 2, NOW);
+    assert_ne!(sibling_pg, honest_pg, "premise: the nonces give two PGs");
+    let (state, _dir) = common::keyless_server();
+    let app = build_router(state);
+    assert_eq!(
+        push(&app, wire(&sibling, 0, &sibling_pg)).await.0,
+        StatusCode::CREATED
+    );
+    let mut canonical = sibling.clone();
+    create_key(&mut canonical, &g, &kp(&pool, "key_b"), NOW + 1);
+    let mut rival = sibling.clone();
+    create_key(&mut rival, &g, &kp(&pool, "alice"), NOW + 2);
+    assert_eq!(
+        push(&app, wire(&canonical, 1, &sibling_pg)).await.0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        push(&app, wire(&rival, 1, &sibling_pg)).await.0,
+        StatusCode::CONFLICT
+    );
+    let items = evidence_items(&app, &sibling_pg).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    let held = fetch_entries(&app, &sibling_pg).await;
+    verify_principal_fork(&items[0], &sibling_pg, genesis(), &held)
+        .expect("control: the fork is evidence against the sibling");
+    assert!(matches!(
+        verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis(), &held),
+        Err(EvidenceFailure::GenesisMismatch)
+    ));
+
+    // Height 0: two rival genesis commits of the sibling.
+    let (state, _dir) = common::keyless_server();
+    let app = build_router(state);
+    let (first, _) = nonce_genesis(&g, 2, NOW);
+    let (second, _) = nonce_genesis(&g, 2, NOW + 5);
+    assert_eq!(
+        push(&app, wire(&first, 0, &sibling_pg)).await.0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        push(&app, wire(&second, 0, &sibling_pg)).await.0,
+        StatusCode::CONFLICT
+    );
+    let items = evidence_items(&app, &sibling_pg).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["height"], 0);
+    verify_principal_fork(&items[0], &sibling_pg, genesis(), &[])
+        .expect("control: the genesis fork is evidence against the sibling");
+    assert!(matches!(
+        verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis(), &[]),
+        Err(EvidenceFailure::GenesisMismatch)
+    ));
+}
+
 /// A view statement signed by `signer`, claiming the principal `pr` at
 /// `size` with commit id `id` and Principal Root `root`.
 fn crafted_view(
