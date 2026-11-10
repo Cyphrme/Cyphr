@@ -816,7 +816,8 @@ mod oracle_properties {
             tagged in prop::collection::vec(tagged_thumbprint_strategy(), 2..12),
         ) {
             let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
-            let leaves: Vec<Leaf<'_>> = tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
+            let leaves: Vec<Leaf<'_>> =
+                tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
             let all_native = tagged.iter().all(|(alg, _)| *alg == target_alg);
 
             let old = compute_kr(&thumbprints, None, &[target_alg]).unwrap();
@@ -852,7 +853,8 @@ mod oracle_properties {
             target_alg in hash_alg_strategy(),
             tagged in prop::collection::vec(tagged_thumbprint_strategy(), 1..12),
         ) {
-            let leaves: Vec<Leaf<'_>> = tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
+            let leaves: Vec<Leaf<'_>> =
+                tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
             let kr = KeyTree::build(&leaves, &[target_alg]).unwrap();
 
             let old = compute_ar(&kr, None, None, &[target_alg]).unwrap();
