@@ -1,5 +1,6 @@
-//! Acceptance surface for keying stored principals by identity (PG, or the
-//! genesis state root while nascent), not by the bare genesis-key tmb.
+//! Acceptance surface for keying stored principals by identity (the PG, or
+//! with a nonce in the genesis commit the PR after it), not by the bare
+//! genesis-key tmb.
 //!
 //! Every test states the claim it backs and the defect that turns it red.
 //! Unit level where stated, each for a stated reason: two principals
@@ -138,12 +139,12 @@ fn storage_typ_routing_agrees_with_core_kind_table() {
 /// Unit: a pure predicate over typ spellings; no scenario reaches every
 /// boundary-broken spelling cheaply.
 ///
-/// Claim (characterization, green): the genesis-carrier predicate uses the
-/// same `/` boundary as the core for `commit/create`, so PGK's routing
-/// change must not loosen it. Turns red if it reverts to a substring or
-/// `ends_with` match.
+/// Claim (characterization, green): the storage `commit/create` predicate
+/// (which names a commit's signer for branch retention) uses the same `/`
+/// boundary as the core, so PGK's routing change must not loosen it. Turns
+/// red if it reverts to a substring or `ends_with` match.
 #[test]
-fn storage_typ_routing_commit_create_carrier_matches_core_boundary() {
+fn storage_typ_routing_commit_create_matches_core_boundary() {
     for typ in typ_probe_set() {
         let core = cyphr::parsed_coz::typ::has_suffix(&typ, cyphr::parsed_coz::typ::COMMIT_CREATE);
         assert_eq!(super::super::is_commit_create_typ(&typ), core, "{typ}");
@@ -158,53 +159,6 @@ fn meta_with_pr(id: &str, seq: u64, pr: &str) -> IndexableCommit {
     let mut m = make_meta(id, seq, 1000 + seq as i64);
     m.prs = vec![pr.to_string()];
     m
-}
-
-/// Backs SPEC be0663f 5.1 l764 (a principal is addressed by its own PR,
-/// never a guess among holders). Unit: two principals holding one PR cannot
-/// be built from signed cozes, so only a direct `ingest_commit` with chosen
-/// `prs` reaches it.
-///
-/// Claim: a PR held by two principals is never attributed to one of them
-/// silently. `locate_by_pr` must return both holders or refuse, and
-/// addressing a principal by that PR is a typed `Ambiguous` refusal; the
-/// signature is the implementer's to change, so the result is compared
-/// through its `Debug` form. Turns red on first-holder selection (today:
-/// `Some(("alice", 0))`, bob unnamed), and on a lookup that returns the
-/// holder that sorts first. The single-holder control must name its
-/// holder, so a lookup that always refuses (or names nobody) is caught.
-#[tokio::test]
-async fn holders_locate_by_pr_never_picks_the_first_holder() {
-    let single = test_engine();
-    single
-        .ingest_commit(
-            &[b"{\"pay\":{\"now\":1}}"],
-            meta_with_pr("alice", 0, DIGEST_A),
-        )
-        .await
-        .expect("ingest alice");
-    let one = format!("{:?}", single.locate_by_pr(DIGEST_A).await);
-    assert!(one.contains("alice"), "control: sole holder unnamed: {one}");
-
-    let engine = test_engine();
-    for (who, now) in [("alice", 1), ("bob", 2)] {
-        let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
-        engine
-            .ingest_commit(&[blob.as_bytes()], meta_with_pr(who, 0, DIGEST_A))
-            .await
-            .expect("ingest");
-    }
-    let got = format!("{:?}", engine.locate_by_pr(DIGEST_A).await);
-    let names_both = got.contains("alice") && got.contains("bob");
-    assert!(
-        names_both || got.starts_with("Err("),
-        "two holders of one PR, neither returned nor refused: {got}"
-    );
-    let addressed = engine.canonical_principal_id(DIGEST_A).await;
-    assert!(
-        matches!(addressed, Err(EngineError::Ambiguous(_))),
-        "{addressed:?}"
-    );
 }
 
 /// Backs the sync-patch anchor rule (an anchor names a position only on the
@@ -420,77 +374,66 @@ fn key_of(k: &Kp) -> cyphr::Key {
     cyphr::Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
 }
 
-/// Wire blobs of commit 0 of a principal rooted at `g` that adds `added`;
-/// commit 0's last blob carries the genesis key, as the wire contract needs.
-fn commit0_adding(g: &Kp, added: &Kp) -> Vec<Vec<u8>> {
-    commit0_adding_with_pr(g, added).0
+fn soft(k: &Kp) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
 }
 
-/// [`commit0_adding`] plus the principal's PR after that commit (its key,
-/// and the PG if `principal/create` follows at once).
-fn commit0_adding_with_pr(g: &Kp, added: &Kp) -> (Vec<Vec<u8>>, String) {
-    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
-    let pay = serde_json::json!({
-        "alg": g.alg, "id": added.tmb.to_b64(), "now": NOW, "tmb": g.tmb.to_b64(),
-        "typ": "cyphr.me/cyphr/key/create",
-    });
+fn signed(g: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     let bytes = serde_json::to_vec(&pay).expect("pay");
     let (sig, cad) = coz::sign_json(&bytes, &g.alg, &g.prv, &g.pubb).expect("sign");
     let czd = coz::czd_for_alg(&cad, &sig, &g.alg).expect("czd");
-    let mut scope = p.begin_commit();
-    scope
-        .verify_and_apply(&bytes, &sig, czd, Some(key_of(added)))
-        .expect("apply");
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
-            NOW,
-            "cyphr.me",
-        )
-        .expect("finalize");
-    let pr = p.pr_tagged().expect("pr");
-    let entry = &crate::export_commits(&p).expect("export")[0];
-    let last = entry.cozies.len() - 1;
-    let blobs: Vec<Vec<u8>> = entry
+    (bytes, sig, czd)
+}
+
+/// Wire blobs of commit `i` of `p`: each key-introducing coz discloses its
+/// key, so a genesis commit's `key/create`s disclose the genesis (SPEC 5.1).
+fn wire_blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
+    let entry = &crate::export_commits(p).expect("export")[i];
+    let mut keys = entry.keys.iter();
+    entry
         .cozies
         .iter()
-        .enumerate()
-        .map(|(n, c)| {
+        .map(|c| {
             let mut c = c.clone();
-            if n == 0 {
-                c["key"] = serde_json::json!({
-                    "alg": added.alg, "pub": Base64UrlUnpadded::encode_string(&added.pubb),
-                    "tmb": added.tmb.to_b64(),
-                });
-            }
-            if n == last {
-                c["key"] = serde_json::json!({
-                    "alg": g.alg, "pub": Base64UrlUnpadded::encode_string(&g.pubb),
-                    "tmb": g.tmb.to_b64(),
-                });
+            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
+            if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
+                let k = keys.next().expect("a key per key-introducing coz");
+                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
             }
             serde_json::to_vec(&c).expect("blob")
         })
-        .collect();
-    (blobs, pr)
+        .collect()
+}
+
+/// The single-key principal on `g` after its genesis commit at `now` (SPEC
+/// 5.1: `g` creates itself, then the principal), its wire blobs and its PR
+/// after that commit. Its PG, and so its key, is the bare-tmb id whatever
+/// `now` is; distinct `now` values give distinct commits at position 0.
+fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, Vec<Vec<u8>>, String) {
+    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+    p.commit_genesis(&soft(g), now, "cyphr.me")
+        .expect("genesis commit");
+    let blobs = wire_blobs(&p, 0);
+    let pr = p.pr_tagged().expect("pr");
+    (p, blobs, pr)
 }
 
 /// Claim (N13, chain-position idempotency and Fork quarantine at the write
-/// path): a rival commit 0 for a principal whose position 0 is taken is
-/// refused, and leaves the stored chain, its tip and its commit id exactly
-/// as they were; the accepted commit's resubmission adds no second
-/// position. Must stay green when the storage key changes from the genesis
-/// tmb to the PG or genesis state root. Turns red if the rival is accepted,
-/// merged, or moves the tip. End to end through `submit_commit` with real
-/// signed commits.
+/// path): a rival commit 0 (a second genesis commit of the same principal)
+/// for a principal whose position 0 is taken is refused, and leaves the
+/// stored chain, its tip and its commit id exactly as they were; the
+/// accepted commit's resubmission adds no second position. Must stay green
+/// when the storage key changes from the genesis tmb to the PG. Turns red
+/// if the rival is accepted, merged, or moves the tip. End to end through
+/// `submit_commit` with real signed commits.
 #[tokio::test]
 async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
     let pool = load_pool();
-    let (g, k1, k2) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "alice"));
+    let g = kp(&pool, "golden");
     let genesis = crate::Genesis::Implicit(key_of(&g));
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = test_engine();
-    let honest = commit0_adding(&g, &k1);
+    let (_, honest, _) = genesis_commit(&g, NOW);
     let refs: Vec<&[u8]> = honest.iter().map(Vec::as_slice).collect();
     engine
         .submit_commit(&id, Some(genesis.clone()), &refs)
@@ -498,7 +441,8 @@ async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
         .expect("honest commit 0");
     let before = engine.get_tip(&id).await.expect("tip").expect("stored");
 
-    let rival = commit0_adding(&g, &k2);
+    let (_, rival, _) = genesis_commit(&g, NOW + 5);
+    assert_ne!(rival, honest, "premise: the rival is another commit");
     let refs: Vec<&[u8]> = rival.iter().map(Vec::as_slice).collect();
     let refused = engine
         .submit_commit(&id, Some(genesis.clone()), &refs)
@@ -519,73 +463,48 @@ async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
 // rekeying: principals sharing a key stay distinct, and the index is a cache
 // ---------------------------------------------------------------------------
 
-/// Wire blobs of commit `i` of `p`; commit 0's last blob carries the genesis
-/// key.
-fn wire_blobs(p: &cyphr::Principal, i: usize, g: &Kp) -> Vec<Vec<u8>> {
-    let entry = &crate::export_commits(p).expect("export")[i];
-    let last = entry.cozies.len() - 1;
-    entry
-        .cozies
-        .iter()
-        .enumerate()
-        .map(|(n, c)| {
-            let mut c = c.clone();
-            // The genesis key's own key/create discloses it (SPEC 5.2 TX0).
-            let creates_genesis = c["pay"]["typ"]
-                .as_str()
-                .is_some_and(|t| t.ends_with("cyphr/key/create"))
-                && c["pay"]["id"].as_str() == Some(g.tmb.to_b64().as_str());
-            if (i == 0 && n == last) || creates_genesis {
-                c["key"] = serde_json::json!({
-                    "alg": g.alg, "pub": Base64UrlUnpadded::encode_string(&g.pubb),
-                    "tmb": g.tmb.to_b64(),
-                });
-            }
-            serde_json::to_vec(&c).expect("blob")
+/// A principal on `g` whose genesis commit (SPEC 5.1) is: `g` creates
+/// itself, inserts `nonce` at the KT root, then `principal/create` (whose
+/// PG includes the nonce), followed by `later` commits each inserting one
+/// more nonce. Returns it with its key (the PR after the genesis commit)
+/// and its PG.
+fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, String) {
+    let nonce_pay = |n: u8, now: i64| {
+        serde_json::json!({
+            "alg": g.alg,
+            "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32])),
+            "now": now, "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
         })
-        .collect()
-}
-
-fn signed(g: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
-    let bytes = serde_json::to_vec(&pay).expect("pay");
-    let (sig, cad) = coz::sign_json(&bytes, &g.alg, &g.prv, &g.pubb).expect("sign");
-    let czd = coz::czd_for_alg(&cad, &sig, &g.alg).expect("czd");
-    (bytes, sig, czd)
-}
-
-/// A principal on `g`: commit 0 inserts `nonce` at the KT root, commit 1
-/// is `principal/create`. Returns it with its PG (`SHA-256:` form).
-fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
+    };
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
-    let soft = |g: &Kp| cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
-    let nonce_pay = serde_json::json!({
-        "alg": g.alg,
-        "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[nonce; 32])),
-        "now": NOW, "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
-    });
-    let (pay, sig, czd) = signed(g, nonce_pay);
     let mut scope = p.begin_commit();
+    scope
+        .create_genesis_keys(&soft(g), NOW, "cyphr.me")
+        .expect("genesis key/create");
+    let (pay, sig, czd) = signed(g, nonce_pay(nonce, NOW));
     scope
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("nonce");
+    let pg = scope.genesis_id().expect("PG");
+    scope
+        .create_principal(&soft(g), NOW, "cyphr.me")
+        .expect("principal/create");
     scope
         .finalize_with_software(&soft(g), NOW, "cyphr.me")
-        .expect("finalize 0");
-    let pg = p.pr_tagged().expect("pr");
-    let create = serde_json::json!({"alg": g.alg, "id": pg, "now": NOW + 1,
-        "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"});
-    let (pay, sig, czd) = signed(g, create);
-    let mut scope = p.begin_commit();
-    scope
-        .create_genesis_keys(&soft(g), NOW + 1, "cyphr.me")
-        .expect("genesis key/creates (SPEC 7.7 Example 1)");
-    scope
-        .verify_and_apply(&pay, &sig, czd, None)
-        .expect("create");
-    scope
-        .finalize_with_software(&soft(g), NOW + 1, "cyphr.me")
-        .expect("finalize 1");
-    (p, pg)
+        .expect("finalize genesis");
+    let key = p.pr_tagged().expect("pr");
+    for n in 1..=later {
+        let now = NOW + i64::from(n);
+        let (pay, sig, czd) = signed(g, nonce_pay(nonce.wrapping_add(n), now));
+        let mut scope = p.begin_commit();
+        scope
+            .verify_and_apply(&pay, &sig, czd, None)
+            .expect("nonce");
+        scope
+            .finalize_with_software(&soft(g), now, "cyphr.me")
+            .expect("finalize");
+    }
+    (p, key, pg)
 }
 
 /// Claim (I1 and SPEC be0663f 5.1 l764): two principals on one key that
@@ -602,22 +521,19 @@ fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
 async fn rekey_nonce_siblings_stay_distinct_through_a_reindex() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
-    let genesis = crate::Genesis::Implicit(key_of(&g));
-    let tmb_id = genesis_principal_id(&genesis).expect("id");
+    let tmb_id = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let engine = test_engine();
-    let built = [nonce_principal(&g, 0x11), nonce_principal(&g, 0x22)];
-    assert_ne!(built[0].1, built[1].1, "control: nonces must differ the PG");
-    assert_ne!(built[0].1, tmb_id, "control: a PG is not the key's tmb");
+    let built = [nonce_principal(&g, 0x11, 1), nonce_principal(&g, 0x22, 1)];
+    assert_ne!(built[0].2, built[1].2, "control: nonces must differ the PG");
+    assert_ne!(built[0].2, tmb_id, "control: a PG is not the key's tmb");
 
-    for (p, pg) in &built {
+    for (p, key, _) in &built {
         for i in 0..2 {
-            let blobs = wire_blobs(p, i, &g);
-            let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-            let r = engine.submit_commit(pg, Some(genesis.clone()), &refs).await;
-            assert!(r.is_ok(), "commit {i} of {pg} refused: {r:?}");
+            let r = submit(&engine, key, &wire_blobs(p, i)).await;
+            assert!(r.is_ok(), "commit {i} of {key} refused: {r:?}");
         }
     }
-    let pgs = [built[0].1.clone(), built[1].1.clone()];
+    let pgs = [built[0].2.clone(), built[1].2.clone()];
     let before = resolve_all(&engine, &pgs).await;
     assert_ne!(before[0].0, before[1].0, "two PGs, one stored principal");
     assert!(before.iter().all(|(_, c)| *c == Some(2)), "{before:?}");
@@ -652,61 +568,62 @@ async fn resolve_all(
 }
 
 // ---------------------------------------------------------------------------
-// keying rule: no nonce -> genesis PR; nonce in commit 0 -> PR after commit 0;
+// keying rule: no nonce -> PG; nonce in the genesis commit -> PR after it;
 // the reported id is the key
 // ---------------------------------------------------------------------------
 
+/// Push `blobs` claiming `claim`, with no caller genesis: a new principal's
+/// genesis is the one its genesis commit discloses.
 async fn submit<B: BlobStore>(
     engine: &StorageEngine<B, MemoryIndexer, cyphr::eml::MemoryStorage>,
     claim: &str,
-    g: &Kp,
     blobs: &[Vec<u8>],
 ) -> Result<IngestResult, EngineError> {
     let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-    engine
-        .submit_commit(claim, Some(crate::Genesis::Implicit(key_of(g))), &refs)
-        .await
+    engine.submit_commit(claim, None, &refs).await
 }
 
-/// Claim: a principal with no nonce is stored under its genesis PR (the
-/// tmb, for an implicit genesis), whatever spelling the push used, so one
-/// principal pushed under its tmb on one server and under its PG-to-be on
-/// another gets the same key, reports that key as its id, and a reindex
-/// from the blobs reproduces it. Turns red when the key follows the claim
-/// or is the PR after commit 0 (a rev-2 keying), or when the report names
-/// anything but the key.
+/// Claim: a principal with no nonce is stored under its genesis PR (its PG:
+/// the tmb, for an implicit genesis), whatever spelling the push used
+/// (labelled or bare), so it gets the same key on every server, reports
+/// that key as its id, and a reindex from the blobs reproduces it. Turns
+/// red when the key follows the claim or is the PR after commit 0 (a rev-2
+/// keying), or when the report names anything but the key.
 #[tokio::test]
 async fn rekey_no_nonce_principal_is_keyed_by_its_genesis_pr_under_any_spelling() {
     let pool = load_pool();
-    let (g, k1) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (blobs, pr) = commit0_adding_with_pr(&g, &k1);
+    let bare = bare_digest(&tmb).to_string();
+    let (_, blobs, pr) = genesis_commit(&g, NOW);
     assert_ne!(pr, tmb, "premise: commit 0 moves the PR off the bare tmb");
-    let (by_tmb, by_pr) = (test_engine(), test_engine());
+    let (by_tmb, by_bare) = (test_engine(), test_engine());
     let reported = [
-        submit(&by_tmb, &tmb, &g, &blobs).await.expect("under tmb"),
-        submit(&by_pr, &pr, &g, &blobs).await.expect("under PR"),
+        submit(&by_tmb, &tmb, &blobs).await.expect("under tmb"),
+        submit(&by_bare, &bare, &blobs)
+            .await
+            .expect("under bare tmb"),
     ]
     .map(|r| r.principal_id);
     assert_eq!(reported, [tmb.clone(), tmb.clone()], "report is the key");
-    for e in [&by_tmb, &by_pr] {
+    for e in [&by_tmb, &by_bare] {
         assert_eq!(resolve_one(e, &tmb).await, tmb);
+        assert_eq!(resolve_one(e, &bare).await, tmb);
         assert_eq!(
-            resolve_one(e, &pr).await,
-            tmb,
-            "the PG-to-be reaches the key"
-        );
-        assert_eq!(
-            e.get_tip(&pr)
+            e.get_tip(&bare)
                 .await
                 .expect("tip")
                 .expect("stored")
                 .principal_id,
             tmb
         );
+        assert!(
+            e.get_tip(&pr).await.expect("tip").is_none(),
+            "the PR after commit 0 is no key"
+        );
         e.rebuild_index_from_scratch().await.expect("reindex");
         assert_eq!(resolve_one(e, &tmb).await, tmb);
-        assert_eq!(resolve_one(e, &pr).await, tmb);
+        assert_eq!(resolve_one(e, &bare).await, tmb);
     }
 }
 
@@ -714,22 +631,22 @@ async fn resolve_one(engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>, id:
     engine.canonical_principal_id(id).await.expect("resolve")
 }
 
-/// Claim: a nonce principal's key is the PR after its commit 0 (not the
-/// genesis tmb), and the reported id stays that key after `principal/create`
-/// establishes a PG: one id per durable keyspace, and the PG addresses the
-/// same chain. Turns red when the report switches to the PG, or the key is
-/// the tmb.
+/// Claim: a nonce principal's key is the PR after its genesis commit (not
+/// the genesis tmb, and not its PG), and the reported id stays that key on
+/// every later commit: one id per durable keyspace, and the PG addresses
+/// the same chain. Turns red when the report switches to the PG, or the
+/// key is the tmb.
 #[tokio::test]
 async fn rekey_nonce_principal_key_is_its_post_commit_0_pr_and_is_reported() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (p, (first, pg)) = nonce_principal_with_gap(&g, 0x66);
+    let (p, first, pg) = nonce_principal(&g, 0x66, 2);
     assert_ne!(first, pg, "premise: the PG differs from the commit-0 PR");
     let engine = test_engine();
     let mut reported = Vec::new();
     for i in 0..3 {
-        let r = submit(&engine, &first, &g, &wire_blobs(&p, i, &g)).await;
+        let r = submit(&engine, &first, &wire_blobs(&p, i)).await;
         reported.push(r.expect("commit").principal_id);
     }
     assert_eq!(reported, vec![first.clone(); 3], "report is the key");
@@ -747,23 +664,24 @@ async fn rekey_nonce_principal_key_is_its_post_commit_0_pr_and_is_reported() {
     );
 }
 
-/// Claim: a second, different commit 0 of a no-nonce principal, whatever it
-/// claims as its id, is refused as a fork of the first (I2), never filed as
-/// a sibling and never merged; the stored chain is untouched. Turns red when
-/// the rival is stored under its own key (two principals on one genesis) or
-/// moves the tip.
+/// Claim: a second, different commit 0 of a no-nonce principal (another
+/// genesis commit of the same genesis), whatever it claims as its id, is
+/// refused as a fork of the first (I2), never filed as a sibling and never
+/// merged; the stored chain is untouched. Turns red when the rival is
+/// stored under its own key (two principals on one genesis) or moves the
+/// tip.
 #[tokio::test]
 async fn rekey_divergent_no_nonce_commit_0_is_refused_as_a_fork() {
     let pool = load_pool();
-    let (g, k1, k2) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "alice"));
+    let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
     let engine = test_engine();
-    let (first, first_pr) = commit0_adding_with_pr(&g, &k1);
-    submit(&engine, &first_pr, &g, &first).await.expect("first");
+    let (_, first, _) = genesis_commit(&g, NOW);
+    submit(&engine, &tmb, &first).await.expect("first");
     let before = engine.get_tip(&tmb).await.expect("tip").expect("stored");
-    let (rival, rival_pr) = commit0_adding_with_pr(&g, &k2);
+    let (_, rival, rival_pr) = genesis_commit(&g, NOW + 5);
     for claim in [&tmb, &rival_pr] {
-        let got = submit(&engine, claim, &g, &rival).await;
+        let got = submit(&engine, claim, &rival).await;
         assert!(got.is_err(), "rival accepted under {claim}: {got:?}");
     }
     let principals = engine.indexer().list_principals().await.expect("list");
@@ -783,10 +701,9 @@ async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (p, _pg) = nonce_principal(&g, 0x55);
-    let blobs = wire_blobs(&p, 0, &g);
+    let (p, ..) = nonce_principal(&g, 0x55, 0);
     let engine = test_engine();
-    let got = submit(&engine, &tmb, &g, &blobs).await;
+    let got = submit(&engine, &tmb, &wire_blobs(&p, 0)).await;
     assert!(got.is_err(), "accepted: {got:?}");
     assert!(
         engine
@@ -796,49 +713,4 @@ async fn rekey_nonce_principal_claimed_by_bare_tmb_is_refused() {
             .expect("list")
             .is_empty()
     );
-}
-
-/// Principal on `g`: commit 0 inserts `nonce`, commit 1 inserts a second
-/// nonce, commit 2 is `principal/create`. Returns it with (PR after commit
-/// 0, the PG).
-fn nonce_principal_with_gap(g: &Kp, nonce: u8) -> (cyphr::Principal, (String, String)) {
-    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
-    let soft = |g: &Kp| cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb);
-    let apply = |p: &mut cyphr::Principal, pay: serde_json::Value, now: i64| {
-        let (pay, sig, czd) = signed(g, pay);
-        let mut scope = p.begin_commit();
-        if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
-            v["typ"]
-                .as_str()
-                .is_some_and(|t| t.ends_with("cyphr/principal/create"))
-        }) {
-            scope
-                .create_genesis_keys(&soft(g), now, "cyphr.me")
-                .expect("genesis key/creates (SPEC 7.7 Example 1)");
-        }
-        scope
-            .verify_and_apply(&pay, &sig, czd, None)
-            .expect("apply");
-        scope
-            .finalize_with_software(&soft(g), now, "cyphr.me")
-            .expect("finalize");
-    };
-    let nonce_pay = |n: u8, now: i64| {
-        serde_json::json!({
-            "alg": g.alg,
-            "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32])),
-            "now": now, "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
-        })
-    };
-    apply(&mut p, nonce_pay(nonce, NOW), NOW);
-    let first = p.pr_tagged().expect("pr");
-    apply(&mut p, nonce_pay(nonce.wrapping_add(1), NOW + 1), NOW + 1);
-    let pg = p.pr_tagged().expect("pr");
-    apply(
-        &mut p,
-        serde_json::json!({"alg": g.alg, "id": pg, "now": NOW + 2,
-            "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        NOW + 2,
-    );
-    (p, (first, pg))
 }

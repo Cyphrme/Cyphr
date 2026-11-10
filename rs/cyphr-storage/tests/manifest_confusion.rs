@@ -252,7 +252,8 @@ async fn crafted_action_blob_cannot_invent_a_principal() {
 }
 
 /// Green control. Claim: rebuild recovers EXACTLY the engine's own
-/// manifests (one per honest commit, 3 + 2 here) and a scratch rebuild
+/// manifests (one per honest commit, 4 + 3 here, each chain's genesis
+/// commit included) and a scratch rebuild
 /// restores byte-equal tips and principal list. Mutants caught: a rebuild
 /// blinded to manifests (count 0 / tips lost after clear), over- or
 /// under-counting, and a rebuild that perturbs honest state.
@@ -266,10 +267,10 @@ async fn rebuild_recovers_exactly_the_honest_manifests() {
         e.get_tip(&b).await.unwrap().unwrap(),
         principals(&e).await,
     );
-    assert_eq!((ta.commit_count, tb.commit_count), (3, 2));
+    assert_eq!((ta.commit_count, tb.commit_count), (4, 3));
 
-    assert_eq!(e.rebuild_index_from_manifests().await.unwrap(), 5);
-    assert_eq!(e.rebuild_index_from_scratch().await.unwrap(), 5);
+    assert_eq!(e.rebuild_index_from_manifests().await.unwrap(), 7);
+    assert_eq!(e.rebuild_index_from_scratch().await.unwrap(), 7);
     assert_eq!(e.get_tip(&a).await.unwrap().unwrap(), ta);
     assert_eq!(e.get_tip(&b).await.unwrap().unwrap(), tb);
     assert_eq!(principals(&e).await, listed);
@@ -291,9 +292,11 @@ async fn submit_as_witness(
     engine.submit_commit(id, None, &refs).await.map(|_| ())
 }
 
-/// Wire blobs of a fixture commit with the fixture's genesis key disclosed
-/// on every coz that carries no key, as a witness-synced bundle does: with
-/// no caller genesis the engine finds the genesis key in the blobs.
+/// Wire blobs of a fixture commit with the fixture's genesis key attached
+/// to every coz that carries no key. With no caller genesis the engine
+/// reads a genesis only from a genesis commit's `key/create`s (SPEC 5.1),
+/// so the extra `key` members are dropped as unsigned noise: a bundle can
+/// carry them, but they never disclose (or bootstrap) a genesis.
 fn raw_blobs_disclosing_genesis(
     fixture: &serde_json::Value,
     commit: &serde_json::Value,
@@ -903,24 +906,29 @@ async fn rebuild_quarantines_manifest_not_bound_to_its_blobs() {
     let e = engine();
     submit_honest(&e, &load_golden("edge_cases", "transaction_replay_order")).await;
     let fx = load_golden("mutations", "transaction_sequence_replay");
-    // A genuine coz blob that no manifest owns, so only the binding check
+    // Genuine coz blobs that no manifest owns, so only the binding check
     // (not the index's digest-conflict check) can refuse the manifest.
-    let carrier = raw_blobs_disclosing_genesis(&fx, &fx["commits"][0])
-        .into_iter()
-        .find(|b| {
-            b["pay"]["typ"]
-                .as_str()
-                .is_some_and(|t| t.contains("/commit/create"))
-        })
-        .expect("the commit/create genesis carrier");
-    let genuine = serde_json::to_vec(&carrier).unwrap();
-    let genuine = cyphr_storage::blob::BlobStore::put(e.blob_store(), &genuine)
-        .await
-        .unwrap();
+    // They are a genesis commit's `key/create` and `principal/create`,
+    // which disclose a genesis (SPEC 5.1), so the binding check derives
+    // the key they bind and refuses the phantom id.
+    let mut genuine = Vec::new();
+    for b in raw_blobs(&fx["commits"][0]).iter().take(2) {
+        let bytes = serde_json::to_vec(b).unwrap();
+        genuine.push(
+            cyphr_storage::blob::BlobStore::put(e.blob_store(), &bytes)
+                .await
+                .unwrap(),
+        );
+    }
     let phantom = fake_digest(0x70);
     let mut foreign = forged(&phantom, 0, 0x71);
-    foreign.blob_hashes = vec![genuine];
-    foreign.cozies[0].blob_hash = genuine;
+    let mut second = foreign.cozies[0].clone();
+    second.czd = fake_digest(0x72);
+    foreign.cozies.push(second);
+    for (coz, hash) in foreign.cozies.iter_mut().zip(&genuine) {
+        coz.blob_hash = *hash;
+    }
+    foreign.blob_hashes = genuine;
     plant_manifest(&e, &foreign).await;
 
     let report = e
@@ -928,10 +936,10 @@ async fn rebuild_quarantines_manifest_not_bound_to_its_blobs() {
         .await
         .expect("rebuild survives");
     assert_eq!(report.quarantined.len(), 1, "{report:?}");
-    assert!(matches!(
-        report.quarantined[0].reason,
-        QuarantineReason::Unbound(_)
-    ));
+    assert!(
+        matches!(report.quarantined[0].reason, QuarantineReason::Unbound(_)),
+        "{report:?}"
+    );
     assert_eq!(
         report.quarantined[0].principal_id.as_deref(),
         Some(phantom.as_str())
@@ -1109,13 +1117,9 @@ mod replay {
             &pk.compute_tmb().unwrap(),
         )
     }
-    /// commit/create blob, with the signer's key disclosed (the genesis
-    /// carrier, as a server push / witness sync with no caller genesis needs).
-    pub fn cc_blob(c: &cyphr::commit::Commit, carrier: &test_fixtures::PoolKey) -> Vec<u8> {
-        let raw = c.commit_tx().0.last().unwrap().raw();
-        let mut v: serde_json::Value = serde_json::to_value(raw).unwrap();
-        v.as_object_mut().unwrap().insert("key".into(), kj(carrier));
-        serde_json::to_vec(&v).unwrap()
+    /// The commit/create blob of `c`.
+    pub fn cc_blob(c: &cyphr::commit::Commit) -> Vec<u8> {
+        serde_json::to_vec(c.commit_tx().0.last().unwrap().raw()).unwrap()
     }
     pub async fn push<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
@@ -1126,14 +1130,27 @@ mod replay {
         e.submit_commit(id, None, &r).await
     }
 
+    /// Push `pk`'s genesis commit at `T` (SPEC 5.1: `pk` creates itself,
+    /// then the principal), as a server push with no caller genesis does.
+    /// Returns the principal's id (its PG) and its client state.
+    pub async fn established<B: BlobStore, I: Indexer + IndexerWrite>(
+        e: &StorageEngine<B, I>,
+        pk: &test_fixtures::PoolKey,
+    ) -> (String, cyphr::Principal) {
+        let id = genesis_principal_id(&Genesis::Implicit(dk(pk))).unwrap();
+        let mut client = cyphr::Principal::implicit(dk(pk)).unwrap();
+        let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, T).unwrap();
+        push(e, &id, &blobs).await.expect("genesis commit");
+        (id, client)
+    }
+
     /// The attacker principal (bob) adds the victim's (alice) public key.
     pub async fn attacker_with_victim_key<B: BlobStore, I: Indexer + IndexerWrite>(
         e: &StorageEngine<B, I>,
     ) -> (String, cyphr::Principal) {
         let p = pool();
         let (bob, alice) = (p.get("bob").unwrap(), p.get("alice").unwrap());
-        let aid = genesis_principal_id(&Genesis::Implicit(dk(bob))).unwrap();
-        let mut client = cyphr::Principal::implicit(dk(bob)).unwrap();
+        let (aid, mut client) = established(e, bob).await;
         let (pb, sig, czd) = sign(
             bob,
             serde_json::json!({
@@ -1146,7 +1163,7 @@ mod replay {
         let c = s
             .finalize_with_software(&signer(bob), T + 2, "cyphr.me")
             .unwrap();
-        let cc = cc_blob(c, bob);
+        let cc = cc_blob(c);
         push(e, &aid, &[kc, cc])
             .await
             .expect("attacker adds the victim's public key");
@@ -1184,7 +1201,7 @@ mod replay {
             p.get("golden").unwrap(),
             p.get("bob").unwrap(),
         );
-        let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+        let (vid, mut vclient) = established(e, alice).await;
         let (vpb, vsig, vczd) = sign(
             alice,
             serde_json::json!({
@@ -1192,14 +1209,13 @@ mod replay {
                 "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
         );
         let vkc = blob(&vpb, &vsig, Some(kj(golden)));
-        let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
         let mut vs = vclient.begin_commit();
         vs.verify_and_apply(&vpb, &vsig, vczd.clone(), Some(dk(golden)))
             .unwrap();
         let vc = vs
             .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
             .unwrap();
-        let vcc = cc_blob(vc, alice);
+        let vcc = cc_blob(vc);
 
         let (aid, mut aclient) = attacker_with_victim_key(e).await;
         let mut s = aclient.begin_commit();
@@ -1208,7 +1224,7 @@ mod replay {
         let c = s
             .finalize_with_software(&signer(bob), T + 12, "cyphr.me")
             .unwrap();
-        push(e, &aid, &[vkc.clone(), cc_blob(c, bob)])
+        push(e, &aid, &[vkc.clone(), cc_blob(c)])
             .await
             .expect("the attacker's replay is accepted");
         let victim_push = push(e, &vid, &[vkc, vcc]).await;
@@ -1243,7 +1259,7 @@ mod replay {
             p.get("golden").unwrap(),
             p.get("bob").unwrap(),
         );
-        let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+        let (vid, mut vclient) = established(e, alice).await;
         let (apb, asig, aczd) = sign(
             alice,
             serde_json::json!({
@@ -1259,7 +1275,6 @@ mod replay {
                 "tmb": alice.compute_tmb_b64().unwrap(), "typ": "cyphr.me/cyphr/key/create"}),
         );
         let vkc = blob(&vkpb, &vksig, Some(kj(golden)));
-        let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
         vclient
             .verify_and_record_action(&apb, &asig, aczd.clone())
             .unwrap();
@@ -1269,7 +1284,7 @@ mod replay {
         let vc = vs
             .finalize_with_software(&signer(alice), T + 22, "cyphr.me")
             .unwrap();
-        let vbundle = vec![act, vkc, cc_blob(vc, alice)];
+        let vbundle = vec![act, vkc, cc_blob(vc)];
 
         let (aid, mut aclient) = attacker_with_victim_key(e).await;
         let (kpb, ksig, kczd) = sign(
@@ -1288,7 +1303,7 @@ mod replay {
         let c = s
             .finalize_with_software(&signer(bob), T + 24, "cyphr.me")
             .unwrap();
-        let abundle = vec![act_a, kc, cc_blob(c, bob)];
+        let abundle = vec![act_a, kc, cc_blob(c)];
 
         let victim_push = if attacker_first {
             push(e, &aid, &abundle)
@@ -1631,7 +1646,7 @@ async fn rebuild_quarantines_unindexable_manifests() {
             .iter()
             .any(|r| matches!(r, QuarantineReason::Unsupported(_)))
     );
-    assert_eq!(first.indexed, 2, "the honest commits are indexed");
+    assert_eq!(first.indexed, 3, "the honest commits are indexed");
     assert_eq!(principals(&e).await, honest);
 }
 
@@ -1665,7 +1680,7 @@ async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
 
 /// Claim (SPEC 2.3.2, "data actions require DT commit inclusion"): a new
 /// principal cannot be created by an action-only bundle. The action's
-/// disclosed `key` is not kept (an action is not a genesis carrier), so with
+/// disclosed `key` is not kept (an action introduces no key), so with
 /// no caller genesis and no `commit/create` in the bundle the push gets a
 /// typed refusal and leaves no principal and no tip. Turns red if a
 /// disclosed key on an action still bootstraps a principal.
@@ -1702,7 +1717,7 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
         p.get("golden").unwrap(),
         p.get("bob").unwrap(),
     );
-    let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
+    let (vid, mut vclient) = established(&e, alice).await;
     let (xpb, xsig, xczd) = sign(
         alice,
         serde_json::json!({
@@ -1714,14 +1729,13 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
     sidecar["tag"] = "ATTACKER-CHOSEN".into();
     sidecar["now"] = 1.into();
     let evil = blob(&xpb, &xsig, Some(sidecar));
-    let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
     let mut vs = vclient.begin_commit();
     vs.verify_and_apply(&xpb, &xsig, xczd.clone(), Some(dk(golden)))
         .unwrap();
     let vc = vs
         .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
         .unwrap();
-    let victim = push(&e, &vid, &[honest, cc_blob(vc, alice)]).await.unwrap();
+    let victim = push(&e, &vid, &[honest, cc_blob(vc)]).await.unwrap();
 
     let (aid, mut aclient) = attacker_with_victim_key(&e).await;
     let mut s = aclient.begin_commit();
@@ -1730,7 +1744,7 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
     let c = s
         .finalize_with_software(&signer(bob), T + 12, "cyphr.me")
         .unwrap();
-    let attacker = push(&e, &aid, &[evil, cc_blob(c, bob)]).await.unwrap();
+    let attacker = push(&e, &aid, &[evil, cc_blob(c)]).await.unwrap();
 
     assert_eq!(
         victim.blob_hashes[0], attacker.blob_hashes[0],
@@ -1750,11 +1764,11 @@ async fn replayed_key_create_sidecar_cannot_split_the_czd() {
     );
 }
 
-/// F-F claim: a `commit/create` keeps its `key` only when the key is the
-/// signer's own (`key.tmb == pay.tmb`, which a genuine genesis carrier always
-/// satisfies). A relayer attaches Bob's self-consistent key to the victim's
-/// signed sequence-1 `commit/create`; it must be stored without it. Turns
-/// red if any foreign key survives on a commit/create.
+/// F-F claim: a `commit/create` keeps no `key` (it introduces none; a
+/// genesis is read only from its commit's `key/create`s, SPEC 5.1). A
+/// relayer attaches Bob's self-consistent key to the victim's signed
+/// later `commit/create`; it must be stored without it. Turns red if a
+/// foreign key survives on a commit/create.
 #[tokio::test]
 async fn relayed_commit_create_cannot_carry_a_foreign_key() {
     use replay::*;
@@ -1765,8 +1779,7 @@ async fn relayed_commit_create_cannot_carry_a_foreign_key() {
         p.get("golden").unwrap(),
         p.get("bob").unwrap(),
     );
-    let vid = genesis_principal_id(&Genesis::Implicit(dk(alice))).unwrap();
-    let mut vclient = cyphr::Principal::implicit(dk(alice)).unwrap();
+    let (vid, mut vclient) = established(&e, alice).await;
     let (xpb, xsig, xczd) = sign(
         alice,
         serde_json::json!({
@@ -1780,7 +1793,7 @@ async fn relayed_commit_create_cannot_carry_a_foreign_key() {
     let c = s
         .finalize_with_software(&signer(alice), T + 11, "cyphr.me")
         .unwrap();
-    push(&e, &vid, &[x, cc_blob(c, alice)]).await.unwrap();
+    push(&e, &vid, &[x, cc_blob(c)]).await.unwrap();
 
     let (dpb, dsig, dczd) = sign(
         alice,
@@ -1794,7 +1807,10 @@ async fn relayed_commit_create_cannot_carry_a_foreign_key() {
     let c = s
         .finalize_with_software(&signer(alice), T + 21, "cyphr.me")
         .unwrap();
-    let relayed = push(&e, &vid, &[del, cc_blob(c, bob)]).await.unwrap();
+    let mut relayed_cc: serde_json::Value = serde_json::from_slice(&cc_blob(c)).unwrap();
+    relayed_cc["key"] = kj(bob);
+    let relayed_cc = serde_json::to_vec(&relayed_cc).unwrap();
+    let relayed = push(&e, &vid, &[del, relayed_cc]).await.unwrap();
 
     let stored = cyphr_storage::blob::BlobStore::get(e.blob_store(), &relayed.blob_hashes[1])
         .await

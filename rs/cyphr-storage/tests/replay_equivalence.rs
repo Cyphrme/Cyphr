@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::StateDigest;
 use cyphr::replay::{StoredCoz, replay_bundle};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
@@ -83,11 +84,7 @@ fn corpus() -> Vec<Chain> {
             } else {
                 Genesis::Explicit(keys)
             };
-            let bundles = commits
-                .iter()
-                .enumerate()
-                .map(|(i, commit)| wire_blobs(commit, (implicit && i == 0).then_some(genesis_keys)))
-                .collect();
+            let bundles = commits.iter().map(wire_blobs).collect();
             chains.push(Chain {
                 name: path.display().to_string(),
                 genesis,
@@ -99,29 +96,20 @@ fn corpus() -> Vec<Chain> {
     chains
 }
 
-/// A golden commit as the wire carries it: each coz `{pay, sig}`, the key a
-/// key-introducing coz adds as its `key` sidecar, and, on the first commit
-/// of an implicit principal, the genesis key on the closing `commit/create`
-/// (the carrier that lets a rebuild derive genesis from blobs).
-fn wire_blobs(
-    commit: &serde_json::Value,
-    carrier: Option<&Vec<serde_json::Value>>,
-) -> Vec<Vec<u8>> {
+/// A golden commit as the wire carries it: each coz `{pay, sig}` and the key
+/// a key-introducing coz adds as its `key` sidecar. A chain's first commit is
+/// its genesis commit, whose `key/create`s disclose its keys, so a rebuild
+/// reads the genesis from these blobs alone.
+fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
     let mut keys = commit["keys"].as_array().into_iter().flatten();
     let txs = commit["txs"].as_array().expect("txs");
     txs.iter()
-        .enumerate()
-        .map(|(i, coz)| {
+        .map(|coz| {
             let mut coz = coz.clone();
             let typ = coz["pay"]["typ"].as_str().expect("typ").to_string();
             if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
                 if let Some(key) = keys.next() {
                     coz["key"] = key.clone();
-                }
-            }
-            if let Some(genesis_keys) = carrier {
-                if i + 1 == txs.len() {
-                    coz["key"] = genesis_keys[0].clone();
                 }
             }
             serde_json::to_vec(&coz).expect("json")
@@ -137,25 +125,33 @@ fn principal(genesis: &Genesis) -> cyphr::Principal {
     .expect("genesis")
 }
 
-/// The id the engine stores `chain` under: the genesis-derived id, or for
-/// a principal whose first commit inserts a nonce, the PR that commit
-/// yields (the bare key does not identify it).
+/// The id the engine stores `chain` under, derived by the core alone: the
+/// PG its genesis commit establishes, or for a genesis commit with a nonce
+/// the PR that commit yields (the bare key does not identify it). A chain of
+/// data actions alone forms no commit and is keyed by its genesis PR.
 fn principal_id(chain: &Chain) -> String {
     let first = &chain.bundles[0];
     let has_nonce = first.iter().any(|blob| {
         StoredCoz::from_wire(blob)
             .is_ok_and(|c| cyphr::parsed_coz::typ::nonce_path(&c.header().typ).is_some())
     });
-    if !has_nonce {
-        return genesis_principal_id(&chain.genesis).expect("principal id");
-    }
     let mut p = principal(&chain.genesis);
     let cozies: Vec<StoredCoz> = first
         .iter()
         .map(|b| StoredCoz::from_wire(b).expect("wire coz"))
         .collect();
     replay_bundle(&mut p, &cozies).expect("first commit replays");
-    p.pr_tagged().expect("pr")
+    match p.pg() {
+        Some(_) if has_nonce => p.pr_tagged().expect("pr"),
+        Some(pg) => {
+            let alg = p.active_algs()[0];
+            format!(
+                "{alg}:{}",
+                Base64UrlUnpadded::encode_string(pg.as_multihash().get(alg).expect("pg variant"))
+            )
+        },
+        None => genesis_principal_id(&chain.genesis).expect("principal id"),
+    }
 }
 
 async fn ingest(engine: &Engine, chain: &Chain) -> String {
@@ -286,7 +282,8 @@ async fn check_chain(chain: &Chain) {
     }
 }
 
-/// Ingest a three-commit corpus chain into an honest store, then copy every
+/// Ingest a corpus chain of a genesis commit and three more into an honest
+/// store, then copy every
 /// blob into `forged_store`, replacing the manifest of commit 1 with one
 /// that records commit 0's PR for the same blobs. Returns the principal id
 /// and commit 0's PR.
@@ -302,7 +299,7 @@ async fn forge_into(forged_store: &impl BlobStore) -> (String, String) {
         .get_commit_chain(&id, None, None)
         .await
         .expect("chain");
-    assert_eq!(held.len(), 3);
+    assert_eq!(held.len(), 4, "the genesis commit and three");
 
     let mut forged = false;
     for hash in honest.blob_store().iter().await.expect("iter") {
@@ -477,13 +474,12 @@ impl Signer {
     }
 
     /// Commit a `key/create` of `new` on `writer`; returns the commit's wire
-    /// blobs, the genesis key carried on its `commit/create` if `carrier`.
+    /// blobs.
     fn key_create(
         &self,
         writer: &mut cyphr::Principal,
         new: &cyphr::Key,
         now: i64,
-        carrier: bool,
     ) -> Vec<Vec<u8>> {
         let pay = serde_json::json!({
             "alg": self.alg, "id": new.tmb().to_b64(), "now": now,
@@ -506,10 +502,7 @@ impl Signer {
             .raw()
             .pay
             .clone();
-        vec![
-            self.blob(&pay, Some(new)),
-            self.blob(&closing, carrier.then_some(&self.key)),
-        ]
+        vec![self.blob(&pay, Some(new)), self.blob(&closing, None)]
     }
 }
 
@@ -530,16 +523,23 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     let key_a = signer("key_a");
     let key_b = signer("alice");
     let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
-    let first = golden.key_create(&mut writer, &key_a.key, 1_700_000_100, true);
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        1_700_000_050,
+    )
+    .expect("genesis commit");
+    let first = golden.key_create(&mut writer, &key_a.key, 1_700_000_100);
     let mut mixed = vec![golden.action(&mut writer, 1_700_000_150)];
-    mixed.extend(golden.key_create(&mut writer, &key_b.key, 1_700_000_200, false));
+    mixed.extend(golden.key_create(&mut writer, &key_b.key, 1_700_000_200));
     let commit_pr = writer.pr_tagged().expect("pr");
     mixed.push(key_b.action(&mut writer, 1_700_000_250));
 
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    for bundle in [first, mixed] {
+    for bundle in [genesis_commit, first, mixed] {
         let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
         engine
             .submit_commit(&id, Some(genesis.clone()), &refs)
@@ -549,7 +549,106 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(
         (tip.commit_count, tip.pr),
-        (2, commit_pr),
+        (3, commit_pr),
         "the indexed tip is the writer's commit"
     );
+}
+
+/// Claim (SPEC 5.1 steps 1-4, 3.3; I1): a genesis commit whose keys are
+/// created out of thumbprint order, one of them by a key the genesis itself
+/// just created, means one thing to ingest and to the rebuild from blobs
+/// alone: the rebuild reads the genesis from the commit's `key/create`s, not
+/// from how the producer seeded its principal, and reaches the same chain,
+/// tip and roots as ingest, quarantining nothing.
+///
+/// Turns red if: the rebuild reads the genesis keys in another order or
+/// seeding than the arrow binds (a genesis `pre` over the seeded set rather
+/// than the genesis key), refuses a genesis key/create signed by a key
+/// created earlier in the commit, or keys the principal other than by its
+/// PG.
+/// End-to-end scenario: yes (core producer, engine ingest, scratch rebuild).
+#[tokio::test]
+async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
+    let (golden, alice, key_a) = (signer("golden"), signer("alice"), signer("key_a"));
+    let order = [&golden.key, &alice.key, &key_a.key];
+    let mut sorted: Vec<String> = order.iter().map(|k| k.tmb().to_b64()).collect();
+    sorted.sort();
+    assert_ne!(
+        order.iter().map(|k| k.tmb().to_b64()).collect::<Vec<_>>(),
+        sorted,
+        "premise: the creation order is not thumbprint order"
+    );
+
+    let now = 1_700_000_000;
+    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let mut blobs = Vec::new();
+    let software =
+        |s: &Signer| cyphr::signer::SoftwareSigner::new(&s.alg, &s.prv, &s.pub_key, s.key.tmb());
+    let mut scope = writer.begin_commit();
+    for (by, new) in [
+        (&golden, &golden.key),
+        (&golden, &alice.key),
+        (&alice, &key_a.key),
+    ] {
+        let pay = serde_json::json!({
+            "alg": by.alg, "id": new.tmb().to_b64(), "now": now,
+            "tmb": by.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/create",
+        });
+        let (bytes, sig, czd) = by.sign(&pay);
+        scope
+            .verify_and_apply(&bytes, &sig, czd, Some(new.clone()))
+            .expect("genesis key/create applies");
+        blobs.push(by.blob(&pay, Some(new)));
+    }
+    let created = scope
+        .create_principal(&software(&golden), now, "cyphr.me")
+        .expect("principal/create");
+    blobs.push(serde_json::to_vec(&created).expect("json"));
+    let commit = scope
+        .finalize_with_software(&software(&golden), now, "cyphr.me")
+        .expect("genesis commit");
+    let closing = commit.commit_tx().0.first().expect("commit/create").raw();
+    blobs.push(serde_json::to_vec(closing).expect("json"));
+
+    let alg = writer.active_algs()[0];
+    let pg = writer
+        .pg()
+        .expect("pg")
+        .as_multihash()
+        .get(alg)
+        .expect("pg variant");
+    let id = format!("{alg}:{}", Base64UrlUnpadded::encode_string(pg));
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    engine
+        .submit_commit(&id, None, &refs)
+        .await
+        .expect("ingest reads the genesis from its blobs");
+    let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(
+        tip.pr,
+        writer.pr_tagged().expect("pr"),
+        "ingest reaches the producer's PR"
+    );
+
+    let before = engine
+        .indexer()
+        .get_commit_chain(&id, None, None)
+        .await
+        .expect("chain");
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    assert!(
+        report.quarantined.is_empty(),
+        "the rebuild replays the genesis: {:?}",
+        report.quarantined
+    );
+    let after = engine
+        .indexer()
+        .get_commit_chain(&id, None, None)
+        .await
+        .expect("chain");
+    assert_eq!(after, before, "the rebuilt chain equals the ingested one");
 }
