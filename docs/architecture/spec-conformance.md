@@ -48,12 +48,12 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   58 |
+| `covered`      |   59 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
 | `not-testable` |   11 |
 | `out-of-scope` |    6 |
-| `total`        |   75 |
+| `total`        |   76 |
 
 ## Rows
 
@@ -280,6 +280,25 @@ SPEC 3.1, line 298. Disposition: `covered`.
 ```claim
 kind: requirement
 evaluator: test
+```
+
+### [sc-l415]
+
+SPEC 3.7.5, line 415. Disposition: `covered`.
+
+- spec-line: 415
+- source: supplement
+- disposition: covered
+- spec-text: TR = MR(TXₘ₀?, TXₘ₁?, ..., TX꜀)
+- tests:
+  - `rs/cyphr-server/tests/transaction_grouping.rs::one_mutation_transaction_grouping_moves_tr`
+  - `rs/cyphr-server/tests/transaction_grouping.rs::grouped_transaction_end_to_end`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_transaction_grouping[transaction_grouping/key_replace_signed_by_two_keys]`
+- fails when: TR is not the MR of every transaction's id in order with the commit transaction last (for example TR built over TMR, which promotes a lone mutation transaction and so hides its grouping), or a commit's transactions grouped otherwise give the same TR.
+
+```claim
+kind: requirement
+evaluator: none
 ```
 
 ### [sc-l463]
