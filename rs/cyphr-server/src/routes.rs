@@ -105,6 +105,17 @@ pub struct PatchEntryResponse {
 pub struct PatchResponseBody {
     pub principal_id: String,
     pub entries: Vec<PatchEntryResponse>,
+    /// Action-only bundles (SPEC 4.8.1), each preceding the commit at
+    /// `after`; a `ds/create` includes exactly the actions before it.
+    pub actions: Vec<PatchActionsResponse>,
+}
+
+/// One action-only bundle in a patch response.
+#[derive(Debug, Serialize)]
+pub struct PatchActionsResponse {
+    pub after: u64,
+    /// Raw coz blobs as base64url strings.
+    pub blobs: Vec<String>,
 }
 
 /// Response for `POST /push`.
@@ -588,9 +599,23 @@ pub async fn patch(
         })
         .collect();
 
+    let actions = response
+        .actions
+        .into_iter()
+        .map(|a| PatchActionsResponse {
+            after: a.after,
+            blobs: a
+                .blobs
+                .iter()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .collect(),
+        })
+        .collect();
+
     let payload = PatchResponseBody {
         principal_id: cyphr_storage::engine::bare_digest(&response.principal_id).to_string(),
         entries,
+        actions,
     };
 
     // Signed via the same tip-attestation path `/tip` uses (K10): the

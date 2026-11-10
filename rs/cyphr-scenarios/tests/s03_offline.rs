@@ -5,7 +5,7 @@
 // case 2, the commits reach different partitioned peers (a real principal fork):
 // Error plus evidence until Alice resolves (SPEC 15.8); the abandoned branch is kept.
 //
-// Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip.
+// Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -27,6 +27,7 @@ async fn s03_offline() {
         Capability::BranchStore,
         Capability::Evidence,
         Capability::PeerGossip,
+        Capability::DataCommit,
     ])
     .await;
 

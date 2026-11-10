@@ -383,9 +383,19 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 
         let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
 
-        let commits = cyphr_storage::export_commits(principal)?;
-
-        for commit in commits.iter().skip(stored_count) {
+        // A line is new when the commits before it are not all stored yet.
+        // An action-only line forms no commit, so it does not count toward
+        // `stored_count`; one stored already hashes to the same manifest, so
+        // submitting it again changes nothing.
+        let mut commits_before = 0usize;
+        for commit in &cyphr_storage::export_commits(principal)? {
+            let is_new = commits_before >= stored_count;
+            if !commit.commit_id.is_empty() {
+                commits_before += 1;
+            }
+            if !is_new {
+                continue;
+            }
             let mut raw_blobs = Vec::new();
             let mut key_iter = commit.keys.iter();
             for coz in &commit.cozies {
@@ -603,4 +613,61 @@ pub fn generate_key(algo: &str, tag: Option<&str>) -> crate::Result<(String, Sto
         .with_tag(tag.map(String::from));
 
     Ok((tmb_b64, stored, key))
+}
+
+/// One step of a replayable history, in order.
+pub enum Placed<C, A> {
+    /// The commit at this position.
+    Commit(usize, C),
+    /// An action-only bundle accepted when this many commits existed.
+    Actions(usize, A),
+}
+
+/// Order a history for replay: a bundle accepted when `n` commits existed
+/// precedes commit `n`, and later ones come last, so a `ds/create` finds
+/// the actions it includes (SPEC 4.8.2). The one placement rule fetch,
+/// rebase, verify and export share, matching `cyphr_storage::export_commits`.
+pub fn place<C, A>(
+    commits: impl IntoIterator<Item = C>,
+    actions: impl IntoIterator<Item = (usize, A)>,
+) -> Vec<Placed<C, A>> {
+    let mut out = Vec::new();
+    let mut bundles = actions.into_iter().peekable();
+    for (i, commit) in commits.into_iter().enumerate() {
+        while let Some((after, held)) = bundles.next_if(|(after, _)| *after <= i) {
+            out.push(Placed::Actions(after, held));
+        }
+        out.push(Placed::Commit(i, commit));
+    }
+    out.extend(bundles.map(|(after, held)| Placed::Actions(after, held)));
+    out
+}
+
+/// Submit a peer's or a store's history to `engine` in replay order, from
+/// the commit at `from` on (and the bundles that precede it). A bundle the
+/// engine already holds is a no-op (SPEC 7.6). Returns the commits applied.
+pub async fn submit_history(
+    engine: &CliStorageEngine,
+    principal_id: &str,
+    genesis: Option<Genesis>,
+    commits: &[Vec<Vec<u8>>],
+    actions: &[(usize, Vec<Vec<u8>>)],
+    from: usize,
+) -> crate::Result<usize> {
+    let mut applied = 0;
+    for step in place(commits, actions.iter().map(|(a, b)| (*a, b))) {
+        let (index, blobs, is_commit) = match step {
+            Placed::Commit(i, blobs) => (i, blobs, true),
+            Placed::Actions(after, blobs) => (after, blobs, false),
+        };
+        if index < from {
+            continue;
+        }
+        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(principal_id, genesis.clone(), &refs)
+            .await?;
+        applied += usize::from(is_commit);
+    }
+    Ok(applied)
 }

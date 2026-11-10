@@ -74,6 +74,8 @@ pub enum EntryDefect {
     BadBlobEncoding,
     /// The `blobs` array decodes to nothing.
     EmptyBlobs,
+    /// An action bundle's `after` is missing or not a non-negative integer.
+    BadAfter,
 }
 
 /// One decoded patch entry. A defective entry is reported, not dropped, so
@@ -86,11 +88,24 @@ pub struct PatchEntry {
     pub blobs: Result<Vec<Vec<u8>>, EntryDefect>,
 }
 
+/// One decoded action-only bundle (SPEC 4.8.1): it precedes the commit at
+/// `after`, since a `ds/create` includes exactly the actions before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionBundle {
+    /// The commits the peer's chain held when it accepted the bundle.
+    pub after: u64,
+    /// The decoded action blobs, or why they cannot be applied.
+    pub blobs: Result<Vec<Vec<u8>>, EntryDefect>,
+}
+
 /// A patch response that passed every carrier-independent check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPatch {
     /// The entries, in wire order, still to be applied by the caller.
     pub entries: Vec<PatchEntry>,
+    /// The action-only bundles, in wire order; empty from a peer that
+    /// serves none.
+    pub actions: Vec<ActionBundle>,
     /// The authenticated tip report; `Some` exactly when an
     /// [`AuthorityKey`] was supplied.
     pub report: Option<TipReport>,
@@ -230,6 +245,23 @@ pub fn verify_patch_body(
 
     Ok(VerifiedPatch {
         entries: entries.iter().map(decode_entry).collect(),
+        actions: body
+            .get("payload")
+            .and_then(|p| p.get("actions"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|a| match a.get("after").and_then(Value::as_u64) {
+                Some(after) => ActionBundle {
+                    after,
+                    blobs: decode_blobs(a),
+                },
+                None => ActionBundle {
+                    after: 0,
+                    blobs: Err(EntryDefect::BadAfter),
+                },
+            })
+            .collect(),
         report,
         binding: None,
     })
@@ -373,6 +405,45 @@ mod tests {
         assert_eq!(percent_encode_query_value("abcXYZ019-_.~"), "abcXYZ019-_.~");
         assert_eq!(percent_encode_query_value(""), "");
         assert_eq!(percent_encode_query_value("a&b=c#d"), "a%26b%3Dc%23d");
+    }
+
+    /// Claim (SPEC 4.8.2): a served action bundle whose `after` is missing or
+    /// not a non-negative integer is a defect, never placed at 0, where it
+    /// would precede every commit and change what a `ds/create` includes.
+    /// Turns red on a reader that defaults `after` to 0.
+    /// Unit: end to end needs a peer rigged to serve a bad `after`, which a
+    /// shipped server cannot be; the decoder is a pure function of the body.
+    #[test]
+    fn a_bundle_without_a_valid_after_is_a_defect() {
+        let body = |after: serde_json::Value| {
+            let mut bundle = serde_json::json!({"blobs": ["e30"]});
+            if !after.is_null() {
+                bundle["after"] = after;
+            }
+            serde_json::to_vec(&serde_json::json!({
+                "v": ENVELOPE_VERSION,
+                "payload": {"entries": [], "actions": [bundle]},
+                "statement": {"kind": "unsigned"},
+            }))
+            .unwrap()
+        };
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!("1"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+        ] {
+            let patch = verify_patch_body(&body(bad.clone()), "pr", None).unwrap();
+            assert!(
+                patch.actions[0].blobs.is_err(),
+                "`after` {bad} must be a defect"
+            );
+        }
+        let good = verify_patch_body(&body(serde_json::json!(2)), "pr", None).unwrap();
+        assert_eq!(
+            (good.actions[0].after, good.actions[0].blobs.is_ok()),
+            (2, true)
+        );
     }
 
     fn patch_body(v: u64) -> Vec<u8> {

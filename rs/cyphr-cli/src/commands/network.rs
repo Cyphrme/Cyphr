@@ -12,12 +12,13 @@ use cyphr_storage::{CommitEntry, Genesis, KeyEntry, load_principal_from_commits}
 use serde_json::{Value, json};
 
 use super::common::{
-    RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
-    local_genesis, open_store, parse_principal_genesis, parse_store, raw_chain, store_path,
+    Placed, RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
+    local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
+    submit_history,
 };
 use crate::choices::Choices;
-use crate::keystore::JsonKeyStore;
-use crate::net::{Peer, PeerError};
+use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
 
 /// Seconds a view may age before `verify` reports it as stale, absent a
@@ -38,12 +39,22 @@ fn wire_id(identity: &str) -> crate::Result<String> {
     Ok(bare_digest(&get_principal_id(&pg)?).to_owned())
 }
 
-/// `cyphr push`: send the commits the peer lacks.
+/// `cyphr push`: send the commits the peer lacks, each preceded by the data
+/// actions recorded before it (a `ds/create` includes exactly those, SPEC
+/// 4.8.2), then the actions recorded after the last commit.
+///
+/// A peer cannot say which trailing actions it already holds, so those are
+/// sent again on every push, one request per action; a replayed action is a
+/// no-op (SPEC 7.6) and the peer stores it once (content-addressed
+/// manifests). They could be batched later.
 pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
+    // Loaded ahead of the async block: loading drives its own runtime.
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     let pushed = block_on(async {
         let local = raw_chain(&store, &principal_id).await?;
@@ -66,21 +77,39 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 },
             },
         };
-        for commit in &local[start..] {
+        // Actions recorded when `n` commits existed precede commit `n`.
+        let mut actions = principal
+            .actions()
+            .filter(|a| a.recorded_after() >= start)
+            .map(|a| Ok((a.recorded_after(), serde_json::to_vec(a.raw())?)))
+            .collect::<crate::Result<Vec<_>>>()?
+            .into_iter()
+            .peekable();
+        let mut sent_actions = 0usize;
+        for (i, commit) in local.iter().enumerate().skip(start) {
+            while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
+                peer.push_commit(&wire, &[blob]).await?;
+                sent_actions += 1;
+            }
             peer.push_commit(&wire, &commit.blobs).await?;
+        }
+        for (_, blob) in actions {
+            peer.push_commit(&wire, &[blob]).await?;
+            sent_actions += 1;
         }
         Ok::<_, Error>((
             local.len() - start,
+            sent_actions,
             local.last().map(|c| c.commit_id.clone()),
         ))
     })??;
 
-    let (count, tip) = pushed;
+    let (count, actions, tip) = pushed;
     let status = if count == 0 { "up_to_date" } else { "accepted" };
     let out = json!({"identity": identity, "peer": peer_url, "pushed": count,
-        "tip": tip, "status": status});
+        "actions": actions, "tip": tip, "status": status});
     emit(cli, &out, || {
-        println!("Push {status}: {count} commit(s) sent to {peer_url}");
+        println!("Push {status}: {count} commit(s), {actions} action(s) sent to {peer_url}");
     })
 }
 
@@ -94,7 +123,10 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
 
     let fetched = block_on(async {
-        let theirs = peer.chain(&wire).await?;
+        let PeerHistory {
+            commits: theirs,
+            actions,
+        } = peer.chain(&wire).await?;
         let local = raw_chain(&store, &principal_id).await?;
         if let Some(i) = first_divergence(&local, &theirs) {
             // A fork needs two histories that both replay; a peer chain that
@@ -103,7 +135,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Some(g) => g.clone(),
                 None => store.resolve_genesis(&principal_id, &[]).await?,
             };
-            if let Err(reason) = replays(&replay_from, &theirs) {
+            if let Err(reason) = replays(&replay_from, &theirs, &actions) {
                 return Err(PeerError::Malformed {
                     peer: peer.url().to_owned(),
                     reason,
@@ -116,14 +148,15 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             }
             .into());
         }
-        let mut applied = 0usize;
-        for blobs in theirs.iter().skip(local.len()) {
-            let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-            store
-                .submit_commit(&principal_id, genesis.clone(), &refs)
-                .await?;
-            applied += 1;
-        }
+        let applied = submit_history(
+            &store,
+            &principal_id,
+            genesis.clone(),
+            &theirs,
+            &actions,
+            local.len(),
+        )
+        .await?;
         Ok::<_, Error>(applied)
     })??;
 
@@ -257,11 +290,15 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let path = store_path(cli)?.to_owned();
 
     let old = parse_store(cli)?;
-    let (local, theirs) = block_on(async {
-        let theirs = peer.chain(&wire).await?;
+    let (local, history) = block_on(async {
+        let history = peer.chain(&wire).await?;
         let local = raw_chain(&old, &principal_id).await?;
-        Ok::<_, Error>((local, theirs))
+        Ok::<_, Error>((local, history))
     })??;
+    let PeerHistory {
+        commits: theirs,
+        actions: their_actions,
+    } = history;
     let common = local
         .iter()
         .zip(&theirs)
@@ -283,6 +320,14 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         return emit(cli, &out, || println!("Nothing to rebase"));
     }
 
+    // The data actions recorded locally, which a rebuild from the peer's
+    // history must not lose (I1: the blob store is the source of truth).
+    let local_actions: Vec<(Vec<u8>, Vec<u8>)> =
+        load_principal_from_engine(&old, &keystore, identity)?
+            .actions()
+            .map(|a| Ok((a.czd().as_bytes().to_vec(), serde_json::to_vec(a.raw())?)))
+            .collect::<crate::Result<_>>()?;
+
     let mut tmp = path.clone().into_os_string();
     tmp.push(".rebase");
     let tmp = std::path::PathBuf::from(tmp);
@@ -291,6 +336,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     }
     // Declared before the engine below so the engine closes its files first.
     let mut scratch = Scratch(Some(tmp.clone()));
+    let mut resigned: Vec<Value> = Vec::new();
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -304,21 +350,63 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     Some(g) => g,
                     None => old.resolve_genesis(&summary.principal_id, &[]).await?,
                 };
-                for c in raw_chain(&old, &summary.principal_id).await? {
-                    let refs: Vec<&[u8]> = c.blobs.iter().map(Vec::as_slice).collect();
-                    new.submit_commit(&summary.principal_id, Some(g.clone()), &refs)
-                        .await?;
-                }
+                let commits: Vec<Vec<Vec<u8>>> = raw_chain(&old, &summary.principal_id)
+                    .await?
+                    .into_iter()
+                    .map(|c| c.blobs)
+                    .collect();
+                let actions: Vec<(usize, Vec<Vec<u8>>)> = old
+                    .get_patch(&summary.principal_id, None, None)
+                    .await?
+                    .actions
+                    .into_iter()
+                    .map(|a| (a.after as usize, a.blobs))
+                    .collect();
+                submit_history(&new, &summary.principal_id, Some(g), &commits, &actions, 0).await?;
             }
-            for blobs in &theirs {
-                let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-                new.submit_commit(&principal_id, Some(genesis.clone()), &refs)
-                    .await?;
-            }
+            submit_history(
+                &new,
+                &principal_id,
+                Some(genesis.clone()),
+                &theirs,
+                &their_actions,
+                0,
+            )
+            .await?;
             Ok::<_, Error>(())
         })??;
 
         let mut principal = load_principal_from_engine(&new, &keystore, identity)?;
+        // Re-record the local actions the peer's history lacks, deduplicated
+        // by czd, as one action-only bundle (recorded in `now` order).
+        let held: std::collections::HashSet<Vec<u8>> = principal
+            .actions()
+            .map(|a| a.czd().as_bytes().to_vec())
+            .collect();
+        // An action older than the peer's latest commit is refused as past
+        // (SPEC 14.1), so each is re-signed with the current `now`, as the
+        // rebase re-signs the local commits it replays.
+        let now = current_timestamp();
+        let missing = local_actions
+            .iter()
+            .filter(|(czd, _)| !held.contains(czd))
+            .map(|(czd, blob)| {
+                let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
+                resigned.push(json!({
+                    "czd": Base64UrlUnpadded::encode_string(czd),
+                    "was_now": pay["now"].clone(),
+                }));
+                pay["now"] = now.into();
+                let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
+                let signed = super::data::sign(keystore.get(tmb)?, tmb, pay.clone())?;
+                Ok(serde_json::to_vec(&signed.wire())?)
+            })
+            .collect::<crate::Result<Vec<Vec<u8>>>>()?;
+        if !missing.is_empty() {
+            let refs: Vec<&[u8]> = missing.iter().map(Vec::as_slice).collect();
+            block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &refs))??;
+            principal = load_principal_from_engine(&new, &keystore, identity)?;
+        }
         for intent in &replay {
             match intent {
                 Intent::AddKey { id, signer } => {
@@ -366,13 +454,21 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     sync_dir(&path)?;
 
     let out = json!({"identity": identity, "peer": peer_url,
-        "rebased": local.len() - common, "backup": backup.display().to_string()});
+        "rebased": local.len() - common, "backup": backup.display().to_string(),
+        "resigned_actions": resigned});
     emit(cli, &out, || {
         println!(
             "Rebased {} commit(s); old store kept at {}",
             local.len() - common,
             backup.display()
         );
+        if !resigned.is_empty() {
+            println!(
+                "Re-signed {} action(s) at rebase; original times and czds: {}",
+                resigned.len(),
+                Value::Array(resigned.clone())
+            );
+        }
     })
 }
 
@@ -408,9 +504,12 @@ fn b64_blobs(blobs: &[Vec<u8>]) -> Vec<String> {
 
 /// Replay a peer's history from `genesis`; a history that does not replay
 /// is not an answer about the principal.
-fn replays(genesis: &Genesis, chain: &[Vec<Vec<u8>>]) -> Result<(), String> {
-    let mut entries = Vec::with_capacity(chain.len());
-    for blobs in chain {
+fn replays(
+    genesis: &Genesis,
+    chain: &[Vec<Vec<u8>>],
+    actions: &[(usize, Vec<Vec<u8>>)],
+) -> Result<(), String> {
+    let line = |blobs: &[Vec<u8>]| -> Result<CommitEntry, String> {
         let mut cozies = Vec::new();
         let mut keys = Vec::new();
         for blob in blobs {
@@ -422,14 +521,19 @@ fn replays(genesis: &Genesis, chain: &[Vec<Vec<u8>>]) -> Result<(), String> {
             }
             cozies.push(v);
         }
-        entries.push(CommitEntry::new(
+        Ok(CommitEntry::new(
             cozies,
             keys,
             String::new(),
             None,
             None,
             String::new(),
-        ));
+        ))
+    };
+    let mut entries = Vec::with_capacity(chain.len() + actions.len());
+    for step in place(chain, actions.iter().map(|(a, b)| (*a, b))) {
+        let (Placed::Commit(_, blobs) | Placed::Actions(_, blobs)) = step;
+        entries.push(line(blobs)?);
     }
     load_principal_from_commits(genesis.clone(), &entries)
         .map(|_| ())
@@ -505,7 +609,10 @@ pub fn verify(
     for (url, answer) in answers {
         match answer {
             Err(e) => failed.push(json!({"peer": url, "reason": e.to_string(), "kind": e.kind()})),
-            Ok(chain) => match replays(&replay_genesis, &chain) {
+            Ok(PeerHistory {
+                commits: chain,
+                actions,
+            }) => match replays(&replay_genesis, &chain, &actions) {
                 Err(reason) => {
                     failed.push(json!({"peer": url, "reason": reason, "kind": "malformed"}))
                 },

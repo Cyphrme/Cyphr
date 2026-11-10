@@ -8,8 +8,8 @@ use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id, parse_store,
-    save_principal_to_engine,
+    Placed, block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
+    parse_principal_genesis, parse_store, place, save_principal_to_engine,
 };
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
@@ -28,9 +28,26 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     let file = File::create(output)?;
     let mut writer = BufWriter::new(file);
 
-    for commit in &commits {
-        let line = serde_json::to_string(commit)?;
-        writeln!(writer, "{}", line)?;
+    // Action-only lines carry the data actions a `ds/create` includes, each
+    // ahead of the commit that follows it, as `export_commits` writes them.
+    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
+    let bundles = block_on(store.get_patch(&principal_id, None, None))??
+        .actions
+        .into_iter();
+    let action_line = |blobs: &[Vec<u8>]| -> crate::Result<String> {
+        let cozies = blobs
+            .iter()
+            .map(|b| serde_json::from_slice(b))
+            .collect::<Result<Vec<serde_json::Value>, _>>()?;
+        let line = CommitEntry::new(cozies, Vec::new(), String::new(), None, None, String::new());
+        Ok(serde_json::to_string(&line)?)
+    };
+    for step in place(
+        commits.iter().map(|c| Ok(serde_json::to_string(c)?)),
+        bundles.map(|a| (a.after as usize, action_line(&a.blobs))),
+    ) {
+        let (Placed::Commit(_, line) | Placed::Actions(_, line)) = step;
+        writeln!(writer, "{}", line?)?;
     }
     writer.flush()?;
 

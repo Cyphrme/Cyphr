@@ -7,7 +7,7 @@
 // Variant: the thief rotates or resolves first; Alice rotates and carries on; every
 // verdict keeps both branches, reports the fork in Error, and never picks a branch.
 //
-// Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,audit.
+// Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,audit,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -32,6 +32,7 @@ async fn s04_theft() {
         Capability::Evidence,
         Capability::PeerGossip,
         Capability::Audit,
+        Capability::DataCommit,
     ])
     .await;
 
