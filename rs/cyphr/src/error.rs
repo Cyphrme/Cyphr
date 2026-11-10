@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Cyphr error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// The signing backend failed (see [`crate::signer`]).
     #[error(transparent)]

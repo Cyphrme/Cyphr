@@ -19,6 +19,7 @@ use crate::state::{HashAlg, TaggedDigest};
 
 /// The tree level a nonce is inserted at (SPEC §10.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum NonceLevel {
     /// The Principal Root (`cyphr/nonce/...`).
     Pr,

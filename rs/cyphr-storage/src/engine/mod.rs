@@ -295,6 +295,7 @@ pub struct BranchTip {
 
 /// Why a stored manifest was left out of a rebuilt index.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum QuarantineReason {
     /// The manifest blob is not a well-formed manifest.
     Malformed(String),

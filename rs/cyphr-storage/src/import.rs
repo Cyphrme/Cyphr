@@ -34,6 +34,7 @@ pub enum Genesis {
 
 /// Errors that can occur during import.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LoadError {
     /// No keys provided for genesis.
     #[error("genesis requires at least one key")]

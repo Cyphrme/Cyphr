@@ -131,6 +131,7 @@ pub mod typ {
 
 /// ParsedCoz kind variants (SPEC §4.2).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CozKind {
     /// Create a new key (Level 3+) - SPEC §4.2.1
     KeyCreate {

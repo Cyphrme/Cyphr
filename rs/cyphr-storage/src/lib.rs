@@ -101,6 +101,7 @@ const BUNDLE_VERSION: u64 = 1;
 
 /// Why a bundle line could not be read.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BundleError {
     /// The line states a format version this build does not read. The text
     /// names the variant so the refusal stays identifiable when it crosses

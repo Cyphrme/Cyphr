@@ -7,8 +7,9 @@
 //!
 //! Defects that turn it red, each checked by a mutant (see the report of the
 //! change that added this file):
-//! - a new `cyphr::Error` variant: the exhaustive `match` in [`classify`] stops compiling, and
-//!   [`variants`] fails the source count if it is not also constructed there;
+//! - a new `cyphr::Error` variant: [`variants`] fails the source count until it is constructed
+//!   there, and [`classify`] then panics on it until it is classified (`Error` is
+//!   `#[non_exhaustive]`, so this crate's `match` cannot be exhaustive);
 //! - a reachable variant with no row in the page's "Errors by claim" table;
 //! - a row naming a variant that does not exist, or one classified as outside the core paths;
 //! - a row pointing to a claim the page does not define, or pointing to a different claim than
@@ -34,8 +35,9 @@ enum Reach {
     Outside(&'static str),
 }
 
-/// Exhaustive on purpose: no wildcard arm, so a new `Error` variant fails to
-/// compile here until someone classifies it.
+/// Every variant by name. `Error` is `#[non_exhaustive]`, so the wildcard
+/// arm is required; it panics, so a variant listed in [`variants`] but not
+/// classified here fails the run instead of passing unclassified.
 fn classify(e: &Error) -> Reach {
     use Reach::{Core, Outside};
     match e {
@@ -77,12 +79,13 @@ fn classify(e: &Error) -> Reach {
         // `#[from]` attribute leaves `cargo check -p cyphr` clean, so no
         // `?` in the core converts a coz error into this variant.
         Error::Coz(_) => Outside("no core path converts a coz::Error"),
+        other => panic!("unclassified cyphr::Error variant: {other:?}"),
     }
 }
 
 /// One instance of every variant. [`variants_cover_the_enum_source`] checks
 /// this list against the enum's source text, so an unlisted variant fails
-/// there even though the exhaustive match above already refuses to compile.
+/// there, and a listed one reaches [`classify`].
 fn variants() -> Vec<Error> {
     vec![
         Error::Signer(SignerError::Backend(String::new())),

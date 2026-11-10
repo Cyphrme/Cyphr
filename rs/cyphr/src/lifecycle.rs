@@ -7,6 +7,7 @@
 /// that may accompany any base state, observable separately via
 /// [`crate::principal::Principal::is_errored`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LifecycleState {
     /// Normal operating state.
     Active,

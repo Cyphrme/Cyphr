@@ -123,6 +123,7 @@ impl DataLedger {
 /// Feature level of a principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Level {
     /// Single static key.
     L1 = 1,

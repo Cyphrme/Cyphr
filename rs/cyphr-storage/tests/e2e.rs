@@ -248,6 +248,7 @@ fn load_error_name(e: &LoadError) -> &'static str {
         },
         LoadError::Json { .. } => "JsonError",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
+        _ => "UnknownLoadError",
     }
 }
 
