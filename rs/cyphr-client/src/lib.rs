@@ -26,8 +26,8 @@ pub use connector::{
 #[cfg(feature = "http")]
 pub use http::{HttpConnector, HttpOptions, MAX_RESPONSE_BYTES};
 pub use patch::{
-    AuthorityKey, EntryDefect, PatchEntry, PatchFailure, PatchRequest, Statement, VerifiedPatch,
-    fetch_patch, verify_authenticated_envelope, verify_patch_body,
+    ActionBundle, AuthorityKey, EntryDefect, PatchEntry, PatchFailure, PatchRequest, Statement,
+    VerifiedPatch, fetch_patch, verify_authenticated_envelope, verify_patch_body,
 };
 pub use peer::{HeldTip, PeerChain, PeerFailure};
 pub use report::{

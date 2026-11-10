@@ -86,11 +86,24 @@ pub struct PatchEntry {
     pub blobs: Result<Vec<Vec<u8>>, EntryDefect>,
 }
 
+/// One decoded action-only bundle (SPEC 4.8.1): it precedes the commit at
+/// `after`, since a `ds/create` includes exactly the actions before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionBundle {
+    /// The commits the peer's chain held when it accepted the bundle.
+    pub after: u64,
+    /// The decoded action blobs, or why they cannot be applied.
+    pub blobs: Result<Vec<Vec<u8>>, EntryDefect>,
+}
+
 /// A patch response that passed every carrier-independent check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPatch {
     /// The entries, in wire order, still to be applied by the caller.
     pub entries: Vec<PatchEntry>,
+    /// The action-only bundles, in wire order; empty from a peer that
+    /// serves none.
+    pub actions: Vec<ActionBundle>,
     /// The authenticated tip report; `Some` exactly when an
     /// [`AuthorityKey`] was supplied.
     pub report: Option<TipReport>,
@@ -230,6 +243,17 @@ pub fn verify_patch_body(
 
     Ok(VerifiedPatch {
         entries: entries.iter().map(decode_entry).collect(),
+        actions: body
+            .get("payload")
+            .and_then(|p| p.get("actions"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|a| ActionBundle {
+                after: a.get("after").and_then(Value::as_u64).unwrap_or(0),
+                blobs: decode_blobs(a),
+            })
+            .collect(),
         report,
         binding: None,
     })

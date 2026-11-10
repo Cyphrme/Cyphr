@@ -49,6 +49,21 @@ pub struct PatchResponse {
     pub principal_id: String,
     /// Ordered commit entries with their blob contents.
     pub entries: Vec<PatchEntry>,
+    /// The action-only bundles accepted in the served range, in accepted
+    /// order. A `ds/create` includes exactly the actions before it
+    /// (SPEC 4.8.2), so a replay needs them in place.
+    pub actions: Vec<PatchActions>,
+}
+
+/// One accepted action-only bundle (SPEC 4.8.1): its actions are recorded
+/// in DT, not chained.
+#[derive(Debug, Clone)]
+pub struct PatchActions {
+    /// The commits the principal's chain held when the bundle was accepted:
+    /// the bundle precedes the commit at this sequence.
+    pub after: u64,
+    /// The action cozies' raw blobs.
+    pub blobs: Vec<Vec<u8>>,
 }
 
 /// Post-commit roots re-derived directly from the authoritative blob store.
@@ -643,9 +658,37 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             });
         }
 
+        // Bundles accepted before the first served commit that the caller
+        // already holds are skipped; those after the last served commit
+        // ride along unless `to` bounds the range short of them.
+        let held: Vec<(u64, Vec<Blake3Hash>)> = {
+            let guard = self.actions.lock().unwrap_or_else(|p| p.into_inner());
+            guard
+                .get(principal_id)
+                .into_iter()
+                .flatten()
+                .filter(|a| a.after >= from_seq.unwrap_or(0) && to.is_none_or(|t| a.after <= t))
+                .map(|a| (a.after, a.blobs.clone()))
+                .collect()
+        };
+        let mut actions = Vec::with_capacity(held.len());
+        for (after, hashes) in held {
+            let mut blobs = Vec::with_capacity(hashes.len());
+            for hash in &hashes {
+                let data =
+                    self.blob_store.get(hash).await?.ok_or_else(|| {
+                        EngineError::NotFound(format!("action blob {hash} missing"))
+                    })?;
+                blobs.push(data);
+            }
+            actions.push(PatchActions { after, blobs });
+        }
+        actions.sort_by_key(|a| a.after);
+
         Ok(PatchResponse {
             principal_id: principal_id.to_string(),
             entries,
+            actions,
         })
     }
 
