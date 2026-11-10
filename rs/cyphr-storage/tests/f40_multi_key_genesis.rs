@@ -128,7 +128,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
 
     let pc_pay = serde_json::json!({
         "alg": key_a.alg,
-        "id": id_tagged,
+        "id": &id_tagged,
         "now": now,
         "tmb": a_tmb_b64,
         "typ": "cyphr.me/cyphr/principal/create",
@@ -170,9 +170,8 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
     let index_path = dir.path().join("index");
-    let principal_id =
-        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
-    let principal_id = principal_id.as_str();
+    // A genesis commit keys its principal by PG (SPEC 5.1).
+    let principal_id = id_tagged.as_str();
 
     let db = fjall::Database::builder(&db_path).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");

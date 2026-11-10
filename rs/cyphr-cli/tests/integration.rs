@@ -278,7 +278,7 @@ fn test_inspect_genesis() {
     assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["ks"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["as"].as_str().unwrap(), genesis_tmb);
-    assert_eq!(inspect["commit_count"], 1, "the genesis commit");
+    assert_eq!(inspect["commit_count"], 0);
 
     let keys = inspect["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
@@ -348,7 +348,7 @@ fn test_explicit_multi_key_genesis_reload() {
     let identity_arg = format!("--identity={pr}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    assert_eq!(inspect["commit_count"], 0);
+    assert_eq!(inspect["commit_count"], 1, "the genesis commit");
     let active_keys: Vec<_> = inspect["active_keys"]
         .as_array()
         .unwrap()
