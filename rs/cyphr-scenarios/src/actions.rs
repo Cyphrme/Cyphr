@@ -349,12 +349,24 @@ impl Harness {
 
     // ---- operator actions on peers ----
 
-    pub async fn backup_peer(&self, _peer: &str) -> ActionResult<Backup> {
-        unsupported("backup_peer", Capability::PeerBackup)
+    /// Snapshot a peer's data with the shipped offline command
+    /// (`cyphr-server backup`); the peer is stopped for it and starts again
+    /// on the same address.
+    pub async fn backup_peer(&self, peer: &str) -> ActionResult<Backup> {
+        self.peer(peer)
+            .backup(self.bins)
+            .await
+            .map(|p| Backup(p.to_string_lossy().into_owned()))
+            .map_err(|e| ActionError::Failed(e.to_string()))
     }
 
-    pub async fn restore_peer(&self, _peer: &str, _from: &Backup) -> ActionResult<()> {
-        unsupported("restore_peer", Capability::PeerBackup)
+    /// Restore a peer from a backup with `cyphr-server restore`; returns
+    /// the report naming the commits the restore lost.
+    pub async fn restore_peer(&self, peer: &str, from: &Backup) -> ActionResult<String> {
+        self.peer(peer)
+            .restore(self.bins, std::path::Path::new(&from.0))
+            .await
+            .map_err(|e| ActionError::Failed(e.to_string()))
     }
 
     /// Rotate a peer's signing key with the shipped offline command: the
