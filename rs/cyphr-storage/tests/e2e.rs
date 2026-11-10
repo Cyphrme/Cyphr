@@ -82,75 +82,28 @@ fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
     commits.to_vec()
 }
 
-/// Compare exported commits against expected commits.
-/// Returns ok if semantically equivalent.
-/// Note: expected may contain action pseudo-commits which are filtered out
-/// since export_commits only exports cozies.
+/// Compare an export with the lines it was imported from. The export
+/// carries every line, commits and the data actions between them, so the
+/// round trip must give back the same lines in the same order.
 fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
-    // Filter expected to only coz commits (exclude action pseudo-commits)
-    // Transactions: key/* and principal/create
-    let tx_commits: Vec<_> = expected
-        .iter()
-        .filter(|c| {
-            // A commit is a coz commit if its first cz has a coz typ
-            c.cozies.first().is_some_and(|cz| {
-                cz.get("pay")
-                    .and_then(|p| p.get("typ"))
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|typ| typ.contains("/key/") || typ.contains("/principal/create"))
-            })
-        })
-        .collect();
-
-    if exported.len() != tx_commits.len() {
+    if exported.len() != expected.len() {
         return Err(format!(
-            "commit count mismatch: exported {} vs expected {} (cz commits)",
+            "line count mismatch: exported {} vs expected {}",
             exported.len(),
-            tx_commits.len()
+            expected.len()
         ));
     }
-
-    for (i, (exp, expected_commit)) in exported.iter().zip(tx_commits.iter()).enumerate() {
-        // Compare coz counts
-        if exp.cozies.len() != expected_commit.cozies.len() {
+    for (i, (exp, want)) in exported.iter().zip(expected).enumerate() {
+        let (exp, want) = (
+            serde_json::to_value(exp).map_err(|e| e.to_string())?,
+            serde_json::to_value(want).map_err(|e| e.to_string())?,
+        );
+        if exp != want {
             return Err(format!(
-                "commit {}: cz count mismatch {} vs {}",
-                i,
-                exp.cozies.len(),
-                expected_commit.cozies.len()
-            ));
-        }
-
-        // Compare state digests
-        if exp.commit_id != expected_commit.commit_id {
-            return Err(format!(
-                "commit {}: commit_id mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.commit_id, expected_commit.commit_id
-            ));
-        }
-
-        if exp.auth_root != expected_commit.auth_root {
-            return Err(format!(
-                "commit {}: as mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.auth_root, expected_commit.auth_root
-            ));
-        }
-
-        if exp.sr != expected_commit.sr {
-            return Err(format!(
-                "commit {}: sr mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.sr, expected_commit.sr
-            ));
-        }
-
-        if exp.pr != expected_commit.pr {
-            return Err(format!(
-                "commit {}: pr mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.pr, expected_commit.pr
+                "line {i} mismatch\n  exported: {exp}\n  expected: {want}"
             ));
         }
     }
-
     Ok(())
 }
 

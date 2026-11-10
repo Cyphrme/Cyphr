@@ -2,9 +2,10 @@
 //!
 //! The core's public replay entry point (`cyphr::replay`), the engine's
 //! ingest (`submit_commit`) and the engine's rebuild from blobs alone
-//! (`rebuild_index_from_scratch`) must reach the same roots for every
-//! chain of the golden corpus, and the rebuild must trust no manifest it
-//! cannot replay (root `AGENTS.md` I1: the blob store is the only source of
+//! (`rebuild_index_from_scratch`) must reach the same roots and the same
+//! Data Tree for every chain of the golden corpus, data actions pushed on
+//! their own included, and the rebuild must trust no manifest it cannot
+//! replay (root `AGENTS.md` I1: the blob store is the only source of
 //! truth).
 
 use std::path::PathBuf;
@@ -84,7 +85,9 @@ fn corpus() -> Vec<Chain> {
             } else {
                 Genesis::Explicit(keys)
             };
-            let bundles = carried(commits.iter().map(wire_blobs).collect());
+            // Each line is pushed as the bundle it is: a commit, or one data
+            // action on its own (SPEC 4.8.1: actions are not chained).
+            let bundles = commits.iter().map(wire_blobs).collect();
             chains.push(Chain {
                 name: path.display().to_string(),
                 genesis,
@@ -115,33 +118,6 @@ fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
             serde_json::to_vec(&coz).expect("json")
         })
         .collect()
-}
-
-/// The bundles as a client carries them: a vector records each data action
-/// as its own entry, but the engine replays only bundles that form a
-/// commit, so actions that a later commit's `ds/create` includes (SPEC
-/// 4.8.2) travel ahead of that commit's transactions, the order the replay
-/// rule records them in. Actions after the last commit stay on their own.
-fn carried(entries: Vec<Vec<Vec<u8>>>) -> Vec<Vec<Vec<u8>>> {
-    let forms_commit = |bundle: &[Vec<u8>]| {
-        bundle
-            .iter()
-            .any(|b| StoredCoz::from_wire(b).expect("wire coz").is_transaction())
-    };
-    let mut bundles = Vec::new();
-    let mut pending: Vec<Vec<u8>> = Vec::new();
-    for entry in entries {
-        if forms_commit(&entry) {
-            pending.extend(entry);
-            bundles.push(std::mem::take(&mut pending));
-        } else {
-            pending.extend(entry);
-        }
-    }
-    if !pending.is_empty() {
-        bundles.push(pending);
-    }
-    bundles
 }
 
 fn principal(genesis: &Genesis) -> cyphr::Principal {
@@ -241,6 +217,7 @@ async fn check_chain(chain: &Chain) {
         // principals would collide in one store.
         let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         let id = ingest(&engine, chain).await;
+        same_history(&engine, &id, chain, &core, "ingest").await;
         let tip = engine.get_tip(&id).await.expect("tip");
         if core.commits().next().is_none() {
             // Action-only bundles form no commit, so nothing is indexed.
@@ -300,7 +277,43 @@ async fn check_chain(chain: &Chain) {
             "{}: the rebuilt index equals the ingest index",
             chain.name
         );
+        same_history(&engine, &id, chain, &core, "rebuild").await;
     }
+}
+
+/// What a replay must agree on: the PR, every commit's TR, and each data
+/// action with the number of commits recorded before it (so DT, and the DR
+/// a `ds/create` includes, at every point of the history).
+fn history(p: &cyphr::Principal) -> (String, Vec<String>, Vec<(String, usize)>) {
+    (
+        p.pr_tagged().expect("pr"),
+        p.commits()
+            .map(|c| c.tr().0.tagged_first().expect("tr").to_string())
+            .collect(),
+        p.actions()
+            .map(|a| (a.czd().to_b64(), a.recorded_after()))
+            .collect(),
+    )
+}
+
+/// The principal the engine replays from its store holds `core`'s history.
+async fn same_history(
+    engine: &Engine,
+    id: &str,
+    chain: &Chain,
+    core: &cyphr::Principal,
+    path: &str,
+) {
+    let loaded = engine
+        .load_principal(id, chain.genesis.clone())
+        .await
+        .unwrap_or_else(|e| panic!("{}: {path}: the stored principal replays: {e}", chain.name));
+    assert_eq!(
+        history(&loaded),
+        history(core),
+        "{}: {path}: the same history, actions included",
+        chain.name
+    );
 }
 
 /// Ingest a corpus chain of a genesis commit and three more into an honest
@@ -672,4 +685,174 @@ async fn genesis_order_is_read_alike_by_ingest_and_the_scratch_rebuild() {
         .await
         .expect("chain");
     assert_eq!(after, before, "the rebuilt chain equals the ingested one");
+}
+
+impl Signer {
+    /// Commit a `ds/create` naming MR(DT) on `writer`; returns the commit's
+    /// wire blobs.
+    fn ds_create(&self, writer: &mut cyphr::Principal, now: i64) -> Vec<Vec<u8>> {
+        let mut scope = writer.begin_commit();
+        let id = scope
+            .data_tree_id()
+            .expect("DR")
+            .expect("DT holds an action");
+        let pay = serde_json::json!({
+            "alg": self.alg, "id": id, "now": now,
+            "tmb": self.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/ds/create",
+        });
+        let (bytes, sig, czd) = self.sign(&pay);
+        scope
+            .verify_and_apply(&bytes, &sig, czd, None)
+            .expect("ds/create applies");
+        let signer =
+            cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pub_key, self.key.tmb());
+        let commit = scope
+            .finalize_with_software(&signer, now, "cyphr.me")
+            .expect("finalizes");
+        let closing = commit
+            .iter_all_cozies()
+            .last()
+            .expect("commit/create")
+            .raw()
+            .pay
+            .clone();
+        vec![self.blob(&pay, None), self.blob(&closing, None)]
+    }
+
+    /// A data action's wire blob, not recorded anywhere.
+    fn unrecorded_action(&self, now: i64, msg: &str) -> Vec<u8> {
+        let pay = serde_json::json!({
+            "alg": self.alg, "msg": msg, "now": now, "tmb": self.key.tmb().to_b64(),
+            "typ": "cyphr.me/app/post/create",
+        });
+        self.blob(&pay, None)
+    }
+}
+
+/// Record a wire action on `writer`, as a client does after pushing it.
+fn record(writer: &mut cyphr::Principal, blob: &[u8]) {
+    let coz = StoredCoz::from_wire(blob).expect("wire coz");
+    writer
+        .verify_and_record_action(coz.pay_json(), coz.sig(), coz.czd().clone())
+        .expect("action records");
+}
+
+async fn push(engine: &Engine, id: &str, genesis: &Genesis, bundle: &[Vec<u8>]) {
+    let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+    engine
+        .submit_commit(id, Some(genesis.clone()), &refs)
+        .await
+        .expect("the bundle is accepted");
+}
+
+/// Claim (SPEC 4.8.1: data actions "are not chained, and are recorded in
+/// DT", "Ordered by `now`"; 4.8.2: a `ds/create` names MR(DT)): data
+/// actions pushed on their own, in any order within their bundle, are
+/// recorded in DT on every path. Engine ingest accepts a `ds/create` over
+/// them; the principal the engine replays from its store, the one a scratch
+/// rebuild replays, the one a restarted engine (a fresh index healed from
+/// the blobs) replays, and the one imported from the client's export all
+/// hold the client's PR and the same actions at the same places, so a
+/// second `ds/create` over a later action is accepted after the restart.
+///
+/// Turns red if: the engine stores an action-only bundle without listing
+/// it for replay (the `ds/create` is refused as `StateMismatch`); a bundle
+/// out of `now` order is replayed in carriage order (`TimestampPast`);
+/// rebuild or restart drops the action manifests; or the export leaves the
+/// actions out (the import's `ds/create` fails).
+/// End-to-end scenario: yes (client, engine ingest, scratch rebuild,
+/// restart, export and import).
+#[tokio::test]
+async fn actions_pushed_alone_replay_alike_on_every_path() {
+    let golden = signer("golden");
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let t = 1_700_000_000;
+    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let genesis_commit =
+        test_fixtures::bundle::genesis_bundle(&mut writer, pool.get("golden").expect("golden"), t)
+            .expect("genesis commit");
+    // Two actions travel in one bundle, the later one first.
+    let (early, late) = (
+        golden.unrecorded_action(t + 10, "early"),
+        golden.unrecorded_action(t + 20, "late"),
+    );
+    record(&mut writer, &early);
+    record(&mut writer, &late);
+    let included = golden.ds_create(&mut writer, t + 30);
+    let trailing = golden.unrecorded_action(t + 40, "after the ds/create");
+    record(&mut writer, &trailing);
+
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for bundle in [
+        genesis_commit,
+        vec![late.clone(), early.clone()],
+        included,
+        vec![trailing.clone()],
+    ] {
+        push(&engine, &id, &genesis, &bundle).await;
+    }
+    let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(
+        tip.pr,
+        writer.pr_tagged().expect("pr"),
+        "the engine's PR includes the DR over the actions pushed alone"
+    );
+
+    let lines = history;
+    let history = lines(&writer);
+    let loaded = async |engine: &Engine| engine.load_principal(&id, genesis.clone()).await;
+    assert_eq!(
+        lines(&loaded(&engine).await.expect("ingest replays")),
+        history,
+        "ingest: the same commits and actions"
+    );
+
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
+    assert_eq!(
+        lines(&loaded(&engine).await.expect("rebuild replays")),
+        history,
+        "scratch rebuild: the same commits and actions"
+    );
+
+    let imported = cyphr_storage::load_principal_from_commits(
+        genesis.clone(),
+        &cyphr_storage::export_commits(&writer).expect("export"),
+    )
+    .expect("the export imports");
+    assert_eq!(lines(&imported), history, "export and import");
+
+    // A restarted engine: the same blobs, a fresh index healed from them.
+    let copy = MemoryBlobStore::new();
+    for hash in engine.blob_store().iter().await.expect("iter") {
+        let blob = engine
+            .blob_store()
+            .get(&hash.expect("hash"))
+            .await
+            .expect("get")
+            .expect("blob");
+        copy.put(&blob).await.expect("put");
+    }
+    let restarted = StorageEngine::new(copy, MemoryIndexer::new());
+    let later = golden.unrecorded_action(t + 50, "after the restart");
+    record(&mut writer, &later);
+    let again = golden.ds_create(&mut writer, t + 60);
+    push(&restarted, &id, &genesis, &[later]).await;
+    push(&restarted, &id, &genesis, &again).await;
+    let tip = restarted.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(
+        tip.pr,
+        writer.pr_tagged().expect("pr"),
+        "after a restart, a ds/create over every action is accepted"
+    );
+    assert_eq!(
+        lines(&loaded(&restarted).await.expect("restart replays")),
+        lines(&writer),
+        "restart: the same commits and actions"
+    );
 }

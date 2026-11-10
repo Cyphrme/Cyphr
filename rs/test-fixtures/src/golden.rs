@@ -511,14 +511,14 @@ impl<'a> Generator<'a> {
     /// - sr: State Root digest (base64url)
     /// - pr: Principal State digest (base64url)
     ///
-    /// Actions are exported as single-cz pseudo-commits at the end, with
-    /// the current state digests at the time of action application.
+    /// Actions travel in the export itself, each on its own line where it
+    /// was recorded; their digests follow the cozies' here.
     fn export_principal_commits(
         principal: &cyphr::Principal,
     ) -> Result<(Vec<CommitEntry>, Vec<String>), Error> {
         use cyphr_storage::export_commits;
 
-        let mut commits = export_commits(principal).map_err(|e| Error::Generation {
+        let commits = export_commits(principal).map_err(|e| Error::Generation {
             name: String::new(),
             reason: format!("export_commits failed: {}", e),
         })?;
@@ -529,48 +529,8 @@ impl<'a> Generator<'a> {
             digests.push(cz.czd().to_b64());
         }
 
-        // Export actions as pseudo-commits
-        // Each action gets its own single-cz commit entry
-        // Actions use the state from the last finalized commit
-        let last_commit = principal.commits().last();
         for action in principal.actions() {
             digests.push(action.czd().to_b64());
-
-            // Serialize action's CozJson
-            let raw = serde_json::to_value(action.raw()).map_err(|e| Error::Generation {
-                name: String::new(),
-                reason: format!("action serialization failed: {}", e),
-            })?;
-
-            // Create pseudo-commit with current state
-            // (actions don't change key state, only add data state)
-            // Use last commit's tr if available, else we have no tr (genesis-only)
-            let tr = last_commit
-                .map(|c| {
-                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    c.tr()
-                        .0
-                        .first_variant()
-                        .map(Base64UrlUnpadded::encode_string)
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
-            let auth_root = principal
-                .auth_root()
-                .and_then(|a| a.as_multihash().first_variant().ok())
-                .map(Base64UrlUnpadded::encode_string);
-            let sr = principal
-                .sr()
-                .and_then(|s| s.as_multihash().first_variant().ok())
-                .map(Base64UrlUnpadded::encode_string);
-            let pr_ = principal
-                .pr()
-                .as_multihash()
-                .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .unwrap_or_default();
-
-            commits.push(CommitEntry::new(vec![raw], vec![], tr, auth_root, sr, pr_));
         }
 
         Ok((commits, digests))
@@ -1133,58 +1093,6 @@ impl<'a> Generator<'a> {
                     )?;
 
                     digests.push(action_czd.to_b64());
-
-                    // Create pseudo-commit with current state
-                    // (actions don't change key state, only add data state)
-                    // Use last commit's tr if available, else we have no tr (genesis-only)
-                    let last_commit = principal.commits().last();
-                    let tr = last_commit
-                        .map(|c| {
-                            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                            c.tr()
-                                .0
-                                .first_variant()
-                                .map(Base64UrlUnpadded::encode_string)
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default();
-                    let auth_root = principal
-                        .auth_root()
-                        .and_then(|a| a.as_multihash().first_variant().ok())
-                        .map(Base64UrlUnpadded::encode_string);
-                    let sr = principal
-                        .sr()
-                        .and_then(|s| s.as_multihash().first_variant().ok())
-                        .map(Base64UrlUnpadded::encode_string);
-                    let pr_ = principal
-                        .pr()
-                        .as_multihash()
-                        .first_variant()
-                        .map(Base64UrlUnpadded::encode_string)
-                        .unwrap_or_default();
-
-                    let action = principal
-                        .actions()
-                        .last()
-                        .ok_or_else(|| Error::Generation {
-                            name: test.name.clone(),
-                            reason: "no actions recorded on principal after action application"
-                                .into(),
-                        })?;
-                    let raw =
-                        serde_json::to_value(action.raw()).map_err(|e| Error::Generation {
-                            name: test.name.clone(),
-                            reason: format!("action serialization failed: {}", e),
-                        })?;
-
-                    action_entries.push(CommitEntry::new(
-                        vec![raw],
-                        vec![],
-                        tr,
-                        auth_root,
-                        sr,
-                        pr_,
-                    ));
                 },
             }
         }
@@ -1200,7 +1108,7 @@ impl<'a> Generator<'a> {
                 reason: format!("export_commits failed: {}", e),
             })?;
 
-        // Interleave action pseudo-commits
+        // The refused action of an error test, which the export lacks.
         commits.extend(action_entries);
         if !failing.is_empty() {
             digests.extend(failing.iter().map(|c| c.czd.clone()));

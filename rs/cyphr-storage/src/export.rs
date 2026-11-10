@@ -1,7 +1,8 @@
 //! Export utilities for Principal storage.
 //!
 //! Bridges the `cyphr` Principal type with the storage layer by exporting
-//! its finalized commits as [`CommitEntry`] bundles.
+//! its history (finalized commits and the data actions between them) as
+//! [`CommitEntry`] bundle lines.
 
 use cyphr::state::StateDigest;
 use cyphr::{Principal, eml};
@@ -20,18 +21,27 @@ pub enum ExportError {
     EmptyDigest(#[from] cyphr::Error),
 }
 
-/// Export commits from a Principal for commit-based storage.
+/// Export a Principal's history as bundle lines, in the order it was
+/// recorded: each finalized commit, preceded by one action-only line per
+/// data action recorded since the commit before, and the actions recorded
+/// after the last commit on lines at the end.
 ///
-/// Returns a vector of `CommitEntry` representing each finalized commit.
-/// Each entry contains:
-/// - `cozies`: Array of coz JSON values (with embedded key material)
-/// - `commit_id`: Commit ID (Merkle root of coz czds, base64url)
-/// - `as`: Auth State (base64url)
-/// - `sr`: State Root (base64url)
-/// - `pr`: Principal Root (base64url)
+/// Actions travel with the history because a `ds/create` includes exactly
+/// the actions recorded before it (SPEC 4.8.2): replaying the lines with
+/// [`load_principal_from_commits`](crate::load_principal_from_commits)
+/// reaches the same DT, DR and PR.
 ///
-/// **Note**: Actions are not included in commits; they are stored separately
-/// or handled by the caller.
+/// A commit line holds:
+/// - `cozies`: the commit's coz JSON values, key material at line level
+/// - `commit_id`: the commit's TR
+/// - `as`, `sr`, `pr`: the roots after the commit
+///
+/// An action-only line forms no commit: its `commit_id` is empty and its
+/// roots are those it leaves, which an action does not change: the roots
+/// of the commit before it, or, for a principal that has made no commit,
+/// its roots. A line recorded before the first commit of a principal that
+/// has since committed carries `null` roots and an empty `pr`: the roots it
+/// left are not kept once the principal commits.
 ///
 /// # Errors
 ///
@@ -41,55 +51,105 @@ pub enum ExportError {
 ///
 /// ```ignore
 /// // Ignored: requires initialized Principal with commits (external context)
-/// let commits = export_commits(&principal)?;
-/// for commit in commits {
-///     file.write_line(&commit.to_json()?)?;
+/// let lines = export_commits(&principal)?;
+/// for line in lines {
+///     file.write_line(&line.to_json()?)?;
 /// }
 /// ```
 pub fn export_commits<S: eml::Storage>(
     principal: &Principal<S>,
 ) -> Result<Vec<CommitEntry>, ExportError> {
+    let mut lines = Vec::new();
+    let mut actions = principal.actions().peekable();
+    let mut before: Option<CommitEntry> = match principal.commits().next() {
+        Some(_) => None,
+        None => Some(roots_line(principal)?),
+    };
+    for (position, commit) in principal.commits().enumerate() {
+        while let Some(action) = actions.next_if(|a| a.recorded_after() <= position) {
+            lines.push(action_line(action, before.as_ref())?);
+        }
+        let line = commit_line(commit)?;
+        lines.push(line.clone());
+        before = Some(line);
+    }
+    for action in actions {
+        lines.push(action_line(action, before.as_ref())?);
+    }
+    Ok(lines)
+}
+
+/// The line of one action recorded after `before` (none: before any
+/// commit).
+fn action_line(
+    action: &cyphr::Action,
+    before: Option<&CommitEntry>,
+) -> Result<CommitEntry, ExportError> {
+    Ok(CommitEntry::new(
+        vec![serde_json::to_value(action.raw())?],
+        Vec::new(),
+        String::new(),
+        before.and_then(|c| c.auth_root.clone()),
+        before.and_then(|c| c.sr.clone()),
+        before.map(|c| c.pr.clone()).unwrap_or_default(),
+    ))
+}
+
+/// A line holding only `principal`'s current roots.
+fn roots_line<S: eml::Storage>(principal: &Principal<S>) -> Result<CommitEntry, ExportError> {
+    let tagged = |m: &cyphr::multihash::MultihashDigest| m.tagged_first().map(|t| t.to_string());
+    Ok(CommitEntry::new(
+        Vec::new(),
+        Vec::new(),
+        String::new(),
+        principal
+            .auth_root()
+            .map(|a| tagged(a.as_multihash()))
+            .transpose()?,
+        principal
+            .sr()
+            .map(|s| tagged(s.as_multihash()))
+            .transpose()?,
+        tagged(principal.pr().as_multihash())?,
+    ))
+}
+
+fn commit_line(commit: &cyphr::Commit) -> Result<CommitEntry, ExportError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let mut commit_entries = Vec::new();
+    let mut cozies = Vec::new();
+    let mut keys = Vec::new();
 
-    for commit in principal.commits() {
-        let mut cozies = Vec::new();
-        let mut keys = Vec::new();
+    for cz in commit.iter_all_cozies() {
+        // Serialize complete CozJson {pay, sig} — no key embedding
+        let raw = serde_json::to_value(cz.raw())?;
+        cozies.push(raw);
 
-        for cz in commit.iter_all_cozies() {
-            // Serialize complete CozJson {pay, sig} — no key embedding
-            let raw = serde_json::to_value(cz.raw())?;
-            cozies.push(raw);
-
-            // Collect key material at commit level
-            if let Some(key) = cz.new_key() {
-                keys.push(KeyEntry {
-                    alg: key.alg().to_owned(),
-                    pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
-                    tmb: key.tmb().to_b64(),
-                    tag: key.tag().map(str::to_owned),
-                    now: Some(key.first_seen()),
-                });
-            }
+        // Collect key material at commit level
+        if let Some(key) = cz.new_key() {
+            keys.push(KeyEntry {
+                alg: key.alg().to_owned(),
+                pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
+                tmb: key.tmb().to_b64(),
+                tag: key.tag().map(str::to_owned),
+                now: Some(key.first_seen()),
+            });
         }
-
-        // Get state digests as algorithm-prefixed strings (alg:digest format)
-        let commit_id = commit.tr().0.tagged_first()?.to_string();
-        // Roots absent after a dying commit (SPEC 3.7) export as `None`,
-        // which serializes as JSON `null`.
-        let auth_root = commit
-            .auth_root()
-            .map(|a| a.as_multihash().tagged_first().map(|t| t.to_string()))
-            .transpose()?;
-        let sr = commit
-            .sr()
-            .map(|s| s.as_multihash().tagged_first().map(|t| t.to_string()))
-            .transpose()?;
-        let pr = commit.pr().as_multihash().tagged_first()?.to_string();
-
-        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, pr));
     }
 
-    Ok(commit_entries)
+    // Get state digests as algorithm-prefixed strings (alg:digest format)
+    let commit_id = commit.tr().0.tagged_first()?.to_string();
+    // Roots absent after a dying commit (SPEC 3.7) export as `None`,
+    // which serializes as JSON `null`.
+    let auth_root = commit
+        .auth_root()
+        .map(|a| a.as_multihash().tagged_first().map(|t| t.to_string()))
+        .transpose()?;
+    let sr = commit
+        .sr()
+        .map(|s| s.as_multihash().tagged_first().map(|t| t.to_string()))
+        .transpose()?;
+    let pr = commit.pr().as_multihash().tagged_first()?.to_string();
+
+    Ok(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, pr))
 }

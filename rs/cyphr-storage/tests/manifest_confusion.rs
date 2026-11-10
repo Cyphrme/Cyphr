@@ -1037,6 +1037,8 @@ proptest! {
                     .unwrap();
                 if data.starts_with(cyphr_storage::engine::COMMIT_MANIFEST_PREFIX) {
                     prefixed += 1;
+                } else if data.starts_with(cyphr_storage::engine::ACTION_MANIFEST_PREFIX) {
+                    // An accepted action-only bundle's record; not a commit.
                 } else {
                     wire += 1;
                     let v: serde_json::Value = serde_json::from_slice(&data).unwrap();

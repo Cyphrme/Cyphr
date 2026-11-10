@@ -112,10 +112,10 @@
         }
       ],
       "keys": [],
-      "commit_id": "P_tfOcpdsxeJ1c4mqTWw-9-nUjWoMF_wGUGCsKZ3DtM",
-      "ar": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
-      "sr": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
-      "pr": "zDj-olveh7yRZ8YrA1lpYi_9nH7tWbs68ZM-2LHa69A"
+      "commit_id": "",
+      "ar": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+      "sr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+      "pr": "SHA-256:zDj-olveh7yRZ8YrA1lpYi_9nH7tWbs68ZM-2LHa69A"
     }
   ],
   "digests": [
