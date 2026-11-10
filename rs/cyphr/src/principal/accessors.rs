@@ -258,7 +258,9 @@ impl<S: eml::Storage> Principal<S> {
     /// A `now` greater than `clock() + seconds` is refused with
     /// `TimestampFuture`. The default is `DEFAULT_MAX_CLOCK_SKEW`; 0 means
     /// no tolerance, not "unchecked": the bound cannot be turned off.
-    pub fn set_max_clock_skew(&mut self, seconds: i64) {
+    /// Unsigned, so a skew that would refuse a `now` at or before the
+    /// verifier clock cannot be expressed.
+    pub fn set_max_clock_skew(&mut self, seconds: u64) {
         self.core_mut().max_clock_skew = seconds;
     }
 
@@ -286,7 +288,7 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::TimestampPast);
         }
         // Saturating: `now` can be up to i64::MAX and the skew is caller-set.
-        let ceiling = ((self.clock)().saturating_add(self.max_clock_skew)).min(MAX_NOW);
+        let ceiling = ((self.clock)().saturating_add_unsigned(self.max_clock_skew)).min(MAX_NOW);
         if now > ceiling {
             return Err(Error::TimestampFuture);
         }
