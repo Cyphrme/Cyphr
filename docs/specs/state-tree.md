@@ -52,8 +52,8 @@ TYPE AR = Digest    -- Auth Root
 TYPE KR = Digest    -- Key Root
 TYPE RR = Digest    -- Rule Root (Level 5+)
 TYPE DR = Digest    -- Data Root (Level 4+)
-TYPE TR = Digest    -- Transaction Root (commit ID): MR(TMR, TCR)
-TYPE TMR = Digest   -- Transaction Mutation Root
+TYPE TR = Digest    -- Transaction Root (commit ID): MR(TXm₀?, TXm₁?, ..., TXc)
+TYPE TMR = Digest   -- Transaction Mutation Root (an input of the arrow)
 TYPE TCR = Digest   -- Transaction Commit Root
 
 -- Trees (underlying data structures behind the digest identifiers)
@@ -299,7 +299,7 @@ AR_alg   = H(KR_alg ∥ RR_alg)                            -- when RR is present
 SR       = MR(AR, DR)                                    -- State Root: ST's root, cell 0 = AR, cell 1 = DR (positional); DR absent at Level < 4 (Singleton Promotion: SR = AR)
 SR_alg   = H(AR_alg ∥ DR_alg)                            -- when DR is present (cells 0-1 both populated)
 DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`; flat computed value, not yet a real tree instance
-TR       = MR(TMR, TCR)                                 -- Transaction Root (commit ID)
+TR       = MR(TXm₀?, TXm₁?, ..., TXc)                   -- Transaction Root (commit ID): every transaction id in order, the commit transaction last (SPEC 3.7.5); TMR is not an input
 CR       = EMLR(TR₀, TR₁, ...)                          -- Commit Root (EML root of commit tree)
 PR       = EMT(SR, CR, ...)                             -- Principal Root: PT's EMT root; cell 0 = SR, cell 1 = CR (positional; cells ≥ 2 are PT embeddings); CR absent at Level 1-2
 PR_alg   = H(SR_alg ∥ CR_alg)                            -- when only cells 0-1 are populated (no embeddings)
