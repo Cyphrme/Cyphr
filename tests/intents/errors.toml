@@ -63,6 +63,29 @@ tx = [
 [test.expected]
 error = "UnknownKey"
 
+# A genesis key signs only once its own key/create is applied (SPEC 5.1
+# steps 1-2; 13.2 step 3: the signer's tmb must be in the current KR). Here
+# key_a, a genesis key not yet created, signs the key/create of alice.
+[[test]]
+name      = "uncreated_genesis_key_signs_fails"
+principal = ["golden", "key_a", "alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "key_a", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
 # The PG is the state at the principal/create (SPEC 5.1 step 3: its id is
 # the future SR), so only the commit/create may follow it in the genesis
 # commit; a key/create after it is refused.

@@ -1,0 +1,84 @@
+{
+  "name": "uncreated_genesis_key_signs_fails",
+  "principal": [
+    "golden",
+    "key_a",
+    "alice"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },
+    {
+      "alg": "ES256",
+      "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+    },
+    {
+      "alg": "ES256",
+      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
+      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+    }
+  ],
+  "commits": [
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/key/create"
+          },
+          "sig": "-FCNYXlZfktL0Ap8gLRbKUoYxm2H_mP1QH5sHf9eRE5OOEnMb8WO4H1c_ikF4cLrc2Rwxz9h4XysrHLCrArSwA"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+            "now": 1700000000,
+            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+            "typ": "cyphr.me/cyphr/key/create"
+          },
+          "sig": "kYl1_RM8s9pKF_RdRTLnjNDh6wXnJYwQW5Wo1PZTH7lW9FPqPmQiAONLIsJe0fqjcxeJag6PY7n_FyhGugNryw"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+        },
+        {
+          "alg": "ES256",
+          "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
+          "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+        }
+      ],
+      "commit_id": "",
+      "ar": null,
+      "sr": null,
+      "pr": ""
+    }
+  ],
+  "digests": [
+    "bw1uwrvH0G_YM6DftXUREAuyCpmgJagKRTHjmBMn10I",
+    "n-lvWixwXMwgAjDDjqK5MwEwci1w2vD4FL2eZHrEKg8"
+  ],
+  "expected": {
+    "key_count": 3,
+    "level": 3,
+    "kr": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
+    "ar": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
+    "pr": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
+    "sr": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
+    "pg": "",
+    "error": "UnknownKey",
+    "deleted": false,
+    "frozen": false
+  }
+}
