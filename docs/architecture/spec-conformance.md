@@ -136,7 +136,9 @@ SPEC 2.3.1, line 226. Disposition: `covered`.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_1_coz_missing_tmb_now_or_typ_is_rejected`
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_1_coz_missing_alg_is_rejected`
-- fails when: a coz missing `tmb`, `now` or `typ` is accepted (green test), or a coz missing `alg` is accepted (green: `verify_coz` and `verify_and_record_action` require `pay.alg == key.alg`).
+  - `rs/cyphr-server/tests/error_parity.rs::missing_alg_is_malformed_on_push_import_and_replay`
+  - `rs/cyphr-server/tests/error_parity.rs::wrong_alg_is_alg_mismatch_on_push_and_import`
+- fails when: a coz missing `tmb`, `now` or `typ` is accepted (green test), a coz missing `alg` is accepted or refused as anything but `MalformedPayload` on core apply, server push, import or replay, or a present `alg` that differs from the signing key's is refused as anything but `AlgMismatch` (green tests).
 
 ```claim
 kind: requirement

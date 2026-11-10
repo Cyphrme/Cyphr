@@ -654,8 +654,8 @@ pub fn compute_czd(pay_json: &[u8], sig: &[u8], alg: &str) -> Option<Czd> {
 ///
 /// # Errors
 ///
-/// - `MalformedPayload`: `pay` does not parse
-/// - `AlgMismatch`: `pay.alg` is absent or differs from `key.alg`
+/// - `MalformedPayload`: `pay` does not parse or has no `alg`
+/// - `AlgMismatch`: `pay.alg` differs from `key.alg`
 /// - `UnknownKey`: `pay.tmb` is absent or differs from `key.tmb`
 /// - `InvalidSignature`: the signature does not verify
 /// - `CzdMismatch`: `czd` is not the digest of (`pay`, `sig`)
@@ -667,7 +667,9 @@ pub fn verify_coz(
     new_key: Option<Key>,
 ) -> Result<VerifiedCoz> {
     let pay: Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
-    if pay.alg.as_deref() != Some(key.alg()) {
+    // SPEC 2.3.1: `alg` is a required field, so its absence is a malformed
+    // payload; a present `alg` naming another algorithm is a mismatch.
+    if pay.alg.as_deref().ok_or(Error::MalformedPayload)? != key.alg() {
         return Err(Error::AlgMismatch);
     }
     if pay.tmb.as_ref() != Some(key.tmb()) {

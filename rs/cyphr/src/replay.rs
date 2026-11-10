@@ -47,7 +47,8 @@ pub enum WireError {
     BadSig,
     /// The pay breaks a core rule checked before verification, with the
     /// kind verification would give it (a missing `alg` is
-    /// [`Error::AlgMismatch`], as [`verify_coz`](crate::verify_coz) rules).
+    /// [`Error::MalformedPayload`], as [`verify_coz`](crate::verify_coz)
+    /// rules).
     #[error("{0}")]
     Protocol(Error),
     /// The pay's `alg` names no algorithm a coz digest can be computed in.
@@ -88,8 +89,8 @@ impl StoredCoz {
     /// # Errors
     ///
     /// [`WireError::Header`] when the pay fails the core's header parse;
-    /// [`WireError::Protocol`] ([`Error::AlgMismatch`]) for a pay with no
-    /// `alg`; [`WireError::UnsupportedAlg`] when no coz digest can be
+    /// [`WireError::Protocol`] ([`Error::MalformedPayload`]) for a pay with
+    /// no `alg`; [`WireError::UnsupportedAlg`] when no coz digest can be
     /// computed in the one it names.
     pub fn new(pay: &Value, sig: Vec<u8>, key: Option<Key>) -> Result<Self, WireError> {
         let mut pay = pay.clone();
@@ -98,7 +99,7 @@ impl StoredCoz {
         let alg = pay
             .get("alg")
             .and_then(Value::as_str)
-            .ok_or(WireError::Protocol(Error::AlgMismatch))?
+            .ok_or(WireError::Protocol(Error::MalformedPayload))?
             .to_string();
         // A `Value` always serializes; `MalformedPayload` names the
         // impossible case without a panic.

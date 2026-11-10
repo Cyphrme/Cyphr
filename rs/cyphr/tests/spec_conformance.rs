@@ -177,14 +177,17 @@ fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
     .expect("control: the complete coz is accepted");
 }
 
-/// Backs SPEC 2.3.1 for `alg`. A coz with no `alg` is refused because
-/// `verify_coz` treats an absent `alg` as a mismatch with the signing key's
-/// algorithm. Turns red if a coz with no `alg` is accepted. End to end: yes.
+/// Backs SPEC 2.3.1 for `alg`. A coz with no `alg` lacks a required field,
+/// so it is refused as `MalformedPayload`; `AlgMismatch` is kept for an
+/// `alg` that is present and names another algorithm than the signing
+/// key's. Turns red if a coz with no `alg` is accepted, or refused as a
+/// mismatch. End to end: yes.
 #[test]
 fn s2_3_1_coz_missing_alg_is_rejected() {
+    let r = create_missing_field("alg");
     assert!(
-        create_missing_field("alg").is_err(),
-        "a coz without `alg` was accepted and finalized"
+        matches!(r, Err(cyphr::Error::MalformedPayload)),
+        "a coz without `alg` must be MalformedPayload: {r:?}"
     );
 }
 

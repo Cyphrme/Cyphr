@@ -42,7 +42,8 @@ pub enum Error {
     #[error("key tmb does not match its public key")]
     TmbMismatch,
 
-    /// `pay.alg` is absent or differs from the signing key's algorithm.
+    /// `pay.alg` differs from the signing key's algorithm. An absent
+    /// `alg` is [`Error::MalformedPayload`] (SPEC 2.3.1).
     #[error("pay alg does not match signing key alg")]
     AlgMismatch,
 

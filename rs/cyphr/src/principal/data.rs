@@ -112,7 +112,9 @@ impl<S: eml::Storage> Principal<S> {
         let signer_key = self.active_signer(&signer_tmb)?;
 
         // The signed pay must name the key that actually verifies it.
-        if pay_value["alg"].as_str() != Some(signer_key.alg()) {
+        // An absent `alg` is malformed (SPEC 2.3.1), as `verify_coz` rules.
+        let alg = pay_value["alg"].as_str().ok_or(Error::MalformedPayload)?;
+        if alg != signer_key.alg() {
             return Err(Error::AlgMismatch);
         }
 
