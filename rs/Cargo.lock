@@ -288,8 +288,7 @@ checksum = "1c53ba0f290bfc610084c05582d9c5d421662128fc69f4bf236707af6fd321b9"
 [[package]]
 name = "canonical-ml"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a52cbe2748bc5d903b15b798894ffbd1150dc11ed8a0a71d7f8b0f5c4b1790a"
+source = "git+https://github.com/Cyphrme/tsml?rev=51df637#51df63789aa8e33dc65366c4c06421369ff90d0f"
 dependencies = [
  "merkle-spine",
 ]
@@ -297,8 +296,7 @@ dependencies = [
 [[package]]
 name = "canonical-mt"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a328f8d081b8498e09e537e3c7c29179b698cbd3113bfdaf8c1be3eacb4f5299"
+source = "git+https://github.com/Cyphrme/tsml?rev=51df637#51df63789aa8e33dc65366c4c06421369ff90d0f"
 dependencies = [
  "merkle-spine",
 ]
@@ -855,9 +853,8 @@ dependencies = [
 
 [[package]]
 name = "eml"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61a7ccbce855d18f838c0a11eab7aa677c864e9e1e71ae4044ec48002083e430"
+version = "0.12.0"
+source = "git+https://github.com/Cyphrme/tsml?rev=51df637#51df63789aa8e33dc65366c4c06421369ff90d0f"
 dependencies = [
  "polydigest",
 ]
@@ -1636,8 +1633,7 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 [[package]]
 name = "merkle-spine"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdc35d5d48e5327a711341c32a8fc28c4fbb26a4184fff1f31abd1da5fe5aa21"
+source = "git+https://github.com/Cyphrme/tsml?rev=51df637#51df63789aa8e33dc65366c4c06421369ff90d0f"
 
 [[package]]
 name = "mime"
@@ -1847,8 +1843,7 @@ dependencies = [
 [[package]]
 name = "polydigest"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4f7500a9231dfffd74344245dce34de3be4fa2d2dd828ec5567bf3f9f0b8491"
+source = "git+https://github.com/Cyphrme/tsml?rev=51df637#51df63789aa8e33dc65366c4c06421369ff90d0f"
 dependencies = [
  "canonical-ml",
  "canonical-mt",
@@ -1858,8 +1853,7 @@ dependencies = [
 [[package]]
 name = "polydigest-storage-fjall"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df87d1cebe0cac5715486bf546f438a6a4576bbef79907346ab5f01021f97de8"
+source = "git+https://github.com/Cyphrme/tsml?rev=51df637#51df63789aa8e33dc65366c4c06421369ff90d0f"
 dependencies = [
  "fjall",
  "polydigest",

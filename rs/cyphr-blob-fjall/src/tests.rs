@@ -244,7 +244,14 @@ async fn scoped_eml_open_accepts_a_principal_id_shaped_prefix() {
 
     // Exercise it like a real Commit Tree would, proving the returned
     // storage is genuinely usable, not just successfully constructed.
-    storage.store_leaf(0, b"leaf-0").await.unwrap();
+    storage
+        .apply(&[eml::WriteOp::AppendLeaf {
+            at: 0,
+            data: b"leaf-0",
+            nodes: &[],
+        }])
+        .await
+        .unwrap();
     assert_eq!(storage.get_leaf(0).await.unwrap(), b"leaf-0");
 }
 
