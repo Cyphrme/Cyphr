@@ -19,7 +19,7 @@ impl<S: eml::Storage> Principal<S> {
     /// - `TimestampPast`: Action timestamp is older than latest seen
     /// - `TimestampFuture`: Action timestamp is too far in the future
     /// - `UnknownKey`: Signer's key not in current KS
-    pub(crate) fn record_action(&mut self, action: Action) -> Result<&PrincipalRoot> {
+    pub(crate) fn record_action(&mut self, mut action: Action) -> Result<&PrincipalRoot> {
         // Validate timestamp is not in the past (SPEC §14.1)
         if action.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
@@ -38,6 +38,7 @@ impl<S: eml::Storage> Principal<S> {
             core.latest_timestamp = action.now;
         }
         core.included_czds.insert(action.czd.as_bytes().to_vec());
+        action.recorded_after = core.auth.commits.len();
         core.data.actions.push(action);
 
         Ok(&self.pr)

@@ -54,7 +54,7 @@ fn classify(e: &Error) -> Reach {
         Error::DuplicateNonce => Core("rv-nonce-ledger"),
         Error::UnknownNonce => Core("rv-nonce-ledger"),
         Error::CozReuse => Core("rv-no-coz-reuse"),
-        Error::StateMismatch => Core("rv-genesis-immutable"),
+        Error::StateMismatch => Core("rv-state-recomputed"),
         Error::EmptyMultihash => Core("rv-internal-invariants"),
         Error::MissingVariant(_) => Core("rv-internal-invariants"),
         Error::NoActiveKeys => Core("rv-key-set"),

@@ -26,6 +26,8 @@ pub struct Action {
     /// Raw Coz message: the signed payload (including application-specific
     /// fields) and signature, for storage/export.
     pub(crate) raw: coz::CozJson,
+    /// How many commits the principal held when it recorded the action.
+    pub(crate) recorded_after: usize,
 }
 
 impl Action {
@@ -47,6 +49,7 @@ impl Action {
             now,
             czd,
             raw,
+            recorded_after: 0,
         }
     }
 
@@ -63,6 +66,7 @@ impl Action {
             now,
             czd,
             raw,
+            recorded_after: 0,
         })
     }
 
@@ -84,6 +88,14 @@ impl Action {
     /// Get the Coz digest.
     pub fn czd(&self) -> &Czd {
         &self.czd
+    }
+
+    /// How many commits the principal held when it recorded this action:
+    /// its place in history, which an export needs to replay it where it
+    /// was recorded (a `ds/create` includes exactly the actions recorded
+    /// before it, SPEC 4.8.2).
+    pub fn recorded_after(&self) -> usize {
+        self.recorded_after
     }
 
     /// Get the raw Coz message for storage/export.

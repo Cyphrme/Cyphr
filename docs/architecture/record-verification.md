@@ -283,7 +283,9 @@ alone.
 A replay recomputes the forward state the `arrow` commits to, the data root
 included, and a commit whose signed `arrow` was made over different state is
 rejected. A forged data action spliced into the history before a commit cannot
-be hidden by replaying the commit's own cozies.
+be hidden by replaying the commit's own cozies: the commit's `ds/create` names
+DR = MR(DT) over the actions recorded before it (SPEC 4.8.2), and over a
+spliced DT that `id` names a state the history is not in.
 
 ```claim
 kind: requirement
@@ -294,11 +296,10 @@ Backed by `forged_action_spliced_before_delete_commit_breaks_replay` in
 `rs/cyphr/tests/negative_vectors.rs`. The scenario replays one real delete
 commit twice, once without and once with a forged action inserted before it;
 every coz verifies on its own, the honest replay (the control) finalizes, and
-the forged one fails with `CommitMismatch`. The same `arrow` check as rule 6
-closes it, and the two claims differ in the component each pins: `pre` for
-rule 6, the forward state for rule 7. Not checked by a named test: a
-root-by-root comparison of replayed SR, AR, KR, CR and PR with roots a server
-published.
+the forged one fails with `StateMismatch` at the `ds/create`, before the
+`arrow` is reached. Rule 6 pins `pre`; this rule pins the forward state, DR
+included. Not checked by a named test: a root-by-root comparison of replayed
+SR, AR, KR, CR and PR with roots a server published.
 
 ### Authorization and lifecycle
 
@@ -403,8 +404,10 @@ second create. The first `principal/create`, which is accepted before the
 second is refused, is its only control. `principal/create` signed by a key other
 than the genesis key (the first) is refused with `UnknownKey`, and one whose
 `id` is not the future SR (the state at the `principal/create`, SPEC 5.1 step 3)
-with `StateMismatch`; no bound test exercises either. `StateMismatch`
-is also raised for an `id` that is not the current PR on `principal/delete`,
+with `StateMismatch`; no bound test exercises either. `StateMismatch`,
+whose row in the error table is under
+[rv-state-recomputed](#rv-state-recomputed) (an `id` naming a state the
+principal is not in), is also raised for an `id` that is not the current PR on `principal/delete`,
 `freeze/create` and `freeze/delete`; see
 [rv-lifecycle-transitions](#rv-lifecycle-transitions). The rule is class C because it depends on whether a PG was
 already written. Not bound here: that a genesis is well-formed.
@@ -770,7 +773,7 @@ paths have no row; its source gives the reason for each.
 | `DuplicateNonce`       | `rv-nonce-ledger`          |
 | `UnknownNonce`         | `rv-nonce-ledger`          |
 | `CozReuse`             | `rv-no-coz-reuse`          |
-| `StateMismatch`        | `rv-genesis-immutable`     |
+| `StateMismatch`        | `rv-state-recomputed`      |
 | `EmptyMultihash`       | `rv-internal-invariants`   |
 | `MissingVariant`       | `rv-internal-invariants`   |
 | `NoActiveKeys`         | `rv-key-set`               |

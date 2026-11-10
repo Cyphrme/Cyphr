@@ -13,9 +13,13 @@
 //! actions before the first transaction are recorded first, then every
 //! transaction is applied inside one commit scope and the commit is
 //! finalized, then the actions that followed the first transaction are
-//! recorded. A bundle with no transaction is recorded action by action and
-//! forms no commit. Transaction grouping (several cozies per transaction)
-//! is not decided here yet; each transaction coz is its own transaction.
+//! recorded. A bundle with no transaction forms no commit: its actions are
+//! recorded in DT in `now` order, the lexical order of their digests
+//! breaking ties (SPEC 4.8.1: actions "are not chained, and are recorded in
+//! DT", "Ordered by `now`"; 3.7 step 2), whatever order they travelled in,
+//! so a later `ds/create` includes them (4.8.2). Transaction grouping
+//! (several cozies per transaction) is not decided here yet; each
+//! transaction coz is its own transaction.
 
 use coz::Czd;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -280,7 +284,11 @@ pub fn replay_bundle<S: eml::Storage>(
     };
 
     let Some(first_tx) = cozies.iter().position(StoredCoz::is_transaction) else {
-        for (i, c) in cozies.iter().enumerate() {
+        let mut order: Vec<(usize, &StoredCoz)> = cozies.iter().enumerate().collect();
+        order.sort_by(|(_, a), (_, b)| {
+            (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
+        });
+        for (i, c) in order {
             record(principal, i, c)?;
         }
         return Ok(BundleId {

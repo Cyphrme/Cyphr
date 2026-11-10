@@ -269,7 +269,6 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
 /// action-only bundles: the server's DT is then empty and the correct
 /// `ds/create` is refused as a state mismatch. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(DS2): the engine does not replay action-only bundles"]
 async fn ds_create_includes_actions_pushed_alone() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");

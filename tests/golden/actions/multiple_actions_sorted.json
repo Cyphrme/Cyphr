@@ -74,10 +74,10 @@
         }
       ],
       "keys": [],
-      "commit_id": "k_31aJq4FjgPrUZr78JEnfZ6gWvGik_AeWtJnDzVWMY",
-      "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "sr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "pr": "K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk"
+      "commit_id": "",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk"
     },
     {
       "v": 1,
@@ -94,10 +94,10 @@
         }
       ],
       "keys": [],
-      "commit_id": "k_31aJq4FjgPrUZr78JEnfZ6gWvGik_AeWtJnDzVWMY",
-      "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "sr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "pr": "K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk"
+      "commit_id": "",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk"
     },
     {
       "v": 1,

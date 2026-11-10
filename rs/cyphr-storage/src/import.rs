@@ -1,7 +1,8 @@
 //! Import utilities for loading Principals from stored commit bundles.
 //!
-//! This module reconstructs a `Principal` by replaying commit bundles
-//! (one commit per line, per SPEC §4.2.1, §7.3.1) from genesis.
+//! This module reconstructs a `Principal` by replaying bundle lines from
+//! genesis: one commit per line (SPEC §4.2.1, §7.3.1), or the data actions
+//! recorded between two commits (an action-only line, SPEC 4.8.1).
 
 use coz::Thumbprint;
 use cyphr::{Key, Principal};
@@ -79,9 +80,9 @@ pub enum LoadError {
 // Import Functions
 // ============================================================================
 
-/// Load a principal by replaying commit bundles from genesis.
-///
-/// Storage holds one commit per line (per SPEC §4.2.1, §7.3.1).
+/// Load a principal by replaying bundle lines from genesis, as
+/// [`export_commits`](crate::export_commits) writes them: commit lines and
+/// action-only lines, in recorded order.
 ///
 /// # Arguments
 ///
@@ -140,28 +141,39 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
     commits: &[CommitEntry],
 ) -> Result<(), LoadError> {
     for (commit_idx, commit) in commits.iter().enumerate() {
-        let cozies = stored_cozies(commit, commit_idx)?;
-        cyphr::replay::replay_bundle(principal, &cozies).map_err(|e| {
-            let Some(i) = e.coz else {
-                return LoadError::Protocol(e.source);
-            };
-            let index = commit_idx * 1000 + i;
-            match e.source {
-                cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
-                    index,
-                    message: "signature verification failed".into(),
-                },
-                cyphr::Error::UnknownKey => LoadError::UnknownSigner {
-                    index,
-                    tmb: cozies
-                        .get(i)
-                        .map(|c| c.header().tmb.to_b64())
-                        .unwrap_or_default(),
-                },
-                other => LoadError::Protocol(other),
-            }
-        })?;
+        replay_commit(principal, commit, commit_idx)?;
     }
+    Ok(())
+}
+
+/// Replay one bundle line, the `commit_idx`-th of its history (which only
+/// numbers the cozies an error names).
+pub(crate) fn replay_commit<S: cyphr::eml::Storage>(
+    principal: &mut Principal<S>,
+    commit: &CommitEntry,
+    commit_idx: usize,
+) -> Result<(), LoadError> {
+    let cozies = stored_cozies(commit, commit_idx)?;
+    cyphr::replay::replay_bundle(principal, &cozies).map_err(|e| {
+        let Some(i) = e.coz else {
+            return LoadError::Protocol(e.source);
+        };
+        let index = commit_idx * 1000 + i;
+        match e.source {
+            cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                index,
+                message: "signature verification failed".into(),
+            },
+            cyphr::Error::UnknownKey => LoadError::UnknownSigner {
+                index,
+                tmb: cozies
+                    .get(i)
+                    .map(|c| c.header().tmb.to_b64())
+                    .unwrap_or_default(),
+            },
+            other => LoadError::Protocol(other),
+        }
+    })?;
     Ok(())
 }
 
