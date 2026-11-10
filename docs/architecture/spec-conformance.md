@@ -48,12 +48,12 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   56 |
+| `covered`      |   58 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
 | `not-testable` |   11 |
 | `out-of-scope` |    6 |
-| `total`        |   73 |
+| `total`        |   75 |
 
 ## Rows
 
@@ -311,7 +311,26 @@ SPEC 4.1, line 468. Disposition: `covered`.
 - spec-text: of PT. All cozies for a particular transaction contain an identical `typ`, which
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s4_1_transaction_cozies_must_share_one_typ`
-- fails when: a transaction holding cozies of different `typ` is applied.
+  - `rs/cyphr-server/tests/transaction_grouping.rs::mixed_typ_transaction_is_refused_by_push_and_import`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_transaction_grouping[transaction_grouping/mixed_typ_transaction_fails]`
+- fails when: a transaction holding cozies of different `typ` is applied, through the core, a push or an import.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l485]
+
+SPEC 4.1, line 485. Disposition: `covered`.
+
+- spec-line: 485
+- source: supplement
+- disposition: covered
+- spec-text: The wire format for transactions, labeled by the field `txs`, is a list of
+- tests:
+  - `rs/cyphr-server/tests/transaction_grouping.rs::grouped_transaction_end_to_end`
+- fails when: a push, `/patch`, the stored manifest, a following client, export or import carries `txs` as anything but a list of transactions, each a list of cozies, or flattens a transaction of several cozies into several.
 
 ```claim
 kind: requirement
@@ -365,6 +384,25 @@ SPEC 4.6.2, line 592. Disposition: `covered`.
 ```claim
 kind: requirement
 evaluator: test
+```
+
+### [sc-l595]
+
+SPEC 4.6.2, line 595. Disposition: `covered`.
+
+- spec-line: 595
+- source: supplement
+- disposition: covered
+- spec-text: transaction. The ID of the transaction itself is MR(czd₀, czd₁?, ...)
+- tests:
+  - `rs/cyphr-server/tests/transaction_grouping.rs::grouped_transaction_end_to_end`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_transaction_grouping[transaction_grouping/key_replace_signed_by_two_keys]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_transaction_grouping[transaction_grouping/key_replace_pair_as_two_transactions]`
+- fails when: a transaction of several cozies does not enter TR as the one leaf TX = MR(czd₀, czd₁, ...) (its `txs_order` or TR differs from the vector's), or the same cozies as separate transactions give the same TR.
+
+```claim
+kind: requirement
+evaluator: none
 ```
 
 ### [sc-l689]
