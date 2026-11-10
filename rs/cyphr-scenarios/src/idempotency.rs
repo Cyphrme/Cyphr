@@ -38,7 +38,7 @@ const KEY_A: (&str, &str) = (
 /// `cyphr-server/tests/coz_reuse.rs` `REPLAY_BLOBS`: `[D, commit/create]`.
 const REPLAY_BLOBS: [&str; 2] = [
     "eyJwYXkiOnsiYWxnIjoiRVMyNTYiLCJpZCI6InhnSnU4R3NFR09WWkNqYlZVWG5fRDRnczRhdWxpZlktVlFHMkZNbEphSEUiLCJub3ciOjE3MDAwMDAwMDAsInRtYiI6IlU1WFVab3RzLVdtUVljUVdtc083NTFYazB5ZVZpOVhVS1dRMm1HejZBcWciLCJ0eXAiOiJjeXBoci5tZS9jeXBoci9rZXkvY3JlYXRlIn0sInNpZyI6InpFRUl1TURNM2E2R2VxZkFhc2hMM1dpeFNidS1MRmUxc0JzSEw5Tzk4MFpyRjVzQ0ttaXJuS2VhVDlpbmZzSEVKc1RCeDFjYUtLV1g3NVl3WThZRUp3Iiwia2V5Ijp7ImFsZyI6IkVTMjU2IiwicHViIjoiTGdNOHcwMEJFYkdkTmxidWd6UVlEYU11dnE5UHNKcFkzYks4Qjl5VHN4eTAxSndTS0l0ODRBNndoRXg4WlZxdEFvcVExeHJQQXpGd1BQYmZlY05fdlEiLCJ0bWIiOiJ4Z0p1OEdzRUdPVlpDamJWVVhuX0Q0Z3M0YXVsaWZZLVZRRzJGTWxKYUhFIn19",
-    "eyJwYXkiOnsiYWxnIjoiRVMyNTYiLCJhcnJvdyI6IlNIQS0yNTY6WWF0T0ZkaXYyRHNHekszRzZ1M0x2R1p1clJqMGJGZl9TWEF6LXA1dmlobyIsIm5vdyI6MTcwMDAwMDAwMCwidG1iIjoiVTVYVVpvdHMtV21RWWNRV21zTzc1MVhrMHllVmk5WFVLV1EybUd6NkFxZyIsInR5cCI6ImN5cGhyLm1lL2N5cGhyL2NvbW1pdC9jcmVhdGUifSwic2lnIjoiUEVNWXVhWGxMWjlzZWhVN01mejdqWTBrMDd3TnlnRnBQY2ZSQ2lELTNVMUtpaHB4bFpOQW9VR1dUZFROQkx1ZENvSDk2bldVdlJQcWlzRHVMenBHYlEifQ",
+    "eyJwYXkiOnsiYWxnIjoiRVMyNTYiLCJhcnJvdyI6IlNIQS0yNTY6M3p0LVprb2hvSWtBczZPM0RWNzNKSUcwVzhJVkxRcDdBeEpRS3daUmg2NCIsIm5vdyI6MTcwMDAwMDAwMCwidG1iIjoiVTVYVVpvdHMtV21RWWNRV21zTzc1MVhrMHllVmk5WFVLV1EybUd6NkFxZyIsInR5cCI6ImN5cGhyLm1lL2N5cGhyL2NvbW1pdC9jcmVhdGUifSwic2lnIjoiR2l2WDlGLUJtdDNTWkR4X0NEdElIbkktbzhOWWNWdnMwRnhiR1pNZGZmWkVZdU50Z0JLVkJKajhRYzVsbHA5NzhpOHVUM00ydkVCem8tQmRtZkF6RncifQ",
 ];
 
 /// What a fresh peer answered to the replay.
@@ -88,8 +88,7 @@ fn key_of(k: &PoolSigner) -> Result<cyphr::Key, String> {
 }
 
 /// One commit by `by` of `typ` over `target`, applied to `p`, as wire blobs:
-/// key-introducing cozies carry their key, and a first commit's closing coz
-/// carries the genesis key (the wire contract for an unseen principal).
+/// key-introducing cozies carry their key.
 fn commit(
     p: &mut Principal,
     by: &PoolSigner,
@@ -104,7 +103,6 @@ fn commit(
     .map_err(|e| e.to_string())?;
     let (sig, cad) = coz::sign_json(&pay, &by.alg, &by.prv, &by.pubb).ok_or("sign failed")?;
     let czd = coz::czd_for_alg(&cad, &sig, &by.alg).ok_or("czd failed")?;
-    let first = p.commits().count() == 0;
     let mut scope = p.begin_commit();
     scope
         .verify_and_apply(
@@ -122,12 +120,8 @@ fn commit(
         )
         .map_err(|e| e.to_string())?;
     let last = p.commits().last().ok_or("no commit")?;
-    let cozies: Vec<_> = last.iter_all_cozies().collect();
-    let n = cozies.len();
-    cozies
-        .iter()
-        .enumerate()
-        .map(|(i, vc)| {
+    last.iter_all_cozies()
+        .map(|vc| {
             let mut c = serde_json::to_value(vc.coz().raw()).map_err(|e| e.to_string())?;
             let sidecar = |k: &cyphr::Key| {
                 json!({"alg": k.alg(),
@@ -136,9 +130,6 @@ fn commit(
             };
             if let Some(k) = vc.new_key() {
                 c["key"] = sidecar(k);
-            }
-            if first && i + 1 == n {
-                c["key"] = sidecar(&key_of(by)?);
             }
             serde_json::to_vec(&c).map_err(|e| e.to_string())
         })
@@ -160,6 +151,17 @@ pub async fn replay_on_fresh_peer(
     let id = golden.tmb.to_b64();
 
     let mut p = Principal::implicit(key_of(&golden)?).map_err(|e| e.to_string())?;
+    // Every chain begins with its genesis commit (SPEC 5.1).
+    let genesis = p
+        .commit_genesis(
+            &SoftwareSigner::new(&golden.alg, &golden.prv, &golden.pubb, &golden.tmb),
+            T,
+            "cyphr.me",
+        )
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|c| serde_json::to_vec(c).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
     let c0 = commit(&mut p, &golden, "cyphr.me/cyphr/key/create", &key_a, true)?;
     let c1 = commit(&mut p, &golden, "cyphr.me/cyphr/key/delete", &key_a, false)?;
     let replay: Vec<Vec<u8>> = REPLAY_BLOBS
@@ -199,7 +201,11 @@ pub async fn replay_on_fresh_peer(
             .as_u64()
             .ok_or_else(|| format!("no commit_count in {v}"))
     };
-    for (what, blobs) in [("commit 0", &c0), ("commit 1", &c1)] {
+    for (what, blobs) in [
+        ("the genesis", &genesis),
+        ("commit 0", &c0),
+        ("commit 1", &c1),
+    ] {
         let r = push(blobs).await.map_err(|e| e.to_string())?;
         if !r.status().is_success() {
             let status = r.status();

@@ -35,6 +35,15 @@ fn kp() -> Kp {
 }
 
 impl Kp {
+    fn signer(&self) -> cyphr::signer::SoftwareSigner {
+        cyphr::signer::SoftwareSigner::new(
+            self.kp.alg.name(),
+            &self.kp.prv_bytes,
+            &self.kp.pub_bytes,
+            &self.tmb,
+        )
+    }
+
     fn domain_key(&self, first_seen: i64) -> cyphr::Key {
         cyphr::Key::new(
             self.kp.alg.name().to_string(),
@@ -46,29 +55,46 @@ impl Kp {
     }
 }
 
-/// A principal with an implicit genesis on `genesis`, grown one
-/// `key/create` commit at a time. `commit` returns the commit's wire blobs
-/// (base64url of each coz JSON, introduced keys embedded, the genesis key on
-/// the closing cozy of the first commit), exactly what `/patch` carries.
+/// A principal with a single-key genesis on `genesis` (its genesis commit,
+/// SPEC 5.1, committed by `new`), grown one `key/create` commit at a time.
+/// `commit` returns the commit's wire blobs (base64url of each coz JSON,
+/// introduced keys embedded), exactly what `/patch` carries; `patch` serves
+/// the genesis commit first, then the given commits.
 struct Chain<'a> {
     genesis: &'a Kp,
     principal: cyphr::Principal<cyphr::eml::MemoryStorage>,
-    commits: usize,
+    /// The wire blobs of the genesis commit, the chain's first entry.
+    genesis_commit: Vec<String>,
 }
 
 impl<'a> Chain<'a> {
     fn new(genesis: &'a Kp) -> Self {
-        let principal = cyphr::Principal::implicit(genesis.domain_key(1_700_000_000))
+        let mut principal = cyphr::Principal::implicit(genesis.domain_key(1_700_000_000))
             .expect("implicit genesis");
+        let genesis_commit = principal
+            .commit_genesis(&genesis.signer(), 1_700_000_000, "cyphr.me")
+            .expect("genesis commit")
+            .iter()
+            .map(|coz| Base64UrlUnpadded::encode_string(&serde_json::to_vec(coz).expect("json")))
+            .collect();
         Self {
             genesis,
             principal,
-            commits: 0,
+            genesis_commit,
         }
     }
 
+    /// The PG: the genesis commit creates only the genesis key, so it is
+    /// that key's thumbprint.
     fn pg(&self) -> String {
         self.genesis.tmb.to_b64()
+    }
+
+    /// A `/patch` body carrying the genesis commit, then `entries`.
+    fn patch(&self, entries: &[Vec<String>]) -> Vec<u8> {
+        let mut all = vec![self.genesis_commit.clone()];
+        all.extend_from_slice(entries);
+        patch_body(&all)
     }
 
     fn commit(&mut self, introduce: &Kp, now: i64) -> Vec<String> {
@@ -102,10 +128,8 @@ impl<'a> Chain<'a> {
             )
             .expect("commit finalizes");
 
-        let first = self.commits == 0;
-        self.commits += 1;
         let commit = self.principal.commits().last().expect("a commit exists");
-        let mut blobs: Vec<serde_json::Value> = commit
+        let blobs: Vec<serde_json::Value> = commit
             .iter_all_cozies()
             .map(|cz| {
                 let mut coz = serde_json::to_value(cz.raw()).expect("coz json");
@@ -119,13 +143,6 @@ impl<'a> Chain<'a> {
                 coz
             })
             .collect();
-        if first {
-            blobs.last_mut().expect("closing cozy")["key"] = serde_json::json!({
-                "alg": g.kp.alg.name(),
-                "pub": Base64UrlUnpadded::encode_string(&g.kp.pub_bytes),
-                "tmb": g.tmb.to_b64(),
-            });
-        }
         blobs
             .iter()
             .map(|b| Base64UrlUnpadded::encode_string(&serde_json::to_vec(b).expect("json")))
@@ -170,7 +187,6 @@ impl Chain<'_> {
                 "cyphr.me",
             )
             .expect("commit finalizes");
-        self.commits += 1;
         self.principal
             .commits()
             .last()
@@ -339,7 +355,7 @@ async fn follow_extends_the_chain_and_statements_verify_against_held_keys() {
     let outsider = kp();
     let mut peer = Chain::new(&g);
     let c1 = peer.commit(&k1, 1_700_000_100);
-    let pipe = Pipe::new(patch_body(std::slice::from_ref(&c1)));
+    let pipe = Pipe::new(peer.patch(std::slice::from_ref(&c1)));
     let (pr, pr_tmb) = subject();
 
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
@@ -399,7 +415,7 @@ async fn never_held_key_stays_refused_after_one_follow() {
     let outsider = kp();
     let mut peer = Chain::new(&g);
     let c1 = peer.commit(&k1, 1_700_000_100);
-    let pipe = Pipe::new(patch_body(&[c1]));
+    let pipe = Pipe::new(peer.patch(&[c1]));
     let (pr, _) = subject();
 
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
@@ -438,13 +454,13 @@ async fn rival_patch_is_a_fork_and_leaves_the_held_chain_unchanged() {
     let r1 = rival.commit(&rival_key, 1_700_000_150);
     let (pr, _) = subject();
 
-    let pipe = Pipe::new(patch_body(std::slice::from_ref(&c1)));
+    let pipe = Pipe::new(honest.patch(std::slice::from_ref(&c1)));
     let mut held = PeerChain::pin(&honest.pg(), g.domain_key(1_700_000_000));
     held.follow(&pipe)
         .await
         .expect("follow to the first commit");
 
-    pipe.serve(patch_body(&[r1]));
+    pipe.serve(rival.patch(&[r1]));
     let forked = held.follow(&pipe).await;
     assert!(
         matches!(forked, Err(PeerFailure::Fork { .. })),
@@ -463,7 +479,7 @@ async fn rival_patch_is_a_fork_and_leaves_the_held_chain_unchanged() {
         "nothing of the rival patch was kept"
     );
 
-    pipe.serve(patch_body(&[c1, c2]));
+    pipe.serve(honest.patch(&[c1, c2]));
     held.follow(&pipe)
         .await
         .expect("an honest extension still follows after a refused fork");
@@ -483,7 +499,7 @@ async fn pin_naming_another_pg_is_refused() {
     let k1 = kp();
     let mut peer = Chain::new(&g);
     let c1 = peer.commit(&k1, 1_700_000_100);
-    let pipe = Pipe::new(patch_body(&[c1]));
+    let pipe = Pipe::new(peer.patch(&[c1]));
 
     let mut held = PeerChain::pin(&b64(5), g.domain_key(1_700_000_000));
     let refused = held.follow(&pipe).await;
@@ -518,12 +534,12 @@ async fn revoked_key_in_the_held_chain_is_refused() {
     let c3 = peer.revoke(&k1, 1_700_000_300);
     let (pr, pr_tmb) = subject();
 
-    let pipe = Pipe::new(patch_body(&[c1.clone(), c2.clone()]));
+    let pipe = Pipe::new(peer.patch(&[c1.clone(), c2.clone()]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
     held.follow(&pipe).await.expect("follow before the revoke");
     assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
 
-    pipe.serve(patch_body(&[c1, c2, c3]));
+    pipe.serve(peer.patch(&[c1, c2, c3]));
     held.follow(&pipe).await.expect("follow the revoke");
     assert!(matches!(
         held.verify_tip(&tip_envelope(&k1), &pr),
@@ -552,7 +568,7 @@ async fn data_action_typed_like_a_freeze_follows() {
     let action = peer.action("cyphr.me/app/freeze/status", 1_700_000_050);
     let mut c1 = vec![action];
     c1.extend(peer.commit(&k1, 1_700_000_100));
-    let pipe = Pipe::new(patch_body(&[c1]));
+    let pipe = Pipe::new(peer.patch(&[c1]));
     let (pr, _) = subject();
 
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
@@ -584,7 +600,7 @@ async fn junk_sidecar_on_a_non_introducing_coz_is_ignored() {
             .expect("coz json");
     coz["key"] = serde_json::json!({ "junk": true });
     *closing = Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"));
-    let pipe = Pipe::new(patch_body(&[c1, c2]));
+    let pipe = Pipe::new(peer.patch(&[c1, c2]));
     let (pr, _) = subject();
 
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
@@ -616,7 +632,7 @@ async fn accessors_report_the_held_chain() {
     let pr_after_two = peer.principal.pr_tagged().expect("pr");
     let c3 = peer.revoke(&k1, 1_700_000_300);
 
-    let pipe = Pipe::new(patch_body(&[c1.clone(), c2.clone()]));
+    let pipe = Pipe::new(peer.patch(&[c1.clone(), c2.clone()]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
     assert_eq!(held.pg(), peer.pg());
     assert_eq!(held.held_tip().expect("tip").commits, 0);
@@ -628,15 +644,16 @@ async fn accessors_report_the_held_chain() {
 
     held.follow(&pipe).await.expect("follow two commits");
     let tip = held.held_tip().expect("tip");
-    assert_eq!((tip.commits, tip.pr.as_str()), (2, pr_after_two.as_str()));
+    // The genesis commit, then the two key/create commits.
+    assert_eq!((tip.commits, tip.pr.as_str()), (3, pr_after_two.as_str()));
     assert_eq!(held.active_key(&k2.tmb).expect("k2").tmb(), &k2.tmb);
     assert_eq!(held.active_key(&k1.tmb).expect("k1").tmb(), &k1.tmb);
     assert!(held.active_key(&outsider.tmb).is_err());
 
-    pipe.serve(patch_body(&[c1, c2, c3]));
+    pipe.serve(peer.patch(&[c1, c2, c3]));
     held.follow(&pipe).await.expect("follow the revoke");
     let tip = held.held_tip().expect("tip");
-    assert_eq!(tip.commits, 3);
+    assert_eq!(tip.commits, 4, "genesis commit + two adds + the revoke");
     assert_eq!(
         tip.pr,
         peer.principal.pr_tagged().expect("pr"),
@@ -686,7 +703,6 @@ impl Chain<'_> {
                 "cyphr.me",
             )
             .expect("commit finalizes");
-        self.commits += 1;
         self.principal
             .commits()
             .last()
@@ -717,17 +733,18 @@ async fn trailing_action_rewritten_is_a_fork() {
     let first = peer.action("cyphr.me/app/post/create", 1_700_000_200);
     let rewrite = peer.action("cyphr.me/app/post/create", 1_700_000_300);
 
-    let pipe = Pipe::new(patch_body(&[c1.clone(), vec![first.clone()]]));
+    let pipe = Pipe::new(peer.patch(&[c1.clone(), vec![first.clone()]]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
     held.follow(&pipe)
         .await
         .expect("a chain ending in an action-only bundle follows");
     let tip = held.held_tip().expect("tip");
 
-    pipe.serve(patch_body(&[c1.clone(), vec![rewrite]]));
+    pipe.serve(peer.patch(&[c1.clone(), vec![rewrite]]));
     let forked = held.follow(&pipe).await;
     assert!(
-        matches!(forked, Err(PeerFailure::Fork { index: 1 })),
+        // Bundle 0 is the genesis commit, 1 the key/create, 2 the action.
+        matches!(forked, Err(PeerFailure::Fork { index: 2 })),
         "a rewritten trailing action is a fork at its bundle: {forked:?}"
     );
     assert_eq!(
@@ -736,7 +753,7 @@ async fn trailing_action_rewritten_is_a_fork() {
         "a refused follow leaves the held chain as it was"
     );
 
-    pipe.serve(patch_body(&[c1, vec![first]]));
+    pipe.serve(peer.patch(&[c1, vec![first]]));
     held.follow(&pipe)
         .await
         .expect("the same history still follows after a refused fork");
@@ -773,15 +790,16 @@ async fn merge_and_merge_ack_chain_follows_to_the_peer_pr() {
         1_700_000_300,
     );
 
-    let pipe = Pipe::new(patch_body(&[c1, c2, c3]));
+    let pipe = Pipe::new(peer.patch(&[c1, c2, c3]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
     held.follow(&pipe)
         .await
         .expect("a chain with merge kinds follows");
     let tip = held.held_tip().expect("tip");
     assert_eq!(
+        // The genesis commit, the key/create and the two merge kinds.
         (tip.commits, tip.pr),
-        (3, peer.principal.pr_tagged().expect("pr")),
+        (4, peer.principal.pr_tagged().expect("pr")),
         "the client replays the merge kinds to the peer's own PR"
     );
 }
@@ -882,15 +900,16 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     bundle.extend(commit);
     bundle.push(trail);
 
-    let pipe = Pipe::new(patch_body(&[c1, bundle]));
+    let pipe = Pipe::new(peer.patch(&[c1, bundle]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000));
     held.follow(&pipe)
         .await
         .expect("a mixed bundle follows by the order rule");
     let tip = held.held_tip().expect("tip");
     assert_eq!(
+        // The genesis commit, c1 and the mixed bundle's commit.
         (tip.commits, tip.pr),
-        (2, peer.principal.pr_tagged().expect("pr")),
+        (3, peer.principal.pr_tagged().expect("pr")),
         "the client reaches the writer's PR"
     );
 }
