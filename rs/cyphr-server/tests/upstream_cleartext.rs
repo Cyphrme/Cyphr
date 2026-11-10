@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use clap::Parser as _;
+use cyphr_server::AppState;
 use cyphr_server::config::{Cli, ConfigError, ServerConfig, ServerMode, resolve_config};
 use cyphr_server::sync::{SyncFailure, SyncOutcome, sync_from_authority};
-use cyphr_server::AppState;
 
 /// Resolve the operator's config: a real TOML file through the real flag
 /// parser, as `cyphr-server serve` does.
@@ -39,7 +39,9 @@ fn resolve(toml: &str) -> Result<ServerConfig, ConfigError> {
 #[test]
 fn config_refuses_cleartext_non_loopback_upstreams_without_the_switch() {
     let witness = |url: &str, extra: &str| {
-        resolve(&format!("mode = \"witness\"\nauthority_url = \"{url}\"\n{extra}"))
+        resolve(&format!(
+            "mode = \"witness\"\nauthority_url = \"{url}\"\n{extra}"
+        ))
     };
     let refused = witness("http://authority.example:3000", "").expect_err("cleartext refused");
     assert!(
@@ -57,8 +59,11 @@ fn config_refuses_cleartext_non_loopback_upstreams_without_the_switch() {
     witness("http://127.0.0.1:3000", "").expect("loopback is allowed");
     witness("http://localhost:3000", "").expect("localhost is allowed");
     witness("https://authority.example", "").expect("https is allowed");
-    witness("http://authority.example:3000", "allow_cleartext_upstream = true\n")
-        .expect("the switch allows it");
+    witness(
+        "http://authority.example:3000",
+        "allow_cleartext_upstream = true\n",
+    )
+    .expect("the switch allows it");
 }
 
 /// Claim: a server that never went through `resolve_config` (an embedder,

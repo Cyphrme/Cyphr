@@ -18,6 +18,7 @@ pub mod auth;
 pub mod config;
 pub mod envelope;
 pub mod error;
+pub mod gossip;
 pub mod logging;
 pub mod metrics;
 pub mod observation;
@@ -475,6 +476,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 
     let state = Arc::new(state);
     let app = build_app_router(state.clone())?;
+    let gossip = gossip::spawn(&state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;
@@ -520,6 +522,9 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     .await?;
 
     if let Some(handle) = transport {
+        handle.abort();
+    }
+    if let Some(handle) = gossip {
         handle.abort();
     }
     tracing::info!("server stopped");

@@ -24,8 +24,9 @@ use common::{envelope_payload, get_json, keyless_server, post_json};
 async fn revoked_serves_the_accepted_naked_revoke_verifiably() {
     let (state, _dir) = keyless_server();
     let app = build_app_router(state).expect("router");
-    let golden: serde_json::Value = serde_json::from_str(include_str!("golden/naked_revoke_valid.json"))
-        .expect("golden vector");
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("golden/naked_revoke_valid.json"))
+            .expect("golden vector");
     let tmb = golden["pay"]["tmb"].as_str().expect("tmb").to_owned();
 
     let (status, body) = post_json(app.clone(), "/revoke", golden.to_string()).await;
@@ -34,7 +35,9 @@ async fn revoked_serves_the_accepted_naked_revoke_verifiably() {
     let unknown = "A".repeat(43);
     let (status, body) = get_json(app.clone(), &format!("/revoked?tmbs={tmb},{unknown}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    let served = envelope_payload(&body)["revoked"].as_array().expect("revoked list");
+    let served = envelope_payload(&body)["revoked"]
+        .as_array()
+        .expect("revoked list");
     assert_eq!(served.len(), 1, "only the key with a revoke is served");
     let revoke = cyphr_client::verify_naked_revoke(&served[0]).expect("verifies client-side");
     assert_eq!(revoke.tmb.to_b64(), tmb);

@@ -134,7 +134,11 @@ pub struct ServeArgs {
 
     /// A peer to gossip with (repeatable, or comma-separated): its base
     /// URL, dialled exactly as given. Replaces the `[gossip] peers` list.
-    #[arg(long = "gossip-peer", env = "CYPHR_GOSSIP_PEERS", value_delimiter = ',')]
+    #[arg(
+        long = "gossip-peer",
+        env = "CYPHR_GOSSIP_PEERS",
+        value_delimiter = ','
+    )]
     pub gossip_peers: Vec<String>,
 
     /// Seconds between gossip rounds (`[gossip] interval_secs`).
@@ -769,6 +773,9 @@ mod tests {
                 signing_key_path: None,
                 audience: None,
                 authority_url: None,
+                gossip_peers: Vec::new(),
+                gossip_interval_secs: None,
+                allow_cleartext_upstream: false,
             }),
         }
     }

@@ -274,8 +274,7 @@ impl ObservationStore {
             .map_err(|e| ObservationError::Join(e.to_string()))??;
         stored
             .map(|raw| {
-                serde_json::from_slice(&raw)
-                    .map_err(|e| ObservationError::Serialize(e.to_string()))
+                serde_json::from_slice(&raw).map_err(|e| ObservationError::Serialize(e.to_string()))
             })
             .transpose()
     }
