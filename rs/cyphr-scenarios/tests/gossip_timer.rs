@@ -87,13 +87,8 @@ async fn gossip_timer_converges_peers_and_keeps_both_branches_of_a_fork() {
     // Two devices commit over one tip to different partitioned peers.
     assert_eq!(h.ok(phone.sync(&pr, &both).await), two);
     h.proxy.partition("p1", "p2");
-    // Key commits, not data commits: the storage engine keeps a rival
-    // branch only when the commits carry no data actions of their own, as
-    // `cyphr-storage` `retain_rival` replays the stored branch's actions
-    // into the rival's pre (reported to the G1 owner; S03's data-action
-    // fork meets the same limit).
-    h.ok(alice.add_backup_key(&pr).await);
-    h.ok(phone.add_backup_key(&pr).await);
+    h.ok(alice.commit_data(&pr, "alice branch").await);
+    h.ok(phone.commit_data(&pr, "phone branch").await);
     let at = h
         .ok(alice.push(&pr, &["p1"]).await)
         .accepted("alice branch");

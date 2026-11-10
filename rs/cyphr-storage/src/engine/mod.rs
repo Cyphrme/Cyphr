@@ -2398,18 +2398,31 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
         for (position, entry) in entries.iter().enumerate() {
             // A rival at this position competes with a commit admitted
-            // over the actions accepted before it.
+            // over the actions accepted before it. Two bases are tried: the
+            // state with those actions (a rival that relies on actions the
+            // principal already holds), then the state without them, which
+            // is the fork point as the rival saw it. A rival whose commits
+            // carry data brings its OWN actions inline, so replaying it over
+            // the stored branch's actions would mismatch its data root.
+            let active = signers.iter().all(|t| principal.is_key_active(t));
+            let fork_point = if active {
+                Some(principal.fork().await?)
+            } else {
+                None
+            };
             replay_actions_at(&mut principal, &actions, position as u64).await?;
-            if signers.iter().all(|t| principal.is_key_active(t)) {
+            if let Some(fork_point) = fork_point {
                 self.retention_trials
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Verified on a fork and never committed: the staged build
                 // is dropped, and only its manifest is kept.
-                let mut candidate = principal.fork().await?;
-                if let Ok(Some(build)) =
-                    Self::build_commit(&mut candidate, bundle, principal_id, position as u64).await
-                {
-                    return self.keep_branch(bundle, build.commit).await;
+                let mut candidates = [principal.fork().await?, fork_point];
+                for candidate in &mut candidates {
+                    if let Ok(Some(build)) =
+                        Self::build_commit(candidate, bundle, principal_id, position as u64).await
+                    {
+                        return self.keep_branch(bundle, build.commit).await;
+                    }
                 }
             }
             // The last commit's own state is never a `pre` of a rival.

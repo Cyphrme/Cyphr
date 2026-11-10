@@ -296,3 +296,128 @@ async fn unforked_principal_lists_only_its_chain_and_unknown_is_404() {
     let (status, body) = branches(app, &unknown).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body:?}");
 }
+
+/// `golden` signs `fields` plus its own `alg` and `tmb`: (pay, sig, czd).
+fn golden_signs(
+    pool: &test_fixtures::Pool,
+    mut fields: serde_json::Value,
+) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+    let g = pool.get("golden").expect("golden");
+    fields["alg"] = g.alg.clone().into();
+    fields["tmb"] = g.compute_tmb_b64().expect("tmb").into();
+    if let Some(obj) = fields.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&fields).expect("pay");
+    let prv = Base64UrlUnpadded::decode_vec(g.prv.as_ref().expect("prv")).expect("prv b64");
+    let pubb = Base64UrlUnpadded::decode_vec(&g.pub_key).expect("pub b64");
+    let (sig, cad) = coz::sign_json(&pay, &g.alg, &prv, &pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &g.alg).expect("czd");
+    (pay, sig, czd)
+}
+
+/// A data action then the `ds/create` that includes it, on `p`: the action's
+/// wire coz and the commit's bundle (SPEC 4.8.2).
+async fn data_commit(
+    p: &mut cyphr::Principal,
+    pool: &test_fixtures::Pool,
+    msg: &str,
+    now: i64,
+) -> (Vec<u8>, cyphr::replay::WireBundle) {
+    let g = pool.get("golden").expect("golden");
+    let (pay, sig, czd) = golden_signs(
+        pool,
+        serde_json::json!({"msg": msg, "now": now, "typ": "cyphr.me/comment/create"}),
+    );
+    p.verify_and_record_action(&pay, &sig, czd)
+        .expect("action records");
+    let wire_action = serde_json::to_vec(&serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("coz");
+    let actions: Vec<&cyphr::Action> = p.actions().collect();
+    let dr = cyphr::compute_dr(&actions, None, &[cyphr::state::HashAlg::Sha256])
+        .expect("DR")
+        .expect("DT holds an action");
+    let dr = format!(
+        "SHA-256:{}",
+        Base64UrlUnpadded::encode_string(dr.0.get(cyphr::state::HashAlg::Sha256).expect("SHA-256"))
+    );
+    let (pay, sig, czd) = golden_signs(
+        pool,
+        serde_json::json!({"id": dr, "now": now + 1, "typ": "cyphr.me/cyphr/ds/create"}),
+    );
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("ds/create applies");
+    scope
+        .finalize_with_software(&g.software_signer().expect("signer"), now + 1, "cyphr.me")
+        .await
+        .expect("commit finalizes");
+    let bundle = cyphr::replay::WireBundle::of_commit(p.commits().last().expect("a commit"))
+        .expect("bundle");
+    (wire_action, bundle)
+}
+
+/// Backs a-rival-data: a fork whose commits carry data actions is kept like
+/// any other. The canonical branch holds its own action (pushed alone, so
+/// stored at that position); the rival brings its OWN action inline. The
+/// rival must replay from the fork point with its own actions, never the
+/// stored branch's, and be listed at `/branches` and proven at `/evidence`.
+///
+/// Turns red if: the rival is dropped (one branch listed, no evidence), or
+/// it is replayed over the stored branch's action (a state mismatch that
+/// retains nothing). End to end over `/push`, `/branches`, `/evidence`.
+#[tokio::test]
+async fn rival_with_data() {
+    let pool = load_pool();
+    let f = forked().await;
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    let n = cyphr_storage::export_commits(&f.shared)
+        .expect("export")
+        .len();
+    for i in 0..n {
+        let (status, body) = post_json(app.clone(), "/push", wire(&f.shared, i, &f.id)).await;
+        assert_eq!(status, StatusCode::CREATED, "shared commit {i}: {body:?}");
+    }
+
+    let mut canonical = f.shared.fork().await.expect("fork");
+    let (action, commit) = data_commit(&mut canonical, &pool, "canonical", NOW + 10).await;
+    let (status, body) =
+        post_json(app.clone(), "/push", common::push_blobs(&f.id, &[action])).await;
+    assert!(status.is_success(), "canonical action: {status} {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &commit)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "canonical data commit: {body:?}"
+    );
+
+    let mut rival = f.shared.fork().await.expect("fork");
+    let (action, mut commit) = data_commit(&mut rival, &pool, "rival", NOW + 20).await;
+    commit.actions = vec![action];
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &commit)).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the fork is refused: {body:?}"
+    );
+
+    let (status, payload) = branches(app.clone(), &f.id).await;
+    assert_eq!(status, StatusCode::OK, "{payload:?}");
+    let at_fork = payload["branches"]
+        .as_array()
+        .expect("branches")
+        .iter()
+        .filter(|b| b["sequence"] == n as u64)
+        .count();
+    assert_eq!(at_fork, 2, "both branches are listed: {payload:?}");
+
+    let (status, body) = get_json(app, &format!("/evidence?pr={}", enc(&f.id))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let items = envelope_payload(&body)["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "the fork is proven: {body:?}");
+}
