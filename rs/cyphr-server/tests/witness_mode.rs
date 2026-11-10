@@ -192,7 +192,9 @@ async fn syncs_from_authority() {
 ///
 /// Verifies that a witness node configured with authority TCP URL REJECTS unverifiable,
 /// corrupted, or forged state deltas from an authority node, refusing to apply them to its local
-/// storage.
+/// storage. The authority's index is corrupted by an entry no commit manifest backs: the index is
+/// a cache of the blob store (I1), so the authority refuses its `/patch` as inconsistent (500)
+/// rather than serve the entry, and the witness keeps the valid history it synced before.
 #[tokio::test]
 async fn rejects_unverifiable_delta() {
     let (auth_state, _identity, auth_dir) = attestor_server().await;
@@ -224,6 +226,22 @@ async fn rejects_unverifiable_delta() {
     let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _push_res) = post_json(auth_app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
+
+    // 3. Construct witness node configured with authority_url
+    let witness_dir = tempfile::tempdir().expect("witness tempdir");
+    let witness_config = ServerConfig {
+        mode: ServerMode::Witness,
+        data_dir: witness_dir.path().join("data"),
+        authority_url: Some(auth_url),
+        ..Default::default()
+    };
+    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
+    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
+
+    // The witness syncs the valid history first.
+    let (synced, synced_json) =
+        get_json(witness_app.clone(), &format!("/tip?pr={principal_id}")).await;
+    assert_eq!(synced, StatusCode::OK, "initial sync: {synced_json:?}");
 
     // 2. Corrupt index/state on authority node so it presents an unverifiable state delta
     let dummy_bytes = vec![7u8; 32];
@@ -257,16 +275,14 @@ async fn rejects_unverifiable_delta() {
         .await
         .expect("corrupt index_commit");
 
-    // 3. Construct witness node configured with authority_url
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        authority_url: Some(auth_url),
-        ..Default::default()
-    };
-    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
-    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
+    // The authority refuses to serve a history its record does not back.
+    let (patch_status, patch_json) =
+        get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a patch over an unbacked index entry must be refused, not served: {patch_json:?}"
+    );
 
     // 4. Witness sync from authority MUST succeed for valid history but REJECT the corrupted delta
     let (witness_tip_status, witness_tip_json) =
