@@ -244,11 +244,10 @@ pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 /// string it returned right after genesis.
 ///
 /// Established (Level 3+) principals key off `pg()`, which is frozen for
-/// life the moment `principal/create` sets it. But a still-nascent
-/// principal (including multi-key explicit genesis before that commit --
-/// the common case, since the CLI never issues `principal/create`) has no
-/// stable field to key off other than `genesis_keys()`, which is fixed at
-/// construction and never mutated afterward. `pr()` is NOT stable here: it
+/// life the moment `principal/create` sets it. A principal that has not
+/// committed yet (the CLI commits its genesis before its first key change)
+/// has no stable field to key off other than `genesis_keys()`, which is
+/// fixed at construction and never mutated afterward. `pr()` is NOT stable here: it
 /// is the live, continuously-recomputed Principal State, which moves with
 /// every subsequent commit -- using it produced a different "stable" ID on
 /// every save once any operation happened after genesis, silently losing
@@ -386,7 +385,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 
         let commits = cyphr_storage::export_commits(principal)?;
 
-        for (i, commit) in commits.iter().enumerate().skip(stored_count) {
+        for commit in commits.iter().skip(stored_count) {
             let mut raw_blobs = Vec::new();
             let mut key_iter = commit.keys.iter();
             for coz in &commit.cozies {
@@ -403,36 +402,6 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                             obj.insert("key".to_string(), serde_json::to_value(key_entry)?);
                         }
                     }
-                } else if i == 0 && typ.contains("/commit/create") {
-                    // Best-effort: embed the genesis key's material into the
-                    // first commit's terminal coz, so a *single-key*
-                    // (implicit) genesis can be reconstructed later purely
-                    // from stored blobs even without a local keystore
-                    // record. A single JSON "key" field can only carry one
-                    // key's material, so this cannot represent a multi-key
-                    // (explicit) genesis without silently narrowing it down
-                    // to just the first key (the F40 root cause, in this
-                    // function's sibling `genesis` resolution below) — for
-                    // that case genesis reconstruction instead relies on
-                    // the local keystore's recorded genesis
-                    // (`keystore.lookup_genesis`, set at `init` time) or,
-                    // failing that, `extract_genesis_from_commits` scanning
-                    // every cozy's own embedded key material.
-                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    if let [identity] = principal.genesis_keys() {
-                        if let Ok(key) = load_key_from_keystore(keystore, identity) {
-                            let key_entry = cyphr_storage::KeyEntry {
-                                alg: key.alg().to_owned(),
-                                pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
-                                tmb: key.tmb().to_b64(),
-                                tag: key.tag().map(str::to_owned),
-                                now: Some(key.first_seen()),
-                            };
-                            if let Some(obj) = coz_mut.as_object_mut() {
-                                obj.insert("key".to_string(), serde_json::to_value(&key_entry)?);
-                            }
-                        }
-                    }
                 }
 
                 let bytes = serde_json::to_vec(&coz_mut).map_err(crate::Error::Json)?;
@@ -440,20 +409,9 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             }
             let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
 
-            // F40: always resolve genesis from what this caller already
-            // knows locally (covering every genesis key, not just the
-            // first), rather than only supplying it for the first commit
-            // and letting `submit_commit` fall back to reconstructing it
-            // server-side from stored blob material for i > 0. That
-            // server-side fallback (`StorageEngine::resolve_genesis`) can
-            // only recover a *single* embedded key from the first commit's
-            // blobs — it has no wire representation for a multi-key
-            // genesis at all — so relying on it for a multi-key genesis's
-            // second-and-later commits silently reconstructs the wrong
-            // principal (e.g. treating the first commit's newly-*added*
-            // key as if it were the whole genesis) and
-            // `finalize_commit`'s arrow check correctly rejects the
-            // resulting state-root divergence.
+            // Resolve the genesis from what this caller knows locally
+            // (every genesis key, not just the first); the engine reads a
+            // stored principal's genesis from its first commit anyway.
             let genesis = match resolve_local_genesis(principal, keystore) {
                 Ok(genesis) => genesis,
                 Err(_) => {
