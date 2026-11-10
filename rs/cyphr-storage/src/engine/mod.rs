@@ -1113,6 +1113,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .await?;
         // Action manifests whose bundle the replay refused, and why.
         let mut refused_actions: Vec<(Blake3Hash, String)> = Vec::new();
+        // The positions whose actions were replayed before a commit there.
+        let mut replayed_at: std::collections::HashSet<(String, u64)> =
+            std::collections::HashSet::new();
         for (hash, manifest) in manifests {
             let commit = &manifest.commit;
             if unbound.contains_key(&commit.principal_id) {
@@ -1134,6 +1137,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let refused = match skip.get(&hash) {
                 Some(why) => Err(format!("quarantined by the last scratch rebuild: {why}")),
                 None if replay => {
+                    replayed_at.insert((commit.principal_id.clone(), commit.sequence));
                     let actions = histories
                         .get(&commit.principal_id)
                         .and_then(|h| h.get(&commit.sequence))
@@ -1180,9 +1184,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
 
-        // The actions accepted after each replayed chain's last commit.
+        // The actions accepted after each replayed chain's last commit,
+        // unless a commit there failed its replay after them.
         for (principal_id, principal) in &mut replays {
             let tip = principal.commits().count() as u64;
+            if replayed_at.contains(&(principal_id.clone(), tip)) {
+                continue;
+            }
             let actions = histories.get(principal_id).and_then(|h| h.get(&tip));
             for bundle in actions.into_iter().flatten() {
                 if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies) {

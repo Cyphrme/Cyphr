@@ -16,7 +16,8 @@ use cyphr::replay::{StoredCoz, replay_bundle};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::{
-    COMMIT_MANIFEST_PREFIX, QuarantineReason, StorageEngine, genesis_principal_id,
+    ACTION_MANIFEST_PREFIX, COMMIT_MANIFEST_PREFIX, QuarantineReason, StorageEngine,
+    genesis_principal_id,
 };
 use cyphr_storage::index::{Indexer, MemoryIndexer};
 
@@ -855,4 +856,71 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
         lines(&writer),
         "restart: the same commits and actions"
     );
+}
+
+/// Claim (I1: the blob store is the only source of truth, and the scratch
+/// rebuild trusts no manifest it cannot replay): an action manifest whose
+/// action the principal's keys did not sign (here one by a key the
+/// principal never held, slipped into the store with a well-formed
+/// manifest) is quarantined by the scratch rebuild, and the principal is
+/// not bricked by it: it replays without the action and takes a further
+/// action and `ds/create`.
+///
+/// Turns red if: the scratch rebuild lists an action manifest whose replay
+/// the core refuses (every later load of the principal then fails with
+/// `UnknownKey`).
+/// End-to-end scenario: yes (ingest, forged store, recovery, ingest).
+#[tokio::test]
+async fn forged_actions_are_quarantined_by_the_scratch_rebuild() {
+    let (golden, alice) = (signer("golden"), signer("alice"));
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let t = 1_700_000_000;
+    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let genesis_commit =
+        test_fixtures::bundle::genesis_bundle(&mut writer, pool.get("golden").expect("golden"), t)
+            .expect("genesis commit");
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&engine, &id, &genesis, &genesis_commit).await;
+
+    let forged = alice.unrecorded_action(t + 10, "not this principal's key");
+    let blob = engine.blob_store().put(&forged).await.expect("put");
+    let manifest = serde_json::json!({
+        "kind": "cyphr-storage/action-manifest/v1",
+        "principal_id": id,
+        "after": 1,
+        "blob_hashes": [blob],
+    });
+    let manifest = [
+        ACTION_MANIFEST_PREFIX,
+        &serde_json::to_vec(&manifest).expect("json"),
+    ]
+    .concat();
+    let manifest = engine.blob_store().put(&manifest).await.expect("put");
+
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    assert!(
+        report.quarantined.iter().any(
+            |q| q.manifest == manifest && matches!(q.reason, QuarantineReason::Unreplayable(_))
+        ),
+        "the forged action manifest is quarantined: {:?}",
+        report.quarantined
+    );
+    let loaded = engine
+        .load_principal(&id, genesis.clone())
+        .await
+        .expect("the principal replays without the forged action");
+    assert_eq!(history(&loaded), history(&writer));
+
+    let own = golden.unrecorded_action(t + 20, "its own");
+    record(&mut writer, &own);
+    let included = golden.ds_create(&mut writer, t + 30);
+    push(&engine, &id, &genesis, &[own]).await;
+    push(&engine, &id, &genesis, &included).await;
+    let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(tip.pr, writer.pr_tagged().expect("pr"));
 }
