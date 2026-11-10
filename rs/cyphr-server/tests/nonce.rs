@@ -97,15 +97,6 @@ fn pg_of(p: &cyphr::Principal) -> String {
         .to_string()
 }
 
-/// The id `p` is stored and pushed under: with a nonce in the genesis
-/// commit, the first PR that commit yields (the engine's record key; the
-/// PG itself is the state before `commit/create`).
-fn record_id(p: &cyphr::Principal) -> String {
-    cyphr_storage::export_commits(p).expect("export")[0]
-        .pr
-        .clone()
-}
-
 /// Push body for commit `i` of `p` under `id`; every `key/create`
 /// discloses the key it creates (SPEC 5.2 TX0).
 fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
@@ -158,9 +149,8 @@ async fn push(app: &axum::Router, body: String, what: &str) {
 /// Backs SPEC 5.1 (a nonce embedding yields a unique PG for reused
 /// authentication components) end to end: one key creates two principals
 /// that differ only in their KT nonce; the two PGs differ from each other
-/// and from the key's thumbprint; each principal's genesis commit is pushed
-/// under its record key (the first PR that commit yields, as the engine
-/// keys a nonce principal) and every later commit under its own PG,
+/// and from the key's thumbprint; each principal is pushed and stored under
+/// its own PG (the nonce in its genesis commit is part of the PG),
 /// interleaved with the other's pushes, and each push
 /// leaves the other's tip byte-identical; each PG reads back its own
 /// principal's Principal Root and commit count. Turns red if the nonce is not accepted (the
@@ -181,13 +171,7 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let (a, b) = (build(&[0x11; 32]), build(&[0x22; 32]));
     let (pg_a, pg_b) = (pg_of(&a), pg_of(&b));
     assert_ne!(pg_a, pg_b, "different nonces must give different PGs");
-    // A first push names the record key; every later push and read names
-    // the PG, which then resolves to the stored principal.
-    let (id_a, id_b) = (record_id(&a), record_id(&b));
-    assert_ne!(
-        id_a, id_b,
-        "different nonces must give different record keys"
-    );
+    let (id_a, id_b) = (pg_a.clone(), pg_b.clone());
     // The PG of `golden`'s genesis without a nonce: its bare thumbprint.
     let genesis_id = common::implicit_principal_id(&pool, "golden");
     for pg in [&pg_a, &pg_b] {
@@ -265,15 +249,15 @@ async fn identical_nonce_principal_pushed_twice_is_one_principal() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
-    push(&app, wire(&a, 0, &record_id(&a)), "A commit 0").await;
+    push(&app, wire(&a, 0, &pg_of(&a)), "A commit 0").await;
     let first = tip(&app, &pg_a).await;
     push(
         &app,
-        wire(&sibling, 0, &record_id(&sibling)),
+        wire(&sibling, 0, &pg_of(&sibling)),
         "sibling commit 0",
     )
     .await;
-    let (status, resp) = post_json(app.clone(), "/push", wire(&a, 0, &record_id(&a))).await;
+    let (status, resp) = post_json(app.clone(), "/push", wire(&a, 0, &pg_of(&a))).await;
     assert!(
         !status.is_server_error(),
         "replaying position 0 is a 5xx: {resp:?}"

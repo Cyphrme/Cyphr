@@ -643,9 +643,9 @@ async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
 
 /// A nonce-embedded principal on `g`: its genesis commit inserts `nonce` at
 /// the KT root after golden's own `key/create`, so its PG differs from the
-/// bare key's. Returns it with the id it is stored under: the first PR its
-/// genesis commit yields (`SHA-256:` form), as the bare key's PG is shared
-/// with the no-nonce principal (SPEC 5.1 l764).
+/// bare key's. Returns it with the id it is stored under: its PG (`SHA-256:`
+/// form), which the nonce makes unique (SPEC 5.1 step 3 and "a nonce
+/// embedding for a unique PG").
 fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
     let nonce_create = sign(
@@ -659,10 +659,11 @@ fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
     );
     genesis_commit(&mut p, g, vec![(nonce_create, None)], NOW);
     let id = p
-        .pr()
+        .pg()
+        .expect("the genesis commit establishes the PG")
         .as_multihash()
         .tagged_first()
-        .expect("pr")
+        .expect("pg")
         .to_string();
     (p, id)
 }

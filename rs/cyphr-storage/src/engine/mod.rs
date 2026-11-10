@@ -1500,12 +1500,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// # Arguments
     ///
-    /// * `principal_id` — The principal's genesis-derived id (SPEC §3.1), labelled (`ALG:digest`,
-    ///   the stored spelling) or bare, or any Principal Root variant the principal has had (its PG
-    ///   among them, SPEC §3.7.1/§12.1), labelled or bare. A bare genesis id claims only a
-    ///   principal with no nonce. Any other id is refused with [`EngineError::InvalidInput`]. The
-    ///   storage key, and the id reported back, is the genesis PR (no nonce) or the PR after commit
-    ///   0 (a nonce in commit 0), in the labelled spelling.
+    /// * `principal_id` — The principal's id: its PG (SPEC 5.1 step 3; for a principal that never
+    ///   committed, its genesis PR, the `tmb` by singleton promotion, SPEC 3.1), labelled
+    ///   (`ALG:digest`, the stored spelling) or bare; a stored principal is also addressed by any
+    ///   variant of its PG. Any other id is refused with [`EngineError::InvalidInput`]. The storage
+    ///   key, and the id reported back, is the PG in the labelled spelling ([`record_key`]).
     /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
     ///   storage (existing principal) or from the submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
@@ -1567,25 +1566,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
                 let key = record_key(&genesis, raw_blobs);
-                let nonce = has_nonce_coz(raw_blobs);
-                if nonce {
-                    let bare_key = genesis_principal_id(&genesis)?;
-                    if claimed == bare_key || claimed == bare_digest(&bare_key) {
-                        return Err(EngineError::InvalidInput(format!(
-                            "a principal with a nonce is not identified by the bare key \
-                             {claimed}; claim its Principal Root or PG"
-                        )));
-                    }
-                }
-                // With a nonce, every Principal Root variant the commit
-                // yields names it; without one, its key in either spelling.
-                let names_key = match &key {
-                    Some(_) if nonce => first_commit_prs(&genesis, raw_blobs)
-                        .iter()
-                        .any(|v| v == claimed || bare_digest(v) == claimed),
-                    Some(key) => claimed == key || claimed == bare_digest(key),
-                    None => false,
-                };
+                let names_key = key
+                    .as_ref()
+                    .is_some_and(|key| claimed == key || claimed == bare_digest(key));
                 // A commit that is no genesis commit derives no key; the
                 // core refuses it with its own reason below.
                 if key.is_some() && !names_key {
@@ -2396,20 +2379,14 @@ fn replay_first(
     Some(principal)
 }
 
-/// Every Principal Root variant the first bundle `raw_blobs` yields.
-fn first_commit_prs(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Vec<String> {
-    replay_first(genesis, raw_blobs)
-        .and_then(|p| format_multihash_all(p.pr().as_multihash()).ok())
-        .unwrap_or_default()
-}
-
 /// The storage key a principal's first bundle `raw_blobs` derives, a
 /// function of the record alone (I1). A genesis commit (SPEC 5.1) keys it
 /// by its PG, in the spelling of [`genesis_principal_id`] (the first active
-/// algorithm); with a nonce in it, by the first PR the commit yields, as the
-/// key with no nonce is shared (SPEC 5.1 l764). A bundle of data actions
-/// alone forms no commit: a Level 1/2 principal is keyed by its genesis PR.
-/// `None` when the bundle does not replay.
+/// algorithm); the PG is the state at `principal/create`, so a nonce in the
+/// genesis commit already makes it unique (5.1: "a nonce embedding for a
+/// unique PG"). A bundle of data actions alone forms no commit: a Level 1/2
+/// principal is keyed by its genesis PR. `None` when the bundle does not
+/// replay.
 fn record_key(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<String> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -2419,12 +2396,6 @@ fn record_key(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Optio
             .then(|| genesis_principal_id(genesis).ok())
             .flatten();
     };
-    if has_nonce_coz(raw_blobs) {
-        return format_multihash_all(principal.pr().as_multihash())
-            .ok()?
-            .into_iter()
-            .next();
-    }
     let alg = principal.active_algs().first().copied()?;
     let digest = pg.as_multihash().get(alg)?;
     Some(format!(
@@ -2442,16 +2413,6 @@ fn is_genesis_bundle(blobs: &[impl AsRef<[u8]>]) -> bool {
             .is_some_and(|typ| {
                 cyphr::parsed_coz::typ::has_suffix(&typ, cyphr::parsed_coz::typ::PRINCIPAL_CREATE)
             })
-    })
-}
-
-/// Whether any of `blobs` is a nonce coz (SPEC 10.1).
-fn has_nonce_coz(blobs: &[impl AsRef<[u8]>]) -> bool {
-    blobs.iter().any(|blob| {
-        serde_json::from_slice::<serde_json::Value>(blob.as_ref())
-            .ok()
-            .and_then(|v| v.pointer("/pay/typ")?.as_str().map(str::to_owned))
-            .is_some_and(|typ| cyphr::parsed_coz::typ::nonce_path(&typ).is_some())
     })
 }
 

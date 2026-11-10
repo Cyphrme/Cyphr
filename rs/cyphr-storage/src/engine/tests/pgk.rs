@@ -492,7 +492,7 @@ fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, S
     scope
         .finalize_with_software(&soft(g), NOW, "cyphr.me")
         .expect("finalize genesis");
-    let key = p.pr_tagged().expect("pr");
+    let post_genesis = p.pr_tagged().expect("pr");
     for n in 1..=later {
         let now = NOW + i64::from(n);
         let (pay, sig, czd) = signed(g, nonce_pay(nonce.wrapping_add(n), now));
@@ -504,7 +504,7 @@ fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, S
             .finalize_with_software(&soft(g), now, "cyphr.me")
             .expect("finalize");
     }
-    (p, key, pg)
+    (p, post_genesis, pg)
 }
 
 /// Claim (I1 and SPEC be0663f 5.1 l764): two principals on one key that
@@ -527,7 +527,7 @@ async fn rekey_nonce_siblings_stay_distinct_through_a_reindex() {
     assert_ne!(built[0].2, built[1].2, "control: nonces must differ the PG");
     assert_ne!(built[0].2, tmb_id, "control: a PG is not the key's tmb");
 
-    for (p, key, _) in &built {
+    for (p, _, key) in &built {
         for i in 0..2 {
             let r = submit(&engine, key, &wire_blobs(p, i)).await;
             assert!(r.is_ok(), "commit {i} of {key} refused: {r:?}");
@@ -631,37 +631,39 @@ async fn resolve_one(engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>, id:
     engine.canonical_principal_id(id).await.expect("resolve")
 }
 
-/// Claim: a nonce principal's key is the PR after its genesis commit (not
-/// the genesis tmb, and not its PG), and the reported id stays that key on
-/// every later commit: one id per durable keyspace, and the PG addresses
-/// the same chain. Turns red when the report switches to the PG, or the
-/// key is the tmb.
+/// Claim: a nonce principal is keyed and reported by its PG, which the
+/// nonce in its genesis commit already makes unique (SPEC 5.1 step 3 and
+/// "a nonce embedding for a unique PG"): not the genesis tmb, and not the
+/// PR after its genesis commit. The reported id stays the PG on every
+/// later commit: one id per durable keyspace. Turns red when the key or
+/// the report is the post-genesis PR or the tmb.
 #[tokio::test]
-async fn rekey_nonce_principal_key_is_its_post_commit_0_pr_and_is_reported() {
+async fn rekey_nonce_principal_is_keyed_and_reported_by_its_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let tmb = genesis_principal_id(&crate::Genesis::Implicit(key_of(&g))).expect("id");
-    let (p, first, pg) = nonce_principal(&g, 0x66, 2);
-    assert_ne!(first, pg, "premise: the PG differs from the commit-0 PR");
+    let (p, post_genesis, pg) = nonce_principal(&g, 0x66, 2);
+    assert_ne!(
+        post_genesis, pg,
+        "premise: the PG differs from the post-genesis PR"
+    );
+    assert_ne!(tmb, pg, "premise: the nonce differs the PG from the tmb");
     let engine = test_engine();
     let mut reported = Vec::new();
     for i in 0..3 {
-        let r = submit(&engine, &first, &wire_blobs(&p, i)).await;
+        let r = submit(&engine, &pg, &wire_blobs(&p, i)).await;
         reported.push(r.expect("commit").principal_id);
     }
-    assert_eq!(reported, vec![first.clone(); 3], "report is the key");
-    for addr in [&first, &pg] {
-        assert_eq!(
-            engine.canonical_principal_id(addr).await.expect("id"),
-            first
+    assert_eq!(reported, vec![pg.clone(); 3], "report is the PG");
+    assert_eq!(engine.canonical_principal_id(&pg).await.expect("id"), pg);
+    let tip = engine.get_tip(&pg).await.expect("tip").expect("stored");
+    assert_eq!((tip.principal_id, tip.commit_count), (pg.clone(), 3));
+    for other in [&post_genesis, &tmb] {
+        assert!(
+            engine.get_tip(other).await.expect("tip").is_none(),
+            "{other} is no key"
         );
-        let tip = engine.get_tip(addr).await.expect("tip").expect("stored");
-        assert_eq!((tip.principal_id, tip.commit_count), (first.clone(), 3));
     }
-    assert!(
-        engine.get_tip(&tmb).await.expect("tip").is_none(),
-        "tmb is no key"
-    );
 }
 
 /// Claim: a second, different commit 0 of a no-nonce principal (another

@@ -126,23 +126,17 @@ fn principal(genesis: &Genesis) -> cyphr::Principal {
 }
 
 /// The id the engine stores `chain` under, derived by the core alone: the
-/// PG its genesis commit establishes, or for a genesis commit with a nonce
-/// the PR that commit yields (the bare key does not identify it). A chain of
-/// data actions alone forms no commit and is keyed by its genesis PR.
+/// PG its genesis commit establishes (a nonce in it is part of the PG). A
+/// chain of data actions alone forms no commit and is keyed by its genesis
+/// PR.
 fn principal_id(chain: &Chain) -> String {
-    let first = &chain.bundles[0];
-    let has_nonce = first.iter().any(|blob| {
-        StoredCoz::from_wire(blob)
-            .is_ok_and(|c| cyphr::parsed_coz::typ::nonce_path(&c.header().typ).is_some())
-    });
     let mut p = principal(&chain.genesis);
-    let cozies: Vec<StoredCoz> = first
+    let cozies: Vec<StoredCoz> = chain.bundles[0]
         .iter()
         .map(|b| StoredCoz::from_wire(b).expect("wire coz"))
         .collect();
     replay_bundle(&mut p, &cozies).expect("first commit replays");
     match p.pg() {
-        Some(_) if has_nonce => p.pr_tagged().expect("pr"),
         Some(pg) => {
             let alg = p.active_algs()[0];
             format!(
