@@ -640,7 +640,9 @@ SPEC 7.7, line 1287. Disposition: `covered`.
 - spec-text: must be performed in exactly one canonical, atomic representation with no
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s7_7_fork_create_does_not_create_a_principal`
-- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300). Example 1 (genesis does not implicitly create the genesis key) conflicts with implicit and explicit genesis, where genesis keys exist with no `key/create`; it is not tested (open point O2).
+  - `rs/cyphr-server/tests/explicit_genesis.rs::genesis_omitting_a_key_create_is_refused`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/principal_create_without_genesis_key_create_fails]`
+- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300); or a `principal/create` is accepted while a genesis key has no `key/create` (Example 1: the genesis commit carries a `key/create` for every genesis key, SPEC 5.1 step 1, 5.2, 5.3).
 
 ```claim
 kind: requirement
@@ -1337,9 +1339,11 @@ Open points this node raised that the resolved set did not cover:
   or a witness rule? The corpus uses fixed 2023 timestamps, so a strict
   backdating check would reject every golden vector. Only the future side is
   tested.
-- **O2 (line 1287).** Example 1 says genesis does not implicitly create the
-  genesis key and every key needs a `key/create`, but implicit and explicit
-  genesis both hold keys with no `key/create`.
+- **O2 (line 1287), closed.** Example 1 says genesis does not implicitly
+  create the genesis key. The genesis commit now carries a `key/create` for
+  every genesis key, and `principal/create` refuses while one is missing
+  (row `sc-l1287`). Implicit genesis (Levels 1 and 2) has no commit and is
+  unchanged.
 - **O3 (lines 535 and 860).** `seq` for multi-coz commit transactions and
   `TRANSACTION_ORDER_UNKNOWN` have no counterpart in the Rust wire format; are
   they still wanted at Levels 1-4?
