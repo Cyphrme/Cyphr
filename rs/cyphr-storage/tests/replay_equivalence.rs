@@ -924,3 +924,260 @@ async fn forged_actions_are_quarantined_by_the_scratch_rebuild() {
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(tip.pr, writer.pr_tagged().expect("pr"));
 }
+
+/// A copy of `store`'s blobs in a fresh in-memory store.
+async fn copy_store(store: &MemoryBlobStore) -> MemoryBlobStore {
+    let copy = MemoryBlobStore::new();
+    for hash in store.iter().await.expect("iter") {
+        let blob = store
+            .get(&hash.expect("hash"))
+            .await
+            .expect("get")
+            .expect("blob");
+        copy.put(&blob).await.expect("put");
+    }
+    copy
+}
+
+/// Write an action manifest for `id` at `after` naming `blobs` straight
+/// into `store`, as a forged store would hold it; returns its hash.
+async fn forge_action_manifest(
+    store: &MemoryBlobStore,
+    id: &str,
+    after: u64,
+    blobs: &[Vec<u8>],
+) -> cyphr_storage::blob::Blake3Hash {
+    let mut hashes = Vec::new();
+    for blob in blobs {
+        hashes.push(store.put(blob).await.expect("put"));
+    }
+    let manifest = serde_json::json!({
+        "kind": "cyphr-storage/action-manifest/v1",
+        "principal_id": id,
+        "after": after,
+        "blob_hashes": hashes,
+    });
+    store
+        .put(
+            &[
+                ACTION_MANIFEST_PREFIX,
+                &serde_json::to_vec(&manifest).expect("json"),
+            ]
+            .concat(),
+        )
+        .await
+        .expect("put")
+}
+
+/// Claim (I1; SPEC 4.8.1: actions are not transactions): an action
+/// manifest is only ever a bundle of data actions. One naming a
+/// transaction blob (here a validly signed `key/create` of the principal's
+/// own key, slipped into the store) is quarantined as malformed by the
+/// scratch rebuild and by the heal pass of a fresh engine, and the
+/// principal loads unchanged: no transaction reaches the chain by the
+/// action keyspace.
+///
+/// Turns red if: the action-only check accepts a bundle holding a
+/// transaction (the rebuild then replays the forged bundle as a commit and
+/// calls it unreplayable, and the heal pass lists it, so every later load
+/// of the principal fails).
+/// End-to-end scenario: yes (ingest, forged store, scratch rebuild,
+/// restart, load).
+#[tokio::test]
+async fn action_manifest_with_a_transaction_is_malformed() {
+    let (golden, key_a) = (signer("golden"), signer("key_a"));
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let t = 1_700_000_000;
+    let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+    let genesis_commit =
+        test_fixtures::bundle::genesis_bundle(&mut writer, pool.get("golden").expect("golden"), t)
+            .expect("genesis commit");
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&engine, &id, &genesis, &genesis_commit).await;
+
+    // A signed key/create by the principal's own key: a transaction.
+    let mut other = writer.clone();
+    let tx = golden.key_create(&mut other, &key_a.key, t + 10).remove(0);
+    let forged = forge_action_manifest(engine.blob_store(), &id, 1, &[tx]).await;
+    let malformed = |q: &[cyphr_storage::engine::QuarantinedManifest]| {
+        q.iter()
+            .any(|q| q.manifest == forged && matches!(q.reason, QuarantineReason::Malformed(_)))
+    };
+
+    let restarted = StorageEngine::new(copy_store(engine.blob_store()).await, MemoryIndexer::new());
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    assert!(
+        malformed(&report.quarantined),
+        "scratch rebuild: {:?}",
+        report.quarantined
+    );
+    let loaded = engine
+        .load_principal(&id, genesis.clone())
+        .await
+        .expect("loads");
+    assert_eq!(
+        history(&loaded),
+        history(&writer),
+        "scratch rebuild: unchanged"
+    );
+
+    let healed = restarted
+        .load_principal(&id, genesis.clone())
+        .await
+        .expect("the healed engine loads the principal");
+    assert_eq!(history(&healed), history(&writer), "heal pass: unchanged");
+    let report = restarted
+        .rebuild_index_with_report()
+        .await
+        .expect("heal pass");
+    assert!(
+        malformed(&report.quarantined),
+        "heal pass: {:?}",
+        report.quarantined
+    );
+}
+
+/// Claim (SPEC 4.8.1: DT is "Ordered by `now`"): action-only bundles
+/// accepted at one chain position are replayed in the order they were
+/// accepted, whatever order their manifests are stored in. Two bundles
+/// whose manifest hashes sort opposite to their `now` order (the order a
+/// durable store lists them in) survive a scratch rebuild unquarantined,
+/// and a `ds/create` over both is accepted after it.
+///
+/// Turns red if: bundles at one position are replayed in manifest-hash
+/// order (the later action first, so the earlier one is refused as
+/// `TimestampPast`).
+/// End-to-end scenario: yes (ingest into a durable store, scratch rebuild,
+/// ingest).
+#[tokio::test]
+async fn actions_at_one_position_rebuild_in_now_order() {
+    let golden = signer("golden");
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let t = 1_700_000_000;
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let fresh = || {
+        let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
+        let commit = test_fixtures::bundle::genesis_bundle(
+            &mut writer,
+            pool.get("golden").expect("golden"),
+            t,
+        )
+        .expect("genesis commit");
+        (writer, commit)
+    };
+
+    // The action manifests' hashes in `now` order, as an engine writes
+    // them for `actions` pushed one bundle each after the genesis.
+    async fn manifest_order(
+        id: &str,
+        genesis: &Genesis,
+        commit: &[Vec<u8>],
+        actions: &[Vec<u8>],
+    ) -> Vec<[u8; 32]> {
+        let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+        push(&engine, id, genesis, commit).await;
+        for a in actions {
+            push(&engine, id, genesis, std::slice::from_ref(a)).await;
+        }
+        let store = engine.blob_store();
+        let mut found = Vec::new();
+        for hash in store.iter().await.expect("iter") {
+            let hash = hash.expect("hash");
+            let data = store.get(&hash).await.expect("get").expect("blob");
+            let Some(json) = data.strip_prefix(ACTION_MANIFEST_PREFIX) else {
+                continue;
+            };
+            let manifest: serde_json::Value = serde_json::from_slice(json).expect("json");
+            let blob: cyphr_storage::blob::Blake3Hash =
+                serde_json::from_value(manifest["blob_hashes"][0].clone()).expect("hash");
+            let coz: serde_json::Value =
+                serde_json::from_slice(&store.get(&blob).await.expect("get").expect("blob"))
+                    .expect("coz");
+            found.push((coz["pay"]["now"].as_i64().expect("now"), *hash.as_bytes()));
+        }
+        found.sort();
+        found.into_iter().map(|(_, h)| h).collect()
+    }
+
+    // Search messages until the later action's manifest sorts first.
+    let mut pair = None;
+    for i in 0..64 {
+        let early = golden.unrecorded_action(t + 10, &format!("early {i}"));
+        let late = golden.unrecorded_action(t + 20, &format!("late {i}"));
+        let (_, commit) = fresh();
+        let order = manifest_order(&id, &genesis, &commit, &[early.clone(), late.clone()]).await;
+        if order[1] < order[0] {
+            pair = Some((early, late));
+            break;
+        }
+    }
+    let (early, late) = pair.expect("a pair whose manifest hashes sort against now");
+
+    let (mut writer, commit) = fresh();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = fjall::Database::builder(dir.path().join("db"))
+        .open()
+        .expect("open db");
+    let blobs = cyphr_blob_fjall::FjallBlobStore::from_database(db).expect("blob store");
+    let index =
+        cyphr_index_fjall::FjallIndexer::open(&dir.path().join("index")).expect("open index");
+    let engine = StorageEngine::new(blobs, index);
+    let push_to = async |bundle: &[Vec<u8>]| {
+        let refs: Vec<&[u8]> = bundle.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .await
+            .expect("the bundle is accepted");
+    };
+    push_to(&commit).await;
+    for a in [&early, &late] {
+        record(&mut writer, a);
+        push_to(std::slice::from_ref(a)).await;
+    }
+
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
+    let included = golden.ds_create(&mut writer, t + 30);
+    push_to(&included).await;
+    let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(tip.pr, writer.pr_tagged().expect("pr"));
+}
+
+/// Claim (SPEC 2.3.2: a principal genesis is required for commits; the
+/// architect's ruling extends it to data actions): an action-only bundle
+/// for a principal with no genesis commit is refused with
+/// `GenesisIncomplete`, not recorded under a key its later genesis commit
+/// never reads (silent orphaning).
+///
+/// Turns red if: the engine accepts the bundle (it does today; DEBT2).
+/// End-to-end scenario: yes (engine ingest of a first bundle).
+#[tokio::test]
+#[ignore = "RED(DEBT2): SPEC 2.3.2"]
+async fn actions_before_the_genesis_commit_are_refused() {
+    let golden = signer("golden");
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let action = golden.unrecorded_action(1_700_000_010, "before any commit");
+    let refused = engine
+        .submit_commit(&id, Some(genesis), &[action.as_slice()])
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(cyphr_storage::engine::EngineError::Protocol(
+                cyphr::Error::GenesisIncomplete
+            ))
+        ),
+        "a pre-genesis action is refused, got {refused:?}"
+    );
+}
