@@ -45,13 +45,14 @@ fn key_of(k: &Kp) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb),
         others,
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -103,7 +104,7 @@ fn software(k: &Kp) -> SoftwareSigner {
 
 /// One finalized commit by `signer` applying a single signed coz plus an
 /// optional sidecar key.
-fn commit_one(
+async fn commit_one(
     p: &mut Principal,
     signer: &Kp,
     coz_parts: Signed,
@@ -115,18 +116,20 @@ fn commit_one(
     scope.verify_and_apply(&pay, &sig, czd, sidecar)?;
     scope
         .finalize_with_software(&software(signer), now, "cyphr.me")
+        .await
         .map(|_| ())
 }
 
 /// Two-key principal `{a, b}` (a two-key genesis), the shape every
 /// lifecycle and revoke scenario below starts from.
-fn two_key_principal() -> (Principal, Kp, Kp) {
+async fn two_key_principal() -> (Principal, Kp, Kp) {
     let (a, b) = (kp(), kp());
     let p = genesis_of(
-        Principal::implicit(key_of(&a)).expect("genesis"),
+        Principal::implicit(key_of(&a)).await.expect("genesis"),
         &a,
         &[key_of(&b)],
-    );
+    )
+    .await;
     (p, a, b)
 }
 
@@ -136,13 +139,18 @@ fn two_key_principal() -> (Principal, Kp, Kp) {
 
 /// Apply a `key/create` missing exactly `missing`; `Ok` means it was
 /// accepted and finalized.
-fn create_missing_field(missing: &str) -> cyphr::error::Result<()> {
+async fn create_missing_field(missing: &str) -> cyphr::error::Result<()> {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let before = snapshot(&p);
     let mut pay = key_create_pay(&g, &k2.tmb, T);
     pay.as_object_mut().expect("object").remove(missing);
-    let r = commit_one(&mut p, &g, sign(&g, pay), Some(key_of(&k2)), T + 1);
+    let r = commit_one(&mut p, &g, sign(&g, pay), Some(key_of(&k2)), T + 1).await;
     if r.is_err() {
         assert_eq!(
             before,
@@ -160,16 +168,21 @@ fn create_missing_field(missing: &str) -> cyphr::error::Result<()> {
 /// red if a missing field is tolerated (a default substituted, or the field
 /// never read). End to end: yes (sign, verify, apply, finalize).
 // @docket: rv-coz-wellformed :: scripts/docket-run rv-coz-wellformed
-#[test]
-fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
+#[tokio::test]
+async fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
     for missing in ["tmb", "now", "typ"] {
         assert!(
-            create_missing_field(missing).is_err(),
+            create_missing_field(missing).await.is_err(),
             "a coz without `{missing}` was accepted and finalized"
         );
     }
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     commit_one(
         &mut p,
         &g,
@@ -177,6 +190,7 @@ fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
         Some(key_of(&k2)),
         T + 1,
     )
+    .await
     .expect("control: the complete coz is accepted");
 }
 
@@ -185,9 +199,9 @@ fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
 /// `alg` that is present and names another algorithm than the signing
 /// key's. Turns red if a coz with no `alg` is accepted, or refused as a
 /// mismatch. End to end: yes.
-#[test]
-fn s2_3_1_coz_missing_alg_is_rejected() {
-    let r = create_missing_field("alg");
+#[tokio::test]
+async fn s2_3_1_coz_missing_alg_is_rejected() {
+    let r = create_missing_field("alg").await;
     assert!(
         matches!(r, Err(cyphr::Error::MalformedPayload)),
         "a coz without `alg` must be MalformedPayload: {r:?}"
@@ -206,9 +220,9 @@ fn s2_3_1_coz_missing_alg_is_rejected() {
 /// if a key that is not yet active can authorize its own admission. End to
 /// end: yes.
 // @docket: sc-l246 :: scripts/docket-run sc-l246
-#[test]
-fn s2_3_2_inactive_key_cannot_authorize_its_own_admission() {
-    let (mut p, a, _b) = two_key_principal();
+#[tokio::test]
+async fn s2_3_2_inactive_key_cannot_authorize_its_own_admission() {
+    let (mut p, a, _b) = two_key_principal().await;
     let outsider = kp();
     let before = snapshot(&p);
     let r = commit_one(
@@ -217,7 +231,8 @@ fn s2_3_2_inactive_key_cannot_authorize_its_own_admission() {
         sign(&outsider, key_create_pay(&outsider, &outsider.tmb, T)),
         Some(key_of(&outsider)),
         T + 1,
-    );
+    )
+    .await;
     assert!(
         matches!(r, Err(Error::UnknownKey)),
         "an inactive key authorized itself: {r:?}"
@@ -231,6 +246,7 @@ fn s2_3_2_inactive_key_cannot_authorize_its_own_admission() {
         Some(key_of(&outsider)),
         T + 3,
     )
+    .await
     .expect("control: an active key may admit the same key");
     assert!(p.is_key_active(&outsider.tmb));
 }
@@ -252,18 +268,20 @@ fn lifecycle_pay(signer: &Kp, p: &Principal, suffix: &str, now: i64) -> serde_js
 /// the freeze, not a general refusal. Turns red if any mutation changes the
 /// principal while it is frozen. End to end: yes.
 // @docket: rv-lifecycle-gate :: scripts/docket-run rv-lifecycle-gate
-#[test]
-fn s11_2_frozen_principal_rejects_key_mutations() {
-    let frozen = || {
-        let (mut p, a, b) = two_key_principal();
+#[tokio::test]
+async fn s11_2_frozen_principal_rejects_key_mutations() {
+    let frozen = async || {
+        let (mut p, a, b) = two_key_principal().await;
         let f = sign(&a, lifecycle_pay(&a, &p, "freeze/create", T));
-        commit_one(&mut p, &a, f, None, T + 1).expect("premise: freeze/create applies");
+        commit_one(&mut p, &a, f, None, T + 1)
+            .await
+            .expect("premise: freeze/create applies");
         assert!(p.is_frozen(), "premise: principal is frozen");
         (p, a, b)
     };
 
     let mut accepted = vec![];
-    let (mut p, a, _) = frozen();
+    let (mut p, a, _) = frozen().await;
     let k3 = kp();
     if commit_one(
         &mut p,
@@ -272,11 +290,12 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         Some(key_of(&k3)),
         T + 3,
     )
+    .await
     .is_ok()
     {
         accepted.push("key/create");
     }
-    let (mut p, a, b) = frozen();
+    let (mut p, a, b) = frozen().await;
     if commit_one(
         &mut p,
         &a,
@@ -284,11 +303,12 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         None,
         T + 3,
     )
+    .await
     .is_ok()
     {
         accepted.push("key/delete");
     }
-    let (mut p, a, _) = frozen();
+    let (mut p, a, _) = frozen().await;
     let k4 = kp();
     if commit_one(
         &mut p,
@@ -301,11 +321,12 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         Some(key_of(&k4)),
         T + 3,
     )
+    .await
     .is_ok()
     {
         accepted.push("key/replace");
     }
-    let (mut p, _, b) = frozen();
+    let (mut p, _, b) = frozen().await;
     if commit_one(
         &mut p,
         &b,
@@ -313,6 +334,7 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         None,
         T + 3,
     )
+    .await
     .is_ok()
     {
         accepted.push("key/revoke");
@@ -322,9 +344,11 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         "a frozen principal accepted and finalized: {accepted:?}"
     );
 
-    let (mut p, a, _) = frozen();
+    let (mut p, a, _) = frozen().await;
     let thaw = sign(&a, lifecycle_pay(&a, &p, "freeze/delete", T + 2));
-    commit_one(&mut p, &a, thaw, None, T + 3).expect("control: freeze/delete thaws");
+    commit_one(&mut p, &a, thaw, None, T + 3)
+        .await
+        .expect("control: freeze/delete thaws");
     let k3 = kp();
     commit_one(
         &mut p,
@@ -333,6 +357,7 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
         Some(key_of(&k3)),
         T + 5,
     )
+    .await
     .expect("control: key/create is accepted once thawed");
 }
 
@@ -347,8 +372,8 @@ fn s11_2_frozen_principal_rejects_key_mutations() {
 /// same action shape is accepted again, so the refusal is the freeze and not
 /// a blanket ban. Turns red if a data action is recorded while frozen, or
 /// if thawing does not restore the principal. End to end: yes.
-#[test]
-fn frozen_principal_rejects_data_actions_until_thawed() {
+#[tokio::test]
+async fn frozen_principal_rejects_data_actions_until_thawed() {
     let action = |k: &Kp, now: i64| {
         sign(
             k,
@@ -361,10 +386,12 @@ fn frozen_principal_rejects_data_actions_until_thawed() {
         p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
     };
 
-    let (mut p, a, _) = two_key_principal();
+    let (mut p, a, _) = two_key_principal().await;
     record(&mut p, &a, T).expect("control: an active principal records an action");
     let f = sign(&a, lifecycle_pay(&a, &p, "freeze/create", T + 1));
-    commit_one(&mut p, &a, f, None, T + 2).expect("premise: freeze/create applies");
+    commit_one(&mut p, &a, f, None, T + 2)
+        .await
+        .expect("premise: freeze/create applies");
     assert!(p.is_frozen(), "premise: principal is frozen");
 
     let before = snapshot(&p);
@@ -376,7 +403,9 @@ fn frozen_principal_rejects_data_actions_until_thawed() {
     assert_eq!(before, snapshot(&p), "a refused action changed state");
 
     let thaw = sign(&a, lifecycle_pay(&a, &p, "freeze/delete", T + 4));
-    commit_one(&mut p, &a, thaw, None, T + 5).expect("freeze/delete is accepted while frozen");
+    commit_one(&mut p, &a, thaw, None, T + 5)
+        .await
+        .expect("freeze/delete is accepted while frozen");
     assert!(!p.is_frozen(), "freeze/delete must unfreeze the principal");
     record(&mut p, &a, T + 6).expect("control: the thawed principal records actions again");
 }
@@ -388,22 +417,22 @@ fn frozen_principal_rejects_data_actions_until_thawed() {
 /// Apply `pay_for(b)` signed by `b` on a fresh two-key principal (the pay is
 /// built from the principal's own key, so a rejection cannot be the
 /// signer simply being unknown).
-fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::Result<()> {
-    revoke_outcome_at(None, pay_for)
+async fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::Result<()> {
+    revoke_outcome_at(None, pay_for).await
 }
 
 /// [`revoke_outcome`] under an injected verifier clock, to reach `now`
 /// values the system clock would refuse as future-dated.
-fn revoke_outcome_at(
+async fn revoke_outcome_at(
     clock: Option<cyphr::principal::Clock>,
     pay_for: impl Fn(&Kp) -> serde_json::Value,
 ) -> cyphr::error::Result<()> {
-    let (mut p, _a, b) = two_key_principal();
+    let (mut p, _a, b) = two_key_principal().await;
     if let Some(clock) = clock {
         p.set_clock(clock);
     }
     let before = snapshot(&p);
-    let r = commit_one(&mut p, &b, sign(&b, pay_for(&b)), None, T + 1);
+    let r = commit_one(&mut p, &b, sign(&b, pay_for(&b)), None, T + 1).await;
     if r.is_err() {
         assert_eq!(before, snapshot(&p), "a rejected revoke changed state");
     }
@@ -419,8 +448,8 @@ fn revoke_outcome_at(
 /// the key. The boundary is pinned both ways: 2^53 - 1 is accepted (the Coz
 /// reference implementations reject only above it) and 2^53 is rejected.
 /// End to end: yes.
-#[test]
-fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
+#[tokio::test]
+async fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
     let cases = [
         ("zero", json!(0)),
         ("negative", json!(-1)),
@@ -430,12 +459,18 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
     ];
     let mut accepted = vec![];
     for (label, rvk) in cases {
-        if revoke_outcome(|b| revoke_pay(b, T, rvk.clone())).is_ok() {
+        if revoke_outcome(|b| revoke_pay(b, T, rvk.clone()))
+            .await
+            .is_ok()
+        {
             accepted.push(label);
         }
     }
-    revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: rvk = 1 is accepted");
+    revoke_outcome(|b| revoke_pay(b, T, json!(1)))
+        .await
+        .expect("control: rvk = 1 is accepted");
     revoke_outcome(|b| revoke_pay(b, T, json!(MAX_SAFE)))
+        .await
         .expect("control: rvk = 2^53 - 1 is in range (Coz references reject only above it)");
     assert!(
         accepted.is_empty(),
@@ -449,23 +484,29 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
 /// the control. Turns red if an out-of-range `now` is accepted. End to end:
 /// yes.
 // @docket: rv-timestamp-range :: scripts/docket-run rv-timestamp-range
-#[test]
-fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
+#[tokio::test]
+async fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
     let mut accepted = vec![];
     for (label, now) in [
         ("zero", 0_i64),
         ("negative", -1),
         ("2^53", 9_007_199_254_740_992),
     ] {
-        if revoke_outcome(|b| revoke_pay(b, now, json!(1))).is_ok() {
+        if revoke_outcome(|b| revoke_pay(b, now, json!(1)))
+            .await
+            .is_ok()
+        {
             accepted.push(label);
         }
     }
-    revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: now = T is accepted");
+    revoke_outcome(|b| revoke_pay(b, T, json!(1)))
+        .await
+        .expect("control: now = T is accepted");
     // The in-range control sits at the verifier clock, not at 2^53 - 1: the
     // future-timestamp bound (SPEC 15.9) refuses that value as a message from
     // the future, which the W1 tests pin separately.
     revoke_outcome(|b| revoke_pay(b, unix_now(), json!(1)))
+        .await
         .expect("control: now at the verifier clock is in range");
     assert!(
         accepted.is_empty(),
@@ -483,18 +524,18 @@ fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
 /// Both must be rejected and `a` must stay active. Turns red if one key can
 /// revoke another. End to end: yes.
 // @docket: sc-l1059 :: scripts/docket-run sc-l1059
-#[test]
-fn s6_4_one_key_cannot_revoke_another() {
-    let (mut p, a, b) = two_key_principal();
+#[tokio::test]
+async fn s6_4_one_key_cannot_revoke_another() {
+    let (mut p, a, b) = two_key_principal().await;
     let before = snapshot(&p);
 
     let mut names_a = revoke_pay(&b, T, json!(T));
     names_a["id"] = json!(b64(&a.tmb));
-    let r1 = commit_one(&mut p, &b, sign(&b, names_a), None, T + 1);
+    let r1 = commit_one(&mut p, &b, sign(&b, names_a), None, T + 1).await;
     assert!(r1.is_err(), "b revoked a through `id`: {r1:?}");
 
     let claims_a = revoke_pay(&a, T, json!(T));
-    let r2 = commit_one(&mut p, &b, sign(&b, claims_a), None, T + 1);
+    let r2 = commit_one(&mut p, &b, sign(&b, claims_a), None, T + 1).await;
     assert!(
         r2.is_err(),
         "b's signature was accepted as a's revoke: {r2:?}"
@@ -521,10 +562,15 @@ fn s6_4_one_key_cannot_revoke_another() {
 /// (verify, apply, finalize through the public scope).
 // @docket: sc-l592 :: scripts/docket-run sc-l592
 // @docket: rv-intra-commit-shape :: scripts/docket-run rv-intra-commit-shape
-#[test]
-fn s4_6_commit_coz_must_be_last_in_txs() {
+#[tokio::test]
+async fn s4_6_commit_coz_must_be_last_in_txs() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let before = snapshot(&p);
     let arrow = format!("SHA-512:{}", Base64UrlUnpadded::encode_string(&[7u8; 64]));
     let finalizer = sign(
@@ -541,7 +587,7 @@ fn s4_6_commit_coz_must_be_last_in_txs() {
     scope
         .verify_and_apply(&pay, &sig, czd, Some(key_of(&k2)))
         .expect("key/create applies");
-    let r = scope.finalize().map(|_| ());
+    let r = scope.finalize().await.map(|_| ());
     assert!(
         matches!(r, Err(Error::CommitNotLast)),
         "a commit with its finalizer first was not rejected as CommitNotLast: {r:?}"
@@ -561,10 +607,15 @@ fn s4_6_commit_coz_must_be_last_in_txs() {
 /// alone. End to end: yes.
 // @docket: sc-l203 :: scripts/docket-run sc-l203
 // @docket: rv-key-material :: scripts/docket-run rv-key-material
-#[test]
-fn s2_2_13_key_create_without_revealed_pub_is_rejected() {
+#[tokio::test]
+async fn s2_2_13_key_create_without_revealed_pub_is_rejected() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let before = snapshot(&p);
     let r = commit_one(
         &mut p,
@@ -572,7 +623,8 @@ fn s2_2_13_key_create_without_revealed_pub_is_rejected() {
         sign(&g, key_create_pay(&g, &k2.tmb, T)),
         None,
         T + 1,
-    );
+    )
+    .await;
     assert!(
         r.is_err(),
         "key/create without a revealed pub was accepted: {r:?}"
@@ -587,7 +639,7 @@ fn s2_2_13_key_create_without_revealed_pub_is_rejected() {
 
 /// One commit by `signer` adding `new`; returns the commit's cozies as a
 /// peer would receive them (coz bytes, signature, czd) and the sidecar key.
-fn add_key_commit(p: &mut Principal, signer: &Kp, new: &Kp, now: i64) -> Vec<Signed> {
+async fn add_key_commit(p: &mut Principal, signer: &Kp, new: &Kp, now: i64) -> Vec<Signed> {
     commit_one(
         p,
         signer,
@@ -595,6 +647,7 @@ fn add_key_commit(p: &mut Principal, signer: &Kp, new: &Kp, now: i64) -> Vec<Sig
         Some(key_of(new)),
         now + 1,
     )
+    .await
     .expect("honest commit builds");
     p.commits()
         .last()
@@ -623,34 +676,37 @@ fn add_key_commit(p: &mut Principal, signer: &Kp, new: &Kp, now: i64) -> Vec<Sig
 // @docket: sc-l237 :: scripts/docket-run sc-l237
 // @docket: sc-l2827 :: scripts/docket-run sc-l2827
 // @docket: sc-l2828 :: scripts/docket-run sc-l2828
-#[test]
-fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
+#[tokio::test]
+async fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
     let (a, b) = (kp(), kp());
     let (k3, k4) = (kp(), kp());
-    let ancestor = || {
+    let ancestor = async || {
         genesis_of(
-            Principal::implicit(key_of(&a)).expect("ancestor"),
+            Principal::implicit(key_of(&a)).await.expect("ancestor"),
             &a,
             &[key_of(&b)],
         )
+        .await
     };
 
-    let wire_a = add_key_commit(&mut ancestor(), &a, &k3, T);
-    let wire_b = add_key_commit(&mut ancestor(), &a, &k4, T + 10);
+    let wire_a = add_key_commit(&mut ancestor().await, &a, &k3, T).await;
+    let wire_b = add_key_commit(&mut ancestor().await, &a, &k4, T + 10).await;
 
-    let replay = |p: &mut Principal, wire: &[Signed], new: &Kp| -> cyphr::error::Result<()> {
+    let replay = async |p: &mut Principal, wire: &[Signed], new: &Kp| -> cyphr::error::Result<()> {
         let mut scope = p.begin_commit();
         for (i, (pay, sig, czd)) in wire.iter().enumerate() {
             let sidecar = (i == 0).then(|| key_of(new));
             scope.verify_and_apply(pay, sig, czd.clone(), sidecar)?;
         }
-        scope.finalize().map(|_| ())
+        scope.finalize().await.map(|_| ())
     };
 
-    let mut linear = ancestor();
-    replay(&mut linear, &wire_a, &k3).expect("control: branch A applies on the ancestor");
+    let mut linear = ancestor().await;
+    replay(&mut linear, &wire_a, &k3)
+        .await
+        .expect("control: branch A applies on the ancestor");
     let before = snapshot(&linear);
-    let r = replay(&mut linear, &wire_b, &k4);
+    let r = replay(&mut linear, &wire_b, &k4).await;
     assert!(
         matches!(r, Err(Error::CommitMismatch)),
         "branch B must fail on its arrow (stale pre), got {r:?}"
@@ -665,7 +721,8 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
         "the abandoned branch's key became active"
     );
 
-    replay(&mut ancestor(), &wire_b, &k4)
+    replay(&mut ancestor().await, &wire_b, &k4)
+        .await
         .expect("control: branch B is valid on its own ancestor, so the rejection is the pre");
 }
 
@@ -679,19 +736,20 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
 /// Control: 256 keys build. Turns red if the tree refuses a key set the SPEC
 /// does not bound. End to end: no; a unit-level boundary, because no
 /// scenario reaches 257 keys more cheaply.
-#[test]
-fn s4_key_tree_supports_more_than_256_keys() {
+#[tokio::test]
+async fn s4_key_tree_supports_more_than_256_keys() {
     let a = kp();
-    let genesis = |others: usize| {
+    let genesis = async |others: usize| {
         let others: Vec<Key> = (0..others).map(|_| key_of(&kp())).collect();
         genesis_of(
-            Principal::implicit(key_of(&a)).expect("principal"),
+            Principal::implicit(key_of(&a)).await.expect("principal"),
             &a,
             &others,
         )
+        .await
     };
-    genesis(255);
-    let p = genesis(256);
+    genesis(255).await;
+    let p = genesis(256).await;
     assert_eq!(p.active_key_count(), 257, "not every key is active");
 }
 
@@ -706,16 +764,19 @@ fn s4_key_tree_supports_more_than_256_keys() {
 /// unchanged by the create), or a delete leaves residue (root not restored).
 /// End to end: yes (signed commits through `finalize`); the genesis-only form is the
 /// `s4_key_tree_supports_more_than_256_keys` red above.
-#[test]
-fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
+#[tokio::test]
+async fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
     let a = kp();
     let mut keys = vec![key_of(&a)];
     keys.extend((1..256).map(|_| key_of(&kp())));
     let mut p = genesis_of(
-        Principal::implicit(keys[0].clone()).expect("principal"),
+        Principal::implicit(keys[0].clone())
+            .await
+            .expect("principal"),
         &a,
         &keys[1..],
-    );
+    )
+    .await;
     let mut roots = vec![p.key_root().expect("live KR").clone()];
     let extra: Vec<Kp> = (0..3).map(|_| kp()).collect();
     for (i, k) in extra.iter().enumerate() {
@@ -727,6 +788,7 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
             Some(key_of(k)),
             now,
         )
+        .await
         .unwrap_or_else(|e| panic!("key {} refused: {e:?}", 257 + i));
         assert!(
             !roots.contains(p.key_root().expect("live KR")),
@@ -746,6 +808,7 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
             None,
             now,
         )
+        .await
         .expect("delete of an added key");
         assert_eq!(
             p.key_root(),
@@ -1164,15 +1227,16 @@ fn map_rows_resolve_and_agree_with_their_tests() {
 /// `key/delete` coz signed by `b` in the same state is accepted, so the
 /// rejection can only be the reuse. Turns red if a previously included
 /// transaction coz is applied a second time. End to end: yes.
-#[test]
-fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
+#[tokio::test]
+async fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
     let (a, b, k3) = (kp(), kp(), kp());
-    let build = || {
+    let build = async || {
         let mut p = genesis_of(
-            Principal::implicit(key_of(&a)).expect("genesis"),
+            Principal::implicit(key_of(&a)).await.expect("genesis"),
             &a,
             &[key_of(&b)],
-        );
+        )
+        .await;
         let d = sign(&a, key_delete_pay(&a, &k3.tmb, T));
         commit_one(
             &mut p,
@@ -1181,8 +1245,11 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
             Some(key_of(&k3)),
             T,
         )
+        .await
         .expect("add k3");
-        commit_one(&mut p, &a, d.clone(), None, T).expect("first inclusion of D");
+        commit_one(&mut p, &a, d.clone(), None, T)
+            .await
+            .expect("first inclusion of D");
         commit_one(
             &mut p,
             &b,
@@ -1190,12 +1257,13 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
             Some(key_of(&k3)),
             T,
         )
+        .await
         .expect("re-add k3 by another coz");
         assert!(p.is_key_active(&k3.tmb), "premise: k3 active again");
         (p, d)
     };
 
-    let (mut p, _) = build();
+    let (mut p, _) = build().await;
     commit_one(
         &mut p,
         &b,
@@ -1203,11 +1271,12 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
         None,
         T,
     )
+    .await
     .expect("control: a fresh delete coz is accepted");
 
-    let (mut p, d) = build();
+    let (mut p, d) = build().await;
     let before = snapshot(&p);
-    let r = commit_one(&mut p, &a, d, None, T);
+    let r = commit_one(&mut p, &a, d, None, T).await;
     assert!(
         r.is_err(),
         "a previously included transaction coz was applied again"
@@ -1224,12 +1293,13 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
 /// it (coz D, signed by `signer`), `b` re-adds it with a different coz, so D
 /// is state-valid again. Every `now` is `T`, so the timestamp rule cannot be
 /// what rejects a replay. Returns the principal, D and the keys.
-fn reuse_fixture(a: &Kp, b: &Kp, k3: &Kp, d_signer: &Kp) -> (Principal, Signed) {
+async fn reuse_fixture(a: &Kp, b: &Kp, k3: &Kp, d_signer: &Kp) -> (Principal, Signed) {
     let mut p = genesis_of(
-        Principal::implicit(key_of(a)).expect("genesis"),
+        Principal::implicit(key_of(a)).await.expect("genesis"),
         a,
         &[key_of(b)],
-    );
+    )
+    .await;
     let d = sign(d_signer, key_delete_pay(d_signer, &k3.tmb, T));
     commit_one(
         &mut p,
@@ -1238,8 +1308,11 @@ fn reuse_fixture(a: &Kp, b: &Kp, k3: &Kp, d_signer: &Kp) -> (Principal, Signed) 
         Some(key_of(k3)),
         T,
     )
+    .await
     .expect("add k3");
-    commit_one(&mut p, d_signer, d.clone(), None, T).expect("first inclusion of D");
+    commit_one(&mut p, d_signer, d.clone(), None, T)
+        .await
+        .expect("first inclusion of D");
     commit_one(
         &mut p,
         b,
@@ -1247,6 +1320,7 @@ fn reuse_fixture(a: &Kp, b: &Kp, k3: &Kp, d_signer: &Kp) -> (Principal, Signed) 
         Some(key_of(k3)),
         T,
     )
+    .await
     .expect("re-add k3 by another coz");
     assert!(p.is_key_active(&k3.tmb), "premise: D is state-valid again");
     (p, d)
@@ -1280,25 +1354,29 @@ fn assert_coz_reuse(r: cyphr::error::Result<()>) {
 /// `Ok` (accepts), `Err(StateMismatch)` (wrong type), a process-global czd
 /// set (control). End to end: yes.
 // @docket: rv-no-coz-reuse :: scripts/docket-run rv-no-coz-reuse
-#[test]
-fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
+#[tokio::test]
+async fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
     let (a, b, c3, k3) = (kp(), kp(), kp(), kp());
-    let (mut p, d) = reuse_fixture(&a, &b, &k3, &a);
+    let (mut p, d) = reuse_fixture(&a, &b, &k3, &a).await;
 
     // Control: a different principal (extra genesis key, so a different PR)
     // applying the very same cozes C and D is not rejected.
     let c = sign(&a, key_create_pay(&a, &k3.tmb, T));
     let mut other = genesis_of(
-        Principal::implicit(key_of(&a)).expect("other"),
+        Principal::implicit(key_of(&a)).await.expect("other"),
         &a,
         &[key_of(&b), key_of(&c3)],
-    );
-    commit_one(&mut other, &a, c, Some(key_of(&k3)), T).expect("other: C accepted");
+    )
+    .await;
+    commit_one(&mut other, &a, c, Some(key_of(&k3)), T)
+        .await
+        .expect("other: C accepted");
     commit_one(&mut other, &a, d.clone(), None, T)
+        .await
         .expect("other: D accepted, reuse is per principal");
 
     let before = snapshot(&p);
-    assert_coz_reuse(commit_one(&mut p, &a, d, None, T));
+    assert_coz_reuse(commit_one(&mut p, &a, d, None, T).await);
     assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
     assert!(p.is_key_active(&k3.tmb), "first inclusion stays in force");
 
@@ -1309,6 +1387,7 @@ fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
         None,
         T,
     )
+    .await
     .expect("a fresh coz still applies after a rejected reuse");
 }
 
@@ -1324,18 +1403,18 @@ fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
 /// SHA-256-width identifier, a first variant, or a truncation, and so never
 /// recognises an ES384 coz. Mutant caught: a set of `[u8; 32]` czd prefixes.
 /// End to end: yes.
-#[test]
-fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
+#[tokio::test]
+async fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
     let (a, b, k3) = (
         kp_alg(coz::Alg::ES256),
         kp_alg(coz::Alg::ES384),
         kp_alg(coz::Alg::ES256),
     );
-    let (mut p, d) = reuse_fixture(&a, &b, &k3, &b);
+    let (mut p, d) = reuse_fixture(&a, &b, &k3, &b).await;
     assert_eq!(d.2.as_bytes().len(), 48, "premise: D's czd is SHA-384 wide");
 
     let before = snapshot(&p);
-    assert_coz_reuse(commit_one(&mut p, &b, d, None, T));
+    assert_coz_reuse(commit_one(&mut p, &b, d, None, T).await);
     assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
 }
 
@@ -1348,14 +1427,15 @@ fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
 /// recomputed from a stale tree) or a variant goes missing. Mutant caught:
 /// leaving one algorithm's MALT tree out of the per-commit append. End to
 /// end: yes.
-#[test]
-fn every_active_algorithms_cr_variant_advances_with_every_commit() {
+#[tokio::test]
+async fn every_active_algorithms_cr_variant_advances_with_every_commit() {
     let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
     let mut p = genesis_of(
-        Principal::implicit(key_of(&a)).expect("genesis"),
+        Principal::implicit(key_of(&a)).await.expect("genesis"),
         &a,
         &[key_of(&b)],
-    );
+    )
+    .await;
     let cr_variants = |p: &Principal| {
         p.cr()
             .map(|cr| cr.as_multihash().variants().clone())
@@ -1371,6 +1451,7 @@ fn every_active_algorithms_cr_variant_advances_with_every_commit() {
             Some(key_of(&k)),
             T,
         )
+        .await
         .expect("commit");
         let now = cr_variants(&p);
         assert_eq!(now.len(), 2, "step {step}: CR must carry both algorithms");
@@ -1407,12 +1488,17 @@ fn unix_now() -> i64 {
 /// tolerance is accepted. The backdated side (a first message far in the past)
 /// is not tested: the whole corpus uses fixed 2023 timestamps (question Q10).
 /// End to end: yes.
-#[test]
-fn s15_9_future_dated_message_is_rejected_by_default() {
+#[tokio::test]
+async fn s15_9_future_dated_message_is_rejected_by_default() {
     let now = unix_now();
-    let outcome = |at: i64| {
+    let outcome = async |at: i64| {
         let (g, k2) = (kp(), kp());
-        let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+        let mut p = genesis_of(
+            Principal::implicit(key_of(&g)).await.expect("genesis"),
+            &g,
+            &[],
+        )
+        .await;
         let (pay, sig, czd) = sign(
             &g,
             json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
@@ -1424,14 +1510,15 @@ fn s15_9_future_dated_message_is_rejected_by_default() {
             sign(&g, key_create_pay(&g, &k2.tmb, at)),
             Some(key_of(&k2)),
             at,
-        );
+        )
+        .await;
         (action, create)
     };
-    let (action, create) = outcome(now);
+    let (action, create) = outcome(now).await;
     action.expect("control: an action dated now is accepted");
     create.expect("control: a key/create dated now is accepted");
 
-    let (action, create) = outcome(now + 86_400);
+    let (action, create) = outcome(now + 86_400).await;
     let mut accepted = vec![];
     if action.is_ok() {
         accepted.push("data action");
@@ -1451,9 +1538,14 @@ fn s15_9_future_dated_message_is_rejected_by_default() {
 
 /// Apply the same `now` through both entry paths (a data action and a
 /// `key/create` commit) on a default `Principal`, returning each outcome.
-fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
+async fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, czd) = sign(
         &g,
         json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
@@ -1466,7 +1558,7 @@ fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>)
         Some(key_of(&k2)),
         at,
     );
-    (action, create)
+    (action, create.await)
 }
 
 /// Backs the same rule from the other side: it must not over-reach. Scenario:
@@ -1475,15 +1567,15 @@ fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>)
 /// accepted. A green characterization that must survive the fix: it turns red
 /// if the bound is made strict (no drift) or two-sided against the clock.
 /// Unit-level on purpose: the window edge has no cheaper scenario.
-#[test]
-fn now_bound_inside_the_drift_window_is_accepted() {
+#[tokio::test]
+async fn now_bound_inside_the_drift_window_is_accepted() {
     let now = unix_now();
     for (label, at) in [
         ("at the clock", now),
         ("an hour behind", now - 3_600),
         ("1s ahead", now + 1),
     ] {
-        let (action, create) = now_outcomes(at);
+        let (action, create) = now_outcomes(at).await;
         action.unwrap_or_else(|e| panic!("action {label}: {e:?}"));
         create.unwrap_or_else(|e| panic!("key/create {label}: {e:?}"));
     }
@@ -1510,18 +1602,23 @@ fn non_canonical_alias(s: &str) -> String {
 /// two spellings and two valid cozies). Control: the canonical `id` is
 /// accepted. Turns red if a lenient decoder admits the alias. End to end: yes.
 // @docket: sc-l119 :: scripts/docket-run sc-l119
-#[test]
-fn s2_2_2_non_canonical_b64ut_is_rejected() {
+#[tokio::test]
+async fn s2_2_2_non_canonical_b64ut_is_rejected() {
     let (g, k2) = (kp(), kp());
     let canonical = b64(&k2.tmb);
     let alias = non_canonical_alias(&canonical);
     assert_ne!(alias, canonical, "premise: the alias differs");
 
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let mut pay = key_create_pay(&g, &k2.tmb, T);
     pay["id"] = json!(alias);
     let before = snapshot(&p);
-    let r = commit_one(&mut p, &g, sign(&g, pay), Some(key_of(&k2)), T + 1);
+    let r = commit_one(&mut p, &g, sign(&g, pay), Some(key_of(&k2)), T + 1).await;
     assert!(r.is_err(), "a non-canonical id was accepted: {r:?}");
     assert_eq!(before, snapshot(&p));
     commit_one(
@@ -1531,6 +1628,7 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
         Some(key_of(&k2)),
         T + 1,
     )
+    .await
     .expect("control: the canonical id is accepted");
 }
 
@@ -1545,13 +1643,14 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
 /// operation changes the recorded PG. End to end: yes.
 // @docket: sc-l240 :: scripts/docket-run sc-l240
 // @docket: rv-genesis-immutable :: scripts/docket-run rv-genesis-immutable
-#[test]
-fn s2_3_2_no_operation_changes_the_principal_genesis() {
+#[tokio::test]
+async fn s2_3_2_no_operation_changes_the_principal_genesis() {
     let (a, b) = (kp(), kp());
-    let mut p = Principal::implicit(key_of(&a)).expect("genesis");
+    let mut p = Principal::implicit(key_of(&a)).await.expect("genesis");
     let mut scope = p.begin_commit();
     scope
         .create_genesis_keys(&software(&a), &[key_of(&b)], T, "cyphr.me")
+        .await
         .expect("genesis key/creates");
     let establish = json!({"alg": a.alg, "id": scope.genesis_id().expect("id"), "now": T,
                            "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
@@ -1561,13 +1660,14 @@ fn s2_3_2_no_operation_changes_the_principal_genesis() {
         .expect("principal/create establishes PG");
     scope
         .finalize_with_software(&software(&a), T, "cyphr.me")
+        .await
         .expect("genesis commit");
     let pg = format!("{:?}", p.pg());
     assert_ne!(pg, "None", "premise: principal/create records a PG");
     let again = json!({"alg": a.alg, "id": p.pr_tagged().expect("pr"), "now": T,
                        "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
     let before = snapshot(&p);
-    let r = commit_one(&mut p, &a, sign(&a, again), None, T);
+    let r = commit_one(&mut p, &a, sign(&a, again), None, T).await;
     assert!(
         matches!(r, Err(Error::StateMismatch)),
         "a second principal/create must be refused (PG is write-once): {r:?}"
@@ -1610,7 +1710,9 @@ fn s2_3_2_no_operation_changes_the_principal_genesis() {
         ),
     ];
     for (label, coz, sidecar, signer) in steps {
-        commit_one(&mut p, signer, coz, sidecar, T).unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        commit_one(&mut p, signer, coz, sidecar, T)
+            .await
+            .unwrap_or_else(|e| panic!("{label}: {e:?}"));
         assert_eq!(format!("{:?}", p.pg()), pg, "{label} changed the PG");
     }
 }
@@ -1627,13 +1729,13 @@ fn s2_3_2_no_operation_changes_the_principal_genesis() {
 /// yes.
 // @docket: sc-l1287 :: scripts/docket-run sc-l1287
 // @docket: sc-l1300 :: scripts/docket-run sc-l1300
-#[test]
-fn s7_7_fork_create_does_not_create_a_principal() {
-    let (mut p, a, _b) = two_key_principal();
+#[tokio::test]
+async fn s7_7_fork_create_does_not_create_a_principal() {
+    let (mut p, a, _b) = two_key_principal().await;
     let before = snapshot(&p);
     let pay = json!({"alg": a.alg, "fork_pr": p.pr_tagged().expect("pr"), "now": T,
                      "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/fork/create"});
-    let r = commit_one(&mut p, &a, sign(&a, pay), None, T);
+    let r = commit_one(&mut p, &a, sign(&a, pay), None, T).await;
     assert!(r.is_err(), "principal/fork/create was applied: {r:?}");
     assert_eq!(before, snapshot(&p));
 }
@@ -1649,10 +1751,15 @@ fn s7_7_fork_create_does_not_create_a_principal() {
 /// action by that key are both rejected and change nothing. Turns red if a
 /// Dead principal still takes a transaction or action. End to end: yes.
 // @docket: sc-l1869 :: scripts/docket-run sc-l1869
-#[test]
-fn s11_2_dead_principal_accepts_no_transaction_or_action() {
+#[tokio::test]
+async fn s11_2_dead_principal_accepts_no_transaction_or_action() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     p.pre_revoke_key(&g.tmb, T).expect("revoke the only key");
     assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
     let before = snapshot(&p);
@@ -1662,7 +1769,8 @@ fn s11_2_dead_principal_accepts_no_transaction_or_action() {
         sign(&g, key_create_pay(&g, &k2.tmb, T + 1)),
         Some(key_of(&k2)),
         T + 2,
-    );
+    )
+    .await;
     assert!(r.is_err(), "a dead principal took a key/create: {r:?}");
     let (pay, sig, czd) = sign(
         &g,
@@ -1685,9 +1793,9 @@ fn s11_2_dead_principal_accepts_no_transaction_or_action() {
 /// End to end: yes.
 // @docket: sc-l3350 :: scripts/docket-run sc-l3350
 // @docket: sc-l3353 :: scripts/docket-run sc-l3353
-#[test]
-fn s19_5_failed_commit_leaves_no_partial_state() {
-    let (mut p, a, _b) = two_key_principal();
+#[tokio::test]
+async fn s19_5_failed_commit_leaves_no_partial_state() {
+    let (mut p, a, _b) = two_key_principal().await;
     let (k3, ghost) = (kp(), kp());
     let before = snapshot(&p);
     {
@@ -1714,6 +1822,7 @@ fn s19_5_failed_commit_leaves_no_partial_state() {
         Some(key_of(&k3)),
         T,
     )
+    .await
     .expect("control: the same key/create commits afterwards");
 }
 
@@ -1727,14 +1836,14 @@ fn s19_5_failed_commit_leaves_no_partial_state() {
 /// active key. Control: two `key/create` cozies in one transaction apply.
 /// Turns red if a transaction of mixed `typ` is applied through `apply_tx`
 /// (the only path that groups cozies). End to end: yes.
-#[test]
-fn s4_1_transaction_cozies_must_share_one_typ() {
+#[tokio::test]
+async fn s4_1_transaction_cozies_must_share_one_typ() {
     let verified = |p: &Principal, coz: Signed, sidecar: Option<Key>, signer: &Kp| {
         let (pay, sig, czd) = coz;
         let key = p.get_key(&signer.tmb).expect("signer key").clone();
         cyphr::parsed_coz::verify_coz(&pay, &sig, &key, czd, sidecar).expect("verifies")
     };
-    let (mut p, a, b) = two_key_principal();
+    let (mut p, a, b) = two_key_principal().await;
     let (k3, k4) = (kp(), kp());
     let same = vec![
         verified(
@@ -1766,7 +1875,9 @@ fn s4_1_transaction_cozies_must_share_one_typ() {
     ];
     // Applying each coz alone must succeed, so a rejection below is the mix.
     let solo = vec![mixed[0].clone()];
-    p.clone()
+    p.fork()
+        .await
+        .expect("fork")
         .begin_commit()
         .apply_tx(solo)
         .expect("premise: each coz is valid alone");
@@ -1809,16 +1920,17 @@ proptest! {
     fn s6_no_wire_form_carries_private_key_material(
         algs in proptest::collection::vec(any::<bool>(), 2..5),
     ) {
+        block_on(async move {
         let keys: Vec<Kp> = algs
             .iter()
             .map(|&ed| kp_alg(if ed { coz::Alg::Ed25519 } else { coz::Alg::ES256 }))
             .collect();
-        let mut p = genesis_of(Principal::implicit(key_of(&keys[0])).expect("genesis"), &keys[0], &[]);
+        let mut p = genesis_of(Principal::implicit(key_of(&keys[0])).await.expect("genesis"), &keys[0], &[]).await;
         let mut wire: Vec<String> = vec![];
         for (i, k) in keys.iter().enumerate().skip(1) {
             let now = T + i64::try_from(i).expect("small");
             let coz = sign(&keys[0], key_create_pay(&keys[0], &k.tmb, now));
-            commit_one(&mut p, &keys[0], coz, Some(key_of(k)), now).expect("honest commit");
+            commit_one(&mut p, &keys[0], coz, Some(key_of(k)), now).await.expect("honest commit");
         }
         for c in p.commits() {
             for vc in c.all_cozies() {
@@ -1836,6 +1948,8 @@ proptest! {
                 }
             }
         }
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 }
 
@@ -1854,14 +1968,15 @@ proptest! {
 /// `lifecycle/dead_principal_rejects_commit` pin the same behaviour for
 /// other implementations. End to end: yes.
 // @docket: sc-l298 :: scripts/docket-run sc-l298
-#[test]
-fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
+#[tokio::test]
+async fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
     let (g, k2) = (kp(), kp());
     let mut two = genesis_of(
-        Principal::implicit(key_of(&g)).expect("genesis"),
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
         &g,
         &[key_of(&k2)],
-    );
+    )
+    .await;
     commit_one(
         &mut two,
         &g,
@@ -1869,16 +1984,23 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
         None,
         T + 1,
     )
+    .await
     .expect("control: a revoke with a second key left is accepted");
 
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let r = commit_one(
         &mut p,
         &g,
         sign(&g, revoke_pay(&g, T, json!(T))),
         None,
         T + 1,
-    );
+    )
+    .await;
     assert!(r.is_ok(), "the only key's self-revoke was refused: {r:?}");
     assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
     let r = commit_one(
@@ -1887,7 +2009,8 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
         sign(&g, key_create_pay(&g, &k2.tmb, T + 2)),
         Some(key_of(&k2)),
         T + 3,
-    );
+    )
+    .await;
     assert!(r.is_err(), "a dead principal took a key/create: {r:?}");
 }
 
@@ -1902,8 +2025,8 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
 /// or if a Dead principal records an action. Catches a lying fix
 /// that gates only the transaction path and leaves actions open, and a
 /// no-op fix that flags Dead without revoking the key. End to end: yes.
-#[test]
-fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
+#[tokio::test]
+async fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
     let action = |k: &Kp, now: i64| {
         sign(
             k,
@@ -1916,7 +2039,7 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
         p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
     };
 
-    let (mut two, a, b) = two_key_principal();
+    let (mut two, a, b) = two_key_principal().await;
     commit_one(
         &mut two,
         &b,
@@ -1924,11 +2047,17 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
         None,
         T + 1,
     )
+    .await
     .expect("control: a sibling's revoke is accepted");
     record(&mut two, &a, T + 2).expect("control: the surviving key still records actions");
 
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     record(&mut p, &g, T).expect("control: the lone key records an action while alive");
     let r = commit_one(
         &mut p,
@@ -1936,7 +2065,8 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
         sign(&g, revoke_pay(&g, T + 1, json!(T + 1))),
         None,
         T + 2,
-    );
+    )
+    .await;
     assert!(r.is_ok(), "the only key's self-revoke was refused: {r:?}");
     let before = snapshot(&p);
     let r = record(&mut p, &g, T + 3);
@@ -1965,10 +2095,15 @@ fn variants_of(mh: &cyphr::multihash::MultihashDigest) -> BTreeMap<coz::HashAlg,
 /// red if any of those roots is fabricated for a keyless principal (a
 /// stale pre-death KR/AR or SR, an empty-set digest), or if PR differs
 /// from CR. End to end: yes.
-#[test]
-fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
+#[tokio::test]
+async fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     commit_one(
         &mut p,
         &g,
@@ -1976,6 +2111,7 @@ fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
         None,
         T + 1,
     )
+    .await
     .expect("the only key's revoke is accepted");
     assert!(p.key_root().is_none(), "dead principal has a KR");
     assert!(p.auth_root().is_none(), "dead principal has an AR");
@@ -1999,10 +2135,15 @@ fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
 /// DR; KR and AR stay absent; PR is MR(SR, CR), different from both.
 /// Turns red if SR is absent despite included data, SR differs from DR, or
 /// PR drops SR. End to end: yes.
-#[test]
-fn dead_principal_roots_state_root_is_the_data_root() {
+#[tokio::test]
+async fn dead_principal_roots_state_root_is_the_data_root() {
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let (pay, sig, czd) = sign(
         &g,
         json!({"alg": g.alg, "msg": "hi", "now": T, "tmb": b64(&g.tmb),
@@ -2028,6 +2169,7 @@ fn dead_principal_roots_state_root_is_the_data_root() {
         .expect("the only key's revoke is accepted");
     scope
         .finalize_with_software(&software(&g), T + 2, "cyphr.me")
+        .await
         .expect("the dying commit");
     assert!(p.key_root().is_none() && p.auth_root().is_none());
     let dr = p.data_root().expect("DR survives death");
@@ -2053,14 +2195,15 @@ fn dead_principal_roots_state_root_is_the_data_root() {
 /// and the commit's PR still carry both SHA-256 and SHA-384 variants. Turns
 /// red if the dying commit hashes under the empty post-commit set (the
 /// commit fails) or under only the signer's algorithm. End to end: yes.
-#[test]
-fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
+#[tokio::test]
+async fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
     let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
     let mut p = genesis_of(
-        Principal::implicit(key_of(&a)).expect("genesis"),
+        Principal::implicit(key_of(&a)).await.expect("genesis"),
         &a,
         &[key_of(&b)],
-    );
+    )
+    .await;
     let both: BTreeSet<coz::HashAlg> = [coz::HashAlg::Sha256, coz::HashAlg::Sha384]
         .into_iter()
         .collect();
@@ -2077,6 +2220,7 @@ fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
     }
     scope
         .finalize_with_software(&software(&a), T + 2, "cyphr.me")
+        .await
         .expect("the dying commit");
     assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
     assert_eq!(algs_of(p.pr().as_multihash()), both, "PR algorithm set");
@@ -2095,9 +2239,9 @@ fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
 /// same delete is accepted and the principal stays live. Turns red if the
 /// delete is refused (`NoActiveKeys`), or if a Dead principal accepts a
 /// commit. End to end: yes.
-#[test]
-fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
-    let (mut two, a, b) = two_key_principal();
+#[tokio::test]
+async fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
+    let (mut two, a, b) = two_key_principal().await;
     commit_one(
         &mut two,
         &a,
@@ -2105,18 +2249,25 @@ fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
         None,
         T + 1,
     )
+    .await
     .expect("control: deleting one of two keys is accepted");
     assert_eq!(two.active_key_count(), 1);
 
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     let r = commit_one(
         &mut p,
         &g,
         sign(&g, key_delete_pay(&g, &g.tmb, T)),
         None,
         T + 1,
-    );
+    )
+    .await;
     assert!(r.is_ok(), "deleting the only key was refused: {r:?}");
     assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
     assert!(p.key_root().is_none() && p.auth_root().is_none() && p.sr().is_none());
@@ -2133,7 +2284,8 @@ fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
         sign(&g, key_create_pay(&g, &k2.tmb, T + 2)),
         Some(key_of(&k2)),
         T + 3,
-    );
+    )
+    .await;
     assert!(r.is_err(), "a dead principal took a commit: {r:?}");
     assert_eq!(before, snapshot(&p));
 }
@@ -2144,10 +2296,15 @@ fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
 /// still-known key, with the typed revoked-key error, and nothing changes.
 /// Turns red if a Dead principal accepts any further commit. End to end:
 /// yes.
-#[test]
-fn dead_principal_roots_are_final_no_further_commit() {
+#[tokio::test]
+async fn dead_principal_roots_are_final_no_further_commit() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
     commit_one(
         &mut p,
         &g,
@@ -2155,6 +2312,7 @@ fn dead_principal_roots_are_final_no_further_commit() {
         None,
         T + 1,
     )
+    .await
     .expect("dying commit");
     let before = snapshot(&p);
     let r = commit_one(
@@ -2163,7 +2321,8 @@ fn dead_principal_roots_are_final_no_further_commit() {
         sign(&g, key_create_pay(&g, &k2.tmb, T + 2)),
         Some(key_of(&k2)),
         T + 3,
-    );
+    )
+    .await;
     assert!(matches!(r, Err(Error::KeyRevoked)), "got {r:?}");
     assert_eq!(before, snapshot(&p));
 }
@@ -2187,8 +2346,8 @@ fn dead_principal_roots_are_final_no_further_commit() {
 /// control fails first (`MalformedPayload`). End to end: yes.
 // @docket: sc-l1673 :: scripts/docket-run sc-l1673
 // @docket: sc-l1674 :: scripts/docket-run sc-l1674
-#[test]
-fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
+#[tokio::test]
+async fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
     let algs = [
         (coz::Alg::ES256, "SHA-256", 32usize),
         (coz::Alg::ES384, "SHA-384", 48),
@@ -2207,14 +2366,20 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
     for (alg, label, n) in algs {
         for path in paths {
             let g = kp_alg(alg);
-            let mut ok = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+            let mut ok = genesis_of(
+                Principal::implicit(key_of(&g)).await.expect("genesis"),
+                &g,
+                &[],
+            )
+            .await;
             let control = commit_one(
                 &mut ok,
                 &g,
                 nonce_coz(&g, label, path, &vec![0xA5; n], T),
                 None,
                 T + 1,
-            );
+            )
+            .await;
             assert!(
                 control.is_ok(),
                 "control: a {n}-byte {label} nonce at {path} was refused: {control:?}"
@@ -2225,7 +2390,12 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
             widths.sort_unstable();
             widths.dedup();
             for w in widths {
-                let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+                let mut p = genesis_of(
+                    Principal::implicit(key_of(&g)).await.expect("genesis"),
+                    &g,
+                    &[],
+                )
+                .await;
                 let before = snapshot(&p);
                 let r = commit_one(
                     &mut p,
@@ -2233,7 +2403,8 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
                     nonce_coz(&g, label, path, &vec![0xA5; w], T),
                     None,
                     T + 1,
-                );
+                )
+                .await;
                 if r.is_ok() {
                     accepted.push(format!("{label} nonce of {w} bytes at {path}"));
                 } else {
@@ -2251,13 +2422,25 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
 /// if the revoke range check rejects its own upper bound (or drops it). The
 /// future-timestamp bound hides this from the system-clock tests above, so an
 /// injected clock is the only way to reach it. End to end: yes.
-#[test]
-fn s6_4_revoke_now_upper_bound_is_inclusive() {
+#[tokio::test]
+async fn s6_4_revoke_now_upper_bound_is_inclusive() {
     let runaway: cyphr::principal::Clock = || i64::MAX;
     revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE, json!(1)))
+        .await
         .expect("a revoke at now = 2^53 - 1 is in range");
     assert!(
-        revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE + 1, json!(1))).is_err(),
+        revoke_outcome_at(Some(runaway), |b| revoke_pay(b, MAX_SAFE + 1, json!(1)))
+            .await
+            .is_err(),
         "a revoke at now = 2^53 was accepted"
     );
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }

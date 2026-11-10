@@ -59,8 +59,12 @@ async fn all_write_routes_refused() {
     let app = build_app_router(state.clone()).expect("app router initialization");
 
     let pool = load_pool();
-    let push_body =
-        build_genesis_push_body(&pool, &common::golden_principal_id(&pool), 1_700_000_000);
+    let push_body = build_genesis_push_body(
+        &pool,
+        &common::golden_principal_id(&pool).await,
+        1_700_000_000,
+    )
+    .await;
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
     let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
@@ -78,7 +82,7 @@ async fn all_write_routes_refused() {
 
     // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
     let revoke_body = serde_json::json!({
-        "principal_id": common::golden_principal_id(&pool),
+        "principal_id": common::golden_principal_id(&pool).await,
         "coz": {}
     })
     .to_string();
@@ -141,10 +145,10 @@ async fn syncs_from_authority() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     // Push state to authority node
     let (push_status, push_res) = post_json(auth_app.clone(), "/push", push_body).await;
@@ -212,12 +216,12 @@ async fn rejects_unverifiable_delta() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
 
     // 1. Establish valid principal on authority
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (push_status, _push_res) = post_json(auth_app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
@@ -434,7 +438,7 @@ async fn responses_carry_freshness() {
 /// `common` is read-only for this node). Keeping one principal across both
 /// commits is what makes the second genuinely chain -- `build_second_commit_
 /// push_body` builds from a fresh principal and 409s with a state-root mismatch.
-fn append_key_create(
+async fn append_key_create(
     principal: &mut cyphr::Principal,
     pool: &test_fixtures::Pool,
     signer_name: &str,
@@ -487,6 +491,7 @@ fn append_key_create(
             now,
             "cyphr.me",
         )
+        .await
         .expect("commit finalizes");
 
     let entries = cyphr_storage::export_commits(principal).expect("export commits");
@@ -516,12 +521,12 @@ fn append_key_create(
 /// principal: the genesis commit (SPEC 5.1) in which golden creates itself
 /// and key_a, then a second `key/create` (key_b) signed by golden onto the
 /// post-genesis state. The two-entry patch the truncation test needs.
-fn build_two_commit_push_bodies(
+async fn build_two_commit_push_bodies(
     pool: &test_fixtures::Pool,
     principal_id: &str,
     now: i64,
 ) -> (String, String) {
-    let mut bodies = build_chained_push_bodies(pool, principal_id, now, &["key_a", "key_b"]);
+    let mut bodies = build_chained_push_bodies(pool, principal_id, now, &["key_a", "key_b"]).await;
     let second = bodies.pop().expect("second commit body");
     let genesis = bodies.pop().expect("genesis body");
     (genesis, second)
@@ -636,7 +641,7 @@ async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthorit
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, principal_id, now),
+        build_genesis_push_body(&pool, principal_id, now).await,
     )
     .await;
     assert_eq!(
@@ -668,7 +673,7 @@ async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuth
     let url = instance.url().expect("authority TCP URL");
 
     let pool = load_pool();
-    let (genesis_body, second_body) = build_two_commit_push_bodies(&pool, principal_id, now);
+    let (genesis_body, second_body) = build_two_commit_push_bodies(&pool, principal_id, now).await;
     let (s0, b0) = post_json(app.clone(), "/push", genesis_body).await;
     assert_eq!(s0, StatusCode::CREATED, "genesis push: {b0:?}");
     let (s1, b1) = post_json(app.clone(), "/push", second_body).await;
@@ -715,7 +720,7 @@ async fn witness_for(
 #[tokio::test]
 async fn sync_recovers_after_bad_entry() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
 
     let bad_pr = principal.clone();
@@ -801,7 +806,7 @@ async fn sync_recovers_after_bad_entry() {
 #[tokio::test]
 async fn sync_recovers_after_unverifiable_entry() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
@@ -907,7 +912,7 @@ async fn sync_recovers_after_unverifiable_entry() {
 #[tokio::test]
 async fn patch_truncated_entries_rejected() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -997,7 +1002,7 @@ async fn genuine_entries_and_identity(
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, principal, now),
+        build_genesis_push_body(&pool, principal, now).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "genesis push: {body:?}");
@@ -1049,7 +1054,7 @@ async fn genuine_entries_and_identity(
 #[tokio::test]
 async fn witness_rejects_malformed_report_at_ingestion() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let (entries, _real_report, identity, _auth_dir) =
         genuine_entries_and_identity(&principal, now).await;
 
@@ -1121,7 +1126,7 @@ async fn witness_rejects_malformed_report_at_ingestion() {
 // principal legitimately in the no-commit-root state -- must be accepted
 // at ingestion, not over-rejected. Formerly pinned here as an
 // integration test; cut because no push path on this authority produces a
-// witness-resulting tip whose OWN `cr` is empty (`finalize_commit` writes
+// witness-resulting tip whose OWN `cr` is empty (`stage_commit` writes
 // a real CR on every finalized commit), so a wire fixture built by
 // doctoring the *report* alone was fixture-vs-entries incoherent -- the
 // witness's own applied entries carry a real `cr`, so `EntryCommitmentMismatch`
@@ -1145,7 +1150,7 @@ async fn witness_rejects_malformed_report_at_ingestion() {
 #[tokio::test]
 async fn authenticated_channel_accepts_genuine_authority() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_genesis(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1259,15 +1264,15 @@ async fn cross_principal_substitution_rejected() {
     let pool = load_pool();
     // Distinct genesis keys (`alice` vs `golden`) give genuinely distinct
     // genesis-derived ids.
-    let principal_a = common::genesis_push_id(&pool, "alice", "bob");
-    let principal_b = common::golden_principal_id(&pool);
+    let principal_a = common::genesis_push_id(&pool, "alice", "bob").await;
+    let principal_b = common::golden_principal_id(&pool).await;
 
     let authority = authority_with_two_commits(&principal_b, now).await;
     let authority_identity = authority.identity();
     let (status, body) = post_json(
         authority.instance.router.clone(),
         "/push",
-        common::build_genesis_push_body_with(&pool, "alice", "bob", &principal_a, now),
+        common::build_genesis_push_body_with(&pool, "alice", "bob", &principal_a, now).await,
     )
     .await;
     assert_eq!(
@@ -1324,7 +1329,7 @@ async fn cross_principal_substitution_rejected() {
 #[tokio::test]
 async fn decoy_top_entry_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1389,7 +1394,7 @@ async fn decoy_top_entry_withholding_rejected() {
 #[tokio::test]
 async fn empty_entries_with_advanced_report_rejected() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1426,7 +1431,7 @@ async fn empty_entries_with_advanced_report_rejected() {
 #[tokio::test]
 async fn request_side_from_rewrite_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1546,7 +1551,7 @@ async fn spawn_replay_proxy(upstream: String) -> (String, tokio::task::JoinHandl
 #[tokio::test]
 async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1587,7 +1592,7 @@ async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
 #[tokio::test]
 async fn stripped_statement_fails_closed_when_configured() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1639,7 +1644,7 @@ async fn stripped_statement_fails_closed_when_configured() {
 /// Build a genuinely CHAINING sequence of push bodies for one principal: its
 /// genesis commit (SPEC 5.1), in which golden creates itself and
 /// `key_names[0]` (so its id is `common::genesis_push_id(pool, "golden",
-/// key_names[0])`), then one chained `key/create` push body per remaining
+/// key_names[0]).await`), then one chained `key/create` push body per remaining
 /// name in `key_names`, each signed by golden onto the state left by the
 /// previous entry via the SAME `principal` object (the `append_key_create`
 /// doc comment explains why a shared object, not a fresh one per commit, is
@@ -1648,7 +1653,7 @@ async fn stripped_statement_fails_closed_when_configured() {
 /// Serves every multi-commit fixture here -- the two-commit authority, an
 /// honest 3-commit authority, a split two-step chain, and a forked branch --
 /// from one construction.
-fn build_chained_push_bodies(
+async fn build_chained_push_bodies(
     pool: &test_fixtures::Pool,
     principal_id: &str,
     now: i64,
@@ -1661,13 +1666,16 @@ fn build_chained_push_bodies(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::implicit(key("golden")).expect("genesis");
+    let mut principal = cyphr::Principal::implicit(key("golden"))
+        .await
+        .expect("genesis");
     let c0 = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get("golden").expect("golden key"),
         &[key(key_names[0])],
         now,
     )
+    .await
     .expect("genesis commit");
 
     let body = |blobs: &[Vec<u8>]| {
@@ -1680,7 +1688,7 @@ fn build_chained_push_bodies(
 
     let mut bodies = vec![body(&c0)];
     for (i, name) in key_names.iter().enumerate().skip(1) {
-        let c = append_key_create(&mut principal, pool, "golden", name, now + i as i64);
+        let c = append_key_create(&mut principal, pool, "golden", name, now + i as i64).await;
         bodies.push(body(&c));
     }
     bodies
@@ -1749,10 +1757,10 @@ async fn spawn_observing_patch_proxy(
 #[tokio::test]
 async fn sync_resumes_from_digest_anchor() {
     let pool = load_pool();
-    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_100_000;
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]).await;
 
     let (auth_state, _identity, auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
@@ -1855,7 +1863,7 @@ async fn sync_resumes_from_digest_anchor() {
 #[tokio::test]
 async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let pool = load_pool();
-    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
     let principal_id = principal_id_owned.as_str();
     // The fork lives on a SEPARATE authority and shares the canonical genesis
     // (hence the genesis-derived id); it diverges only at sequence 1.
@@ -1863,7 +1871,8 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let now = 1_700_200_000;
 
     // Canonical authority: three genuinely chained commits.
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
+    let bodies =
+        build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]).await;
     let (auth_state, _identity, _auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
@@ -1897,7 +1906,8 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // shape (key_a, signed by golden) but a DIFFERENT, genuinely valid
     // "sequence 1" commit (introducing "bob" rather than "key_b") -- a real
     // equivocation, not a corrupted/forged fixture.
-    let fork_bodies = build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]);
+    let fork_bodies =
+        build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]).await;
     let (fork_state, _fork_identity, _fork_dir) = attestor_server().await;
     let fork_app = build_app_router(fork_state.clone()).expect("fork router");
     for body in &fork_bodies {
@@ -1979,11 +1989,12 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
 #[tokio::test]
 async fn sequence_only_anchor_does_not_resume() {
     let pool = load_pool();
-    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_300_000;
 
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
+    let bodies =
+        build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]).await;
     let (auth_state, _identity, _auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
@@ -2049,11 +2060,11 @@ async fn sequence_only_anchor_does_not_resume() {
 #[tokio::test]
 async fn anchor_digest_rejects_malformed() {
     let pool = load_pool();
-    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id_owned = common::golden_principal_id(&load_pool()).await;
     let principal_id = principal_id_owned.as_str();
     let now = 1_700_400_000;
 
-    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]).await;
     let (auth_state, _identity, _auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
@@ -2106,7 +2117,7 @@ async fn anchor_digest_rejects_malformed() {
 #[tokio::test]
 async fn patch_bounded_to_is_unsigned_on_attestor() {
     let now = 1_700_500_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
 
     let (unbounded_status, unbounded) = get_json(
@@ -2165,7 +2176,7 @@ async fn patch_bounded_to_is_unsigned_on_attestor() {
 #[tokio::test]
 async fn sync_converges_and_refuses_tampered_or_missigned() {
     let now = 1_700_000_000;
-    let principal = common::golden_principal_id(&load_pool());
+    let principal = common::golden_principal_id(&load_pool()).await;
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_tip = authority
         .instance

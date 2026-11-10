@@ -265,11 +265,11 @@ async fn repeated_tip_get_does_not_replay_history() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    let pid = golden_principal_id(&pool).await;
     let (s, b) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &pid, 1_700_000_000),
+        build_genesis_push_body(&pool, &pid, 1_700_000_000).await,
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{b:?}");
@@ -304,12 +304,12 @@ async fn tip_after_new_commit_is_never_stale() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    let pid = golden_principal_id(&pool).await;
     let uri = format!("/tip?pr={pid}");
     let (s, b) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &pid, 1_700_000_000),
+        build_genesis_push_body(&pool, &pid, 1_700_000_000).await,
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{b:?}");
@@ -333,9 +333,10 @@ async fn tip_after_new_commit_is_never_stale() {
         .await
         .expect("load");
     let entries = cyphr_storage::export_commits(&stored).expect("export");
-    let principal =
-        cyphr_storage::load_principal_from_commits(genesis(), &entries).expect("replay");
-    let blobs = sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_100);
+    let principal = cyphr_storage::load_principal_from_commits(genesis(), &entries)
+        .await
+        .expect("replay");
+    let blobs = sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_100).await;
     let body = serde_json::json!({
         "principal_id": pid,
         "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),

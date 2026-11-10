@@ -57,12 +57,11 @@ const AUTHORITY: &str = "cyphr.me";
 
 /// Minimal single-threaded driver: poll with a no-op waker until ready.
 ///
-/// Deliberately NOT `futures::executor::block_on`: the core's synchronous
-/// commit-root bridge (`commit_root.rs`) already calls that internally, and
-/// `futures` executors panic when nested. A signer future must be drivable
-/// by an arbitrary caller-owned executor (tokio, wasm-bindgen-futures, ...),
-/// so the seam must not smuggle a second `futures` executor into the caller's
-/// poll. Requires only `!Send`-compatible polling.
+/// A signer future, and the core futures awaiting it, must be drivable by an
+/// arbitrary caller-owned executor (tokio, wasm-bindgen-futures, ...): this
+/// one knows nothing of the core and polls `!Send` futures, so passing here
+/// shows the seam needs no particular runtime. Over in-memory storage every
+/// core future completes without suspending.
 fn block_on<F: Future>(fut: F) -> F::Output {
     let mut fut = std::pin::pin!(fut);
     let mut cx = Context::from_waker(std::task::Waker::noop());
@@ -95,7 +94,7 @@ fn domain_key(pk: &test_fixtures::PoolKey) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(
             &k.alg,
@@ -108,6 +107,7 @@ fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> P
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -336,18 +336,20 @@ const GOLDEN: &[(&str, &str, &str)] = &[
 /// different key/alg than the signer's, the signer is handed anything but the
 /// cad of the commit pay, or signing through the seam alters sig/czd/cad
 /// relative to the legacy golden vectors.
-#[test]
-fn opaque_signer_finalizes_commit_with_legacy_bytes() {
+#[tokio::test]
+async fn opaque_signer_finalizes_commit_with_legacy_bytes() {
     let pool = pool();
     for (name, want_czd, want_sig) in GOLDEN {
         let signer = OpaqueSigner::from_pool(&pool, name);
         let target = pool.get("key_a").expect("key_a");
         let mut principal = genesis_of(
             Principal::implicit(domain_key(pool.get(name).expect("genesis")))
+                .await
                 .expect("genesis principal"),
             pool.get(name).expect("genesis"),
             &[],
-        );
+        )
+        .await;
         let scope = open_scope(&mut principal, &signer, target);
 
         let commit = finalize(scope, &signer).unwrap_or_else(|e| panic!("{name}: finalize: {e}"));
@@ -437,8 +439,8 @@ impl Signer for LocalSigner {
 /// signature (never-ready future is dropped, no commit); the core signs more
 /// than once per commit; or the cad handed over is not
 /// `canonical_hash(commit pay)`.
-#[test]
-fn not_send_suspending_signer_finalizes_exactly_once() {
+#[tokio::test]
+async fn not_send_suspending_signer_finalizes_exactly_once() {
     let pool = pool();
     let calls = Rc::new(Cell::new(0));
     let seen_cad = Rc::new(std::cell::RefCell::new(None));
@@ -450,10 +452,12 @@ fn not_send_suspending_signer_finalizes_exactly_once() {
     let target = pool.get("key_a").expect("key_a");
     let mut principal = genesis_of(
         Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .await
             .expect("genesis principal"),
         pool.get("golden").expect("genesis"),
         &[],
-    );
+    )
+    .await;
     // Mutation signing also goes through the signer; reset the counter after.
     let scope = open_scope(&mut principal, &signer, target);
     calls.set(0);
@@ -471,32 +475,32 @@ fn not_send_suspending_signer_finalizes_exactly_once() {
 }
 
 /// CLAIM (c-signer-shape, split API; scenario: yes — full genesis ->
-/// mutation -> prepare/sign/finish): the three-step API lets a caller whose
-/// executor is `futures::executor` (which cannot be nested with the core's
-/// commit-root `block_on`) sign on that executor and still finish: prepare
-/// and finish are synchronous and the signature is awaited between them.
+/// mutation -> prepare/sign/finish): the three-step API lets a caller sign
+/// on an executor of its own (here `futures::executor`) between the
+/// synchronous prepare and the finish, and the signature it returns commits.
 ///
-/// RED IF: prepare or finish become async or require the caller's executor,
-/// prepare mutates the scope, or the signature is awaited inside finish
-/// (finish would then nest `futures` executors and panic).
-#[test]
-fn split_api_works_under_a_futures_executor() {
+/// RED IF: prepare becomes async or mutates the scope, or finish signs
+/// again instead of taking the caller's signature.
+#[tokio::test]
+async fn split_api_works_under_a_futures_executor() {
     let pool = pool();
     let signer = OpaqueSigner::from_pool(&pool, "golden");
     let target = pool.get("key_a").expect("key_a");
     let mut principal = genesis_of(
         Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .await
             .expect("genesis principal"),
         pool.get("golden").expect("genesis"),
         &[],
-    );
+    )
+    .await;
     let scope = open_scope(&mut principal, &signer, target);
 
     let prepared = scope
         .prepare_commit(&signer, NOW + 1, AUTHORITY)
         .expect("prepare is synchronous");
     let sig = futures::executor::block_on(signer.sign(prepared.cad())).expect("sign");
-    let commit = scope.finish_commit(prepared, sig).expect("finish");
+    let commit = scope.finish_commit(prepared, sig).await.expect("finish");
 
     assert_eq!(&commit.commit_tx().0[0].coz().czd().to_b64(), GOLDEN[0].1);
 }
@@ -521,16 +525,18 @@ fn assert_no_commit(principal: &Principal, pr_before: &str, what: &str) {
 
 /// Run one faulty finalize on a fresh principal and return the error,
 /// asserting no commit landed.
-fn faulty_finalize_err(pool: &test_fixtures::Pool, name: &str, fault: Fault) -> Error {
+async fn faulty_finalize_err(pool: &test_fixtures::Pool, name: &str, fault: Fault) -> Error {
     let what = format!("{name}/{fault:?}");
     let good = OpaqueSigner::from_pool(pool, name);
     let target = pool.get("key_a").expect("key_a");
     let mut principal = genesis_of(
         Principal::implicit(domain_key(pool.get(name).expect("genesis")))
+            .await
             .expect("genesis principal"),
         pool.get(name).expect("genesis"),
         &[],
-    );
+    )
+    .await;
     let pr_before = principal.pr_tagged().expect("pr");
     // The mutation is signed by the honest signer; only the commit signer is faulty.
     let scope = open_scope(&mut principal, &good, target);
@@ -553,11 +559,11 @@ fn faulty_finalize_err(pool: &test_fixtures::Pool, name: &str, fault: Fault) -> 
 /// RED IF: a backend error is swallowed into an empty signature; an
 /// unverified signature reaches a commit; or a fault surfaces as the wrong
 /// type (e.g. `MalformedPayload`, the legacy catch-all for sign failure).
-#[test]
-fn faulty_signers_yield_typed_errors_and_no_commit() {
+#[tokio::test]
+async fn faulty_signers_yield_typed_errors_and_no_commit() {
     let pool = pool();
     for name in ["golden", "diana_es384", "eve_ed25519"] {
-        let e = faulty_finalize_err(&pool, name, Fault::Backend);
+        let e = faulty_finalize_err(&pool, name, Fault::Backend).await;
         assert!(
             matches!(e, Error::Signer(SignerError::Backend(_))),
             "{name}: backend failure -> typed Signer error, got {e:?}"
@@ -568,7 +574,7 @@ fn faulty_signers_yield_typed_errors_and_no_commit() {
             Fault::Extended,
             Fault::WrongCad,
         ] {
-            let e = faulty_finalize_err(&pool, name, fault.clone());
+            let e = faulty_finalize_err(&pool, name, fault.clone()).await;
             assert!(
                 matches!(e, Error::InvalidSignature),
                 "{name}/{fault:?}: expected InvalidSignature, got {e:?}"
@@ -588,8 +594,8 @@ fn faulty_signers_yield_typed_errors_and_no_commit() {
 /// scenario with the genuine low-S signature succeeds, and the grounding
 /// asserts below show the high-S twin is really high-S yet cryptographically
 /// valid for the cad, so rejection can only come from the canonicality check.
-#[test]
-fn high_s_signature_is_rejected_not_normalized() {
+#[tokio::test]
+async fn high_s_signature_is_rejected_not_normalized() {
     let pool = pool();
     let good = OpaqueSigner::from_pool(&pool, "golden");
     assert_eq!(good.alg(), "ES256");
@@ -610,7 +616,7 @@ fn high_s_signature_is_rejected_not_normalized() {
         Some(false)
     );
 
-    let e = faulty_finalize_err(&pool, "golden", Fault::HighS);
+    let e = faulty_finalize_err(&pool, "golden", Fault::HighS).await;
     assert!(
         matches!(e, Error::InvalidSignature),
         "high-S must be rejected as InvalidSignature, got {e:?}"
@@ -620,10 +626,12 @@ fn high_s_signature_is_rejected_not_normalized() {
     let target = pool.get("key_a").expect("key_a");
     let mut principal = genesis_of(
         Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .await
             .expect("genesis principal"),
         pool.get("golden").expect("genesis"),
         &[],
-    );
+    )
+    .await;
     let scope = open_scope(&mut principal, &good, target);
     finalize(scope, &good).expect("low-S signature commits");
 }
@@ -644,10 +652,13 @@ proptest! {
         flip in any::<usize>(),
         use_flip in any::<bool>(),
     ) {
+        block_on(async move {
         let name = ["golden", "diana_es384", "eve_ed25519"][name_idx];
         let fault = if use_flip { Fault::BitFlip(flip) } else { Fault::Bytes(bytes) };
-        let e = faulty_finalize_err(&pool(), name, fault);
+        let e = faulty_finalize_err(&pool(), name, fault).await;
         prop_assert!(matches!(e, Error::InvalidSignature), "got {e:?}");
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 }
 
@@ -712,8 +723,8 @@ fn commit_err(
 ///
 /// RED IF: the core accepts any self-consistent signer (checks the signature
 /// only against the key the signer reports), i.e. `finalize` returns `Ok`.
-#[test]
-fn signer_outside_principal_is_unknown_key() {
+#[tokio::test]
+async fn signer_outside_principal_is_unknown_key() {
     let pool = pool();
     // (genesis, outsider): the outsider is a real pool key, absent from the principal.
     for (genesis, outsider) in [
@@ -726,10 +737,12 @@ fn signer_outside_principal_is_unknown_key() {
         let foreign = OpaqueSigner::from_pool(&pool, outsider);
         let mut principal = genesis_of(
             Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
+                .await
                 .expect("genesis principal"),
             pool.get(genesis).expect("genesis"),
             &[],
-        );
+        )
+        .await;
         let e = commit_err(&mut principal, &honest, "key_a", &foreign, &pool, &what);
         assert!(
             matches!(e, Error::UnknownKey),
@@ -749,8 +762,8 @@ fn signer_outside_principal_is_unknown_key() {
 /// whether alg or signature is checked first.
 ///
 /// RED IF: finalize returns `Ok` (tmb/pub mismatch unchecked).
-#[test]
-fn signer_claiming_anothers_tmb_is_rejected() {
+#[tokio::test]
+async fn signer_claiming_anothers_tmb_is_rejected() {
     let pool = pool();
     for (genesis, impostor) in [
         ("golden", "alice"),
@@ -765,10 +778,12 @@ fn signer_claiming_anothers_tmb_is_rejected() {
         };
         let mut principal = genesis_of(
             Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
+                .await
                 .expect("genesis principal"),
             pool.get(genesis).expect("genesis"),
             &[],
-        );
+        )
+        .await;
         let e = commit_err(&mut principal, &honest, "key_a", &claimed, &pool, &what);
         if genesis == "golden" {
             assert!(
@@ -785,8 +800,8 @@ fn signer_claiming_anothers_tmb_is_rejected() {
 ///
 /// RED IF: the core never consults the principal's revocation state for the
 /// commit signer (finalize returns `Ok`).
-#[test]
-fn revoked_signer_is_key_revoked() {
+#[tokio::test]
+async fn revoked_signer_is_key_revoked() {
     let pool = pool();
     for revoked_name in ["key_a", "diana_es384", "eve_ed25519"] {
         let what = format!("revoked {revoked_name}");
@@ -794,10 +809,12 @@ fn revoked_signer_is_key_revoked() {
         let revoked = OpaqueSigner::from_pool(&pool, revoked_name);
         let mut principal = genesis_of(
             Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+                .await
                 .expect("genesis principal"),
             pool.get("golden").expect("genesis"),
             &[],
-        );
+        )
+        .await;
 
         // Commit 1: genesis adds the key that will later be revoked.
         let scope = open_scope(

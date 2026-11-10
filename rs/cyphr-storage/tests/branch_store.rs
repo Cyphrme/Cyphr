@@ -59,7 +59,7 @@ fn key_of(k: &Kp) -> cyphr::Key {
 
 /// Apply `pay` signed by `signer` (optionally introducing `sidecar`) and
 /// finalize the commit with `finalizer`.
-fn apply(
+async fn apply(
     p: &mut cyphr::Principal,
     signer: &Kp,
     finalizer: &Kp,
@@ -85,6 +85,7 @@ fn apply(
             now,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 }
 
@@ -97,7 +98,7 @@ fn create_pay(signer: &Kp, new: &Kp, now: i64) -> serde_json::Value {
 
 /// `signer` creates `new` at time `now` and finalizes the commit itself.
 /// Distinct `now` values give distinct commits at one position.
-fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
+async fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
     apply(
         p,
         signer,
@@ -105,7 +106,8 @@ fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
         create_pay(signer, new, now),
         Some(key_of(new)),
         now,
-    );
+    )
+    .await;
 }
 
 fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
@@ -136,10 +138,13 @@ fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
 
 /// The principal with genesis keys `keys` (the first signs), after its
 /// genesis commit at `now` (SPEC 5.1).
-fn genesis_of(keys: &[&Kp], now: i64) -> cyphr::Principal {
-    let mut p = cyphr::Principal::implicit(key_of(keys[0])).expect("genesis");
+async fn genesis_of(keys: &[&Kp], now: i64) -> cyphr::Principal {
+    let mut p = cyphr::Principal::implicit(key_of(keys[0]))
+        .await
+        .expect("genesis");
     let others: Vec<cyphr::Key> = keys[1..].iter().map(|k| key_of(k)).collect();
     p.commit_genesis(&signer_of(keys[0]), &others, now, "cyphr.me")
+        .await
         .expect("genesis commit");
     p
 }
@@ -162,12 +167,12 @@ struct Fork {
 }
 
 impl Fork {
-    fn new(rivals: usize) -> Self {
+    async fn new(rivals: usize) -> Self {
         let pool = load_pool();
         let golden = kp(&pool, "golden");
         let key_a = kp(&pool, "key_a");
         let genesis = Genesis::Explicit(vec![key_of(&golden), key_of(&key_a)]);
-        let base = genesis_of(&[&golden, &key_a], NOW);
+        let base = genesis_of(&[&golden, &key_a], NOW).await;
         let pre = base.pr_tagged().expect("pr after commit 0");
         let first = blobs(&base, 0);
         let id = test_fixtures::bundle::genesis_id(&first).expect("genesis id");
@@ -181,31 +186,31 @@ impl Fork {
             golden,
         };
         for n in 0..rivals {
-            fork.add_rival(n as i64);
+            fork.add_rival(n as i64).await;
         }
         fork
     }
 
     /// The principal after the rival commit `salt` at position 1.
-    fn rival_state(&self, salt: i64) -> cyphr::Principal {
+    async fn rival_state(&self, salt: i64) -> cyphr::Principal {
         let pool = load_pool();
-        let mut p = self.base.clone();
+        let mut p = self.base.fork().await.expect("fork");
         let new = kp(&pool, if salt % 2 == 0 { "key_b" } else { "alice" });
-        create_key(&mut p, &self.golden, &new, NOW + 1 + salt);
+        create_key(&mut p, &self.golden, &new, NOW + 1 + salt).await;
         p
     }
 
     /// One more valid commit at position 1; `salt` makes it distinct.
-    fn add_rival(&mut self, salt: i64) {
-        let p = self.rival_state(salt);
+    async fn add_rival(&mut self, salt: i64) {
+        let p = self.rival_state(salt).await;
         self.rivals.push(blobs(&p, 1));
     }
 
     /// A second, divergent genesis commit of the same principal (the same
     /// genesis keys, so the same PG, at another time).
-    fn second_genesis(&self) -> Vec<Vec<u8>> {
+    async fn second_genesis(&self) -> Vec<Vec<u8>> {
         let key_a = kp(&load_pool(), "key_a");
-        blobs(&genesis_of(&[&self.golden, &key_a], NOW + 7), 0)
+        blobs(&genesis_of(&[&self.golden, &key_a], NOW + 7).await, 0)
     }
 
     async fn submit(
@@ -268,7 +273,7 @@ async fn blob_count(e: &Engine) -> usize {
 /// `principal_id_canonical.rs`.
 #[tokio::test]
 async fn fork_commit_is_refused_as_the_tip() {
-    let f = Fork::new(2);
+    let f = Fork::new(2).await;
     let (e, outcomes) = f.engine_with(&[0]).await;
     assert!(
         outcomes[0].is_ok(),
@@ -299,7 +304,7 @@ async fn fork_commit_is_refused_as_the_tip() {
 /// build by corrupting a valid one than as a scenario.
 #[tokio::test]
 async fn unverifiable_rival_is_refused_and_stores_nothing() {
-    let f = Fork::new(2);
+    let f = Fork::new(2).await;
     let (e, _) = f.engine_with(&[0]).await;
     let blobs_before = blob_count(&e).await;
     let tip_before = e.get_tip(&f.id).await.expect("tip").expect("stored");
@@ -328,11 +333,11 @@ async fn unverifiable_rival_is_refused_and_stores_nothing() {
 /// Green today. End to end at the engine seam: yes.
 #[tokio::test]
 async fn second_genesis_is_refused_as_the_tip() {
-    let f = Fork::new(0);
+    let f = Fork::new(0).await;
     let (e, _) = f.engine_with(&[]).await;
     let before = e.get_tip(&f.id).await.expect("tip").expect("stored");
     assert!(
-        f.submit(&e, &f.second_genesis()).await.is_err(),
+        f.submit(&e, &f.second_genesis().await).await.is_err(),
         "a second commit 0 must be refused"
     );
     let after = e.get_tip(&f.id).await.expect("tip").expect("stored");
@@ -354,11 +359,11 @@ struct Revoked {
     theft: Vec<Vec<u8>>,
 }
 
-fn revoked() -> Revoked {
-    let f = Fork::new(0);
+async fn revoked() -> Revoked {
+    let f = Fork::new(0).await;
     let pool = load_pool();
     let key_a = kp(&pool, "key_a");
-    let mut canonical = f.base.clone();
+    let mut canonical = f.base.fork().await.expect("fork");
     apply(
         &mut canonical,
         &f.golden,
@@ -367,9 +372,10 @@ fn revoked() -> Revoked {
                            "tmb": f.golden.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/revoke"}),
         None,
         NOW + 10,
-    );
-    let mut rival = f.base.clone();
-    create_key(&mut rival, &f.golden, &kp(&pool, "key_b"), NOW + 11);
+    )
+    .await;
+    let mut rival = f.base.fork().await.expect("fork");
+    create_key(&mut rival, &f.golden, &kp(&pool, "key_b"), NOW + 11).await;
     let theft = blobs(&rival, 1);
     Revoked {
         f,
@@ -385,10 +391,10 @@ fn revoked() -> Revoked {
 /// `golden` through `coz` directly. Its arrow cannot match (the state
 /// root after a revoked-key transaction cannot be computed), so the
 /// closing coz is not self-consistent with the swapped transaction.
-fn after_revocation(r: &Revoked) -> Vec<Vec<u8>> {
+async fn after_revocation(r: &Revoked) -> Vec<Vec<u8>> {
     let pool = load_pool();
-    let mut q = r.canonical.clone();
-    create_key(&mut q, &r.key_a, &kp(&pool, "bob"), NOW + 12);
+    let mut q = r.canonical.fork().await.expect("fork");
+    create_key(&mut q, &r.key_a, &kp(&pool, "bob"), NOW + 12).await;
     let mut bundle = blobs(&q, 2);
     let mut coz_v: serde_json::Value = serde_json::from_slice(&bundle[0]).expect("tx coz");
     coz_v["pay"]["tmb"] = serde_json::json!(r.f.golden.tmb.to_b64());
@@ -412,7 +418,7 @@ fn after_revocation(r: &Revoked) -> Vec<Vec<u8>> {
 /// arrow mismatch, so it is attributable to the revocation.
 #[tokio::test]
 async fn revoked_key_bundle_is_refused_and_stores_nothing() {
-    let r = revoked();
+    let r = revoked().await;
     let (e, _) = {
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
@@ -426,8 +432,8 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
 
     // Control: the same commit signed by the active key_a is accepted.
     let pool = load_pool();
-    let mut ok = r.canonical.clone();
-    create_key(&mut ok, &r.key_a, &kp(&pool, "bob"), NOW + 12);
+    let mut ok = r.canonical.fork().await.expect("fork");
+    create_key(&mut ok, &r.key_a, &kp(&pool, "bob"), NOW + 12).await;
     let ok_blobs = blobs(&ok, 2);
     let control = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     r.f.submit(&control, &r.f.first)
@@ -440,7 +446,7 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
         .await
         .expect("control: an active key commits at position 2");
 
-    let refused = r.f.submit(&e, &after_revocation(&r)).await;
+    let refused = r.f.submit(&e, &after_revocation(&r).await).await;
     assert!(
         matches!(
             refused,
@@ -486,7 +492,7 @@ mod retained {
     /// End to end at the engine seam: yes.
     #[tokio::test]
     async fn refused_fork_is_retained_as_a_non_tip_branch() {
-        let f = Fork::new(2);
+        let f = Fork::new(2).await;
         let (e, outcomes) = f.engine_with(&[0, 1]).await;
         assert!(
             outcomes[0].is_ok() && outcomes[1].is_err(),
@@ -536,7 +542,7 @@ mod retained {
     /// yes.
     #[tokio::test]
     async fn rebuild_keeps_tip_and_branches_in_both_manifest_orders() {
-        let f = Fork::new(2);
+        let f = Fork::new(2).await;
         for order in [[0, 1], [1, 0]] {
             let (e, _) = f.engine_with(&order).await;
             let tip = e.get_tip(&f.id).await.expect("tip").expect("stored");
@@ -565,22 +571,22 @@ mod retained {
     /// A principal of `n` commits (golden creates one pool key per commit)
     /// plus an authenticated rival at position 1, and the rival's blobs.
     async fn long_chain(n: usize) -> (Fork, Engine, Vec<Vec<u8>>, Vec<cyphr::Principal>) {
-        let f = Fork::new(0);
+        let f = Fork::new(0).await;
         let pool = load_pool();
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         f.submit(&e, &f.first).await.expect("commit 0");
-        let mut p = f.base.clone();
-        let mut states = vec![p.clone()];
+        let mut p = f.base.fork().await.expect("fork");
+        let mut states = vec![p.fork().await.expect("fork")];
         let names = ["key_b", "alice", "bob", "diana_es384", "eve_ed25519"];
         for (i, name) in names.iter().take(n - 1).enumerate() {
-            create_key(&mut p, &f.golden, &kp(&pool, name), NOW + 100 + i as i64);
+            create_key(&mut p, &f.golden, &kp(&pool, name), NOW + 100 + i as i64).await;
             f.submit(&e, &blobs(&p, i + 1))
                 .await
                 .expect("canonical commit");
-            states.push(p.clone());
+            states.push(p.fork().await.expect("fork"));
         }
-        let mut r = f.base.clone();
-        create_key(&mut r, &f.golden, &kp(&pool, "eve_ed25519"), NOW + 900);
+        let mut r = f.base.fork().await.expect("fork");
+        create_key(&mut r, &f.golden, &kp(&pool, "eve_ed25519"), NOW + 900).await;
         let rival = blobs(&r, 1);
         (f, e, rival, states)
     }
@@ -601,7 +607,7 @@ mod retained {
         // Unknown signer: carol never held a key of this principal.
         let pool = load_pool();
         let carol = kp(&pool, "carol");
-        let stranger = genesis_of(&[&carol, &kp(&pool, "bob")], NOW + 5);
+        let stranger = genesis_of(&[&carol, &kp(&pool, "bob")], NOW + 5).await;
         let before = e.retention_replays();
         assert!(f.submit(&e, &blobs(&stranger, 0)).await.is_err());
         assert_eq!(e.retention_replays(), before, "unknown signer was replayed");
@@ -632,8 +638,8 @@ mod retained {
         // joined at commit 2, so a rival at the tip's position (4, after
         // commits 0..=3) is tried at positions 3 and 4 and no earlier.
         let alice = kp(&pool, "alice");
-        let mut late = states[3].clone();
-        create_key(&mut late, &alice, &kp(&pool, "carol"), NOW + 950);
+        let mut late = states[3].fork().await.expect("fork");
+        create_key(&mut late, &alice, &kp(&pool, "carol"), NOW + 950).await;
         let trials = e.retention_trials();
         assert!(f.submit(&e, &blobs(&late, 4)).await.is_err());
         assert_eq!(
@@ -658,10 +664,10 @@ mod retained {
     /// not produce. End to end at the engine seam: yes.
     #[tokio::test]
     async fn branch_replay_from_blobs_equals_the_branch_as_ingested() {
-        let f = Fork::new(2);
+        let f = Fork::new(2).await;
         let (e, _) = f.engine_with(&[0, 1]).await;
         // `rivals[1]` was refused; the independent derivation of its state.
-        let entry = cyphr_storage::export_commits(&f.rival_state(1))
+        let entry = cyphr_storage::export_commits(&f.rival_state(1).await)
             .expect("export")
             .remove(1);
 
@@ -707,9 +713,9 @@ mod retained {
     impl Fork {
         /// A valid commit at position 1, signed by `signer` (a key active
         /// at the fork's `pre`); `salt` makes it distinct.
-        fn rival_by(&self, signer: &Kp, salt: i64) -> Vec<Vec<u8>> {
-            let mut p = self.base.clone();
-            create_key(&mut p, signer, &fresh_kp(), NOW + 1 + salt);
+        async fn rival_by(&self, signer: &Kp, salt: i64) -> Vec<Vec<u8>> {
+            let mut p = self.base.fork().await.expect("fork");
+            create_key(&mut p, signer, &fresh_kp(), NOW + 1 + salt).await;
             blobs(&p, 1)
         }
     }
@@ -723,12 +729,12 @@ mod retained {
     #[tokio::test]
     async fn a_key_past_its_quota_is_refused_naming_it() {
         const BRANCH_PER_KEY: usize = 2;
-        let mut f = Fork::new(0);
+        let mut f = Fork::new(0).await;
         let (e, _) = f.engine_with(&[]).await;
         // The first rival takes the position; the quota counts rivals
         // refused as the tip.
         for n in 0..=BRANCH_PER_KEY {
-            f.add_rival(n as i64);
+            f.add_rival(n as i64).await;
             f.submit(&e, f.rivals.last().expect("rival"))
                 .await
                 .or_else(|err| match err {
@@ -738,7 +744,7 @@ mod retained {
                 .expect("within the quota the rival is retained");
         }
         let (blobs_before, listed_before) = (blob_count(&e).await, branches(&e, &f.id).await);
-        f.add_rival(BRANCH_PER_KEY as i64 + 1);
+        f.add_rival(BRANCH_PER_KEY as i64 + 1).await;
         let refused = f.submit(&e, f.rivals.last().expect("rival")).await;
         match refused {
             Err(EngineError::BranchLimit { key }) => {
@@ -769,14 +775,14 @@ mod retained {
     /// at the engine seam: yes.
     #[tokio::test]
     async fn one_keys_flood_leaves_a_slot_for_another_key() {
-        let mut f = Fork::new(0);
+        let mut f = Fork::new(0).await;
         let (e, _) = f.engine_with(&[]).await;
         for n in 0..6 {
-            f.add_rival(n);
+            f.add_rival(n).await;
             let _ = f.submit(&e, f.rivals.last().expect("rival")).await;
         }
         let key_a = kp(&load_pool(), "key_a");
-        let other = f.rival_by(&key_a, 50);
+        let other = f.rival_by(&key_a, 50).await;
         f.submit(&e, &other).await.expect_err("refused as the tip");
         let listed = e.list_branches(&f.id).await.expect("list_branches");
         let kept_other = listed.iter().filter(|b| !b.canonical).count();
@@ -796,11 +802,11 @@ mod retained {
         const SIGNERS: usize = 9;
         let golden = kp(&load_pool(), "golden");
         let signers: Vec<Kp> = (0..SIGNERS).map(|_| fresh_kp()).collect();
-        let mut base = genesis_of(&[&golden], NOW);
+        let mut base = genesis_of(&[&golden], NOW).await;
         let genesis = Genesis::Implicit(key_of(&golden));
         let id = cyphr_storage::engine::genesis_principal_id(&genesis).expect("id");
         for (i, k) in signers.iter().enumerate() {
-            create_key(&mut base, &golden, k, NOW + 1 + i as i64);
+            create_key(&mut base, &golden, k, NOW + 1 + i as i64).await;
         }
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         let submit = |b: Vec<Vec<u8>>| {
@@ -814,19 +820,21 @@ mod retained {
         for i in 0..=SIGNERS {
             submit(blobs(&base, i)).await.expect("shared prefix");
         }
-        let rival = |signer: &Kp, salt: i64| {
-            let mut p = base.clone();
-            create_key(&mut p, signer, &fresh_kp(), NOW + 1000 + salt);
+        let rival = async |signer: &Kp, salt: i64| {
+            let mut p = base.fork().await.expect("fork");
+            create_key(&mut p, signer, &fresh_kp(), NOW + 1000 + salt).await;
             blobs(&p, SIGNERS + 1)
         };
         // Signer 0's first rival takes the position; signers 1..=8 then fill
         // all sixteen slots.
-        submit(rival(&signers[0], 0)).await.expect("canonical");
+        submit(rival(&signers[0], 0).await)
+            .await
+            .expect("canonical");
         let mut salt = 1;
         for signer in &signers[1..] {
             for _ in 0..2 {
                 assert!(matches!(
-                    submit(rival(signer, salt)).await,
+                    submit(rival(signer, salt).await).await,
                     Err(EngineError::Protocol(_))
                 ));
                 salt += 1;
@@ -840,7 +848,7 @@ mod retained {
             .filter(|b| !b.canonical)
             .count();
         assert_eq!(kept, 16, "every key within its quota is retained");
-        match submit(rival(&signers[0], salt)).await {
+        match submit(rival(&signers[0], salt).await).await {
             Err(EngineError::BranchLimit { key }) => {
                 assert_eq!(key, signers[0].tmb.to_b64(), "the refusal names the key")
             },
@@ -855,7 +863,7 @@ mod retained {
     /// engine seam: yes (the counters are the engine's cost surface).
     #[tokio::test]
     async fn a_held_commit_costs_retention_no_trial() {
-        let f = Fork::new(2);
+        let f = Fork::new(2).await;
         let (e, _) = f.engine_with(&[0, 1]).await;
         let before = e.retention_trials();
         f.submit(&e, &f.rivals[0])
@@ -925,7 +933,7 @@ mod retained {
     /// store can only be injected here.
     #[tokio::test]
     async fn a_storage_fault_while_retaining_keeps_the_original_refusal() {
-        let f = Fork::new(2);
+        let f = Fork::new(2).await;
         let e = StorageEngine::new(
             Flaky {
                 inner: MemoryBlobStore::new(),
@@ -962,10 +970,10 @@ mod retained {
     /// engine seam: yes.
     #[tokio::test]
     async fn second_genesis_is_retained_with_no_pre() {
-        let f = Fork::new(0);
+        let f = Fork::new(0).await;
         let (e, _) = f.engine_with(&[]).await;
         assert!(
-            f.submit(&e, &f.second_genesis()).await.is_err(),
+            f.submit(&e, &f.second_genesis().await).await.is_err(),
             "premise: refused"
         );
         let tip = e.get_tip(&f.id).await.expect("tip").expect("stored");
@@ -996,7 +1004,7 @@ mod retained {
     /// at the engine seam: yes.
     #[tokio::test]
     async fn rival_at_the_revocation_position_is_retained() {
-        let r = revoked();
+        let r = revoked().await;
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
         r.f.submit(&e, &blobs(&r.canonical, 1))
@@ -1032,14 +1040,14 @@ mod retained {
     /// as a branch. End to end at the engine seam: yes.
     #[tokio::test]
     async fn revoked_key_bundle_is_not_listed() {
-        let r = revoked();
+        let r = revoked().await;
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
         r.f.submit(&e, &blobs(&r.canonical, 1))
             .await
             .expect("revocation");
         let listed = branches(&e, &r.f.id).await;
-        assert!(r.f.submit(&e, &after_revocation(&r)).await.is_err());
+        assert!(r.f.submit(&e, &after_revocation(&r).await).await.is_err());
         assert_eq!(
             branches(&e, &r.f.id).await,
             listed,

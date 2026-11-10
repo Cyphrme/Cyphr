@@ -214,9 +214,9 @@ fn some_429(statuses: &[u16]) -> bool {
 
 /// A brand-new principal's genesis push body (its genesis commit: golden
 /// creates itself and `key_a`).
-fn genesis_body(principal_id: &str, now: i64) -> String {
+async fn genesis_body(principal_id: &str, now: i64) -> String {
     let pool = common::load_pool();
-    common::build_genesis_push_body(&pool, principal_id, now)
+    common::build_genesis_push_body(&pool, principal_id, now).await
 }
 
 /// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
@@ -233,11 +233,11 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
 /// itself and `key_a`); the follow-on is a non-genesis "golden adds key_b"
 /// commit chained onto it, which the protocol accepts once the principal is
 /// resident -- so the ONLY thing that can refuse it is the count quota.
-fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
+async fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
     let pool = common::load_pool();
     (
-        common::build_genesis_push_body(&pool, pid, now),
-        common::build_second_commit_push_body(&pool, pid, now, now + 1),
+        common::build_genesis_push_body(&pool, pid, now).await,
+        common::build_second_commit_push_body(&pool, pid, now, now + 1).await,
     )
 }
 
@@ -299,7 +299,7 @@ async fn per_operation_push_bucket_limits_reads_independent() {
             server
                 .post(
                     "/push",
-                    &genesis_body(&format!("perop-{i}"), NOW_BASE + i as i64),
+                    &genesis_body(&format!("perop-{i}"), NOW_BASE + i as i64).await,
                 )
                 .await
                 .status,
@@ -379,8 +379,8 @@ async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
 
     // The victim establishes residency with an active key via its genesis push
     // (from its own IP). Under generous per-op/per-IP limits this succeeds.
-    let victim_id = common::golden_principal_id(&common::load_pool());
-    let (genesis, followon) = genesis_and_followon(&victim_id, NOW_BASE + 700);
+    let victim_id = common::golden_principal_id(&common::load_pool()).await;
+    let (genesis, followon) = genesis_and_followon(&victim_id, NOW_BASE + 700).await;
     let g = server
         .request("POST", "/push", Some(&genesis), "127.0.0.1")
         .await;
@@ -443,7 +443,7 @@ async fn request_size_cap_rejects_oversized_body() {
 
     // A normal genesis body is far under the cap and must still be admitted.
     let under = server
-        .post("/push", &genesis_body("size-ok", NOW_BASE + 5))
+        .post("/push", &genesis_body("size-ok", NOW_BASE + 5).await)
         .await;
     assert_ne!(
         under.status, 413,
@@ -508,9 +508,10 @@ async fn per_principal_count_quota_refuses_over_cap() {
     let server = TestServer::with_limits(&limits).await;
 
     let (genesis, followon) = genesis_and_followon(
-        &common::golden_principal_id(&common::load_pool()),
+        &common::golden_principal_id(&common::load_pool()).await,
         NOW_BASE + 100,
-    );
+    )
+    .await;
 
     let g = server.post("/push", &genesis).await;
     assert_eq!(
@@ -571,7 +572,10 @@ async fn both_fences_compose_in_serve() {
 
     // Admission still fires: a no-token genesis under invite is 403.
     let denied = server
-        .post("/push", &genesis_body("coexist-admission", NOW_BASE + 200))
+        .post(
+            "/push",
+            &genesis_body("coexist-admission", NOW_BASE + 200).await,
+        )
         .await;
     assert_eq!(
         denied.status, 403,
@@ -613,9 +617,10 @@ async fn bare_server_boots_and_self_bootstraps() {
             .post(
                 "/push",
                 &genesis_body(
-                    &common::golden_principal_id(&common::load_pool()),
+                    &common::golden_principal_id(&common::load_pool()).await,
                     NOW_BASE + 400,
-                ),
+                )
+                .await,
             )
             .await
             .status,

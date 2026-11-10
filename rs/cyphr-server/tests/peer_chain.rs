@@ -77,10 +77,10 @@ impl Connector for RouterConnector {
 /// Push bodies for two successive commits of the standard principal: its
 /// genesis commit (`golden` creates itself and `key_a`, SPEC 5.1), then a
 /// `key/create` of `key_b` signed by `golden` on that genesis state.
-fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, String) {
+async fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, String) {
     let genesis_now = 1_700_000_000;
-    let first = build_genesis_push_body(pool, pr, genesis_now);
-    let second = build_second_commit_push_body(pool, pr, genesis_now, 1_700_000_100);
+    let first = build_genesis_push_body(pool, pr, genesis_now).await;
+    let second = build_second_commit_push_body(pool, pr, genesis_now, 1_700_000_100).await;
     (first, second)
 }
 
@@ -123,13 +123,13 @@ async fn attestor_state() -> (
     .expect("bootstrap the server principal");
     state.principal = Some(Arc::new(sp));
     let pool = load_pool();
-    let pr = golden_principal_id(&pool);
+    let pr = golden_principal_id(&pool).await;
     (Arc::new(state), identity, dir, pr)
 }
 
 async fn push_golden(app: &Router, pr: &str) {
     let pool = load_pool();
-    let (first, second) = two_commit_bodies(&pool, pr);
+    let (first, second) = two_commit_bodies(&pool, pr).await;
     for body in [first, second] {
         let (status, resp) = post_json(app.clone(), "/push", body).await;
         assert_eq!(status, StatusCode::CREATED, "{resp:?}");
@@ -160,7 +160,7 @@ async fn client_follows_the_server_chain_across_a_key_rotation() {
     push_golden(&app, &pr).await;
 
     let (pg, genesis_key) = discover(&app).await;
-    let mut held = PeerChain::pin(&pg, genesis_key);
+    let mut held = PeerChain::pin(&pg, genesis_key).await;
     held.follow(&RouterConnector::new(app.clone()))
         .await
         .expect("follow the server chain");
@@ -224,7 +224,7 @@ async fn statement_signed_by_the_retired_key_is_refused() {
     push_golden(&app, &pr).await;
 
     let (pg, genesis_key) = discover(&app).await;
-    let mut held = PeerChain::pin(&pg, genesis_key);
+    let mut held = PeerChain::pin(&pg, genesis_key).await;
     let carrier = RouterConnector::new(app.clone());
 
     let (_, tip) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
@@ -266,7 +266,7 @@ async fn pin_naming_another_server_pg_is_refused() {
 
     let (pg, genesis_key) = discover(&app).await;
     assert_ne!(pg, pr, "the golden principal is not the server's own");
-    let mut held = PeerChain::pin(&pr, genesis_key);
+    let mut held = PeerChain::pin(&pr, genesis_key).await;
     let refused = held.follow(&RouterConnector::new(app)).await;
     assert!(
         matches!(refused, Err(PeerFailure::PinMismatch { .. })),
@@ -290,7 +290,7 @@ async fn retired_key_is_accepted_until_the_caller_follows_again() {
     let app = build_router(state.clone());
     push_golden(&app, &pr).await;
     let (pg, genesis_key) = discover(&app).await;
-    let mut held = PeerChain::pin(&pg, genesis_key);
+    let mut held = PeerChain::pin(&pg, genesis_key).await;
     held.follow(&RouterConnector::new(app.clone()))
         .await
         .expect("follow before the rotation");

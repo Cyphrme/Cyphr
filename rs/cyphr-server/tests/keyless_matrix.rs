@@ -121,10 +121,10 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let pool = load_pool();
     // The id the genesis commit derives: its PG (SPEC 5.1).
-    let principal_id_derived = common::golden_principal_id(&pool);
+    let principal_id_derived = common::golden_principal_id(&pool).await;
     let principal_id = principal_id_derived.as_str();
     let now = 1_700_000_000;
-    let push_body = common::build_genesis_push_body(&pool, principal_id, now);
+    let push_body = common::build_genesis_push_body(&pool, principal_id, now).await;
     let pushed_blobs = serde_json::from_str::<serde_json::Value>(&push_body).expect("push body")
         ["blobs"]
         .as_array()

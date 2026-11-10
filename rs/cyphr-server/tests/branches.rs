@@ -44,7 +44,7 @@ fn key_of(k: &Kp) -> cyphr::Key {
 
 /// `signer` creates `new` at `now` and finalizes the commit. Distinct
 /// `new`/`now` give distinct commits at one position.
-fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
+async fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
         "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"
@@ -67,6 +67,7 @@ fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
             now,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 }
 
@@ -77,11 +78,14 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
 /// A principal over the genesis `keys` (the first signs) with its genesis
 /// commit (SPEC 5.1) made at `now`, and its id: the PG, the principal
 /// state over those keys.
-fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, String) {
-    let mut p = cyphr::Principal::implicit(key_of(keys[0])).expect("genesis");
+async fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, String) {
+    let mut p = cyphr::Principal::implicit(key_of(keys[0]))
+        .await
+        .expect("genesis");
     let others: Vec<cyphr::Key> = keys[1..].iter().map(|k| key_of(k)).collect();
     let blobs: Vec<Vec<u8>> = p
         .commit_genesis(&signer_of(keys[0]), &others, now, "cyphr.me")
+        .await
         .expect("genesis commit")
         .iter()
         .map(|c| serde_json::to_vec(c).expect("coz"))
@@ -147,13 +151,14 @@ struct Forked {
     spellings: Vec<String>,
 }
 
-fn forked() -> Forked {
+async fn forked() -> Forked {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let (shared, id) = genesis(
         &[&g, &kp(&pool, "diana_es384"), &kp(&pool, "eve_ed25519")],
         NOW + 2,
-    );
+    )
+    .await;
 
     let mut spellings = vec![id.clone()];
     let mh = shared.pg().expect("PG established").as_multihash();
@@ -163,10 +168,10 @@ fn forked() -> Forked {
         spellings.push(tagged);
     }
 
-    let mut canonical = shared.clone();
-    create_key(&mut canonical, &g, &kp(&pool, "key_a"), NOW + 3);
-    let mut rival = shared.clone();
-    create_key(&mut rival, &g, &kp(&pool, "key_b"), NOW + 4);
+    let mut canonical = shared.fork().await.expect("fork");
+    create_key(&mut canonical, &g, &kp(&pool, "key_a"), NOW + 3).await;
+    let mut rival = shared.fork().await.expect("fork");
+    create_key(&mut rival, &g, &kp(&pool, "key_b"), NOW + 4).await;
     Forked {
         id,
         shared,
@@ -195,7 +200,7 @@ async fn branches(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value
 /// yes.
 #[tokio::test]
 async fn fork_is_listed_under_every_pg_spelling() {
-    let f = forked();
+    let f = forked().await;
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
@@ -278,9 +283,9 @@ async fn unforked_principal_lists_only_its_chain_and_unknown_is_404() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     // The genesis commit (`golden` with `key_a`), then one more commit.
-    let (mut p, id) = genesis(&[&g, &kp(&pool, "key_a")], NOW);
-    assert_eq!(id, common::golden_principal_id(&pool));
-    create_key(&mut p, &g, &kp(&pool, "key_b"), NOW + 1);
+    let (mut p, id) = genesis(&[&g, &kp(&pool, "key_a")], NOW).await;
+    assert_eq!(id, common::golden_principal_id(&pool).await);
+    create_key(&mut p, &g, &kp(&pool, "key_b"), NOW + 1).await;
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);

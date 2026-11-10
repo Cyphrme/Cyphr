@@ -278,6 +278,7 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
             .unwrap_or_else(|e| panic!("reopen scoped storage for {pid} failed: {e}"));
         let trees: cyphr::commit_root::CommitTrees<FjallStorage> =
             cyphr::commit_root::CommitTrees::open(scoped)
+                .await
                 .unwrap_or_else(|e| panic!("open commit trees for {pid} failed: {e}"));
         assert_eq!(
             trees.global_size(),

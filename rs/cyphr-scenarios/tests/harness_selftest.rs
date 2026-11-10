@@ -447,8 +447,8 @@ fn harness_statement_verification_catches_forgery() {
 // principal's item is refused (the accepted-fork path is the end-to-end test
 // below). Pure crypto and logic: no scenario reaches a forged statement
 // cheaply.
-#[test]
-fn harness_evidence_items_are_verified_offline() {
+#[tokio::test]
+async fn harness_evidence_items_are_verified_offline() {
     use std::collections::BTreeMap;
 
     use cyphr_scenarios::signed::{ChainView, Keys, Proven, verify_evidence};
@@ -463,14 +463,14 @@ fn harness_evidence_items_are_verified_offline() {
         commit_ids: vec!["C0".into(), "C1".into(), "C2".into()],
         ..ChainView::default()
     };
-    let ok = |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain);
+    let ok = async |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain).await;
 
     let fork = json!({"kind": "principal-fork", "pg": "PG", "height": 0, "pre": null,
                       "a": {"blobs": ["AA"]}, "b": {"blobs": ["BB"]}});
-    assert!(ok(&fork).is_err(), "no chain to replay a fork from");
+    assert!(ok(&fork).await.is_err(), "no chain to replay a fork from");
     let mut other = fork.clone();
     other["pg"] = "OTHER".into();
-    assert!(ok(&other).is_err(), "another principal's item");
+    assert!(ok(&other).await.is_err(), "another principal's item");
 
     let view = |size: u64, id: &str, signer: (&str, &str, &[u8])| {
         signed_coz(
@@ -488,35 +488,43 @@ fn harness_evidence_items_are_verified_offline() {
         peer: "PEER".into(),
     });
     assert_eq!(
-        ok(&equiv(view(2, "C1", peer), view(2, "X1", peer))),
+        ok(&equiv(view(2, "C1", peer), view(2, "X1", peer))).await,
         proven,
         "one size, two ids"
     );
     assert_eq!(
-        ok(&equiv(view(1, "X0", peer), view(3, "C2", peer))),
+        ok(&equiv(view(1, "X0", peer), view(3, "C2", peer))).await,
         proven,
         "lower is off the chain"
     );
     assert!(
-        ok(&equiv(view(2, "C1", peer), view(2, "C1", peer))).is_err(),
+        ok(&equiv(view(2, "C1", peer), view(2, "C1", peer)))
+            .await
+            .is_err(),
         "agreeing statements"
     );
     assert!(
-        ok(&equiv(view(1, "C0", peer), view(3, "C2", peer))).is_err(),
+        ok(&equiv(view(1, "C0", peer), view(3, "C2", peer)))
+            .await
+            .is_err(),
         "a stale prefix"
     );
     assert!(
-        ok(&equiv(view(1, "X0", peer), view(3, "X2", peer))).is_err(),
+        ok(&equiv(view(1, "X0", peer), view(3, "X2", peer)))
+            .await
+            .is_err(),
         "higher is not on the chain read"
     );
     let stranger = (tmb.as_str(), peer_pub.as_str(), peer_prv.as_slice());
     assert!(
-        ok(&equiv(view(2, "C1", stranger), view(2, "X1", peer))).is_err(),
+        ok(&equiv(view(2, "C1", stranger), view(2, "X1", peer)))
+            .await
+            .is_err(),
         "not the accused peer"
     );
     let mut unknown = equiv(view(2, "C1", peer), view(2, "X1", peer));
     unknown["peer"] = "NOBODY".into();
-    assert!(ok(&unknown).is_err(), "unknown peer");
+    assert!(ok(&unknown).await.is_err(), "unknown peer");
 }
 
 /// A signing key outside any pool.
@@ -542,7 +550,7 @@ fn key_of(k: &Signer) -> cyphr::Key {
 }
 
 /// `by` creates `new` at `now` and finalizes the commit.
-fn create_key(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i64) {
+async fn create_key(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i64) {
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": by.alg, "id": new.tmb.to_b64(), "now": now,
         "tmb": by.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"
@@ -560,6 +568,7 @@ fn create_key(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i64) {
             now,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 }
 
@@ -599,7 +608,9 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
 
     let h = Harness::start(&["p1"]).await.expect("start peer");
     let (g, k1, k2, k3) = (signer(), signer(), signer(), signer());
-    let mut base = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let mut base = cyphr::Principal::implicit(key_of(&g))
+        .await
+        .expect("genesis");
     // A single-key genesis: the PG is the genesis key's thumbprint.
     let id = g.tmb.to_b64();
     base.commit_genesis(
@@ -608,11 +619,15 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
         1_700_099_999,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
-    create_key(&mut base, &g, &k1, 1_700_100_000);
-    let (mut first, mut rival) = (base.clone(), base.clone());
-    create_key(&mut first, &g, &k2, 1_700_100_001);
-    create_key(&mut rival, &g, &k3, 1_700_100_002);
+    create_key(&mut base, &g, &k1, 1_700_100_000).await;
+    let (mut first, mut rival) = (
+        base.fork().await.expect("fork"),
+        base.fork().await.expect("fork"),
+    );
+    create_key(&mut first, &g, &k2, 1_700_100_001).await;
+    create_key(&mut rival, &g, &k3, 1_700_100_002).await;
 
     let addr = h.peer("p1").addr;
     let push = |p: &cyphr::Principal, i: usize| {

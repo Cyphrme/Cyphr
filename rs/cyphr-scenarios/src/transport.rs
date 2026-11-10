@@ -53,14 +53,14 @@ impl Identity {
         )
     }
 
-    fn pin(&self) -> Result<PeerChain, String> {
+    async fn pin(&self) -> Result<PeerChain, String> {
         let key = cyphr::Key::new(
             self.kp.alg.name().to_string(),
             self.tmb.clone(),
             self.kp.pub_bytes.clone(),
         )
         .map_err(|e| e.to_string())?;
-        Ok(PeerChain::pin(&self.pg(), key))
+        Ok(PeerChain::pin(&self.pg(), key).await)
     }
 }
 
@@ -107,7 +107,7 @@ pub async fn handshake_at(
     )
     .map_err(|e| e.to_string())?
     .with_first_seen(g["first_seen"].as_i64().ok_or("no first_seen")?);
-    let mut held = PeerChain::pin(d["pg"].as_str().ok_or("/server has no pg")?, genesis);
+    let mut held = PeerChain::pin(d["pg"].as_str().ok_or("/server has no pg")?, genesis).await;
 
     let me = Identity::generate()?;
     let conn = NoiseConnector::connect(addr, &mut held, &me.signer(), &me.pg())
@@ -124,7 +124,7 @@ pub async fn handshake_at(
 /// a client pins to trust it.
 async fn hostile_responder(envelope: Vec<u8>) -> Result<(SocketAddr, PeerChain), String> {
     let me = Identity::generate()?;
-    let pinned = me.pin()?;
+    let pinned = me.pin().await?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| e.to_string())?;

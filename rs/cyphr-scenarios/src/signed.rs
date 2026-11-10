@@ -95,7 +95,7 @@ impl ChainView {
     /// replay adds the rest. It is only accepted if the replay derives
     /// `pg`. A patch that does not replay, or whose stated roots or
     /// commit ids disagree with the replay, is an error.
-    pub fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
+    pub async fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
         let first = patch
@@ -123,22 +123,26 @@ impl ChainView {
             .find(|c| typ_is(c, "/cyphr/key/create"))
             .ok_or("the genesis commit creates no key")
             .and_then(|c| genesis_key(&c["key"]).ok_or("a genesis key/create discloses no key"))?;
-        let genesis = Principal::implicit(key).map_err(|e| format!("genesis: {e}"))?;
-        Self::replay(body, pg, genesis, patch.entries)
+        let genesis = Principal::implicit(key)
+            .await
+            .map_err(|e| format!("genesis: {e}"))?;
+        Self::replay(body, pg, genesis, patch.entries).await
     }
 
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare)
     /// from a genesis key the caller already holds (a peer's own chain,
     /// whose genesis its `GET /server` states), with the same checks as
     /// [`ChainView::from_patch`].
-    pub fn from_patch_with_genesis(body: &[u8], pg: &str, key: Key) -> Result<Self, String> {
+    pub async fn from_patch_with_genesis(body: &[u8], pg: &str, key: Key) -> Result<Self, String> {
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
-        let genesis = Principal::implicit(key).map_err(|e| format!("genesis: {e}"))?;
-        Self::replay(body, pg, genesis, patch.entries)
+        let genesis = Principal::implicit(key)
+            .await
+            .map_err(|e| format!("genesis: {e}"))?;
+        Self::replay(body, pg, genesis, patch.entries).await
     }
 
-    fn replay(
+    async fn replay(
         body: &[u8],
         pg: &str,
         genesis: Principal,
@@ -151,7 +155,12 @@ impl ChainView {
             .ok()
             .and_then(|tmb| genesis.get_key(&coz::Thumbprint::from_bytes(tmb)).cloned())
             .ok_or("the genesis holds no genesis key")?;
-        let chain = replay_chain(genesis.clone(), &entries)
+        let base = genesis
+            .fork()
+            .await
+            .map_err(|e| format!("genesis does not fork: {e}"))?;
+        let chain = replay_chain(base, &entries)
+            .await
             .map_err(|e| format!("the patch does not replay from its genesis: {e}"))?;
         // A genesis commit names the principal by its PG; a chain with none
         // by its genesis key's PR (SPEC 5.1).
@@ -307,7 +316,7 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
 /// `requested`, and both statements must be signed by the accused peer's key.
 /// At one size they conflict if they differ; at different sizes the lower
 /// one is a prefix, and so no evidence, when both sit on `chain`.
-pub fn verify_evidence(
+pub async fn verify_evidence(
     item: &Value,
     requested: &str,
     keys: &Keys,
@@ -331,8 +340,15 @@ pub fn verify_evidence(
             // the chain read, so only keys the chain held at `pre` count
             // (a serving peer's key is never among them) and two copies of
             // one commit are not a fork.
-            let genesis = chain.genesis.clone().ok_or("no chain to replay from")?;
+            let genesis = chain
+                .genesis
+                .as_ref()
+                .ok_or("no chain to replay from")?
+                .fork()
+                .await
+                .map_err(|e| e.to_string())?;
             let proof = verify_principal_fork(item, requested, genesis, &chain.entries)
+                .await
                 .map_err(|e| e.to_string())?;
             Ok(Proven::PrincipalFork { pg: proof.pg })
         },

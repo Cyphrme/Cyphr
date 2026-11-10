@@ -93,12 +93,12 @@ async fn attestor_with(
 async fn failing_signer_leaves_a_committed_push_answered_201_unsigned() {
     let (app, _state, _dir) = attestor_with(true).await;
     let pool = load_pool();
-    let pr = golden_principal_id(&pool);
+    let pr = golden_principal_id(&pool).await;
 
     let (status, push) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &pr, 1_700_000_000),
+        build_genesis_push_body(&pool, &pr, 1_700_000_000).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "committed push: {push:?}");
@@ -127,11 +127,11 @@ async fn failing_signer_leaves_a_committed_push_answered_201_unsigned() {
 async fn failing_signer_leaves_a_tip_answered_200_unsigned() {
     let (app, _state, _dir) = attestor_with(true).await;
     let pool = load_pool();
-    let pr = golden_principal_id(&pool);
+    let pr = golden_principal_id(&pool).await;
     let (status, push) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &pr, 1_700_000_000),
+        build_genesis_push_body(&pool, &pr, 1_700_000_000).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{push:?}");
@@ -159,11 +159,11 @@ async fn failing_signer_leaves_a_tip_answered_200_unsigned() {
 async fn working_injected_signer_still_signs_the_push() {
     let (app, _state, _dir) = attestor_with(false).await;
     let pool = load_pool();
-    let pr = golden_principal_id(&pool);
+    let pr = golden_principal_id(&pool).await;
     let (status, push) = post_json(
         app,
         "/push",
-        build_genesis_push_body(&pool, &pr, 1_700_000_000),
+        build_genesis_push_body(&pool, &pr, 1_700_000_000).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{push:?}");

@@ -81,7 +81,9 @@ async fn single_key_explicit_genesis_establishes_pg() {
 
     // Client-side: build the principal and derive its PG, which for a
     // single-key genesis is the genesis key's own PR (SPEC 5.2).
-    let mut client = cyphr::Principal::implicit(genesis_key).expect("genesis");
+    let mut client = cyphr::Principal::implicit(genesis_key)
+        .await
+        .expect("genesis");
     let pg_tagged = client
         .pr_tagged()
         .expect("pr_tagged for a fresh single-key genesis");
@@ -109,6 +111,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
             now,
             "cyphr.me",
         )
+        .await
         .expect("the genesis key creates itself (SPEC 5.2 TX0)")
         .first()
         .map(|c| serde_json::to_vec(c).unwrap())
@@ -122,6 +125,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
             now + 1,
             "cyphr.me",
         )
+        .await
         .expect("genesis commit finalizes");
 
     // The commit/create finalizer comes off the finalized commit; the

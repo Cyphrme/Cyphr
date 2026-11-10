@@ -793,6 +793,7 @@ impl Client<'_> {
             .await
             .map_err(|e| ActionError::Failed(e.to_string()))?;
         let chain = crate::signed::ChainView::from_patch_with_genesis(&body, &pg, genesis)
+            .await
             .map_err(|e| ActionError::Failed(format!("`{}`'s own chain: {e}", s.peer)))?;
         let coz: serde_json::Value =
             serde_json::from_slice(&s.coz).map_err(|e| ActionError::Failed(e.to_string()))?;

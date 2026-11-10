@@ -79,8 +79,8 @@ impl Kp {
 
     /// A bare pin on this principal, as a client holds a peer it has not
     /// yet followed.
-    fn pinned(&self) -> PeerChain {
-        PeerChain::pin(&self.pg(), self.domain_key())
+    async fn pinned(&self) -> PeerChain {
+        PeerChain::pin(&self.pg(), self.domain_key()).await
     }
 }
 
@@ -256,7 +256,7 @@ fn refusal(outcome: Result<NoiseConnector, TransportError>, why: &str) -> Transp
 #[tokio::test]
 async fn statement_over_another_handshake_hash_is_bad_binding() {
     let (srv, client) = (kp(), kp());
-    let held = srv.pinned();
+    let held = srv.pinned().await;
     let (outcome, _) = run(srv, held, &client, vec![Mode::WrongHash]).await;
     let err = refusal(outcome, "a statement over another handshake hash");
     assert!(matches!(err, TransportError::BadBinding { .. }), "{err:?}");
@@ -271,7 +271,7 @@ async fn statement_over_another_handshake_hash_is_bad_binding() {
 #[tokio::test]
 async fn statement_claiming_the_initiator_role_is_refused() {
     let (srv, client) = (kp(), kp());
-    let held = srv.pinned();
+    let held = srv.pinned().await;
     let (outcome, _) = run(srv, held, &client, vec![Mode::InitiatorRole]).await;
     let err = refusal(outcome, "a responder statement in the initiator role");
     assert!(
@@ -292,7 +292,7 @@ async fn statement_claiming_the_initiator_role_is_refused() {
 #[tokio::test]
 async fn statement_replayed_from_an_earlier_session_is_bad_binding() {
     let (srv, client) = (kp(), kp());
-    let held = srv.pinned();
+    let held = srv.pinned().await;
     let (outcome, seen) = run(srv, held, &client, vec![Mode::Honest, Mode::Replay]).await;
     assert_eq!(seen.len(), 2, "both sessions ran");
     assert_ne!(seen[0].h, seen[1].h, "the sessions are distinct");
@@ -309,7 +309,7 @@ async fn statement_replayed_from_an_earlier_session_is_bad_binding() {
 #[tokio::test]
 async fn statement_naming_another_principal_is_a_mismatch() {
     let (srv, client, other) = (kp(), kp(), kp());
-    let held = srv.pinned();
+    let held = srv.pinned().await;
     let modes = vec![Mode::OtherPrincipal(other.pg())];
     let (outcome, _) = run(srv, held, &client, modes).await;
     let err = refusal(outcome, "a statement naming another principal");
@@ -332,7 +332,7 @@ async fn foreign_signature_and_missing_statement_are_refused() {
         (Mode::Missing, "no statement"),
     ] {
         let (srv, client) = (kp(), kp());
-        let held = srv.pinned();
+        let held = srv.pinned().await;
         let (outcome, _) = run(srv, held, &client, vec![mode.clone()]).await;
         let err = refusal(outcome, what);
         let ok = match mode {
@@ -364,7 +364,7 @@ async fn foreign_signature_and_missing_statement_are_refused() {
 async fn sigma_initiator_is_hidden_from_an_unverified_responder() {
     for mode in [Mode::Missing, Mode::WrongHash, Mode::ForeignSignature] {
         let (srv, client) = (kp(), kp());
-        let held = srv.pinned();
+        let held = srv.pinned().await;
         let (own_pg, own_tmb) = (client.pg(), client.tmb.to_b64());
         let (outcome, seen) = run(srv, held, &client, vec![mode.clone()]).await;
         assert!(outcome.is_err(), "{mode:?} must be refused");
@@ -395,7 +395,7 @@ async fn sigma_initiator_is_hidden_from_an_unverified_responder() {
 #[tokio::test]
 async fn sigma_control_honest_responder_receives_the_initiator_statement() {
     let (srv, client) = (kp(), kp());
-    let held = srv.pinned();
+    let held = srv.pinned().await;
     let (_, seen) = run(srv, held, &client, vec![Mode::Honest]).await;
     let seen = &seen[0];
     let plain = seen

@@ -66,7 +66,7 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
 }
 
 /// Commit, on the established `p`, `signer`'s `key/create` of `added`.
-fn commit_key_create(p: &mut cyphr::Principal, signer: &Kp, added: &Kp, now: i64) {
+async fn commit_key_create(p: &mut cyphr::Principal, signer: &Kp, added: &Kp, now: i64) {
     let (pay, sig, czd) = sign(
         signer,
         serde_json::json!({"alg": signer.alg, "id": added.tmb.to_b64(), "now": now,
@@ -78,6 +78,7 @@ fn commit_key_create(p: &mut cyphr::Principal, signer: &Kp, added: &Kp, now: i64
         .expect("apply");
     scope
         .finalize_with_software(&signer_of(signer), now, "cyphr.me")
+        .await
         .expect("finalize");
 }
 
@@ -108,7 +109,7 @@ fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
 /// `genesis` (so its PG spans their algorithms), then adds each of `later`
 /// in its own commit. Returns the principal, its genesis and its id (the
 /// PG, in its first-algorithm spelling).
-fn build(
+async fn build(
     pool: &test_fixtures::Pool,
     genesis: &[&str],
     later: &[&str],
@@ -117,17 +118,20 @@ fn build(
     let keys: Vec<cyphr::Key> = std::iter::once(key_of(&g))
         .chain(genesis.iter().map(|name| key_of(&kp(pool, name))))
         .collect();
-    let mut p = cyphr::Principal::implicit(keys[0].clone()).expect("genesis");
+    let mut p = cyphr::Principal::implicit(keys[0].clone())
+        .await
+        .expect("genesis");
     let blobs = test_fixtures::bundle::genesis_bundle(
         &mut p,
         pool.get("golden").expect("golden"),
         &keys[1..],
         NOW,
     )
+    .await
     .expect("genesis commit");
     let id = test_fixtures::bundle::genesis_id(&blobs).expect("genesis id");
     for (n, name) in later.iter().enumerate() {
-        commit_key_create(&mut p, &g, &kp(pool, name), NOW + 1 + n as i64);
+        commit_key_create(&mut p, &g, &kp(pool, name), NOW + 1 + n as i64).await;
     }
     (p, Genesis::Explicit(keys), id)
 }
@@ -175,7 +179,7 @@ where
     B: cyphr_storage::blob::BlobStore,
     I: Indexer + IndexerWrite,
 {
-    let (p, genesis, id) = build(pool, added, &["bob"]);
+    let (p, genesis, id) = build(pool, added, &["bob"]).await;
     let commits = 2;
     for i in 0..commits {
         let raw = blobs(&p, i);
@@ -257,7 +261,7 @@ async fn alias_resolution_survives_reindex_on_fjall() {
 #[tokio::test]
 async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant() {
     let pool = load_pool();
-    let (p, genesis, id) = build(&pool, &["diana_es384", "eve_ed25519"], &[]);
+    let (p, genesis, id) = build(&pool, &["diana_es384", "eve_ed25519"], &[]).await;
     let spellings = pg_spellings(&p);
     assert_eq!(
         spellings.len(),
@@ -296,7 +300,7 @@ async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant(
 #[tokio::test]
 async fn commit_pre_is_the_previous_commits_pr() {
     let pool = load_pool();
-    let (p, genesis, id) = build(&pool, &["key_a"], &["diana_es384", "bob"]);
+    let (p, genesis, id) = build(&pool, &["key_a"], &["diana_es384", "bob"]).await;
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     for i in 0..3 {
         let raw = blobs(&p, i);
@@ -377,7 +381,7 @@ impl cyphr_storage::blob::BlobStore for CountingBlobs {
 #[tokio::test]
 async fn established_principal_current_pr_is_refused_without_replay() {
     let pool = load_pool();
-    let (p, genesis, id) = build(&pool, &["key_a"], &["diana_es384", "bob"]);
+    let (p, genesis, id) = build(&pool, &["key_a"], &["diana_es384", "bob"]).await;
     let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let engine = StorageEngine::new(
         CountingBlobs {
@@ -436,7 +440,7 @@ async fn established_principal_current_pr_is_refused_without_replay() {
 #[tokio::test]
 async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
     let pool = load_pool();
-    let (p, _, id) = build(&pool, &["key_a"], &["bob"]);
+    let (p, _, id) = build(&pool, &["key_a"], &["bob"]).await;
     let entry = cyphr_storage::export_commits(&p).expect("export").remove(1);
 
     let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

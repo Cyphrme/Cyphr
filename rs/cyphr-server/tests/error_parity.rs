@@ -26,23 +26,20 @@ async fn refusals(
     Result<cyphr::Principal, LoadError>,
 ) {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
+    let id = golden_principal_id(&pool).await;
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let (status, _) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &id, 1_700_000_100),
+        build_genesis_push_body(&pool, &id, 1_700_000_100).await,
     )
     .await;
     assert!(status.is_success(), "genesis push lands: {status}");
 
-    let mut body: serde_json::Value = serde_json::from_str(&build_second_commit_push_body(
-        &pool,
-        &id,
-        1_700_000_100,
-        1_700_000_200,
-    ))
+    let mut body: serde_json::Value = serde_json::from_str(
+        &build_second_commit_push_body(&pool, &id, 1_700_000_100, 1_700_000_200).await,
+    )
     .expect("push body");
     let first =
         Base64UrlUnpadded::decode_vec(body["blobs"][0].as_str().expect("blob")).expect("base64url");
@@ -69,7 +66,7 @@ async fn refusals(
         None,
         "SHA-256:p".into(),
     );
-    let imported = load_principal_from_commits(Genesis::Implicit(genesis), &[entry]);
+    let imported = load_principal_from_commits(Genesis::Implicit(genesis), &[entry]).await;
     (replayed, status, reply, imported)
 }
 

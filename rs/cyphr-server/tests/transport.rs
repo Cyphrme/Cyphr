@@ -96,7 +96,7 @@ async fn discover(app: &Router) -> (String, cyphr::Key) {
 /// Pin the server and follow its chain over the in-process router.
 async fn pinned_and_followed(app: &Router) -> (PeerChain, String, cyphr::Key) {
     let (pg, genesis) = discover(app).await;
-    let mut held = PeerChain::pin(&pg, genesis.clone());
+    let mut held = PeerChain::pin(&pg, genesis.clone()).await;
     held.follow(&RouterConnector(app.clone()))
         .await
         .expect("follow the server chain");
@@ -106,8 +106,8 @@ async fn pinned_and_followed(app: &Router) -> (PeerChain, String, cyphr::Key) {
 /// Push the `golden` principal (the client's own principal) to the server.
 async fn push_client_principal(app: &Router) -> String {
     let pool = load_pool();
-    let pr = golden_principal_id(&pool);
-    let body = build_genesis_push_body(&pool, &pr, 1_700_000_000);
+    let pr = golden_principal_id(&pool).await;
+    let body = build_genesis_push_body(&pool, &pr, 1_700_000_000).await;
     let (status, resp) = post_json(app.clone(), "/push", body).await;
     assert_eq!(status, StatusCode::CREATED, "{resp:?}");
     pr
@@ -134,7 +134,7 @@ fn golden_signer() -> SoftwareSigner {
 /// (SPEC's self-revoke shape), returning the commit's wire blobs. Mirrors
 /// the helper `tests/login.rs` keeps for the same purpose; the two suites
 /// do not share a module.
-fn self_revoke_commit_blobs(
+async fn self_revoke_commit_blobs(
     mut principal: cyphr::Principal<impl cyphr::eml::Storage>,
     signer_name: &str,
     at: i64,
@@ -165,6 +165,7 @@ fn self_revoke_commit_blobs(
             at,
             "cyphr.me",
         )
+        .await
         .expect("the commit finalizes");
     let entries = cyphr_storage::export_commits(&principal).expect("export the commit");
     entries
@@ -382,7 +383,7 @@ async fn initiator_key_revoked_in_the_chain_is_refused() {
         .load_principal(&own_principal, genesis)
         .await
         .expect("load the pushed principal");
-    let blobs = self_revoke_commit_blobs(principal, "key_a", 1_700_000_100);
+    let blobs = self_revoke_commit_blobs(principal, "key_a", 1_700_000_100).await;
     let slices: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     state
         .engine
@@ -619,13 +620,13 @@ async fn serve_starts_the_transport_only_for_a_keyed_server() {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis);
+    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis).await;
     let pool = load_pool();
-    let pr = golden_principal_id(&pool);
+    let pr = golden_principal_id(&pool).await;
     let pushed = http
         .post(format!("http://{}/push", keyed.http))
         .header("content-type", "application/json")
-        .body(build_genesis_push_body(&pool, &pr, 1_700_000_000))
+        .body(build_genesis_push_body(&pool, &pr, 1_700_000_000).await)
         .send()
         .await
         .expect("push the client principal");
@@ -1303,7 +1304,7 @@ async fn the_listener_survives_running_out_of_descriptors() {
     )
     .expect("key binds its tmb")
     .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis);
+    let mut held = PeerChain::pin(d["pg"].as_str().expect("pg"), genesis).await;
     level_one_session(transport, &mut held).await;
     drop(guard);
 }

@@ -146,11 +146,8 @@ fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
     )?;
     scope.verify_and_apply(&signed.pay_bytes, &signed.sig, signed.czd.clone(), None)?;
     let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(signer_tmb)?);
-    scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(&key.alg, &key.prv_key, &key.pub_key, &tmb),
-        now,
-        &cli.authority,
-    )?;
+    let signer = cyphr::signer::SoftwareSigner::new(&key.alg, &key.prv_key, &key.pub_key, &tmb);
+    block_on(scope.finalize_with_software(&signer, now, &cli.authority))??;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
     let commit_id = cyphr_storage::export_commits(&principal)?

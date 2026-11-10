@@ -26,13 +26,13 @@ const NOW: i64 = 1_700_100_000;
 /// A push of a second commit for the standard principal (`golden` with
 /// `key_a`, its genesis pushed at `NOW`) that adds `new_key`, signed by
 /// `golden`.
-fn second_commit_push_adding(
+async fn second_commit_push_adding(
     pool: &test_fixtures::Pool,
     principal_id: &str,
     new_key: &str,
 ) -> String {
-    let principal = genesis_pushed_principal(pool, "golden", "key_a", NOW);
-    let blobs = sign_key_create_commit(principal, pool, "golden", new_key, NOW + 1);
+    let principal = genesis_pushed_principal(pool, "golden", "key_a", NOW).await;
+    let blobs = sign_key_create_commit(principal, pool, "golden", new_key, NOW + 1).await;
     serde_json::json!({
         "principal_id": principal_id,
         "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
@@ -62,10 +62,10 @@ async fn commit_count(app: &axum::Router, id: &str) -> u64 {
 #[tokio::test]
 async fn s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put() {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
-    let genesis = common::build_genesis_push_body(&pool, &id, NOW);
-    let first = second_commit_push_adding(&pool, &id, "key_b");
-    let competing = second_commit_push_adding(&pool, &id, "carol");
+    let id = golden_principal_id(&pool).await;
+    let genesis = common::build_genesis_push_body(&pool, &id, NOW).await;
+    let first = second_commit_push_adding(&pool, &id, "key_b").await;
+    let competing = second_commit_push_adding(&pool, &id, "carol").await;
 
     let (control_state, _control_dir) = keyless_server();
     let control = build_router(control_state);
@@ -134,11 +134,11 @@ async fn s6_no_http_response_carries_private_key_material() {
     }
 
     let app = build_router(state);
-    let id = common::golden_principal_id(&pool);
+    let id = common::golden_principal_id(&pool).await;
     let (status, push) = post_json(
         app.clone(),
         "/push",
-        common::build_genesis_push_body(&pool, &id, NOW),
+        common::build_genesis_push_body(&pool, &id, NOW).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{push:?}");
@@ -193,6 +193,7 @@ proptest! {
     fn s6_exported_commits_carry_no_private_key_material(
         algs in proptest::collection::vec(any::<bool>(), 2..5),
     ) {
+        block_on(async move {
         let gen_key = |ed: bool| {
             let k = if ed { coz::Alg::Ed25519 } else { coz::Alg::ES256 }.generate_keypair();
             let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
@@ -201,10 +202,10 @@ proptest! {
         let key_of = |k: &coz::KeyPair, tmb: &coz::Thumbprint| cyphr::Key::new(k.alg.name().to_string(), tmb.clone(), k.pub_bytes.clone()).expect("key binds its tmb");
         let keys: Vec<_> = algs.iter().map(|&ed| gen_key(ed)).collect();
         let (g, gtmb) = &keys[0];
-        let mut p = cyphr::Principal::implicit(key_of(g, gtmb)).expect("genesis");
+        let mut p = cyphr::Principal::implicit(key_of(g, gtmb)).await.expect("genesis");
         let g_signer =
             cyphr::signer::SoftwareSigner::new(g.alg.name(), &g.prv_bytes, &g.pub_bytes, gtmb);
-        p.commit_genesis(&g_signer, &[], 1_700_000_000, "cyphr.me").expect("genesis commit");
+        p.commit_genesis(&g_signer, &[], 1_700_000_000, "cyphr.me").await.expect("genesis commit");
         for (i, (k, tmb)) in keys.iter().enumerate().skip(1) {
             let now = 1_700_000_000 + i64::try_from(i).expect("small");
             let pay = serde_json::json!({
@@ -226,7 +227,7 @@ proptest! {
                     now,
                     "cyphr.me",
                 )
-                .expect("finalize");
+                .await.expect("finalize");
         }
         let exported = serde_json::to_string(&cyphr_storage::export_commits(&p).expect("export"))
             .expect("serialize");
@@ -238,6 +239,8 @@ proptest! {
             prop_assert!(!exported.contains(&b64) && !exported.contains(&hex),
                 "an exported commit carries a private component");
         }
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 }
 
@@ -272,4 +275,13 @@ async fn s17_2_challenge_is_256_bits_and_unique() {
         assert_eq!(bytes.len(), 32, "challenge is not 256 bits");
         assert!(seen.insert(bytes), "a challenge repeated");
     }
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }

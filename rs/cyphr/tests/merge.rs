@@ -63,13 +63,14 @@ fn signer(name: &str) -> Signer {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &Signer, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &Signer, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
         others,
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -81,7 +82,7 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(name: &str) -> Self {
+    async fn new(name: &str) -> Self {
         let signer = signer(name);
         let key = Key::new(
             signer.alg.clone(),
@@ -91,10 +92,11 @@ impl Peer {
         .expect("key binds its tmb")
         .with_first_seen(NOW);
         let principal = genesis_of(
-            Principal::implicit(key).expect("implicit genesis"),
+            Principal::implicit(key).await.expect("implicit genesis"),
             &signer,
             &[],
-        );
+        )
+        .await;
         Self { signer, principal }
     }
 
@@ -125,13 +127,17 @@ impl Peer {
     }
 
     /// Apply `pays` as one commit and finalize it.
-    fn commit(&mut self, pays: &[Value], now: i64) -> Result<(), Error> {
+    async fn commit(&mut self, pays: &[Value], now: i64) -> Result<(), Error> {
         let with_keys: Vec<_> = pays.iter().map(|p| (p.clone(), None)).collect();
-        self.commit_with_keys(with_keys, now)
+        self.commit_with_keys(with_keys, now).await
     }
 
     /// As [`Peer::commit`], supplying the new key a `key/create` carries.
-    fn commit_with_keys(&mut self, pays: Vec<(Value, Option<Key>)>, now: i64) -> Result<(), Error> {
+    async fn commit_with_keys(
+        &mut self,
+        pays: Vec<(Value, Option<Key>)>,
+        now: i64,
+    ) -> Result<(), Error> {
         let signed: Vec<_> = pays
             .iter()
             .map(|(p, k)| (self.sign(p), k.clone()))
@@ -140,16 +146,18 @@ impl Peer {
         for ((bytes, sig, czd), key) in signed {
             scope.verify_and_apply(&bytes, &sig, czd, key)?;
         }
-        scope.finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(
-                &self.signer.alg,
-                &self.signer.prv,
-                &self.signer.pub_key,
-                &self.signer.tmb,
-            ),
-            now,
-            "cyphr.me",
-        )?;
+        scope
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    &self.signer.alg,
+                    &self.signer.prv,
+                    &self.signer.pub_key,
+                    &self.signer.tmb,
+                ),
+                now,
+                "cyphr.me",
+            )
+            .await?;
         Ok(())
     }
 
@@ -196,10 +204,10 @@ impl Peer {
 /// merge deactivates or deletes the source; the merge or ack copies the
 /// source's keys or actions into the target.
 /// End-to-end scenario: yes (two principals, two commits).
-#[test]
-fn a_merge_and_its_matching_ack_are_accepted() {
-    let mut source = Peer::new("alice");
-    let mut target = Peer::new("bob");
+#[tokio::test]
+async fn a_merge_and_its_matching_ack_are_accepted() {
+    let mut source = Peer::new("alice").await;
+    let mut target = Peer::new("bob").await;
     let (source_pr, target_pr) = (source.pr(), target.pr());
     let target_keys_before = target.active_tmbs();
     let target_actions_before = target.principal.action_count();
@@ -209,7 +217,7 @@ fn a_merge_and_its_matching_ack_are_accepted() {
     let to = json!(target_pr);
 
     let merge = source.merge_pay(&from, &to, NOW + 10);
-    let r = source.commit(&[merge], NOW + 10);
+    let r = source.commit(&[merge], NOW + 10).await;
     assert!(
         r.is_ok(),
         "SPEC 11.5.1: the source's principal/merge must be accepted into its chain: {r:?}"
@@ -220,7 +228,7 @@ fn a_merge_and_its_matching_ack_are_accepted() {
     );
 
     let ack = target.ack_pay(&from, &to, NOW + 20);
-    let r = target.commit(&[ack], NOW + 20);
+    let r = target.commit(&[ack], NOW + 20).await;
     assert!(
         r.is_ok(),
         "SPEC 11.5.1: the target's matching principal/merge-ack must be accepted: {r:?}"
@@ -277,27 +285,27 @@ fn a_merge_and_its_matching_ack_are_accepted() {
 /// second assertion).
 /// End-to-end scenario: yes (the ack is judged against the principal it
 /// is committed to).
-#[test]
-fn an_ack_naming_another_target_is_refused() {
-    let source = Peer::new("alice");
-    let other = Peer::new("carol");
+#[tokio::test]
+async fn an_ack_naming_another_target_is_refused() {
+    let source = Peer::new("alice").await;
+    let other = Peer::new("carol").await;
     let from = json!([source.pr()]);
 
     // Prelude (positive control): bob's ack for bob is accepted.
-    let mut bob = Peer::new("bob");
+    let mut bob = Peer::new("bob").await;
     let own = json!(bob.pr());
     let good = bob.ack_pay(&from, &own, NOW + 20);
-    let r = bob.commit(&[good], NOW + 20);
+    let r = bob.commit(&[good], NOW + 20).await;
     assert!(
         r.is_ok(),
         "positive control: a self-targeted ack must be accepted: {r:?}"
     );
 
     // Same shape from a fresh bob, but naming carol as the target.
-    let mut bob = Peer::new("bob");
+    let mut bob = Peer::new("bob").await;
     let before = bob.pr();
     let wrong = bob.ack_pay(&from, &json!(other.pr()), NOW + 20);
-    let r = bob.commit(&[wrong], NOW + 20);
+    let r = bob.commit(&[wrong], NOW + 20).await;
     assert!(
         r.is_err(),
         "SPEC 11.5.1: an ack whose merge_to_pr is not the acking principal must be refused"
@@ -321,15 +329,15 @@ fn an_ack_naming_another_target_is_refused() {
 /// Not an end-to-end scenario: a table of parser boundary cases, kept
 /// here because no multi-peer scenario reaches each malformed shape
 /// cheaply.
-#[test]
-fn malformed_merge_fields_are_refused() {
-    let source = Peer::new("alice");
-    let target = Peer::new("bob");
+#[tokio::test]
+async fn malformed_merge_fields_are_refused() {
+    let source = Peer::new("alice").await;
+    let target = Peer::new("bob").await;
     let (spr, tpr) = (source.pr(), target.pr());
 
-    let mut ok = Peer::new("alice");
+    let mut ok = Peer::new("alice").await;
     let good = ok.merge_pay(&json!([spr]), &json!(tpr), NOW + 10);
-    let r = ok.commit(&[good], NOW + 10);
+    let r = ok.commit(&[good], NOW + 10).await;
     assert!(
         r.is_ok(),
         "positive control: a well-formed merge must be accepted: {r:?}"
@@ -356,9 +364,9 @@ fn malformed_merge_fields_are_refused() {
     ];
     for (why, from, to) in cases {
         for typ in [MERGE_TYP, ACK_TYP] {
-            let mut p = Peer::new(if typ == MERGE_TYP { "alice" } else { "bob" });
+            let mut p = Peer::new(if typ == MERGE_TYP { "alice" } else { "bob" }).await;
             let pay = p.merge_shaped(typ, &from, &to, NOW + 10);
-            let r = p.commit(&[pay], NOW + 10);
+            let r = p.commit(&[pay], NOW + 10).await;
             assert!(r.is_err(), "{typ}: must refuse: {why}");
         }
     }
@@ -368,10 +376,10 @@ fn malformed_merge_fields_are_refused() {
         for drop in ["merge_from", "merge_to_pr"] {
             // The acking principal must be the ack's target, or self-targeting
             // would refuse it whatever field is missing.
-            let mut p = Peer::new(if typ == MERGE_TYP { "alice" } else { "bob" });
+            let mut p = Peer::new(if typ == MERGE_TYP { "alice" } else { "bob" }).await;
             let mut pay = p.merge_shaped(typ, &json!([spr]), &json!(tpr), NOW + 10);
             pay.as_object_mut().expect("object").remove(drop);
-            let r = p.commit(&[pay], NOW + 10);
+            let r = p.commit(&[pay], NOW + 10).await;
             assert!(r.is_err(), "{typ}: must refuse a pay missing {drop}");
         }
     }
@@ -386,13 +394,13 @@ fn malformed_merge_fields_are_refused() {
 /// refusal follows it. A name-the-tip-only mutant fails the first
 /// assertion; an accept-any-PR mutant fails the second.
 /// End-to-end scenario: yes (target commits, then acks an older PR).
-#[test]
-fn an_ack_may_name_an_earlier_pr_of_the_target() {
-    let source = Peer::new("alice");
+#[tokio::test]
+async fn an_ack_may_name_an_earlier_pr_of_the_target() {
+    let source = Peer::new("alice").await;
     let from = json!([source.pr()]);
-    let stranger = Peer::new("carol");
+    let stranger = Peer::new("carol").await;
 
-    let advance = |p: &mut Peer| {
+    let advance = async |p: &mut Peer| {
         let k = signer("key_a");
         let pay = json!({
             "alg": p.signer.alg,
@@ -404,24 +412,28 @@ fn an_ack_may_name_an_earlier_pr_of_the_target() {
         let key = Key::new(k.alg.clone(), k.tmb.clone(), k.pub_key.clone())
             .expect("key binds its tmb")
             .with_first_seen(NOW + 5);
-        p.commit_with_keys(vec![(pay, Some(key))], NOW + 5)
+        p.commit_with_keys(vec![(pay, Some(key))], NOW + 5).await
     };
 
-    let mut bob = Peer::new("bob");
+    let mut bob = Peer::new("bob").await;
     let earlier = bob.pr();
-    advance(&mut bob).expect("an ordinary commit advances the target");
+    advance(&mut bob)
+        .await
+        .expect("an ordinary commit advances the target");
     assert_ne!(bob.pr(), earlier);
     let ack = bob.ack_pay(&from, &json!(earlier), NOW + 20);
-    let r = bob.commit(&[ack], NOW + 20);
+    let r = bob.commit(&[ack], NOW + 20).await;
     assert!(
         r.is_ok(),
         "SPEC 11.5.1: an ack may name a PR the target held earlier: {r:?}"
     );
 
-    let mut bob = Peer::new("bob");
-    advance(&mut bob).expect("an ordinary commit advances the target");
+    let mut bob = Peer::new("bob").await;
+    advance(&mut bob)
+        .await
+        .expect("an ordinary commit advances the target");
     let ack = bob.ack_pay(&from, &json!(stranger.pr()), NOW + 20);
-    let r = bob.commit(&[ack], NOW + 20);
+    let r = bob.commit(&[ack], NOW + 20).await;
     assert!(
         r.is_err(),
         "SPEC 11.5.1: an ack naming a PR the target never held must be refused"
@@ -438,11 +450,11 @@ fn an_ack_may_name_an_earlier_pr_of_the_target() {
 /// kind.
 /// Not an end-to-end scenario: the dispatch table has no scenario that
 /// reaches the shadowing case without already trusting it.
-#[test]
-fn merge_and_merge_ack_parse_to_distinct_kinds() {
-    let p = Peer::new("alice");
+#[tokio::test]
+async fn merge_and_merge_ack_parse_to_distinct_kinds() {
+    let p = Peer::new("alice").await;
     let from = json!([p.pr()]);
-    let to = json!(Peer::new("bob").pr());
+    let to = json!(Peer::new("bob").await.pr());
     let parse = |pay: Value| {
         let pay: coz::Pay = serde_json::from_value(pay.clone()).expect("pay shape");
         ParsedCoz::from_pay(
@@ -478,13 +490,13 @@ fn merge_and_merge_ack_parse_to_distinct_kinds() {
 /// Turns red if: any ack matches any merge (accept-any mutant: alice/diana
 /// or alice/eve become Merged), or Pending is never reported.
 /// End-to-end scenario: yes (five principals, two chains per status).
-#[test]
-fn merge_status_distinguishes_merged_pending_and_none() {
-    let mut alice = Peer::new("alice");
-    let mut bob = Peer::new("bob");
-    let mut carol = Peer::new("carol");
-    let mut diana = Peer::new("diana_es384");
-    let mut eve = Peer::new("eve_ed25519");
+#[tokio::test]
+async fn merge_status_distinguishes_merged_pending_and_none() {
+    let mut alice = Peer::new("alice").await;
+    let mut bob = Peer::new("bob").await;
+    let mut carol = Peer::new("carol").await;
+    let mut diana = Peer::new("diana_es384").await;
+    let mut eve = Peer::new("eve_ed25519").await;
     let (alice_pr, carol_pr) = (alice.pr(), carol.pr());
     let (bob_pr, diana_pr, eve_pr) = (bob.pr(), diana.pr(), eve.pr());
 
@@ -493,7 +505,7 @@ fn merge_status_distinguishes_merged_pending_and_none() {
         (&mut carol, &carol_pr, &diana_pr),
     ] {
         let pay = src.merge_pay(&json!([from]), &json!(to), NOW + 10);
-        src.commit(&[pay], NOW + 10).expect("merge accepted");
+        src.commit(&[pay], NOW + 10).await.expect("merge accepted");
     }
     for (who, to) in [
         (&mut bob, &bob_pr),
@@ -501,7 +513,7 @@ fn merge_status_distinguishes_merged_pending_and_none() {
         (&mut eve, &eve_pr),
     ] {
         let pay = who.ack_pay(&json!([alice_pr]), &json!(to), NOW + 20);
-        who.commit(&[pay], NOW + 20).expect("ack accepted");
+        who.commit(&[pay], NOW + 20).await.expect("ack accepted");
     }
 
     let st = |s: &Peer, t: &Peer| merge_status(&s.principal, &t.principal);
@@ -520,10 +532,10 @@ fn merge_status_distinguishes_merged_pending_and_none() {
 /// Turns red if: `merge_from` is ignored or compared as a set, or the
 /// positive control (identical ack) is not Merged.
 /// End-to-end scenario: yes.
-#[test]
-fn an_ack_differing_only_in_merge_from_does_not_merge() {
-    let carol = Peer::new("carol");
-    let mut alice = Peer::new("alice");
+#[tokio::test]
+async fn an_ack_differing_only_in_merge_from_does_not_merge() {
+    let carol = Peer::new("carol").await;
+    let mut alice = Peer::new("alice").await;
     let old = alice.pr();
     let k = signer("key_a");
     let key_pay = json!({
@@ -538,12 +550,16 @@ fn an_ack_differing_only_in_merge_from_does_not_merge() {
         .with_first_seen(NOW + 5);
     alice
         .commit_with_keys(vec![(key_pay, Some(key))], NOW + 5)
+        .await
         .expect("alice advances");
     let new = alice.pr();
-    let bob_pr = Peer::new("bob").pr();
+    let bob_pr = Peer::new("bob").await.pr();
 
     let pay = alice.merge_pay(&json!([old, new]), &json!(bob_pr), NOW + 10);
-    alice.commit(&[pay], NOW + 10).expect("merge accepted");
+    alice
+        .commit(&[pay], NOW + 10)
+        .await
+        .expect("merge accepted");
 
     let variants = [
         ("reordered", json!([new, old])),
@@ -551,9 +567,10 @@ fn an_ack_differing_only_in_merge_from_does_not_merge() {
         ("a different PR", json!([old, carol.pr()])),
     ];
     for (why, from) in variants {
-        let mut bob = Peer::new("bob");
+        let mut bob = Peer::new("bob").await;
         let pay = bob.ack_pay(&from, &json!(bob_pr), NOW + 20);
         bob.commit(&[pay], NOW + 20)
+            .await
             .expect("an unmatched ack is accepted");
         assert_eq!(
             merge_status(&alice.principal, &bob.principal),
@@ -562,9 +579,10 @@ fn an_ack_differing_only_in_merge_from_does_not_merge() {
         );
     }
 
-    let mut bob = Peer::new("bob");
+    let mut bob = Peer::new("bob").await;
     let pay = bob.ack_pay(&json!([old, new]), &json!(bob_pr), NOW + 20);
     bob.commit(&[pay], NOW + 20)
+        .await
         .expect("identical ack accepted");
     assert_eq!(
         merge_status(&alice.principal, &bob.principal),
@@ -579,18 +597,18 @@ fn an_ack_differing_only_in_merge_from_does_not_merge() {
 /// Positive control: the same merge with one PR is accepted.
 /// Turns red if: an empty list is accepted.
 /// Not an end-to-end scenario: a parser boundary case.
-#[test]
-fn an_empty_merge_from_is_refused() {
-    let tpr = Peer::new("bob").pr();
-    let mut ok = Peer::new("alice");
+#[tokio::test]
+async fn an_empty_merge_from_is_refused() {
+    let tpr = Peer::new("bob").await.pr();
+    let mut ok = Peer::new("alice").await;
     let pay = ok.merge_pay(&json!([ok.pr()]), &json!(tpr), NOW + 10);
-    ok.commit(&[pay], NOW + 10).expect("positive control");
+    ok.commit(&[pay], NOW + 10).await.expect("positive control");
     for (typ, who) in [(MERGE_TYP, "alice"), (ACK_TYP, "bob")] {
-        let mut p = Peer::new(who);
+        let mut p = Peer::new(who).await;
         let own = if typ == ACK_TYP { p.pr() } else { tpr.clone() };
         let pay = p.merge_shaped(typ, &json!([]), &json!(own), NOW + 10);
         assert!(
-            p.commit(&[pay], NOW + 10).is_err(),
+            p.commit(&[pay], NOW + 10).await.is_err(),
             "{typ}: empty merge_from"
         );
     }

@@ -218,7 +218,7 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
     }
 }
 
-fn run_engine_recovery_test<B, I>(
+async fn run_engine_recovery_test<B, I>(
     pool: &test_fixtures::Pool,
     intent: test_fixtures::intent::TestIntent,
     engine: cyphr_storage::engine::StorageEngine<B, I>,
@@ -227,7 +227,7 @@ fn run_engine_recovery_test<B, I>(
     I: cyphr_storage::index::Indexer + cyphr_storage::index::IndexerWrite + 'static,
 {
     let generator = test_fixtures::Generator::new(pool);
-    let golden = match generator.generate_test(&intent) {
+    let golden = match generator.generate_test(&intent).await {
         Ok(g) => g,
         Err(_) => {
             // Ignore dynamically generated intents that are cryptographically invalid
@@ -283,7 +283,7 @@ fn run_engine_recovery_test<B, I>(
 
     let genesis_key = &genesis_keys[0];
     let key = golden_key_to_domain(genesis_key);
-    let temp_principal = cyphr::Principal::implicit(key).unwrap();
+    let temp_principal = cyphr::Principal::implicit(key).await.unwrap();
     let hash_alg = temp_principal.hash_alg();
     let pr_bytes = temp_principal.pr().as_multihash().get(hash_alg).unwrap();
     let principal_id = format!(
@@ -291,8 +291,7 @@ fn run_engine_recovery_test<B, I>(
         coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
     );
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    async {
         // Ingest commits sequentially
         for commit in &merged_commits {
             let mut raw_blobs = Vec::new();
@@ -430,7 +429,8 @@ fn run_engine_recovery_test<B, I>(
             .unwrap()
             .unwrap();
         assert_eq!(original_entity.blob_hash, recovered_entity.blob_hash);
-    });
+    }
+    .await;
 }
 
 proptest! {
@@ -438,18 +438,22 @@ proptest! {
     /// index rebuilt from the in-memory blob store equals the one built at ingest.
     #[test]
     fn test_memory_engine_rebuild_recovery((genesis_key_idx, steps) in test_case_strategy()) {
+        block_on(async move {
         let pool = load_pool();
         let intent = build_intent(genesis_key_idx, steps);
         let blob_store = MemoryBlobStore::new();
         let indexer = MemoryIndexer::new();
         let engine = StorageEngine::new(blob_store, indexer);
-        run_engine_recovery_test(&pool, intent, engine);
+        run_engine_recovery_test(&pool, intent, engine).await;
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 
     /// Backs I1 on the durable fjall backends: the same property after real
     /// on-disk ingest.
     #[test]
     fn test_persistent_engine_rebuild_recovery((genesis_key_idx, steps) in test_case_strategy()) {
+        block_on(async move {
         let pool = load_pool();
         let intent = build_intent(genesis_key_idx, steps);
         let temp_dir_blob = tempfile::tempdir().unwrap();
@@ -457,6 +461,17 @@ proptest! {
         let blob_store = FjallBlobStore::open(temp_dir_blob.path()).unwrap();
         let indexer = FjallIndexer::open(&temp_dir_index.path().join("index")).unwrap();
         let engine = StorageEngine::new(blob_store, indexer);
-        run_engine_recovery_test(&pool, intent, engine);
+        run_engine_recovery_test(&pool, intent, engine).await;
+            Ok::<(), TestCaseError>(())
+        })?;
     }
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }

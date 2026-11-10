@@ -76,7 +76,7 @@ fn golden_tx(pool: &test_fixtures::Pool, typ: &str, target: &str, with_key: bool
 
 /// Apply `tx` to `p` as one commit signed by `golden`, returning the commit's
 /// wire blobs (the key sidecar embedded on the key-introducing coz).
-fn commit_blobs(p: &mut Principal, pool: &test_fixtures::Pool, tx: &Tx) -> Vec<Vec<u8>> {
+async fn commit_blobs(p: &mut Principal, pool: &test_fixtures::Pool, tx: &Tx) -> Vec<Vec<u8>> {
     let g = pool.get("golden").expect("golden");
     let prv = Base64UrlUnpadded::decode_vec(g.prv.as_ref().expect("prv")).expect("prv b64");
     let pubb = Base64UrlUnpadded::decode_vec(&g.pub_key).expect("pub b64");
@@ -90,6 +90,7 @@ fn commit_blobs(p: &mut Principal, pool: &test_fixtures::Pool, tx: &Tx) -> Vec<V
             T,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 
     let entries = cyphr_storage::export_commits(p).expect("export");
@@ -134,7 +135,7 @@ struct Chain {
     d_blob: Vec<u8>,
 }
 
-fn build_chain(pool: &test_fixtures::Pool) -> Chain {
+async fn build_chain(pool: &test_fixtures::Pool) -> Chain {
     let g = pool.get("golden").expect("golden");
     let genesis_key = cyphr::Key::new(
         g.alg.clone(),
@@ -142,21 +143,25 @@ fn build_chain(pool: &test_fixtures::Pool) -> Chain {
         Base64UrlUnpadded::decode_vec(&g.pub_key).expect("pub b64"),
     )
     .expect("key binds its tmb");
-    let mut p = Principal::implicit(genesis_key).expect("implicit genesis");
+    let mut p = Principal::implicit(genesis_key)
+        .await
+        .expect("implicit genesis");
     let id = p.pr_tagged().expect("PG");
-    let genesis_blobs = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T).expect("genesis");
+    let genesis_blobs = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
+        .await
+        .expect("genesis");
 
     let d = golden_tx(pool, "cyphr.me/cyphr/key/create", "key_a", true);
-    let create_blobs = commit_blobs(&mut p, pool, &d);
+    let create_blobs = commit_blobs(&mut p, pool, &d).await;
     let d_blob = create_blobs[0].clone();
 
     let del = golden_tx(pool, "cyphr.me/cyphr/key/delete", "key_a", false);
-    let delete_blobs = commit_blobs(&mut p, pool, &del);
+    let delete_blobs = commit_blobs(&mut p, pool, &del).await;
 
-    // Clones are independent (G0), so `p` is untouched by this commit.
-    let mut fresh = p.clone();
+    // Forks are independent (G0), so `p` is untouched by this commit.
+    let mut fresh = p.fork().await.expect("fork");
     let fresh_tx = golden_tx(pool, "cyphr.me/cyphr/key/create", "key_b", true);
-    let fresh_blobs = commit_blobs(&mut fresh, pool, &fresh_tx);
+    let fresh_blobs = commit_blobs(&mut fresh, pool, &fresh_tx).await;
 
     Chain {
         genesis_body: body(&id, &genesis_blobs),
@@ -187,7 +192,7 @@ fn build_chain(pool: &test_fixtures::Pool) -> Chain {
 #[tokio::test]
 async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
     let pool = load_pool();
-    let chain = build_chain(&pool);
+    let chain = build_chain(&pool).await;
     let id = chain.id.clone();
 
     let replay_blobs: Vec<Vec<u8>> = REPLAY_BLOBS

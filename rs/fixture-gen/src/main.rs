@@ -60,7 +60,10 @@ enum PoolCmd {
     },
 }
 
-fn main() {
+// The generator drives the async core on one thread: nothing it does
+// runs concurrently.
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -79,9 +82,9 @@ fn main() {
             };
 
             if recursive {
-                generate_recursive(&input, &output, &pool);
+                generate_recursive(&input, &output, &pool).await;
             } else {
-                generate_single(&input, &output, &pool);
+                generate_single(&input, &output, &pool).await;
             }
         },
         Commands::Pool { cmd } => match cmd {
@@ -131,7 +134,7 @@ fn main() {
 }
 
 /// Generate from a single intent file to a single output file (array of goldens).
-fn generate_single(intent_path: &Path, output_path: &PathBuf, pool: &test_fixtures::Pool) {
+async fn generate_single(intent_path: &Path, output_path: &PathBuf, pool: &test_fixtures::Pool) {
     let intent_data = match test_fixtures::Intent::load(intent_path) {
         Ok(i) => i,
         Err(e) => {
@@ -140,7 +143,7 @@ fn generate_single(intent_path: &Path, output_path: &PathBuf, pool: &test_fixtur
         },
     };
 
-    let goldens = match test_fixtures::generate(&intent_data, pool) {
+    let goldens = match test_fixtures::generate(&intent_data, pool).await {
         Ok(g) => g,
         Err(e) => {
             eprintln!("✗ Generation failed: {}", e);
@@ -191,7 +194,7 @@ fn generate_single(intent_path: &Path, output_path: &PathBuf, pool: &test_fixtur
 ///
 /// Structure: input_dir/genesis.toml (with test1, test2)
 ///         → output_dir/genesis/test1.json, output_dir/genesis/test2.json
-fn generate_recursive(input_dir: &PathBuf, output_dir: &Path, pool: &test_fixtures::Pool) {
+async fn generate_recursive(input_dir: &PathBuf, output_dir: &Path, pool: &test_fixtures::Pool) {
     if !input_dir.is_dir() {
         eprintln!(
             "✗ Input path '{}' is not a directory (use -r only with directories)",
@@ -234,7 +237,7 @@ fn generate_recursive(input_dir: &PathBuf, output_dir: &Path, pool: &test_fixtur
             },
         };
 
-        let goldens = match test_fixtures::generate(&intent_data, pool) {
+        let goldens = match test_fixtures::generate(&intent_data, pool).await {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("✗ Generation failed for '{}': {}", toml_path.display(), e);

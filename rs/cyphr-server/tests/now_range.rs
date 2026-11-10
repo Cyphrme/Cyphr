@@ -81,15 +81,17 @@ fn sign(k: &Kp, mut pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
 
 /// Apply the same `now` through both core entry paths (a data action and a
 /// `key/create` commit) on a default `Principal`.
-fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
+async fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
     let (g, k2) = (kp(), kp());
-    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let mut p = cyphr::Principal::implicit(key_of(&g))
+        .await
+        .expect("genesis");
     let (pay, sig, czd) = sign(
         &g,
         serde_json::json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
     );
     let action = p.verify_and_record_action(&pay, &sig, czd).map(|_| ());
-    let create = (|| {
+    let create = (async || {
         let (pay, sig, czd) = sign(
             &g,
             serde_json::json!({"alg": g.alg, "id": b64(&k2.tmb), "now": at, "tmb": b64(&g.tmb),
@@ -103,8 +105,10 @@ fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>)
                 at,
                 "cyphr.me",
             )
+            .await
             .map(|_| ())
-    })();
+    })()
+    .await;
     (action, create)
 }
 
@@ -119,9 +123,9 @@ fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>)
 /// can also overflow). Unit-level on purpose: the extremes cannot be authored
 /// through the server builder. Lives here, not in the core `spec_conformance.rs`,
 /// because that file's map test demands a docs row for every red there.
-#[test]
-fn now_bound_far_future_is_refused_on_every_entry_path() {
-    let (action, create) = now_outcomes(MAX_SAFE);
+#[tokio::test]
+async fn now_bound_far_future_is_refused_on_every_entry_path() {
+    let (action, create) = now_outcomes(MAX_SAFE).await;
     assert!(
         matches!(action, Err(cyphr::Error::TimestampFuture)),
         "action at 2^53 - 1: {action:?}"
@@ -130,7 +134,7 @@ fn now_bound_far_future_is_refused_on_every_entry_path() {
         matches!(create, Err(cyphr::Error::TimestampFuture)),
         "key/create at 2^53 - 1: {create:?}"
     );
-    let (action, create) = now_outcomes(i64::MAX);
+    let (action, create) = now_outcomes(i64::MAX).await;
     assert!(action.is_err(), "action at i64::MAX accepted");
     assert!(create.is_err(), "key/create at i64::MAX accepted");
 }
@@ -140,11 +144,13 @@ fn now_bound_far_future_is_refused_on_every_entry_path() {
 /// is offered a data action at 2^53; it is refused, while 2^53 - 1 is
 /// accepted. Turns red if the range ceiling is dropped and only the clock
 /// bounds `now`. Unit-level on purpose: only an injected clock can reach it.
-#[test]
-fn now_bound_range_ceiling_holds_for_a_runaway_clock() {
-    let outcome = |at: i64| {
+#[tokio::test]
+async fn now_bound_range_ceiling_holds_for_a_runaway_clock() {
+    let outcome = async |at: i64| {
         let g = kp();
-        let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+        let mut p = cyphr::Principal::implicit(key_of(&g))
+            .await
+            .expect("genesis");
         p.set_clock(|| i64::MAX);
         let (pay, sig, czd) = sign(
             &g,
@@ -152,9 +158,14 @@ fn now_bound_range_ceiling_holds_for_a_runaway_clock() {
         );
         p.verify_and_record_action(&pay, &sig, czd).map(|_| ())
     };
-    outcome(MAX_SAFE).expect("control: 2^53 - 1 is in range");
+    outcome(MAX_SAFE)
+        .await
+        .expect("control: 2^53 - 1 is in range");
     assert!(
-        matches!(outcome(MAX_SAFE + 1), Err(cyphr::Error::TimestampFuture)),
+        matches!(
+            outcome(MAX_SAFE + 1).await,
+            Err(cyphr::Error::TimestampFuture)
+        ),
         "2^53 accepted under a runaway clock"
     );
 }
@@ -209,7 +220,7 @@ async fn assert_refused_for_time(pool: &test_fixtures::Pool, body: String, label
         words.contains(&"timestamp") || words.contains(&"now"),
         "{label}: the refusal must name the timestamp, got: {resp:?}"
     );
-    let (tip, _) = get_json(app, &format!("/tip?pr={}", golden_principal_id(pool))).await;
+    let (tip, _) = get_json(app, &format!("/tip?pr={}", golden_principal_id(pool).await)).await;
     assert_eq!(tip, StatusCode::NOT_FOUND, "{label}: nothing may land");
 }
 
@@ -224,8 +235,8 @@ async fn assert_refused_for_time(pool: &test_fixtures::Pool, body: String, label
 #[tokio::test]
 async fn push_refuses_a_now_above_clock_plus_drift() {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
-    let base = build_genesis_push_body(&pool, &id, OLD);
+    let id = golden_principal_id(&pool).await;
+    let base = build_genesis_push_body(&pool, &id, OLD).await;
     for (label, now) in [
         ("a day ahead", wall_clock() + 86_400),
         ("2^53 - 1", MAX_SAFE),
@@ -244,8 +255,8 @@ async fn push_refuses_a_now_above_clock_plus_drift() {
 #[tokio::test]
 async fn push_refuses_a_now_outside_the_safe_integer_range() {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
-    let base = build_genesis_push_body(&pool, &id, OLD);
+    let id = golden_principal_id(&pool).await;
+    let base = build_genesis_push_body(&pool, &id, OLD).await;
     for (label, now) in [("zero", 0_i64), ("negative", -1), ("2^53", MAX_SAFE + 1)] {
         assert_refused_for_time(&pool, retimed(&pool, &base, now), label).await;
     }
@@ -260,14 +271,14 @@ async fn push_refuses_a_now_outside_the_safe_integer_range() {
 #[tokio::test]
 async fn old_dated_history_is_accepted_and_replays() {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
+    let id = golden_principal_id(&pool).await;
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
     let (status, resp) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &id, OLD),
+        build_genesis_push_body(&pool, &id, OLD).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{resp:?}");

@@ -26,8 +26,8 @@ const NOW: i64 = 1_700_100_000;
 /// The genesis-derived id for `build_genesis_push_body`'s principal
 /// (a genesis commit on the pool's `golden` key that also creates `key_a`):
 /// its PG.
-fn derived_id(pool: &test_fixtures::Pool) -> String {
-    golden_principal_id(pool)
+async fn derived_id(pool: &test_fixtures::Pool) -> String {
+    golden_principal_id(pool).await
 }
 
 async fn tip_status(app: axum::Router, id: &str) -> StatusCode {
@@ -46,12 +46,12 @@ async fn d2_control_push_under_derived_id_is_accepted() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     let pool = load_pool();
-    let id = derived_id(&pool);
+    let id = derived_id(&pool).await;
 
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &id, NOW),
+        build_genesis_push_body(&pool, &id, NOW).await,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
@@ -72,7 +72,7 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, squat, NOW),
+        build_genesis_push_body(&pool, squat, NOW).await,
     )
     .await;
     assert!(
@@ -97,12 +97,12 @@ async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     let app = build_router(state);
     let pool = load_pool();
     let squat = Base64UrlUnpadded::encode_string(&[0x61u8; 32]);
-    assert_ne!(squat, derived_id(&pool), "premise");
+    assert_ne!(squat, derived_id(&pool).await, "premise");
 
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &squat, NOW),
+        build_genesis_push_body(&pool, &squat, NOW).await,
     )
     .await;
     assert!(
@@ -149,10 +149,10 @@ async fn d1_push_refuses_substituted_key_sidecar() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     let pool = load_pool();
-    let id = derived_id(&pool);
+    let id = derived_id(&pool).await;
     let attacker_pub = pool.get("key_b").expect("key_b in pool").pub_key.clone();
 
-    let honest = build_genesis_push_body(&pool, &id, NOW);
+    let honest = build_genesis_push_body(&pool, &id, NOW).await;
     let forged = substitute_sidecar_pub(&honest, &attacker_pub);
     assert_ne!(honest, forged, "premise: the body was altered");
 
@@ -177,7 +177,7 @@ async fn d1_push_refuses_substituted_key_sidecar() {
 
 /// Honest history: the genesis commit of `golden` (SPEC 5.1), then golden
 /// `key/create` key_a.
-fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
+async fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
     let dom = |pk: &test_fixtures::PoolKey| {
@@ -189,13 +189,16 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
         .expect("key binds its tmb")
     };
     let b64d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
-    let mut p = cyphr::Principal::implicit(dom(golden)).expect("genesis");
+    let mut p = cyphr::Principal::implicit(dom(golden))
+        .await
+        .expect("genesis");
     p.commit_genesis(
         &golden.software_signer().expect("golden signer"),
         &[],
         NOW,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     let g_prv = b64d(golden.prv.as_ref().expect("golden prv"));
     let g_pub = b64d(&golden.pub_key);
@@ -224,6 +227,7 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
             NOW + 1,
             "cyphr.me",
         )
+        .await
         .expect("finalize");
 
     p
@@ -234,8 +238,8 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
 /// recorded `pr`/`ar`/`sr` still match (they do not cover `pub`). Red now
 /// because `load_principal_from_commits` rebuilds the key from the stored
 /// sidecar without checking `tmb == H(pub)`.
-#[test]
-fn d1_replay_refuses_substituted_key_sidecar() {
+#[tokio::test]
+async fn d1_replay_refuses_substituted_key_sidecar() {
     let pool = load_pool();
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
@@ -250,9 +254,10 @@ fn d1_replay_refuses_substituted_key_sidecar() {
         .expect("key binds its tmb")
     };
 
-    let p = honest_history(&pool);
+    let p = honest_history(&pool).await;
     let honest = cyphr_storage::export_commits(&p).expect("export");
     load_principal_from_commits(Genesis::Implicit(dom(golden)), &honest)
+        .await
         .expect("control: honest history replays");
 
     // Commit 0 is the genesis commit; commit 1 is the key_a `key/create`.
@@ -260,7 +265,9 @@ fn d1_replay_refuses_substituted_key_sidecar() {
     assert_eq!(forged[1].keys[0].tmb, key_a.compute_tmb_b64().expect("tmb"));
     forged[1].keys[0].pub_key = attacker_pub;
     assert!(
-        load_principal_from_commits(Genesis::Implicit(dom(golden)), &forged).is_err(),
+        load_principal_from_commits(Genesis::Implicit(dom(golden)), &forged)
+            .await
+            .is_err(),
         "replay accepted a stored key whose pub does not hash to its tmb"
     );
 }

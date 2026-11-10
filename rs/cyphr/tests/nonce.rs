@@ -72,13 +72,14 @@ fn key_of(k: &Kp) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb),
         others,
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -99,7 +100,7 @@ fn sign(k: &Kp, mut pay: serde_json::Value) -> Signed {
 
 /// One finalized commit by `signer` applying a single signed coz plus an
 /// optional sidecar key.
-fn commit_one(
+async fn commit_one(
     p: &mut Principal,
     signer: &Kp,
     parts: Signed,
@@ -115,6 +116,7 @@ fn commit_one(
             now,
             "cyphr.me",
         )
+        .await
         .map(|_| ())
 }
 
@@ -172,10 +174,17 @@ fn key_create(signer: &Kp, id: &Kp, now: i64) -> Signed {
 /// A two-key principal (`golden` + `key_a`, both ES256) after one finalized
 /// commit, so it has a Commit Root and no data: the minimal shape where
 /// `PR = H(SR || CR)` and `SR == AR == KR`.
-fn base() -> (Principal, Kp, Kp) {
+async fn base() -> (Principal, Kp, Kp) {
     let (g, a) = (pool_key("golden"), pool_key("key_a"));
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
-    commit_one(&mut p, &g, key_create(&g, &a, T), Some(key_of(&a)), T).expect("add key_a");
+    let mut p = genesis_of(
+        Principal::implicit(key_of(&g)).await.expect("genesis"),
+        &g,
+        &[],
+    )
+    .await;
+    commit_one(&mut p, &g, key_create(&g, &a, T), Some(key_of(&a)), T)
+        .await
+        .expect("add key_a");
     (p, g, a)
 }
 
@@ -241,9 +250,9 @@ fn nonce_bytes(seed: u8) -> [u8; 32] {
 /// base shape stops matching 3.7, which would make the RED tests assert
 /// against a moved target. Not end to end: a characterization of the
 /// pre-nonce roots.
-#[test]
-fn premise_roots_without_nonce_follow_3_7() {
-    let (p, g, a) = base();
+#[tokio::test]
+async fn premise_roots_without_nonce_follow_3_7() {
+    let (p, g, a) = base().await;
     let kr = sha256_of_sorted(&[g.tmb.as_bytes(), a.tmb.as_bytes()]);
     assert_eq!(
         sha256_bytes(p.key_root().expect("a live principal has a KR")),
@@ -286,10 +295,10 @@ fn expected_moved(level: Level) -> (bool, bool, bool) {
     }
 }
 
-fn state_after_create(level: Level, n: &[u8]) -> (Principal, Roots, Roots, Kp) {
-    let (mut p, g, _) = base();
+async fn state_after_create(level: Level, n: &[u8]) -> (Principal, Roots, Roots, Kp) {
+    let (mut p, g, _) = base().await;
     let before = roots(&p);
-    let r = commit_one(&mut p, &g, create(level, &g, n, T + 10), None, T + 10);
+    let r = commit_one(&mut p, &g, create(level, &g, n, T + 10), None, T + 10).await;
     assert!(
         r.is_ok(),
         "{level:?} nonce/create was refused (nonces are not implemented): {r:?}"
@@ -324,8 +333,9 @@ proptest! {
         n1 in any::<[u8; 32]>(),
         n2 in any::<[u8; 32]>(),
     ) {
+        block_on(async move {
         prop_assume!(n1 != n2);
-        let (mut p, before, after, g) = state_after_create(level, &n1);
+        let (mut p, before, after, g) = state_after_create(level, &n1).await;
         let (kr, ar, sr) = expected_moved(level);
         prop_assert_eq!(after.kr != before.kr, kr, "KR moved wrongly at {:?}", level);
         prop_assert_eq!(after.ar != before.ar, ar, "AR moved wrongly at {:?}", level);
@@ -341,19 +351,21 @@ proptest! {
         }
 
         // A different value at the same path gives a different root there.
-        let (other, _, other_after, _) = state_after_create(level, &n2);
+        let (other, _, other_after, _) = state_after_create(level, &n2).await;
         match level {
             Level::Kt => prop_assert_ne!(other_after.kr, after.kr.clone()),
             Level::At => prop_assert_ne!(other_after.ar, after.ar.clone()),
             Level::Pr => prop_assert_ne!(other.pr(), p.pr()),
         }
 
-        let r = commit_one(&mut p, &g, delete(level, &g, &n1, T + 20), None, T + 20);
+        let r = commit_one(&mut p, &g, delete(level, &g, &n1, T + 20), None, T + 20).await;
         prop_assert!(r.is_ok(), "{:?} nonce/delete was refused: {:?}", level, r);
         prop_assert_eq!(roots(&p), before, "delete left residue at {:?}", level);
         prop_assert_eq!(
             &pr_without_embedding(&p), p.pr(), "delete left a PR embedding at {:?}", level
         );
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 }
 
@@ -367,14 +379,14 @@ proptest! {
 /// digest differs); a second nonce replacing the first; a delete removing
 /// every nonce or the wrong one; an insertion-order-dependent root.
 /// End to end: yes (create, create, delete, delete on a live principal).
-#[test]
-fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
+#[tokio::test]
+async fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let (n1, n2) = (nonce_bytes(1), nonce_bytes(2));
-    let (mut p, g, a) = base();
+    let (mut p, g, a) = base().await;
     let tmbs = [g.tmb.as_bytes(), a.tmb.as_bytes()];
     let pre = roots(&p);
 
-    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n1, T + 10), None, T + 10);
+    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n1, T + 10), None, T + 10).await;
     assert!(r.is_ok(), "KT nonce/create was refused: {r:?}");
     assert_eq!(
         sha256_bytes(p.key_root().expect("a live principal has a KR")),
@@ -396,7 +408,7 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
             .as_multihash()
     );
 
-    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n2, T + 11), None, T + 11);
+    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n2, T + 11), None, T + 11).await;
     assert!(r.is_ok(), "a second KT nonce was refused: {r:?}");
     assert_eq!(
         sha256_bytes(p.key_root().expect("a live principal has a KR")),
@@ -406,7 +418,7 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
     let two = roots(&p);
 
     // The same two nonces in the other order: same state roots.
-    let (mut q, g2, _) = base();
+    let (mut q, g2, _) = base().await;
     commit_one(
         &mut q,
         &g2,
@@ -414,6 +426,7 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
         None,
         T + 10,
     )
+    .await
     .expect("reordered first nonce");
     commit_one(
         &mut q,
@@ -422,10 +435,11 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
         None,
         T + 11,
     )
+    .await
     .expect("reordered second nonce");
     assert_eq!(roots(&q), two, "the nonce set is order-dependent");
 
-    let r = commit_one(&mut p, &g, delete(Level::Kt, &g, &n1, T + 20), None, T + 20);
+    let r = commit_one(&mut p, &g, delete(Level::Kt, &g, &n1, T + 20), None, T + 20).await;
     assert!(r.is_ok(), "deleting one of two nonces was refused: {r:?}");
     assert_eq!(
         sha256_bytes(p.key_root().expect("a live principal has a KR")),
@@ -433,7 +447,7 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
         "KR after deleting N1 must keep N2"
     );
 
-    let r = commit_one(&mut p, &g, delete(Level::Kt, &g, &n2, T + 21), None, T + 21);
+    let r = commit_one(&mut p, &g, delete(Level::Kt, &g, &n2, T + 21), None, T + 21).await;
     assert!(r.is_ok(), "deleting the last nonce was refused: {r:?}");
     assert_eq!(
         roots(&p),
@@ -450,14 +464,14 @@ fn kt_nonces_are_sorted_into_the_key_root_and_delete_one_by_one() {
 /// an AT nonce folded into KR (KR moves); an AT nonce that does not enter
 /// AR; AR hashing anything but KR and the nonce; an insertion-order
 /// dependent AR. End to end: yes (live principal, create, create, delete).
-#[test]
-fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
+#[tokio::test]
+async fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
     let (n1, n2) = (nonce_bytes(3), nonce_bytes(4));
-    let (mut p, g, _) = base();
+    let (mut p, g, _) = base().await;
     let pre = roots(&p);
     let kr = sha256_bytes(p.key_root().expect("a live principal has a KR"));
 
-    let r = commit_one(&mut p, &g, create(Level::At, &g, &n1, T + 10), None, T + 10);
+    let r = commit_one(&mut p, &g, create(Level::At, &g, &n1, T + 10), None, T + 10).await;
     assert!(r.is_ok(), "AT nonce/create was refused: {r:?}");
     assert_eq!(roots(&p).kr, pre.kr, "an AT nonce reached KR");
     let ar = sha256_bytes(p.auth_root().expect("a live principal has an AR"));
@@ -473,7 +487,7 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
         "SR promotes AR"
     );
 
-    let r = commit_one(&mut p, &g, create(Level::At, &g, &n2, T + 11), None, T + 11);
+    let r = commit_one(&mut p, &g, create(Level::At, &g, &n2, T + 11), None, T + 11).await;
     assert!(r.is_ok(), "a second AT nonce was refused: {r:?}");
     let two = roots(&p);
     assert_eq!(two.kr, pre.kr, "a second AT nonce reached KR");
@@ -482,7 +496,7 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
         "two AT nonces left AR at its pre-nonce value"
     );
 
-    let (mut q, g2, _) = base();
+    let (mut q, g2, _) = base().await;
     commit_one(
         &mut q,
         &g2,
@@ -490,6 +504,7 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
         None,
         T + 10,
     )
+    .await
     .expect("reordered first nonce");
     commit_one(
         &mut q,
@@ -498,11 +513,12 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
         None,
         T + 11,
     )
+    .await
     .expect("reordered second nonce");
     assert_eq!(roots(&q), two, "the AT nonce set is order-dependent");
 
     for (n, now) in [(&n1, T + 20), (&n2, T + 21)] {
-        let r = commit_one(&mut p, &g, delete(Level::At, &g, n, now), None, now);
+        let r = commit_one(&mut p, &g, delete(Level::At, &g, n, now), None, now).await;
         assert!(r.is_ok(), "AT nonce/delete was refused: {r:?}");
     }
     assert_eq!(
@@ -525,11 +541,11 @@ fn at_nonce_is_hashed_with_the_key_root_into_the_auth_root() {
 /// unknown key); 10.1 does not say (SPEC ambiguity, node report). End to end:
 /// yes.
 // @docket: rv-nonce-ledger :: scripts/docket-run rv-nonce-ledger
-#[test]
-fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
+#[tokio::test]
+async fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
     let (n, never) = (nonce_bytes(5), nonce_bytes(6));
-    let (mut p, g, _) = base();
-    let r = commit_one(&mut p, &g, create(Level::At, &g, &n, T + 10), None, T + 10);
+    let (mut p, g, _) = base().await;
+    let r = commit_one(&mut p, &g, create(Level::At, &g, &n, T + 10), None, T + 10).await;
     assert!(r.is_ok(), "AT nonce/create was refused: {r:?}");
     let armed = roots(&p);
     let commits = p.commits().count();
@@ -545,7 +561,7 @@ fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
     let mut accepted = vec![];
     for (what, parts) in refusals {
         let now = parts_now(&parts);
-        if commit_one(&mut p, &g, parts, None, now).is_ok() {
+        if commit_one(&mut p, &g, parts, None, now).await.is_ok() {
             accepted.push(what);
         }
     }
@@ -553,7 +569,7 @@ fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
     assert_eq!(roots(&p), armed, "a refused delete moved a root");
     assert_eq!(p.commits().count(), commits, "a refused delete finalized");
 
-    let r = commit_one(&mut p, &g, delete(Level::At, &g, &n, T + 30), None, T + 30);
+    let r = commit_one(&mut p, &g, delete(Level::At, &g, &n, T + 30), None, T + 30).await;
     assert!(r.is_ok(), "control: the matching delete was refused: {r:?}");
 }
 
@@ -565,21 +581,21 @@ fn nonce_delete_removes_only_the_named_nonce_at_the_named_path() {
 /// to end: yes. Controls: the first create and the other-level create are
 /// accepted.
 // @docket: rv-nonce-ledger :: scripts/docket-run rv-nonce-ledger
-#[test]
-fn nonce_created_twice_at_one_level_is_refused() {
+#[tokio::test]
+async fn nonce_created_twice_at_one_level_is_refused() {
     let n = nonce_bytes(9);
-    let (mut p, g, _) = base();
-    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 10), None, T + 10);
+    let (mut p, g, _) = base().await;
+    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 10), None, T + 10).await;
     assert!(r.is_ok(), "control: first KT create was refused: {r:?}");
     let armed = roots(&p);
     let commits = p.commits().count();
 
-    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 11), None, T + 11);
+    let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 11), None, T + 11).await;
     assert!(r.is_err(), "a repeat KT create was accepted");
     assert_eq!(roots(&p), armed, "a refused create moved a root");
     assert_eq!(p.commits().count(), commits, "a refused create finalized");
 
-    let r = commit_one(&mut p, &g, create(Level::At, &g, &n, T + 12), None, T + 12);
+    let r = commit_one(&mut p, &g, create(Level::At, &g, &n, T + 12), None, T + 12).await;
     assert!(
         r.is_ok(),
         "control: the same value at AT was refused: {r:?}"
@@ -601,9 +617,9 @@ fn parts_now(parts: &Signed) -> i64 {
 /// `nonce/create` is handled as `key/create` (the key activates) or if the
 /// nonce `id` is looked up as a thumbprint (the create is refused as an
 /// unknown key). End to end: yes.
-#[test]
-fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
-    let (mut p, g, _) = base();
+#[tokio::test]
+async fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
+    let (mut p, g, _) = base().await;
     let stranger = pool_key("alice");
     let before = roots(&p);
     let r = commit_one(
@@ -612,7 +628,8 @@ fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
         create(Level::Kt, &g, stranger.tmb.as_bytes(), T + 10),
         None,
         T + 10,
-    );
+    )
+    .await;
     assert!(r.is_ok(), "a thumbprint-shaped nonce was refused: {r:?}");
     assert_eq!(p.active_key_count(), before.keys, "a nonce became a key");
     assert!(!p.is_key_active(&stranger.tmb), "the nonce activated a key");
@@ -625,7 +642,8 @@ fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
         key_create(&stranger, &third, T + 11),
         Some(key_of(&third)),
         T + 11,
-    );
+    )
+    .await;
     assert!(r.is_err(), "the nonce's lookalike key signed a commit");
 }
 
@@ -636,17 +654,18 @@ fn nonce_is_opaque_even_when_it_looks_like_a_thumbprint() {
 /// creates are accepted (so the refusals are the freeze). Turns red if a
 /// nonce kind bypasses the frozen gate (its `frozen_exempt` match), or if a
 /// nonce is refused after the thaw. End to end: yes.
-#[test]
-fn frozen_principal_refuses_nonce_mutations_until_thawed() {
+#[tokio::test]
+async fn frozen_principal_refuses_nonce_mutations_until_thawed() {
     let (n_old, n_new) = (nonce_bytes(7), nonce_bytes(8));
-    let (mut p, g, _) = base();
+    let (mut p, g, _) = base().await;
     let r = commit_one(
         &mut p,
         &g,
         create(Level::Kt, &g, &n_old, T + 10),
         None,
         T + 10,
-    );
+    )
+    .await;
     assert!(r.is_ok(), "pre-freeze nonce/create was refused: {r:?}");
     let lifecycle = |p: &Principal, suffix: &str, now: i64| {
         sign(
@@ -656,7 +675,9 @@ fn frozen_principal_refuses_nonce_mutations_until_thawed() {
         )
     };
     let f = lifecycle(&p, "freeze/create", T + 20);
-    commit_one(&mut p, &g, f, None, T + 21).expect("premise: freeze/create applies");
+    commit_one(&mut p, &g, f, None, T + 21)
+        .await
+        .expect("premise: freeze/create applies");
     assert!(p.is_frozen(), "premise: frozen");
     let frozen = roots(&p);
 
@@ -664,12 +685,18 @@ fn frozen_principal_refuses_nonce_mutations_until_thawed() {
     for (i, level) in [Level::Pr, Level::At, Level::Kt].into_iter().enumerate() {
         let now = T + 30 + i as i64;
         let n = nonce_bytes(20 + i as u8);
-        if commit_one(&mut p, &g, create(level, &g, &n, now), None, now).is_ok() {
+        if commit_one(&mut p, &g, create(level, &g, &n, now), None, now)
+            .await
+            .is_ok()
+        {
             accepted.push(format!("{level:?} create"));
         }
     }
     let now = T + 40;
-    if commit_one(&mut p, &g, delete(Level::Kt, &g, &n_old, now), None, now).is_ok() {
+    if commit_one(&mut p, &g, delete(Level::Kt, &g, &n_old, now), None, now)
+        .await
+        .is_ok()
+    {
         accepted.push("KT delete".to_string());
     }
     assert!(
@@ -679,14 +706,17 @@ fn frozen_principal_refuses_nonce_mutations_until_thawed() {
     assert_eq!(roots(&p), frozen, "a refused nonce moved a root");
 
     let thaw = lifecycle(&p, "freeze/delete", T + 50);
-    commit_one(&mut p, &g, thaw, None, T + 51).expect("premise: freeze/delete thaws");
+    commit_one(&mut p, &g, thaw, None, T + 51)
+        .await
+        .expect("premise: freeze/delete thaws");
     let r = commit_one(
         &mut p,
         &g,
         create(Level::Kt, &g, &n_new, T + 60),
         None,
         T + 60,
-    );
+    )
+    .await;
     assert!(
         r.is_ok(),
         "control: a thawed principal refused a nonce: {r:?}"
@@ -709,8 +739,8 @@ fn frozen_principal_refuses_nonce_mutations_until_thawed() {
 /// or KR/AR of a keyless principal derived from nothing), if a lone nonce
 /// is hashed instead of promoted, or if the AT nonce is placed after an
 /// absent KR slot. End to end: yes.
-#[test]
-fn dead_principal_roots_keep_the_nonces_that_remain() {
+#[tokio::test]
+async fn dead_principal_roots_keep_the_nonces_that_remain() {
     let (n_kt, n_at) = (nonce_bytes(11), nonce_bytes(12));
     let revoke = |g: &Kp, now: i64| {
         sign(
@@ -734,19 +764,26 @@ fn dead_principal_roots_keep_the_nonces_that_remain() {
     for (way, die) in ways {
         for (kt, at) in [(true, false), (false, true), (true, true)] {
             let g = pool_key("golden");
-            let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
+            let mut p = genesis_of(
+                Principal::implicit(key_of(&g)).await.expect("genesis"),
+                &g,
+                &[],
+            )
+            .await;
             let mut now = T;
             if kt {
                 commit_one(&mut p, &g, create(Level::Kt, &g, &n_kt, now), None, now)
+                    .await
                     .expect("KT nonce");
                 now += 1;
             }
             if at {
                 commit_one(&mut p, &g, create(Level::At, &g, &n_at, now), None, now)
+                    .await
                     .expect("AT nonce");
                 now += 1;
             }
-            let r = commit_one(&mut p, &g, die(&g, now), None, now + 1);
+            let r = commit_one(&mut p, &g, die(&g, now), None, now + 1).await;
             assert!(r.is_ok(), "{way} of the last key (kt={kt} at={at}): {r:?}");
             assert_eq!(p.active_key_count(), 0);
 
@@ -771,4 +808,13 @@ fn dead_principal_roots_keep_the_nonces_that_remain() {
             );
         }
     }
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }

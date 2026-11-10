@@ -110,7 +110,7 @@ fn data_tree_id(p: &Principal) -> String {
 
 /// Record `actions` on `p`, apply `txs` as one commit signed by `golden`,
 /// and return the bundle: the actions, then the commit's cozies.
-fn bundle(
+async fn bundle(
     p: &mut Principal,
     pool: &test_fixtures::Pool,
     actions: &[Signed],
@@ -130,7 +130,7 @@ fn bundle(
             .expect("transaction applies");
     }
     let signer = g.software_signer().expect("signer");
-    finalize(scope, &signer, now);
+    finalize(scope, &signer, now).await;
 
     let entries = cyphr_storage::export_commits(p).expect("export");
     let commit = entries.last().expect("a commit");
@@ -145,9 +145,10 @@ fn bundle(
         .collect()
 }
 
-fn finalize(scope: cyphr::CommitScope<'_>, signer: &SoftwareSigner, now: i64) {
+async fn finalize(scope: cyphr::CommitScope<'_>, signer: &SoftwareSigner, now: i64) {
     scope
         .finalize_with_software(signer, now, "cyphr.me")
+        .await
         .expect("commit finalizes");
 }
 
@@ -180,9 +181,13 @@ fn body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
 async fn data_root_enters_pr_only_by_a_signed_ds_create() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
-    let mut p = Principal::implicit(g.key().expect("golden key")).expect("implicit genesis");
+    let mut p = Principal::implicit(g.key().expect("golden key"))
+        .await
+        .expect("implicit genesis");
     let id = p.pr_tagged().expect("PG");
-    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T).expect("genesis");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
+        .await
+        .expect("genesis");
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -198,7 +203,8 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
         &[action(&pool, T + 1, "one")],
         |_| vec![key_create(&pool, "key_a", T + 2)],
         T + 2,
-    );
+    )
+    .await;
     let (s, b) = post_json(app.clone(), "/push", body(&id, &first)).await;
     assert_eq!(s, StatusCode::CREATED, "action + key/create push: {b:?}");
     let (_, tip) = get_json(app.clone(), &tip_uri).await;
@@ -240,7 +246,8 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
         &[action(&pool, T + 3, "two")],
         |p| vec![ds_create(&pool, &data_tree_id(p), T + 4)],
         T + 4,
-    );
+    )
+    .await;
     let (s, b) = post_json(app.clone(), "/push", body(&id, &included)).await;
     assert_eq!(s, StatusCode::CREATED, "ds/create push: {b:?}");
     let (_, tip) = get_json(app.clone(), &tip_uri).await;
@@ -272,9 +279,13 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
 async fn ds_create_includes_actions_pushed_alone() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
-    let mut p = Principal::implicit(g.key().expect("golden key")).expect("implicit genesis");
+    let mut p = Principal::implicit(g.key().expect("golden key"))
+        .await
+        .expect("implicit genesis");
     let id = p.pr_tagged().expect("PG");
-    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T).expect("genesis");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
+        .await
+        .expect("genesis");
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -291,7 +302,9 @@ async fn ds_create_includes_actions_pushed_alone() {
 
     // A ds/create naming a DR that is not MR(DT) is refused.
     let other = action(&pool, T + 1, "never pushed");
-    let mut q = Principal::implicit(g.key().expect("golden key")).expect("implicit genesis");
+    let mut q = Principal::implicit(g.key().expect("golden key"))
+        .await
+        .expect("implicit genesis");
     q.verify_and_record_action(&other.pay, &other.sig, other.czd.clone())
         .expect("action records");
     let wrong = [ds_create(&pool, &data_tree_id(&q), T + 2)];
@@ -307,7 +320,8 @@ async fn ds_create_includes_actions_pushed_alone() {
         &[],
         |p| vec![ds_create(&pool, &data_tree_id(p), T + 2)],
         T + 2,
-    );
+    )
+    .await;
     let (s, b) = post_json(app.clone(), "/push", body(&id, &included)).await;
     assert_eq!(
         s,

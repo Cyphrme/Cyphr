@@ -3,7 +3,7 @@
 use cyphr::{Principal, StateDigest};
 
 use super::common::{
-    current_timestamp, decode_b64, generate_key, load_key_from_keystore, parse_store,
+    block_on, current_timestamp, decode_b64, generate_key, load_key_from_keystore, parse_store,
     save_principal_to_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
@@ -28,7 +28,7 @@ pub(crate) fn commit_genesis<S: cyphr::eml::Storage>(
     let tmb = coz::Thumbprint::from_bytes(decode_b64(genesis)?);
     let software =
         cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv_key, &signer.pub_key, &tmb);
-    principal.commit_genesis(&software, others, current_timestamp(), authority)?;
+    block_on(principal.commit_genesis(&software, others, current_timestamp(), authority))??;
     Ok(())
 }
 
@@ -83,7 +83,7 @@ pub fn run(
         },
     };
 
-    let mut principal = Principal::implicit(genesis)?;
+    let mut principal = block_on(Principal::implicit(genesis))??;
     // A multi-key principal is Level 3+, which exists only through its
     // genesis commit (SPEC 5.1), so `--keys` with further keys commits it.
     if genesis_commit || !others.is_empty() {

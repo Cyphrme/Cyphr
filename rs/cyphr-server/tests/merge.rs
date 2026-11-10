@@ -44,7 +44,7 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(name: &str) -> Self {
+    async fn new(name: &str) -> Self {
         let pool = load_pool();
         let pk = pool.get(name).expect("pool key");
         let prv = Base64UrlUnpadded::decode_vec(pk.prv.as_ref().expect("prv")).expect("prv b64");
@@ -57,7 +57,7 @@ impl Peer {
             prv,
             pub_key,
             tmb,
-            principal: Principal::implicit(key).expect("implicit genesis"),
+            principal: Principal::implicit(key).await.expect("implicit genesis"),
             id: None,
         }
     }
@@ -145,7 +145,7 @@ impl Peer {
     /// `principal/create`. The local principal advances even when the
     /// server later refuses, so a test that expects a refusal authors that
     /// commit on a peer it does not reuse.
-    fn commit_blobs(
+    async fn commit_blobs(
         &mut self,
         pays: Vec<(Value, Option<Key>)>,
         now: i64,
@@ -159,19 +159,23 @@ impl Peer {
         let genesis = self.id.is_none();
         let mut scope = self.principal.begin_commit();
         if genesis {
-            scope.create_genesis_keys(&signer, &[], now, "cyphr.me")?;
+            scope
+                .create_genesis_keys(&signer, &[], now, "cyphr.me")
+                .await?;
         }
         for ((bytes, sig, czd), key) in signed {
             scope.verify_and_apply(&bytes, &sig, czd, key)?;
         }
         let id = if genesis {
             let id = scope.genesis_id()?;
-            scope.create_principal(&signer, now, "cyphr.me")?;
+            scope.create_principal(&signer, now, "cyphr.me").await?;
             Some(id)
         } else {
             None
         };
-        scope.finalize_with_software(&signer, now, "cyphr.me")?;
+        scope
+            .finalize_with_software(&signer, now, "cyphr.me")
+            .await?;
         if id.is_some() {
             self.id = id;
         }
@@ -208,14 +212,14 @@ impl Peer {
 
     /// A copy that continues this peer's chain, for authoring a commit the
     /// honest peer's verifier would refuse.
-    fn fork(&self) -> Self {
+    async fn fork(&self) -> Self {
         Self {
             name: self.name.clone(),
             alg: self.alg.clone(),
             prv: self.prv.clone(),
             pub_key: self.pub_key.clone(),
             tmb: self.tmb.clone(),
-            principal: self.principal.clone(),
+            principal: self.principal.fork().await.expect("fork"),
             id: self.id.clone(),
         }
     }
@@ -239,6 +243,7 @@ async fn bootstrap(app: &Router, peer: &mut Peer, added_key: &str, now: i64) {
     let pays = vec![peer.key_create(added_key, now)];
     let blobs = peer
         .commit_blobs(pays, now)
+        .await
         .expect("genesis commit authors");
     let (status, body) = push(app, peer, &blobs).await;
     assert_eq!(
@@ -277,15 +282,15 @@ async fn tip(app: &Router, peer: &Peer) -> Value {
 async fn merge_with_matching_ack_is_accepted_end_to_end() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
-    let mut source = Peer::new("alice");
-    let mut target = Peer::new("bob");
+    let mut source = Peer::new("alice").await;
+    let mut target = Peer::new("bob").await;
     bootstrap(&app, &mut source, "key_a", 1_700_100_000).await;
     bootstrap(&app, &mut target, "key_b", 1_700_100_000).await;
     let (source_pr, target_pr) = (source.pr(), target.pr());
     let target_before = tip(&app, &target).await;
 
     let pays = vec![source.merge(std::slice::from_ref(&source_pr), &target_pr, 1_700_100_100)];
-    let blobs = source.commit_blobs(pays, 1_700_100_100);
+    let blobs = source.commit_blobs(pays, 1_700_100_100).await;
     assert!(
         blobs.is_ok(),
         "SPEC 11.5.1: the verifier must accept principal/merge: {blobs:?}"
@@ -297,7 +302,7 @@ async fn merge_with_matching_ack_is_accepted_end_to_end() {
     );
 
     let pays = vec![target.ack(&[source_pr], &target_pr, 1_700_100_200)];
-    let blobs = target.commit_blobs(pays, 1_700_100_200);
+    let blobs = target.commit_blobs(pays, 1_700_100_200).await;
     assert!(
         blobs.is_ok(),
         "SPEC 11.5.1: the verifier must accept principal/merge-ack: {blobs:?}"
@@ -330,6 +335,7 @@ async fn merge_with_matching_ack_is_accepted_end_to_end() {
     let pays = vec![source.key_create("key_b", 1_700_100_300)];
     let blobs = source
         .commit_blobs(pays, 1_700_100_300)
+        .await
         .expect("source authors after merging");
     let (status, body) = push(&app, &source, &blobs).await;
     assert!(
@@ -353,14 +359,14 @@ async fn merge_with_matching_ack_is_accepted_end_to_end() {
 async fn merge_without_ack_leaves_the_target_untouched() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
-    let mut attacker = Peer::new("carol");
-    let mut victim = Peer::new("bob");
+    let mut attacker = Peer::new("carol").await;
+    let mut victim = Peer::new("bob").await;
     bootstrap(&app, &mut attacker, "key_a", 1_700_100_000).await;
     bootstrap(&app, &mut victim, "key_b", 1_700_100_000).await;
     let victim_before = tip(&app, &victim).await;
 
     let pays = vec![attacker.merge(&[attacker.pr()], &victim.pr(), 1_700_100_100)];
-    let blobs = attacker.commit_blobs(pays, 1_700_100_100);
+    let blobs = attacker.commit_blobs(pays, 1_700_100_100).await;
     assert!(
         blobs.is_ok(),
         "SPEC 11.5.1: the verifier must accept principal/merge: {blobs:?}"
@@ -385,6 +391,7 @@ async fn merge_without_ack_leaves_the_target_untouched() {
     let pays = vec![victim.key_create("alice", 1_700_100_200)];
     let blobs = victim
         .commit_blobs(pays, 1_700_100_200)
+        .await
         .expect("victim authors");
     let (status, body) = push(&app, &victim, &blobs).await;
     assert!(
@@ -411,11 +418,11 @@ async fn merge_without_ack_leaves_the_target_untouched() {
 async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
-    let mut alice = Peer::new("alice");
-    let mut bob = Peer::new("bob");
-    let mut carol = Peer::new("carol");
-    let mut diana = Peer::new("diana_es384");
-    let mut eve = Peer::new("eve_ed25519");
+    let mut alice = Peer::new("alice").await;
+    let mut bob = Peer::new("bob").await;
+    let mut carol = Peer::new("carol").await;
+    let mut diana = Peer::new("diana_es384").await;
+    let mut eve = Peer::new("eve_ed25519").await;
     for p in [&mut alice, &mut bob, &mut carol, &mut diana, &mut eve] {
         bootstrap(&app, p, "key_a", 1_700_100_000).await;
     }
@@ -427,7 +434,7 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
         (&mut carol, &carol_pr, &diana_pr),
     ] {
         let pays = vec![src.merge(std::slice::from_ref(from), to, 1_700_100_100)];
-        let blobs = src.commit_blobs(pays, 1_700_100_100);
+        let blobs = src.commit_blobs(pays, 1_700_100_100).await;
         assert!(
             blobs.is_ok(),
             "SPEC 11.5.1: the verifier must accept principal/merge: {blobs:?}"
@@ -438,7 +445,7 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
 
     // Positive control: the matching ack.
     let pays = vec![bob.ack(std::slice::from_ref(&alice_pr), &bob_pr, 1_700_100_200)];
-    let blobs = bob.commit_blobs(pays, 1_700_100_200);
+    let blobs = bob.commit_blobs(pays, 1_700_100_200).await;
     assert!(
         blobs.is_ok(),
         "SPEC 11.5.1: the verifier must accept principal/merge-ack: {blobs:?}"
@@ -468,6 +475,7 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
         let pays = vec![who.ack(std::slice::from_ref(&alice_pr), to, 1_700_100_200)];
         let blobs = who
             .commit_blobs(pays, 1_700_100_200)
+            .await
             .expect("locally well-formed");
         let (status, body) = push(&app, who, &blobs).await;
         assert!(
@@ -523,14 +531,14 @@ async fn an_unmatched_ack_is_accepted_but_makes_no_merge() {
 async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
-    let mut alice = Peer::new("alice");
-    let mut bob = Peer::new("bob");
+    let mut alice = Peer::new("alice").await;
+    let mut bob = Peer::new("bob").await;
     bootstrap(&app, &mut alice, "key_a", 1_700_100_000).await;
     bootstrap(&app, &mut bob, "key_b", 1_700_100_000).await;
     let (alice_pr, earlier) = (alice.pr(), bob.pr());
 
     let pays = vec![alice.merge(std::slice::from_ref(&alice_pr), &earlier, 1_700_100_100)];
-    let blobs = alice.commit_blobs(pays, 1_700_100_100);
+    let blobs = alice.commit_blobs(pays, 1_700_100_100).await;
     assert!(
         blobs.is_ok(),
         "SPEC 11.5.1: the verifier must accept principal/merge: {blobs:?}"
@@ -539,13 +547,16 @@ async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
     assert!(status.is_success(), "merge must push: {status} {body:?}");
 
     let pays = vec![bob.key_create("alice", 1_700_100_150)];
-    let blobs = bob.commit_blobs(pays, 1_700_100_150).expect("bob advances");
+    let blobs = bob
+        .commit_blobs(pays, 1_700_100_150)
+        .await
+        .expect("bob advances");
     let (status, body) = push(&app, &bob, &blobs).await;
     assert!(status.is_success(), "plain commit: {status} {body:?}");
     assert_ne!(bob.pr(), earlier);
 
     let pays = vec![bob.ack(std::slice::from_ref(&alice_pr), &earlier, 1_700_100_200)];
-    let blobs = bob.commit_blobs(pays, 1_700_100_200);
+    let blobs = bob.commit_blobs(pays, 1_700_100_200).await;
     assert!(
         blobs.is_ok(),
         "SPEC 11.5.1: the verifier must accept an ack naming an earlier PR: {blobs:?}"
@@ -576,9 +587,9 @@ async fn an_ack_naming_an_earlier_pr_is_accepted_over_push() {
 async fn forged_ack_naming_a_never_held_pr_is_refused_over_push() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
-    let mut alice = Peer::new("alice");
-    let mut bob = Peer::new("bob");
-    let mut carol = Peer::new("carol");
+    let mut alice = Peer::new("alice").await;
+    let mut bob = Peer::new("bob").await;
+    let mut carol = Peer::new("carol").await;
     bootstrap(&app, &mut alice, "key_a", 1_700_100_000).await;
     bootstrap(&app, &mut bob, "key_b", 1_700_100_000).await;
     bootstrap(&app, &mut carol, "key_a", 1_700_100_000).await;
@@ -587,23 +598,25 @@ async fn forged_ack_naming_a_never_held_pr_is_refused_over_push() {
     let pays = vec![alice.merge(std::slice::from_ref(&alice_pr), &bob_pr, 1_700_100_100)];
     let blobs = alice
         .commit_blobs(pays, 1_700_100_100)
+        .await
         .expect("merge authors");
     let (status, body) = push(&app, &alice, &blobs).await;
     assert!(status.is_success(), "merge must push: {status} {body:?}");
 
     // Positive control: the honest peer's verifier refuses the forgery.
-    let mut honest = bob.fork();
+    let mut honest = bob.fork().await;
     let pays = vec![honest.ack(std::slice::from_ref(&alice_pr), &carol_pr, 1_700_100_200)];
     assert!(
-        honest.commit_blobs(pays, 1_700_100_200).is_err(),
+        honest.commit_blobs(pays, 1_700_100_200).await.is_err(),
         "an honest verifier refuses an ack naming a PR it never held"
     );
 
-    let mut forger = bob.fork();
+    let mut forger = bob.fork().await;
     forger.principal.pretend_held(carol.principal.pr().clone());
     let pays = vec![forger.ack(std::slice::from_ref(&alice_pr), &carol_pr, 1_700_100_200)];
     let blobs = forger
         .commit_blobs(pays, 1_700_100_200)
+        .await
         .expect("the believing copy authors the forgery");
     let before = tip(&app, &bob).await;
     let (status, body) = push(&app, &forger, &blobs).await;
@@ -626,6 +639,7 @@ async fn forged_ack_naming_a_never_held_pr_is_refused_over_push() {
     let pays = vec![bob.ack(&[alice_pr], &bob_pr, 1_700_100_300)];
     let blobs = bob
         .commit_blobs(pays, 1_700_100_300)
+        .await
         .expect("honest ack authors");
     let (status, body) = push(&app, &bob, &blobs).await;
     assert!(

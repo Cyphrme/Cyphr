@@ -252,7 +252,7 @@ pub struct EquivocationProof {
 ///
 /// [`EvidenceFailure::BadCommit`] or [`EvidenceFailure::Replay`] naming
 /// the first commit that fails.
-pub fn replay_chain(
+pub async fn replay_chain(
     mut base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
 ) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
@@ -264,7 +264,7 @@ pub fn replay_chain(
                 commit: index,
                 what: "entry is undecodable",
             })?;
-        replay_commit(&mut base, index, blobs)?;
+        replay_commit(&mut base, index, blobs).await?;
     }
     Ok(base)
 }
@@ -287,7 +287,7 @@ pub fn replay_chain(
 /// # Errors
 ///
 /// An [`EvidenceFailure`] naming the first check that refused.
-pub fn verify_principal_fork(
+pub async fn verify_principal_fork(
     item: &Value,
     pg: &str,
     base: Principal<MemoryStorage>,
@@ -343,7 +343,7 @@ pub fn verify_principal_fork(
             return Err(EvidenceFailure::GenesisMismatch);
         }
     }
-    let state = replay_chain(base, prefix)?;
+    let state = replay_chain(base, prefix).await?;
     if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
         return Err(EvidenceFailure::GenesisMismatch);
     }
@@ -356,26 +356,32 @@ pub fn verify_principal_fork(
         ));
     }
     let at = prefix.len();
-    let branch =
-        |which, blobs: &[Vec<u8>]| -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
-            let mut copy = state.clone();
-            replay_commit(&mut copy, at, blobs).map_err(|e| match e {
+    let branch = async |which,
+                        blobs: &[Vec<u8>]|
+           -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
+        let mut copy = state
+            .fork()
+            .await
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
+        replay_commit(&mut copy, at, blobs)
+            .await
+            .map_err(|e| match e {
                 EvidenceFailure::Replay { source, .. } => {
                     EvidenceFailure::CommitRefused { which, source }
                 },
                 other => other,
             })?;
-            let commit = copy
-                .commits()
-                .last()
-                .cloned()
-                .ok_or(EvidenceFailure::BadCommit {
-                    commit: at,
-                    what: "no commit formed",
-                })?;
-            Ok((copy, commit))
-        };
-    let (ca, cb) = (branch("a", &a)?, branch("b", &b)?);
+        let commit = copy
+            .commits()
+            .last()
+            .cloned()
+            .ok_or(EvidenceFailure::BadCommit {
+                commit: at,
+                what: "no commit formed",
+            })?;
+        Ok((copy, commit))
+    };
+    let (ca, cb) = (branch("a", &a).await?, branch("b", &b).await?);
     if prefix.is_empty() && !(pg_names(&ca.0, pg) && pg_names(&cb.0, pg)) {
         return Err(EvidenceFailure::GenesisMismatch);
     }
@@ -658,12 +664,13 @@ fn opens_with(blobs: &[Vec<u8>], genesis_key: &str) -> bool {
 
 /// Replay one entry's blobs onto `principal` through the core's one replay
 /// entry point, as [`PeerChain`](crate::PeerChain) does.
-fn replay_commit(
+async fn replay_commit(
     principal: &mut Principal<MemoryStorage>,
     commit: usize,
     blobs: &[Vec<u8>],
 ) -> Result<(), EvidenceFailure> {
     crate::peer::replay_entry(principal, blobs)
+        .await
         .map(|_| ())
         .map_err(|refusal| match refusal {
             crate::peer::EntryRefusal::Malformed(what) => {

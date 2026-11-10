@@ -142,7 +142,7 @@ proptest! {
 // Per-mutation `pre` has been removed from the protocol, so these two call
 // sites — CommitScope::matches_arrow (write path, gates
 // cyphr-storage's engine before it finalizes a commit) and
-// Principal::finalize_commit's own arrow check (replay/import path) — are
+// PrincipalState::stage_commit's own arrow check (replay/import path) — are
 // the sole surviving chain-integrity guards. Both independently recompute
 // Arrow = MR(pre, sr, tmr) and compare it against the value claimed by the
 // closing commit/create coz's `arrow` field; each needs its own coverage
@@ -190,7 +190,7 @@ fn arrow_domain_key(pk: &test_fixtures::PoolKey) -> Key {
 /// genesis key's `key/create` of itself, the `principal/create` and the
 /// `commit/create`), signed by its genesis key `k`, which creates
 /// each of `others` after itself.
-fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> Principal {
+async fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(
             &k.alg,
@@ -203,6 +203,7 @@ fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> P
         1,
         "cyphr.me",
     )
+    .await
     .expect("genesis commit");
     p
 }
@@ -344,6 +345,7 @@ proptest! {
         byte_index in any::<usize>(),
         mask in 1u8..=255u8,
     ) {
+        block_on(async move {
         let pool = arrow_pool();
         let (genesis_name, signer_alg) = ARROW_GENESIS_CHOICES[genesis_idx];
         let genesis = arrow_pool_key(&pool, genesis_name);
@@ -355,8 +357,8 @@ proptest! {
         // genesis material, kept in lockstep by replaying the SAME signed
         // mutation bytes onto both (never re-signed — ECDSA signing is
         // randomized per call, so re-signing would desync their state).
-        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis, &[]);
-        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis, &[]);
+        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).await.expect("genesis a"), genesis, &[]).await;
+        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).await.expect("genesis b"), genesis, &[]).await;
         let mut scope_a = principal_a.begin_commit();
         let mut scope_b = principal_b.begin_commit();
 
@@ -378,7 +380,7 @@ proptest! {
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_a
             .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
-            .expect("finalize_with_software should succeed for a genuine commit");
+            .await.expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -395,6 +397,8 @@ proptest! {
             "matches_arrow must reject a single-byte-tampered arrow (alg={:?}, mutation_count={})",
             signer_alg, mutation_count
         );
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 
     /// Property 2: `matches_arrow` accepts a genuine, untampered arrow —
@@ -405,6 +409,7 @@ proptest! {
         genesis_idx in arrow_genesis_idx_strategy(),
         mutation_count in arrow_mutation_count_strategy(),
     ) {
+        block_on(async move {
         let pool = arrow_pool();
         let (genesis_name, _signer_alg) = ARROW_GENESIS_CHOICES[genesis_idx];
         let genesis = arrow_pool_key(&pool, genesis_name);
@@ -412,8 +417,8 @@ proptest! {
         let genesis_tmb = genesis.compute_tmb().expect("genesis tmb");
         let now = 1_700_000_000i64;
 
-        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis, &[]);
-        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis, &[]);
+        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).await.expect("genesis a"), genesis, &[]).await;
+        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).await.expect("genesis b"), genesis, &[]).await;
         let mut scope_a = principal_a.begin_commit();
         let mut scope_b = principal_b.begin_commit();
 
@@ -432,7 +437,7 @@ proptest! {
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_a
             .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
-            .expect("finalize_with_software should succeed for a genuine commit");
+            .await.expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -447,9 +452,11 @@ proptest! {
             "matches_arrow must accept the genuine, untampered arrow (mutation_count={})",
             mutation_count
         );
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 
-    /// Property 3: `Principal::finalize_commit` raises `Error::CommitMismatch`
+    /// Property 3: `PrincipalState::stage_commit` raises `Error::CommitMismatch`
     /// for a REAL signed `commit/create` coz whose `arrow` is a genuine
     /// single-byte-tampered (valid-length) value, driven through
     /// `verify_and_apply` + `finalize()` — the replay-path sibling of
@@ -464,6 +471,7 @@ proptest! {
         byte_index in any::<usize>(),
         mask in 1u8..=255u8,
     ) {
+        block_on(async move {
         let pool = arrow_pool();
         let (genesis_name, signer_alg) = ARROW_GENESIS_CHOICES[genesis_idx];
         let genesis = arrow_pool_key(&pool, genesis_name);
@@ -480,7 +488,7 @@ proptest! {
         // Reference principal: learn the genuine arrow for this exact
         // mutation, so the tamper is a real single-byte flip of a value
         // that would otherwise be accepted — not arbitrary noise.
-        let mut principal_ref = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis ref"), genesis, &[]);
+        let mut principal_ref = genesis_of(Principal::implicit(arrow_domain_key(genesis)).await.expect("genesis ref"), genesis, &[]).await;
         let mut scope_ref = principal_ref.begin_commit();
         scope_ref
             .verify_and_apply(
@@ -494,7 +502,7 @@ proptest! {
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_ref
             .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
-            .expect("finalize_with_software should succeed for a genuine commit");
+            .await.expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -512,7 +520,7 @@ proptest! {
         // Test principal: byte-identical mutation replay, then a REAL
         // signed commit/create coz carrying the tampered arrow, through
         // the actual write path (verify_and_apply, then finalize()).
-        let mut principal = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis test"), genesis, &[]);
+        let mut principal = genesis_of(Principal::implicit(arrow_domain_key(genesis)).await.expect("genesis test"), genesis, &[]).await;
         let mut scope = principal.begin_commit();
         scope
             .verify_and_apply(
@@ -529,12 +537,14 @@ proptest! {
             .verify_and_apply(&commit_pay, &commit_sig, commit_czd, None)
             .expect("a real signature over a well-formed (if tampered) payload must verify");
 
-        let result = scope.finalize();
+        let result = scope.finalize().await;
         prop_assert!(
             matches!(result, Err(Error::CommitMismatch)),
             "finalize() must raise CommitMismatch for a tampered-but-valid-length arrow, got {:?}",
             result.map(|_| ())
         );
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 }
 
@@ -546,8 +556,8 @@ proptest! {
 /// test in this file only ever exercises `Principal::implicit` (single-key,
 /// PG-less L1/L2) genesis; no existing test drives an *established*
 /// (`principal/create`-finalized) multi-key genesis through a second commit.
-#[test]
-fn test_explicit_multi_key_genesis_second_commit_succeeds() {
+#[tokio::test]
+async fn test_explicit_multi_key_genesis_second_commit_succeeds() {
     let pool = arrow_pool();
     let key_a = arrow_pool_key(&pool, "golden");
     let key_b = arrow_pool_key(&pool, "eve_ed25519");
@@ -559,8 +569,9 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
     let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
     let now = 1_700_000_000i64;
 
-    let mut principal =
-        Principal::implicit(arrow_domain_key(key_a)).expect("genesis key construction");
+    let mut principal = Principal::implicit(arrow_domain_key(key_a))
+        .await
+        .expect("genesis key construction");
     assert!(
         principal.pg().is_none(),
         "PG must not exist before principal/create"
@@ -575,6 +586,7 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
             now,
             "cyphr.me",
         )
+        .await
         .expect("genesis key/creates");
     // The future SR after both creates, promoted to PR with no CR/DR —
     // exactly what `principal/create`'s `id` field must carry per SPEC §5.1.
@@ -590,6 +602,7 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
             now + 1,
             "cyphr.me",
         )
+        .await
         .expect("genesis commit should finalize");
 
     assert!(
@@ -609,6 +622,7 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
             now + 3,
             "cyphr.me",
         )
+        .await
         .expect(
             "a second commit signed on top of a fresh multi-key established genesis must finalize \
              without a state-root mismatch (F40)",
@@ -633,14 +647,15 @@ proptest! {
         now_offset in 0i64..1_000,
         msg in "[a-z]{1,12}",
     ) {
+        block_on(async move {
         let pool = arrow_pool();
         let golden = arrow_pool_key(&pool, "golden");
         let signer = arrow_pool_key(&pool, signer_name);
         let mut p = genesis_of(
-            Principal::implicit(arrow_domain_key(golden)).expect("principal"),
+            Principal::implicit(arrow_domain_key(golden)).await.expect("principal"),
             golden,
             &[arrow_domain_key(signer)],
-        );
+        ).await;
 
         let pay = serde_json::to_vec(&serde_json::json!({
             "alg": signer.alg,
@@ -669,5 +684,16 @@ proptest! {
             count_once,
             p.action_count()
         );
+            Ok::<(), TestCaseError>(())
+        })?;
     }
+}
+
+/// Drive one proptest case's async body: `proptest!` bodies are
+/// synchronous, so each case runs on its own current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
 }

@@ -57,7 +57,7 @@ async fn register_route_is_gone_and_push_never_dials_out() {
     let peer_url = format!("http://{}", peer.local_addr().expect("peer addr"));
 
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    let pid = golden_principal_id(&pool).await;
 
     let (reg_status, _) = post_json(
         app.clone(),
@@ -66,8 +66,12 @@ async fn register_route_is_gone_and_push_never_dials_out() {
     )
     .await;
 
-    let (push_status, push_json) =
-        post_json(app, "/push", build_genesis_push_body(&pool, &pid, NOW + 10)).await;
+    let (push_status, push_json) = post_json(
+        app,
+        "/push",
+        build_genesis_push_body(&pool, &pid, NOW + 10).await,
+    )
+    .await;
     assert_eq!(push_status, StatusCode::CREATED, "push: {push_json:?}");
 
     let dialed = tokio::time::timeout(Duration::from_millis(500), peer.accept()).await;

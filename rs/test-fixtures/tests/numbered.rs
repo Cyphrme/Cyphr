@@ -33,10 +33,12 @@ fn golden(file: &str, name: &str) -> Value {
 
 /// Regenerate every test of `tests/intents/<file>.toml` against a freshly
 /// loaded pool and return them as JSON, keyed by order of the intent file.
-fn regenerate(file: &str) -> Vec<Value> {
+async fn regenerate(file: &str) -> Vec<Value> {
     let intent = Intent::load(&tests_dir().join(format!("intents/{file}.toml")))
         .expect("intent loads and expands");
-    let goldens = test_fixtures::generate(&intent, &pool()).expect("generation succeeds");
+    let goldens = test_fixtures::generate(&intent, &pool())
+        .await
+        .expect("generation succeeds");
     goldens
         .iter()
         .map(|g| serde_json::to_value(g).expect("golden serializes"))
@@ -47,10 +49,10 @@ fn regenerate(file: &str) -> Vec<Value> {
 /// seed, so the vectors built from it are reproducible. Red if derivation
 /// reads any ambient state (clock, RNG, load order), or a committed golden
 /// is stale against its intent. End to end: yes (intent -> golden).
-#[test]
-fn numbered_vectors_regenerate_byte_identical() {
-    let first = regenerate("numbered_keys");
-    let second = regenerate("numbered_keys");
+#[tokio::test]
+async fn numbered_vectors_regenerate_byte_identical() {
+    let first = regenerate("numbered_keys").await;
+    let second = regenerate("numbered_keys").await;
     assert_eq!(first, second, "two regenerations differ");
     for g in &first {
         let name = g["name"].as_str().expect("golden has a name");

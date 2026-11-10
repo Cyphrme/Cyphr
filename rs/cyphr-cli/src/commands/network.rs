@@ -535,7 +535,8 @@ fn replays(
         let (Placed::Commit(_, blobs) | Placed::Actions(_, blobs)) = step;
         entries.push(line(blobs)?);
     }
-    load_principal_from_commits(genesis.clone(), &entries)
+    block_on(load_principal_from_commits(genesis.clone(), &entries))
+        .map_err(|e| e.to_string())?
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

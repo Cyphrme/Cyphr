@@ -50,11 +50,11 @@ async fn healthz_answers_200_on_a_healthy_peer_that_holds_data() {
     let app = build_app_router(state).expect("router");
 
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
+    let id = golden_principal_id(&pool).await;
     let (push, _) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body(&pool, &id, 1_700_100_000),
+        build_genesis_push_body(&pool, &id, 1_700_100_000).await,
     )
     .await;
     assert_eq!(push, StatusCode::CREATED, "fixture push must land");
