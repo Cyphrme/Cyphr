@@ -306,7 +306,6 @@ fn key_create(kp: &coz::KeyPair, target: &cyphr::Key) -> (Vec<u8>, Vec<u8>, coz:
 /// key/creates (the over-strict rule GEN0 ships).
 /// Red today: the third key's key/create is refused with UnknownKey.
 #[tokio::test]
-#[ignore = "RED(GEN0b): SPEC 3.3, 5.3"]
 async fn a_created_genesis_key_may_create_the_next() {
     let kps = [
         coz::Alg::ES256.generate_keypair(),
@@ -349,4 +348,52 @@ async fn a_created_genesis_key_may_create_the_next() {
     let (state, _dir) = keyless_server();
     let (status, body) = post_json(build_router(state), "/push", push_body(&pg, &blobs)).await;
     assert_eq!(status, StatusCode::CREATED, "push: {body}");
+}
+
+/// Claim (SPEC 5.1 steps 3-4, 3.3): a commit chain begins with its genesis
+/// commit, so a first commit without `principal/create` is no commit at
+/// all. The core refuses to finalize it (`GenesisIncomplete`), and the
+/// server refuses its push and stores nothing.
+/// End-to-end: yes (core producer, HTTP push).
+/// Turns red on: the nascent committed form (a PG-less commit) being
+/// accepted, as it was before every chain had to begin with a genesis.
+#[tokio::test]
+async fn a_first_commit_without_principal_create_is_refused() {
+    let kp = coz::Alg::ES256.generate_keypair();
+    let key = key_of(&kp);
+    let signer = signer_of(&kp);
+    let mut p = cyphr::Principal::implicit(key.clone()).expect("implicit");
+    let id = p.pr_tagged().expect("pr");
+    let (pay, sig, czd, create) = key_create(&kp, &key);
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key))
+        .expect("the genesis key's own key/create opens the commit");
+    let prepared = scope
+        .prepare_commit(&signer, NOW, "cyphr.me")
+        .expect("the commit/create can be prepared");
+    let cc_sig = signer.sign_now(prepared.cad()).expect("sign");
+    let closing = serde_json::to_vec(&serde_json::json!({
+        "pay": prepared.pay(),
+        "sig": Base64UrlUnpadded::encode_string(&cc_sig),
+    }))
+    .unwrap();
+    let refused = scope.finish_commit(prepared, cc_sig);
+    assert!(
+        matches!(refused, Err(cyphr::Error::GenesisIncomplete)),
+        "a commit before principal/create: {refused:?}"
+    );
+
+    let (state, _dir) = keyless_server();
+    let (status, body) = post_json(
+        build_router(state.clone()),
+        "/push",
+        push_body(&id, &[create, closing]),
+    )
+    .await;
+    assert!(!status.is_success(), "the push is refused: {body}");
+    assert!(
+        state.engine.get_tip(&id).await.unwrap().is_none(),
+        "nothing stored"
+    );
 }

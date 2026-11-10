@@ -70,54 +70,29 @@ fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
         .expect("finalize");
 }
 
-/// `principal/create` by `signer`, whose `id` is the current PR: establishes
-/// the PG.
-fn establish_pg(p: &mut cyphr::Principal, signer: &Kp, now: i64) {
-    let pr = p.pr_tagged().expect("pr");
-    let pay = serde_json::to_vec(&serde_json::json!({
-        "alg": signer.alg, "id": pr, "now": now,
-        "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"
-    }))
-    .expect("pay");
-    let (sig, cad) = coz::sign_json(&pay, &signer.alg, &signer.prv, &signer.pubb).expect("sign");
-    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
-    let mut scope = p.begin_commit();
-    scope
-        .create_genesis_keys(
-            &cyphr::signer::SoftwareSigner::new(
-                &signer.alg,
-                &signer.prv,
-                &signer.pubb,
-                &signer.tmb,
-            ),
-            now,
-            "cyphr.me",
-        )
-        .expect("genesis key/creates (SPEC 7.7 Example 1)");
-    scope
-        .verify_and_apply(&pay, &sig, czd, None)
-        .expect("apply");
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(
-                &signer.alg,
-                &signer.prv,
-                &signer.pubb,
-                &signer.tmb,
-            ),
-            now,
-            "cyphr.me",
-        )
-        .expect("finalize");
+fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
 }
 
-/// Push body for commit `i` of `p` under `id`; commit 0 also embeds the
-/// genesis key on its closing cozy, as the wire contract requires.
-fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
+/// A principal over the genesis `keys` (the first signs) with its genesis
+/// commit (SPEC 5.1) made at `now`, and its id: the PG, the principal
+/// state over those keys.
+fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, String) {
+    let mut p = cyphr::Principal::explicit(keys.iter().map(|k| key_of(k)).collect())
+        .expect("explicit genesis");
+    let id = p.pr_tagged().expect("PG");
+    p.commit_genesis(&signer_of(keys[0]), now, "cyphr.me")
+        .expect("genesis commit");
+    (p, id)
+}
+
+/// Push body for commit `i` of `p` under `id`; every key-introducing cozy
+/// discloses its key, so commit 0 (the genesis) reads from its blobs alone.
+fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     let entry = &entries[i];
     let mut key_idx = 0;
-    let mut blobs: Vec<serde_json::Value> = entry
+    let blobs: Vec<serde_json::Value> = entry
         .cozies
         .iter()
         .map(|c| {
@@ -131,14 +106,6 @@ fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
             c
         })
         .collect();
-    if i == 0 {
-        let last = blobs.len() - 1;
-        blobs[last]["key"] = serde_json::json!({
-            "alg": genesis.alg,
-            "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-            "tmb": genesis.tmb.to_b64(),
-        });
-    }
     serde_json::json!({
         "principal_id": id,
         "blobs": blobs
@@ -163,28 +130,26 @@ async fn tip_payload(app: axum::Router, id: &str) -> serde_json::Value {
 }
 
 /// One principal with a PG, three PG hash variants (ES256, ES384, Ed25519
-/// keys), and a fork at its last position: two rival commits that both
-/// verify at the same `pre`.
+/// genesis keys), and a fork at its last position: two rival commits that
+/// both verify at the same `pre`.
 struct Forked {
     id: String,
-    genesis: Kp,
     /// The shared prefix, pushed first.
     shared: cyphr::Principal,
     /// The commit that is pushed first at the fork position, and its rival.
     canonical: cyphr::Principal,
     rival: cyphr::Principal,
-    /// Every spelling the PG answers to, plus the genesis id.
+    /// Every spelling the PG answers to, the id among them.
     spellings: Vec<String>,
 }
 
 fn forked() -> Forked {
     let pool = load_pool();
     let g = kp(&pool, "golden");
-    let mut shared = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    let id = common::golden_principal_id(&pool);
-    create_key(&mut shared, &g, &kp(&pool, "diana_es384"), NOW);
-    create_key(&mut shared, &g, &kp(&pool, "eve_ed25519"), NOW + 1);
-    establish_pg(&mut shared, &g, NOW + 2);
+    let (shared, id) = genesis(
+        &[&g, &kp(&pool, "diana_es384"), &kp(&pool, "eve_ed25519")],
+        NOW + 2,
+    );
 
     let mut spellings = vec![id.clone()];
     let mh = shared.pg().expect("PG established").as_multihash();
@@ -200,7 +165,6 @@ fn forked() -> Forked {
     create_key(&mut rival, &g, &kp(&pool, "key_b"), NOW + 4);
     Forked {
         id,
-        genesis: g,
         shared,
         canonical,
         rival,
@@ -235,21 +199,14 @@ async fn fork_is_listed_under_every_pg_spelling() {
         .expect("export")
         .len();
     for i in 0..n {
-        let (status, body) =
-            post_json(app.clone(), "/push", wire(&f.shared, i, &f.genesis, &f.id)).await;
+        let (status, body) = post_json(app.clone(), "/push", wire(&f.shared, i, &f.id)).await;
         assert_eq!(status, StatusCode::CREATED, "shared commit {i}: {body:?}");
     }
-    let (status, body) = post_json(
-        app.clone(),
-        "/push",
-        wire(&f.canonical, n, &f.genesis, &f.id),
-    )
-    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&f.canonical, n, &f.id)).await;
     assert_eq!(status, StatusCode::CREATED, "canonical commit: {body:?}");
     let tip_before = tip_payload(app.clone(), &f.id).await;
 
-    let (status, body) =
-        post_json(app.clone(), "/push", wire(&f.rival, n, &f.genesis, &f.id)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&f.rival, n, &f.id)).await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
@@ -316,15 +273,15 @@ async fn fork_is_listed_under_every_pg_spelling() {
 async fn unforked_principal_lists_only_its_chain_and_unknown_is_404() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
-    let id = common::golden_principal_id(&pool);
-    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    create_key(&mut p, &g, &kp(&pool, "key_a"), NOW);
+    // The genesis commit (`golden` with `key_a`), then one more commit.
+    let (mut p, id) = genesis(&[&g, &kp(&pool, "key_a")], NOW);
+    assert_eq!(id, common::golden_principal_id(&pool));
     create_key(&mut p, &g, &kp(&pool, "key_b"), NOW + 1);
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     for i in 0..2 {
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &id)).await;
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &id)).await;
         assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
     }
 

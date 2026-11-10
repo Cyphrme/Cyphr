@@ -107,93 +107,6 @@ fn load_pool() -> test_fixtures::Pool {
     test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
 }
 
-/// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name` (must have a known private key in `pool`). Returns the new
-/// commit's raw coz blob bytes, wire-ready for `submit_commit`. Mirrors the
-/// helper of the same name in tests/e2e.rs.
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key::new(
-        new_key.alg.clone(),
-        coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-    )
-    .expect("key binds its tmb")
-    .with_first_seen(now);
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
-}
-
 /// Assert `body` is a well-formed unsigned envelope
 /// (`docs/specs/http-envelope.md`) and return its `payload` for further
 /// field assertions -- migrated suites read `payload.*`, never top-level
@@ -314,41 +227,32 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
     (status, json)
 }
 
-/// Bootstrap a brand-new Active principal (implicit genesis `genesis_name`,
-/// plus one added key) through the real `/push` wire path, so the genesis key and the added
-/// key are both active and the principal is loadable by the login handler.
-/// Returns the principal's genesis-derived id.
+/// Bootstrap a brand-new Active principal through the real `/push` wire
+/// path: its genesis commit (SPEC 5.1), in which `genesis_name` creates
+/// itself and `add_key`, so both keys are active and the principal is
+/// loadable by the login handler. Returns the principal's id (its PG) in
+/// the bare spelling.
 async fn bootstrap_active_with_key(
     app: axum::Router,
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     add_key: &str,
 ) -> String {
-    let golden = pool.get(genesis_name).expect("genesis key in pool");
-    // SPEC 3.1: an implicit genesis's principal id is its key's thumbprint.
-    let principal_id = golden.compute_tmb_b64().expect("genesis tmb b64");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
+    };
+    let mut principal = cyphr::Principal::explicit(vec![key(genesis_name), key(add_key)])
+        .expect("explicit genesis");
+    let principal_id = principal.pr_tagged().expect("PG");
+    let blobs = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get(genesis_name).expect("genesis key in pool"),
+        1_700_000_000,
     )
-    .expect("key binds its tmb");
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, genesis_name, add_key, 1_700_000_000);
-
-    // Embed genesis on the closing commit/create -- the wire contract for a
-    // brand-new principal's genesis auto-detection.
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
+    .expect("genesis commit");
 
     let body = serde_json::json!({
         "principal_id": principal_id,
@@ -362,11 +266,15 @@ async fn bootstrap_active_with_key(
         "bootstrap active principal push must succeed"
     );
     principal_id
+        .split_once(':')
+        .expect("an algorithm-labelled PG")
+        .1
+        .to_string()
 }
 
 /// Bootstrap a golden `lifecycle/` fixture so the login handler can load it:
-/// the genesis key is embedded on the stored `commit/create` cozy (what
-/// `resolve_genesis` recovers an existing principal's genesis from), and the
+/// its first commit is its genesis commit (what `resolve_genesis` recovers
+/// an existing principal's genesis from), and the
 /// fixture's own pre-signed transactions drive the real lifecycle
 /// transition. Only reachable once the storage layer recognizes the
 /// lifecycle transactions (see the module-level note).
@@ -375,21 +283,9 @@ async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let principal_id = cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
         .expect("fixture genesis derives an id");
-    let gk = &genesis_keys[0];
 
     for commit in fixture["commits"].as_array().unwrap() {
-        let mut blobs = build_raw_blobs(commit);
-        for blob in blobs.iter_mut() {
-            let mut value: serde_json::Value = serde_json::from_slice(blob).unwrap();
-            let typ = value["pay"]["typ"].as_str().unwrap_or("");
-            if typ.ends_with("/commit/create") {
-                value.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({ "alg": gk["alg"], "pub": gk["pub"], "tmb": gk["tmb"] }),
-                );
-                *blob = serde_json::to_vec(&value).unwrap();
-            }
-        }
+        let blobs = build_raw_blobs(commit);
         let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
         state
             .engine
@@ -401,8 +297,8 @@ async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
 }
 
 /// Sign a fresh "self-revoke `signer_name`" commit onto `principal`. Mirrors
-/// [`sign_key_create_commit`]'s shape (see that function for the pattern),
-/// but for `key/revoke`: no new key is introduced, the signer revokes
+/// the common `sign_key_create_commit`'s shape (see that function for the
+/// pattern), but for `key/revoke`: no new key is introduced, the signer revokes
 /// itself (`rvk`, no `id` -- SPEC's self-revoke shape), so the mechanism
 /// differs enough not to share a body with the create case.
 fn sign_key_revoke_commit<S: eml::Storage>(

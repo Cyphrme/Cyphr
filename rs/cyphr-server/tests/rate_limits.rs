@@ -212,7 +212,8 @@ fn some_429(statuses: &[u16]) -> bool {
 // Push bodies
 // ========================================================================
 
-/// A brand-new principal's genesis push body (golden key adds `key_a`).
+/// A brand-new principal's genesis push body (its genesis commit: golden
+/// creates itself and `key_a`).
 fn genesis_body(principal_id: &str, now: i64) -> String {
     let pool = common::load_pool();
     common::build_genesis_push_body(&pool, principal_id, now)
@@ -227,139 +228,17 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
     .to_string()
 }
 
-/// The genesis `cyphr::Key` for pool key `name` (`first_seen` 0, like a fixture
-/// genesis).
-fn genesis_key(pool: &test_fixtures::Pool, name: &str) -> cyphr::Key {
-    let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key::new(
-        k.alg.clone(),
-        k.compute_tmb().expect("genesis tmb"),
-        Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-    )
-    .expect("key binds its tmb")
-}
-
-/// Append a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name`, and return the new commit's raw coz blobs, wire-ready. Takes
-/// `&mut principal` so a caller can build a genesis and a valid follow-on onto
-/// the SAME principal in sequence (a fresh `Principal::clone()` would share the
-/// durable log rather than deep-copy, colliding two "next commits" on one leaf).
-/// The key-introducing cozy carries its new key embedded, as the wire path
-/// expects.
-fn append_key_create(
-    principal: &mut cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    // Alphabetical field order matches the server's `canonicalize_value`
-    // `sort_keys()`, which it re-derives before verifying; any other order
-    // would make the signature mismatch what the server recomputes.
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key::new(
-        new_key.alg.clone(),
-        coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-    )
-    .expect("key binds its tmb")
-    .with_first_seen(now);
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the current principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    // The wire format expects the introduced key embedded directly on the
-    // key-introducing cozy; `export_commits` carries it separately.
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({ "alg": key.alg, "pub": key.pub_key, "tmb": key.tmb }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
-}
-
 /// Build a genesis push body AND a valid follow-on push body for the SAME
-/// principal, sharing one principal instance so the follow-on legitimately
-/// chains onto the genesis. The follow-on is a genesis-less "add key_b" commit
-/// the protocol accepts once the principal is resident -- so the ONLY thing that
-/// can refuse it is the count quota.
+/// principal. The genesis is the standard genesis commit (golden creates
+/// itself and `key_a`); the follow-on is a non-genesis "golden adds key_b"
+/// commit chained onto it, which the protocol accepts once the principal is
+/// resident -- so the ONLY thing that can refuse it is the count quota.
 fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
     let pool = common::load_pool();
-    let gkey = genesis_key(&pool, "golden");
-    let mut principal = cyphr::Principal::implicit(gkey.clone()).expect("implicit genesis");
-
-    // Genesis commit: golden adds key_a.
-    let mut g_blobs = append_key_create(&mut principal, &pool, "golden", "key_a", now);
-    // The closing cozy of a never-before-seen genesis carries the embedded
-    // genesis key `resolve_genesis` re-derives the principal from.
-    let closing = g_blobs.len() - 1;
-    let mut c: serde_json::Value = serde_json::from_slice(&g_blobs[closing]).unwrap();
-    c.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": gkey.alg(),
-            "pub": pool.get("golden").unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb().as_bytes()),
-        }),
-    );
-    g_blobs[closing] = serde_json::to_vec(&c).unwrap();
-
-    // Follow-on commit: golden (still active) adds key_b onto the same chain.
-    let f_blobs = append_key_create(&mut principal, &pool, "golden", "key_b", now + 1);
-
-    (push_body(pid, &g_blobs), push_body(pid, &f_blobs))
+    (
+        common::build_genesis_push_body(&pool, pid, now),
+        common::build_second_commit_push_body(&pool, pid, now, now + 1),
+    )
 }
 
 // ========================================================================

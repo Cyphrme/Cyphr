@@ -94,13 +94,32 @@ fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
     apply(p, signer, signer, pay, Some(key_of(new)), now);
 }
 
-/// Push body for commit `i` of `p`; commit 0 also embeds the genesis key on
-/// its closing cozy, as the wire contract requires.
-fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
+/// A principal over the genesis `keys` (the first signs) after its genesis
+/// commit (SPEC 5.1) at `now`.
+fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
+    let mut p = cyphr::Principal::explicit(keys.iter().map(|k| key_of(k)).collect())
+        .expect("explicit genesis");
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(
+            &keys[0].alg,
+            &keys[0].prv,
+            &keys[0].pubb,
+            &keys[0].tmb,
+        ),
+        now,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
+/// Push body for commit `i` of `p`; every key-introducing cozy discloses
+/// its key, so commit 0 (the genesis) reads from its blobs alone.
+fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     let entry = &entries[i];
     let mut key_idx = 0;
-    let mut blobs: Vec<serde_json::Value> = entry
+    let blobs: Vec<serde_json::Value> = entry
         .cozies
         .iter()
         .map(|c| {
@@ -114,14 +133,6 @@ fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
             c
         })
         .collect();
-    if i == 0 {
-        let last = blobs.len() - 1;
-        blobs[last]["key"] = serde_json::json!({
-            "alg": genesis.alg,
-            "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-            "tmb": genesis.tmb.to_b64(),
-        });
-    }
     serde_json::json!({
         "principal_id": id,
         "blobs": blobs
@@ -214,27 +225,42 @@ fn equivocation_item(pr: &str, a: &serde_json::Value, b: &serde_json::Value) -> 
     serde_json::json!({"kind": "peer-equivocation", "pg": pr, "peer": "p1", "a": a, "b": b})
 }
 
-/// The principal both servers hold, as its first commit (key_a) and the
-/// state after it.
+/// The principal both servers hold, as its genesis commit (`golden` with
+/// `key_a`) and the state after it.
 struct Pr {
     g: Kp,
+    a: Kp,
     id: String,
     base: cyphr::Principal,
 }
 
 fn principal() -> Pr {
     let pool = load_pool();
-    let g = kp(&pool, "golden");
-    let mut base = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    create_key(&mut base, &g, &kp(&pool, "key_a"), NOW);
-    Pr {
-        id: golden_principal_id(&pool),
-        g,
-        base,
-    }
+    let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let base = genesis_commit(&[&g, &a], NOW);
+    // The bare spelling of the PG, which names the evidence's `pg`.
+    let id = golden_principal_id(&pool)
+        .split_once(':')
+        .expect("labelled PG")
+        .1
+        .to_string();
+    Pr { id, g, a, base }
 }
 
 impl Pr {
+    /// The principal before its genesis commit: what a client replays the
+    /// fetched chain onto.
+    fn genesis(&self) -> cyphr::Principal {
+        cyphr::Principal::explicit(vec![key_of(&self.g), key_of(&self.a)])
+            .expect("explicit genesis")
+    }
+
+    /// Another genesis commit of the same principal (same genesis keys,
+    /// same PG), made at `now`.
+    fn other_genesis(&self, now: i64) -> cyphr::Principal {
+        genesis_commit(&[&self.g, &self.a], now)
+    }
+
     /// The principal after a second commit by `signer` creating `new`.
     fn extend(&self, signer: &Kp, new: &str, now: i64) -> cyphr::Principal {
         let mut p = self.base.clone();
@@ -243,7 +269,7 @@ impl Pr {
     }
 
     async fn push_commit(&self, app: &axum::Router, p: &cyphr::Principal, i: usize) -> StatusCode {
-        push(app, wire(p, i, &self.g, &self.id)).await.0
+        push(app, wire(p, i, &self.id)).await.0
     }
 }
 
@@ -300,7 +326,7 @@ async fn fork_evidence_is_served_and_verified_offline() {
     assert_eq!(items.len(), 1, "{items:?}");
     let item = &items[0];
     let held = fetch_entries(&app, &pr.id).await;
-    let genesis = || cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
+    let genesis = || pr.genesis();
 
     let proof = verify_principal_fork(item, &pr.id, genesis(), &held)
         .expect("the client verifies the fork from the chain it fetched");
@@ -400,13 +426,8 @@ async fn fork_evidence_is_served_and_verified_offline() {
         })
         .collect();
     reordered["a"]["blobs"] = serde_json::json!(blobs);
-    verify_principal_fork(
-        &reordered,
-        &pr.id,
-        cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis"),
-        &held,
-    )
-    .expect("member order on the wire is not part of what is signed");
+    verify_principal_fork(&reordered, &pr.id, pr.genesis(), &held)
+        .expect("member order on the wire is not part of what is signed");
 
     let (status, _) = get_json(app.clone(), "/evidence?pr=probe").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "a malformed id");
@@ -462,7 +483,7 @@ async fn slots_one_key_cannot_crowd_out_another() {
 
     let held = fetch_entries(&app, &pr.id).await;
     for item in &items {
-        let genesis = cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
+        let genesis = pr.genesis();
         verify_principal_fork(item, &pr.id, genesis, &held).expect("every served item verifies");
     }
 }
@@ -628,11 +649,8 @@ async fn stale_prefix_is_not_evidence() {
     let new = view_of(&peer.a, &pr.id).await;
 
     // The higher view's own principal chain, as the client fetched it.
-    let higher = replay_chain(
-        cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis"),
-        &fetch_entries(&peer.a, &pr.id).await,
-    )
-    .expect("the principal chain replays");
+    let higher = replay_chain(pr.genesis(), &fetch_entries(&peer.a, &pr.id).await)
+        .expect("the principal chain replays");
 
     let item = equivocation_item(&pr.id, &old, &new);
     let stale = verify_peer_equivocation(&item, &pg, &chain, Some(&higher))
@@ -652,11 +670,8 @@ async fn stale_prefix_is_not_evidence() {
     // cannot settle the comparison: no verdict, never a conflict.
     let c1b = pr.extend(&pr.g, "alice", NOW + 2);
     assert_eq!(pr.push_commit(&peer.b, &c1b, 1).await, StatusCode::CREATED);
-    let elsewhere = replay_chain(
-        cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis"),
-        &fetch_entries(&peer.b, &pr.id).await,
-    )
-    .expect("the other chain replays");
+    let elsewhere = replay_chain(pr.genesis(), &fetch_entries(&peer.b, &pr.id).await)
+        .expect("the other chain replays");
     let unbacked = verify_peer_equivocation(&item, &pg, &chain, Some(&elsewhere))
         .expect_err("the chain does not back the higher statement");
     assert!(
@@ -668,8 +683,7 @@ async fn stale_prefix_is_not_evidence() {
     // the higher chain's first: not a prefix, so evidence.
     let (third, _, _dir, _) = attestor(Some(&peer.key)).await;
     let third = build_router(Arc::new(third));
-    let mut other = cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
-    create_key(&mut other, &pr.g, &kp(&load_pool(), "bob"), NOW + 9);
+    let other = pr.other_genesis(NOW + 9);
     assert_eq!(pr.push_commit(&third, &other, 0).await, StatusCode::CREATED);
     let short = view_of(&third, &pr.id).await;
     let forked = equivocation_item(&pr.id, &short, &new);
@@ -746,7 +760,7 @@ async fn historical_view_survives_the_signing_keys_revocation() {
 }
 
 /// Claim (`arch-principal-fork-evidence`, at the first position): two
-/// different first commits of one principal are a fork with no ancestor;
+/// different genesis commits of one principal are a fork with no ancestor;
 /// the item has `height` 0 and a null `pre`, and the client checks it with
 /// no held commit at all.
 ///
@@ -759,16 +773,16 @@ async fn genesis_fork_is_evidence_at_height_zero() {
     let app = build_router(state);
     assert_eq!(pr.push_commit(&app, &pr.base, 0).await, StatusCode::CREATED);
 
-    let mut other = cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
-    create_key(&mut other, &pr.g, &kp(&load_pool(), "key_b"), NOW + 5);
-    assert_eq!(pr.push_commit(&app, &other, 0).await, StatusCode::CONFLICT);
+    let other = pr.other_genesis(NOW + 5);
+    let status = push(&app, wire(&other, 0, &pr.id)).await;
+    assert_eq!(status.0, StatusCode::CONFLICT, "{:?}", status.1);
 
     let items = evidence_items(&app, &pr.id).await;
     assert_eq!(items.len(), 1, "{items:?}");
     assert_eq!(items[0]["height"], 0);
     assert!(items[0]["pre"].is_null(), "no ancestor at height 0");
-    let genesis = cyphr::Principal::implicit(key_of(&pr.g)).expect("genesis");
-    verify_principal_fork(&items[0], &pr.id, genesis, &[]).expect("a fork at the first position");
+    verify_principal_fork(&items[0], &pr.id, pr.genesis(), &[])
+        .expect("a fork at the first position");
 }
 
 /// A view statement signed by `signer`, claiming the principal `pr` at
@@ -814,8 +828,8 @@ fn key_history_bounds_a_key_by_its_signed_times() {
     const T: i64 = NOW;
     let pool = load_pool();
     let (g, a, bob) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "bob"));
-    let mut peer = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    create_key(&mut peer, &g, &a, T);
+    // The genesis commit creates golden and key_a at T.
+    let mut peer = genesis_commit(&[&g, &a], T);
     create_key(&mut peer, &a, &bob, T + 10);
     apply(
         &mut peer,
@@ -837,7 +851,7 @@ fn key_history_bounds_a_key_by_its_signed_times() {
         None,
         T + 30,
     );
-    let history = cyphr_client::evidence::KeyHistory::of(&[key_of(&g)], &peer);
+    let history = cyphr_client::evidence::KeyHistory::of(&[key_of(&g), key_of(&a)], &peer);
 
     let pr = Base64UrlUnpadded::encode_string(&[9; 32]);
     let pg = thumbprint(&pr);

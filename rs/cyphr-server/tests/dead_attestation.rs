@@ -17,9 +17,10 @@ use common::{
 };
 
 /// Backs the receipt rule that `sr` and `ar` MAY be `null` for a Dead
-/// principal. Scenario: an attestor takes the push of the dying commit (the
-/// lifecycle vector `last_key_revoke_leaves_dead`: the only key revokes
-/// itself) and answers 201 with a signed receipt whose `roots.sr` and
+/// principal. Scenario: an attestor takes the push of the genesis commit and
+/// then of the dying commit (the lifecycle vector
+/// `last_key_revoke_leaves_dead`: the only key revokes itself) and answers
+/// the latter 201 with a signed receipt whose `roots.sr` and
 /// `roots.ar` are `null` while `pr`, `cr` and the unsigned payload agree; a
 /// later `/tip` returns a signed tip report with the same roots; the client
 /// verifies both against the attestor's key and reads the absent roots as
@@ -33,23 +34,28 @@ async fn dying_commit_push_and_tip_attest_absent_roots_as_null() {
 
     let fixture = load_golden("lifecycle", "last_key_revoke_leaves_dead");
     let principal_id = fixture_principal_id(&fixture);
-    let mut blobs = build_raw_blobs(&fixture["commits"].as_array().expect("commits")[0]);
-    // A first push carries the genesis key on its closing blob.
-    let closing = blobs.len() - 1;
-    let mut coz: serde_json::Value = serde_json::from_slice(&blobs[closing]).expect("coz json");
-    coz["key"] = fixture["genesis_keys"][0].clone();
-    blobs[closing] = serde_json::to_vec(&coz).expect("coz serializes");
-    let body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let commits = fixture["commits"].as_array().expect("commits");
+    assert_eq!(
+        commits.len(),
+        2,
+        "the genesis commit, then the dying commit"
+    );
+    let body = |commit: &serde_json::Value| {
+        let blobs = build_raw_blobs(commit);
+        serde_json::json!({
+            "principal_id": principal_id,
+            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+        })
+        .to_string()
+    };
     let authority = AuthorityKey {
         alg: identity.alg().name().to_string(),
         pub_key: identity.pub_key().to_vec(),
     };
 
-    let (status, push) = post_json(app.clone(), "/push", body).await;
+    let (status, genesis) = post_json(app.clone(), "/push", body(&commits[0])).await;
+    assert_eq!(status, StatusCode::CREATED, "{genesis:?}");
+    let (status, push) = post_json(app.clone(), "/push", body(&commits[1])).await;
     assert_eq!(status, StatusCode::CREATED, "{push:?}");
     let claims = &push["statement"]["coz"]["pay"]["roots"];
     assert!(

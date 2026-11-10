@@ -6,14 +6,17 @@
 //! ## Why the replay commit is a recorded fixture
 //!
 //! Once the core refuses reuse it can no longer be asked to build the very
-//! commit this suite needs to push. `REPLAY_BODY` is therefore the wire
-//! bundle for commit 2 (`[D, commit/create]`, D being commit 0's coz), built
-//! through the core on the base that still accepted reuse; ES256 signatures
-//! are deterministic, so commits 0 and 1, rebuilt here at run time, are
-//! byte-identical to the ones it chains onto (`fixture_chain_is_stable` pins
-//! that). Rebuild recipe: apply `[create key_a, delete key_a, create key_a]`
-//! (all by `golden`, all with `now = T`) to a fresh implicit principal, and
-//! export the third commit's wire blobs.
+//! commit this suite needs to push. `REPLAY_BLOBS` is therefore the wire
+//! bundle for commit 3 (`[D, commit/create]`, D being commit 1's coz);
+//! ES256 signatures are deterministic, so commits 0-2, rebuilt here at run
+//! time, are byte-identical to the ones it chains onto (the premise assert
+//! pins D). Recorded over the genesis-commit chain (SPEC 5.1): commit 0 is
+//! `golden`'s genesis, then `[create key_a, delete key_a]` (all by
+//! `golden`, all with `now = T`). D is the blob commit 1 exports; the
+//! closing `commit/create` was signed by `golden` over the arrow
+//! `MR(pre, sr, tmr)` (SPEC 4.2) computed by hand, with `pre` the PR after
+//! commit 2 and `sr`/`tmr` those of commit 1 (same keys, same single
+//! mutation D), a computation checked to reproduce commit 2's own arrow.
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -23,19 +26,17 @@ use cyphr_server::build_router;
 
 mod common;
 
-use common::{
-    envelope_payload, get_json, golden_principal_id, keyless_server, load_pool, post_json,
-};
+use common::{envelope_payload, get_json, keyless_server, load_pool, post_json};
 
 /// Every `now` in the chain; equal values keep the timestamp rule from being
 /// what refuses the replay.
 const T: i64 = 1_700_000_000;
 
 /// Recorded blobs (base64url) of the replay bundle, see the module docs:
-/// `[D, commit/create]`. Pushed under the principal id of `golden`.
+/// `[D, commit/create]`. Pushed under the PG of `golden`'s genesis.
 const REPLAY_BLOBS: [&str; 2] = [
     "eyJwYXkiOnsiYWxnIjoiRVMyNTYiLCJpZCI6InhnSnU4R3NFR09WWkNqYlZVWG5fRDRnczRhdWxpZlktVlFHMkZNbEphSEUiLCJub3ciOjE3MDAwMDAwMDAsInRtYiI6IlU1WFVab3RzLVdtUVljUVdtc083NTFYazB5ZVZpOVhVS1dRMm1HejZBcWciLCJ0eXAiOiJjeXBoci5tZS9jeXBoci9rZXkvY3JlYXRlIn0sInNpZyI6InpFRUl1TURNM2E2R2VxZkFhc2hMM1dpeFNidS1MRmUxc0JzSEw5Tzk4MFpyRjVzQ0ttaXJuS2VhVDlpbmZzSEVKc1RCeDFjYUtLV1g3NVl3WThZRUp3Iiwia2V5Ijp7ImFsZyI6IkVTMjU2IiwicHViIjoiTGdNOHcwMEJFYkdkTmxidWd6UVlEYU11dnE5UHNKcFkzYks4Qjl5VHN4eTAxSndTS0l0ODRBNndoRXg4WlZxdEFvcVExeHJQQXpGd1BQYmZlY05fdlEiLCJ0bWIiOiJ4Z0p1OEdzRUdPVlpDamJWVVhuX0Q0Z3M0YXVsaWZZLVZRRzJGTWxKYUhFIn19",
-    "eyJwYXkiOnsiYWxnIjoiRVMyNTYiLCJhcnJvdyI6IlNIQS0yNTY6WWF0T0ZkaXYyRHNHekszRzZ1M0x2R1p1clJqMGJGZl9TWEF6LXA1dmlobyIsIm5vdyI6MTcwMDAwMDAwMCwidG1iIjoiVTVYVVpvdHMtV21RWWNRV21zTzc1MVhrMHllVmk5WFVLV1EybUd6NkFxZyIsInR5cCI6ImN5cGhyLm1lL2N5cGhyL2NvbW1pdC9jcmVhdGUifSwic2lnIjoiUEVNWXVhWGxMWjlzZWhVN01mejdqWTBrMDd3TnlnRnBQY2ZSQ2lELTNVMUtpaHB4bFpOQW9VR1dUZFROQkx1ZENvSDk2bldVdlJQcWlzRHVMenBHYlEifQ",
+    "eyJwYXkiOnsiYWxnIjoiRVMyNTYiLCJhcnJvdyI6IlNIQS0yNTY6M3p0LVprb2hvSWtBczZPM0RWNzNKSUcwVzhJVkxRcDdBeEpRS3daUmg2NCIsIm5vdyI6MTcwMDAwMDAwMCwidG1iIjoiVTVYVVpvdHMtV21RWWNRV21zTzc1MVhrMHllVmk5WFVLV1EybUd6NkFxZyIsInR5cCI6ImN5cGhyLm1lL2N5cGhyL2NvbW1pdC9jcmVhdGUifSwic2lnIjoiR2l2WDlGLUJtdDNTWkR4X0NEdElIbkktbzhOWWNWdnMwRnhiR1pNZGZmWkVZdU50Z0JLVkJKajhRYzVsbHA5NzhpOHVUM00ydkVCem8tQmRtZkF6RncifQ",
 ];
 
 struct Tx {
@@ -120,17 +121,20 @@ fn body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
     .to_string()
 }
 
-/// The fixture chain: commit 0 `create key_a` (D), commit 1 `delete key_a`,
-/// and a legitimate alternative commit 2 (`create key_b`), as push bodies,
-/// plus D's wire blob.
+/// The fixture chain: commit 0 `golden`'s genesis, commit 1 `create key_a`
+/// (D), commit 2 `delete key_a`, and a legitimate alternative commit 3
+/// (`create key_b`), as push bodies, plus D's wire blob and the principal
+/// id (its PG).
 struct Chain {
+    id: String,
     genesis_body: String,
+    create_body: String,
     delete_body: String,
     fresh_body: String,
     d_blob: Vec<u8>,
 }
 
-fn build_chain(pool: &test_fixtures::Pool, id: &str) -> Chain {
+fn build_chain(pool: &test_fixtures::Pool) -> Chain {
     let g = pool.get("golden").expect("golden");
     let genesis_key = cyphr::Key::new(
         g.alg.clone(),
@@ -138,24 +142,13 @@ fn build_chain(pool: &test_fixtures::Pool, id: &str) -> Chain {
         Base64UrlUnpadded::decode_vec(&g.pub_key).expect("pub b64"),
     )
     .expect("key binds its tmb");
-    let mut p = Principal::implicit(genesis_key.clone()).expect("implicit genesis");
+    let mut p = Principal::implicit(genesis_key).expect("implicit genesis");
+    let id = p.pr_tagged().expect("PG");
+    let genesis_blobs = test_fixtures::bundle::genesis_bundle(&mut p, g, T).expect("genesis");
 
     let d = golden_tx(pool, "cyphr.me/cyphr/key/create", "key_a", true);
-    let mut genesis_blobs = commit_blobs(&mut p, pool, &d);
-    let d_blob = genesis_blobs[0].clone();
-    // A never-seen principal's first bundle carries its genesis key on the
-    // closing coz (the wire contract `resolve_genesis` reads).
-    let last = genesis_blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&genesis_blobs[last]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".into(),
-        serde_json::json!({
-            "alg": genesis_key.alg(),
-            "pub": g.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes()),
-        }),
-    );
-    genesis_blobs[last] = serde_json::to_vec(&closing).unwrap();
+    let create_blobs = commit_blobs(&mut p, pool, &d);
+    let d_blob = create_blobs[0].clone();
 
     let del = golden_tx(pool, "cyphr.me/cyphr/key/delete", "key_a", false);
     let delete_blobs = commit_blobs(&mut p, pool, &del);
@@ -166,22 +159,25 @@ fn build_chain(pool: &test_fixtures::Pool, id: &str) -> Chain {
     let fresh_blobs = commit_blobs(&mut fresh, pool, &fresh_tx);
 
     Chain {
-        genesis_body: body(id, &genesis_blobs),
-        delete_body: body(id, &delete_blobs),
-        fresh_body: body(id, &fresh_blobs),
+        genesis_body: body(&id, &genesis_blobs),
+        create_body: body(&id, &create_blobs),
+        delete_body: body(&id, &delete_blobs),
+        fresh_body: body(&id, &fresh_blobs),
         d_blob,
+        id,
     }
 }
 
 /// Backs SPEC 7.6: "For transactions, coz reuse by a particular principal is
 /// prohibited and results in error `COZ_REUSE`. The first inclusion of a
 /// transaction coz is considered authoritative." Scenario, end to end over
-/// HTTP: `golden` creates `key_a` (coz D, commit 0) and deletes it (commit 1),
-/// so D is state-valid again; commit 2 re-includes D verbatim (the recorded
-/// bundle, whose first blob is asserted equal to commit 0's D). The push must
+/// HTTP: after its genesis (commit 0), `golden` creates `key_a` (coz D,
+/// commit 1) and deletes it (commit 2), so D is state-valid again; commit 3
+/// re-includes D verbatim (the recorded bundle, whose first blob is asserted
+/// equal to commit 1's D). The push must
 /// be refused with a client-error status (422 or 409, never 2xx or 500)
 /// whose message names `COZ_REUSE`; the stored chain must be exactly as it
-/// was (same tip, same patch) and must stay writable: a legitimate commit 2
+/// was (same tip, same patch) and must stay writable: a legitimate commit 3
 /// (`create key_b`) is then accepted, and the refused bundle is refused
 /// again. Turns red if the push path bypasses the core check (replay
 /// accepted), maps the error to a 500 or an untyped message, or persists the
@@ -191,8 +187,8 @@ fn build_chain(pool: &test_fixtures::Pool, id: &str) -> Chain {
 #[tokio::test]
 async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
     let pool = load_pool();
-    let id = golden_principal_id(&pool);
-    let chain = build_chain(&pool, &id);
+    let chain = build_chain(&pool);
+    let id = chain.id.clone();
 
     let replay_blobs: Vec<Vec<u8>> = REPLAY_BLOBS
         .iter()
@@ -200,7 +196,7 @@ async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
         .collect();
     assert_eq!(
         replay_blobs[0], chain.d_blob,
-        "premise: the recorded bundle re-includes commit 0's coz D verbatim"
+        "premise: the recorded bundle re-includes commit 1's coz D verbatim"
     );
     let replay_body = body(&id, &replay_blobs);
 
@@ -209,6 +205,8 @@ async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
 
     let (s0, b0) = post_json(app.clone(), "/push", chain.genesis_body.clone()).await;
     assert_eq!(s0, StatusCode::CREATED, "genesis push: {b0:?}");
+    let (sc, bc) = post_json(app.clone(), "/push", chain.create_body.clone()).await;
+    assert_eq!(sc, StatusCode::CREATED, "create push: {bc:?}");
     let (s1, b1) = post_json(app.clone(), "/push", chain.delete_body.clone()).await;
     assert_eq!(s1, StatusCode::CREATED, "delete push: {b1:?}");
 
@@ -216,7 +214,7 @@ async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
     let patch_uri = format!("/patch?pr={id}");
     let (_, tip_before) = get_json(app.clone(), &tip_uri).await;
     let (_, patch_before) = get_json(app.clone(), &patch_uri).await;
-    assert_eq!(envelope_payload(&tip_before)["commit_count"], 2);
+    assert_eq!(envelope_payload(&tip_before)["commit_count"], 3);
 
     for attempt in 1..=2 {
         let (status, resp) = post_json(app.clone(), "/push", replay_body.clone()).await;

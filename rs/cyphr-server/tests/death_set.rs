@@ -85,13 +85,13 @@ fn key_of(k: &PoolKey) -> cyphr::Key {
 
 /// A commit on `principal`, signed by `signer`, whose one coz is of `typ`
 /// (`key/create` or `key/replace`) and introduces `target`. Returns the wire
-/// blobs (the introduced key embedded on its coz) and the commit entry.
+/// blobs (the introduced key embedded on its coz).
 fn intro_commit(
     mut principal: cyphr::Principal,
     signer: &PoolKey,
     target: &PoolKey,
     typ: &str,
-) -> (Vec<Vec<u8>>, cyphr_storage::CommitEntry) {
+) -> Vec<Vec<u8>> {
     let signer_tmb = signer.compute_tmb_b64().expect("signer tmb");
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": signer.alg,
@@ -126,7 +126,7 @@ fn intro_commit(
         .pop()
         .expect("a commit");
     let mut keys = entry.keys.iter();
-    let blobs = entry
+    entry
         .cozies
         .iter()
         .map(|v| {
@@ -138,8 +138,7 @@ fn intro_commit(
             }
             serde_json::to_vec(&coz).unwrap()
         })
-        .collect();
-    (blobs, entry)
+        .collect()
 }
 
 fn body(pid: &str, blobs: &[Vec<u8>]) -> String {
@@ -150,29 +149,81 @@ fn body(pid: &str, blobs: &[Vec<u8>]) -> String {
     .to_string()
 }
 
-/// The genesis push of a new implicit principal on `genesis`, introducing
-/// `target` by `typ`, with the genesis key embedded on the closing coz.
+fn signer_of(k: &PoolKey) -> cyphr::signer::SoftwareSigner {
+    k.software_signer().expect("pool key signs")
+}
+
+/// The pool key that, in a `key/replace` genesis, is created and then
+/// replaces itself with the target.
+const REPLACER: &str = "carol";
+
+/// The genesis push of a new principal on `genesis` (SPEC 5.1) whose
+/// genesis commit introduces `target` by `typ`: a `key/create` of it by
+/// `genesis`, or, for `key/replace`, the creation of [`REPLACER`], which
+/// then replaces itself with `target`, before the `principal/create`.
+/// Returns the push body, the principal's id (its PG) and the principal
+/// after that genesis commit.
 fn genesis_push(
     pool: &Pool,
     genesis: &str,
     target: &str,
     typ: &str,
-) -> (String, cyphr::Key, cyphr_storage::CommitEntry) {
+) -> (String, String, cyphr::Principal) {
     let g = pool.get(genesis).expect("genesis key");
-    let gkey = key_of(g);
-    let (mut blobs, entry) = intro_commit(
-        cyphr::Principal::implicit(gkey.clone()).expect("implicit"),
-        g,
-        pool.get(target).expect("target key"),
-        typ,
+    let t = pool.get(target).expect("target key");
+    let wire = |cozies: Vec<serde_json::Value>| -> Vec<Vec<u8>> {
+        cozies
+            .iter()
+            .map(|c| serde_json::to_vec(c).expect("coz"))
+            .collect()
+    };
+    if typ == CREATE {
+        let mut p = cyphr::Principal::explicit(vec![key_of(g), key_of(t)]).expect("explicit");
+        let pid = p.pr_tagged().expect("PG");
+        let cozies = p
+            .commit_genesis(&signer_of(g), NOW, "cyphr.me")
+            .expect("genesis commit");
+        return (body(&pid, &wire(cozies)), pid, p);
+    }
+
+    let r = pool.get(REPLACER).expect("replacer key");
+    let mut p = cyphr::Principal::explicit(vec![key_of(g), key_of(r)]).expect("explicit");
+    let mut scope = p.begin_commit();
+    let mut cozies = scope
+        .create_genesis_keys(&signer_of(g), NOW, "cyphr.me")
+        .expect("genesis key/creates");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": r.alg,
+        "id": t.compute_tmb_b64().expect("target tmb"),
+        "now": NOW,
+        "tmb": r.compute_tmb_b64().expect("replacer tmb"),
+        "typ": typ,
+    }))
+    .unwrap();
+    let (sig, cad) = coz::sign_json(&pay, &r.alg, &prv(r), &pubk(r)).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &r.alg).expect("czd");
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(t).with_first_seen(NOW)))
+        .expect("the replace is valid in the genesis commit");
+    cozies.push(serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).unwrap(),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {"alg": t.alg, "pub": t.pub_key, "tmb": t.compute_tmb_b64().unwrap()},
+    }));
+    let pid = scope.genesis_id().expect("PG");
+    cozies.push(
+        scope
+            .create_principal(&signer_of(g), NOW, "cyphr.me")
+            .expect("principal/create"),
     );
-    let last = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[last]).unwrap();
-    closing["key"] = serde_json::json!({
-        "alg": g.alg, "pub": g.pub_key, "tmb": g.compute_tmb_b64().unwrap(),
-    });
-    blobs[last] = serde_json::to_vec(&closing).unwrap();
-    (body(&g.compute_tmb_b64().unwrap(), &blobs), gkey, entry)
+    let commit = scope
+        .finalize_with_software(&signer_of(g), NOW, "cyphr.me")
+        .expect("finalize");
+    cozies.push(
+        serde_json::to_value(commit.commit_tx().0.first().expect("commit/create").raw())
+            .expect("commit/create json"),
+    );
+    (body(&pid, &wire(cozies)), pid, p)
 }
 
 async fn push(state: &Arc<AppState>, body: String) -> StatusCode {
@@ -200,10 +251,9 @@ async fn assert_refused_and_unwritten(state: &Arc<AppState>, status: StatusCode,
 async fn dead_key_refused_as_key_create_in_a_new_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (body, ..) = genesis_push(&pool, "bob", "key_a", CREATE);
+    let (body, pid, _) = genesis_push(&pool, "bob", "key_a", CREATE);
     let status = push(&state, body).await;
-    assert_refused_and_unwritten(&state, status, &common::implicit_principal_id(&pool, "bob"))
-        .await;
+    assert_refused_and_unwritten(&state, status, &pid).await;
 }
 
 /// Claim: as above for `key/replace`: a principal cannot swap onto a dead
@@ -212,14 +262,9 @@ async fn dead_key_refused_as_key_create_in_a_new_principal() {
 async fn dead_key_refused_as_key_replace_in_a_new_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (body, ..) = genesis_push(&pool, "alice", "key_a", REPLACE);
+    let (body, pid, _) = genesis_push(&pool, "alice", "key_a", REPLACE);
     let status = push(&state, body).await;
-    assert_refused_and_unwritten(
-        &state,
-        status,
-        &common::implicit_principal_id(&pool, "alice"),
-    )
-    .await;
+    assert_refused_and_unwritten(&state, status, &pid).await;
 }
 
 /// Claim: the refusal holds for an established principal's LATER commit, not
@@ -229,22 +274,16 @@ async fn dead_key_refused_as_key_replace_in_a_new_principal() {
 async fn dead_key_refused_as_key_create_in_an_existing_principal() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (first, gkey, entry) = genesis_push(&pool, "bob", "key_b", CREATE);
+    let (first, pid, bob) = genesis_push(&pool, "bob", "key_b", CREATE);
     assert_eq!(
         push(&state, first).await,
         StatusCode::CREATED,
         "bootstrap bob+key_b"
     );
-    let pid = common::implicit_principal_id(&pool, "bob");
     let before = state.engine.get_tip(&pid).await.unwrap().expect("tip");
 
-    let replayed = cyphr_storage::load_principal_from_commits(
-        cyphr_storage::Genesis::Implicit(gkey),
-        std::slice::from_ref(&entry),
-    )
-    .expect("replay genesis");
-    let (blobs, _) = intro_commit(
-        replayed,
+    let blobs = intro_commit(
+        bob,
         pool.get("bob").unwrap(),
         pool.get("key_a").unwrap(),
         CREATE,

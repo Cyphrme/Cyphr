@@ -22,7 +22,8 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    get_json, golden_principal_id, keyed_appstate, load_pool, post_json, write_signing_key,
+    build_genesis_push_body, build_second_commit_push_body, get_json, golden_principal_id,
+    keyed_appstate, load_pool, post_json, write_signing_key,
 };
 
 /// The carrier over the in-process router, counting `/patch` fetches.
@@ -73,89 +74,13 @@ impl Connector for RouterConnector {
     }
 }
 
-/// Push bodies for two successive commits of the `golden` principal, each a
-/// `key/create` signed by `golden` and authored on ONE local principal so the
-/// second commit's `pre` is the first's state. The genesis key rides on the
-/// first commit's closing cozy, as `/push` requires.
+/// Push bodies for two successive commits of the standard principal: its
+/// genesis commit (`golden` creates itself and `key_a`, SPEC 5.1), then a
+/// `key/create` of `key_b` signed by `golden` on that genesis state.
 fn two_commit_bodies(pool: &test_fixtures::Pool, pr: &str) -> (String, String) {
-    let golden = pool.get("golden").expect("golden in pool");
-    let prv = Base64UrlUnpadded::decode_vec(golden.prv.as_ref().expect("golden prv"))
-        .expect("golden prv b64");
-    let pub_key = Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64");
-    let tmb = golden.compute_tmb().expect("golden tmb");
-    let key = cyphr::Key::new(golden.alg.clone(), tmb.clone(), pub_key.clone())
-        .expect("key binds its tmb");
-    let mut principal = cyphr::Principal::implicit(key).expect("implicit genesis");
-
-    let mut commit = |new_key: &str, now: i64, genesis: bool| -> String {
-        let nk = pool.get(new_key).expect("new key in pool");
-        let nk_tmb = nk.compute_tmb().expect("new key tmb");
-        let nk_pub = Base64UrlUnpadded::decode_vec(&nk.pub_key).expect("new key pub b64");
-        // Alphabetical field order: the server re-canonicalizes before
-        // verifying, so the signed bytes must already be in that order.
-        let pay = serde_json::to_vec(&serde_json::json!({
-            "alg": golden.alg,
-            "id": nk_tmb.to_b64(),
-            "now": now,
-            "tmb": tmb.to_b64(),
-            "typ": "cyphr.me/cyphr/key/create",
-        }))
-        .expect("pay json");
-        let (sig, cad) = coz::sign_json(&pay, &golden.alg, &prv, &pub_key).expect("sign");
-        let czd = coz::czd_for_alg(&cad, &sig, &golden.alg).expect("czd");
-        let new_key = cyphr::Key::new(nk.alg.clone(), nk_tmb, nk_pub)
-            .expect("key binds its tmb")
-            .with_first_seen(now);
-
-        let mut scope = principal.begin_commit();
-        scope
-            .verify_and_apply(&pay, &sig, czd, Some(new_key))
-            .expect("key/create applies");
-        scope
-            .finalize_with_software(
-                &cyphr::signer::SoftwareSigner::new(&golden.alg, &prv, &pub_key, &tmb),
-                now,
-                "cyphr.me",
-            )
-            .expect("commit finalizes");
-
-        let entries = cyphr_storage::export_commits(&principal).expect("export commits");
-        let entry = entries.last().expect("a commit after finalize");
-        let mut key_idx = 0;
-        let mut blobs: Vec<serde_json::Value> = entry
-            .cozies
-            .iter()
-            .map(|v| {
-                let mut coz = v.clone();
-                let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-                if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < entry.keys.len() {
-                    let k = &entry.keys[key_idx];
-                    coz["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
-                    key_idx += 1;
-                }
-                coz
-            })
-            .collect();
-        if genesis {
-            let closing = blobs.last_mut().expect("closing cozy");
-            closing["key"] = serde_json::json!({
-                "alg": golden.alg,
-                "pub": golden.pub_key,
-                "tmb": tmb.to_b64(),
-            });
-        }
-        serde_json::json!({
-            "principal_id": pr,
-            "blobs": blobs
-                .iter()
-                .map(|b| Base64UrlUnpadded::encode_string(&serde_json::to_vec(b).expect("json")))
-                .collect::<Vec<_>>(),
-        })
-        .to_string()
-    };
-
-    let first = commit("key_a", 1_700_000_000, true);
-    let second = commit("key_b", 1_700_000_100, false);
+    let genesis_now = 1_700_000_000;
+    let first = build_genesis_push_body(pool, pr, genesis_now);
+    let second = build_second_commit_push_body(pool, pr, genesis_now, 1_700_000_100);
     (first, second)
 }
 
@@ -211,8 +136,11 @@ async fn push_golden(app: &Router, pr: &str) {
     }
 }
 
+/// The digest bytes of a principal id, which may carry an algorithm label
+/// (`SHA-256:<b64ut>`, as the PG does) or be a bare digest.
 fn pr_thumbprint(pr: &str) -> coz::Thumbprint {
-    coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(pr).expect("pr b64"))
+    let digest = pr.rsplit_once(':').map_or(pr, |(_, d)| d);
+    coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(digest).expect("pr b64"))
 }
 
 /// Claim: a client pins the server by PG and genesis key from `/server`,

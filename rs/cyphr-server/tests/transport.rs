@@ -1273,7 +1273,12 @@ async fn routes_see_the_authenticated_peer_only_over_the_transport() {
     .expect("json");
     let binding = conn.channel_binding().expect("a binding");
     assert_eq!(over_noise["present"], true, "{over_noise}");
-    assert_eq!(over_noise["pg"], own_principal);
+    // The peer is named in its default wire spelling, the bare digest
+    // (SPEC 2.2.3); the pushed id is the engine's labelled PG.
+    assert_eq!(
+        over_noise["pg"],
+        cyphr_storage::engine::bare_digest(&own_principal)
+    );
     assert_eq!(
         over_noise["tmb"],
         golden_signer().tmb().to_b64(),

@@ -101,7 +101,12 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     // Cross-check the claims against the push response's OWN payload,
     // claim-by-claim -- the payload now carries the accepted commit's
     // facts directly, so no follow-up read is needed to verify them.
-    assert_eq!(claims["pr"], serde_json::json!(principal_id));
+    // The receipt names the principal in its default wire spelling, the
+    // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
+    assert_eq!(
+        claims["pr"],
+        serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
+    );
     assert_eq!(claims["sequence"], payload["sequence"]);
     assert_eq!(claims["commit_id"], payload["commit_id"]);
     assert_eq!(claims["roots"]["pr"], payload["roots"]["pr"]);
@@ -132,7 +137,12 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     let (payload, claims) =
         assert_signed_envelope_claims(&tip_envelope, "cyphr-server/receipt/tip", &identity);
 
-    assert_eq!(claims["pr"], serde_json::json!(principal_id));
+    // The receipt names the principal in its default wire spelling, the
+    // bare digest (SPEC 2.2.3); the pushed id is the engine's labelled PG.
+    assert_eq!(
+        claims["pr"],
+        serde_json::json!(cyphr_storage::engine::bare_digest(principal_id))
+    );
     assert_eq!(
         claims["sequence"],
         serde_json::json!(payload["commit_count"].as_u64().unwrap() - 1)

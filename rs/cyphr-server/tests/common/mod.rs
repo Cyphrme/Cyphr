@@ -319,7 +319,8 @@ pub fn sign_key_create_commit(
 }
 
 /// The id a principal with an implicit genesis on pool key `name` derives
-/// (SPEC 3.1): that key's thumbprint, base64url.
+/// (SPEC 3.1): that key's thumbprint, base64url. A principal that commits
+/// is keyed by its PG instead ([`genesis_push_id`]).
 pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> String {
     pool.get(name)
         .expect("key in pool")
@@ -327,19 +328,66 @@ pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> String {
         .expect("pool key tmb")
 }
 
-/// The id of the standard test principal (implicit genesis on `golden`),
-/// the one `build_genesis_push_body` builds.
-pub fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
-    implicit_principal_id(pool, "golden")
+/// The genesis keys [`build_genesis_push_body_with`] creates: `genesis_name`
+/// first, then `new_key_name`.
+fn genesis_push_principal(
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    new_key_name: &str,
+) -> cyphr::Principal {
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
+    };
+    cyphr::Principal::explicit(vec![key(genesis_name), key(new_key_name)])
+        .expect("explicit genesis")
 }
 
-/// Build a brand-new principal's genesis push HTTP body: the implicit genesis
-/// key `genesis_name` signs a `key/create` of `new_key_name`, closed by
-/// `commit/create` with the genesis key embedded on the closing cozy -- the
-/// wire contract `resolve_genesis` requires for a never-before-seen
-/// principal. The principal's derived id is
-/// `implicit_principal_id(pool, genesis_name)`; pass it as `principal_id`
-/// unless the test deliberately pushes under another one.
+/// The id (the PG) of the principal whose genesis commit
+/// [`build_genesis_push_body_with`] builds for `genesis_name` and
+/// `new_key_name`.
+pub fn genesis_push_id(
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    new_key_name: &str,
+) -> String {
+    genesis_push_principal(pool, genesis_name, new_key_name)
+        .pr_tagged()
+        .expect("genesis PR")
+}
+
+/// The id of the standard test principal, the one `build_genesis_push_body`
+/// builds: `golden` with `key_a`.
+pub fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+    genesis_push_id(pool, "golden", "key_a")
+}
+
+/// The principal [`build_genesis_push_body_with`] pushes, after its genesis
+/// commit: the state a test signs its next commit on.
+pub fn genesis_pushed_principal(
+    pool: &test_fixtures::Pool,
+    genesis_name: &str,
+    new_key_name: &str,
+    now: i64,
+) -> cyphr::Principal {
+    let mut principal = genesis_push_principal(pool, genesis_name, new_key_name);
+    test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get(genesis_name).expect("genesis key in pool"),
+        now,
+    )
+    .expect("genesis commit");
+    principal
+}
+
+/// Build a brand-new principal's genesis push HTTP body: its genesis
+/// commit (SPEC 5.1, 5.3), in which `genesis_name` creates itself and
+/// `new_key_name`, then signs the `principal/create` and `commit/create`.
+/// Every `key/create` discloses its key, so the principal reads from the
+/// blobs alone. Its id is [`genesis_push_id`]; pass that as
+/// `principal_id` unless the test deliberately pushes under another one.
 pub fn build_genesis_push_body_with(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
@@ -347,28 +395,13 @@ pub fn build_genesis_push_body_with(
     principal_id: &str,
     now: i64,
 ) -> String {
-    let genesis = pool.get(genesis_name).expect("genesis key in pool");
-    let genesis_key = cyphr::Key::new(
-        genesis.alg.clone(),
-        genesis.compute_tmb().expect("genesis tmb"),
-        Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub b64"),
+    let mut principal = genesis_push_principal(pool, genesis_name, new_key_name);
+    let blobs = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get(genesis_name).expect("genesis key in pool"),
+        now,
     )
-    .expect("key binds its tmb");
-    let principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, genesis_name, new_key_name, now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": genesis_key.alg(),
-            "pub": genesis.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
+    .expect("genesis commit");
     serde_json::json!({
         "principal_id": principal_id,
         "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
@@ -376,25 +409,21 @@ pub fn build_genesis_push_body_with(
     .to_string()
 }
 
-/// The standard genesis push: `golden` adds `key_a`.
+/// The standard genesis push: `golden` with `key_a`.
 pub fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
     build_genesis_push_body_with(pool, "golden", "key_a", principal_id, now)
 }
 
-/// Build a second commit push HTTP body for an existing principal (introducing `key_b`).
+/// Build a second commit push HTTP body for the standard principal
+/// ([`build_genesis_push_body`] pushed at `genesis_now`), introducing
+/// `key_b`, signed by `golden`.
 pub fn build_second_commit_push_body(
     pool: &test_fixtures::Pool,
     principal_id: &str,
+    genesis_now: i64,
     now: i64,
 ) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-    )
-    .expect("key binds its tmb");
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+    let principal = genesis_pushed_principal(pool, "golden", "key_a", genesis_now);
     let blobs = sign_key_create_commit(principal, pool, "golden", "key_b", now);
 
     serde_json::json!({

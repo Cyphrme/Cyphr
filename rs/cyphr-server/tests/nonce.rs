@@ -2,12 +2,12 @@
 //! line 764: "A principal may reuse authentication components with an nonce
 //! embedding for a unique PG"; 10.1, 10.2).
 //!
-//! Both principals start as an implicit genesis on the same pool key, so
-//! their genesis-time identifier (the key's thumbprint) is identical. A
-//! KT-level `nonce/create` in commit 0 makes their Principal Roots differ,
-//! and `principal/create` in commit 1 fixes each PG at that root. The server
-//! must then hold them as two principals keyed by PG, never one keyed by the
-//! shared genesis key.
+//! Both principals are built on the same pool key, so without a nonce
+//! their PG would be identical (the key's thumbprint). A KT-level
+//! `nonce/create` in the genesis commit, before its `principal/create`
+//! (SPEC 5.1), makes their Principal Roots differ, and `principal/create`
+//! fixes each PG at that root. The server must then hold them as two
+//! principals keyed by PG, never one keyed by the shared genesis key.
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -49,65 +49,42 @@ fn sign(k: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     (bytes, sig, czd)
 }
 
-/// One finalized commit by `g` applying one signed coz.
-fn commit_one(
-    p: &mut cyphr::Principal,
-    g: &Kp,
-    parts: (Vec<u8>, Vec<u8>, coz::Czd),
-    now: i64,
-) -> cyphr::error::Result<()> {
-    let (pay, sig, czd) = parts;
-    let mut scope = p.begin_commit();
-    if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
-        v["typ"]
-            .as_str()
-            .is_some_and(|t| t.ends_with("cyphr/principal/create"))
-    }) {
-        scope.create_genesis_keys(
-            &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
-            now,
-            "cyphr.me",
-        )?;
-    }
-    scope.verify_and_apply(&pay, &sig, czd, None)?;
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
-            now,
-            "cyphr.me",
-        )
-        .map(|_| ())
+fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
 }
 
-/// `g`'s principal: implicit genesis, commit 0 inserts `nonce` at the KT
-/// root, commit 1 is `principal/create` at the resulting PR.
-fn principal_with_nonce(g: &Kp, nonce: &[u8; 32]) -> cyphr::error::Result<cyphr::Principal> {
+/// `g`'s principal: the genesis commit (SPEC 5.1) is `g`'s self
+/// `key/create`, a `nonce/create` at the KT root, then `principal/create`
+/// at the resulting PR; commit 1 is `g` creating `next`.
+fn principal_with_nonce(
+    g: &Kp,
+    next: &Kp,
+    nonce: &[u8; 32],
+) -> cyphr::error::Result<cyphr::Principal> {
     let mut p = cyphr::Principal::implicit(key_of(g))?;
-    commit_one(
-        &mut p,
+    let mut scope = p.begin_commit();
+    scope.create_genesis_keys(&signer_of(g), NOW, "cyphr.me")?;
+    let (pay, sig, czd) = sign(
         g,
-        sign(
-            g,
-            serde_json::json!({
-                "alg": g.alg,
-                "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(nonce)),
-                "now": NOW, "tmb": g.tmb.to_b64(),
-                "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
-            }),
-        ),
-        NOW,
-    )?;
-    let pr = p.pr_tagged()?;
-    commit_one(
-        &mut p,
+        serde_json::json!({
+            "alg": g.alg,
+            "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(nonce)),
+            "now": NOW, "tmb": g.tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
+        }),
+    );
+    scope.verify_and_apply(&pay, &sig, czd, None)?;
+    scope.create_principal(&signer_of(g), NOW, "cyphr.me")?;
+    scope.finalize_with_software(&signer_of(g), NOW, "cyphr.me")?;
+
+    let (pay, sig, czd) = sign(
         g,
-        sign(
-            g,
-            serde_json::json!({"alg": g.alg, "id": pr, "now": NOW + 1, "tmb": g.tmb.to_b64(),
-                               "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        NOW + 1,
-    )?;
+        serde_json::json!({"alg": g.alg, "id": next.tmb.to_b64(), "now": NOW + 1,
+                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+    );
+    let mut scope = p.begin_commit();
+    scope.verify_and_apply(&pay, &sig, czd, Some(key_of(next).with_first_seen(NOW + 1)))?;
+    scope.finalize_with_software(&signer_of(g), NOW + 1, "cyphr.me")?;
     Ok(p)
 }
 
@@ -120,32 +97,33 @@ fn pg_of(p: &cyphr::Principal) -> String {
         .to_string()
 }
 
-/// Push body for commit `i` of `p` under `id`; commit 0 also embeds the
-/// genesis key on its closing cozy, as the wire contract requires.
-fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
+/// The id `p` is stored and pushed under: with a nonce in the genesis
+/// commit, the first PR that commit yields (the engine's record key; the
+/// PG itself is the state before `commit/create`).
+fn record_id(p: &cyphr::Principal) -> String {
+    cyphr_storage::export_commits(p).expect("export")[0]
+        .pr
+        .clone()
+}
+
+/// Push body for commit `i` of `p` under `id`; every `key/create`
+/// discloses the key it creates (SPEC 5.2 TX0).
+fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     let mut blobs: Vec<serde_json::Value> = entries[i].cozies.clone();
-    // The genesis key's own key/create discloses it (SPEC 5.2 TX0).
     for c in &mut blobs {
-        if c["pay"]["typ"]
+        if !c["pay"]["typ"]
             .as_str()
             .is_some_and(|t| t.ends_with("cyphr/key/create"))
-            && c["pay"]["id"].as_str() == Some(genesis.tmb.to_b64().as_str())
         {
-            c["key"] = serde_json::json!({
-                "alg": genesis.alg,
-                "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-                "tmb": genesis.tmb.to_b64(),
-            });
+            continue;
         }
-    }
-    if i == 0 {
-        let last = blobs.len() - 1;
-        blobs[last]["key"] = serde_json::json!({
-            "alg": genesis.alg,
-            "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-            "tmb": genesis.tmb.to_b64(),
-        });
+        let key = entries[i]
+            .keys
+            .iter()
+            .find(|k| c["pay"]["id"].as_str() == Some(k.tmb.as_str()))
+            .expect("the commit carries every key it creates");
+        c["key"] = serde_json::json!({"alg": key.alg, "pub": key.pub_key, "tmb": key.tmb});
     }
     serde_json::json!({
         "principal_id": id,
@@ -180,28 +158,38 @@ async fn push(app: &axum::Router, body: String, what: &str) {
 /// Backs SPEC 5.1 (a nonce embedding yields a unique PG for reused
 /// authentication components) end to end: one key creates two principals
 /// that differ only in their KT nonce; the two PGs differ from each other
-/// and from the key's thumbprint; each principal is pushable commit by commit
-/// under its own PG, interleaved with the other's pushes, and each push
+/// and from the key's thumbprint; each principal's genesis commit is pushed
+/// under its record key (the first PR that commit yields, as the engine
+/// keys a nonce principal) and every later commit under its own PG,
+/// interleaved with the other's pushes, and each push
 /// leaves the other's tip byte-identical; each PG reads back its own
 /// principal's Principal Root and commit count. Turns red if the nonce is not accepted (the
 /// principals cannot be built), if the nonce does not change the PG (the
 /// second principal collides with the first), if the server keys storage by
 /// the shared genesis key so the second push is refused or merges into the
 /// first (409 or a moved tip), or if a push under one PG touches the
-/// other. Red today: `nonce/create` is rejected as a malformed payload.
-/// End to end: yes.
+/// other. End to end: yes.
 #[tokio::test]
 async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
+    let next = kp(&pool, "key_a");
     let build = |nonce: &[u8; 32]| {
-        principal_with_nonce(&g, nonce)
-            .unwrap_or_else(|e| panic!("nonce/create must apply on an implicit genesis: {e:?}"))
+        principal_with_nonce(&g, &next, nonce)
+            .unwrap_or_else(|e| panic!("nonce/create must apply in a genesis commit: {e:?}"))
     };
     let (a, b) = (build(&[0x11; 32]), build(&[0x22; 32]));
     let (pg_a, pg_b) = (pg_of(&a), pg_of(&b));
     assert_ne!(pg_a, pg_b, "different nonces must give different PGs");
-    let genesis_id = common::golden_principal_id(&pool);
+    // A first push names the record key; every later push and read names
+    // the PG, which then resolves to the stored principal.
+    let (id_a, id_b) = (record_id(&a), record_id(&b));
+    assert_ne!(
+        id_a, id_b,
+        "different nonces must give different record keys"
+    );
+    // The PG of `golden`'s genesis without a nonce: its bare thumbprint.
+    let genesis_id = common::implicit_principal_id(&pool, "golden");
     for pg in [&pg_a, &pg_b] {
         assert_ne!(pg, &format!("SHA-256:{genesis_id}"), "a PG is the bare key");
     }
@@ -209,11 +197,11 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
-    push(&app, wire(&a, 0, &g, &pg_a), "A commit 0").await;
+    push(&app, wire(&a, 0, &id_a), "A commit 0").await;
     let a_after_0 = tip(&app, &pg_a).await;
     assert_eq!(a_after_0.0, StatusCode::OK);
 
-    push(&app, wire(&b, 0, &g, &pg_b), "B commit 0").await;
+    push(&app, wire(&b, 0, &id_b), "B commit 0").await;
     assert_eq!(tip(&app, &pg_a).await, a_after_0, "pushing B moved A's tip");
     let b_after_0 = tip(&app, &pg_b).await;
     assert_eq!(
@@ -223,13 +211,13 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
     );
     assert_ne!(a_after_0.1, b_after_0.1, "the two tips are the same record");
 
-    push(&app, wire(&a, 1, &g, &pg_a), "A commit 1").await;
+    push(&app, wire(&a, 1, &pg_a), "A commit 1").await;
     assert_eq!(
         tip(&app, &pg_b).await,
         b_after_0,
         "pushing A's second commit moved B's tip"
     );
-    push(&app, wire(&b, 1, &g, &pg_b), "B commit 1").await;
+    push(&app, wire(&b, 1, &pg_b), "B commit 1").await;
 
     for (p, pg) in [(&a, &pg_a), (&b, &pg_b)] {
         let (status, t) = tip(&app, pg).await;
@@ -265,16 +253,27 @@ async fn two_principals_one_key_each_addressed_by_its_own_pg() {
 async fn identical_nonce_principal_pushed_twice_is_one_principal() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
-    let a = principal_with_nonce(&g, &[0x33; 32]).expect("a");
-    let sibling = principal_with_nonce(&g, &[0x44; 32]).expect("sibling");
-    let (pg_a, pg_s) = (pg_of(&a), pg_of(&sibling));
+    let next = kp(&pool, "key_a");
+    let a = principal_with_nonce(&g, &next, &[0x33; 32]).expect("a");
+    let sibling = principal_with_nonce(&g, &next, &[0x44; 32]).expect("sibling");
+    let pg_a = pg_of(&a);
+    assert_ne!(
+        pg_a,
+        pg_of(&sibling),
+        "premise: the sibling is another principal"
+    );
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
-    push(&app, wire(&a, 0, &g, &pg_a), "A commit 0").await;
+    push(&app, wire(&a, 0, &record_id(&a)), "A commit 0").await;
     let first = tip(&app, &pg_a).await;
-    push(&app, wire(&sibling, 0, &g, &pg_s), "sibling commit 0").await;
-    let (status, resp) = post_json(app.clone(), "/push", wire(&a, 0, &g, &pg_a)).await;
+    push(
+        &app,
+        wire(&sibling, 0, &record_id(&sibling)),
+        "sibling commit 0",
+    )
+    .await;
+    let (status, resp) = post_json(app.clone(), "/push", wire(&a, 0, &record_id(&a))).await;
     assert!(
         !status.is_server_error(),
         "replaying position 0 is a 5xx: {resp:?}"

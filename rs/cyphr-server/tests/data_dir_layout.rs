@@ -388,7 +388,13 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     let claims_before = identity_before
         .verify_token(&token_before, now_secs())
         .expect("token issued before deletion must verify");
-    assert_eq!(claims_before.pr, principal_id);
+    // The token's subject is the principal's bare canonical digest.
+    assert_eq!(
+        claims_before.pr,
+        principal_id
+            .split_once(':')
+            .map_or(principal_id, |(_, digest)| digest)
+    );
 
     // Drop every handle onto the physical databases before touching
     // index/ on disk.

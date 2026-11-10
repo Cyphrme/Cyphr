@@ -28,6 +28,12 @@ mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
+/// The id a `/tip` response reports for `principal_id`: its bare digest
+/// (routes report the stored PG without its algorithm label).
+fn reported_id(principal_id: &str) -> &str {
+    cyphr_storage::engine::bare_digest(principal_id)
+}
+
 // ========================================================================
 // Acceptance Criteria N2.1 – N2.6
 // ========================================================================
@@ -172,7 +178,8 @@ async fn syncs_from_authority() {
 
     let payload = common::envelope_payload(&witness_tip_json);
     assert_eq!(
-        payload["principal_id"], principal_id,
+        payload["principal_id"],
+        reported_id(principal_id),
         "witness tip response payload must match synced principal"
     );
 }
@@ -506,50 +513,18 @@ fn append_key_create(
 }
 
 /// Build genuine, CHAINING genesis + second-commit push bodies for one
-/// principal: a `key/create` (key_a) genesis closed under the golden key, then
-/// a second `key/create` (key_b) signed by golden onto the post-genesis state.
-/// The two-entry patch the truncation test needs.
+/// principal: the genesis commit (SPEC 5.1) in which golden creates itself
+/// and key_a, then a second `key/create` (key_b) signed by golden onto the
+/// post-genesis state. The two-entry patch the truncation test needs.
 fn build_two_commit_push_bodies(
     pool: &test_fixtures::Pool,
     principal_id: &str,
     now: i64,
 ) -> (String, String) {
-    let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-    )
-    .expect("key binds its tmb");
-    let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-
-    // Commit 0 (genesis): introduce key_a, then embed the golden genesis key on
-    // the closing cozy -- the wire contract `resolve_genesis` needs for a
-    // never-before-seen principal (mirrors `build_genesis_push_body`).
-    let mut c0 = append_key_create(&mut principal, pool, "golden", "key_a", now);
-    let closing = c0.len() - 1;
-    let mut closing_coz: serde_json::Value = serde_json::from_slice(&c0[closing]).unwrap();
-    closing_coz.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
-
-    // Commit 1: introduce key_b, signed by the still-active golden key.
-    let c1 = append_key_create(&mut principal, pool, "golden", "key_b", now + 1);
-
-    let body = |blobs: &[Vec<u8>]| {
-        serde_json::json!({
-            "principal_id": principal_id,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-        .to_string()
-    };
-    (body(&c0), body(&c1))
+    let mut bodies = build_chained_push_bodies(pool, principal_id, now, &["key_a", "key_b"]);
+    let second = bodies.pop().expect("second commit body");
+    let genesis = bodies.pop().expect("genesis body");
+    (genesis, second)
 }
 
 /// A mutation applied to an upstream `/patch` JSON body by the proxy below.
@@ -792,7 +767,7 @@ async fn sync_recovers_after_bad_entry() {
          genuine genesis MUST still apply and be served: {json:?}"
     );
     let payload = common::envelope_payload(&json);
-    assert_eq!(payload["principal_id"], principal);
+    assert_eq!(payload["principal_id"], reported_id(&principal));
     assert_eq!(
         payload["commit_count"].as_u64(),
         Some(1),
@@ -897,7 +872,7 @@ async fn sync_recovers_after_unverifiable_entry() {
          trigger site) -- the genuine genesis MUST still apply and be served: {json:?}"
     );
     let payload = common::envelope_payload(&json);
-    assert_eq!(payload["principal_id"], principal);
+    assert_eq!(payload["principal_id"], reported_id(&principal));
     assert_eq!(
         payload["commit_count"].as_u64(),
         Some(1),
@@ -1202,7 +1177,7 @@ async fn authenticated_channel_accepts_genuine_authority() {
          authority's patch and serve the synced state: {json:?}"
     );
     let payload = common::envelope_payload(&json);
-    assert_eq!(payload["principal_id"], principal);
+    assert_eq!(payload["principal_id"], reported_id(&principal));
     assert_eq!(
         payload["commit_count"].as_u64(),
         Some(1),
@@ -1266,45 +1241,6 @@ async fn spawn_query_rewriting_proxy(
     (format!("http://{addr}"), handle)
 }
 
-/// Build a genuine genesis push body whose genesis key is `signer` (not
-/// `golden`), so the resulting chain has a genuinely DIFFERENT principal
-/// root from the golden-keyed fixtures every other test in this file uses --
-/// required so the cross-principal test below cannot be dismissed as an
-/// artifact of every fixture sharing one genesis key.
-fn build_genesis_push_body_with(
-    pool: &test_fixtures::Pool,
-    principal_id: &str,
-    now: i64,
-    signer: &str,
-    new_key: &str,
-) -> String {
-    let g = pool.get(signer).expect("signer key in pool");
-    let g_key = cyphr::Key::new(
-        g.alg.clone(),
-        g.compute_tmb().expect("signer tmb"),
-        Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64"),
-    )
-    .expect("key binds its tmb");
-    let mut principal = cyphr::Principal::implicit(g_key.clone()).expect("implicit genesis");
-    let mut blobs = append_key_create(&mut principal, pool, signer, new_key, now);
-    let closing = blobs.len() - 1;
-    let mut closing_coz: serde_json::Value = serde_json::from_slice(&blobs[closing]).unwrap();
-    closing_coz.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": g_key.alg(),
-            "pub": g.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(g_key.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing] = serde_json::to_vec(&closing_coz).unwrap();
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
 /// N2 rework, fix 1: cross-principal state substitution is rejected before
 /// any entry is applied.
 ///
@@ -1323,7 +1259,7 @@ async fn cross_principal_substitution_rejected() {
     let pool = load_pool();
     // Distinct genesis keys (`alice` vs `golden`) give genuinely distinct
     // genesis-derived ids.
-    let principal_a = common::implicit_principal_id(&pool, "alice");
+    let principal_a = common::genesis_push_id(&pool, "alice", "bob");
     let principal_b = common::golden_principal_id(&pool);
 
     let authority = authority_with_two_commits(&principal_b, now).await;
@@ -1331,7 +1267,7 @@ async fn cross_principal_substitution_rejected() {
     let (status, body) = post_json(
         authority.instance.router.clone(),
         "/push",
-        build_genesis_push_body_with(&pool, &principal_a, now, "alice", "bob"),
+        common::build_genesis_push_body_with(&pool, "alice", "bob", &principal_a, now),
     )
     .await;
     assert_eq!(
@@ -1700,19 +1636,18 @@ async fn stripped_statement_fails_closed_when_configured() {
 // why N4.2 constructs a genuine two-branch equivocation rather than
 // asserting the property abstractly.
 
-/// Build a genuinely CHAINING sequence of push bodies for one principal: a
-/// `key/create` genesis (introducing `key_names[0]`, closed under the golden
-/// key per the wire contract for a never-before-seen principal -- mirrors
-/// `build_two_commit_push_bodies`'s C0 step), then one chained `key/create`
-/// push body per remaining name in `key_names`, each signed by golden onto
-/// the state left by the previous entry via the SAME `principal` object (the
-/// `append_key_create` doc comment explains why a shared object, not a fresh
-/// one per commit, is what makes the chain genuine).
+/// Build a genuinely CHAINING sequence of push bodies for one principal: its
+/// genesis commit (SPEC 5.1), in which golden creates itself and
+/// `key_names[0]` (so its id is `common::genesis_push_id(pool, "golden",
+/// key_names[0])`), then one chained `key/create` push body per remaining
+/// name in `key_names`, each signed by golden onto the state left by the
+/// previous entry via the SAME `principal` object (the `append_key_create`
+/// doc comment explains why a shared object, not a fresh one per commit, is
+/// what makes the chain genuine).
 ///
-/// Generalizes `build_two_commit_push_bodies` to an arbitrary chain length
-/// so N4's fixtures -- an honest 3-commit authority, a split two-step chain,
-/// and a forked branch -- share one construction instead of three
-/// hand-rolled ones.
+/// Serves every multi-commit fixture here -- the two-commit authority, an
+/// honest 3-commit authority, a split two-step chain, and a forked branch --
+/// from one construction.
 fn build_chained_push_bodies(
     pool: &test_fixtures::Pool,
     principal_id: &str,
@@ -1720,27 +1655,20 @@ fn build_chained_push_bodies(
     key_names: &[&str],
 ) -> Vec<String> {
     assert!(!key_names.is_empty(), "at least a genesis key is required");
-    let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
+    };
+    let mut principal = cyphr::Principal::explicit(vec![key("golden"), key(key_names[0])])
+        .expect("explicit genesis");
+    let c0 = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get("golden").expect("golden key"),
+        now,
     )
-    .expect("key binds its tmb");
-    let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-
-    let mut c0 = append_key_create(&mut principal, pool, "golden", key_names[0], now);
-    let closing = c0.len() - 1;
-    let mut closing_coz: serde_json::Value = serde_json::from_slice(&c0[closing]).unwrap();
-    closing_coz.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
+    .expect("genesis commit");
 
     let body = |blobs: &[Vec<u8>]| {
         serde_json::json!({

@@ -17,18 +17,17 @@ use cyphr_storage::{Genesis, load_principal_from_commits};
 mod common;
 
 use common::{
-    attestor_server, build_genesis_push_body, get_json, keyless_server, load_pool, post_json,
+    attestor_server, build_genesis_push_body, get_json, golden_principal_id, keyless_server,
+    load_pool, post_json,
 };
 
 const NOW: i64 = 1_700_100_000;
 
 /// The genesis-derived id for `build_genesis_push_body`'s principal
-/// (implicit genesis on the pool's `golden` key): that key's thumbprint.
+/// (a genesis commit on the pool's `golden` key that also creates `key_a`):
+/// its PG.
 fn derived_id(pool: &test_fixtures::Pool) -> String {
-    pool.get("golden")
-        .expect("golden in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb")
+    golden_principal_id(pool)
 }
 
 async fn tip_status(app: axum::Router, id: &str) -> StatusCode {
@@ -176,7 +175,8 @@ async fn d1_push_refuses_substituted_key_sidecar() {
     );
 }
 
-/// Honest history: genesis(golden) then golden `key/create` key_a.
+/// Honest history: the genesis commit of `golden` (SPEC 5.1), then golden
+/// `key/create` key_a.
 fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
@@ -190,6 +190,12 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     };
     let b64d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
     let mut p = cyphr::Principal::implicit(dom(golden)).expect("genesis");
+    p.commit_genesis(
+        &golden.software_signer().expect("golden signer"),
+        NOW,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
     let g_prv = b64d(golden.prv.as_ref().expect("golden prv"));
     let g_pub = b64d(&golden.pub_key);
     let pay = serde_json::json!({
@@ -248,9 +254,10 @@ fn d1_replay_refuses_substituted_key_sidecar() {
     load_principal_from_commits(Genesis::Implicit(dom(golden)), &honest)
         .expect("control: honest history replays");
 
+    // Commit 0 is the genesis commit; commit 1 is the key_a `key/create`.
     let mut forged = honest.clone();
-    assert_eq!(forged[0].keys[0].tmb, key_a.compute_tmb_b64().expect("tmb"));
-    forged[0].keys[0].pub_key = attacker_pub;
+    assert_eq!(forged[1].keys[0].tmb, key_a.compute_tmb_b64().expect("tmb"));
+    forged[1].keys[0].pub_key = attacker_pub;
     assert!(
         load_principal_from_commits(Genesis::Implicit(dom(golden)), &forged).is_err(),
         "replay accepted a stored key whose pub does not hash to its tmb"

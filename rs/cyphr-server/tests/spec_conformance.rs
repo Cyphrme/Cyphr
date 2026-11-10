@@ -17,36 +17,27 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    build_second_commit_push_body, envelope_payload, get_json, keyless_server, load_pool, post_json,
+    envelope_payload, genesis_pushed_principal, get_json, golden_principal_id, keyless_server,
+    load_pool, post_json, sign_key_create_commit,
 };
 
 const NOW: i64 = 1_700_100_000;
 
-/// A genesis push for the pool's `golden` principal whose single commit adds
-/// `key_b`. Same shape as `common::build_genesis_push_body` (which adds
-/// `key_a`): the genesis key rides on the closing `commit/create`.
-fn genesis_push_adding_key_b(pool: &test_fixtures::Pool, principal_id: &str) -> String {
-    let golden = pool.get("golden").expect("golden in pool");
-    let mut body: serde_json::Value =
-        serde_json::from_str(&build_second_commit_push_body(pool, principal_id, NOW))
-            .expect("push body is JSON");
-    let blobs = body["blobs"].as_array_mut().expect("blobs array");
-    let last = blobs.len() - 1;
-    let raw = Base64UrlUnpadded::decode_vec(blobs[last].as_str().expect("blob is a string"))
-        .expect("blob base64");
-    let mut closing: serde_json::Value = serde_json::from_slice(&raw).expect("blob is JSON");
-    closing.as_object_mut().expect("coz object").insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden.alg,
-            "pub": golden.pub_key,
-            "tmb": golden.compute_tmb_b64().expect("golden tmb"),
-        }),
-    );
-    blobs[last] = serde_json::Value::String(Base64UrlUnpadded::encode_string(
-        &serde_json::to_vec(&closing).expect("serialize"),
-    ));
-    body.to_string()
+/// A push of a second commit for the standard principal (`golden` with
+/// `key_a`, its genesis pushed at `NOW`) that adds `new_key`, signed by
+/// `golden`.
+fn second_commit_push_adding(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    new_key: &str,
+) -> String {
+    let principal = genesis_pushed_principal(pool, "golden", "key_a", NOW);
+    let blobs = sign_key_create_commit(principal, pool, "golden", new_key, NOW + 1);
+    serde_json::json!({
+        "principal_id": principal_id,
+        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+    })
+    .to_string()
 }
 
 async fn commit_count(app: &axum::Router, id: &str) -> u64 {
@@ -59,26 +50,27 @@ async fn commit_count(app: &axum::Router, id: &str) -> u64 {
 
 /// Backs SPEC 2.3.2: "Commits are never removed from the chain and implicit
 /// forks are prohibited by the protocol." Scenario over HTTP: one principal
-/// has its first commit (adds `key_a`) accepted; a competing first commit
-/// (adds `key_b`, signed by the same genesis key, so it is fully authorized)
-/// is pushed on the same `pre` and must be refused with 409, leaving the chain at one
-/// commit. Control: on a fresh server the competing commit alone is accepted,
-/// so the refusal is the stale `pre`, not a malformed body. Turns red if the
-/// server appends a second commit on a `pre` the chain has moved past, or
-/// reports success for it. End to end: yes (HTTP, store, replay).
+/// has its genesis commit and then a second commit (adds `key_b`) accepted;
+/// a competing second commit (adds `carol`, signed by the same genesis key,
+/// so it is fully authorized) is pushed on the same `pre` and must be
+/// refused with 409, leaving the chain at two commits. Control: on a fresh
+/// server the genesis then the competing commit alone are accepted, so the
+/// refusal is the stale `pre`, not a malformed body. Turns red if the
+/// server appends a commit on a `pre` the chain has moved past, or reports
+/// success for it. End to end: yes (HTTP, store, replay).
 // @docket: sc-l237 :: scripts/docket-run sc-l237
 #[tokio::test]
 async fn s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put() {
     let pool = load_pool();
-    let id = pool
-        .get("golden")
-        .expect("golden in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb");
-    let competing = genesis_push_adding_key_b(&pool, &id);
+    let id = golden_principal_id(&pool);
+    let genesis = common::build_genesis_push_body(&pool, &id, NOW);
+    let first = second_commit_push_adding(&pool, &id, "key_b");
+    let competing = second_commit_push_adding(&pool, &id, "carol");
 
     let (control_state, _control_dir) = keyless_server();
     let control = build_router(control_state);
+    let (status, body) = post_json(control.clone(), "/push", genesis.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "control genesis: {body:?}");
     let (status, body) = post_json(control, "/push", competing.clone()).await;
     assert_eq!(
         status,
@@ -88,14 +80,11 @@ async fn s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put() {
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    let (status, body) = post_json(
-        app.clone(),
-        "/push",
-        common::build_genesis_push_body(&pool, &id, NOW),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "first commit: {body:?}");
-    assert_eq!(commit_count(&app, &id).await, 1);
+    let (status, body) = post_json(app.clone(), "/push", genesis).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis commit: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", first).await;
+    assert_eq!(status, StatusCode::CREATED, "second commit: {body:?}");
+    assert_eq!(commit_count(&app, &id).await, 2);
 
     let (status, body) = post_json(app.clone(), "/push", competing).await;
     assert_eq!(
@@ -105,7 +94,7 @@ async fn s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put() {
     );
     assert_eq!(
         commit_count(&app, &id).await,
-        1,
+        2,
         "the refused fork commit landed in the chain"
     );
 }
@@ -213,6 +202,9 @@ proptest! {
         let keys: Vec<_> = algs.iter().map(|&ed| gen_key(ed)).collect();
         let (g, gtmb) = &keys[0];
         let mut p = cyphr::Principal::implicit(key_of(g, gtmb)).expect("genesis");
+        let g_signer =
+            cyphr::signer::SoftwareSigner::new(g.alg.name(), &g.prv_bytes, &g.pub_bytes, gtmb);
+        p.commit_genesis(&g_signer, 1_700_000_000, "cyphr.me").expect("genesis commit");
         for (i, (k, tmb)) in keys.iter().enumerate().skip(1) {
             let now = 1_700_000_000 + i64::try_from(i).expect("small");
             let pay = serde_json::json!({

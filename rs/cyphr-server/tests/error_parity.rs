@@ -39,9 +39,13 @@ async fn missing_alg_is_alg_mismatch_on_push_import_and_replay() {
     assert!(status.is_success(), "genesis push lands: {status}");
 
     // The second commit's key/create with its `alg` removed.
-    let mut body: serde_json::Value =
-        serde_json::from_str(&build_second_commit_push_body(&pool, &id, 1_700_000_200))
-            .expect("push body");
+    let mut body: serde_json::Value = serde_json::from_str(&build_second_commit_push_body(
+        &pool,
+        &id,
+        1_700_000_100,
+        1_700_000_200,
+    ))
+    .expect("push body");
     let first =
         Base64UrlUnpadded::decode_vec(body["blobs"][0].as_str().expect("blob")).expect("base64url");
     let mut coz: serde_json::Value = serde_json::from_slice(&first).expect("coz json");

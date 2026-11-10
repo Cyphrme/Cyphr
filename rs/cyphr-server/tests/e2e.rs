@@ -6,15 +6,10 @@
 //!
 //! ## Bootstrap strategy
 //!
-//! Golden fixtures use a pre-existing genesis key that signs commits but
-//! isn't embedded in the commit blobs (the embedded `"key"` field is the
-//! key being *added*, not the genesis key).  This means the HTTP `/push`
-//! endpoint's genesis auto-detection cannot bootstrap from raw fixture
-//! data alone.
-//!
-//! Tests therefore bootstrap principals via the engine API (which accepts
-//! explicit genesis), then exercise the HTTP transport layer for reads and
-//! error paths.
+//! Most tests bootstrap golden-fixture principals via the engine API
+//! (which accepts an explicit genesis), then exercise the HTTP transport
+//! layer for reads and error paths. `push_new_principal_happy_path` drives
+//! a genesis commit through `/push` itself.
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -23,9 +18,9 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    bootstrap_principal, build_raw_blobs, envelope_payload, fixture_principal_id, get_json,
-    golden_principal_id, implicit_principal_id, keyless_server, load_golden, load_pool,
-    make_genesis, post_json, sign_key_create_commit,
+    bootstrap_principal, build_genesis_push_body, build_raw_blobs, envelope_payload,
+    fixture_principal_id, get_json, golden_principal_id, implicit_principal_id, keyless_server,
+    load_golden, load_pool, make_genesis, post_json, sign_key_create_commit,
 };
 
 // ========================================================================
@@ -389,12 +384,11 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
 
     let pool = load_pool();
     let signers = ["golden", "alice", "bob", "carol"];
-    let new_keys = |signer: &str| -> Vec<&'static str> {
+    let new_key = |signer: &str| -> &'static str {
         ["key_a", "key_b", "alice", "bob"]
             .into_iter()
-            .filter(|k| *k != signer)
-            .take(2)
-            .collect()
+            .find(|k| *k != signer)
+            .expect("a key other than the signer")
     };
     let genesis_of = |signer: &str| {
         let key = pool.get(signer).expect("signer key in pool");
@@ -448,13 +442,18 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
     // commit against its current state.
     let mut commit1_blobs = Vec::with_capacity(signers.len());
     for (i, signer) in signers.iter().enumerate() {
-        let principal = cyphr::Principal::implicit(match genesis_of(signer) {
+        let mut principal = cyphr::Principal::implicit(match genesis_of(signer) {
             cyphr_storage::Genesis::Implicit(k) => k,
             cyphr_storage::Genesis::Explicit(_) => unreachable!("genesis_of builds implicit"),
         })
         .expect("implicit genesis");
-        let commit0 =
-            sign_key_create_commit(principal, &pool, signer, new_keys(signer)[0], 1_700_000_100);
+        // Commit 0 is the principal's genesis commit (SPEC 5.1).
+        let commit0 = test_fixtures::bundle::genesis_bundle(
+            &mut principal,
+            pool.get(signer).expect("signer key in pool"),
+            1_700_000_100,
+        )
+        .expect("genesis commit");
         let slices: Vec<&[u8]> = commit0.iter().map(|b| b.as_slice()).collect();
         engine
             .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &slices)
@@ -474,7 +473,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
             fresh,
             &pool,
             signer,
-            new_keys(signer)[1],
+            new_key(signer),
             1_700_000_200,
         ));
     }
@@ -552,68 +551,49 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
 // ========================================================================
 //
 // Unlike every test above (which bootstraps via the engine's explicit-genesis
-// API and only exercises HTTP for reads/error paths -- golden fixtures don't
-// embed genesis key material on wire blobs, see the module doc comment),
-// this drives a brand new principal's first-ever commit through the real
-// `POST /push` path end to end, including `resolve_genesis`'s genesis=None
-// auto-detection (`rs/cyphr-storage/src/engine/mod.rs`).
+// API and only exercises HTTP for reads/error paths), this drives a brand new principal's
+// first-ever commit through the real `POST /push` path end to end, including `resolve_genesis`'s
+// genesis=None auto-detection (`rs/cyphr-storage/src/engine/mod.rs`).
 
-/// A brand new principal's first-ever push -- a `key/create` adding a second
-/// key, closed by `commit/create` -- lands over real HTTP with no explicit
-/// genesis, is readable back via `/tip`, and its blobs round-trip via
-/// `/patch`.
+/// A brand new principal's first-ever push -- its genesis commit (SPEC
+/// 5.1), in which the genesis key creates itself and a second key, then
+/// signs the `principal/create` and `commit/create` -- lands over real HTTP
+/// with no explicit genesis, is readable back via `/tip`, and its blobs
+/// round-trip via `/patch`.
 ///
 /// This is this system's actual wire contract for bootstrapping a new
-/// principal: the closing `commit/create` cozy carries the genesis key in
-/// its own `"key"` field (distinct from the `key/create` cozy's `"key"`,
-/// which carries the *new* key being added) -- `resolve_genesis` scans for
-/// exactly that (`genesis_from_raw_blobs`). Before that scan existed, this
-/// exact scenario failed with 422 "unknown key" (F44): the new-principal
-/// branch blindly read blob 0's `"key"` field, which is the new key, not
-/// genesis.
+/// principal: every `key/create` of the genesis commit carries its key in
+/// its own `"key"` field, and `resolve_genesis` reads the genesis from
+/// exactly those (`genesis_from_raw_blobs`), the first `key/create` being
+/// the genesis key's own.
 #[tokio::test]
 async fn push_new_principal_happy_path() {
     let pool = load_pool();
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-    )
-    .expect("key binds its tmb");
-
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let now = 1_700_000_000;
-    let mut blobs = sign_key_create_commit(principal, &pool, "golden", "key_a", now);
-
-    // Embed the genesis key on the closing commit/create cozy -- the wire
-    // contract `resolve_genesis` requires for a brand new principal.
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    assert_eq!(
-        closing["pay"]["typ"], "cyphr.me/cyphr/commit/create",
-        "expected the last cozy in the bundle to be the closing commit/create"
-    );
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
     let principal_id = golden_principal_id(&pool);
-    let body = serde_json::json!({
-        "principal_id": &principal_id,
-        "blobs": blobs
-            .iter()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
-            .collect::<Vec<_>>(),
-    })
-    .to_string();
-
+    let body: serde_json::Value =
+        serde_json::from_str(&build_genesis_push_body(&pool, &principal_id, now))
+            .expect("push body");
+    let blobs = body["blobs"].as_array().expect("blobs").clone();
+    let typs: Vec<String> = blobs
+        .iter()
+        .map(|b| {
+            let bytes = Base64UrlUnpadded::decode_vec(b.as_str().expect("b64")).expect("blob");
+            let coz: serde_json::Value = serde_json::from_slice(&bytes).expect("coz json");
+            coz["pay"]["typ"].as_str().expect("typ").to_string()
+        })
+        .collect();
+    assert_eq!(
+        typs,
+        [
+            "cyphr.me/cyphr/key/create",
+            "cyphr.me/cyphr/key/create",
+            "cyphr.me/cyphr/principal/create",
+            "cyphr.me/cyphr/commit/create",
+        ],
+        "the bundle is a genesis commit"
+    );
+    let body = body.to_string();
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
@@ -630,7 +610,11 @@ async fn push_new_principal_happy_path() {
         get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK);
     let tip = envelope_payload(&tip_envelope);
-    assert_eq!(tip["principal_id"], principal_id);
+    // `/tip` names the principal by its bare canonical digest.
+    assert_eq!(
+        tip["principal_id"],
+        principal_id.split_once(':').expect("labelled PG").1
+    );
     assert_eq!(tip["commit_count"].as_u64().unwrap(), 1);
 
     let (patch_status, patch_envelope) = get_json(app, &format!("/patch?pr={principal_id}")).await;
