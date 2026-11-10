@@ -1,0 +1,66 @@
+# Transaction grouping (SPEC 3.7.5, 4, 4.1, 4.6.2)
+#
+# A transaction is one or more cozies of one `typ`; its id is
+# TX = MR(czd0, czd1?, ...), a leaf of TR. Each vector states its commit's
+# `txs_order` (the TX of each transaction).
+
+# The SPEC 4 example: one key/replace transaction signed by two keys (two
+# cozies), one key/create transaction, and the commit/create.
+[[test]]
+name      = "key_replace_signed_by_two_keys"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+    { now = 1700000000, signer = "key_a", target = "bob", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# The same two replaces as two transactions: another TMR, so another arrow,
+# TR and PR, with the same keys.
+[[test]]
+name      = "key_replace_pair_as_two_transactions"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+  [
+    { now = 1700000000, signer = "key_a", target = "bob", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# SPEC 4.1: all cozies of a transaction share one typ. Each coz is valid
+# alone; together they are refused.
+[[test]]
+name      = "mixed_typ_transaction_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error = "MixedTransactionTyp"
