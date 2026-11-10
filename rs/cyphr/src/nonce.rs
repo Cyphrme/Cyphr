@@ -10,7 +10,7 @@
 //! `<alg>:<b64ut>` (§10.2). Either way its byte length must equal the output
 //! size of the algorithm it is under, the only strength check possible.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -19,6 +19,7 @@ use crate::state::{HashAlg, TaggedDigest};
 
 /// The tree level a nonce is inserted at (SPEC §10.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum NonceLevel {
     /// The Principal Root (`cyphr/nonce/...`).
     Pr,
@@ -40,11 +41,23 @@ impl NonceLevel {
     }
 }
 
-/// A validated nonce: digest bytes whose length is the output size of an
-/// algorithm. Identity is the bytes alone, so one value named under two
-/// labels is the same nonce.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Nonce(Vec<u8>);
+/// A validated nonce: digest bytes whose length is the output size of the
+/// algorithm it is under. Identity is the bytes alone, so one value named
+/// under two labels is the same nonce; the algorithm is kept so a tree of
+/// another algorithm converts it from the one it is in.
+#[derive(Debug, Clone)]
+pub struct Nonce {
+    bytes: Vec<u8>,
+    alg: HashAlg,
+}
+
+impl PartialEq for Nonce {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for Nonce {}
 
 impl Nonce {
     /// Parse a coz `id` signed by a key whose hash algorithm is
@@ -61,33 +74,46 @@ impl Nonce {
     pub fn parse(id: &str, signer_alg: HashAlg) -> Result<Self> {
         if id.contains(':') {
             let tagged: TaggedDigest = id.parse().map_err(|_| Error::MalformedPayload)?;
-            return Ok(Self(tagged.as_bytes().to_vec()));
+            return Ok(Self {
+                bytes: tagged.as_bytes().to_vec(),
+                alg: tagged.alg(),
+            });
         }
         let bytes = Base64UrlUnpadded::decode_vec(id).map_err(|_| Error::MalformedPayload)?;
         if bytes.len() != TaggedDigest::expected_len(signer_alg) {
             return Err(Error::MalformedPayload);
         }
-        Ok(Self(bytes))
+        Ok(Self {
+            bytes,
+            alg: signer_alg,
+        })
     }
 
     /// The nonce's digest bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+        &self.bytes
+    }
+
+    /// The hash algorithm the nonce is under.
+    #[must_use]
+    pub fn alg(&self) -> HashAlg {
+        self.alg
     }
 }
 
-/// The nonces a principal currently holds, per level. Ordered, so the
-/// derived roots do not depend on creation order.
+/// The nonces a principal currently holds, per level, each with the
+/// algorithm it is under. Ordered by bytes, so the derived roots do not
+/// depend on creation order.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NonceSets {
-    pr: BTreeSet<Vec<u8>>,
-    at: BTreeSet<Vec<u8>>,
-    kt: BTreeSet<Vec<u8>>,
+    pr: BTreeMap<Vec<u8>, HashAlg>,
+    at: BTreeMap<Vec<u8>, HashAlg>,
+    kt: BTreeMap<Vec<u8>, HashAlg>,
 }
 
 impl NonceSets {
-    fn level_mut(&mut self, level: NonceLevel) -> &mut BTreeSet<Vec<u8>> {
+    fn level_mut(&mut self, level: NonceLevel) -> &mut BTreeMap<Vec<u8>, HashAlg> {
         match level {
             NonceLevel::Pr => &mut self.pr,
             NonceLevel::At => &mut self.at,
@@ -95,14 +121,14 @@ impl NonceSets {
         }
     }
 
-    /// Nonces at `level`, in ascending byte order.
-    pub(crate) fn at_level(&self, level: NonceLevel) -> Vec<&[u8]> {
+    /// Nonces at `level` with their algorithms, in ascending byte order.
+    pub(crate) fn at_level(&self, level: NonceLevel) -> Vec<(&[u8], HashAlg)> {
         let set = match level {
             NonceLevel::Pr => &self.pr,
             NonceLevel::At => &self.at,
             NonceLevel::Kt => &self.kt,
         };
-        set.iter().map(Vec::as_slice).collect()
+        set.iter().map(|(n, &alg)| (n.as_slice(), alg)).collect()
     }
 
     /// Insert `nonce` at `level`.
@@ -111,10 +137,12 @@ impl NonceSets {
     ///
     /// `DuplicateNonce` if the level already holds it (SPEC §7.6).
     pub(crate) fn insert(&mut self, level: NonceLevel, nonce: &Nonce) -> Result<()> {
-        if self.level_mut(level).insert(nonce.0.clone()) {
-            Ok(())
-        } else {
-            Err(Error::DuplicateNonce)
+        match self.level_mut(level).entry(nonce.bytes.clone()) {
+            std::collections::btree_map::Entry::Occupied(_) => Err(Error::DuplicateNonce),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(nonce.alg);
+                Ok(())
+            },
         }
     }
 
@@ -124,7 +152,7 @@ impl NonceSets {
     ///
     /// `UnknownNonce` if the level does not hold it.
     pub(crate) fn remove(&mut self, level: NonceLevel, nonce: &Nonce) -> Result<()> {
-        if self.level_mut(level).remove(&nonce.0) {
+        if self.level_mut(level).remove(&nonce.bytes).is_some() {
             Ok(())
         } else {
             Err(Error::UnknownNonce)
@@ -190,6 +218,9 @@ mod tests {
         ));
         sets.remove(NonceLevel::Kt, &n).unwrap();
         assert!(sets.at_level(NonceLevel::Kt).is_empty());
-        assert_eq!(sets.at_level(NonceLevel::At), vec![n.as_bytes()]);
+        assert_eq!(
+            sets.at_level(NonceLevel::At),
+            vec![(n.as_bytes(), HashAlg::Sha256)]
+        );
     }
 }

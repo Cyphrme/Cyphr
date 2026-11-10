@@ -226,7 +226,10 @@ fn third_party_verify_key_inclusion(
     let kr = hop2.leaf_hash.clone();
 
     let roots: [&[u8]; 4] = [&kr, ar.as_bytes(), sr.as_bytes(), pr.as_bytes()];
-    cyphr::verify_key_inclusion(alg, tmb, hops, &roots)
+    // The thumbprints asked about are the foreign principal's genesis keys
+    // (`golden`, `key_a`: ES256 in the pool) or a synthetic 32-byte value,
+    // so each is a SHA-256 leaf.
+    cyphr::verify_key_inclusion(alg, (tmb.as_bytes(), HashAlg::Sha256), hops, &roots)
 }
 
 // ========================================================================
@@ -265,7 +268,11 @@ async fn build_fixture() -> PortabilityFixture {
     assert_eq!(thumbprints.len(), 2, "the two genesis keys");
     let tmb_a = thumbprints[0].clone();
 
-    let kt = KeyTree::build_tree(&thumbprints, &active_algs).expect("build KT");
+    let leaves: Vec<_> = foreign_principal
+        .active_keys()
+        .map(cyphr::semantic_tree::key_leaf)
+        .collect();
+    let kt = KeyTree::build_tree(&leaves, &active_algs).expect("build KT");
     let kr = kt.root(&active_algs).expect("KR");
     let ar_node = AuthTree::build_tree(&kr, &active_algs).expect("build AR-node");
     let ar = ar_node.root(&active_algs).expect("AR");

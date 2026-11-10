@@ -34,6 +34,7 @@ pub enum Genesis {
 
 /// Errors that can occur during import.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LoadError {
     /// No keys provided for genesis.
     #[error("genesis requires at least one key")]
@@ -66,10 +67,6 @@ pub enum LoadError {
         #[source]
         source: serde_json::Error,
     },
-
-    /// Unsupported cryptographic algorithm.
-    #[error("unsupported algorithm")]
-    UnsupportedAlgorithm,
 
     /// Invalid key material (e.g., base64 decode failure).
     #[error("invalid key material: {field}: {message}")]
@@ -219,7 +216,9 @@ fn stored_cozies(
                 WireError::Header(p) | WireError::Key(p) | WireError::Protocol(p) => {
                     LoadError::Protocol(p)
                 },
-                _ => LoadError::UnsupportedAlgorithm,
+                // `StoredCoz::new` raises only the variants above; the rest
+                // describe wire framing this path does not read.
+                _ => LoadError::Protocol(cyphr::Error::MalformedPayload),
             })
         })
         .collect()

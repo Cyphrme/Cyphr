@@ -41,6 +41,7 @@ impl MergeClaim {
 
 /// How far a merge from one principal into another has progressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MergeStatus {
     /// The source signed a merge naming a PR the target held, and the
     /// target signed an ack carrying the same fields.

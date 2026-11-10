@@ -247,8 +247,8 @@ fn load_error_name(e: &LoadError) -> &'static str {
             _ => "UnknownProtocolError",
         },
         LoadError::Json { .. } => "JsonError",
-        LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
+        _ => "UnknownLoadError",
     }
 }
 
@@ -569,12 +569,15 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 3: Verify each variant is coherent (recomputable) ---
         // Get thumbprints from current keyset
-        let thumbprints: Vec<_> = principal.active_keys().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = principal
+            .active_keys()
+            .map(cyphr::semantic_tree::key_leaf)
+            .collect();
 
         // Recompute KR via the real KT (not the demoted compute_kr oracle,
         // which only agrees with KT for single-algorithm keysets — see
         // cyphr::state::compute_kr's doc comment).
-        let recomputed_ks = KeyTree::build(&thumbprints, &active_algs).unwrap();
+        let recomputed_ks = KeyTree::build(&leaves, &active_algs).unwrap();
 
         // Verify each algorithm variant matches
         for alg in active_algs.clone() {

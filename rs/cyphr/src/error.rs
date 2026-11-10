@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Cyphr error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// The signing backend failed (see [`crate::signer`]).
     #[error(transparent)]
@@ -42,7 +43,8 @@ pub enum Error {
     #[error("key tmb does not match its public key")]
     TmbMismatch,
 
-    /// `pay.alg` is absent or differs from the signing key's algorithm.
+    /// `pay.alg` differs from the signing key's algorithm. An absent
+    /// `alg` is [`Error::MalformedPayload`] (SPEC 2.3.1).
     #[error("pay alg does not match signing key alg")]
     AlgMismatch,
 

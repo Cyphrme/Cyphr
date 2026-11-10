@@ -22,6 +22,7 @@ use coz::{Cad, Thumbprint};
 
 /// A signing backend failed to produce a signature.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SignerError {
     /// The backend reported failure (device unavailable, user denied, ...).
     #[error("signer backend failure: {0}")]

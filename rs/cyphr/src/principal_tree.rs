@@ -60,8 +60,9 @@ pub struct PrincipalTree {
     sr: Option<Vec<u8>>,
     /// Cell 1 payload.
     cr: Option<Vec<u8>>,
-    /// PR-level nonces, raw and sorted; payloads depend on `algs`.
-    nonces: Vec<Vec<u8>>,
+    /// PR-level nonces with their algorithms, sorted by bytes; payloads
+    /// depend on `algs`.
+    nonces: Vec<(Vec<u8>, HashAlg)>,
 }
 
 impl PrincipalTree {
@@ -116,9 +117,10 @@ impl PrincipalTree {
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
         let mut payloads: Vec<Vec<u8>> = self.sr.iter().chain(&self.cr).cloned().collect();
-        for nonce in &self.nonces {
+        for (nonce, alg) in &self.nonces {
             payloads.push(crate::semantic_tree::serialize_converted(
-                nonce, &self.algs,
+                (nonce, *alg),
+                &self.algs,
             )?);
         }
         for (index, payload) in payloads.into_iter().enumerate() {
@@ -175,11 +177,16 @@ impl PrincipalTree {
     /// Replace the PR-level nonces, registering any newly active
     /// algorithms first. They sit after SR and CR (SPEC §3.7.1), so a
     /// nonce moves from cell 1 to cell 2 when CR first appears.
-    pub(crate) fn set_nonces(&mut self, nonces: &[&[u8]], algs: &[HashAlg]) -> Result<()> {
+    pub(crate) fn set_nonces(
+        &mut self,
+        nonces: &[crate::semantic_tree::Leaf<'_>],
+        algs: &[HashAlg],
+    ) -> Result<()> {
         for &alg in algs {
             self.ensure_algorithm(alg);
         }
-        let mut sorted: Vec<Vec<u8>> = nonces.iter().map(|n| n.to_vec()).collect();
+        let mut sorted: Vec<(Vec<u8>, HashAlg)> =
+            nonces.iter().map(|&(n, alg)| (n.to_vec(), alg)).collect();
         sorted.sort();
         self.nonces = sorted;
         self.rebuild()
@@ -297,7 +304,7 @@ mod tests {
             pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
         }
         let nv = nonce_values(n);
-        let nr: Vec<&[u8]> = nv.iter().map(Vec::as_slice).collect();
+        let nr: Vec<_> = nv.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
         pt.set_nonces(&nr, &algs)
             .unwrap_or_else(|e| panic!("PR of SR, CR={with_cr} + {n} nonces refused: {e:?}"));
         pt.pr(&algs).unwrap().get(HashAlg::Sha256).unwrap().to_vec()
@@ -371,12 +378,18 @@ mod tests {
         pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
         pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
         let small = nonce_values(10);
-        let small: Vec<&[u8]> = small.iter().map(Vec::as_slice).collect();
+        let small: Vec<_> = small
+            .iter()
+            .map(|n| (n.as_slice(), HashAlg::Sha256))
+            .collect();
         pt.set_nonces(&small, &algs).unwrap();
         let before = pt.pr(&algs).unwrap();
 
         let big = nonce_values(1000);
-        let mut fwd: Vec<&[u8]> = big.iter().map(Vec::as_slice).collect();
+        let mut fwd: Vec<_> = big
+            .iter()
+            .map(|n| (n.as_slice(), HashAlg::Sha256))
+            .collect();
         pt.set_nonces(&fwd, &algs).unwrap();
         let grown = pt.pr(&algs).unwrap();
         fwd.reverse();

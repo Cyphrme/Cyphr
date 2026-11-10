@@ -446,7 +446,6 @@ pub(crate) fn replay_entry(
                 WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
                 WireError::MissingPay => EntryRefusal::Malformed("no pay"),
                 WireError::BadSig => EntryRefusal::Malformed("sig is not base64url"),
-                WireError::UnsupportedAlg(_) => EntryRefusal::Malformed("unsupported algorithm"),
                 WireError::KeyFields | WireError::Key(_) => {
                     EntryRefusal::Malformed("key sidecar is malformed")
                 },

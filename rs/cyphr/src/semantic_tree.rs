@@ -17,11 +17,11 @@
 //!   not share a width. `EpochTree`'s generic node fold requires same-width siblings (an unprefixed
 //!   concatenation is only unambiguously parseable when children share a width — see
 //!   `spine::nary_mr`'s contract), so each non-native thumbprint is converted to its canonical
-//!   digest under the target algorithm before folding, via the same
-//!   `infer_alg_from_len`/`hash_bytes` mechanism [`crate::state::compute_dr`] already uses for czd
-//!   content. This is a real, authorized divergence from `compute_kr`'s
-//!   raw-concat-regardless-of-size behavior for mixed-algorithm keysets — single-algorithm keysets
-//!   are unaffected (every thumbprint is already native, so conversion is a no-op).
+//!   digest under the target algorithm before folding, from the algorithm its key names, the same
+//!   `hash_bytes` conversion [`crate::state::compute_dr`] applies to czd content. This is a real,
+//!   authorized divergence from `compute_kr`'s raw-concat-regardless-of-size behavior for
+//!   mixed-algorithm keysets — single-algorithm keysets are unaffected (every thumbprint is already
+//!   native, so conversion is a no-op).
 //! - [`AuthTree`] — a k=2 role-slot node: cell 0 = KT's root, cell 1 = RT's root (Rule Tree — Level
 //!   5, not yet implemented, permanently absent). Its root is AR. Because cell 1 never gets set, AR
 //!   always promotes from KT alone (native singleton promotion — see
@@ -46,10 +46,12 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use coz::Thumbprint;
 
 use crate::commit_root::{MaltHasher, hash_alg_to_u64};
 use crate::error::{Error, Result};
+use crate::key::Key;
 use crate::multihash::MultihashDigest;
 use crate::nonce::{NonceLevel, NonceSets};
 use crate::state::{AuthRoot, DataRoot, HashAlg, KeyRoot, StateRoot};
@@ -102,21 +104,25 @@ fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<
     Ok(())
 }
 
-/// Serialize a raw thumbprint digest into the shared cell-payload idiom,
-/// converting it to each target algorithm's canonical digest first.
+/// A tree leaf: digest bytes and the hash algorithm they are in (a key's
+/// thumbprint under its key's algorithm, a nonce under its label's).
+pub type Leaf<'a> = (&'a [u8], HashAlg);
+
+/// A key's KT leaf: its thumbprint, in its key's hash algorithm.
+pub fn key_leaf(key: &Key) -> Leaf<'_> {
+    (key.tmb().as_bytes(), key.hash_alg())
+}
+
+/// Serialize a leaf into the shared cell-payload idiom, converting it to
+/// each target algorithm's canonical digest first.
 ///
-/// `bytes`'s own algorithm is inferred from its length
-/// ([`crate::state::infer_alg_from_len`]); a target algorithm matching that
-/// native algorithm gets the raw bytes unchanged, any other target gets
-/// `hash_bytes(target, bytes)` — the exact mechanism
-/// [`crate::state::TaggedCzd::convert_to`] already uses for czd content in
-/// `compute_dr`. This keeps every algorithm's leaf entry at that
-/// algorithm's own native width, which `EpochTree`'s generic node fold
+/// A target algorithm matching the leaf's own gets the raw bytes
+/// unchanged, any other target gets `hash_bytes(target, bytes)` — the
+/// exact mechanism [`crate::state::TaggedCzd::convert_to`] already uses for
+/// czd content in `compute_dr`. This keeps every algorithm's leaf entry at
+/// that algorithm's own native width, which `EpochTree`'s generic node fold
 /// requires of its siblings.
-pub(crate) fn serialize_converted(bytes: &[u8], algs: &[HashAlg]) -> Result<Vec<u8>> {
-    let native = crate::state::infer_alg_from_len(bytes.len()).ok_or_else(|| {
-        Error::UnsupportedAlgorithm(format!("invalid digest length: {}", bytes.len()))
-    })?;
+pub(crate) fn serialize_converted((bytes, native): Leaf<'_>, algs: &[HashAlg]) -> Result<Vec<u8>> {
     let mut mapped = BTreeMap::new();
     for &alg in algs {
         let converted = if alg == native {
@@ -152,17 +158,17 @@ fn new_tree(arity: u64) -> polydigest::EpochTree {
 /// lexically sorted by raw digest bytes (SPEC §3.7: a nonce sorts with the
 /// other digests). The one place that order is defined, so a proof's index
 /// is found in the same order the tree was built in.
-pub(crate) fn sorted_leaves<'a>(members: &[&'a [u8]], nonces: &[&'a [u8]]) -> Vec<&'a [u8]> {
-    let mut leaves: Vec<&[u8]> = members.iter().chain(nonces).copied().collect();
-    leaves.sort();
+pub(crate) fn sorted_leaves<'a>(members: &[Leaf<'a>], nonces: &[Leaf<'a>]) -> Vec<Leaf<'a>> {
+    let mut leaves: Vec<Leaf<'a>> = members.iter().chain(nonces).copied().collect();
+    leaves.sort_by(|a, b| a.0.cmp(b.0));
     leaves
 }
 
 /// Cell payloads for a role-slot node's nonces: they follow the node's
 /// defined slots, in ascending byte order (SPEC §3.7.1).
-fn nonce_payloads(nonces: &[&[u8]], algs: &[HashAlg]) -> Result<Vec<Vec<u8>>> {
+fn nonce_payloads(nonces: &[Leaf<'_>], algs: &[HashAlg]) -> Result<Vec<Vec<u8>>> {
     let mut sorted = nonces.to_vec();
-    sorted.sort();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
     sorted
         .into_iter()
         .map(|n| serialize_converted(n, algs))
@@ -207,7 +213,8 @@ impl KeyTree {
         Ok(KeyRoot(assemble(&self.inner, algs)?))
     }
 
-    /// Build KT fresh from `thumbprints`, sorted lexically (matching
+    /// Build KT fresh from `members` (key leaves, see [`key_leaf`]), sorted
+    /// lexically by thumbprint (matching
     /// `compute_kr`'s existing sort-then-concat order), and return the tree
     /// itself (rather than just its root), so a caller can also generate
     /// inclusion proofs over it via [`Self::thumbprint_inclusion_proof`].
@@ -215,30 +222,29 @@ impl KeyTree {
     /// # Errors
     ///
     /// Returns `NoActiveKeys` if `algs` is empty.
-    pub fn build_tree(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<Self> {
-        Self::build_tree_with_nonces(thumbprints, &[], algs)
+    pub fn build_tree(members: &[Leaf<'_>], algs: &[HashAlg]) -> Result<Self> {
+        Self::build_tree_with_nonces(members, &[], algs)
     }
 
-    /// [`Self::build_tree`] with the KT-level nonces sorted in among the
-    /// thumbprints (SPEC §3.7, §10.2).
+    /// KT from `members` (key leaves, see [`key_leaf`]) with the KT-level
+    /// nonces sorted in among them (SPEC §3.7, §10.2).
     ///
     /// # Errors
     ///
-    /// As [`Self::build_tree`].
+    /// `NoActiveKeys` if `algs` is empty.
     pub(crate) fn build_tree_with_nonces(
-        thumbprints: &[&Thumbprint],
-        nonces: &[&[u8]],
+        members: &[Leaf<'_>],
+        nonces: &[Leaf<'_>],
         algs: &[HashAlg],
     ) -> Result<Self> {
         if algs.is_empty() {
             return Err(Error::NoActiveKeys);
         }
-        let tmbs: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
-        let sorted = sorted_leaves(&tmbs, nonces);
+        let sorted = sorted_leaves(members, nonces);
 
         let mut kt = Self::new();
         register_algs(&mut kt.inner, algs)?;
-        for (index, leaf) in sorted.iter().enumerate() {
+        for (index, &leaf) in sorted.iter().enumerate() {
             let payload = serialize_converted(leaf, algs)?;
             kt.inner
                 .set(index as u64, payload, Vec::new())
@@ -248,13 +254,13 @@ impl KeyTree {
         Ok(kt)
     }
 
-    /// Build KT fresh from `thumbprints` and return its root as [`KeyRoot`].
+    /// Build KT fresh from `members` and return its root as [`KeyRoot`].
     ///
     /// # Errors
     ///
     /// See [`Self::build_tree`].
-    pub fn build(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<KeyRoot> {
-        Self::build_tree(thumbprints, algs)?.root(algs)
+    pub fn build(members: &[Leaf<'_>], algs: &[HashAlg]) -> Result<KeyRoot> {
+        Self::build_tree(members, algs)?.root(algs)
     }
 
     /// Generate a self-contained inclusion proof for the thumbprint at
@@ -320,7 +326,7 @@ impl AuthTree {
     /// As [`Self::build_tree`].
     pub(crate) fn build_tree_with_nonces(
         kr: &KeyRoot,
-        nonces: &[&[u8]],
+        nonces: &[Leaf<'_>],
         algs: &[HashAlg],
     ) -> Result<Self> {
         let mut node = Self::new(role_arity(nonces.len()));
@@ -341,7 +347,7 @@ impl AuthTree {
     /// AR of a principal whose KT is empty but which holds AT nonces: with
     /// KR absent the nonces fill the cells from 0 (SPEC 3.7: an empty
     /// component is omitted), so one nonce is promoted.
-    pub(crate) fn build_nonces_only(nonces: &[&[u8]], algs: &[HashAlg]) -> Result<AuthRoot> {
+    pub(crate) fn build_nonces_only(nonces: &[Leaf<'_>], algs: &[HashAlg]) -> Result<AuthRoot> {
         let mut node = Self::new(role_arity(nonces.len()));
         register_algs(&mut node.inner, algs)?;
         for (index, payload) in nonce_payloads(nonces, algs)?.into_iter().enumerate() {
@@ -476,12 +482,11 @@ fn assemble(inner: &polydigest::EpochTree, algs: &[HashAlg]) -> Result<Multihash
 /// Mirrors `derive_auth_state`'s exact signature so call sites need only
 /// swap the function, not restructure their surrounding code.
 pub fn derive_state_roots(
-    thumbprints: &[&Thumbprint],
+    members: &[Leaf<'_>],
     dr: Option<&DataRoot>,
     algs: &[HashAlg],
 ) -> Result<(KeyRoot, AuthRoot, StateRoot)> {
-    let (kr, ar, sr) =
-        derive_state_roots_with_nonces(thumbprints, dr, &NonceSets::default(), algs)?;
+    let (kr, ar, sr) = derive_state_roots_with_nonces(members, dr, &NonceSets::default(), algs)?;
     match (kr, ar, sr) {
         (Some(kr), Some(ar), Some(sr)) => Ok((kr, ar, sr)),
         _ => Err(Error::NoActiveKeys),
@@ -497,7 +502,7 @@ pub fn derive_state_roots(
 /// under; for the commit that leaves no key, the caller supplies the set in
 /// force before the commit.
 pub(crate) fn derive_state_roots_with_nonces(
-    thumbprints: &[&Thumbprint],
+    members: &[Leaf<'_>],
     dr: Option<&DataRoot>,
     nonces: &NonceSets,
     algs: &[HashAlg],
@@ -508,10 +513,10 @@ pub(crate) fn derive_state_roots_with_nonces(
     // removes (10.2), so KR and AR survive as long as a KT or AT nonce does.
     let kt_nonces = nonces.at_level(NonceLevel::Kt);
     let at_nonces = nonces.at_level(NonceLevel::At);
-    let kr = if thumbprints.is_empty() && kt_nonces.is_empty() {
+    let kr = if members.is_empty() && kt_nonces.is_empty() {
         None
     } else {
-        Some(KeyTree::build_tree_with_nonces(thumbprints, &kt_nonces, algs)?.root(algs)?)
+        Some(KeyTree::build_tree_with_nonces(members, &kt_nonces, algs)?.root(algs)?)
     };
     let ar = match &kr {
         Some(kr) => Some(AuthTree::build_tree_with_nonces(kr, &at_nonces, algs)?.root(algs)?),
@@ -593,9 +598,12 @@ mod tests {
     /// `nonces` nonces.
     fn kt_root(keys: usize, nonces: usize, algs: &[HashAlg]) -> Vec<u8> {
         let raw = distinct_tmbs(keys);
-        let refs: Vec<&Thumbprint> = raw.iter().collect();
+        let refs: Vec<Leaf<'_>> = raw
+            .iter()
+            .map(|t| (t.as_bytes(), HashAlg::Sha256))
+            .collect();
         let nv = nonce_values(nonces);
-        let nr: Vec<&[u8]> = nv.iter().map(Vec::as_slice).collect();
+        let nr: Vec<Leaf<'_>> = nv.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
         let kt = KeyTree::build_tree_with_nonces(&refs, &nr, algs)
             .unwrap_or_else(|e| panic!("KT of {keys} keys + {nonces} nonces refused: {e:?}"));
         let last = algs[algs.len() - 1];
@@ -604,9 +612,9 @@ mod tests {
 
     fn at_root(nonces: usize, algs: &[HashAlg]) -> Vec<u8> {
         let t = tmb(&[0xAA; 32]);
-        let kr = KeyTree::build(&[&t], algs).unwrap();
+        let kr = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], algs).unwrap();
         let nv = nonce_values(nonces);
-        let nr: Vec<&[u8]> = nv.iter().map(Vec::as_slice).collect();
+        let nr: Vec<Leaf<'_>> = nv.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
         let at = AuthTree::build_tree_with_nonces(&kr, &nr, algs)
             .unwrap_or_else(|e| panic!("AT of KR + {nonces} nonces refused: {e:?}"));
         at.root(algs).unwrap().0.get(algs[0]).unwrap().to_vec()
@@ -660,8 +668,8 @@ mod tests {
             seen.push(r);
         }
         let raw = distinct_tmbs(1000);
-        let fwd: Vec<&Thumbprint> = raw.iter().collect();
-        let rev: Vec<&Thumbprint> = raw.iter().rev().collect();
+        let fwd: Vec<Leaf<'_>> = raw.iter().map(|t| (t.as_bytes(), a[0])).collect();
+        let rev: Vec<Leaf<'_>> = fwd.iter().rev().copied().collect();
         assert_eq!(
             KeyTree::build(&fwd, &a).unwrap().0.get(a[0]),
             KeyTree::build(&rev, &a).unwrap().0.get(a[0]),
@@ -723,7 +731,11 @@ mod oracle_tests {
         let algs = [HashAlg::Sha256];
 
         let (old_kr, old_ar, old_sr) = derive_auth_state(&[&a, &b], None, &algs).unwrap();
-        let (new_kr, new_ar, new_sr) = derive_state_roots(&[&a, &b], None, &algs).unwrap();
+        let leaves = [
+            (a.as_bytes(), HashAlg::Sha256),
+            (b.as_bytes(), HashAlg::Sha256),
+        ];
+        let (new_kr, new_ar, new_sr) = derive_state_roots(&leaves, None, &algs).unwrap();
 
         assert_eq!(old_kr.get(HashAlg::Sha256), new_kr.get(HashAlg::Sha256));
         assert_eq!(old_ar.get(HashAlg::Sha256), new_ar.get(HashAlg::Sha256));
@@ -804,10 +816,12 @@ mod oracle_properties {
             tagged in prop::collection::vec(tagged_thumbprint_strategy(), 2..12),
         ) {
             let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
+            let leaves: Vec<Leaf<'_>> =
+                tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
             let all_native = tagged.iter().all(|(alg, _)| *alg == target_alg);
 
             let old = compute_kr(&thumbprints, None, &[target_alg]).unwrap();
-            let new = KeyTree::build(&thumbprints, &[target_alg]).unwrap();
+            let new = KeyTree::build(&leaves, &[target_alg]).unwrap();
 
             if all_native {
                 prop_assert_eq!(old.get(target_alg), new.get(target_alg));
@@ -826,7 +840,7 @@ mod oracle_properties {
         ) {
             let t = Thumbprint::from_bytes(bytes);
             let old = compute_kr(&[&t], None, &[alg]).unwrap();
-            let new = KeyTree::build(&[&t], &[alg]).unwrap();
+            let new = KeyTree::build(&[(t.as_bytes(), alg)], &[alg]).unwrap();
             prop_assert_eq!(old.get(alg), new.get(alg));
         }
 
@@ -839,8 +853,9 @@ mod oracle_properties {
             target_alg in hash_alg_strategy(),
             tagged in prop::collection::vec(tagged_thumbprint_strategy(), 1..12),
         ) {
-            let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
-            let kr = KeyTree::build(&thumbprints, &[target_alg]).unwrap();
+            let leaves: Vec<Leaf<'_>> =
+                tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
+            let kr = KeyTree::build(&leaves, &[target_alg]).unwrap();
 
             let old = compute_ar(&kr, None, None, &[target_alg]).unwrap();
             let new = AuthTree::build(&kr, &[target_alg]).unwrap();
@@ -916,7 +931,7 @@ mod liveness_tests {
     fn kt_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
         let t = Thumbprint::from_bytes(vec![0xAA; 32]);
         let algs = [HashAlg::Sha256];
-        let root_before = KeyTree::build(&[&t], &algs).unwrap();
+        let root_before = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], &algs).unwrap();
 
         // Manually build the same tree, but with a foreign algorithm's
         // variant spliced into the live cell's payload map.
@@ -938,7 +953,7 @@ mod liveness_tests {
     fn ar_node_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
         let t = Thumbprint::from_bytes(vec![0xAA; 32]);
         let algs = [HashAlg::Sha256];
-        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let kr = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], &algs).unwrap();
         let root_before = AuthTree::build(&kr, &algs).unwrap();
 
         let mut inner = new_tree(ROLE_ARITY);
@@ -959,7 +974,7 @@ mod liveness_tests {
     fn sr_node_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
         let t = Thumbprint::from_bytes(vec![0xAA; 32]);
         let algs = [HashAlg::Sha256];
-        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let kr = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], &algs).unwrap();
         let ar = AuthTree::build(&kr, &algs).unwrap();
         let root_before = StateTree::build(&ar, None, &algs).unwrap();
 

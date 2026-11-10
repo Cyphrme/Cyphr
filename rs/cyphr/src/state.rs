@@ -146,11 +146,33 @@ impl StateDigest for PrincipalGenesis {
 }
 
 // ============================================================================
-// Hash algorithm dispatch (re-export from coz)
+// The algorithm table
 // ============================================================================
 
-// Re-export HashAlg from coz - single source of truth for algorithm mapping
+// Coz owns the algorithms: a signing algorithm's name and hash
+// (`coz::Alg`), a hash algorithm's name (`HashAlg`'s `Display`), digest
+// size and hashing. Cyphr adds only which hash algorithms it supports and
+// their EML ids (`crate::commit_root::hash_alg_to_u64`); everything else
+// is looked up here rather than re-tabulated.
 pub use coz::HashAlg;
+
+/// Every hash algorithm Cyphr supports, keyed by its Coz name (e.g.
+/// `SHA-256`) through [`hash_alg_named`]. `hash_alg_to_u64` matches
+/// exhaustively on `HashAlg`, so an algorithm Coz adds fails to compile
+/// there until it is given an EML id and a row here.
+pub const HASH_ALGS: [HashAlg; 3] = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512];
+
+/// The supported hash algorithm whose Coz name is `name` (e.g. `SHA-256`).
+///
+/// # Errors
+///
+/// `UnsupportedAlgorithm` if no supported hash algorithm has that name.
+pub fn hash_alg_named(name: &str) -> crate::error::Result<HashAlg> {
+    HASH_ALGS
+        .into_iter()
+        .find(|alg| alg.to_string() == name)
+        .ok_or_else(|| crate::error::Error::UnsupportedAlgorithm(name.to_string()))
+}
 
 // ============================================================================
 // Tagged Digest (algorithm-prefixed digest with parse-time validation)
@@ -203,21 +225,7 @@ impl TaggedDigest {
     /// Returns the expected digest length in bytes for a given algorithm.
     #[must_use]
     pub const fn expected_len(alg: HashAlg) -> usize {
-        match alg {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        }
-    }
-
-    /// Parses a hash algorithm name string (e.g., "SHA-256").
-    fn parse_alg(s: &str) -> Result<HashAlg, crate::error::Error> {
-        match s {
-            "SHA-256" => Ok(HashAlg::Sha256),
-            "SHA-384" => Ok(HashAlg::Sha384),
-            "SHA-512" => Ok(HashAlg::Sha512),
-            _ => Err(crate::error::Error::UnsupportedAlgorithm(s.to_string())),
-        }
+        alg.digest_size()
     }
 }
 
@@ -231,7 +239,7 @@ impl std::str::FromStr for TaggedDigest {
                     "missing ':' separator",
                 ))?;
 
-        let alg = Self::parse_alg(alg_str)?;
+        let alg = hash_alg_named(alg_str)?;
 
         // Decode base64 into a buffer sized for the expected algorithm output
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -289,9 +297,8 @@ impl<'de> serde::Deserialize<'de> for TaggedDigest {
     }
 }
 
-/// Get hash algorithm from signing algorithm name (string).
-///
-/// Prefer `coz::Alg::from_str(s).map(|a| a.hash_alg())` when possible.
+/// The hash algorithm of the signing algorithm named `alg` (e.g. `ES256`),
+/// by Coz's algorithm table.
 ///
 /// # Errors
 ///
@@ -307,8 +314,9 @@ pub fn hash_alg_from_str(alg: &str) -> crate::error::Result<HashAlg> {
 
 /// Derive the set of hash algorithms from a keyset (SPEC §14).
 ///
-/// For each unique key algorithm, returns the corresponding hash algorithm.
-/// The result is sorted for deterministic ordering.
+/// For each active key, its algorithm's hash algorithm, deduplicated and
+/// sorted for deterministic ordering. A [`crate::Key`] holds only a
+/// supported algorithm, so no key is dropped for an unknown one.
 ///
 /// # Example
 ///
@@ -323,7 +331,7 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
     let algs: BTreeSet<HashAlg> = keys
         .iter()
         .filter(|k| k.is_active())
-        .filter_map(|k| hash_alg_from_str(k.alg()).ok())
+        .map(|k| k.hash_alg())
         .collect();
 
     algs.into_iter().collect()
@@ -337,7 +345,6 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
 ///
 /// Same as [`hash_sorted_concat`] but returns raw bytes for MultihashDigest construction.
 pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
-    use crate::hasher::CyphrHasher;
     // Sort lexicographically
     let mut sorted: Vec<&[u8]> = components.to_vec();
     sorted.sort();
@@ -346,27 +353,25 @@ pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Ve
     for c in sorted {
         concat.extend_from_slice(c);
     }
-    alg.hash(&concat)
+    alg.hash_bytes(&concat)
 }
 
 /// Compute `H(components...)` in array order (no sort).
 ///
 /// Used for CommitID where coz order is significant (SPEC §8.5).
 pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
-    use crate::hasher::CyphrHasher;
     let mut concat = Vec::new();
     for c in components {
         concat.extend_from_slice(c);
     }
-    alg.hash(&concat)
+    alg.hash_bytes(&concat)
 }
 
 /// Hash raw bytes using the specified algorithm (SPEC §14.2 conversion).
 ///
 /// Used when converting a czd from one algorithm to another.
 pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
-    use crate::hasher::CyphrHasher;
-    alg.hash(data)
+    alg.hash_bytes(data)
 }
 
 // ============================================================================
@@ -388,8 +393,8 @@ pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
 /// against each other. The two agree byte-for-byte for single-hash-algorithm
 /// keysets; for mixed-hash-algorithm keysets `KeyTree` additionally converts
 /// each non-native thumbprint to its target algorithm's canonical digest
-/// (the same `infer_alg_from_len`/`hash_bytes` mechanism [`compute_dr`] uses
-/// for czd content) before folding, which this function does not do — see
+/// (the same `hash_bytes` conversion [`compute_dr`] applies to czd content)
+/// before folding, which this function does not do — see
 /// `semantic_tree`'s `oracle_kr_*` differential tests for the exact,
 /// predicted divergence. `Principal`'s actual KR is produced by the tree
 /// itself, never by this function.
@@ -583,29 +588,18 @@ pub(crate) fn compute_sr(
     Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
-/// Infer the hash algorithm that produced a raw digest from its byte length.
-///
-/// `pub(crate)`: also used by [`crate::semantic_tree::KeyTree`] to convert
-/// non-native thumbprints to their canonical digest under a target
-/// algorithm, the same cross-algorithm conversion mechanism this module
-/// already applies to czd content in [`compute_dr`].
-pub(crate) fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
-    match len {
-        32 => Some(HashAlg::Sha256),
-        48 => Some(HashAlg::Sha384),
-        64 => Some(HashAlg::Sha512),
-        _ => None,
-    }
-}
-
 /// Compute Data State (SPEC §7.4).
 ///
 /// - No actions, no nonce: DS = None
 /// - Single action, no nonce: DS = czd (implicit promotion)
 /// - Otherwise: DS = H(sort(czd₀, czd₁, nonce?, ...))
+///
+/// Each component is converted to every target algorithm from the
+/// algorithm it is in (an action's signing key's, a nonce's label), never
+/// from one guessed from its width.
 pub fn compute_dr(
     actions: &[&crate::action::Action],
-    nonce: Option<&[u8]>,
+    nonce: Option<&TaggedDigest>,
     algs: &[HashAlg],
 ) -> crate::error::Result<Option<DataRoot>> {
     use std::collections::BTreeMap;
@@ -619,14 +613,7 @@ pub fn compute_dr(
     // Implicit promotion: single action, no nonce.
     // Convert the action's single-algorithm czd to all target algorithms.
     if actions.len() == 1 && nonce.is_none() {
-        let digest_bytes = actions[0].czd().as_bytes();
-        let source_alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
-            crate::error::Error::UnsupportedAlgorithm(format!(
-                "invalid digest length: {}",
-                digest_bytes.len()
-            ))
-        })?;
-        let tagged = TaggedCzd::new(actions[0].czd(), source_alg);
+        let tagged = TaggedCzd::new(actions[0].czd(), actions[0].hash_alg());
         let mut variants = BTreeMap::new();
         for &target_alg in algs {
             let converted = tagged.convert_to(target_alg);
@@ -639,6 +626,7 @@ pub fn compute_dr(
     // Sort components: actions by now then czd, non-actions by digest bytes
     struct DrComponent<'a> {
         bytes: &'a [u8],
+        alg: HashAlg,
         now: i64,
     }
 
@@ -646,12 +634,14 @@ pub fn compute_dr(
     for a in actions {
         components.push(DrComponent {
             bytes: a.czd().as_bytes(),
+            alg: a.hash_alg(),
             now: a.now(),
         });
     }
     if let Some(n) = nonce {
         components.push(DrComponent {
-            bytes: n,
+            bytes: n.as_bytes(),
+            alg: n.alg(),
             now: i64::MAX,
         });
     }
@@ -665,13 +655,7 @@ pub fn compute_dr(
         // Convert components to the target algorithm
         let mut converted_components = Vec::new();
         for comp in &components {
-            let source_alg = infer_alg_from_len(comp.bytes.len()).ok_or_else(|| {
-                crate::error::Error::UnsupportedAlgorithm(format!(
-                    "invalid digest length: {}",
-                    comp.bytes.len()
-                ))
-            })?;
-            if source_alg == alg {
+            if comp.alg == alg {
                 converted_components.push(comp.bytes.to_vec());
             } else {
                 converted_components.push(hash_bytes(alg, comp.bytes));
@@ -805,6 +789,7 @@ mod tests {
             Thumbprint::from_bytes(vec![1; 32]),
             1000,
             czd.clone(),
+            HashAlg::Sha256,
             coz::CozJson {
                 pay: serde_json::Value::Null,
                 sig: vec![],
@@ -879,24 +864,6 @@ mod tests {
             ),
             "expected DigestLengthMismatch, got {:?}",
             err
-        );
-    }
-
-    #[test]
-    fn compute_dr_errors_on_ambiguous_component_length() {
-        // A 16-byte component maps to no known hash algorithm (32/48/64),
-        // so its source algorithm cannot be inferred. compute_dr's
-        // multi-component conversion path must surface an honest error
-        // rather than silently assuming SHA-256 (forge issue #15). A lone
-        // nonce is the minimal multi-component input: it skips the
-        // single-action implicit-promotion branch and reaches the
-        // per-component algorithm inference this fix hardens.
-        let nonce = [0u8; 16];
-        let result = compute_dr(&[], Some(&nonce), &[HashAlg::Sha256]);
-        assert!(
-            matches!(result, Err(crate::error::Error::UnsupportedAlgorithm(_))),
-            "ambiguous digest length must error, not default to SHA-256; got {:?}",
-            result
         );
     }
 }

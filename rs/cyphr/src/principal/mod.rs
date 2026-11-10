@@ -39,7 +39,7 @@ pub type Clock = fn() -> i64;
 
 /// Default tolerance for a `now` ahead of the verifier clock: the +-360 s of
 /// SPEC 15.9. A `now` past `clock() + max_clock_skew` is `TimestampFuture`.
-pub const DEFAULT_MAX_CLOCK_SKEW: i64 = 360;
+pub const DEFAULT_MAX_CLOCK_SKEW: u64 = 360;
 
 /// Largest valid `now`, 2^53 - 1 (SPEC 6.4: an integer in `1..2^53-1`, the
 /// range every JSON consumer reads exactly). Spec 4.1 states no range for a
@@ -123,6 +123,7 @@ impl DataLedger {
 /// Feature level of a principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Level {
     /// Single static key.
     L1 = 1,
@@ -204,7 +205,7 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,
     /// Maximum allowed future timestamp (seconds from verifier time).
-    pub(crate) max_clock_skew: i64,
+    pub(crate) max_clock_skew: u64,
     /// Verifier time source for the future-timestamp bound.
     pub(crate) clock: Clock,
     /// Base64 thumbprints of the genesis keys (keys present at construction).
@@ -616,7 +617,11 @@ impl<S: eml::Storage> PrincipalCore<S> {
             .and_then(|tmb| self.auth.keys.get(tmb))
             .ok_or(Error::UnknownKey)?;
         let algs = self.active_algs();
-        let (_, _, sr) = crate::semantic_tree::derive_state_roots(&[genesis.tmb()], None, &algs)?;
+        let (_, _, sr) = crate::semantic_tree::derive_state_roots(
+            &[crate::semantic_tree::key_leaf(genesis)],
+            None,
+            &algs,
+        )?;
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &algs)?;
         pt.pr(&algs)
@@ -630,9 +635,14 @@ impl<S: eml::Storage> PrincipalCore<S> {
     pub(crate) fn genesis_pr(&self) -> Result<PrincipalRoot> {
         let algs = self.active_algs();
         let dr = self.data.included_root(&algs)?;
-        let tmbs: Vec<&Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = self
+            .auth
+            .keys
+            .values()
+            .map(crate::semantic_tree::key_leaf)
+            .collect();
         let (_, _, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
-            &tmbs,
+            &leaves,
             dr.as_ref(),
             &self.nonces,
             &algs,
