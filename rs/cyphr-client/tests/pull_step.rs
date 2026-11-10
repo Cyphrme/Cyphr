@@ -390,6 +390,35 @@ async fn pull_marks_a_key_inactive_from_a_verified_naked_revoke() {
     assert!(rec.is_key_active(&g.tmb), "and only it");
 }
 
+/// A genesis commit opened by `opener` over the key set `{opener} + others`:
+/// its line and bare PG.
+async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, String) {
+    let mut p = cyphr::Principal::implicit(opener.domain_key(T0))
+        .await
+        .expect("genesis");
+    let others: Vec<_> = others.iter().map(|k| k.domain_key(T0)).collect();
+    p.commit_genesis(&opener.signer(), &others, T0, "cyphr.me")
+        .await
+        .expect("genesis commit");
+    let pg = {
+        use cyphr::StateDigest as _;
+        let tagged = p
+            .pg()
+            .expect("PG")
+            .as_multihash()
+            .tagged_first()
+            .expect("pg")
+            .to_string();
+        tagged.split_once(':').expect("tagged").1.to_owned()
+    };
+    let line = Line {
+        entries: vec![wire_commit(p.commits().last().expect("commit"))],
+        prs: vec![p.pr_tagged().expect("pr")],
+        ids: vec![commit_id(&p)],
+    };
+    (line, pg)
+}
+
 /// Claim: an opener holding one genesis key cannot impersonate the anchored
 /// chain. Two genesis commits over one key set, differing only in which key
 /// opens, derive one PG but are different chains. A verifier anchored on
@@ -401,33 +430,8 @@ async fn pull_marks_a_key_inactive_from_a_verified_naked_revoke() {
 #[tokio::test]
 async fn anchor_accepts_the_anchored_opener_and_refuses_the_other() {
     let (a, b) = (kp(), kp());
-    let two_key_genesis = async |opener: &Kp, other: &Kp| {
-        let mut p = cyphr::Principal::implicit(opener.domain_key(T0))
-            .await
-            .expect("genesis");
-        p.commit_genesis(&opener.signer(), &[other.domain_key(T0)], T0, "cyphr.me")
-            .await
-            .expect("genesis commit");
-        let pg = {
-            use cyphr::StateDigest as _;
-            let tagged = p
-                .pg()
-                .expect("PG")
-                .as_multihash()
-                .tagged_first()
-                .expect("pg")
-                .to_string();
-            tagged.split_once(':').expect("tagged").1.to_owned()
-        };
-        let line = Line {
-            entries: vec![wire_commit(p.commits().last().expect("commit"))],
-            prs: vec![p.pr_tagged().expect("pr")],
-            ids: vec![commit_id(&p)],
-        };
-        (line, pg)
-    };
-    let (by_a, pg_a) = two_key_genesis(&a, &b).await;
-    let (by_b, pg_b) = two_key_genesis(&b, &a).await;
+    let (by_a, pg_a) = genesis_over(&a, &[&b]).await;
+    let (by_b, pg_b) = genesis_over(&b, &[&a]).await;
     assert_eq!(pg_a, pg_b, "one key set, one PG");
     assert_ne!(by_a.tip(), by_b.tip(), "but different chains");
     let (anchored, impostor) = (Fake::new(&pg_a, &by_a), Fake::new(&pg_a, &by_b));
@@ -505,4 +509,44 @@ async fn naked_revoked_peer_key_is_refused() {
         Err(PeerFailure::KeyRevoked { .. })
     ));
     assert!(held.verify_tip(&tip_envelope(&g), &pr).is_ok());
+}
+
+/// Claim: a genesis-key anchor does not let a peer swap in another principal.
+/// Two principals opened by one key over different key sets (the nonce
+/// sibling case: same key, different PG) both replay cleanly from that key,
+/// so only the check that the replayed chain derives the principal asked
+/// about stops a record for `pg_v` from taking `pg_s`'s history. The peer
+/// that serves the sibling's chain under `pg_v` is refused; the same peer
+/// serving `pg_v`'s own chain is accepted.
+///
+/// Turns red if: the sibling's chain extends the record for `pg_v`, or the
+/// control chain is refused.
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn anchor_refuses_a_sibling_principal_on_the_same_key() {
+    let (a, b, c) = (kp(), kp(), kp());
+    let (own, pg_v) = genesis_over(&a, &[&b]).await;
+    let (sibling, pg_s) = genesis_over(&a, &[&c]).await;
+    assert_ne!(pg_v, pg_s, "one opener, different key sets, different PGs");
+
+    let liar = Fake::new(&pg_v, &sibling);
+    let mut rec = Record::new(&pg_v, Anchor::GenesisKey(a.domain_key(T0))).with_clock(CLOCK);
+    let report = pull(&mut rec, &[peer("liar", &liar)]).await;
+    assert!(
+        matches!(
+            standing(&report, "liar"),
+            PeerStanding::Failed(PeerFailure::PrincipalMismatch { .. })
+        ),
+        "{:?}",
+        standing(&report, "liar")
+    );
+    assert!(rec.tip().is_none(), "nothing of the sibling was adopted");
+
+    let honest = Fake::new(&pg_v, &own);
+    let report = pull(&mut rec, &[peer("honest", &honest)]).await;
+    assert!(matches!(
+        standing(&report, "honest"),
+        PeerStanding::Extended { added: 1 }
+    ));
+    assert_eq!(rec.tip().expect("tip").commit_id, own.tip());
 }
