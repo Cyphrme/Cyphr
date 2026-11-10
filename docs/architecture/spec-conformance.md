@@ -643,6 +643,7 @@ SPEC 7.7, line 1287. Disposition: `covered`.
   - `rs/cyphr-server/tests/explicit_genesis.rs::genesis_omitting_a_key_create_is_refused`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/principal_create_without_genesis_key_create_fails]`
 - fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300); or a `principal/create` is accepted while a genesis key has no `key/create` (Example 1: the genesis commit carries a `key/create` for every genesis key, SPEC 5.1 step 1, 5.2, 5.3).
+- note: the core currently requires the first genesis key to sign every genesis `key/create` (`rs/cyphr/src/principal/apply.rs`, the `KeyCreate` arm). SPEC 3.3 lets any key `key/create` any other key, so this is over-strict; GEN0b relaxes it to "the signer is a genesis key already created in this scope", pinned by the ignored `rs/cyphr-server/tests/explicit_genesis.rs::a_created_genesis_key_may_create_the_next` (`RED(GEN0b)`).
 
 ```claim
 kind: requirement
@@ -1343,7 +1344,8 @@ Open points this node raised that the resolved set did not cover:
   create the genesis key. The genesis commit now carries a `key/create` for
   every genesis key, and `principal/create` refuses while one is missing
   (row `sc-l1287`). Implicit genesis (Levels 1 and 2) has no commit and is
-  unchanged.
+  unchanged; an implicit principal's first commit is its genesis commit and
+  is brought to §5.1 by GEN0b.
 - **O3 (lines 535 and 860).** `seq` for multi-coz commit transactions and
   `TRANSACTION_ORDER_UNKNOWN` have no counterpart in the Rust wire format; are
   they still wanted at Levels 1-4?

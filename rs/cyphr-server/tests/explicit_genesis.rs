@@ -271,3 +271,82 @@ async fn rebuild_replays_the_server_principal_and_the_server_signs_after() {
     let tip = state.engine.get_tip(sp.pg()).await.unwrap().unwrap();
     assert_eq!(tip.commit_count, 2);
 }
+
+/// A `key/create` of `target` signed by `kp`, as a wire coz plus the pieces
+/// `verify_and_apply` takes.
+fn key_create(kp: &coz::KeyPair, target: &cyphr::Key) -> (Vec<u8>, Vec<u8>, coz::Czd, Vec<u8>) {
+    let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
+    let mut pay = serde_json::json!({
+        "alg": kp.alg.name(), "id": target.tmb().to_b64(), "now": NOW, "tmb": tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    pay.as_object_mut().unwrap().sort_keys();
+    let bytes = serde_json::to_vec(&pay).unwrap();
+    let (sig, cad) = coz::sign_json(&bytes, kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes).unwrap();
+    let czd = coz::czd_for_alg(&cad, &sig, kp.alg.name()).unwrap();
+    let blob = serde_json::to_vec(&serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {
+            "alg": target.alg(),
+            "pub": Base64UrlUnpadded::encode_string(target.pub_key()),
+            "tmb": target.tmb().to_b64(),
+        },
+    }))
+    .unwrap();
+    (bytes, sig, czd, blob)
+}
+
+/// Claim (SPEC 3.3 "any key can `key/create` ... any other key", 5.3): in
+/// a genesis, a genesis key already created in the commit may sign the
+/// next genesis key's `key/create`; here the second key creates the third.
+/// The core accepts the genesis and the server accepts its push.
+/// End-to-end: yes (core producer, HTTP push).
+/// Turns red on: a core that lets only the first genesis key sign genesis
+/// key/creates (the over-strict rule GEN0 ships).
+/// Red today: the third key's key/create is refused with UnknownKey.
+#[tokio::test]
+#[ignore = "RED(GEN0b): SPEC 3.3, 5.3"]
+async fn a_created_genesis_key_may_create_the_next() {
+    let kps = [
+        coz::Alg::ES256.generate_keypair(),
+        coz::Alg::ES256.generate_keypair(),
+        coz::Alg::ES256.generate_keypair(),
+    ];
+    let keys: Vec<cyphr::Key> = kps.iter().map(key_of).collect();
+    let mut p = cyphr::Principal::explicit(keys.clone()).expect("explicit");
+    let pg = p.pr_tagged().expect("pr");
+    let mut blobs = Vec::new();
+    let mut scope = p.begin_commit();
+    for (signer, target) in [
+        (&kps[0], &keys[0]),
+        (&kps[0], &keys[1]),
+        (&kps[1], &keys[2]),
+    ] {
+        let (pay, sig, czd, blob) = key_create(signer, target);
+        scope
+            .verify_and_apply(&pay, &sig, czd, Some(target.clone()))
+            .unwrap_or_else(|e| panic!("key/create of {}: {e:?}", target.tmb().to_b64()));
+        blobs.push(blob);
+    }
+    let (pay, sig, czd) = principal_create(&kps[0], &pg);
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("principal/create after every key/create");
+    let commit = scope
+        .finalize_with_software(&signer_of(&kps[0]), NOW, "cyphr.me")
+        .expect("genesis commit");
+    let cc = serde_json::to_vec(commit.commit_tx().0[0].raw()).unwrap();
+    blobs.push(
+        serde_json::to_vec(&serde_json::json!({
+            "pay": serde_json::from_slice::<serde_json::Value>(&pay).unwrap(),
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+        }))
+        .unwrap(),
+    );
+    blobs.push(cc);
+
+    let (state, _dir) = keyless_server();
+    let (status, body) = post_json(build_router(state), "/push", push_body(&pg, &blobs)).await;
+    assert_eq!(status, StatusCode::CREATED, "push: {body}");
+}
