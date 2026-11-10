@@ -1435,14 +1435,6 @@ mod tests {
     impl eml::Storage for ToggledFailureStorage {
         type Error = InjectedFinalizeFailure;
 
-        async fn store_leaf(&mut self, index: u64, data: &[u8]) -> Result<(), Self::Error> {
-            self.check()?;
-            self.inner
-                .store_leaf(index, data)
-                .await
-                .map_err(|_| InjectedFinalizeFailure)
-        }
-
         async fn get_leaf(&self, index: u64) -> Result<Vec<u8>, Self::Error> {
             self.check()?;
             self.inner
@@ -1454,20 +1446,6 @@ mod tests {
         async fn len(&self) -> Result<u64, Self::Error> {
             self.check()?;
             self.inner.len().await.map_err(|_| InjectedFinalizeFailure)
-        }
-
-        async fn store_node(
-            &mut self,
-            alg_id: u64,
-            left: u64,
-            height: u32,
-            hash: &[u8],
-        ) -> Result<(), Self::Error> {
-            self.check()?;
-            self.inner
-                .store_node(alg_id, left, height, hash)
-                .await
-                .map_err(|_| InjectedFinalizeFailure)
         }
 
         async fn get_node(
@@ -1483,18 +1461,6 @@ mod tests {
                 .map_err(|_| InjectedFinalizeFailure)
         }
 
-        async fn store_algorithm_meta(
-            &mut self,
-            alg_id: u64,
-            epochs: &[(u64, u64)],
-        ) -> Result<(), Self::Error> {
-            self.check()?;
-            self.inner
-                .store_algorithm_meta(alg_id, epochs)
-                .await
-                .map_err(|_| InjectedFinalizeFailure)
-        }
-
         async fn load_algorithm_metas(&self) -> Result<eml::AlgorithmMetas, Self::Error> {
             self.check()?;
             self.inner
@@ -1503,33 +1469,18 @@ mod tests {
                 .map_err(|_| InjectedFinalizeFailure)
         }
 
-        async fn load_log_meta(&self) -> Result<Option<(u64, u8)>, Self::Error> {
+        async fn append_count(&self) -> Result<u64, Self::Error> {
             self.check()?;
             self.inner
-                .load_log_meta()
+                .append_count()
                 .await
                 .map_err(|_| InjectedFinalizeFailure)
         }
 
-        async fn load_checkpoint_roots(&self) -> Result<Vec<(u64, Vec<u8>)>, Self::Error> {
+        async fn apply(&mut self, ops: &[eml::WriteOp<'_>]) -> Result<(), Self::Error> {
             self.check()?;
             self.inner
-                .load_checkpoint_roots()
-                .await
-                .map_err(|_| InjectedFinalizeFailure)
-        }
-
-        async fn write_batch(
-            &mut self,
-            leaves: &[(u64, &[u8])],
-            nodes: &[(u64, u64, u32, &[u8])],
-            algorithm_metas: &[(u64, &[(u64, u64)])],
-            log_meta: Option<(u64, u8)>,
-            checkpoint_roots: &[(u64, &[u8])],
-        ) -> Result<(), Self::Error> {
-            self.check()?;
-            self.inner
-                .write_batch(leaves, nodes, algorithm_metas, log_meta, checkpoint_roots)
+                .apply(ops)
                 .await
                 .map_err(|_| InjectedFinalizeFailure)
         }

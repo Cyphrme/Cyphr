@@ -10,7 +10,7 @@
 //! of `eml` itself.
 
 use cyphr::Principal;
-use cyphr::eml::{AlgorithmMetas, Storage};
+use cyphr::eml::{AlgorithmMetas, Storage, WriteOp};
 use cyphr::error::Error;
 use cyphr::key::Key;
 
@@ -45,25 +45,11 @@ struct FailingStorage;
 impl Storage for FailingStorage {
     type Error = InjectedStorageFailure;
 
-    async fn store_leaf(&mut self, _index: u64, _data: &[u8]) -> Result<(), Self::Error> {
-        Err(InjectedStorageFailure)
-    }
-
     async fn get_leaf(&self, _index: u64) -> Result<Vec<u8>, Self::Error> {
         Err(InjectedStorageFailure)
     }
 
     async fn len(&self) -> Result<u64, Self::Error> {
-        Err(InjectedStorageFailure)
-    }
-
-    async fn store_node(
-        &mut self,
-        _alg_id: u64,
-        _left: u64,
-        _height: u32,
-        _hash: &[u8],
-    ) -> Result<(), Self::Error> {
         Err(InjectedStorageFailure)
     }
 
@@ -76,34 +62,15 @@ impl Storage for FailingStorage {
         Err(InjectedStorageFailure)
     }
 
-    async fn store_algorithm_meta(
-        &mut self,
-        _alg_id: u64,
-        _epochs: &[(u64, u64)],
-    ) -> Result<(), Self::Error> {
-        Err(InjectedStorageFailure)
-    }
-
     async fn load_algorithm_metas(&self) -> Result<AlgorithmMetas, Self::Error> {
         Err(InjectedStorageFailure)
     }
 
-    async fn load_log_meta(&self) -> Result<Option<(u64, u8)>, Self::Error> {
+    async fn append_count(&self) -> Result<u64, Self::Error> {
         Err(InjectedStorageFailure)
     }
 
-    async fn load_checkpoint_roots(&self) -> Result<Vec<(u64, Vec<u8>)>, Self::Error> {
-        Err(InjectedStorageFailure)
-    }
-
-    async fn write_batch(
-        &mut self,
-        _leaves: &[(u64, &[u8])],
-        _nodes: &[(u64, u64, u32, &[u8])],
-        _algorithm_metas: &[(u64, &[(u64, u64)])],
-        _log_meta: Option<(u64, u8)>,
-        _checkpoint_roots: &[(u64, &[u8])],
-    ) -> Result<(), Self::Error> {
+    async fn apply(&mut self, _ops: &[WriteOp<'_>]) -> Result<(), Self::Error> {
         Err(InjectedStorageFailure)
     }
 }
