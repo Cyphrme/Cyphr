@@ -762,10 +762,11 @@ async fn historical_view_survives_the_signing_keys_revocation() {
 /// Claim (`arch-principal-fork-evidence`, at the first position): two
 /// different genesis commits of one principal are a fork with no ancestor;
 /// the item has `height` 0 and a null `pre`, and the client checks it with
-/// no held commit at all.
+/// no held commit at all, refusing it from a foreign genesis.
 ///
-/// Turns red if: a divergent commit 0 is not kept and served, or an item
-/// at height 0 is not accepted. End-to-end scenario: yes.
+/// Turns red if: a divergent commit 0 is not kept and served, an item at
+/// height 0 is not accepted, or one is accepted (or refused as anything but
+/// `GenesisMismatch`) from a genesis that does not derive the principal. End-to-end scenario: yes.
 #[tokio::test]
 async fn genesis_fork_is_evidence_at_height_zero() {
     let pr = principal();
@@ -783,6 +784,14 @@ async fn genesis_fork_is_evidence_at_height_zero() {
     assert!(items[0]["pre"].is_null(), "no ancestor at height 0");
     verify_principal_fork(&items[0], &pr.id, pr.genesis(), &[])
         .expect("a fork at the first position");
+    // With no held commit, a genesis that is not this principal's is still
+    // refused as such, not as a rival that fails to replay.
+    let pool = load_pool();
+    let wrong_genesis = cyphr::Principal::implicit(key_of(&kp(&pool, "key_a"))).expect("genesis");
+    assert!(matches!(
+        verify_principal_fork(&items[0], &pr.id, wrong_genesis, &[]),
+        Err(EvidenceFailure::GenesisMismatch)
+    ));
 }
 
 /// A view statement signed by `signer`, claiming the principal `pr` at

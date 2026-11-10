@@ -275,7 +275,10 @@ pub fn replay_chain(
 /// its genesis state and `entries` its commits as fetched (any peer's
 /// `/patch`; they are replayed, not trusted). The check:
 ///
-/// 1. the item names `pg`, and `base` derives it;
+/// 1. the item names `pg`, and `base` derives it: its own PR names `pg` (a principal named by its
+///    genesis key), or the genesis commit opens with `base`'s genesis key and, replayed from
+///    `base`, establishes a PG naming `pg` (SPEC 5.1). At `height` 0 the genesis commits are the
+///    two served rivals, and each must establish a PG naming `pg`;
 /// 2. replaying the first `height` held commits reaches the item's `pre`;
 /// 3. each of the two served commits, replayed from a copy of that state, verifies, so each is
 ///    signed by a key active at `pre`;
@@ -305,14 +308,6 @@ pub fn verify_principal_fork(
     if item_pg != pg {
         return Err(EvidenceFailure::OtherPrincipal);
     }
-    // The replay is only evidence about `pg` if it starts from the genesis
-    // `pg` names (the genesis root, labelled or bare).
-    let derives = base
-        .pr_tagged()
-        .is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
-    if !derives {
-        return Err(EvidenceFailure::GenesisMismatch);
-    }
     let prefix = usize::try_from(height)
         .ok()
         .and_then(|h| entries.get(..h))
@@ -320,7 +315,38 @@ pub fn verify_principal_fork(
             need: height,
             have: entries.len(),
         })?;
+    // The replay is only evidence about `pg` if it starts from the genesis
+    // `pg` names. A principal is its genesis key (SPEC 5.1): one that names
+    // itself by that key's PR derives `pg` from `base` alone; one named by
+    // its PG derives it through its genesis commit, which must open with
+    // `base`'s genesis key (a foreign genesis is refused here, not as a
+    // replay failure) and establish that PG.
+    let named_by_key = base.pr_tagged().is_ok_and(|g| names_pg(pg, &g));
+    let genesis_commit = match prefix.first() {
+        Some(first) => Some(
+            first
+                .blobs
+                .as_deref()
+                .map_err(|_| EvidenceFailure::BadCommit {
+                    commit: 0,
+                    what: "undecodable blobs",
+                })?,
+        ),
+        None => None,
+    };
+    if !named_by_key {
+        let opened = match genesis_commit {
+            Some(blobs) => opens_with(blobs, base.genesis_key()),
+            None => opens_with(&a, base.genesis_key()) && opens_with(&b, base.genesis_key()),
+        };
+        if !opened {
+            return Err(EvidenceFailure::GenesisMismatch);
+        }
+    }
     let state = replay_chain(base, prefix)?;
+    if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
+        return Err(EvidenceFailure::GenesisMismatch);
+    }
     if pre.is_some() && state.pr_tagged().ok() != pre {
         return Err(EvidenceFailure::PreMismatch);
     }
@@ -330,23 +356,30 @@ pub fn verify_principal_fork(
         ));
     }
     let at = prefix.len();
-    let branch = |which, blobs: &[Vec<u8>]| -> Result<Commit, EvidenceFailure> {
-        let mut copy = state.clone();
-        replay_commit(&mut copy, at, blobs).map_err(|e| match e {
-            EvidenceFailure::Replay { source, .. } => {
-                EvidenceFailure::CommitRefused { which, source }
-            },
-            other => other,
-        })?;
-        copy.commits()
-            .last()
-            .cloned()
-            .ok_or(EvidenceFailure::BadCommit {
-                commit: at,
-                what: "no commit formed",
-            })
-    };
+    let branch =
+        |which, blobs: &[Vec<u8>]| -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
+            let mut copy = state.clone();
+            replay_commit(&mut copy, at, blobs).map_err(|e| match e {
+                EvidenceFailure::Replay { source, .. } => {
+                    EvidenceFailure::CommitRefused { which, source }
+                },
+                other => other,
+            })?;
+            let commit = copy
+                .commits()
+                .last()
+                .cloned()
+                .ok_or(EvidenceFailure::BadCommit {
+                    commit: at,
+                    what: "no commit formed",
+                })?;
+            Ok((copy, commit))
+        };
     let (ca, cb) = (branch("a", &a)?, branch("b", &b)?);
+    if prefix.is_empty() && !(pg_names(&ca.0, pg) && pg_names(&cb.0, pg)) {
+        return Err(EvidenceFailure::GenesisMismatch);
+    }
+    let (ca, cb) = (ca.1, cb.1);
     if ca.tr() == cb.tr() {
         return Err(EvidenceFailure::NotConflicting(
             "the two commits have one id",
@@ -595,6 +628,32 @@ pub fn verify_peer_equivocation<H: Storage>(
         pg: pr.clone(),
         signers,
     })
+}
+
+/// Whether `g`, a tagged or bare root, names `pg` (bare).
+fn names_pg(pg: &str, g: &str) -> bool {
+    g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg)
+}
+
+/// Whether `principal` has a PG naming `pg` in any of its algorithms.
+fn pg_names(principal: &Principal<MemoryStorage>, pg: &str) -> bool {
+    use cyphr::StateDigest as _;
+    principal.pg().is_some_and(|g| {
+        let digest = g.as_multihash();
+        digest
+            .algorithms()
+            .filter_map(|alg| digest.tagged(alg).ok())
+            .any(|t| names_pg(pg, &t.to_string()))
+    })
+}
+
+/// Whether the commit `blobs` opens with a coz signed by `genesis_key` (a
+/// genesis commit opens with its genesis key's own `key/create`, SPEC 5.1).
+fn opens_with(blobs: &[Vec<u8>], genesis_key: &str) -> bool {
+    blobs
+        .first()
+        .and_then(|blob| serde_json::from_slice::<Value>(blob).ok())
+        .is_some_and(|coz| coz.pointer("/pay/tmb").and_then(Value::as_str) == Some(genesis_key))
 }
 
 /// Replay one entry's blobs onto `principal` through the core's one replay
