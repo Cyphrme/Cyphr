@@ -301,6 +301,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/evidence", axum::routing::get(routes::evidence))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
+        .route("/revoked", axum::routing::get(routes::revoked))
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route("/healthz", axum::routing::get(routes::healthz))

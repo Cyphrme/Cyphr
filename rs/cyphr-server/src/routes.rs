@@ -28,6 +28,24 @@ pub struct TipQuery {
     pub pr: String,
 }
 
+/// Query parameters for `GET /revoked`.
+#[derive(Debug, Deserialize)]
+pub struct RevokedQuery {
+    /// Comma-separated base64url thumbprints.
+    pub tmbs: String,
+}
+
+/// Response for `GET /revoked`.
+#[derive(Debug, Serialize)]
+pub struct RevokedResponse {
+    /// The self-signed revoke envelope (`{pay, sig, key}`) of each asked
+    /// key this server holds one for; keys it holds none for are absent.
+    pub revoked: Vec<serde_json::Value>,
+}
+
+/// Most keys one `GET /revoked` may name.
+const MAX_REVOKED_ASKS: usize = 128;
+
 /// Query parameters for `GET /patch`.
 #[derive(Debug, Deserialize)]
 pub struct PatchQuery {
@@ -359,6 +377,44 @@ pub async fn evidence(
         })
         .collect();
     Ok(Json(Envelope::unsigned(EvidenceResponse { items })))
+}
+
+/// `GET /revoked?tmbs=<tmb>,<tmb>...` -- the naked revokes this peer holds
+/// for the named keys (SPEC 6.4).
+///
+/// A naked revoke mutates no chain, so a verifier that replays commits can
+/// never learn of one from `/patch`; it asks here, for the keys its own
+/// record holds. Each answer is the stored self-signed envelope, which the
+/// reader re-verifies (`cyphr_client::verify_naked_revoke`): the peer is a
+/// mirror of the revoke, not its authority.
+#[tracing::instrument(skip(state))]
+pub async fn revoked(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RevokedQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let asked: Vec<&str> = query.tmbs.split(',').filter(|s| !s.is_empty()).collect();
+    if asked.len() > MAX_REVOKED_ASKS {
+        return Err(AppError::bad_request(format!(
+            "at most {MAX_REVOKED_ASKS} keys per request, got {}",
+            asked.len()
+        )));
+    }
+    let mut revoked = Vec::new();
+    for raw in asked {
+        let bytes = Base64UrlUnpadded::decode_vec(raw)
+            .map_err(|_| AppError::bad_request(format!("`{raw}` is not a base64url thumbprint")))?;
+        if let Some(envelope) = state
+            .observations
+            .revoke_of(&coz::Thumbprint::from_bytes(bytes))
+            .await
+            .map_err(AppError::observation)?
+        {
+            revoked.push(envelope);
+        }
+    }
+    Ok(Json(Envelope::unsigned(RevokedResponse { revoked })))
 }
 
 /// `GET /view?pr=<PG>` -- this peer's signed claim "I hold `pr` at this
