@@ -43,8 +43,8 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector};
 use crate::patch::{
-    Step, replay_order, AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, fetch_patch,
-    verify_authenticated_envelope,
+    AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, Step, fetch_patch,
+    replay_order, verify_authenticated_envelope,
 };
 use crate::report::{TipReport, ViewFailure, ViewStatement, verify_view};
 use crate::revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
@@ -416,32 +416,34 @@ impl PeerChain {
             let (index, bundle) = match step {
                 Step::Commit(index, entry) => (
                     index,
-                    entry.bundle.clone().map_err(|defect| PeerFailure::Entry {
-                        index,
-                        defect,
-                    })?,
+                    entry
+                        .bundle
+                        .clone()
+                        .map_err(|defect| PeerFailure::Entry { index, defect })?,
                 ),
                 Step::Actions(a) => {
                     let index = usize::try_from(a.after).unwrap_or(usize::MAX);
-                    let blobs = a.blobs.clone().map_err(|defect| PeerFailure::Entry {
-                        index,
-                        defect,
-                    })?;
+                    let blobs = a
+                        .blobs
+                        .clone()
+                        .map_err(|defect| PeerFailure::Entry { index, defect })?;
                     (index, WireBundle::actions(blobs))
                 },
             };
-            offered.push(replay_entry(&mut candidate, &bundle).await.map_err(
-                |refusal| match refusal {
-                    EntryRefusal::Malformed(what) => PeerFailure::Malformed {
-                        commit: index,
-                        what,
-                    },
-                    EntryRefusal::Replay(source) => PeerFailure::Replay {
-                        commit: index,
-                        source,
-                    },
-                },
-            )?);
+            offered.push(
+                replay_entry(&mut candidate, &bundle)
+                    .await
+                    .map_err(|refusal| match refusal {
+                        EntryRefusal::Malformed(what) => PeerFailure::Malformed {
+                            commit: index,
+                            what,
+                        },
+                        EntryRefusal::Replay(source) => PeerFailure::Replay {
+                            commit: index,
+                            source,
+                        },
+                    })?,
+            );
         }
 
         // Every held bundle is compared, the action-only ones after the
