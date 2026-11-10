@@ -4,7 +4,7 @@ use super::*;
 use crate::commit::PendingCommit;
 use crate::multihash::MultihashDigest;
 use crate::parsed_coz::VerifiedCoz;
-use crate::semantic_tree::derive_state_roots;
+use crate::semantic_tree::{derive_state_roots, key_leaf};
 use crate::state::{compute_dr, derive_hash_algs};
 
 /// Backs SPEC 3.7 / levels: a multi-key explicit genesis is Level 3, has every key active and no
@@ -484,11 +484,10 @@ fn same_commit_delete_and_own_finalizer_succeeds() {
     // `apply_transaction_test`.
     let key_refs: Vec<&Key> = principal.auth.keys.values().collect();
     let active_algs = derive_hash_algs(&key_refs);
-    let thumbprints: Vec<&coz::Thumbprint> =
-        principal.auth.keys.values().map(|k| k.tmb()).collect();
+    let leaves: Vec<_> = principal.auth.keys.values().map(key_leaf).collect();
     let action_refs: Vec<&Action> = principal.data.actions.iter().collect();
     let dr = compute_dr(&action_refs, None, &active_algs).unwrap();
-    let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs).unwrap();
+    let (_kr, _ar, sr) = derive_state_roots(&leaves, dr.as_ref(), &active_algs).unwrap();
 
     let tx_alg = delete_cz.hash_alg;
     let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);

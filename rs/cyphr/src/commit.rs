@@ -548,8 +548,13 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         // 1. Recompute projected state roots
         let active_algs = self.projected.active_algs();
-        let thumbprints: Vec<&coz::Thumbprint> =
-            self.projected.auth.keys.values().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = self
+            .projected
+            .auth
+            .keys
+            .values()
+            .map(crate::semantic_tree::key_leaf)
+            .collect();
 
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
@@ -559,7 +564,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         };
 
         let Ok((_kr, _ar, sr)) = derive_state_roots_with_nonces(
-            &thumbprints,
+            &leaves,
             dr.as_ref(),
             &self.projected.nonces,
             &active_algs,
@@ -643,8 +648,13 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
         //    reads the projected state.
         let active_algs = self.projected.active_algs();
-        let thumbprints: Vec<&coz::Thumbprint> =
-            self.projected.auth.keys.values().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = self
+            .projected
+            .auth
+            .keys
+            .values()
+            .map(crate::semantic_tree::key_leaf)
+            .collect();
 
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
@@ -652,7 +662,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let dr = self.projected.data.included_root(&active_algs)?;
 
         let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
-            &thumbprints,
+            &leaves,
             dr.as_ref(),
             &self.projected.nonces,
             &active_algs,

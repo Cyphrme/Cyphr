@@ -393,8 +393,8 @@ pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
 /// against each other. The two agree byte-for-byte for single-hash-algorithm
 /// keysets; for mixed-hash-algorithm keysets `KeyTree` additionally converts
 /// each non-native thumbprint to its target algorithm's canonical digest
-/// (the same `infer_alg_from_len`/`hash_bytes` mechanism [`compute_dr`] uses
-/// for czd content) before folding, which this function does not do — see
+/// (the same `hash_bytes` conversion [`compute_dr`] applies to czd content)
+/// before folding, which this function does not do — see
 /// `semantic_tree`'s `oracle_kr_*` differential tests for the exact,
 /// predicted divergence. `Principal`'s actual KR is produced by the tree
 /// itself, never by this function.
@@ -588,19 +588,15 @@ pub(crate) fn compute_sr(
     Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
-/// Infer the hash algorithm that produced a raw digest from its byte length.
+/// The supported hash algorithm whose digests are `len` bytes wide.
 ///
-/// `pub(crate)`: also used by [`crate::semantic_tree::KeyTree`] to convert
-/// non-native thumbprints to their canonical digest under a target
-/// algorithm, the same cross-algorithm conversion mechanism this module
-/// already applies to czd content in [`compute_dr`].
+/// A guess, not a fact: two algorithms of one width would be told apart
+/// wrongly. Only the two public entry points that still take a bare
+/// thumbprint use it ([`crate::semantic_tree::KeyTree::build_tree`] and
+/// [`crate::inclusion::verify_key_inclusion`]); everything the crate builds
+/// itself names its algorithm.
 pub(crate) fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
-    match len {
-        32 => Some(HashAlg::Sha256),
-        48 => Some(HashAlg::Sha384),
-        64 => Some(HashAlg::Sha512),
-        _ => None,
-    }
+    HASH_ALGS.into_iter().find(|alg| alg.digest_size() == len)
 }
 
 /// Compute Data State (SPEC §7.4).
@@ -608,9 +604,13 @@ pub(crate) fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
 /// - No actions, no nonce: DS = None
 /// - Single action, no nonce: DS = czd (implicit promotion)
 /// - Otherwise: DS = H(sort(czd₀, czd₁, nonce?, ...))
+///
+/// Each component is converted to every target algorithm from the
+/// algorithm it is in (an action's signing key's, a nonce's label), never
+/// from one guessed from its width.
 pub fn compute_dr(
     actions: &[&crate::action::Action],
-    nonce: Option<&[u8]>,
+    nonce: Option<&TaggedDigest>,
     algs: &[HashAlg],
 ) -> crate::error::Result<Option<DataRoot>> {
     use std::collections::BTreeMap;
@@ -624,14 +624,7 @@ pub fn compute_dr(
     // Implicit promotion: single action, no nonce.
     // Convert the action's single-algorithm czd to all target algorithms.
     if actions.len() == 1 && nonce.is_none() {
-        let digest_bytes = actions[0].czd().as_bytes();
-        let source_alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
-            crate::error::Error::UnsupportedAlgorithm(format!(
-                "invalid digest length: {}",
-                digest_bytes.len()
-            ))
-        })?;
-        let tagged = TaggedCzd::new(actions[0].czd(), source_alg);
+        let tagged = TaggedCzd::new(actions[0].czd(), actions[0].hash_alg());
         let mut variants = BTreeMap::new();
         for &target_alg in algs {
             let converted = tagged.convert_to(target_alg);
@@ -644,6 +637,7 @@ pub fn compute_dr(
     // Sort components: actions by now then czd, non-actions by digest bytes
     struct DrComponent<'a> {
         bytes: &'a [u8],
+        alg: HashAlg,
         now: i64,
     }
 
@@ -651,12 +645,14 @@ pub fn compute_dr(
     for a in actions {
         components.push(DrComponent {
             bytes: a.czd().as_bytes(),
+            alg: a.hash_alg(),
             now: a.now(),
         });
     }
     if let Some(n) = nonce {
         components.push(DrComponent {
-            bytes: n,
+            bytes: n.as_bytes(),
+            alg: n.alg(),
             now: i64::MAX,
         });
     }
@@ -670,13 +666,7 @@ pub fn compute_dr(
         // Convert components to the target algorithm
         let mut converted_components = Vec::new();
         for comp in &components {
-            let source_alg = infer_alg_from_len(comp.bytes.len()).ok_or_else(|| {
-                crate::error::Error::UnsupportedAlgorithm(format!(
-                    "invalid digest length: {}",
-                    comp.bytes.len()
-                ))
-            })?;
-            if source_alg == alg {
+            if comp.alg == alg {
                 converted_components.push(comp.bytes.to_vec());
             } else {
                 converted_components.push(hash_bytes(alg, comp.bytes));
@@ -810,6 +800,7 @@ mod tests {
             Thumbprint::from_bytes(vec![1; 32]),
             1000,
             czd.clone(),
+            HashAlg::Sha256,
             coz::CozJson {
                 pay: serde_json::Value::Null,
                 sig: vec![],
@@ -884,24 +875,6 @@ mod tests {
             ),
             "expected DigestLengthMismatch, got {:?}",
             err
-        );
-    }
-
-    #[test]
-    fn compute_dr_errors_on_ambiguous_component_length() {
-        // A 16-byte component maps to no known hash algorithm (32/48/64),
-        // so its source algorithm cannot be inferred. compute_dr's
-        // multi-component conversion path must surface an honest error
-        // rather than silently assuming SHA-256 (forge issue #15). A lone
-        // nonce is the minimal multi-component input: it skips the
-        // single-action implicit-promotion branch and reaches the
-        // per-component algorithm inference this fix hardens.
-        let nonce = [0u8; 16];
-        let result = compute_dr(&[], Some(&nonce), &[HashAlg::Sha256]);
-        assert!(
-            matches!(result, Err(crate::error::Error::UnsupportedAlgorithm(_))),
-            "ambiguous digest length must error, not default to SHA-256; got {:?}",
-            result
         );
     }
 }

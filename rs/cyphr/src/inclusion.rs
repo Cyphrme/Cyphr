@@ -25,9 +25,10 @@ use crate::state::HashAlg;
 /// if `alg` is the thumbprint's own native algorithm (inferred from its
 /// length), else `alg`'s hash of the raw bytes.
 ///
-/// Returns `None` for a byte length that names no known algorithm — mirrors
-/// `serialize_converted`'s own rejection of an unrecognized digest length
-/// rather than silently hashing it under `alg` anyway.
+/// Returns `None` for a byte length that names no supported algorithm,
+/// rather than silently hashing it under `alg` anyway. The width stands in
+/// for the key's algorithm only because this public entry takes a bare
+/// thumbprint.
 fn canonical_thumbprint_digest(bytes: &[u8], alg: HashAlg) -> Option<Vec<u8>> {
     let native = crate::state::infer_alg_from_len(bytes.len())?;
     Some(if native == alg {

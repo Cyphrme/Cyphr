@@ -6,7 +6,7 @@ use super::Principal;
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::semantic_tree::derive_state_roots_with_nonces;
+use crate::semantic_tree::{derive_state_roots_with_nonces, key_leaf};
 use crate::state::{HashAlg, PrincipalGenesis};
 
 impl<S: eml::Storage> Principal<S> {
@@ -196,10 +196,10 @@ impl<S: eml::Storage> Principal<S> {
         // than trusting the cached value, which may predate a key of a new
         // algorithm (see finalize_commit's identical refresh).
         let active_algs = self.active_algs();
-        let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = self.auth.keys.values().map(key_leaf).collect();
         let dr = self.data.included_root(&active_algs)?;
         let (_kr, _ar, sr) =
-            derive_state_roots_with_nonces(&thumbprints, dr.as_ref(), &self.nonces, &active_algs)?;
+            derive_state_roots_with_nonces(&leaves, dr.as_ref(), &self.nonces, &active_algs)?;
 
         // Prefer the signer's own algorithm for the arrow, but a self-revoke
         // of the last key of that algorithm retires it from active_algs —
@@ -641,9 +641,9 @@ impl<S: eml::Storage> Principal<S> {
 
         // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.
-        let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = core.auth.keys.values().map(key_leaf).collect();
         let (kr, ar, sr) = derive_state_roots_with_nonces(
-            &thumbprints,
+            &leaves,
             core.dr.as_ref(),
             &core.nonces,
             &active_algs,

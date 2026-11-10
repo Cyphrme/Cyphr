@@ -329,6 +329,7 @@ fn signer_lookup_refuses_alike_at_every_site() {
             tmb.clone(),
             now,
             czd,
+            crate::state::HashAlg::Sha256,
             coz::CozJson {
                 pay: serde_json::json!({}),
                 sig: vec![],

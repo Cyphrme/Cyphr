@@ -5,6 +5,8 @@
 
 use coz::{Czd, Thumbprint};
 
+use crate::state::HashAlg;
+
 /// A verified action (Level 4+).
 ///
 /// Actions are arbitrary signed Coz messages that represent user actions.
@@ -23,6 +25,8 @@ pub struct Action {
     pub(crate) now: i64,
     /// Coz digest (unique identifier).
     pub(crate) czd: Czd,
+    /// The hash algorithm `czd` is in: the signing key's.
+    pub(crate) hash_alg: HashAlg,
     /// Raw Coz message: the signed payload (including application-specific
     /// fields) and signature, for storage/export.
     pub(crate) raw: coz::CozJson,
@@ -41,6 +45,7 @@ impl Action {
         signer: Thumbprint,
         now: i64,
         czd: Czd,
+        hash_alg: HashAlg,
         raw: coz::CozJson,
     ) -> Self {
         Self {
@@ -48,6 +53,7 @@ impl Action {
             signer,
             now,
             czd,
+            hash_alg,
             raw,
             recorded_after: 0,
         }
@@ -59,12 +65,14 @@ impl Action {
         let signer = pay.tmb.clone()?;
         let now = pay.now?;
         let typ = pay.typ.clone()?;
+        let hash_alg = coz::Alg::from_str(pay.alg.as_deref()?)?.hash_alg();
 
         Some(Self {
             typ,
             signer,
             now,
             czd,
+            hash_alg,
             raw,
             recorded_after: 0,
         })
@@ -88,6 +96,11 @@ impl Action {
     /// Get the Coz digest.
     pub fn czd(&self) -> &Czd {
         &self.czd
+    }
+
+    /// The hash algorithm the Coz digest is in.
+    pub fn hash_alg(&self) -> HashAlg {
+        self.hash_alg
     }
 
     /// How many commits the principal held when it recorded this action:
@@ -152,6 +165,7 @@ mod tests {
             Thumbprint::from_bytes(vec![0xAA; 32]),
             1000,
             Czd::from_bytes(vec![0xBB; 32]),
+            HashAlg::Sha256,
             to_raw(&pay),
         );
         assert_eq!(action.msg(), Some("hi"));

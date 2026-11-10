@@ -147,7 +147,7 @@ impl<S: eml::Storage> Principal<S> {
         };
 
         // Construct Action directly from extracted values
-        let action = Action::new(typ, signer_tmb, now, czd, raw);
+        let action = Action::new(typ, signer_tmb, now, czd, signer_key.hash_alg(), raw);
 
         // Record the action
         self.record_action(action)

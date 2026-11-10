@@ -1,7 +1,6 @@
 //! Genesis constructors, and the genesis finalization
 //! (`principal/create`) that freezes PG.
 
-use coz::Thumbprint;
 
 use super::{
     Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees,
@@ -9,7 +8,7 @@ use super::{
 };
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::semantic_tree::derive_state_roots;
+use crate::semantic_tree::{derive_state_roots, key_leaf};
 use crate::state::{PrincipalGenesis, derive_hash_algs};
 
 // ============================================================================
@@ -113,7 +112,7 @@ impl<S: eml::Storage> Principal<S> {
         let active_algs = derive_hash_algs(&[&key]);
 
         // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
-        let (kr, ar, sr) = derive_state_roots(&[key.tmb()], None, &active_algs)?;
+        let (kr, ar, sr) = derive_state_roots(&[key_leaf(&key)], None, &active_algs)?;
         let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
         let core = PrincipalCore::new(vec![key], roots, open_commit_trees(storage)?);
         Ok(Self(Some(PrincipalKind::Nascent(core))))
@@ -138,8 +137,8 @@ impl<S: eml::Storage> Principal<S> {
         let active_algs = derive_hash_algs(&key_refs);
 
         // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
-        let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
+        let leaves: Vec<_> = keys.iter().map(key_leaf).collect();
+        let (kr, ar, sr) = derive_state_roots(&leaves, None, &active_algs)?;
         let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
         let core = PrincipalCore::new(keys, roots, open_commit_trees(storage)?);
         Ok(Self(Some(PrincipalKind::Nascent(core))))

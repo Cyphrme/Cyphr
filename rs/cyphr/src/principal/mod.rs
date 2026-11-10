@@ -616,7 +616,11 @@ impl<S: eml::Storage> PrincipalCore<S> {
             .and_then(|tmb| self.auth.keys.get(tmb))
             .ok_or(Error::UnknownKey)?;
         let algs = self.active_algs();
-        let (_, _, sr) = crate::semantic_tree::derive_state_roots(&[genesis.tmb()], None, &algs)?;
+        let (_, _, sr) = crate::semantic_tree::derive_state_roots(
+            &[crate::semantic_tree::key_leaf(genesis)],
+            None,
+            &algs,
+        )?;
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &algs)?;
         pt.pr(&algs)
@@ -630,9 +634,14 @@ impl<S: eml::Storage> PrincipalCore<S> {
     pub(crate) fn genesis_pr(&self) -> Result<PrincipalRoot> {
         let algs = self.active_algs();
         let dr = self.data.included_root(&algs)?;
-        let tmbs: Vec<&Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
+        let leaves: Vec<_> = self
+            .auth
+            .keys
+            .values()
+            .map(crate::semantic_tree::key_leaf)
+            .collect();
         let (_, _, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
-            &tmbs,
+            &leaves,
             dr.as_ref(),
             &self.nonces,
             &algs,

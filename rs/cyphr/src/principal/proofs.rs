@@ -6,7 +6,7 @@ use super::Principal;
 use crate::error::{Error, Result};
 use crate::multihash::MultihashDigest;
 use crate::nonce::NonceLevel;
-use crate::semantic_tree::{AuthTree, KeyTree, StateTree, sorted_leaves};
+use crate::semantic_tree::{AuthTree, KeyTree, StateTree, key_leaf, sorted_leaves};
 use crate::state::HashAlg;
 
 // ============================================================================
@@ -260,17 +260,16 @@ impl<S: eml::Storage> Principal<S> {
 
         // Lexical-sort position among the thumbprints and KT nonces, from
         // the same ordering KeyTree builds with.
-        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
-        let tmbs: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
+        let members: Vec<_> = self.auth.keys.values().map(key_leaf).collect();
         let kt_nonces = self.nonces.at_level(NonceLevel::Kt);
-        let sorted = sorted_leaves(&tmbs, &kt_nonces);
+        let sorted = sorted_leaves(&members, &kt_nonces);
         let index = sorted
             .iter()
-            .position(|&b| b == tmb.as_bytes())
+            .position(|&(b, _)| b == tmb.as_bytes())
             .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?
             as u64;
 
-        let kt = KeyTree::build_tree_with_nonces(&thumbprints, &kt_nonces, &active_algs)?;
+        let kt = KeyTree::build_tree_with_nonces(&members, &kt_nonces, &active_algs)?;
         let kr = kt.root(&active_algs)?;
         let ar_node = AuthTree::build_tree_with_nonces(
             &kr,
