@@ -506,6 +506,9 @@ fn push_fetch_pulls_peer_history() {
 /// that omits the recorded actions (the server's DT is then empty and the
 /// correct `ds/create` is refused), a `data commit` that names a DR other
 /// than MR(DT), or a refusal the CLI reports as success.
+/// A fresh client fetches the chain and `verify` reaches the published tip;
+/// red while `/patch` carries no actions (the replay of the `ds/create`
+/// finds an empty DT: state mismatch, #202).
 /// Red on base: `data` is an unknown subcommand, so the first `data action`
 /// fails.
 #[test]
@@ -563,6 +566,16 @@ fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
         made["commit_id"].as_str().expect("commit_id"),
         "the peer's tip is the commit `data commit` made"
     );
+
+    // A fresh client was not there: it fetches the chain holding the
+    // ds/create with the actions it includes, and verify reaches that tip.
+    let reader = User::new();
+    let fetched = reader.run(&["fetch", &ident, &format!("--peer={}", server.url)]);
+    assert!(fetched.ok, "fetch of a data chain: {}", fetched.stderr);
+    assert_eq!(reader.commit_count(&id), a.commit_count(&id));
+    let verified = reader.setup(&["verify", &ident, &format!("--peer={}", server.url)]);
+    assert_eq!(verified["verdict"], "Active");
+    assert_eq!(verified["tip"], made["commit_id"], "verify reaches the tip");
 }
 
 // ----------------------------------------------------------------- verify

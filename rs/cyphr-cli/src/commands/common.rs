@@ -383,14 +383,19 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
 
         let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
 
-        // Action-only lines form no commit: data actions are stored as their
-        // own bundles when recorded, so only real commits are counted here.
-        let commits: Vec<_> = cyphr_storage::export_commits(principal)?
-            .into_iter()
-            .filter(|line| !line.commit_id.is_empty())
-            .collect();
-
-        for commit in commits.iter().skip(stored_count) {
+        // A line is new when the commits before it are not all stored yet.
+        // An action-only line forms no commit, so it does not count toward
+        // `stored_count`; one stored already hashes to the same manifest, so
+        // submitting it again changes nothing.
+        let mut commits_before = 0usize;
+        for commit in &cyphr_storage::export_commits(principal)? {
+            let is_new = commits_before >= stored_count;
+            if !commit.commit_id.is_empty() {
+                commits_before += 1;
+            }
+            if !is_new {
+                continue;
+            }
             let mut raw_blobs = Vec::new();
             let mut key_iter = commit.keys.iter();
             for coz in &commit.cozies {

@@ -105,6 +105,17 @@ impl PeerError {
     }
 }
 
+/// A peer's history: its commits' blobs, and its action-only bundles each
+/// with the number of commits the peer held when it accepted the bundle (the
+/// bundle precedes the commit at that position, SPEC 4.8.2).
+#[derive(Debug, Default)]
+pub struct PeerHistory {
+    /// One blob list per commit, oldest first.
+    pub commits: Vec<Vec<Vec<u8>>>,
+    /// `(after, blobs)` per action-only bundle, in accepted order.
+    pub actions: Vec<(usize, Vec<Vec<u8>>)>,
+}
+
 /// One peer reached over HTTP(S). The carrier bounds every request (total
 /// timeout, no redirect, at most [`cyphr_client::MAX_RESPONSE_BYTES`] read) and refuses
 /// cleartext to a non-loopback host unless the user allowed it.
@@ -165,13 +176,14 @@ impl Peer {
     }
 
     /// The peer's whole history for `principal`: one blob list per commit,
-    /// empty when the peer holds nothing for it.
+    /// and the action-only bundles between them. Both are empty when the
+    /// peer holds nothing for it.
     ///
     /// # Errors
     ///
     /// [`PeerError`] for a carrier failure, a refusal, or an answer that is
     /// not a well-formed patch.
-    pub async fn chain(&self, principal: &str) -> Result<Vec<Vec<Vec<u8>>>, PeerError> {
+    pub async fn chain(&self, principal: &str) -> Result<PeerHistory, PeerError> {
         let target = cyphr_client::PatchRequest {
             principal_id: principal,
             anchor: None,
@@ -179,18 +191,31 @@ impl Peer {
         .target();
         let body = match self.send(&Request::get(target)).await {
             Ok(body) => body,
-            Err(PeerError::Status { status: 404, .. }) => return Ok(Vec::new()),
+            Err(PeerError::Status { status: 404, .. }) => return Ok(PeerHistory::default()),
             Err(e) => return Err(e),
         };
         let patch = verify_patch_body(&body, principal, None).map_err(|e| self.patch_error(e))?;
-        patch
+        let commits = patch
             .entries
             .into_iter()
             .map(|e| {
                 e.blobs
                     .map_err(|defect| self.malformed(format!("entry {}: {defect:?}", e.sequence)))
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        let actions = patch
+            .actions
+            .into_iter()
+            .map(|a| {
+                let after = usize::try_from(a.after)
+                    .map_err(|_| self.malformed(format!("actions after {}", a.after)))?;
+                let blobs = a.blobs.map_err(|defect| {
+                    self.malformed(format!("actions after {after}: {defect:?}"))
+                })?;
+                Ok((after, blobs))
+            })
+            .collect::<Result<_, PeerError>>()?;
+        Ok(PeerHistory { commits, actions })
     }
 
     /// Send one commit's blobs to the peer.

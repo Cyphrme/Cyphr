@@ -17,7 +17,7 @@ use super::common::{
 };
 use crate::choices::Choices;
 use crate::keystore::JsonKeyStore;
-use crate::net::{Peer, PeerError};
+use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
 
 /// Seconds a view may age before `verify` reports it as stale, absent a
@@ -120,7 +120,10 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
 
     let fetched = block_on(async {
-        let theirs = peer.chain(&wire).await?;
+        let PeerHistory {
+            commits: theirs,
+            actions,
+        } = peer.chain(&wire).await?;
         let local = raw_chain(&store, &principal_id).await?;
         if let Some(i) = first_divergence(&local, &theirs) {
             // A fork needs two histories that both replay; a peer chain that
@@ -129,7 +132,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Some(g) => g.clone(),
                 None => store.resolve_genesis(&principal_id, &[]).await?,
             };
-            if let Err(reason) = replays(&replay_from, &theirs) {
+            if let Err(reason) = replays(&replay_from, &theirs, &actions) {
                 return Err(PeerError::Malformed {
                     peer: peer.url().to_owned(),
                     reason,
@@ -143,12 +146,30 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .into());
         }
         let mut applied = 0usize;
-        for blobs in theirs.iter().skip(local.len()) {
+        // A bundle precedes the commit at its `after`; one the local store
+        // already holds is a no-op (SPEC 7.6).
+        let mut bundles = actions.iter().filter(|(after, _)| *after >= local.len());
+        let mut next = bundles.next();
+        for (i, blobs) in theirs.iter().enumerate().skip(local.len()) {
+            while let Some((_, held)) = next.filter(|(after, _)| *after <= i) {
+                let refs: Vec<&[u8]> = held.iter().map(Vec::as_slice).collect();
+                store
+                    .submit_commit(&principal_id, genesis.clone(), &refs)
+                    .await?;
+                next = bundles.next();
+            }
             let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
             store
                 .submit_commit(&principal_id, genesis.clone(), &refs)
                 .await?;
             applied += 1;
+        }
+        while let Some((_, held)) = next {
+            let refs: Vec<&[u8]> = held.iter().map(Vec::as_slice).collect();
+            store
+                .submit_commit(&principal_id, genesis.clone(), &refs)
+                .await?;
+            next = bundles.next();
         }
         Ok::<_, Error>(applied)
     })??;
@@ -284,7 +305,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 
     let old = parse_store(cli)?;
     let (local, theirs) = block_on(async {
-        let theirs = peer.chain(&wire).await?;
+        let theirs = peer.chain(&wire).await?.commits;
         let local = raw_chain(&old, &principal_id).await?;
         Ok::<_, Error>((local, theirs))
     })??;
@@ -434,9 +455,12 @@ fn b64_blobs(blobs: &[Vec<u8>]) -> Vec<String> {
 
 /// Replay a peer's history from `genesis`; a history that does not replay
 /// is not an answer about the principal.
-fn replays(genesis: &Genesis, chain: &[Vec<Vec<u8>>]) -> Result<(), String> {
-    let mut entries = Vec::with_capacity(chain.len());
-    for blobs in chain {
+fn replays(
+    genesis: &Genesis,
+    chain: &[Vec<Vec<u8>>],
+    actions: &[(usize, Vec<Vec<u8>>)],
+) -> Result<(), String> {
+    let line = |blobs: &[Vec<u8>]| -> Result<CommitEntry, String> {
         let mut cozies = Vec::new();
         let mut keys = Vec::new();
         for blob in blobs {
@@ -448,14 +472,27 @@ fn replays(genesis: &Genesis, chain: &[Vec<Vec<u8>>]) -> Result<(), String> {
             }
             cozies.push(v);
         }
-        entries.push(CommitEntry::new(
+        Ok(CommitEntry::new(
             cozies,
             keys,
             String::new(),
             None,
             None,
             String::new(),
-        ));
+        ))
+    };
+    // The bundles precede the commit at their `after`, as an export writes
+    // them, so a `ds/create` finds the actions it includes.
+    let mut entries = Vec::with_capacity(chain.len() + actions.len());
+    let mut bundles = actions.iter().peekable();
+    for (i, blobs) in chain.iter().enumerate() {
+        while let Some((_, held)) = bundles.next_if(|(after, _)| *after <= i) {
+            entries.push(line(held)?);
+        }
+        entries.push(line(blobs)?);
+    }
+    for (_, held) in bundles {
+        entries.push(line(held)?);
     }
     load_principal_from_commits(genesis.clone(), &entries)
         .map(|_| ())
@@ -531,7 +568,10 @@ pub fn verify(
     for (url, answer) in answers {
         match answer {
             Err(e) => failed.push(json!({"peer": url, "reason": e.to_string(), "kind": e.kind()})),
-            Ok(chain) => match replays(&replay_genesis, &chain) {
+            Ok(PeerHistory {
+                commits: chain,
+                actions,
+            }) => match replays(&replay_genesis, &chain, &actions) {
                 Err(reason) => {
                     failed.push(json!({"peer": url, "reason": reason, "kind": "malformed"}))
                 },
