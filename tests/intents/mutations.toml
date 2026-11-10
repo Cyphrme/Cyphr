@@ -228,6 +228,9 @@ tx = [
 [[test.commit]]
 tx = [
   [
+    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
@@ -242,6 +245,9 @@ principal = ["golden"]
 
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
   ],

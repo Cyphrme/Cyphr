@@ -101,6 +101,16 @@ async fn single_key_explicit_genesis_establishes_pg() {
     let pc_czd = coz::czd_for_alg(&pc_cad, &pc_sig, &alg).expect("czd pc");
 
     let mut scope = client.begin_commit();
+    let kc_blob = scope
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb),
+            now,
+            "cyphr.me",
+        )
+        .expect("the genesis key creates itself (SPEC 5.2 TX0)")
+        .first()
+        .map(|c| serde_json::to_vec(c).unwrap())
+        .expect("one key/create");
     scope
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create applies to single-key explicit genesis");
@@ -147,7 +157,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
     });
 
     engine
-        .submit_commit(&pg_tagged, Some(genesis), &[&pc_blob, &cc_blob])
+        .submit_commit(&pg_tagged, Some(genesis), &[&kc_blob, &pc_blob, &cc_blob])
         .await
         .expect("genesis commit submits through the validated write path");
 
@@ -443,96 +453,5 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
             env["statement"]["coz"]["pay"]["pr"], bare,
             "the report attests the server's own PG"
         );
-    }
-}
-
-/// Claim: a data dir holding a key-less genesis (what every pre-fix boot
-/// wrote) never leaves a keyed server 500ing its own tip: boot either
-/// repairs it (then /tip is a signed 200) or refuses with an error. Red if
-/// boot succeeds and /tip is not a signed 200. Lying impl it catches: a fix
-/// that only changes new bootstraps and leaves existing dirs broken. The
-/// legacy dir is built by hand because the fixed bootstrap no longer writes
-/// one. E2E: legacy dir, boot, HTTP.
-#[tokio::test]
-async fn own_tip_legacy_keyless_genesis_dir_is_repaired_or_refused() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (key_path, kp) = write_signing_key(dir.path());
-    let data_dir = dir.path().join("data");
-    let state = keyed_appstate(&data_dir, &key_path);
-
-    let alg = kp.alg.name().to_string();
-    let tmb = tmb_of(&kp);
-    let key = cyphr::Key::new(alg.clone(), tmb.clone(), kp.pub_bytes.clone())
-        .expect("key binds its tmb")
-        .with_first_seen(cyphr_server::auth::principal::GENESIS_FIRST_SEEN);
-    let mut client = cyphr::Principal::explicit(vec![key.clone()]).expect("explicit genesis");
-    let pg = client.pr_tagged().expect("pg");
-    let now = 1_700_000_000i64;
-    let mut pay = serde_json::json!({
-        "alg": alg, "id": pg, "now": now,
-        "tmb": Base64UrlUnpadded::encode_string(tmb.as_bytes()),
-        "typ": "cyphr.me/cyphr/principal/create",
-    });
-    pay.as_object_mut().unwrap().sort_keys();
-    let pay_bytes = serde_json::to_vec(&pay).unwrap();
-    let (sig, cad) = coz::sign_json(&pay_bytes, &alg, &kp.prv_bytes, &kp.pub_bytes).unwrap();
-    let czd = coz::czd_for_alg(&cad, &sig, &alg).unwrap();
-    let mut scope = client.begin_commit();
-    scope
-        .verify_and_apply(&pay_bytes, &sig, czd, None)
-        .expect("apply");
-    let commit = scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb),
-            now + 1,
-            "cyphr.me",
-        )
-        .expect("finalize");
-    let cc_blob = serde_json::to_vec(commit.commit_tx().0[0].raw()).unwrap();
-    // No `key` field anywhere: the legacy shape.
-    let pc_blob = serde_json::to_vec(&serde_json::json!({
-        "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig),
-    }))
-    .unwrap();
-    state
-        .engine
-        .submit_commit(
-            &pg,
-            Some(Genesis::Explicit(vec![key.clone()])),
-            &[&pc_blob, &cc_blob],
-        )
-        .await
-        .expect("legacy genesis commits");
-
-    // The sidecar a pre-fix boot left next to it.
-    let record_dir = data_dir.join(cyphr_server::config::RECORD_DIR_NAME);
-    std::fs::create_dir_all(&record_dir).unwrap();
-    std::fs::write(
-        record_dir.join("server-principal.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "pg": pg,
-            "genesis_key": {
-                "alg": alg,
-                "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
-                "tmb": Base64UrlUnpadded::encode_string(tmb.as_bytes()),
-                "first_seen": cyphr_server::auth::principal::GENESIS_FIRST_SEEN,
-            },
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let mut state = state;
-    let identity = state.identity.clone().expect("identity");
-    match ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &data_dir).await {
-        Err(_refused) => {},
-        Ok(sp) => {
-            state.principal = Some(Arc::new(sp));
-            let app = cyphr_server::build_router(Arc::new(state));
-            let bare = cyphr_storage::engine::bare_digest(&pg).to_string();
-            let (status, env) = common::get_json(app, &format!("/tip?pr={bare}")).await;
-            assert_eq!(status, axum::http::StatusCode::OK, "{env:?}");
-            assert_eq!(env["statement"]["kind"], "signed", "{env:?}");
-        },
     }
 }

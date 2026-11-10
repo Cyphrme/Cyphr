@@ -278,12 +278,12 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         keys: Option<Vec<String>>,
 
-        /// Publish a single-key genesis: the genesis key signs a
-        /// principal/create (id = the principal's state) and the commit
-        /// finalizing it, with no further key (SPEC 5.1/5.2). Without it,
-        /// init leaves a commitless principal that `push` has nothing to
-        /// send for.
-        #[arg(long, conflicts_with = "keys")]
+        /// Publish the genesis commit: the genesis key (the first) signs a
+        /// key/create for itself and each further key, a principal/create
+        /// (id = the principal's state) and the commit finalizing it (SPEC
+        /// 5.1-5.3). Without it, init leaves a commitless principal that
+        /// `push` has nothing to send for.
+        #[arg(long)]
         genesis_commit: bool,
     },
 

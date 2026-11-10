@@ -11,12 +11,11 @@ use super::common::{
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, Error, OutputFormat};
 
-/// Commit the genesis of a single-key principal: its key signs a
-/// `principal/create` whose `id` is the principal's state (SPEC 5.1 step 3),
-/// finalized by the commit transaction. The genesis key is already part of
-/// the principal at construction, so no `key/create` precedes it: the core
-/// refuses to add an active key a second time.
-fn apply_principal_create<S: cyphr::eml::Storage>(
+/// Commit the principal's genesis (SPEC 5.1, 5.2, 5.3): the genesis key
+/// (the first) signs a `key/create` for itself and for each further genesis
+/// key, then a `principal/create` whose `id` is the principal's state, and
+/// the commit transaction finalizes it.
+fn commit_genesis<S: cyphr::eml::Storage>(
     principal: &mut Principal<S>,
     keystore: &JsonKeyStore,
     signer_tmb: &str,
@@ -45,13 +44,12 @@ fn apply_principal_create<S: cyphr::eml::Storage>(
         .ok_or_else(|| Error::Signing("czd_for_alg failed".into()))?;
     let tmb = coz::Thumbprint::from_bytes(decode_b64(signer_tmb)?);
 
+    let software =
+        cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv_key, &signer.pub_key, &tmb);
     let mut scope = principal.begin_commit();
+    scope.create_genesis_keys(&software, now, authority)?;
     scope.verify_and_apply(&pay_vec, &sig, czd, None)?;
-    scope.finalize_with_software(
-        &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv_key, &signer.pub_key, &tmb),
-        now,
-        authority,
-    )?;
+    scope.finalize_with_software(&software, now, authority)?;
     Ok(())
 }
 
@@ -106,13 +104,12 @@ pub fn run(
     };
 
     if genesis_commit {
-        let [genesis_key] = principal.genesis_keys() else {
-            return Err(Error::InvalidArgument(
-                "--genesis-commit publishes a single-key genesis".into(),
-            ));
-        };
-        let genesis_key = genesis_key.clone();
-        apply_principal_create(&mut principal, &keystore, &genesis_key, &cli.authority)?;
+        let genesis_key = principal
+            .genesis_keys()
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::InvalidArgument("genesis has no key".into()))?;
+        commit_genesis(&mut principal, &keystore, &genesis_key, &cli.authority)?;
     }
 
     // Get identity string for output: PG if available, else PR

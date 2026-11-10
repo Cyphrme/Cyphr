@@ -800,6 +800,71 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let sig = signer.sign_now(prepared.cad())?;
         self.finish_commit(prepared, sig)
     }
+
+    /// Sign with `signer`, the first genesis key, and apply the `key/create`
+    /// of every genesis key not yet created, in genesis order: the genesis
+    /// key adds itself, then each further genesis key (SPEC 5.1 step 1, 5.2,
+    /// 5.3, 7.7 Example 1). A genesis commit carries these before its
+    /// `principal/create`.
+    ///
+    /// Returns each as a wire coz (`pay`, `sig` and the disclosed `key`):
+    /// the key material rides on its own `key/create`, so a genesis is
+    /// readable from the commit's cozies alone.
+    ///
+    /// # Errors
+    ///
+    /// `Signer` if signing fails; otherwise as
+    /// [`verify_and_apply`](Self::verify_and_apply), e.g. `UnknownKey` when
+    /// `signer` is not the first genesis key.
+    pub fn create_genesis_keys(
+        &mut self,
+        signer: &SoftwareSigner,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<Vec<serde_json::Value>> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        use serde_json::json;
+
+        use crate::error::Error;
+
+        let typ = format!("{authority}/{}", crate::parsed_coz::typ::KEY_CREATE);
+        let mut cozies = Vec::new();
+        for tmb in self.projected.uncreated_genesis.clone() {
+            let key = self
+                .projected
+                .auth
+                .keys
+                .get(&tmb)
+                .cloned()
+                .ok_or(Error::UnknownKey)?;
+            let mut pay = json!({
+                "alg": signer.alg(),
+                "id": tmb,
+                "now": now,
+                "tmb": signer.tmb().to_b64(),
+                "typ": typ,
+            });
+            if let Some(obj) = pay.as_object_mut() {
+                obj.sort_keys();
+            }
+            let pay_vec = serde_json::to_vec(&pay).map_err(|_| Error::MalformedPayload)?;
+            let cad = coz::canonical_hash_for_alg(&pay_vec, signer.alg(), None)
+                .ok_or(Error::MalformedPayload)?;
+            let sig = signer.sign_now(&cad)?;
+            let czd = coz::czd_for_alg(&cad, &sig, signer.alg()).ok_or(Error::MalformedPayload)?;
+            self.verify_and_apply(&pay_vec, &sig, czd, Some(key.clone()))?;
+            cozies.push(json!({
+                "pay": pay,
+                "sig": Base64UrlUnpadded::encode_string(&sig),
+                "key": {
+                    "alg": key.alg(),
+                    "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
+                    "tmb": tmb,
+                },
+            }));
+        }
+        Ok(cozies)
+    }
 }
 
 /// Output of [`CommitScope::prepare_commit`]: the unsigned `commit/create`

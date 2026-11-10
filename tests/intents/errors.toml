@@ -21,6 +21,29 @@ principal = ["golden", "key_a", "golden"]
 [test.expected]
 error = "DuplicateKey"
 
+# Genesis never creates a key implicitly (SPEC 5.1 step 1, 7.7 Example 1):
+# principal/create while a genesis key lacks its key/create is refused
+[[test]]
+name      = "principal_create_without_genesis_key_create_fails"
+principal = ["golden", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
 # ============================================================================
 # Revoked key tests
 # Need setup.revoke_key to pre-revoke a key before the test
@@ -72,10 +95,19 @@ error = "KeyRevoked"
 name      = "duplicate_key_fails"
 principal = ["golden"]
 
+# The first key/create is the genesis key's own explicit add (SPEC 5.2
+# TX0); the second re-adds a key already created.
 [[test.commit]]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 

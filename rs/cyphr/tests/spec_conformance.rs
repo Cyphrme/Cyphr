@@ -1494,7 +1494,17 @@ fn s2_3_2_no_operation_changes_the_principal_genesis() {
     let (mut p, a, b) = two_key_principal();
     let establish = json!({"alg": a.alg, "id": p.pr_tagged().expect("pr"), "now": T,
                            "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
-    commit_one(&mut p, &a, sign(&a, establish), None, T).expect("principal/create establishes PG");
+    let (pay, sig, czd) = sign(&a, establish);
+    let mut scope = p.begin_commit();
+    scope
+        .create_genesis_keys(&software(&a), T, "cyphr.me")
+        .expect("genesis key/creates");
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("principal/create establishes PG");
+    scope
+        .finalize_with_software(&software(&a), T, "cyphr.me")
+        .expect("genesis commit");
     let pg = format!("{:?}", p.pg());
     assert_ne!(pg, "None", "premise: principal/create records a PG");
     let again = json!({"alg": a.alg, "id": p.pr_tagged().expect("pr"), "now": T,

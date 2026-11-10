@@ -181,6 +181,11 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) clock: Clock,
     /// Base64 thumbprints of the genesis keys (keys present at construction).
     pub(crate) genesis_keys: Vec<String>,
+    /// Genesis keys whose `key/create` has not yet been applied, in genesis
+    /// order. Every key enters through a `key/create`, the genesis keys
+    /// included (SPEC 5.1 step 1, 7.7 Example 1), so `principal/create`
+    /// refuses while one of these is still active.
+    pub(crate) uncreated_genesis: Vec<String>,
     /// `principal/delete` has been signed (SPEC.md §11.1 `Deleted`). No
     /// transaction sets this yet — the field exists for the derivation in
     /// [`crate::lifecycle`] to read; it is always `false` at this node's tip.
@@ -240,6 +245,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             max_clock_skew: self.max_clock_skew,
             clock: self.clock,
             genesis_keys: self.genesis_keys.clone(),
+            uncreated_genesis: self.uncreated_genesis.clone(),
             deleted: self.deleted,
             deleted_pending: self.deleted_pending,
             frozen: self.frozen,
@@ -268,6 +274,7 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("max_clock_skew", &self.max_clock_skew)
             .field("clock", &(self.clock as usize))
             .field("genesis_keys", &self.genesis_keys)
+            .field("uncreated_genesis", &self.uncreated_genesis)
             .field("deleted", &self.deleted)
             .field("deleted_pending", &self.deleted_pending)
             .field("frozen", &self.frozen)
@@ -516,6 +523,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             latest_timestamp: 0,
             max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
             clock: system_clock,
+            uncreated_genesis: genesis_keys.clone(),
             genesis_keys,
             deleted: false,
             deleted_pending: false,

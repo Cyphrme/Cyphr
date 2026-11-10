@@ -696,11 +696,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// [`Self::rederive_roots`] for a caller that already holds the
     /// principal's genesis.
-    ///
-    /// Needed for an explicit-genesis principal (such as the server's own),
-    /// whose genesis key set cannot be read back from its stored blobs: the
-    /// blob-derived genesis [`Self::rederive_roots`] resolves is always
-    /// implicit.
     #[tracing::instrument(skip(self, genesis))]
     pub async fn rederive_roots_with_genesis(
         &self,
@@ -1208,16 +1203,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(kept)
     }
 
-    /// A corruption detector for principals whose blobs carry their
-    /// genesis, not a security boundary. Without replay: if a principal's
-    /// first sequence-0 manifest (in canonical order) names a
-    /// `commit/create` blob carrying a key, the id derived from that
-    /// commit (the genesis PR, or with a nonce the PR after the commit)
-    /// must equal the principal id the manifests carry. Returns each
-    /// failing principal with why; they are quarantined.
+    /// A corruption detector, not a security boundary. Without replay: the
+    /// genesis a principal's first sequence-0 manifest (in canonical
+    /// order) discloses in its blobs ([`disclosed_genesis`]) must derive
+    /// the principal id the manifests carry (the genesis PR, or with a
+    /// nonce the PR after the commit). Returns each failing principal with
+    /// why; they are quarantined.
     ///
-    /// Scope: a principal with no such carrier (explicit genesis, whose
-    /// key set is never in blobs) is not judged, and when several
+    /// Scope: a principal whose blobs disclose no genesis is not judged
+    /// here (the replaying rebuild quarantines it), and when several
     /// sequence-0 manifests claim one id only the first is checked. The
     /// guarantee that a forged manifest cannot re-point a principal comes
     /// from the manifest keyspace plus the single writer
@@ -1256,15 +1250,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     EngineError::NotFound(format!("blob {blob} of a sequence-0 manifest"))
                 })?);
             }
-            // Only a `commit/create` blob carrying a key is a genesis
-            // carrier (the wire convention). Without one the id cannot be
-            // proven from blobs, so the manifest is not judged here.
-            let Some(carrier) = genesis_carrier(&blobs) else {
-                continue;
-            };
-            let genesis = match Self::genesis_from_blob(carrier) {
-                Ok(genesis) => genesis,
-                Err(e) => {
+            // Without a disclosed genesis the id cannot be proven from
+            // blobs; this pass does not judge it (the replaying rebuild
+            // quarantines it).
+            let genesis = match disclosed_genesis(&blobs) {
+                Some(Ok(genesis)) => genesis,
+                None => continue,
+                Some(Err(e)) => {
                     unbound.insert(
                         principal_id.to_string(),
                         format!("genesis not derivable from its blobs: {e}"),
@@ -1299,9 +1291,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// and compare the commit the admission path builds with the one the
     /// manifest records. `Ok(Err(why))` is a manifest to quarantine.
     ///
-    /// A principal whose sequence-0 blobs carry no genesis key (an
-    /// explicit genesis) cannot be replayed from blobs alone; its manifests
-    /// are left to the binding and support checks, as before replay.
+    /// A principal is replayed from the genesis its sequence-0 blobs
+    /// disclose ([`disclosed_genesis`]); one that discloses none is left to
+    /// the binding and support checks ([`Replay::CarrierLess`]).
     async fn replay_manifest(
         &self,
         replays: &mut HashMap<String, Replay>,
@@ -1316,15 +1308,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let state = match replays.entry(commit.principal_id.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
-                let state = match genesis_carrier(&blobs) {
+                let state = match disclosed_genesis(&blobs) {
                     None => Replay::CarrierLess,
-                    Some(carrier) => {
-                        match Self::genesis_from_blob(carrier).and_then(|genesis| {
-                            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())
-                        }) {
-                            Ok(principal) => Replay::Principal(Box::new(principal)),
-                            Err(e) => return Ok(Err(format!("genesis does not replay: {e}"))),
-                        }
+                    Some(genesis) => match genesis.and_then(|genesis| {
+                        Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new())
+                    }) {
+                        Ok(principal) => Replay::Principal(Box::new(principal)),
+                        Err(e) => return Ok(Err(format!("genesis does not replay: {e}"))),
                     },
                 };
                 e.insert(state)
@@ -2129,12 +2119,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///   commit's blobs.
     /// - If the principal is new, extracts key material from the first submitted commit's blobs.
     ///
-    /// Both cases apply the identical genesis-discovery rule (see
-    /// [`Self::genesis_from_raw_blobs`]) over their respective blob set: this system's wire
-    /// convention embeds the genesis key on the bundle's `commit/create` cozy, not on whichever
-    /// blob happens to be first -- a mutation-introducing cozy earlier in the same bundle (e.g. a
-    /// `key/create` adding a second key) carries the *new* key in its own `"key"` field, never
-    /// genesis.
+    /// Both cases apply the identical genesis-discovery rule ([`disclosed_genesis`]) over their
+    /// respective blob set.
     pub async fn resolve_genesis(
         &self,
         principal_id: &str,
@@ -2317,40 +2303,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
     }
 
-    /// Scan `blobs` (a single commit bundle, in wire order) for a `commit/create`-typed cozy
-    /// carrying a `"key"` field -- this system's genesis-key carrier -- falling back to `blobs[0]`
-    /// only if that scan finds nothing.
+    /// The genesis a principal's first commit bundle discloses
+    /// ([`disclosed_genesis`]), falling back to a key carried on `blobs[0]`
+    /// only if it discloses none.
     fn genesis_from_raw_blobs<D: AsRef<[u8]>>(blobs: &[D]) -> Result<crate::Genesis, EngineError> {
-        if blobs.is_empty() {
-            return Err(EngineError::NotFound(
-                "no blobs to resolve genesis from".into(),
-            ));
-        }
-
-        for (idx, data) in blobs.iter().enumerate() {
-            let data = data.as_ref();
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
-                let pay = value.get("pay");
-                let typ = pay
-                    .and_then(|p| p.get("typ"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("");
-                let has_key = value.get("key").is_some();
-                tracing::debug!(
-                    "genesis_from_raw_blobs: blob idx={}, typ={}, has_key={}",
-                    idx,
-                    typ,
-                    has_key
-                );
-                if is_commit_create_typ(typ) && has_key {
-                    tracing::debug!("genesis_from_raw_blobs: found genesis key in commit/create!");
-                    return Self::genesis_from_blob(data);
-                }
-            }
-        }
-
-        tracing::debug!("genesis_from_raw_blobs: fallback to first blob");
-        Self::genesis_from_blob(blobs[0].as_ref())
+        let first = blobs
+            .first()
+            .ok_or_else(|| EngineError::NotFound("no blobs to resolve genesis from".into()))?;
+        disclosed_genesis(blobs).unwrap_or_else(|| Self::genesis_from_blob(first.as_ref()))
     }
 
     /// Extract an implicit genesis key from a raw coz blob's `"key"` field.
@@ -2388,9 +2348,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`Self::build_commit`]), manifest by manifest in sequence order, and
     /// a manifest recording a commit its blobs do not yield is quarantined
     /// ([`QuarantineReason::Unreplayable`]) with the rest of its chain. A
-    /// principal whose sequence-0 blobs carry no genesis key (an explicit
-    /// genesis) cannot be replayed from blobs alone and keeps the heal
-    /// pass's support and binding checks only.
+    /// principal whose sequence-0 blobs disclose no genesis keeps the heal
+    /// pass's support and binding checks only ([`Replay::CarrierLess`]).
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_from_scratch(&self) -> Result<usize, EngineError> {
         Ok(self.rebuild_index_from_scratch_with_report().await?.indexed)
@@ -2468,32 +2427,60 @@ fn authenticated_signers(
     (!signers.is_empty()).then_some(signers)
 }
 
-/// The genesis carrier among a sequence-0 commit's blobs: the
-/// `commit/create` coz carrying a `key` (the wire convention). Without one
-/// the principal's genesis cannot be read from its blobs.
-fn genesis_carrier(blobs: &[Vec<u8>]) -> Option<&[u8]> {
-    blobs
+/// The genesis a principal's first commit discloses in its blobs, in wire
+/// order. An explicit genesis is every key a `key/create` discloses before
+/// the `principal/create`, the genesis key first (SPEC 5.1 step 1, 5.3,
+/// 7.7 Example 1); with one such key it is that key's genesis. Without a
+/// `principal/create` it is the genesis key a `commit/create` carries (the
+/// implicit-genesis wire convention). `None` when the blobs disclose
+/// neither: such a principal cannot be read from its blobs.
+fn disclosed_genesis(blobs: &[impl AsRef<[u8]>]) -> Option<Result<crate::Genesis, EngineError>> {
+    use cyphr::parsed_coz::typ::{KEY_CREATE, PRINCIPAL_CREATE, has_suffix};
+
+    let values: Vec<serde_json::Value> = blobs
         .iter()
-        .find(|b| {
-            serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|v| {
-                v.get("key").is_some()
-                    && v.pointer("/pay/typ")
-                        .and_then(|t| t.as_str())
-                        .is_some_and(is_commit_create_typ)
-            })
-        })
-        .map(Vec::as_slice)
+        .filter_map(|b| serde_json::from_slice(b.as_ref()).ok())
+        .collect();
+    let typ = |v: &serde_json::Value| v.pointer("/pay/typ")?.as_str().map(str::to_owned);
+    let to_key = |v: &serde_json::Value| -> Result<cyphr::Key, EngineError> {
+        let entry = v.get("key").and_then(key_value_to_entry).ok_or_else(|| {
+            EngineError::MalformedBlob("a genesis key/create discloses no key".into())
+        })?;
+        crate::import::key_entry_to_key(&entry)
+            .map_err(|e| EngineError::MalformedBlob(format!("genesis key conversion: {e}")))
+    };
+    if let Some(pc) = values
+        .iter()
+        .position(|v| typ(v).is_some_and(|t| has_suffix(&t, PRINCIPAL_CREATE)))
+    {
+        let keys = values[..pc]
+            .iter()
+            .filter(|v| typ(v).is_some_and(|t| has_suffix(&t, KEY_CREATE)))
+            .map(to_key)
+            .collect::<Result<Vec<_>, _>>();
+        return match keys {
+            Err(e) => Some(Err(e)),
+            Ok(mut keys) if keys.len() == 1 => keys.pop().map(|k| Ok(crate::Genesis::Implicit(k))),
+            Ok(keys) if keys.is_empty() => None,
+            Ok(keys) => Some(Ok(crate::Genesis::Explicit(keys))),
+        };
+    }
+    values
+        .iter()
+        .find(|v| v.get("key").is_some() && typ(v).is_some_and(|t| is_commit_create_typ(&t)))
+        .map(|v| to_key(v).map(crate::Genesis::Implicit))
 }
 
 /// A principal's state during a replaying rebuild.
 enum Replay {
-    /// Replayed from its genesis carrier up to the last manifest seen.
+    /// Replayed from its disclosed genesis up to the last manifest seen.
     Principal(Box<cyphr::Principal<cyphr::eml::MemoryStorage>>),
-    /// No genesis carrier: not replayable from blobs alone. Kept, not
-    /// refused, because an explicit-genesis principal (the server's own)
-    /// stores no genesis key in its blobs, and refusing it would drop that
-    /// principal from every reindex; GEN0, which stores genesis durably,
-    /// removes this fallback.
+    /// Its blobs disclose no genesis, so it is not replayed. Scaffolding:
+    /// every conformant genesis (the server's own included) discloses its
+    /// keys on its `key/create`s, but the corpus still holds fixtures that
+    /// do not (pre-seeded multi-key KTs with no genesis commit, implicit
+    /// principals whose `commit/create` carries no key, dummy-blob engine
+    /// tests). Node GEN0b regenerates them conformant and removes this.
     CarrierLess,
 }
 

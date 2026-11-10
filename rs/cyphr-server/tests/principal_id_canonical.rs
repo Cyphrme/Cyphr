@@ -128,6 +128,24 @@ fn commit_one(
 ) {
     let (pay, sig, czd) = parts;
     let mut scope = p.begin_commit();
+    if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
+        v["typ"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("cyphr/principal/create"))
+    }) {
+        scope
+            .create_genesis_keys(
+                &cyphr::signer::SoftwareSigner::new(
+                    &finalizer.alg,
+                    &finalizer.prv,
+                    &finalizer.pubb,
+                    &finalizer.tmb,
+                ),
+                now,
+                "cyphr.me",
+            )
+            .expect("genesis key/creates (SPEC 7.7 Example 1)");
+    }
     scope
         .verify_and_apply(&pay, &sig, czd, sidecar)
         .expect("apply");

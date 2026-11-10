@@ -455,7 +455,13 @@ impl KeyHistory {
                 cyphr::CozKind::SelfRevoke { rvk } => end(&mut keys, cz.signer(), *rvk),
                 _ => {},
             }
-            if let Some(key) = vc.new_key() {
+            // A genesis key's own `key/create` (SPEC 5.2 TX0) discloses a
+            // key already held from the beginning: its interval is open.
+            if let Some(key) = vc.new_key().filter(|k| {
+                !keys
+                    .iter()
+                    .any(|h| h.key.tmb() == k.tmb() && h.until.is_none())
+            }) {
                 keys.push(HeldKey {
                     key: key.clone(),
                     from: cz.now(),

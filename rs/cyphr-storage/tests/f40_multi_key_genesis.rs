@@ -119,6 +119,25 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     };
 
     let mut scope1 = client.begin_commit();
+    let genesis_creates: Vec<Vec<u8>> = scope1
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(
+                &key_a.alg,
+                &coz::base64ct::Base64UrlUnpadded::decode_vec(
+                    key_a.prv.as_ref().expect("golden has prv"),
+                )
+                .expect("golden prv base64"),
+                &coz::base64ct::Base64UrlUnpadded::decode_vec(&key_a.pub_key)
+                    .expect("golden pub base64"),
+                &tmb_a,
+            ),
+            now,
+            "cyphr.me",
+        )
+        .expect("genesis key/creates (SPEC 7.7 Example 1)")
+        .iter()
+        .map(|c| serde_json::to_vec(c).expect("key/create blob"))
+        .collect();
     scope1
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis (client side)");
@@ -134,7 +153,11 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
             "cyphr.me",
         )
         .expect("genesis commit should finalize (client side)");
-    assert_eq!(commit1.len(), 2, "principal/create + commit/create");
+    assert_eq!(
+        commit1.len(),
+        genesis_creates.len() + 2,
+        "key/create per genesis key + principal/create + commit/create"
+    );
     let cc1_blob = commit_tx_raw_blob(commit1, 0);
 
     assert!(
@@ -157,7 +180,15 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     });
 
     engine
-        .submit_commit(principal_id, Some(genesis.clone()), &[&pc_blob, &cc1_blob])
+        .submit_commit(
+            principal_id,
+            Some(genesis.clone()),
+            &genesis_creates
+                .iter()
+                .chain([&pc_blob, &cc1_blob])
+                .map(Vec::as_slice)
+                .collect::<Vec<_>>(),
+        )
         .await
         .expect("genesis commit should submit through the real durable StorageEngine write path");
 

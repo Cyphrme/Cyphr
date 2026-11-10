@@ -41,12 +41,14 @@ impl Principal<eml::MemoryStorage> {
         Self::implicit_with_storage(key, eml::MemoryStorage::new())
     }
 
-    /// Create a principal with explicit genesis (multiple keys).
+    /// Create a principal with explicit genesis (multiple keys), the first
+    /// being the genesis key.
     ///
-    /// Per SPEC §3.2: Multi-key accounts require explicit genesis
-    /// - PR is absent at construction (established by principal/create)
-    ///
-    /// This is the Level 3+ genesis path.
+    /// This is the Level 3+ genesis path. The keys form the KT the genesis
+    /// commit establishes, but none is created yet: the genesis commit
+    /// carries a `key/create` for each, signed by the genesis key, before
+    /// its `principal/create` (SPEC 5.1 step 1, 5.3, 7.7 Example 1; see
+    /// [`CommitScope::create_genesis_keys`](crate::commit::CommitScope::create_genesis_keys)).
     ///
     /// # Errors
     ///

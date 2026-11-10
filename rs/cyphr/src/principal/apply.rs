@@ -269,11 +269,25 @@ impl<S: eml::Storage> Principal<S> {
                 if self.auth.revoked.contains_key(&id.to_b64()) {
                     return Err(Error::KeyRevoked);
                 }
-                // Check for duplicate key
-                if self.auth.keys.contains_key(&id.to_b64()) {
+                let tmb = id.to_b64();
+                if self.uncreated_genesis.first() == Some(&tmb) && self.auth.keys.contains_key(&tmb)
+                {
+                    // SPEC 5.1 step 1, 5.3, 7.7 Example 1: a genesis key is
+                    // in the KT from construction, and its `key/create` is
+                    // the explicit add the genesis carries. The first
+                    // genesis key signs every one of them, in genesis
+                    // order, and the key it discloses must be the one held.
+                    if self.genesis_keys.first() != Some(&cz.signer.to_b64())
+                        || self.auth.keys.get(&tmb).map(Key::pub_key) != Some(key.pub_key())
+                    {
+                        return Err(Error::UnknownKey);
+                    }
+                    self.core_mut().uncreated_genesis.remove(0);
+                } else if self.auth.keys.contains_key(&tmb) {
                     return Err(Error::DuplicateKey);
+                } else {
+                    self.add_key(key, cz.now);
                 }
-                self.add_key(key, cz.now);
             },
             CozKind::KeyDelete { id } => {
                 self.remove_key(id)?;
@@ -313,6 +327,16 @@ impl<S: eml::Storage> Principal<S> {
                 // Verify signer is a genesis key
                 let signer_b64 = cz.signer.to_b64();
                 if !self.genesis_keys.contains(&signer_b64) {
+                    return Err(Error::UnknownKey);
+                }
+                // SPEC 7.7 Example 1: genesis does not create a key
+                // implicitly. A genesis key still active without its
+                // `key/create` is a key the genesis never created.
+                if self
+                    .uncreated_genesis
+                    .iter()
+                    .any(|tmb| self.auth.keys.contains_key(tmb))
+                {
                     return Err(Error::UnknownKey);
                 }
                 // Verify that `id` matches the computed PR (SPEC §5.1 step 3:

@@ -83,6 +83,18 @@ fn establish_pg(p: &mut cyphr::Principal, signer: &Kp, now: i64) {
     let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
     let mut scope = p.begin_commit();
     scope
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(
+                &signer.alg,
+                &signer.prv,
+                &signer.pubb,
+                &signer.tmb,
+            ),
+            now,
+            "cyphr.me",
+        )
+        .expect("genesis key/creates (SPEC 7.7 Example 1)");
+    scope
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("apply");
     scope
