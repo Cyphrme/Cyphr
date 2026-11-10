@@ -67,10 +67,6 @@ pub enum LoadError {
         source: serde_json::Error,
     },
 
-    /// Unsupported cryptographic algorithm.
-    #[error("unsupported algorithm")]
-    UnsupportedAlgorithm,
-
     /// Invalid key material (e.g., base64 decode failure).
     #[error("invalid key material: {field}: {message}")]
     InvalidKeyMaterial { field: String, message: String },
@@ -219,7 +215,9 @@ fn stored_cozies(
                 WireError::Header(p) | WireError::Key(p) | WireError::Protocol(p) => {
                     LoadError::Protocol(p)
                 },
-                _ => LoadError::UnsupportedAlgorithm,
+                // `StoredCoz::new` raises only the variants above; the rest
+                // describe wire framing this path does not read.
+                _ => LoadError::Protocol(cyphr::Error::MalformedPayload),
             })
         })
         .collect()

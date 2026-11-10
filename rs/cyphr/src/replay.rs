@@ -29,7 +29,7 @@ use crate::error::Error;
 use crate::key::Key;
 use crate::parsed_coz::{CozHeader, compute_czd, typ};
 use crate::principal::Principal;
-use crate::state::PrincipalRoot;
+use crate::state::{HashAlg, PrincipalRoot, hash_alg_from_str};
 use crate::transaction_root::TransactionRoot;
 
 /// Why a wire blob is not a stored coz.
@@ -48,12 +48,9 @@ pub enum WireError {
     /// The pay breaks a core rule checked before verification, with the
     /// kind verification would give it (a missing `alg` is
     /// [`Error::MalformedPayload`], as [`verify_coz`](crate::verify_coz)
-    /// rules).
+    /// rules; an `alg` outside the algorithm table is [`Error::UnknownAlg`]).
     #[error("{0}")]
     Protocol(Error),
-    /// The pay's `alg` names no algorithm a coz digest can be computed in.
-    #[error("unsupported algorithm {0}")]
-    UnsupportedAlg(String),
     /// The pay fails the core's header parse (`typ`, `tmb`, `now`).
     #[error("pay header: {0}")]
     Header(Error),
@@ -76,6 +73,7 @@ pub struct StoredCoz {
     pay_json: Vec<u8>,
     sig: Vec<u8>,
     alg: String,
+    hash_alg: HashAlg,
     czd: Czd,
     header: CozHeader,
     key: Option<Key>,
@@ -89,9 +87,9 @@ impl StoredCoz {
     /// # Errors
     ///
     /// [`WireError::Header`] when the pay fails the core's header parse;
-    /// [`WireError::Protocol`] ([`Error::MalformedPayload`]) for a pay with
-    /// no `alg`; [`WireError::UnsupportedAlg`] when no coz digest can be
-    /// computed in the one it names.
+    /// [`WireError::Protocol`]: [`Error::MalformedPayload`] for a pay with
+    /// no `alg`, [`Error::UnknownAlg`] for one the algorithm table does not
+    /// hold.
     pub fn new(pay: &Value, sig: Vec<u8>, key: Option<Key>) -> Result<Self, WireError> {
         let mut pay = pay.clone();
         canonicalize(&mut pay);
@@ -105,14 +103,18 @@ impl StoredCoz {
         // impossible case without a panic.
         let pay_json =
             serde_json::to_vec(&pay).map_err(|_| WireError::Header(Error::MalformedPayload))?;
+        let hash_alg = hash_alg_from_str(&alg).map_err(WireError::Protocol)?;
+        // Every algorithm in the table has a coz digest; a `None` here is a
+        // table row coz cannot compute, named rather than defaulted.
         let czd = compute_czd(&pay_json, &sig, &alg)
-            .ok_or_else(|| WireError::UnsupportedAlg(alg.clone()))?;
+            .ok_or_else(|| WireError::Protocol(Error::UnsupportedAlgorithm(alg.clone())))?;
         let key = key.filter(|_| typ::is_key_introducing(&header.typ));
         Ok(Self {
             pay,
             pay_json,
             sig,
             alg,
+            hash_alg,
             czd,
             header,
             key,
@@ -168,6 +170,13 @@ impl StoredCoz {
     #[must_use]
     pub fn alg(&self) -> &str {
         &self.alg
+    }
+
+    /// The hash algorithm of the pay's `alg`: the algorithm [`Self::czd`]
+    /// is in.
+    #[must_use]
+    pub fn hash_alg(&self) -> HashAlg {
+        self.hash_alg
     }
 
     /// The coz digest, in the pay's algorithm.

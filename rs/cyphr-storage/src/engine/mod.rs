@@ -2048,8 +2048,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
             let mut indexed = Vec::with_capacity(cozies.len());
             for coz in &cozies {
-                let source_alg = cyphr::state::hash_alg_from_str(coz.alg())
-                    .unwrap_or(cyphr::state::HashAlg::Sha256);
+                let source_alg = coz.hash_alg();
                 let tagged = cyphr::state::TaggedCzd::new(coz.czd(), source_alg);
 
                 let post_active_algs = active_algs.clone();

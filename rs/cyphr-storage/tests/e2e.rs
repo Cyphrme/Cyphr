@@ -247,7 +247,6 @@ fn load_error_name(e: &LoadError) -> &'static str {
             _ => "UnknownProtocolError",
         },
         LoadError::Json { .. } => "JsonError",
-        LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
     }
 }
