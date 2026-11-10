@@ -38,7 +38,7 @@ pub fn run(cli: &Cli, command: &DataCommands) -> crate::Result<()> {
 }
 
 /// One signed coz: the pay as signed, its signature and digest.
-struct Signed {
+pub(super) struct Signed {
     pay: Value,
     pay_bytes: Vec<u8>,
     sig: Vec<u8>,
@@ -47,14 +47,14 @@ struct Signed {
 
 impl Signed {
     /// The wire coz `{pay, sig}`.
-    fn wire(&self) -> Value {
+    pub(super) fn wire(&self) -> Value {
         json!({"pay": self.pay, "sig": Base64UrlUnpadded::encode_string(&self.sig)})
     }
 }
 
 /// Sign `fields` plus the signer's `alg` and `tmb`, members sorted as the
 /// core signs its own cozies.
-fn sign(key: &StoredKey, tmb: &str, mut fields: Value) -> crate::Result<Signed> {
+pub(super) fn sign(key: &StoredKey, tmb: &str, mut fields: Value) -> crate::Result<Signed> {
     fields["alg"] = key.alg.clone().into();
     fields["tmb"] = tmb.into();
     if let Some(obj) = fields.as_object_mut() {

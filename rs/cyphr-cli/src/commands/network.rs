@@ -12,11 +12,12 @@ use cyphr_storage::{CommitEntry, Genesis, KeyEntry, load_principal_from_commits}
 use serde_json::{Value, json};
 
 use super::common::{
-    RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
-    local_genesis, open_store, parse_principal_genesis, parse_store, raw_chain, store_path,
+    Placed, RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
+    local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
+    submit_history,
 };
 use crate::choices::Choices;
-use crate::keystore::JsonKeyStore;
+use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
 
@@ -147,32 +148,15 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             }
             .into());
         }
-        let mut applied = 0usize;
-        // A bundle precedes the commit at its `after`; one the local store
-        // already holds is a no-op (SPEC 7.6).
-        let mut bundles = actions.iter().filter(|(after, _)| *after >= local.len());
-        let mut next = bundles.next();
-        for (i, blobs) in theirs.iter().enumerate().skip(local.len()) {
-            while let Some((_, held)) = next.filter(|(after, _)| *after <= i) {
-                let refs: Vec<&[u8]> = held.iter().map(Vec::as_slice).collect();
-                store
-                    .submit_commit(&principal_id, genesis.clone(), &refs)
-                    .await?;
-                next = bundles.next();
-            }
-            let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-            store
-                .submit_commit(&principal_id, genesis.clone(), &refs)
-                .await?;
-            applied += 1;
-        }
-        while let Some((_, held)) = next {
-            let refs: Vec<&[u8]> = held.iter().map(Vec::as_slice).collect();
-            store
-                .submit_commit(&principal_id, genesis.clone(), &refs)
-                .await?;
-            next = bundles.next();
-        }
+        let applied = submit_history(
+            &store,
+            &principal_id,
+            genesis.clone(),
+            &theirs,
+            &actions,
+            local.len(),
+        )
+        .await?;
         Ok::<_, Error>(applied)
     })??;
 
@@ -306,11 +290,15 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let path = store_path(cli)?.to_owned();
 
     let old = parse_store(cli)?;
-    let (local, theirs) = block_on(async {
-        let theirs = peer.chain(&wire).await?.commits;
+    let (local, history) = block_on(async {
+        let history = peer.chain(&wire).await?;
         let local = raw_chain(&old, &principal_id).await?;
-        Ok::<_, Error>((local, theirs))
+        Ok::<_, Error>((local, history))
     })??;
+    let PeerHistory {
+        commits: theirs,
+        actions: their_actions,
+    } = history;
     let common = local
         .iter()
         .zip(&theirs)
@@ -331,6 +319,14 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         let out = json!({"identity": identity, "peer": peer_url, "rebased": 0});
         return emit(cli, &out, || println!("Nothing to rebase"));
     }
+
+    // The data actions recorded locally, which a rebuild from the peer's
+    // history must not lose (I1: the blob store is the source of truth).
+    let local_actions: Vec<(Vec<u8>, Vec<u8>)> =
+        load_principal_from_engine(&old, &keystore, identity)?
+            .actions()
+            .map(|a| Ok((a.czd().as_bytes().to_vec(), serde_json::to_vec(a.raw())?)))
+            .collect::<crate::Result<_>>()?;
 
     let mut tmp = path.clone().into_os_string();
     tmp.push(".rebase");
@@ -353,21 +349,59 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     Some(g) => g,
                     None => old.resolve_genesis(&summary.principal_id, &[]).await?,
                 };
-                for c in raw_chain(&old, &summary.principal_id).await? {
-                    let refs: Vec<&[u8]> = c.blobs.iter().map(Vec::as_slice).collect();
-                    new.submit_commit(&summary.principal_id, Some(g.clone()), &refs)
-                        .await?;
-                }
+                let commits: Vec<Vec<Vec<u8>>> = raw_chain(&old, &summary.principal_id)
+                    .await?
+                    .into_iter()
+                    .map(|c| c.blobs)
+                    .collect();
+                let actions: Vec<(usize, Vec<Vec<u8>>)> = old
+                    .get_patch(&summary.principal_id, None, None)
+                    .await?
+                    .actions
+                    .into_iter()
+                    .map(|a| (a.after as usize, a.blobs))
+                    .collect();
+                submit_history(&new, &summary.principal_id, Some(g), &commits, &actions, 0).await?;
             }
-            for blobs in &theirs {
-                let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-                new.submit_commit(&principal_id, Some(genesis.clone()), &refs)
-                    .await?;
-            }
+            submit_history(
+                &new,
+                &principal_id,
+                Some(genesis.clone()),
+                &theirs,
+                &their_actions,
+                0,
+            )
+            .await?;
             Ok::<_, Error>(())
         })??;
 
         let mut principal = load_principal_from_engine(&new, &keystore, identity)?;
+        // Re-record the local actions the peer's history lacks, deduplicated
+        // by czd, as one action-only bundle (recorded in `now` order).
+        let held: std::collections::HashSet<Vec<u8>> = principal
+            .actions()
+            .map(|a| a.czd().as_bytes().to_vec())
+            .collect();
+        // An action older than the peer's latest commit is refused as past
+        // (SPEC 14.1), so each is re-signed with the current `now`, as the
+        // rebase re-signs the local commits it replays.
+        let now = current_timestamp();
+        let missing = local_actions
+            .iter()
+            .filter(|(czd, _)| !held.contains(czd))
+            .map(|(_, blob)| {
+                let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
+                pay["now"] = now.into();
+                let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
+                let signed = super::data::sign(keystore.get(tmb)?, tmb, pay.clone())?;
+                Ok(serde_json::to_vec(&signed.wire())?)
+            })
+            .collect::<crate::Result<Vec<Vec<u8>>>>()?;
+        if !missing.is_empty() {
+            let refs: Vec<&[u8]> = missing.iter().map(Vec::as_slice).collect();
+            block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &refs))??;
+            principal = load_principal_from_engine(&new, &keystore, identity)?;
+        }
         for intent in &replay {
             match intent {
                 Intent::AddKey { id, signer } => {
@@ -483,18 +517,10 @@ fn replays(
             String::new(),
         ))
     };
-    // The bundles precede the commit at their `after`, as an export writes
-    // them, so a `ds/create` finds the actions it includes.
     let mut entries = Vec::with_capacity(chain.len() + actions.len());
-    let mut bundles = actions.iter().peekable();
-    for (i, blobs) in chain.iter().enumerate() {
-        while let Some((_, held)) = bundles.next_if(|(after, _)| *after <= i) {
-            entries.push(line(held)?);
-        }
+    for step in place(chain, actions.iter().map(|(a, b)| (*a, b))) {
+        let (Placed::Commit(_, blobs) | Placed::Actions(_, blobs)) = step;
         entries.push(line(blobs)?);
-    }
-    for (_, held) in bundles {
-        entries.push(line(held)?);
     }
     load_principal_from_commits(genesis.clone(), &entries)
         .map(|_| ())

@@ -605,6 +605,43 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
     );
 }
 
+/// Claim (SPEC 4.8.1, 4.8.2, I1): a rebase onto a peer's newer tip loses no
+/// data action recorded locally. The action stays in the rebased device's DT,
+/// so a following `ds/create` includes it, the peer accepts it, and a fresh
+/// client verifies the result.
+/// End-to-end: yes (two devices of one principal, one real server).
+/// Turns red if rebase rebuilds the store from commits alone: the action is
+/// gone, `data commit` has no DR to include and fails.
+#[test]
+fn data_rebase_keeps_local_actions() {
+    let server = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &server.url), "base push");
+    let b = a.clone_identity(&id);
+    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+
+    // B records an action and a commit it does not push; A moves the peer on.
+    b.setup(&["data", "action", &ident, &signer, "--msg=mine"]);
+    b.add_key(&id);
+    a.add_key(&id);
+    accepted(&a.push(&id, &server.url), "A's newer commit");
+    assert!(!b.push(&id, &server.url).ok, "B is stale");
+
+    b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
+    let made = b.setup(&["data", "commit", &ident, &signer]);
+    let pushed = b.push(&id, &server.url);
+    accepted(&pushed, "push of the rebased history with its ds/create");
+    assert_eq!(pushed.json()["tip"], made["commit_id"]);
+
+    let reader = User::new();
+    let fetched = reader.run(&["fetch", &ident, &format!("--peer={}", server.url)]);
+    assert!(fetched.ok, "fetch: {}", fetched.stderr);
+    let v = reader.setup(&["verify", &ident, &format!("--peer={}", server.url)]);
+    assert_eq!(v["verdict"], "Active");
+    assert_eq!(v["tip"], made["commit_id"]);
+}
+
 // ----------------------------------------------------------------- verify
 
 fn verify_args<'a>(id: &'a str, extra: &[&'a str]) -> Vec<&'a str> {

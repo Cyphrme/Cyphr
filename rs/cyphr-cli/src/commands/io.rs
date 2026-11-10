@@ -8,8 +8,8 @@ use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
-    parse_principal_genesis, parse_store, save_principal_to_engine,
+    Placed, block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
+    parse_principal_genesis, parse_store, place, save_principal_to_engine,
 };
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
@@ -31,10 +31,9 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     // Action-only lines carry the data actions a `ds/create` includes, each
     // ahead of the commit that follows it, as `export_commits` writes them.
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let mut bundles = block_on(store.get_patch(&principal_id, None, None))??
+    let bundles = block_on(store.get_patch(&principal_id, None, None))??
         .actions
-        .into_iter()
-        .peekable();
+        .into_iter();
     let action_line = |blobs: &[Vec<u8>]| -> crate::Result<String> {
         let cozies = blobs
             .iter()
@@ -43,14 +42,12 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
         let line = CommitEntry::new(cozies, Vec::new(), String::new(), None, None, String::new());
         Ok(serde_json::to_string(&line)?)
     };
-    for (i, commit) in commits.iter().enumerate() {
-        while let Some(held) = bundles.next_if(|a| a.after <= i as u64) {
-            writeln!(writer, "{}", action_line(&held.blobs)?)?;
-        }
-        writeln!(writer, "{}", serde_json::to_string(commit)?)?;
-    }
-    for held in bundles {
-        writeln!(writer, "{}", action_line(&held.blobs)?)?;
+    for step in place(
+        commits.iter().map(|c| Ok(serde_json::to_string(c)?)),
+        bundles.map(|a| (a.after as usize, action_line(&a.blobs))),
+    ) {
+        let (Placed::Commit(_, line) | Placed::Actions(_, line)) = step;
+        writeln!(writer, "{}", line?)?;
     }
     writer.flush()?;
 
