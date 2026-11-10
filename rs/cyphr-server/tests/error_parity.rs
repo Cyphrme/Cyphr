@@ -141,7 +141,10 @@ async fn wrong_alg_is_alg_mismatch_on_push_and_import() {
         "the push refusal names AlgMismatch: {reply}"
     );
     assert!(
-        matches!(imported, Err(LoadError::Protocol(cyphr::Error::AlgMismatch))),
+        matches!(
+            imported,
+            Err(LoadError::Protocol(cyphr::Error::AlgMismatch))
+        ),
         "import rules a wrong alg AlgMismatch: {imported:?}"
     );
 }

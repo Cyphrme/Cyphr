@@ -61,8 +61,7 @@ impl Key {
     /// - `UnknownAlg`: `alg` is unknown or `pub_key` is malformed for it
     pub fn from_pub_key(alg: impl Into<String>, pub_key: Vec<u8>) -> Result<Self> {
         let alg = coz::Alg::from_str(&alg.into()).ok_or(Error::UnknownAlg)?;
-        let tmb =
-            coz::compute_thumbprint_for_alg(alg.name(), &pub_key).ok_or(Error::UnknownAlg)?;
+        let tmb = coz::compute_thumbprint_for_alg(alg.name(), &pub_key).ok_or(Error::UnknownAlg)?;
         Ok(Self {
             alg,
             tmb,

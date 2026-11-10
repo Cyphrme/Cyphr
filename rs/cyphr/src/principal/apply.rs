@@ -642,12 +642,8 @@ impl<S: eml::Storage> Principal<S> {
         // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.
         let leaves: Vec<_> = core.auth.keys.values().map(key_leaf).collect();
-        let (kr, ar, sr) = derive_state_roots_with_nonces(
-            &leaves,
-            core.dr.as_ref(),
-            &core.nonces,
-            &active_algs,
-        )?;
+        let (kr, ar, sr) =
+            derive_state_roots_with_nonces(&leaves, core.dr.as_ref(), &core.nonces, &active_algs)?;
         core.kr = kr;
         core.ar = ar;
         // core.sr/core.pt are NOT written yet — the arrow validation below

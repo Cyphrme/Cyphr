@@ -1,7 +1,6 @@
 //! Genesis constructors, and the genesis finalization
 //! (`principal/create`) that freezes PG.
 
-
 use super::{
     Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees,
     validate_genesis_keys,

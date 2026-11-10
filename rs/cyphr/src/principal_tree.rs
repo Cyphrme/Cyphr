@@ -378,12 +378,18 @@ mod tests {
         pt.set_sr(&sr(&[0xAA; 32]), &algs).unwrap();
         pt.set_cr(&cr(&[0xBB; 32]), &algs).unwrap();
         let small = nonce_values(10);
-        let small: Vec<_> = small.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
+        let small: Vec<_> = small
+            .iter()
+            .map(|n| (n.as_slice(), HashAlg::Sha256))
+            .collect();
         pt.set_nonces(&small, &algs).unwrap();
         let before = pt.pr(&algs).unwrap();
 
         let big = nonce_values(1000);
-        let mut fwd: Vec<_> = big.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
+        let mut fwd: Vec<_> = big
+            .iter()
+            .map(|n| (n.as_slice(), HashAlg::Sha256))
+            .collect();
         pt.set_nonces(&fwd, &algs).unwrap();
         let grown = pt.pr(&algs).unwrap();
         fwd.reverse();

@@ -18,9 +18,10 @@
 //!   concatenation is only unambiguously parseable when children share a width — see
 //!   `spine::nary_mr`'s contract), so each non-native thumbprint is converted to its canonical
 //!   digest under the target algorithm before folding, from the algorithm its key names, the same
-//!   `hash_bytes` conversion [`crate::state::compute_dr`] applies to czd content. This is a real, authorized divergence from `compute_kr`'s
-//!   raw-concat-regardless-of-size behavior for mixed-algorithm keysets — single-algorithm keysets
-//!   are unaffected (every thumbprint is already native, so conversion is a no-op).
+//!   `hash_bytes` conversion [`crate::state::compute_dr`] applies to czd content. This is a real,
+//!   authorized divergence from `compute_kr`'s raw-concat-regardless-of-size behavior for
+//!   mixed-algorithm keysets — single-algorithm keysets are unaffected (every thumbprint is already
+//!   native, so conversion is a no-op).
 //! - [`AuthTree`] — a k=2 role-slot node: cell 0 = KT's root, cell 1 = RT's root (Rule Tree — Level
 //!   5, not yet implemented, permanently absent). Its root is AR. Because cell 1 never gets set, AR
 //!   always promotes from KT alone (native singleton promotion — see
@@ -233,7 +234,10 @@ impl KeyTree {
                 crate::state::infer_alg_from_len(bytes.len())
                     .map(|alg| (bytes, alg))
                     .ok_or_else(|| {
-                        Error::UnsupportedAlgorithm(format!("invalid digest length: {}", bytes.len()))
+                        Error::UnsupportedAlgorithm(format!(
+                            "invalid digest length: {}",
+                            bytes.len()
+                        ))
                     })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -612,7 +616,10 @@ mod tests {
     /// `nonces` nonces.
     fn kt_root(keys: usize, nonces: usize, algs: &[HashAlg]) -> Vec<u8> {
         let raw = distinct_tmbs(keys);
-        let refs: Vec<Leaf<'_>> = raw.iter().map(|t| (t.as_bytes(), HashAlg::Sha256)).collect();
+        let refs: Vec<Leaf<'_>> = raw
+            .iter()
+            .map(|t| (t.as_bytes(), HashAlg::Sha256))
+            .collect();
         let nv = nonce_values(nonces);
         let nr: Vec<Leaf<'_>> = nv.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
         let kt = KeyTree::build_tree_with_nonces(&refs, &nr, algs)
