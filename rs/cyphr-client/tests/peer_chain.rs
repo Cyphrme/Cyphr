@@ -13,7 +13,9 @@ mod common;
 
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::{PeerChain, PeerFailure};
+use std::sync::atomic::AtomicI64;
+
+use cyphr_client::{PeerChain, PeerFailure, PeerLimits};
 
 /// Claim: a client that pinned a peer holds only what it has followed, so a
 /// statement signed by a key the peer introduced LATER is refused until the
@@ -607,4 +609,126 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
         (3, peer.principal.pr_tagged().expect("pr")),
         "the client reaches the writer's PR"
     );
+}
+
+/// Claim: a gossip participant cannot make a client re-download a peer
+/// chain on demand. Each unverified body naming a key the held chain lacks
+/// asks `verify_tip_following` to follow; at most one full `/patch` fetch
+/// and replay is spent per configured interval per peer, and the refusal
+/// is the typed `FetchTooSoon`, never a silent re-fetch. The interval runs
+/// on the injected clock.
+///
+/// Turns red if: the flood causes more than one fetch inside the interval;
+/// the refusal is another failure; or the fetch is not allowed again once
+/// the injected clock passes the interval.
+/// End-to-end scenario: yes (a flood of unknown-key tips against a carrier
+/// that counts the fetches it serves).
+#[tokio::test]
+async fn hardening_unknown_tmb_flood_fetches_once_per_interval() {
+    static NOW: AtomicI64 = AtomicI64::new(1_700_001_000);
+    fn clock() -> i64 {
+        NOW.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    let (g, k1) = (kp(), kp());
+    let mut peer = Chain::new(&g).await;
+    let c1 = peer.commit(&k1, 1_700_000_100).await;
+    let pipe = Pipe::new(peer.patch(std::slice::from_ref(&c1)));
+    let (pr, _) = subject();
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000))
+        .await
+        .with_clock(clock)
+        .with_limits(PeerLimits {
+            min_follow_interval_secs: 60,
+            max_patch_entries: 100,
+        });
+
+    // The first unknown key follows once and stays refused.
+    assert!(matches!(
+        held.verify_tip_following(&pipe, &tip_envelope(&kp()), &pr)
+            .await,
+        Err(PeerFailure::KeyNotActive { .. })
+    ));
+    assert_eq!(pipe.exchanges(), 1);
+
+    for _ in 0..50 {
+        let refused = held
+            .verify_tip_following(&pipe, &tip_envelope(&kp()), &pr)
+            .await;
+        assert!(
+            matches!(refused, Err(PeerFailure::FetchTooSoon { .. })),
+            "a flood inside the interval is refused with the typed failure, got {refused:?}"
+        );
+    }
+    assert_eq!(pipe.exchanges(), 1, "50 more bodies fetched nothing");
+
+    NOW.store(1_700_001_061, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(
+        held.verify_tip_following(&pipe, &tip_envelope(&kp()), &pr)
+            .await,
+        Err(PeerFailure::KeyNotActive { .. })
+    ));
+    assert_eq!(pipe.exchanges(), 2, "one more fetch once the interval ran");
+}
+
+/// Claim: a patch longer than the configured cap is refused before any
+/// replay, with the typed `PatchTooLarge`, and the held chain is exactly
+/// what it was.
+///
+/// Turns red if: an over-cap patch is replayed or adopted, or the refusal
+/// is another failure.
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn hardening_patch_over_the_cap_is_refused() {
+    let (g, k1, k2) = (kp(), kp(), kp());
+    let mut peer = Chain::new(&g).await;
+    let c1 = peer.commit(&k1, 1_700_000_100).await;
+    let c2 = peer.commit(&k2, 1_700_000_200).await;
+    let pipe = Pipe::new(peer.patch(&[c1, c2]));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000))
+        .await
+        .with_limits(PeerLimits {
+            min_follow_interval_secs: 0,
+            max_patch_entries: 2,
+        });
+    let before = held.held_tip().expect("tip");
+    assert!(matches!(
+        held.follow(&pipe).await,
+        Err(PeerFailure::PatchTooLarge {
+            offered: 3,
+            cap: 2
+        })
+    ));
+    assert_eq!(held.held_tip().expect("tip"), before);
+}
+
+/// Claim: the peer chain replays with the injected clock, not the ambient
+/// one: a clock that reads before the commits' `now` refuses the follow
+/// (the core's future-`now` bound), and the same chain follows under a
+/// clock that reads after them.
+///
+/// Turns red if: `follow` replays with the system clock (the early-clock
+/// follow then succeeds).
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn hardening_follow_replays_with_the_injected_clock() {
+    fn early() -> i64 {
+        1_600_000_000
+    }
+    fn late() -> i64 {
+        1_700_001_000
+    }
+    let (g, k1) = (kp(), kp());
+    let mut peer = Chain::new(&g).await;
+    let c1 = peer.commit(&k1, 1_700_000_100).await;
+    let pipe = Pipe::new(peer.patch(std::slice::from_ref(&c1)));
+    let pin = async |clock: cyphr::principal::Clock| {
+        PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000))
+            .await
+            .with_clock(clock)
+    };
+    assert!(matches!(
+        pin(early).await.follow(&pipe).await,
+        Err(PeerFailure::Replay { .. })
+    ));
+    pin(late).await.follow(&pipe).await.expect("late clock");
 }
