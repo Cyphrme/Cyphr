@@ -397,26 +397,64 @@ impl Harness {
     /// Make a peer answer with an envelope of version `v`.
     ///
     /// A shipped peer cannot be rigged (the server has no hook, by design),
-    /// so the hostile party is a responder the harness runs: it
-    /// authenticates as a fresh principal, answers every request with
-    /// envelope `v`, and a transport client must fail closed on it. The
-    /// action succeeds only if that held, and otherwise panics: a client
-    /// that accepted an unknown version is a defect, not a refusal to
-    /// report. `_peer` names the peer the scenario means to rig.
-    pub async fn serve_envelope_version(&self, _peer: &str, v: u32) -> ActionResult<()> {
+    /// so the hostile party is a responder the harness runs, in two forms.
+    /// Over the Noise transport it authenticates as a fresh principal,
+    /// answers every request with envelope `v`, and a transport client must
+    /// fail closed on it; the action panics if one accepted it, since that
+    /// is a defect, not a refusal to report. Over HTTP it takes the named
+    /// peer's place behind the proxy, so every client that reads `peer`
+    /// from now on is served `v` and the scenario sees what the CLI does
+    /// with it.
+    pub async fn serve_envelope_version(&self, peer: &str, v: u32) -> ActionResult<()> {
         let closed = crate::transport::client_fails_closed_on_version(u64::from(v)).await;
         match closed {
-            Ok(true) => Ok(()),
+            Ok(true) => {},
             Ok(false) => panic!("a transport client accepted envelope v={v}"),
             Err(e) => panic!("harness defect: the hostile responder could not run: {e}"),
         }
+        let hostile = crate::transport::serve_http_envelope_version(u64::from(v))
+            .await
+            .map_err(|e| ActionError::Failed(format!("hostile HTTP responder: {e}")))?;
+        self.proxy.redirect(peer, hostile);
+        Ok(())
     }
 
-    /// Flood a peer with `count` bogus evidence submissions. A peer takes no
-    /// evidence from outside today (`/evidence` is read-only); submission
-    /// between peers arrives with peer gossip (G2).
-    pub async fn flood_evidence(&self, _peer: &str, _count: usize) -> ActionResult<()> {
-        unsupported("flood_evidence", Capability::PeerGossip)
+    /// Flood a peer with `count` requests naming principals and keys it has
+    /// never seen, on the two routes a gossiping peer is asked: `/evidence`
+    /// and `/revoked`. A peer must answer each (served or refused by its
+    /// own limits) and never fail it: a connection that breaks or a 5xx is
+    /// a defect, reported as a failed action.
+    pub async fn flood_evidence(&self, peer: &str, count: usize) -> ActionResult<()> {
+        let base = format!("http://{}", self.peer(peer).addr);
+        let mut sent = 0;
+        while sent < count {
+            let batch = (count - sent).min(100);
+            let mut set = tokio::task::JoinSet::new();
+            for i in sent..sent + batch {
+                let http = self.http.clone();
+                // 43 base64url characters: the shape of a thumbprint or an
+                // unpadded SHA-256 PG, which is never one a peer holds.
+                let bogus = format!("{i:0>43}");
+                let url = if i % 2 == 0 {
+                    format!("{base}/evidence?pr={bogus}")
+                } else {
+                    format!("{base}/revoked?tmbs={bogus}")
+                };
+                set.spawn(async move { http.get(url).send().await.map(|r| r.status()) });
+            }
+            while let Some(answer) = set.join_next().await {
+                let status = answer
+                    .map_err(|e| ActionError::Failed(format!("flood task: {e}")))?
+                    .map_err(|e| ActionError::Failed(format!("`{peer}` dropped a request: {e}")))?;
+                if status.is_server_error() {
+                    return Err(ActionError::Failed(format!(
+                        "`{peer}` answered a flood request with {status}"
+                    )));
+                }
+            }
+            sent += batch;
+        }
+        Ok(())
     }
 
     /// Stop a peer's server process.

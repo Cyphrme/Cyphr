@@ -61,6 +61,8 @@ pub enum Probe {
     Cli(&'static [&'static str], Option<&'static str>),
     /// `cyphr-server <args>` exits 0.
     Server(&'static [&'static str]),
+    /// `cyphr-server <args>` exits 0 and its stdout contains the text.
+    ServerHelp(&'static [&'static str], &'static str),
     /// `GET <path>` on a running peer answers something other than 404.
     Route(&'static str),
     /// A peer's startup output has a line with this prefix.
@@ -143,10 +145,11 @@ impl Capability {
             // lookup's own 404 for an unknown principal as an absent route.
             Self::BranchStore => Probe::Route("/branches"),
             Self::Evidence => Probe::Route("/evidence?pr=probe"),
-            // The brief's probe was "config accepts [gossip] peers", but the
-            // server's config does not reject unknown keys, so acceptance
-            // cannot discriminate; a served route can.
-            Self::PeerGossip => Probe::Route("/gossip"),
+            // Gossip is a timer inside the server calling the client's pull
+            // step, with no route of its own. Its operator surface is the
+            // flag that names the peers; the scenarios that need it
+            // (`gossip_timer`, S02, S03, S04) observe the behaviour itself.
+            Self::PeerGossip => Probe::ServerHelp(&["serve", "--help"], "--gossip-peer"),
             Self::ClientGossip => Probe::Cli(&["gossip", "--help"], None),
             Self::Audit => Probe::Cli(&["audit", "--help"], None),
             Self::Pinning => Probe::Cli(&["watch", "--help"], None),
@@ -203,6 +206,14 @@ impl Probe {
                     .map_err(|e| run(e.to_string()))?
                     .status;
                 Ok(status.success())
+            },
+            Probe::ServerHelp(args, needle) => {
+                let out = tokio::process::Command::new(&h.bins.server)
+                    .args(*args)
+                    .output()
+                    .await
+                    .map_err(|e| run(e.to_string()))?;
+                Ok(out.status.success() && String::from_utf8_lossy(&out.stdout).contains(needle))
             },
             Probe::Route(path) => {
                 let peer = h

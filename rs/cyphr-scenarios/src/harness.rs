@@ -76,6 +76,24 @@ impl Harness {
         })
     }
 
+    /// Like [`Harness::start`], with every peer gossiping with every other
+    /// every `interval_secs`, each over its own proxy route (`from` dials
+    /// `to`), so partitioning two peers cuts their gossip link and the
+    /// proxy counts the attempts.
+    pub async fn start_gossiping(names: &[&str], interval_secs: u64) -> Result<Harness, PeerError> {
+        let h = Self::start(names).await?;
+        for from in names {
+            let mut routes = Vec::new();
+            for to in names.iter().filter(|to| to != &from) {
+                routes.push(h.route(from, to).await);
+            }
+            h.peer(from)
+                .enable_gossip(h.bins, &routes, interval_secs)
+                .await?;
+        }
+        Ok(h)
+    }
+
     /// Remember `p`'s genesis public key (a public-only keystore entry).
     pub fn record_genesis(&self, p: &Principal, entry: serde_json::Value) {
         self.genesis
