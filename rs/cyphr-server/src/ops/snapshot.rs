@@ -11,8 +11,8 @@
 //! The check detects a torn copy, it does not prevent one: a change that
 //! leaves every commit count as it was would pass it: chain writes always
 //! add a commit, but a write to the observation store (the key death-set)
-//! does not, and is not detected. `index/` is derived (ADR-0002) and is neither copied nor trusted back: a restore drops it
-//! and rebuilds from the restored blobs (I1).
+//! does not, and is not detected. `index/` is derived (ADR-0002) and is neither copied nor trusted
+//! back: a restore drops it and rebuilds from the restored blobs (I1).
 //!
 //! **Keys.** The copy is of `record/` only. The server's signing key
 //! lives at `signing_key_path`; a backup refuses to run if that file sits
