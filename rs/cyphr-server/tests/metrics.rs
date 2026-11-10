@@ -198,17 +198,13 @@ async fn metrics_carry_no_identifier_and_bounded_labels() {
     }
     // Distinct, content-bearing refused bodies.
     let (series_after_one, _) = {
-        let _ = push(
-            &app,
-            format!(r#"{{"principal_id":"{marker}-0","blobs":[]}}"#),
-        )
-        .await;
+        let _ = push(&app, format!(r#"{{"principal_id":"{marker}-0","txs":[]}}"#)).await;
         scrape(&app).await
     };
     for i in 1..20 {
         let _ = push(
             &app,
-            format!(r#"{{"principal_id":"{marker}-{i}","blobs":[]}}"#),
+            format!(r#"{{"principal_id":"{marker}-{i}","txs":[]}}"#),
         )
         .await;
     }

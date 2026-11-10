@@ -56,7 +56,7 @@ fn patch_body(auth: &Authority, pr: &str) -> Vec<u8> {
         "commit_id": digest(9),
         "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },
     });
-    let entry = |seq: u64, blob: &[u8]| serde_json::json!({ "sequence": seq, "blobs": [Base64UrlUnpadded::encode_string(blob)] });
+    let entry = |seq: u64, blob: &[u8]| serde_json::json!({ "sequence": seq, "txs": [[Base64UrlUnpadded::encode_string(blob)]] });
     serde_json::to_vec(&serde_json::json!({
         "v": 1,
         "payload": { "entries": [entry(0, b"blob-zero"), entry(1, b"blob-one")] },

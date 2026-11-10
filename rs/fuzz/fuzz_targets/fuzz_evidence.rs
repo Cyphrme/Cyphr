@@ -57,8 +57,8 @@ fuzz_target!(|data: &[u8]| {
                 "pg": b64(&[7; 32]),
                 "height": u64::arbitrary(&mut u).unwrap_or_default() % 4,
                 "pre": if bool::arbitrary(&mut u).unwrap_or(false) { Value::Null } else { json!(blob(&mut u)) },
-                "a": {"blobs": [blob(&mut u)]},
-                "b": {"blobs": [blob(&mut u), blob(&mut u)]},
+                "a": {"txs": [[blob(&mut u)]]},
+                "b": {"txs": [[blob(&mut u)], [blob(&mut u)]]},
             })
         },
         _ => {

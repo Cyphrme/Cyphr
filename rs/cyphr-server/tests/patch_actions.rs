@@ -11,6 +11,7 @@
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::Principal;
+use cyphr::replay::WireBundle;
 use cyphr_server::build_router;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
@@ -48,11 +49,7 @@ fn wire(pay: &[u8], sig: &[u8]) -> Vec<u8> {
 }
 
 fn push_body(id: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_blobs(id, blobs)
 }
 
 fn blobs_of(entry: &serde_json::Value) -> Vec<Vec<u8>> {
@@ -64,18 +61,15 @@ fn blobs_of(entry: &serde_json::Value) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn line(blobs: &[Vec<u8>]) -> CommitEntry {
-    let cozies: Vec<serde_json::Value> = blobs
-        .iter()
-        .map(|b| serde_json::from_slice(b).expect("coz"))
-        .collect();
-    // A key a `key/create` discloses rides on the line, as a bundle writes it.
-    let keys = cozies
-        .iter()
-        .filter_map(|c| c.get("key"))
-        .map(|k| serde_json::from_value(k.clone()).expect("key entry"))
-        .collect();
-    CommitEntry::new(cozies, keys, String::new(), None, None, String::new())
+/// The bundle line of a served action-only bundle: its actions.
+fn action_line(blobs: &[Vec<u8>]) -> CommitEntry {
+    CommitEntry::from_bundle(&WireBundle::actions(blobs.to_vec())).expect("action line")
+}
+
+/// The bundle line of a served commit entry (SPEC 4.6.2 `txs`, `keys`).
+fn entry_line(entry: &serde_json::Value) -> CommitEntry {
+    let bundle: WireBundle = serde_json::from_value(entry.clone()).expect("entry bundle");
+    CommitEntry::from_bundle(&bundle).expect("entry line")
 }
 
 /// Backs SPEC 4.8.2 across the wire: a data action pushed alone, then a
@@ -98,7 +92,7 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
         .expect("genesis");
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    let (s, b) = post_json(app.clone(), "/push", push_body(&id, &genesis)).await;
+    let (s, b) = post_json(app.clone(), "/push", common::push_body(&id, &genesis)).await;
     assert_eq!(s, StatusCode::CREATED, "genesis push: {b:?}");
 
     // The action travels alone; the client records it too.
@@ -132,18 +126,8 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
         .finalize_with_software(&g.software_signer().expect("signer"), T + 2, "cyphr.me")
         .await
         .expect("commit finalizes");
-    let commit = cyphr_storage::export_commits(&p).expect("export");
-    let commit_create = commit
-        .last()
-        .expect("a commit")
-        .cozies
-        .last()
-        .expect("seal");
-    let blobs = [
-        wire(&pay, &sig),
-        serde_json::to_vec(commit_create).expect("coz"),
-    ];
-    let (s, b) = post_json(app.clone(), "/push", push_body(&id, &blobs)).await;
+    let bundle = WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle");
+    let (s, b) = post_json(app.clone(), "/push", common::push_body(&id, &bundle)).await;
     assert_eq!(s, StatusCode::CREATED, "ds/create push: {b:?}");
 
     // A fresh client reads the patch and replays it.
@@ -164,9 +148,9 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
     for entry in payload["entries"].as_array().expect("entries") {
         let seq = entry["sequence"].as_u64().expect("sequence");
         for a in held.iter().filter(|a| a["after"].as_u64() == Some(seq)) {
-            lines.push(line(&blobs_of(a)));
+            lines.push(action_line(&blobs_of(a)));
         }
-        lines.push(line(&blobs_of(entry)));
+        lines.push(entry_line(entry));
     }
     let key = g.key().expect("golden key");
     let fresh = load_principal_from_commits(Genesis::Implicit(key), &lines)

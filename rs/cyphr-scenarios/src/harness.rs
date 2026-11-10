@@ -301,30 +301,26 @@ impl Harness {
         let id = genesis["tmb"]
             .as_str()
             .ok_or("fixture genesis has no tmb")?;
+        // The fixture's genesis commit, pushed in the wire form: each coz
+        // of each transaction as a base64url string, the keys as stated.
         let commit = &fixture["commits"][0];
-        let keys = commit["keys"].as_array().cloned().unwrap_or_default();
-
-        let mut key_idx = 0;
-        let mut blobs = Vec::new();
         let txs = commit["txs"]
             .as_array()
-            .ok_or("fixture commit has no txs")?;
-        for (i, tx) in txs.iter().enumerate() {
-            let mut coz = tx.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or_default().to_owned();
-            if typ.ends_with("/key/create") || typ.ends_with("/key/replace") {
-                coz["key"] = keys.get(key_idx).cloned().ok_or("fixture lacks a key")?;
-                key_idx += 1;
-            }
-            // The implicit genesis key rides on the closing commit coz.
-            if i + 1 == txs.len() {
-                coz["key"] = genesis.clone();
-            }
-            blobs.push(Base64UrlUnpadded::encode_string(
-                &serde_json::to_vec(&coz).map_err(|e| e.to_string())?,
-            ));
-        }
-        let body = serde_json::json!({"principal_id": id, "blobs": blobs});
+            .ok_or("fixture commit has no txs")?
+            .iter()
+            .map(|tx| {
+                tx.as_array()
+                    .ok_or("fixture transaction is not an array")?
+                    .iter()
+                    .map(|coz| {
+                        serde_json::to_vec(coz)
+                            .map(|b| Base64UrlUnpadded::encode_string(&b))
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let body = serde_json::json!({"principal_id": id, "txs": txs, "keys": commit["keys"]});
         for peer in peers {
             let addr = self.upstream(peer);
             let r = self

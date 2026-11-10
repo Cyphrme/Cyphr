@@ -181,7 +181,12 @@ fn retimed(pool: &test_fixtures::Pool, body: &str, now: i64) -> String {
     let pubb = Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("pub b64");
 
     let mut json: serde_json::Value = serde_json::from_str(body).expect("push body is JSON");
-    for blob in json["blobs"].as_array_mut().expect("blobs array") {
+    let cozies = json["txs"]
+        .as_array_mut()
+        .expect("txs array")
+        .iter_mut()
+        .flat_map(|tx| tx.as_array_mut().expect("a transaction"));
+    for blob in cozies {
         let raw =
             Base64UrlUnpadded::decode_vec(blob.as_str().expect("blob string")).expect("blob b64");
         let mut coz: serde_json::Value = serde_json::from_slice(&raw).expect("blob is JSON");

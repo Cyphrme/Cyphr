@@ -66,34 +66,13 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> cyphr_storage::Genesis {
     }
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key material.
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// Load the shared cryptographic key pool backing the golden fixtures.
@@ -177,8 +156,9 @@ async fn sign_key_create_commit<S: eml::Storage>(
 
     let mut key_idx = 0;
     let blobs = new_commit
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|v| {
             let mut coz = v.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
@@ -222,13 +202,12 @@ async fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &ser
     let commits = fixture["commits"].as_array().unwrap();
 
     for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let bundle = build_bundle(commit);
         let genesis = make_genesis(genesis_keys);
 
         state
             .engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .submit_commit(principal_id, Some(genesis), &bundle)
             .await
             .expect("bootstrap submit_commit failed");
     }
@@ -633,8 +612,9 @@ async fn sign_key_revoke_commit<S: eml::Storage>(
     entries
         .last()
         .expect("at least one commit after finalize")
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|v| serde_json::to_vec(v).expect("cozy serializes"))
         .collect()
 }
@@ -669,20 +649,15 @@ async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
             .expect("load principal")
     };
     let blobs = sign_key_revoke_commit(load().await, &pool, "key_a", 1_700_000_100).await;
-    let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
     state
         .engine
-        .submit_commit(pid, None, &slices)
+        .submit_commit(pid, None, &common::bundle_of(&blobs))
         .await
         .expect("submit the revoke commit");
 
     let (followup, _entry) =
         sign_key_create_commit(load().await, &pool, "golden", "key_b", 1_700_000_200).await;
-    let followup_body = serde_json::json!({
-        "principal_id": pid,
-        "blobs": followup.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let followup_body = common::push_blobs(pid, &followup);
     (state, followup_body, revoked_token, survivor_token)
 }
 
@@ -884,11 +859,7 @@ async fn token_key_naked_revoked_session_refused() {
     let principal = state.engine.load_principal(pid, genesis).await.unwrap();
     let (blobs, _entry) =
         sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400).await;
-    let followup = serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let followup = common::push_blobs(pid, &blobs);
 
     let (status, json) = send(
         push_request(followup.clone(), Some(&doomed)),

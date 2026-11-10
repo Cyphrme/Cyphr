@@ -3,6 +3,7 @@
 use std::sync::OnceLock;
 
 use coz::{ES256, SigningKey};
+use cyphr::replay::{KeyEntry, WireBundle};
 use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::{StorageEngine, genesis_principal_id};
 use cyphr_storage::index::MemoryIndexer;
@@ -65,83 +66,100 @@ fn int_field(u: &mut Unstructured<'_>) -> i64 {
     }
 }
 
-/// Splits the input into u16-length-prefixed chunks: one chunk per blob of
-/// the pushed commit bundle.
-fn split_bundle(mut rest: &[u8]) -> Vec<&[u8]> {
-    let mut chunks = Vec::new();
+/// Splits the input into u16-prefixed chunks, one per coz of the pushed
+/// bundle: the low 15 bits are the chunk's length, and a set high bit
+/// starts a new transaction, so the fuzzer steers the grouping (SPEC 4.6.2)
+/// as well as the bytes.
+fn split_bundle(mut rest: &[u8]) -> Vec<Vec<Vec<u8>>> {
+    let mut txs: Vec<Vec<Vec<u8>>> = Vec::new();
     while rest.len() >= 2 {
-        let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+        let prefix = u16::from_be_bytes([rest[0], rest[1]]);
+        let len = usize::from(prefix & 0x7fff);
         rest = &rest[2..];
-        if rest.len() < len {
-            chunks.push(rest);
-            break;
+        let chunk = if rest.len() < len {
+            let all = rest;
+            rest = &[];
+            all
+        } else {
+            let (chunk, remaining) = rest.split_at(len);
+            rest = remaining;
+            chunk
+        };
+        match txs.last_mut() {
+            Some(tx) if prefix & 0x8000 == 0 => tx.push(chunk.to_vec()),
+            _ => txs.push(vec![chunk.to_vec()]),
         }
-        let (chunk, remaining) = rest.split_at(len);
-        chunks.push(chunk);
-        rest = remaining;
     }
-    chunks
+    txs
 }
 
-/// A `commit/create` blob carrying the process key as its genesis key, with a
-/// fuzzer-chosen payload field. Blind mutation cannot produce a `key` whose
-/// `tmb` is the hash of its `pub`, so without this no input gets past
-/// genesis resolution into the blob-parsing and chain-verification code.
-fn genesis_blob(u: &mut Unstructured<'_>) -> Option<Vec<u8>> {
+/// The self-signed `key/create` of the process key, a genesis transaction,
+/// with a fuzzer-chosen `now` and payload field, and the key's `keys`
+/// entry. Blind mutation cannot produce a key entry whose `tmb` is the hash
+/// of its `pub`, so without this no input gets past genesis resolution
+/// into the blob-parsing and chain-verification code.
+fn genesis_tx(u: &mut Unstructured<'_>) -> Option<(Vec<u8>, KeyEntry)> {
     let (prv, pubk) = keypair();
     let tmb = coz::compute_thumbprint_for_alg("ES256", pubk)?;
     let pay = json!({
-        "typ": "cyphr.me/cyphr/commit/create",
+        "typ": "cyphr.me/cyphr/key/create",
         "alg": "ES256",
         "tmb": tmb,
+        "id": tmb,
         "now": int_field(u),
         "pad": String::arbitrary(u).ok()?,
     });
     let (sig, _cad) = coz::sign_json(&serde_json::to_vec(&pay).ok()?, "ES256", prv, pubk)?;
     let b64 =
         |b: &[u8]| <coz::base64ct::Base64UrlUnpadded as coz::base64ct::Encoding>::encode_string(b);
-    serde_json::to_vec(&json!({
-        "pay": pay,
-        "sig": b64(&sig),
-        "key": { "alg": "ES256", "pub": b64(pubk), "tmb": tmb },
-    }))
-    .ok()
+    let blob = serde_json::to_vec(&json!({ "pay": pay, "sig": b64(&sig) })).ok()?;
+    let entry = KeyEntry {
+        alg: "ES256".into(),
+        pub_key: b64(pubk),
+        tmb: tmb.to_string(),
+        tag: None,
+        now: None,
+    };
+    Some((blob, entry))
 }
 
-// Mode 0 treats the input as the raw bundle. Mode 1 prepends a
-// genesis-bearing blob (see `genesis_blob`) to the fuzzer's remaining blobs.
-// Either way the principal id is derived from the bundle's own genesis, as a
-// legitimate client would, so inputs get past the id-binding check.
+// Mode 0 treats the input as the raw bundle's transactions. Mode 1 opens the
+// bundle with a genesis transaction (see `genesis_tx`) before the fuzzer's
+// own. Either way the principal id is derived from the bundle's own
+// genesis, as a legitimate client would, so inputs get past the id-binding
+// check.
 fuzz_target!(|data: &[u8]| {
     let Some((mode, rest)) = data.split_first() else {
         return;
     };
 
-    let owned;
-    let mut blobs: Vec<&[u8]> = Vec::new();
+    let mut bundle = WireBundle::default();
     if mode % 2 == 1 {
         let mut u = Unstructured::new(rest);
-        let Some(blob) = genesis_blob(&mut u) else {
+        let Some((blob, entry)) = genesis_tx(&mut u) else {
             return;
         };
-        owned = blob;
-        blobs.push(&owned);
-        // Remaining unstructured bytes become the following blobs.
+        bundle.txs.push(vec![blob]);
+        bundle.keys.push(entry);
+        // Remaining unstructured bytes become the following transactions.
         let consumed = rest.len() - u.len();
-        blobs.extend(split_bundle(&rest[consumed..]));
+        bundle.txs.extend(split_bundle(&rest[consumed..]));
     } else {
-        blobs = split_bundle(rest);
+        bundle.txs = split_bundle(rest);
     }
-    if blobs.is_empty() {
+    if bundle.is_empty() {
         return;
     }
 
     runtime().block_on(async {
         let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-        let principal_id = match engine.resolve_genesis("fuzz", &blobs).await {
+        let principal_id = match engine
+            .resolve_genesis("fuzz", std::slice::from_ref(&bundle))
+            .await
+        {
             Ok(genesis) => genesis_principal_id(&genesis).unwrap_or_else(|_| "fuzz".into()),
             Err(_) => "fuzz".into(),
         };
-        let _ = engine.submit_commit(&principal_id, None, &blobs).await;
+        let _ = engine.submit_commit(&principal_id, None, &bundle).await;
     });
 });

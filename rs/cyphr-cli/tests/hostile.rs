@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::WireBundle;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -93,8 +94,9 @@ impl Server {
         }
     }
 
-    /// The server's whole history for `id`: one blob list per commit.
-    fn chain(&self, id: &str) -> Vec<Vec<Vec<u8>>> {
+    /// The server's whole history for `id`: one bundle per commit (SPEC
+    /// 4.6.2).
+    fn chain(&self, id: &str) -> Vec<WireBundle> {
         let mut s = TcpStream::connect(&self.addr).expect("connect");
         write!(
             s,
@@ -113,14 +115,7 @@ impl Server {
             .as_array()
             .expect("entries")
             .iter()
-            .map(|e| {
-                e["blobs"]
-                    .as_array()
-                    .expect("blobs")
-                    .iter()
-                    .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("str")).expect("b64"))
-                    .collect()
-            })
+            .map(|e| serde_json::from_value(e.clone()).expect("entry bundle"))
             .collect()
     }
 }
@@ -236,38 +231,50 @@ fn serve(
 /// a different but honest JSON writer would: pretty-printed, members in
 /// reverse order. Signatures and digests are untouched, so a canonical
 /// reader sees exactly the victim's history.
-fn reserialized_patch(chain: &[Vec<Vec<u8>>]) -> Vec<u8> {
+fn reserialized_patch(chain: &[WireBundle]) -> Vec<u8> {
     patch_with(chain, false)
 }
 
 /// As [`reserialized_patch`]; with `unsigned_extras`, each blob also gains
-/// an unsigned top-level member and a different `tag` and `now` on its `key`
-/// sidecar, none of which a signature binds.
-fn patch_with(chain: &[Vec<Vec<u8>>], unsigned_extras: bool) -> Vec<u8> {
+/// an unsigned top-level member and each `keys` entry a different `tag` and
+/// `now`, none of which a signature binds.
+fn patch_with(chain: &[WireBundle], unsigned_extras: bool) -> Vec<u8> {
+    let rewrite = |b: &Vec<u8>| {
+        let Value::Object(mut m) = serde_json::from_slice::<Value>(b).expect("json") else {
+            panic!("blob is not an object")
+        };
+        if unsigned_extras {
+            m.insert("lm_extra".into(), 1.into());
+        }
+        let reversed: serde_json::Map<String, Value> = m.into_iter().rev().collect();
+        Base64UrlUnpadded::encode_string(
+            &serde_json::to_vec_pretty(&Value::Object(reversed)).expect("pretty"),
+        )
+    };
     let entries: Vec<Value> = chain
         .iter()
         .enumerate()
-        .map(|(i, blobs)| {
-            let blobs: Vec<String> = blobs
+        .map(|(i, bundle)| {
+            let txs: Vec<Vec<String>> = bundle
+                .txs
                 .iter()
-                .map(|b| {
-                    let Value::Object(mut m) = serde_json::from_slice::<Value>(b).expect("json") else {
-                        panic!("blob is not an object")
-                    };
+                .map(|tx| tx.iter().map(rewrite).collect())
+                .collect();
+            let actions: Vec<String> = bundle.actions.iter().map(rewrite).collect();
+            let keys: Vec<Value> = bundle
+                .keys
+                .iter()
+                .map(|k| {
+                    let mut k = serde_json::to_value(k).expect("key");
                     if unsigned_extras {
-                        m.insert("lm_extra".into(), 1.into());
-                        if let Some(Value::Object(k)) = m.get_mut("key") {
-                            k.insert("tag".into(), "relabelled".into());
-                            k.insert("now".into(), 7.into());
-                        }
+                        k["tag"] = "relabelled".into();
+                        k["now"] = 7.into();
                     }
-                    let reversed: serde_json::Map<String, Value> = m.into_iter().rev().collect();
-                    Base64UrlUnpadded::encode_string(
-                        &serde_json::to_vec_pretty(&Value::Object(reversed)).expect("pretty"),
-                    )
+                    k
                 })
                 .collect();
-            serde_json::json!({"commit_id": format!("c{i}"), "sequence": i, "pr": "p", "blobs": blobs})
+            serde_json::json!({"commit_id": format!("c{i}"), "sequence": i, "pr": "p",
+                "txs": txs, "actions": actions, "keys": keys})
         })
         .collect();
     serde_json::to_vec(&serde_json::json!({
@@ -559,7 +566,11 @@ fn failed_rebase_cleans_up_its_scratch_store() {
 
     // The peer serves B's chain with the last commit's signature damaged.
     let mut chain = real.chain(&id);
-    let last = chain.last_mut().and_then(|c| c.last_mut()).expect("a blob");
+    let last = chain
+        .last_mut()
+        .and_then(|c| c.txs.last_mut())
+        .and_then(|tx| tx.last_mut())
+        .expect("a blob");
     let mut v: Value = serde_json::from_slice(last).expect("json");
     let sig = v["sig"].as_str().expect("sig").to_owned();
     let flipped = if sig.starts_with('A') { 'B' } else { 'A' };

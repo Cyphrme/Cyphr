@@ -6,7 +6,7 @@
 
 use crate::parsed_coz::VerifiedCoz;
 use crate::signer::{Signer, SoftwareSigner};
-use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
+use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 
 // ============================================================================
 // Commit
@@ -211,16 +211,7 @@ impl PendingCommit {
             (&[][..], None)
         };
 
-        let mut tx_roots = Vec::new();
-        for tx in mutations {
-            let tx_czds: Vec<TaggedCzd<'_>> =
-                tx.0.iter()
-                    .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
-                    .collect();
-            if let Some(mh) = crate::transaction_root::compute_tx(&tx_czds, algs) {
-                tx_roots.push(mh);
-            }
-        }
+        let tx_roots: Vec<_> = mutations.iter().filter_map(|tx| tx.id(algs)).collect();
 
         let tmr = if tx_roots.is_empty() {
             None
@@ -230,12 +221,10 @@ impl PendingCommit {
         };
 
         if let Some(ctx) = commit_tx {
-            let ctx_czds: Vec<TaggedCzd<'_>> = ctx
-                .0
-                .iter()
-                .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
-                .collect();
-            if let Some(tcr) = crate::transaction_root::compute_tcr(&ctx_czds, algs) {
+            if let Some(tcr) = ctx
+                .id(algs)
+                .map(crate::transaction_root::TransactionCommitRoot)
+            {
                 let tr = crate::transaction_root::compute_tr(tmr.as_ref(), &tcr, algs);
                 return (tmr, Some(tcr), tr);
             }
@@ -481,11 +470,11 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         self.stage().await?.commit().await
     }
 
-    /// Verify a coz signature and apply it within this commit scope.
-    ///
-    /// This combines signature verification and application in one call,
-    /// analogous to `Principal::verify_and_apply_transaction` but within
-    /// a multi-coz commit scope.
+    /// Verify a coz signature against this scope's state, applying
+    /// nothing: the coz's signer must be active in the principal or in the
+    /// state the cozies applied so far reach. Pass the result to
+    /// [`apply`](Self::apply) or, with the other cozies of its transaction,
+    /// to [`apply_tx`](Self::apply_tx).
     ///
     /// # Arguments
     ///
@@ -493,6 +482,36 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// * `sig` - Signature bytes
     /// * `czd` - Coz digest for this coz
     /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
+    ///
+    /// # Errors
+    ///
+    /// `MalformedPayload` for an unreadable pay or one with no `tmb`;
+    /// `UnknownKey` for an inactive signer; as
+    /// [`verify_coz`](crate::parsed_coz::verify_coz) otherwise.
+    pub fn verify(
+        &self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        new_key: Option<crate::key::Key>,
+    ) -> crate::error::Result<VerifiedCoz> {
+        let pay: coz::Pay =
+            serde_json::from_slice(pay_json).map_err(|_| crate::error::Error::MalformedPayload)?;
+        let signer_tmb = pay
+            .tmb
+            .as_ref()
+            .ok_or(crate::error::Error::MalformedPayload)?;
+        let signer_key = self.resolve_signer(signer_tmb)?;
+        crate::parsed_coz::verify_coz(pay_json, sig, signer_key, czd, new_key)
+    }
+
+    /// Verify a coz signature and apply it within this commit scope as a
+    /// transaction of its own: [`verify`](Self::verify), then
+    /// [`apply`](Self::apply).
+    ///
+    /// # Errors
+    ///
+    /// As [`verify`](Self::verify) and [`apply`](Self::apply).
     pub fn verify_and_apply(
         &mut self,
         pay_json: &[u8],
@@ -500,21 +519,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         czd: coz::Czd,
         new_key: Option<crate::key::Key>,
     ) -> crate::error::Result<()> {
-        use crate::parsed_coz::verify_coz;
-
-        let pay: coz::Pay =
-            serde_json::from_slice(pay_json).map_err(|_| crate::error::Error::MalformedPayload)?;
-        let signer_tmb = pay
-            .tmb
-            .as_ref()
-            .ok_or(crate::error::Error::MalformedPayload)?;
-
-        let signer_key = self.resolve_signer(signer_tmb)?;
-
-        // Verify signature and parse coz
-        let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
-
-        // Apply within this scope
+        let vtx = self.verify(pay_json, sig, czd, new_key)?;
         self.apply(vtx)
     }
 
@@ -970,8 +975,9 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Apply a prepared coz with its signature `sig` (the finish step after
     /// [`prepare_genesis_keys`](Self::prepare_genesis_keys) or
     /// [`prepare_create_principal`](Self::prepare_create_principal)), and
-    /// return it as a wire coz: `pay`, `sig` and, for a `key/create`, the
-    /// disclosed `key`, so a genesis reads from its cozies alone.
+    /// return it as a wire coz, `{pay, sig}`. The key a `key/create`
+    /// discloses travels in its bundle's `keys` (SPEC 4.6.2), never on the
+    /// coz.
     ///
     /// # Errors
     ///
@@ -994,19 +1000,11 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         } = prepared;
         let czd =
             coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
-        self.verify_and_apply(&pay_vec, &sig, czd, key.clone())?;
-        let mut wire = serde_json::json!({
+        self.verify_and_apply(&pay_vec, &sig, czd, key)?;
+        Ok(serde_json::json!({
             "pay": pay,
             "sig": Base64UrlUnpadded::encode_string(&sig),
-        });
-        if let Some(key) = key {
-            wire["key"] = serde_json::json!({
-                "alg": key.alg(),
-                "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
-                "tmb": key.tmb().to_b64(),
-            });
-        }
-        Ok(wire)
+        }))
     }
 }
 
@@ -1094,10 +1092,10 @@ const _: () = {
         scope: CommitScope<'_, S>,
         principal: &mut crate::principal::Principal<S>,
         signer: &SoftwareSigner,
-        cozies: &[crate::replay::StoredCoz],
+        bundle: &crate::replay::Bundle,
     ) {
         assert_send(&scope.finalize_with_software(signer, 0, ""));
-        assert_send(&crate::replay::replay_bundle(principal, cozies));
+        assert_send(&crate::replay::replay_bundle(principal, bundle));
     }
 };
 

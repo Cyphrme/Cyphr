@@ -77,12 +77,6 @@ pub fn compute_tmr(txs: &[&MultihashDigest], algs: &[HashAlg]) -> Option<Transac
     ))
 }
 
-/// Compute the Transaction Commit Root from the commit transaction's czds.
-pub fn compute_tcr(czds: &[TaggedCzd<'_>], algs: &[HashAlg]) -> Option<TransactionCommitRoot> {
-    let mh = compute_tx(czds, algs)?;
-    Some(TransactionCommitRoot(mh))
-}
-
 /// Compute the Transaction Root from TMR and TCR.
 pub fn compute_tr(
     tmr: Option<&TransactionMutationRoot>,

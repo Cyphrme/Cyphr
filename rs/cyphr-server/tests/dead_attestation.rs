@@ -6,14 +6,13 @@
 //! string, and a client must read both back as absent roots.
 
 use axum::http::StatusCode;
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{AuthorityKey, verify_authenticated_envelope};
 use cyphr_server::build_router;
 
 mod common;
 
 use common::{
-    attestor_server, build_raw_blobs, fixture_principal_id, get_json, load_golden, post_json,
+    attestor_server, build_bundle, fixture_principal_id, get_json, load_golden, post_json,
 };
 
 /// Backs the receipt rule that `sr` and `ar` MAY be `null` for a Dead
@@ -41,12 +40,8 @@ async fn dying_commit_push_and_tip_attest_absent_roots_as_null() {
         "the genesis commit, then the dying commit"
     );
     let body = |commit: &serde_json::Value| {
-        let blobs = build_raw_blobs(commit);
-        serde_json::json!({
-            "principal_id": principal_id,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-        .to_string()
+        let blobs = build_bundle(commit);
+        common::push_body(&principal_id, &blobs)
     };
     let authority = AuthorityKey {
         alg: identity.alg().name().to_string(),

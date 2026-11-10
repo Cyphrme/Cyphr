@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphr::Key;
+use cyphr::replay::WireBundle;
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::engine::StorageEngine;
@@ -67,50 +68,60 @@ pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Resu
 ///
 /// **With keystore**: Look up the signer of the first coz by
 /// thumbprint (`pay.tmb`). This is the correct approach for import,
-/// where the genesis key (signer) may not be embedded in the commit
-/// but the *new* key being added might be.
+/// where the genesis key (signer) may not be in the commit's `keys` but
+/// the *new* key being added might be.
 ///
-/// **Without keystore**: Scan the first commit's cozies for
-/// embedded `key` objects. This works for inspect/verify/list where
-/// all key material is in the commits themselves.
+/// **Without keystore**: the first commit's `keys` entries its
+/// `key/create` cozies name, in transaction order. This works for
+/// inspect/verify/list where all key material is in the commits
+/// themselves.
 pub fn extract_genesis_from_commits(
     commits: &[CommitEntry],
     keystore: Option<&JsonKeyStore>,
 ) -> crate::Result<Genesis> {
     let first_commit = commits.first().ok_or(Error::MissingField("commits"))?;
+    let named = |tmb: &str| first_commit.keys.iter().find(|k| k.tmb == tmb);
 
     // When keystore is available, prefer signer-based lookup.
     // The signer of the first coz IS the genesis key.
     if let Some(ks) = keystore {
-        if let Some(first_tx) = first_commit.cozies.first() {
-            if let Some(signer_tmb) = first_tx
-                .get("pay")
-                .and_then(|p| p.get("tmb"))
-                .and_then(|v| v.as_str())
-            {
-                // The keystore is the local authority: a key embedded in
-                // the (untrusted) bundle never overrides it.
-                if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
-                    return Ok(Genesis::Implicit(key));
-                }
+        if let Some(signer_tmb) = first_commit
+            .txs
+            .first()
+            .and_then(|tx| tx.first())
+            .and_then(|coz| coz.pointer("/pay/tmb"))
+            .and_then(|v| v.as_str())
+        {
+            // The keystore is the local authority: a key in the
+            // (untrusted) bundle never overrides it.
+            if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
+                return Ok(Genesis::Implicit(key));
+            }
 
-                // Not in the keystore: fall back to the self-signed
-                // genesis key the bundle embeds.
-                if let Some(key_obj) = first_tx.get("key") {
-                    if key_obj.get("tmb").and_then(|v| v.as_str()) == Some(signer_tmb) {
-                        return extract_key_from_obj(key_obj).map(Genesis::Implicit);
-                    }
-                }
+            // Not in the keystore: fall back to the self-signed genesis
+            // key the bundle discloses.
+            if let Some(entry) = named(signer_tmb) {
+                return entry_key(entry).map(Genesis::Implicit);
             }
         }
     }
 
-    // No keystore or signer lookup failed — scan for embedded keys.
+    // No keystore or signer lookup failed — the keys the key/creates name.
     let mut genesis_keys = Vec::new();
-
-    for tx_value in &first_commit.cozies {
-        if let Some(key_obj) = tx_value.get("key") {
-            genesis_keys.push(extract_key_from_obj(key_obj)?);
+    for coz in first_commit.txs.iter().flatten() {
+        let typ = coz
+            .pointer("/pay/typ")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_CREATE) {
+            continue;
+        }
+        if let Some(entry) = coz
+            .pointer("/pay/id")
+            .and_then(|v| v.as_str())
+            .and_then(named)
+        {
+            genesis_keys.push(entry_key(entry)?);
         }
     }
 
@@ -125,29 +136,12 @@ pub fn extract_genesis_from_commits(
     }
 }
 
-/// Extract a Key from a JSON key object.
-fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
-    let alg = key_obj
-        .get("alg")
-        .and_then(|v| v.as_str())
-        .ok_or(Error::MissingField("key.alg"))?;
-    let pub_b64 = key_obj
-        .get("pub")
-        .and_then(|v| v.as_str())
-        .ok_or(Error::MissingField("key.pub"))?;
-    let tmb_b64 = key_obj
-        .get("tmb")
-        .and_then(|v| v.as_str())
-        .ok_or(Error::MissingField("key.tmb"))?;
-
-    let pub_key = Base64UrlUnpadded::decode_vec(pub_b64)?;
-    let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64)?;
-
-    Ok(Key::new(
-        alg.to_string(),
-        Thumbprint::from_bytes(tmb_bytes),
-        pub_key,
-    )?)
+/// A commit `keys` entry as a [`Key`].
+fn entry_key(entry: &cyphr_storage::KeyEntry) -> crate::Result<Key> {
+    entry.to_key().map_err(|e| match e {
+        cyphr::replay::WireError::Key(refusal) => refusal.into(),
+        other => Error::InvalidArgument(format!("key {}: {other}", entry.tmb)),
+    })
 }
 
 /// Parse the CLI options into a CliStorageEngine.
@@ -308,16 +302,6 @@ pub fn load_principal_from_engine(
     })?
 }
 
-/// Whether a coz `typ` string indicates a key-embedding transaction
-/// (`key/create` or `key/replace`) -- i.e. one whose blob must carry the
-/// new key's material inline, not just the signer's thumbprint.
-///
-/// Thin wrapper over `cyphr::parsed_coz::typ::is_key_introducing`, the
-/// crate-spanning canonical implementation of this rule (F41).
-fn is_key_embedding_typ(typ: &str) -> bool {
-    cyphr::parsed_coz::typ::is_key_introducing(typ)
-}
-
 /// Resolve `principal`'s genesis from its own `genesis_key()` and the local
 /// `keystore`. Every further key enters by a `key/create` its commits
 /// carry, so the genesis key alone replays it.
@@ -373,28 +357,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             if !is_new {
                 continue;
             }
-            let mut raw_blobs = Vec::new();
-            let mut key_iter = commit.keys.iter();
-            for coz in &commit.cozies {
-                let mut coz_mut = coz.clone();
-                let typ = coz_mut
-                    .get("pay")
-                    .and_then(|p| p.get("typ"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("");
-
-                if is_key_embedding_typ(typ) {
-                    if let Some(key_entry) = key_iter.next() {
-                        if let Some(obj) = coz_mut.as_object_mut() {
-                            obj.insert("key".to_string(), serde_json::to_value(key_entry)?);
-                        }
-                    }
-                }
-
-                let bytes = serde_json::to_vec(&coz_mut).map_err(crate::Error::Json)?;
-                raw_blobs.push(bytes);
-            }
-            let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
+            let bundle = commit.bundle().map_err(crate::Error::Json)?;
 
             // Resolve the genesis from what this caller knows locally (its
             // genesis key); the engine reads a stored principal's genesis
@@ -407,7 +370,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             };
 
             engine
-                .submit_commit(&principal_id, Some(genesis), &raw_refs)
+                .submit_commit(&principal_id, Some(genesis), &bundle)
                 .await?;
         }
 
@@ -424,95 +387,51 @@ pub fn get_commits_from_engine(
     let principal_id = get_principal_id(&pg)?;
 
     block_on(async {
-        use cyphr_storage::blob::BlobStore;
-        use cyphr_storage::index::Indexer;
-
-        let chain = engine
-            .indexer()
-            .get_commit_chain(&principal_id, None, None)
-            .await?;
-
-        let mut commit_entries = Vec::with_capacity(chain.len());
-        for commit_ref in &chain {
-            let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
-            let mut keys = Vec::new();
-
-            for hash in &commit_ref.blob_hashes {
-                let data = engine
-                    .blob_store()
-                    .get(hash)
-                    .await?
-                    .ok_or(crate::Error::MissingBlob(*hash))?;
-
-                let json_str = String::from_utf8(data)?;
-                let value: serde_json::Value =
-                    serde_json::from_str(&json_str).map_err(crate::Error::Json)?;
-
-                if let Some(key_obj) = value.get("key") {
-                    if let Ok(ke) =
-                        serde_json::from_value::<cyphr_storage::KeyEntry>(key_obj.clone())
-                    {
-                        keys.push(ke);
-                    }
-                }
-
-                cozies.push(value);
-            }
-
-            commit_entries.push(cyphr_storage::CommitEntry::new(
-                cozies,
-                keys,
-                commit_ref.commit_id.clone(),
-                commit_ref.ar.clone(),
-                commit_ref.sr.clone(),
-                commit_ref.pr.clone(),
-            ));
-        }
-
-        Ok(commit_entries)
+        let patch = engine.get_patch(&principal_id, None, None).await?;
+        patch
+            .entries
+            .iter()
+            .map(|entry| {
+                Ok(CommitEntry {
+                    commit_id: entry.commit.commit_id.clone(),
+                    auth_root: entry.commit.ar.clone(),
+                    sr: entry.commit.sr.clone(),
+                    pr: entry.commit.pr.clone(),
+                    ..CommitEntry::from_bundle(&entry.bundle).map_err(crate::Error::Json)?
+                })
+            })
+            .collect()
     })?
 }
 
-/// One stored commit as the exact wire blobs the store holds, so a peer
+/// One stored commit as the exact wire bundle the store holds, so a peer
 /// receives the bytes the commit's digests were computed over.
 pub struct RawCommit {
     /// The commit id (tagged digest).
     pub commit_id: String,
-    /// The commit's coz blobs, in commit order.
-    pub blobs: Vec<Vec<u8>>,
+    /// The commit's bundle, grouped by transaction.
+    pub bundle: WireBundle,
 }
 
-/// A principal's stored history as raw wire blobs, oldest first. Empty when
-/// the store holds nothing for `principal_id`.
+/// A principal's stored history as raw wire bundles, oldest first. Empty
+/// when the store holds nothing for `principal_id`.
 pub async fn raw_chain(
     engine: &CliStorageEngine,
     principal_id: &str,
 ) -> crate::Result<Vec<RawCommit>> {
-    use cyphr_storage::blob::BlobStore;
-    use cyphr_storage::index::Indexer;
-
-    let chain = engine
-        .indexer()
-        .get_commit_chain(principal_id, None, None)
-        .await?;
-    let mut out = Vec::with_capacity(chain.len());
-    for commit_ref in &chain {
-        let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
-        for hash in &commit_ref.blob_hashes {
-            blobs.push(
-                engine
-                    .blob_store()
-                    .get(hash)
-                    .await?
-                    .ok_or(crate::Error::MissingBlob(*hash))?,
-            );
-        }
-        out.push(RawCommit {
-            commit_id: commit_ref.commit_id.clone(),
-            blobs,
-        });
+    if engine.get_tip(principal_id).await?.is_none() {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    Ok(engine
+        .get_patch(principal_id, None, None)
+        .await?
+        .entries
+        .into_iter()
+        .map(|entry| RawCommit {
+            commit_id: entry.commit.commit_id,
+            bundle: entry.bundle,
+        })
+        .collect())
 }
 
 /// The genesis a locally held keystore can state for `identity`, if any:
@@ -615,22 +534,21 @@ pub async fn submit_history(
     engine: &CliStorageEngine,
     principal_id: &str,
     genesis: Option<Genesis>,
-    commits: &[Vec<Vec<u8>>],
+    commits: &[WireBundle],
     actions: &[(usize, Vec<Vec<u8>>)],
     from: usize,
 ) -> crate::Result<usize> {
     let mut applied = 0;
     for step in place(commits, actions.iter().map(|(a, b)| (*a, b))) {
-        let (index, blobs, is_commit) = match step {
-            Placed::Commit(i, blobs) => (i, blobs, true),
-            Placed::Actions(after, blobs) => (after, blobs, false),
+        let (index, bundle, is_commit) = match step {
+            Placed::Commit(i, bundle) => (i, bundle.clone(), true),
+            Placed::Actions(after, blobs) => (after, WireBundle::actions(blobs.clone()), false),
         };
         if index < from {
             continue;
         }
-        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(principal_id, genesis.clone(), &refs)
+            .submit_commit(principal_id, genesis.clone(), &bundle)
             .await?;
         applied += usize::from(is_commit);
     }

@@ -64,9 +64,18 @@ async fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
         .await
         .expect("genesis commit");
     let cc = serde_json::to_vec(commit.commit_tx().0[0].raw()).unwrap();
+    // Each key/create carries the key it creates for `push_blobs` to move
+    // into the bundle's `keys` (the creates name the genesis key, then each
+    // other key, in order).
+    let created = std::iter::once(key_of(&kps[0])).chain(others.iter().cloned());
     let mut blobs: Vec<Vec<u8>> = creates
         .iter()
-        .map(|c| serde_json::to_vec(c).unwrap())
+        .zip(created)
+        .map(|(c, k)| {
+            let mut c = c.clone();
+            c["key"] = serde_json::to_value(cyphr_storage::KeyEntry::of(&k)).unwrap();
+            serde_json::to_vec(&c).unwrap()
+        })
         .collect();
     blobs.push(
         serde_json::to_vec(&serde_json::json!({
@@ -84,11 +93,7 @@ async fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
 }
 
 fn push_body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_blobs(principal_id, blobs)
 }
 
 fn typ_suffix(blob: &[u8]) -> String {

@@ -96,8 +96,9 @@ async fn commit_blobs(p: &mut Principal, pool: &test_fixtures::Pool, tx: &Tx) ->
     let entries = cyphr_storage::export_commits(p).expect("export");
     let last = entries.last().expect("a commit");
     let mut key_idx = 0;
-    last.cozies
+    last.txs
         .iter()
+        .flatten()
         .map(|v| {
             let mut coz = v.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
@@ -115,11 +116,7 @@ async fn commit_blobs(p: &mut Principal, pool: &test_fixtures::Pool, tx: &Tx) ->
 }
 
 fn body(principal_id: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_blobs(principal_id, blobs)
 }
 
 /// The fixture chain: commit 0 `golden`'s genesis, commit 1 `create key_a`
@@ -164,7 +161,7 @@ async fn build_chain(pool: &test_fixtures::Pool) -> Chain {
     let fresh_blobs = commit_blobs(&mut fresh, pool, &fresh_tx).await;
 
     Chain {
-        genesis_body: body(&id, &genesis_blobs),
+        genesis_body: common::push_body(&id, &genesis_blobs),
         create_body: body(&id, &create_blobs),
         delete_body: body(&id, &delete_blobs),
         fresh_body: body(&id, &fresh_blobs),

@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::http::StatusCode;
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::{AlgorithmMetas, Storage, WriteOp};
+use cyphr::replay::WireBundle;
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_blob_fjall::storage_fjall::FjallStorage;
 use cyphr_index_fjall::FjallIndexer;
@@ -176,7 +176,7 @@ async fn eml_leaves(db: &fjall::Database, principal_id: &str) -> u64 {
 /// The standard principal (`golden` with `key_a`) and the blobs of its
 /// genesis commit and of two further commits (golden creates `key_b`,
 /// then `alice`), each wire-ready.
-async fn chain(pool: &test_fixtures::Pool) -> (String, [Vec<Vec<u8>>; 3]) {
+async fn chain(pool: &test_fixtures::Pool) -> (String, [WireBundle; 3]) {
     let id = common::golden_principal_id(pool).await;
     let mut p = cyphr::Principal::implicit(pool.get("golden").expect("golden").key().expect("key"))
         .await
@@ -197,31 +197,19 @@ async fn chain(pool: &test_fixtures::Pool) -> (String, [Vec<Vec<u8>>; 3]) {
         GENESIS_NOW + 100,
     )
     .await;
-    let cozies: Vec<_> = second
-        .iter()
-        .map(|b| cyphr::replay::StoredCoz::from_wire(b).expect("wire coz"))
-        .collect();
-    cyphr::replay::replay_bundle(&mut p, &cozies)
+    cyphr::replay::replay_bundle(&mut p, &second.decode().expect("wire bundle"))
         .await
         .expect("second commit replays");
     let third = common::sign_key_create_commit(p, pool, "golden", "alice", GENESIS_NOW + 200).await;
     (id, [genesis, second, third])
 }
 
-fn refs(blobs: &[Vec<u8>]) -> Vec<&[u8]> {
-    blobs.iter().map(Vec::as_slice).collect()
-}
-
-fn push_body(id: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+fn push_body(id: &str, bundle: &WireBundle) -> String {
+    common::push_body(id, bundle)
 }
 
 /// Reopen the data directory as a real server and push `blobs` over HTTP.
-async fn push_through_server(config: &ServerConfig, id: &str, blobs: &[Vec<u8>]) -> StatusCode {
+async fn push_through_server(config: &ServerConfig, id: &str, blobs: &WireBundle) -> StatusCode {
     let state = Arc::new(cyphr_server::AppState::new(config.clone()).expect("server opens"));
     let app = cyphr_server::build_router(state);
     let (status, body) = common::post_json(app, "/push", push_body(id, blobs)).await;
@@ -254,11 +242,11 @@ async fn manifest_failure_leaves_no_eml_leaf_or_index_entry() {
     {
         let s = stack(&config);
         s.engine
-            .submit_commit(&id, None, &refs(&genesis))
+            .submit_commit(&id, None, &genesis)
             .await
             .expect("genesis push");
         s.fail_manifests.store(true, Ordering::SeqCst);
-        let refused = s.engine.submit_commit(&id, None, &refs(&second)).await;
+        let refused = s.engine.submit_commit(&id, None, &second).await;
         assert!(
             refused.is_err(),
             "a push whose manifest failed must be refused"
@@ -301,11 +289,11 @@ async fn eml_failure_after_manifest_is_repaired_by_the_next_load() {
     {
         let s = stack(&config);
         s.engine
-            .submit_commit(&id, None, &refs(&genesis))
+            .submit_commit(&id, None, &genesis)
             .await
             .expect("genesis push");
         s.fail_eml.store(true, Ordering::SeqCst);
-        let accepted = s.engine.submit_commit(&id, None, &refs(&second)).await;
+        let accepted = s.engine.submit_commit(&id, None, &second).await;
         let accepted = accepted.expect("the commit is recorded once its manifest is stored");
         assert!(accepted.manifest_hash.is_some(), "the manifest is stored");
 

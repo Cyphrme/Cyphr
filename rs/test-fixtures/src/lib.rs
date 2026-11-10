@@ -30,6 +30,8 @@ pub mod pool;
 
 pub use cyphr_storage::{CommitEntry, KeyEntry};
 pub use error::Error;
-pub use golden::{Generator, Golden, GoldenCoz, GoldenExpected, GoldenKey, GoldenSetup, generate};
+pub use golden::{
+    Generator, Golden, GoldenCoz, GoldenExpected, GoldenKey, GoldenPeer, GoldenSetup, generate,
+};
 pub use intent::Intent;
 pub use pool::{Pool, PoolKey};

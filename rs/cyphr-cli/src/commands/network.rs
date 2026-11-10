@@ -7,8 +7,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::WireBundle;
 use cyphr_storage::engine::bare_digest;
-use cyphr_storage::{CommitEntry, Genesis, KeyEntry, load_principal_from_commits};
+use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 use serde_json::{Value, json};
 
 use super::common::{
@@ -88,13 +89,15 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         let mut sent_actions = 0usize;
         for (i, commit) in local.iter().enumerate().skip(start) {
             while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
-                peer.push_commit(&wire, &[blob]).await?;
+                peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
+                    .await?;
                 sent_actions += 1;
             }
-            peer.push_commit(&wire, &commit.blobs).await?;
+            peer.push_commit(&wire, &commit.bundle).await?;
         }
         for (_, blob) in actions {
-            peer.push_commit(&wire, &[blob]).await?;
+            peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
+                .await?;
             sent_actions += 1;
         }
         Ok::<_, Error>((
@@ -191,17 +194,27 @@ fn signed_identity(blob: &[u8]) -> Vec<u8> {
     signed.unwrap_or_else(|| blob.to_vec())
 }
 
-/// Whether two commits are the same signed commit, whatever their encoding.
-fn same_commit(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
+/// Whether two commits are the same signed commit, whatever their encoding:
+/// the same cozies, grouped into the same transactions (the grouping is a
+/// hash input of TR, SPEC 3.7.5).
+fn same_commit(a: &WireBundle, b: &WireBundle) -> bool {
+    let shape = |w: &WireBundle| {
+        (
+            w.actions.len(),
+            w.txs.iter().map(Vec::len).collect::<Vec<_>>(),
+        )
+    };
+    shape(a) == shape(b)
+        && a.cozies()
+            .zip(b.cozies())
             .all(|(x, y)| signed_identity(x) == signed_identity(y))
 }
 
 /// Index of the first commit at which `a` and `b` both hold one and differ.
-fn first_divergence(a: &[RawCommit], b: &[Vec<Vec<u8>>]) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| !same_commit(&x.blobs, y))
+fn first_divergence(a: &[RawCommit], b: &[WireBundle]) -> Option<usize> {
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| !same_commit(&x.bundle, y))
 }
 
 /// Suffix of the file that records a rebase swap in progress.
@@ -249,7 +262,7 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
     use cyphr::parsed_coz::typ;
     let mut out = Vec::new();
     let mut authority = String::new();
-    for blob in &commit.blobs {
+    for blob in commit.bundle.cozies() {
         let v: Value = serde_json::from_slice(blob)?;
         let pay = &v["pay"];
         let t = pay["typ"].as_str().ok_or(Error::MissingField("pay.typ"))?;
@@ -302,7 +315,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let common = local
         .iter()
         .zip(&theirs)
-        .take_while(|(x, y)| same_commit(&x.blobs, y))
+        .take_while(|(x, y)| same_commit(&x.bundle, y))
         .count();
     let mut replay = Vec::new();
     let mut authority = cli.authority.clone();
@@ -350,10 +363,10 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     Some(g) => g,
                     None => old.resolve_genesis(&summary.principal_id, &[]).await?,
                 };
-                let commits: Vec<Vec<Vec<u8>>> = raw_chain(&old, &summary.principal_id)
+                let commits: Vec<WireBundle> = raw_chain(&old, &summary.principal_id)
                     .await?
                     .into_iter()
-                    .map(|c| c.blobs)
+                    .map(|c| c.bundle)
                     .collect();
                 let actions: Vec<(usize, Vec<Vec<u8>>)> = old
                     .get_patch(&summary.principal_id, None, None)
@@ -403,8 +416,8 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             })
             .collect::<crate::Result<Vec<Vec<u8>>>>()?;
         if !missing.is_empty() {
-            let refs: Vec<&[u8]> = missing.iter().map(Vec::as_slice).collect();
-            block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &refs))??;
+            let bundle = WireBundle::actions(missing);
+            block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &bundle))??;
             principal = load_principal_from_engine(&new, &keystore, identity)?;
         }
         for intent in &replay {
@@ -484,7 +497,7 @@ enum Relation {
     Fork(usize),
 }
 
-fn relate(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> Relation {
+fn relate(a: &[WireBundle], b: &[WireBundle]) -> Relation {
     if let Some(i) = a.iter().zip(b).position(|(x, y)| !same_commit(x, y)) {
         return Relation::Fork(i);
     }
@@ -495,45 +508,28 @@ fn relate(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> Relation {
     }
 }
 
-fn b64_blobs(blobs: &[Vec<u8>]) -> Vec<String> {
-    blobs
-        .iter()
-        .map(|b| Base64UrlUnpadded::encode_string(b))
-        .collect()
+/// A fork branch as reported: its source and its commit's bundle in the
+/// push wire form.
+fn branch(source: &str, bundle: &WireBundle) -> Value {
+    let mut v = serde_json::to_value(bundle).unwrap_or_default();
+    v["source"] = source.into();
+    v
 }
 
 /// Replay a peer's history from `genesis`; a history that does not replay
 /// is not an answer about the principal.
 fn replays(
     genesis: &Genesis,
-    chain: &[Vec<Vec<u8>>],
+    chain: &[WireBundle],
     actions: &[(usize, Vec<Vec<u8>>)],
 ) -> Result<(), String> {
-    let line = |blobs: &[Vec<u8>]| -> Result<CommitEntry, String> {
-        let mut cozies = Vec::new();
-        let mut keys = Vec::new();
-        for blob in blobs {
-            let v: Value = serde_json::from_slice(blob).map_err(|e| e.to_string())?;
-            if let Some(k) = v.get("key") {
-                if let Ok(ke) = serde_json::from_value::<KeyEntry>(k.clone()) {
-                    keys.push(ke);
-                }
-            }
-            cozies.push(v);
-        }
-        Ok(CommitEntry::new(
-            cozies,
-            keys,
-            String::new(),
-            None,
-            None,
-            String::new(),
-        ))
-    };
     let mut entries = Vec::with_capacity(chain.len() + actions.len());
     for step in place(chain, actions.iter().map(|(a, b)| (*a, b))) {
-        let (Placed::Commit(_, blobs) | Placed::Actions(_, blobs)) = step;
-        entries.push(line(blobs)?);
+        let bundle = match step {
+            Placed::Commit(_, bundle) => bundle.clone(),
+            Placed::Actions(_, blobs) => WireBundle::actions(blobs.clone()),
+        };
+        entries.push(CommitEntry::from_bundle(&bundle).map_err(|e| e.to_string())?);
     }
     block_on(load_principal_from_commits(genesis.clone(), &entries))
         .map_err(|e| e.to_string())?
@@ -586,7 +582,7 @@ pub fn verify(
         Ok::<_, Error>((local, tip))
     })??;
     let tip_state = tip_state.ok_or_else(|| Error::EmptyHistory(identity.to_owned()))?;
-    let local_blobs: Vec<Vec<Vec<u8>>> = local.iter().map(|c| c.blobs.clone()).collect();
+    let local_blobs: Vec<WireBundle> = local.iter().map(|c| c.bundle.clone()).collect();
 
     let answers = block_on(async {
         let mut answers = Vec::new();
@@ -604,7 +600,7 @@ pub fn verify(
         Some(g) => g,
         None => block_on(store.resolve_genesis(&principal_id, &[]))??,
     };
-    let mut chains: Vec<(String, Vec<Vec<Vec<u8>>>)> = vec![("local".into(), local_blobs.clone())];
+    let mut chains: Vec<(String, Vec<WireBundle>)> = vec![("local".into(), local_blobs.clone())];
     let mut failed = Vec::new();
     let mut newer = false;
     for (url, answer) in answers {
@@ -646,8 +642,8 @@ pub fn verify(
             if let Relation::Fork(h) = relate(a, b) {
                 evidence.push(json!({"kind": "principal_fork", "height": h,
                     "branches": [
-                        {"source": na, "blobs": b64_blobs(&a[h])},
-                        {"source": nb, "blobs": b64_blobs(&b[h])}]}));
+                        branch(na, &a[h]),
+                        branch(nb, &b[h])]}));
             }
         }
     }

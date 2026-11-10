@@ -2,6 +2,15 @@ use super::*;
 use crate::blob::MemoryBlobStore;
 use crate::index::MemoryIndexer;
 
+/// A bundle of `blobs`, each coz a transaction of its own: the raw shape
+/// the index-path tests store, which never verify a commit.
+pub(super) fn singles<B: AsRef<[u8]>>(blobs: &[B]) -> WireBundle {
+    WireBundle {
+        txs: blobs.iter().map(|b| vec![b.as_ref().to_vec()]).collect(),
+        ..WireBundle::default()
+    }
+}
+
 /// Build a test engine with memory backends.
 fn test_engine() -> StorageEngine<MemoryBlobStore, MemoryIndexer> {
     StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new())
@@ -51,11 +60,11 @@ async fn ingest_two_then_get_patch_full() {
     let blob_1 = b"{\"pay\":{\"now\":2000},\"typ\":\"cyphr/key/create\"}";
 
     engine
-        .ingest_metadata(&[blob_0.as_slice()], make_meta("alice", 0, 1000))
+        .ingest_metadata(&singles(&[blob_0.as_slice()]), make_meta("alice", 0, 1000))
         .await
         .expect("first ingest");
     engine
-        .ingest_metadata(&[blob_1.as_slice()], make_meta("alice", 1, 2000))
+        .ingest_metadata(&singles(&[blob_1.as_slice()]), make_meta("alice", 1, 2000))
         .await
         .expect("second ingest");
 
@@ -68,9 +77,8 @@ async fn ingest_two_then_get_patch_full() {
     assert_eq!(patch.entries.len(), 2);
 
     // Verify blob content is fetched correctly.
-    assert_eq!(patch.entries[0].blobs.len(), 1);
-    assert_eq!(patch.entries[0].blobs[0], blob_0.as_slice());
-    assert_eq!(patch.entries[1].blobs[0], blob_1.as_slice());
+    assert_eq!(patch.entries[0].bundle.txs, vec![vec![blob_0.to_vec()]]);
+    assert_eq!(patch.entries[1].bundle.txs, vec![vec![blob_1.to_vec()]]);
 
     // Verify ordering.
     assert_eq!(patch.entries[0].commit.sequence, 0);
@@ -98,7 +106,7 @@ async fn get_patch_with_range() {
             meta.prs = vec![anchor.to_string()];
         }
         engine
-            .ingest_metadata(&[blob.as_bytes()], meta)
+            .ingest_metadata(&singles(&[blob.as_bytes()]), meta)
             .await
             .expect("ingest");
     }
@@ -119,7 +127,7 @@ async fn get_patch_with_range() {
 async fn get_patch_unknown_anchor_is_not_found() {
     let engine = test_engine();
     engine
-        .ingest_metadata(&[b"alice-genesis"], make_meta("alice", 0, 1000))
+        .ingest_metadata(&singles(&[b"alice-genesis"]), make_meta("alice", 0, 1000))
         .await
         .expect("ingest");
 
@@ -186,11 +194,9 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> crate::Genesis {
     }
 }
 
-/// Ingest a golden fixture's commits into the engine.
-///
-/// Each coz in the fixture becomes a separate blob. Key material from the
-/// commit-level `keys[]` array is embedded into the corresponding coz blob's
-/// `"key"` field, mirroring the wire format a server would receive.
+/// Ingest a golden fixture's commits into the engine through the raw index
+/// path: each commit line's bundle (SPEC 4.6.2) as stored, its keys as the
+/// commit's index keys.
 async fn ingest_fixture(
     engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>,
     principal_id: &str,
@@ -199,37 +205,13 @@ async fn ingest_fixture(
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (seq, commit) in commits.iter().enumerate() {
-        let cozies_json = commit["txs"].as_array().expect("txs array");
-        let keys_json = commit["keys"].as_array();
-        let mut key_idx = 0;
-
-        let mut blobs: Vec<Vec<u8>> = Vec::new();
+        let bundle = build_bundle(commit);
         let mut cozies = Vec::new();
-        let mut extracted_keys = Vec::new();
+        let mut last_now = 0;
 
-        for coz_value in cozies_json {
-            let mut coz = coz_value.clone();
-
-            // If this is a key-introducing transaction, embed the key
-            // material from the commit-level keys[] into the blob.
+        for blob in bundle.cozies() {
+            let coz: serde_json::Value = serde_json::from_slice(blob).unwrap();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("").to_string();
-            let is_key_introducing = crate::import::is_key_introducing_typ(&typ);
-
-            if is_key_introducing {
-                if let Some(ks) = keys_json {
-                    if key_idx < ks.len() {
-                        coz.as_object_mut()
-                            .unwrap()
-                            .insert("key".to_string(), ks[key_idx].clone());
-                        key_idx += 1;
-                    }
-                }
-            }
-
-            let blob_bytes = serde_json::to_vec(&coz).unwrap();
-            blobs.push(blob_bytes.clone());
-
-            // Parse for IndexableCoz and PublicKeyInfo
             let pay = coz.get("pay").unwrap();
             let sig_b64 = coz.get("sig").unwrap().as_str().unwrap();
             let sig = Base64UrlUnpadded::decode_vec(sig_b64).unwrap();
@@ -258,30 +240,28 @@ async fn ingest_fixture(
                 .unwrap_or("")
                 .to_string();
             let now = pay.get("now").unwrap().as_i64().unwrap();
+            last_now = now;
             let payload = Some(serde_json::to_string(&pay_val).unwrap());
 
             cozies.push(IndexableCoz {
                 blob_hash: crate::blob::Blake3Hash::from_bytes([0; 32]),
                 czd,
-                typ: typ.clone(),
+                typ,
                 tmb,
                 alg,
                 now,
                 payload,
             });
-
-            if is_key_introducing {
-                if let Some(k) = coz.get("key") {
-                    extracted_keys.push(crate::index::PublicKeyInfo {
-                        thumbprint: k.get("tmb").unwrap().as_str().unwrap().to_string(),
-                        algorithm: k.get("alg").unwrap().as_str().unwrap().to_string(),
-                        public_key: k.get("pub").unwrap().as_str().unwrap().to_string(),
-                    });
-                }
-            }
         }
-
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let extracted_keys = bundle
+            .keys
+            .iter()
+            .map(|k| crate::index::PublicKeyInfo {
+                thumbprint: k.tmb.clone(),
+                algorithm: k.alg.clone(),
+                public_key: k.pub_key.clone(),
+            })
+            .collect();
 
         let pre = if seq == 0 {
             None
@@ -308,15 +288,12 @@ async fn ingest_fixture(
             crs: Vec::new(),
             blob_hashes: Vec::new(),
             cozies,
-            timestamp: cozies_json
-                .last()
-                .and_then(|c| c["pay"]["now"].as_i64())
-                .unwrap_or(0),
+            timestamp: last_now,
             keys: extracted_keys,
         };
 
         engine
-            .ingest_metadata(&blob_slices, meta)
+            .ingest_metadata(&bundle, meta)
             .await
             .unwrap_or_else(|e| panic!("ingest commit {seq} failed: {e}"));
     }
@@ -376,36 +353,12 @@ async fn load_principal_unknown_returns_genesis() {
 // submit_commit tests (validated write path)
 // ========================================================================
 
-/// Build raw coz blobs from a golden fixture's commit, ready for submit_commit.
-///
-/// Embeds key material from commit-level `keys[]` into each key-introducing
-/// coz blob, matching the wire format a client would send.
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-
-        if crate::import::is_key_introducing_typ(typ) {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push.
+fn build_bundle(commit: &serde_json::Value) -> WireBundle {
+    serde_json::from_value::<crate::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// F36: `submit_commit`'s action-only branch (a bundle with no
@@ -429,11 +382,11 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
     let principal_id = genesis_principal_id(&genesis).unwrap();
     let principal_id = principal_id.as_str();
 
-    let blobs = build_raw_blobs(&commits[0]);
-    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    let bundle = build_bundle(&commits[0]);
+    assert!(bundle.txs.is_empty(), "premise: an action-only line");
 
     let result = engine
-        .submit_commit(principal_id, Some(genesis), &blob_slices)
+        .submit_commit(principal_id, Some(genesis), &bundle)
         .await
         .expect("submit_commit failed for action-only bundle");
 
@@ -476,7 +429,11 @@ async fn submit_commit_rejects_blob_missing_typ() {
     let engine = test_engine();
     let principal_id = genesis_principal_id(&genesis).unwrap();
     let result = engine
-        .submit_commit(&principal_id, Some(genesis), &[&bytes])
+        .submit_commit(
+            &principal_id,
+            Some(genesis),
+            &WireBundle::actions(vec![bytes]),
+        )
         .await;
 
     assert!(
@@ -500,10 +457,10 @@ async fn submit_commit_bad_signature_rejected() {
 
     // Build blobs from the first commit but tamper with the signature.
     let first_commit = &commits[0];
-    let mut blobs = build_raw_blobs(first_commit);
+    let mut bundle = build_bundle(first_commit);
 
-    // Tamper: flip a byte in the first blob's sig field.
-    let mut tampered: serde_json::Value = serde_json::from_slice(&blobs[0]).unwrap();
+    // Tamper: flip a byte in the first coz's sig field.
+    let mut tampered: serde_json::Value = serde_json::from_slice(&bundle.txs[0][0]).unwrap();
     if let Some(sig) = tampered.get("sig").and_then(|s| s.as_str()) {
         let mut sig_chars: Vec<char> = sig.chars().collect();
         if !sig_chars.is_empty() {
@@ -513,14 +470,13 @@ async fn submit_commit_bad_signature_rejected() {
         let tampered_sig: String = sig_chars.into_iter().collect();
         tampered["sig"] = serde_json::Value::String(tampered_sig);
     }
-    blobs[0] = serde_json::to_vec(&tampered).unwrap();
+    bundle.txs[0][0] = serde_json::to_vec(&tampered).unwrap();
 
-    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
     let genesis = make_genesis(genesis_keys);
 
     // Submission should fail — protocol error, not stored.
     let result = engine
-        .submit_commit(principal_id, Some(genesis), &blob_slices)
+        .submit_commit(principal_id, Some(genesis), &bundle)
         .await;
     assert!(result.is_err(), "tampered commit should be rejected");
 
@@ -541,7 +497,7 @@ async fn submit_commit_empty_rejected() {
 
     let principal_id = genesis_principal_id(&genesis).unwrap();
     let result = engine
-        .submit_commit(&principal_id, Some(genesis), &[])
+        .submit_commit(&principal_id, Some(genesis), &WireBundle::default())
         .await;
     assert!(result.is_err(), "empty blob list should be rejected");
 }
@@ -562,12 +518,10 @@ async fn submit_then_load_round_trip() {
 
     // Submit all commits.
     for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
         let genesis = make_genesis(genesis_keys);
 
         engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .submit_commit(principal_id, Some(genesis), &build_bundle(commit))
             .await
             .expect("submit_commit failed");
     }
@@ -617,7 +571,7 @@ async fn crash_between_manifest_and_index_write_is_recoverable() {
     let meta = make_meta("alice", 0, 1000);
 
     let (commit, manifest_hash) = engine
-        .store_blobs_and_manifest(&[blob.as_slice()], meta)
+        .store_blobs_and_manifest(&singles(&[blob.as_slice()]), meta)
         .await
         .expect("store_blobs_and_manifest failed");
 
@@ -701,9 +655,8 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
     let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, &[], 1000)
         .await
         .unwrap();
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     engine
-        .submit_commit(&alice, None, &refs)
+        .submit_commit(&alice, None, &blobs)
         .await
         .expect("genesis commit");
 
@@ -782,7 +735,7 @@ async fn manifest_retains_ingest_order_without_search() {
 
     let result = engine
         .ingest_metadata(
-            &[blob_a.as_slice(), blob_b.as_slice(), blob_c.as_slice()],
+            &singles(&[blob_a.as_slice(), blob_b.as_slice(), blob_c.as_slice()]),
             meta,
         )
         .await
@@ -1029,11 +982,18 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
         .submit_commit(
             principal_id,
             Some(genesis.clone()),
-            &genesis_creates
-                .iter()
-                .chain([&pc_blob, &cc1_blob])
-                .map(Vec::as_slice)
-                .collect::<Vec<_>>(),
+            &WireBundle {
+                txs: genesis_creates
+                    .iter()
+                    .chain([&pc_blob, &cc1_blob])
+                    .map(|b| vec![b.clone()])
+                    .collect(),
+                keys: genesis_domain_keys
+                    .iter()
+                    .map(crate::KeyEntry::of)
+                    .collect(),
+                ..WireBundle::default()
+            },
         )
         .await
         .expect("genesis commit should submit through the real StorageEngine write path");
@@ -1047,7 +1007,7 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
         "typ": "cyphr.me/cyphr/key/create",
     });
     let (kc_pay_bytes, kc_sig) = sign_pay(key_a, kc_pay);
-    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, Some(pool_key_json(key_c)));
+    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, None);
     let kc_czd = {
         let cad = coz::canonical_hash_for_alg(&kc_pay_bytes, &key_a.alg, None).expect("cad");
         coz::czd_for_alg(&cad, &kc_sig, &key_a.alg).expect("czd")
@@ -1073,7 +1033,15 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 
     engine
-        .submit_commit(principal_id, Some(genesis), &[&kc_blob, &cc2_blob])
+        .submit_commit(
+            principal_id,
+            Some(genesis),
+            &WireBundle {
+                txs: vec![vec![kc_blob], vec![cc2_blob]],
+                keys: vec![serde_json::from_value(pool_key_json(key_c)).expect("key entry")],
+                ..WireBundle::default()
+            },
+        )
         .await
         .expect(
             "a second commit signed on top of a fresh multi-key established genesis must submit \
@@ -1095,12 +1063,11 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
     let wrong = "unrelated-principal-id";
     assert_ne!(wrong, derived);
 
-    let blobs = build_raw_blobs(&commits[0]);
-    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    let bundle = build_bundle(&commits[0]);
     let engine = test_engine();
 
     let refused = engine
-        .submit_commit(wrong, Some(genesis.clone()), &blob_slices)
+        .submit_commit(wrong, Some(genesis.clone()), &bundle)
         .await;
     assert!(
         matches!(refused, Err(EngineError::InvalidInput(_))),
@@ -1117,7 +1084,7 @@ async fn submit_commit_refuses_id_not_derived_from_genesis() {
 
     // Same commit, derived id: succeeds, so the refusal was about the id.
     engine
-        .submit_commit(&derived, Some(genesis), &blob_slices)
+        .submit_commit(&derived, Some(genesis), &bundle)
         .await
         .expect("the same commit under the genesis-derived id must be accepted");
     assert!(engine.get_tip(&derived).await.unwrap().is_some());
@@ -1137,16 +1104,16 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
 
     let a0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":1}}"];
     engine
-        .ingest_metadata(&a0, make_meta("alice", 0, 1))
+        .ingest_metadata(&singles(&a0), make_meta("alice", 0, 1))
         .await
         .unwrap();
     let mut a1 = make_meta("alice", 1, 2);
     a1.pg = pg.clone();
     let a1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":2}}"];
-    engine.ingest_metadata(&a1b, a1).await.unwrap();
+    engine.ingest_metadata(&singles(&a1b), a1).await.unwrap();
     let b0: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":3}}"];
     engine
-        .ingest_metadata(&b0, make_meta("bob", 0, 3))
+        .ingest_metadata(&singles(&b0), make_meta("bob", 0, 3))
         .await
         .unwrap();
 
@@ -1159,7 +1126,7 @@ async fn alias_conflict_is_refused_before_anything_is_written() {
     b1.pg = pg;
     let b1b: Vec<&[u8]> = vec![b"{\"pay\":{\"now\":4}}"];
     let err = engine
-        .ingest_metadata(&b1b, b1)
+        .ingest_metadata(&singles(&b1b), b1)
         .await
         .expect_err("alias held by alice");
     assert!(
@@ -1205,7 +1172,7 @@ async fn rebuild_quarantines_a_contested_pg_alias() {
             let mut meta = make_meta(who, 0, 10);
             meta.pg = pg.clone();
             engine
-                .store_blobs_and_manifest(&[blob.as_bytes()], meta)
+                .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), meta)
                 .await
                 .unwrap();
         }
@@ -1246,7 +1213,7 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
     for (seq, now) in [(0u64, 1), (2, 3)] {
         let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
         engine
-            .store_blobs_and_manifest(&[blob.as_bytes()], make_meta("alice", seq, now))
+            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), make_meta("alice", seq, now))
             .await
             .unwrap();
     }
@@ -1260,6 +1227,10 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
         &CommitManifest {
             kind: COMMIT_MANIFEST_KIND.into(),
             commit: lost,
+            shape: Shape {
+                actions: 0,
+                txs: vec![1],
+            },
         },
     )
     .unwrap();
@@ -1304,14 +1275,14 @@ async fn rebuild_quarantines_a_rival_manifest_at_one_position() {
     for (seq, now) in [(0u64, 1), (1, 2), (2, 3)] {
         let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
         engine
-            .store_blobs_and_manifest(&[blob.as_bytes()], make_meta("alice", seq, now))
+            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), make_meta("alice", seq, now))
             .await
             .unwrap();
     }
     let mut rival = make_meta("alice", 1, 9);
     rival.commit_ids = vec!["SHA-256:commit-alice-rival".to_string()];
     engine
-        .store_blobs_and_manifest(&[b"{\"pay\":{\"now\":9}}"], rival)
+        .store_blobs_and_manifest(&singles(&[b"{\"pay\":{\"now\":9}}"]), rival)
         .await
         .unwrap();
 
@@ -1343,87 +1314,98 @@ async fn rebuild_quarantines_a_rival_manifest_at_one_position() {
     );
 }
 
-/// A signed coz blob of `typ` disclosing the pool key `who` in its unsigned
-/// `key` member.
-fn coz_disclosing(typ: &str, who: &str) -> Vec<u8> {
+fn pool_for_keys() -> test_fixtures::Pool {
     let path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
-    let pool = test_fixtures::Pool::load(&path).unwrap();
-    let signer = pool.get("alice").unwrap();
-    let shown = pool.get(who).unwrap();
-    serde_json::to_vec(&serde_json::json!({
-        "pay": {"alg": signer.alg, "now": 1, "tmb": signer.compute_tmb_b64().unwrap(), "typ": typ},
-        "sig": "AAAA",
-        "key": {"alg": shown.alg, "pub": shown.pub_key, "tmb": shown.compute_tmb_b64().unwrap()},
-    }))
-    .unwrap()
+    test_fixtures::Pool::load(&path).unwrap()
 }
 
-/// Claim: the unsigned `key` member survives canonicalization only on a
-/// key-introducing coz, judged by the protocol predicate (the typ's
-/// authority-qualified suffix), never by substring. A `commit/create`
-/// introduces no key (a genesis is read only from its commit's
-/// `key/create`s, SPEC 5.1), and an application typ that merely contains
-/// `/commit/create` is an ordinary coz: neither keeps a key, and two copies
-/// differing only in `key` store as the same bytes. A unit test: the
-/// engine's action classifier is substring-based, so such a typ cannot be
-/// pushed end to end. Turns red if `key` is kept on either.
-#[test]
-fn canonical_key_is_kept_only_on_a_key_introducing_coz() {
-    let kept = |typ: &str, who: &str| {
-        let bytes = canonical_coz(&coz_disclosing(typ, who), 0).expect("canonical");
-        serde_json::from_slice::<serde_json::Value>(&bytes)
-            .unwrap()
-            .get("key")
-            .is_some()
-    };
-    assert!(
-        !kept("cyphr.me/cyphr/commit/create", "alice"),
-        "a commit/create introduces no key, so keeps none"
-    );
-    assert!(
-        kept("cyphr.me/cyphr/key/create", "golden"),
-        "a key-introducing coz keeps its key"
-    );
-    assert!(
-        !kept("example.com/repo/commit/create", "alice"),
-        "an application typ is not a carrier"
-    );
-    assert_eq!(
-        canonical_coz(
-            &coz_disclosing("example.com/repo/commit/create", "alice"),
-            0
-        )
-        .unwrap(),
-        canonical_coz(&coz_disclosing("example.com/repo/commit/create", "bob"), 0).unwrap(),
-        "two copies differing only in key must be one blob",
-    );
-}
-
-/// A signed-looking coz of `typ` by pool key `signer`, with `key` as its
-/// unsigned sidecar (absent when `None`). `canonical_coz` never checks the
-/// signature, so a placeholder is enough.
-fn coz_with_sidecar(typ: &str, signer: &str, key: Option<serde_json::Value>) -> Vec<u8> {
-    let path =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
-    let pool = test_fixtures::Pool::load(&path).unwrap();
+/// A signed-looking coz of `typ` by pool key `signer` naming pool key `who`
+/// by its `id`, with `sidecar` as an unsigned `key` member on the coz
+/// (absent when `None`). `canonical_bundle` never checks the signature, so
+/// a placeholder is enough.
+fn coz_naming(typ: &str, signer: &str, who: &str, sidecar: Option<serde_json::Value>) -> Vec<u8> {
+    let pool = pool_for_keys();
     let s = pool.get(signer).unwrap();
     let mut coz = serde_json::json!({
-        "pay": {"alg": s.alg, "now": 1, "tmb": s.compute_tmb_b64().unwrap(), "typ": typ},
+        "pay": {"alg": s.alg, "id": pool.get(who).unwrap().compute_tmb_b64().unwrap(),
+                "now": 1, "tmb": s.compute_tmb_b64().unwrap(), "typ": typ},
         "sig": "AAAA",
     });
-    if let Some(k) = key {
+    if let Some(k) = sidecar {
         coz["key"] = k;
     }
     serde_json::to_vec(&coz).unwrap()
 }
 
 fn key_json_of(who: &str) -> serde_json::Value {
-    let path =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
-    let pool = test_fixtures::Pool::load(&path).unwrap();
+    let pool = pool_for_keys();
     let k = pool.get(who).unwrap();
     serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.compute_tmb_b64().unwrap()})
+}
+
+/// A one-transaction bundle of `coz` whose `keys` are `keys` (JSON, read
+/// through the wire's own parse, so unsigned members a sender adds to an
+/// entry are exercised).
+fn bundle_with_keys(coz: Vec<u8>, keys: &[serde_json::Value]) -> WireBundle {
+    let mut bundle: WireBundle =
+        serde_json::from_value(serde_json::json!({ "keys": keys })).expect("keys parse");
+    bundle.txs = vec![vec![coz]];
+    bundle
+}
+
+/// Claim: of a pushed bundle's `keys` (SPEC 4.6.2), canonicalization keeps
+/// exactly the entries a key-introducing coz names, judged by the protocol
+/// predicate (the typ's authority-qualified suffix), never by substring,
+/// and no coz keeps a `key` member of its own. A `commit/create` introduces
+/// no key (a genesis is read only from its commit's `key/create`s, SPEC
+/// 5.1), and an application typ that merely contains `/commit/create` is an
+/// ordinary coz: neither keeps the entry its `id` names, and two bundles
+/// differing only in that entry, or in a `key` member on the coz, store as
+/// the same bundle. A unit test: the engine's action classifier is
+/// substring-based, so such a typ cannot be pushed end to end. Turns red if
+/// an entry is kept for either, or a coz keeps a `key` member.
+#[test]
+fn canonical_key_is_kept_only_on_a_key_introducing_coz() {
+    let kept = |typ: &str, who: &str| {
+        let pushed = bundle_with_keys(
+            coz_naming(typ, "alice", who, Some(key_json_of(who))),
+            &[key_json_of(who)],
+        );
+        let canonical = canonical_bundle(&pushed).expect("canonical");
+        let coz: serde_json::Value = serde_json::from_slice(&canonical.txs[0][0]).unwrap();
+        assert!(coz.get("key").is_none(), "{typ}: a coz kept a key member");
+        !canonical.keys.is_empty()
+    };
+    assert!(
+        !kept("cyphr.me/cyphr/commit/create", "bob"),
+        "a commit/create introduces no key, so keeps none"
+    );
+    assert!(
+        kept("cyphr.me/cyphr/key/create", "golden"),
+        "a key-introducing coz keeps the key it names"
+    );
+    assert!(
+        !kept("example.com/repo/commit/create", "bob"),
+        "an application typ is not a carrier"
+    );
+    let app = |who: &str| {
+        canonical_bundle(&bundle_with_keys(
+            coz_naming(
+                "example.com/repo/commit/create",
+                "alice",
+                "bob",
+                Some(key_json_of(who)),
+            ),
+            &[key_json_of(who)],
+        ))
+        .unwrap()
+    };
+    assert_eq!(
+        app("alice"),
+        app("golden"),
+        "two copies differing only in key material must be one bundle",
+    );
 }
 
 /// No regression file: tests must not write to the tree.
@@ -1437,13 +1419,13 @@ fn no_regression_file() -> proptest::prelude::ProptestConfig {
 proptest::proptest! {
     #![proptest_config(no_regression_file())]
     /// Property: whatever unsigned members a replayer or relayer attaches to
-    /// the `key` sidecar (a `tag`, a `now`, any extra member, any member
-    /// order), `canonical_coz` returns the same bytes, for every coz kind
-    /// that keeps `key` (key/create, key/replace). For kinds that keep no
-    /// key (an action, key/delete, commit/create), the output equals the
-    /// output with no key at all. One czd, one blob. Turns red if any
-    /// unsigned sidecar member, or a key on a kind that introduces none,
-    /// survives.
+    /// a bundle's `keys` entry (a `tag`, a `now`, any extra member, any
+    /// member order), `canonical_bundle` returns the same bundle, for every
+    /// coz kind that introduces the key (key/create, key/replace). For kinds
+    /// that introduce none (an action, key/delete, commit/create), the
+    /// output equals the output with no key at all. One czd, one blob, one
+    /// stored key. Turns red if any unsigned entry member, or a key for a
+    /// kind that introduces none, survives.
     #[test]
     fn canonical_coz_is_independent_of_the_unsigned_sidecar(
         tag in proptest::option::of("[ -~]{0,12}"),
@@ -1467,16 +1449,13 @@ proptest::proptest! {
             ("cyphr.me/cyphr/key/create", "alice", "golden"),
             ("cyphr.me/cyphr/key/replace", "alice", "golden"),
         ] {
-            let shown = key_json_of(shown);
+            let coz = || coz_naming(typ, signer, shown, None);
             let plain =
-                canonical_coz(&coz_with_sidecar(typ, signer, Some(shown.clone())), 0).unwrap();
-            let varied = canonical_coz(
-                &coz_with_sidecar(typ, signer, Some(vary(shown.clone()))),
-                0,
-            )
-            .unwrap();
-            proptest::prop_assert_eq!(&plain, &varied, "{} sidecar changed the blob", typ);
-            proptest::prop_assert!(serde_json::from_slice::<serde_json::Value>(&plain).unwrap().get("key").is_some());
+                canonical_bundle(&bundle_with_keys(coz(), &[key_json_of(shown)])).unwrap();
+            let varied =
+                canonical_bundle(&bundle_with_keys(coz(), &[vary(key_json_of(shown))])).unwrap();
+            proptest::prop_assert_eq!(&plain, &varied, "{} key entry changed the bundle", typ);
+            proptest::prop_assert_eq!(plain.keys.len(), 1);
         }
         // Kinds that keep no key.
         for (typ, signer) in [
@@ -1484,12 +1463,10 @@ proptest::proptest! {
             ("cyphr.me/cyphr/key/delete", "alice"),
             ("cyphr.me/cyphr/commit/create", "alice"),
         ] {
-            let none = canonical_coz(&coz_with_sidecar(typ, signer, None), 0).unwrap();
-            let foreign = canonical_coz(
-                &coz_with_sidecar(typ, signer, Some(vary(key_json_of("bob")))),
-                0,
-            )
-            .unwrap();
+            let coz = || coz_naming(typ, signer, "bob", None);
+            let none = canonical_bundle(&bundle_with_keys(coz(), &[])).unwrap();
+            let foreign =
+                canonical_bundle(&bundle_with_keys(coz(), &[vary(key_json_of("bob"))])).unwrap();
             proptest::prop_assert_eq!(&none, &foreign, "{} kept a foreign key", typ);
         }
     }

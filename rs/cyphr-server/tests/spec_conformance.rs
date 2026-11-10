@@ -33,11 +33,7 @@ async fn second_commit_push_adding(
 ) -> String {
     let principal = genesis_pushed_principal(pool, "golden", "key_a", NOW).await;
     let blobs = sign_key_create_commit(principal, pool, "golden", new_key, NOW + 1).await;
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_body(principal_id, &blobs)
 }
 
 async fn commit_count(app: &axum::Router, id: &str) -> u64 {
@@ -158,7 +154,7 @@ async fn s6_no_http_response_carries_private_key_material() {
         patch.to_string(),
     ];
     for entry in patch["payload"]["entries"].as_array().expect("entries") {
-        for blob in entry["blobs"].as_array().expect("blobs") {
+        for blob in &common::wire_cozies(entry) {
             let raw = Base64UrlUnpadded::decode_vec(blob.as_str().expect("blob string"))
                 .expect("blob base64url");
             surfaces.push(String::from_utf8_lossy(&raw).into_owned());

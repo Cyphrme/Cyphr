@@ -35,11 +35,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
         .actions
         .into_iter();
     let action_line = |blobs: &[Vec<u8>]| -> crate::Result<String> {
-        let cozies = blobs
-            .iter()
-            .map(|b| serde_json::from_slice(b))
-            .collect::<Result<Vec<serde_json::Value>, _>>()?;
-        let line = CommitEntry::new(cozies, Vec::new(), String::new(), None, None, String::new());
+        let line = CommitEntry::from_bundle(&cyphr::replay::WireBundle::actions(blobs.to_vec()))?;
         Ok(serde_json::to_string(&line)?)
     };
     for step in place(

@@ -118,34 +118,12 @@ async fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
     p
 }
 
-/// Push body for commit `i` of `p`; every key-introducing cozy discloses
-/// its key, so commit 0 (the genesis) reads from its blobs alone.
+/// Push body for line `i` of `p`'s export under `id`, in the wire form
+/// (SPEC 4.6.2): its keys travel in the bundle's `keys`, so commit 0 (the
+/// genesis) reads from its record alone.
 fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
-    let entry = &entries[i];
-    let mut key_idx = 0;
-    let blobs: Vec<serde_json::Value> = entry
-        .cozies
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
-                let k = &entry.keys[key_idx];
-                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
-                key_idx += 1;
-            }
-            c
-        })
-        .collect();
-    serde_json::json!({
-        "principal_id": id,
-        "blobs": blobs
-            .iter()
-            .map(|b| Base64UrlUnpadded::encode_string(&serde_json::to_vec(b).expect("blob")))
-            .collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_body(id, &entries[i].bundle().expect("bundle"))
 }
 
 async fn push(app: &axum::Router, body: String) -> (StatusCode, serde_json::Value) {
@@ -370,11 +348,14 @@ async fn fork_evidence_is_served_and_verified_offline() {
         EvidenceFailure::PreMismatch
     ));
     let mut tampered = item.clone();
-    let blob = tampered["b"]["blobs"][0].as_str().expect("blob").to_owned();
+    let blob = tampered["b"]["txs"][0][0]
+        .as_str()
+        .expect("blob")
+        .to_owned();
     let mut raw: serde_json::Value =
         serde_json::from_slice(&Base64UrlUnpadded::decode_vec(&blob).expect("b64")).expect("json");
     raw["pay"]["now"] = serde_json::json!(NOW + 99);
-    tampered["b"]["blobs"][0] = serde_json::json!(Base64UrlUnpadded::encode_string(
+    tampered["b"]["txs"][0][0] = serde_json::json!(Base64UrlUnpadded::encode_string(
         &serde_json::to_vec(&raw).expect("blob"),
     ));
     assert!(matches!(
@@ -394,20 +375,20 @@ async fn fork_evidence_is_served_and_verified_offline() {
 
     // Blob counts are bounded: none, or past the bound, is not an item.
     let mut empty = item.clone();
-    empty["a"]["blobs"] = serde_json::json!([]);
+    empty["a"]["txs"] = serde_json::json!([]);
     assert!(matches!(
         refused(&empty, &pr.id, &held).await,
         EvidenceFailure::Malformed(_)
     ));
     let mut flood = item.clone();
-    flood["a"]["blobs"] = serde_json::json!(vec![item["a"]["blobs"][0].clone(); 1025]);
+    flood["a"]["txs"] = serde_json::json!(vec![item["a"]["txs"][0].clone(); 1025]);
     assert!(matches!(
         refused(&flood, &pr.id, &held).await,
         EvidenceFailure::Malformed(_)
     ));
     let mut one = item.clone();
-    one["a"]["blobs"] = serde_json::json!(vec![item["a"]["blobs"][0].clone(); 1]);
-    one["b"]["blobs"] = serde_json::json!(vec![item["b"]["blobs"][0].clone(); 1024]);
+    one["a"]["txs"] = serde_json::json!(vec![item["a"]["txs"][0].clone(); 1]);
+    one["b"]["txs"] = serde_json::json!(vec![item["b"]["txs"][0].clone(); 1024]);
     assert!(
         !matches!(
             refused(&one, &pr.id, &held).await,
@@ -419,32 +400,33 @@ async fn fork_evidence_is_served_and_verified_offline() {
     // The order of a pay's members on the wire is not signed: the signature
     // is over the canonical pay, so a re-ordered blob verifies the same.
     let mut reordered = item.clone();
-    let blobs: Vec<serde_json::Value> = item["a"]["blobs"]
+    let reorder = |b: &serde_json::Value| {
+        let v: serde_json::Value = serde_json::from_slice(
+            &Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("b64"),
+        )
+        .expect("json");
+        let pay = v["pay"].as_object().expect("pay");
+        let backwards: Vec<String> = pay
+            .iter()
+            .rev()
+            .map(|(k, val)| format!("{}:{}", serde_json::json!(k), val))
+            .collect();
+        let text = format!(
+            "{{\"pay\":{{{}}},\"sig\":{}{}}}",
+            backwards.join(","),
+            v["sig"],
+            v.get("key")
+                .map_or(String::new(), |k| format!(",\"key\":{k}"))
+        );
+        serde_json::json!(Base64UrlUnpadded::encode_string(text.as_bytes()))
+    };
+    let txs: Vec<serde_json::Value> = item["a"]["txs"]
         .as_array()
-        .expect("blobs")
+        .expect("txs")
         .iter()
-        .map(|b| {
-            let v: serde_json::Value = serde_json::from_slice(
-                &Base64UrlUnpadded::decode_vec(b.as_str().expect("blob")).expect("b64"),
-            )
-            .expect("json");
-            let pay = v["pay"].as_object().expect("pay");
-            let backwards: Vec<String> = pay
-                .iter()
-                .rev()
-                .map(|(k, val)| format!("{}:{}", serde_json::json!(k), val))
-                .collect();
-            let text = format!(
-                "{{\"pay\":{{{}}},\"sig\":{}{}}}",
-                backwards.join(","),
-                v["sig"],
-                v.get("key")
-                    .map_or(String::new(), |k| format!(",\"key\":{k}"))
-            );
-            serde_json::json!(Base64UrlUnpadded::encode_string(text.as_bytes()))
-        })
+        .map(|tx| tx.as_array().expect("tx").iter().map(reorder).collect())
         .collect();
-    reordered["a"]["blobs"] = serde_json::json!(blobs);
+    reordered["a"]["txs"] = serde_json::json!(txs);
     verify_principal_fork(&reordered, &pr.id, pr.genesis().await, &held)
         .await
         .expect("member order on the wire is not part of what is signed");

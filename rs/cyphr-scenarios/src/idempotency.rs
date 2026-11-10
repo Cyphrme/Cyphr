@@ -17,6 +17,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::Principal;
+use cyphr::replay::WireBundle;
 use cyphr::signer::SoftwareSigner;
 use serde_json::{Value, json};
 
@@ -87,15 +88,15 @@ fn key_of(k: &PoolSigner) -> Result<cyphr::Key, String> {
         .map_err(|e| e.to_string())
 }
 
-/// One commit by `by` of `typ` over `target`, applied to `p`, as wire blobs:
-/// key-introducing cozies carry their key.
+/// One commit by `by` of `typ` over `target`, applied to `p`, as its wire
+/// bundle (SPEC 4.6.2).
 async fn commit(
     p: &mut Principal,
     by: &PoolSigner,
     typ: &str,
     target: &PoolSigner,
     introduces: bool,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<WireBundle, String> {
     let pay = serde_json::to_vec(&json!({
         "alg": by.alg, "id": target.tmb.to_b64(), "now": T,
         "tmb": by.tmb.to_b64(), "typ": typ,
@@ -121,20 +122,7 @@ async fn commit(
         .await
         .map_err(|e| e.to_string())?;
     let last = p.commits().last().ok_or("no commit")?;
-    last.iter_all_cozies()
-        .map(|vc| {
-            let mut c = serde_json::to_value(vc.coz().raw()).map_err(|e| e.to_string())?;
-            let sidecar = |k: &cyphr::Key| {
-                json!({"alg": k.alg(),
-                    "pub": Base64UrlUnpadded::encode_string(k.pub_key()),
-                    "tmb": k.tmb().to_b64()})
-            };
-            if let Some(k) = vc.new_key() {
-                c["key"] = sidecar(k);
-            }
-            serde_json::to_vec(&c).map_err(|e| e.to_string())
-        })
-        .collect()
+    WireBundle::of_commit(last).map_err(|e| e.to_string())
 }
 
 fn signed_part(blob: &[u8]) -> Result<Value, String> {
@@ -155,25 +143,28 @@ pub async fn replay_on_fresh_peer(
         .await
         .map_err(|e| e.to_string())?;
     // Every chain begins with its genesis commit (SPEC 5.1).
-    let genesis = p
-        .commit_genesis(
-            &SoftwareSigner::new(&golden.alg, &golden.prv, &golden.pubb, &golden.tmb),
-            &[],
-            T,
-            "cyphr.me",
-        )
-        .await
-        .map_err(|e| e.to_string())?
-        .iter()
-        .map(|c| serde_json::to_vec(c).map_err(|e| e.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
+    p.commit_genesis(
+        &SoftwareSigner::new(&golden.alg, &golden.prv, &golden.pubb, &golden.tmb),
+        &[],
+        T,
+        "cyphr.me",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let genesis = WireBundle::of_commit(p.commits().last().ok_or("no genesis commit")?)
+        .map_err(|e| e.to_string())?;
     let c0 = commit(&mut p, &golden, "cyphr.me/cyphr/key/create", &key_a, true).await?;
     let c1 = commit(&mut p, &golden, "cyphr.me/cyphr/key/delete", &key_a, false).await?;
-    let replay: Vec<Vec<u8>> = REPLAY_BLOBS
+    let replay_blobs: Vec<Vec<u8>> = REPLAY_BLOBS
         .iter()
         .map(|b| Base64UrlUnpadded::decode_vec(b).map_err(|e| e.to_string()))
         .collect::<Result<_, _>>()?;
-    if signed_part(&replay[0])? != signed_part(&c0[0])? {
+    let c0_d = c0
+        .txs
+        .first()
+        .and_then(|tx| tx.first())
+        .ok_or("commit 0 has no coz")?;
+    if signed_part(&replay_blobs[0])? != signed_part(c0_d)? {
         return Err("the recorded replay no longer re-includes commit 0's coz".into());
     }
 
@@ -187,9 +178,16 @@ pub async fn replay_on_fresh_peer(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let push = |blobs: &[Vec<u8>]| {
-        let body = json!({"principal_id": id,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>()});
+    // The replay re-includes D as its own transaction, before the
+    // recorded commit/create, with the key D names (commit 0's).
+    let replay = WireBundle {
+        txs: replay_blobs.into_iter().map(|b| vec![b]).collect(),
+        keys: c0.keys.clone(),
+        ..WireBundle::default()
+    };
+    let push = |bundle: &WireBundle| {
+        let mut body = serde_json::to_value(bundle).unwrap_or_default();
+        body["principal_id"] = id.as_str().into();
         http.post(format!("http://{}/push", peer.addr))
             .json(&body)
             .send()

@@ -101,7 +101,15 @@ impl Forge {
 /// coz's top level (outside `pay`, so the signature still verifies).
 fn with_forged_manifest(body: &str, forge: &Forge) -> String {
     let mut v: serde_json::Value = serde_json::from_str(body).unwrap();
-    let last = v["blobs"].as_array_mut().unwrap().last_mut().unwrap();
+    let last = v["txs"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
     let mut coz: serde_json::Value =
         serde_json::from_slice(&Base64UrlUnpadded::decode_vec(last.as_str().unwrap()).unwrap())
             .unwrap();
@@ -205,7 +213,7 @@ impl World {
             build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001)
                 .await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let raw = Base64UrlUnpadded::decode_vec(v["blobs"][0].as_str().unwrap()).unwrap();
+        let raw = Base64UrlUnpadded::decode_vec(v["txs"][0][0].as_str().unwrap()).unwrap();
         Blake3Hash::from_bytes(*blake3::hash(&raw).as_bytes())
     }
 

@@ -128,8 +128,9 @@ async fn intro_commit(
         .expect("a commit");
     let mut keys = entry.keys.iter();
     entry
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|v| {
             let mut coz = v.clone();
             if cyphr::parsed_coz::typ::is_key_introducing(coz["pay"]["typ"].as_str().unwrap_or(""))
@@ -143,11 +144,7 @@ async fn intro_commit(
 }
 
 fn body(pid: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_blobs(pid, blobs)
 }
 
 fn signer_of(k: &PoolKey) -> cyphr::signer::SoftwareSigner {
@@ -182,13 +179,13 @@ async fn genesis_push(
         let mut p = cyphr::Principal::implicit(key_of(g))
             .await
             .expect("genesis");
-        let blobs = wire(
-            p.commit_genesis(&signer_of(g), &[key_of(t)], NOW, "cyphr.me")
-                .await
-                .expect("genesis commit"),
-        );
-        let pid = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
-        return (body(&pid, &blobs), pid, p);
+        p.commit_genesis(&signer_of(g), &[key_of(t)], NOW, "cyphr.me")
+            .await
+            .expect("genesis commit");
+        let bundle = cyphr::replay::WireBundle::of_commit(p.commits().last().expect("genesis"))
+            .expect("bundle");
+        let pid = test_fixtures::bundle::genesis_id(&bundle).expect("PG");
+        return (common::push_body(&pid, &bundle), pid, p);
     }
 
     let r = pool.get(REPLACER).expect("replacer key");
@@ -200,6 +197,11 @@ async fn genesis_push(
         .create_genesis_keys(&signer_of(g), &[key_of(r)], NOW, "cyphr.me")
         .await
         .expect("genesis key/creates");
+    // Each key/create carries the key it creates for `push_blobs` to move
+    // into the bundle's `keys`.
+    for (coz, key) in cozies.iter_mut().zip([key_of(g), key_of(r)]) {
+        coz["key"] = serde_json::to_value(cyphr_storage::KeyEntry::of(&key)).unwrap();
+    }
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": r.alg,
         "id": t.compute_tmb_b64().expect("target tmb"),

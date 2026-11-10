@@ -194,34 +194,12 @@ fn key_create(signer: &Kp, new: &Kp, now: i64) -> Tx {
     )
 }
 
-/// Push body for commit `i` of `p` under `id`; every `key/create`
-/// (the genesis commit's included) discloses its key.
+/// Push body for line `i` of `p`'s export under `id`, in the wire form
+/// (SPEC 4.6.2): its keys travel in the bundle's `keys`, so commit 0 (the
+/// genesis) reads from its record alone.
 fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
-    let entry = &entries[i];
-    let mut key_idx = 0;
-    let blobs: Vec<serde_json::Value> = entry
-        .cozies
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
-                let k = &entry.keys[key_idx];
-                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
-                key_idx += 1;
-            }
-            c
-        })
-        .collect();
-    serde_json::json!({
-        "principal_id": id,
-        "blobs": blobs
-            .iter()
-            .map(|b| Base64UrlUnpadded::encode_string(&serde_json::to_vec(b).expect("blob")))
-            .collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::push_body(id, &entries[i].bundle().expect("bundle"))
 }
 
 /// Backs: a key the owner self-revoked can neither commit nor rewind the

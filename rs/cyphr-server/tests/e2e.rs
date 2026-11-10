@@ -18,7 +18,7 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    bootstrap_principal, build_genesis_push_body, build_raw_blobs, envelope_payload,
+    bootstrap_principal, build_bundle, build_genesis_push_body, envelope_payload,
     fixture_principal_id, get_json, golden_principal_id, implicit_principal_id, keyless_server,
     load_golden, load_pool, make_genesis, post_json, sign_key_create_commit,
 };
@@ -99,7 +99,7 @@ async fn patch_after_bootstrap() {
 
     // Each entry should have base64url-encoded blobs.
     for entry in entries {
-        let blobs = entry["blobs"].as_array().unwrap();
+        let blobs = common::wire_cozies(entry);
         assert!(!blobs.is_empty(), "each commit entry should contain blobs");
         // Verify each blob is valid base64url.
         for blob_str in blobs {
@@ -174,7 +174,7 @@ async fn push_empty_blobs_rejected() {
     let app = build_router(state);
     let body = serde_json::json!({
         "principal_id": "test",
-        "blobs": [],
+        "txs": [],
     })
     .to_string();
 
@@ -189,7 +189,7 @@ async fn push_bad_base64_rejected() {
     let app = build_router(state);
     let body = serde_json::json!({
         "principal_id": "test",
-        "blobs": ["!!!not-base64!!!"],
+        "txs": [["!!!not-base64!!!"]],
     })
     .to_string();
 
@@ -212,7 +212,7 @@ async fn push_malformed_json_rejected() {
     let garbage = Base64UrlUnpadded::encode_string(b"not json at all");
     let body = serde_json::json!({
         "principal_id": "test",
-        "blobs": [garbage],
+        "txs": [[garbage]],
     })
     .to_string();
 
@@ -255,14 +255,13 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
 
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
-    let commit0_blobs = build_raw_blobs(&commits[0]);
-    let commit0_slices: Vec<&[u8]> = commit0_blobs.iter().map(|b| b.as_slice()).collect();
+    let commit0_blobs = build_bundle(&commits[0]);
     state
         .engine
         .submit_commit(
             principal_id,
             Some(make_genesis(genesis_keys)),
-            &commit0_slices,
+            &commit0_blobs,
         )
         .await
         .expect("bootstrap commit 0 failed");
@@ -308,13 +307,12 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
         )
         .await;
         handles.push(tokio::spawn(async move {
-            let variant_slices: Vec<&[u8]> = variant_blobs.iter().map(|b| b.as_slice()).collect();
             state
                 .engine
                 .submit_commit(
                     &principal_id,
                     Some(make_genesis(&genesis_keys)),
-                    &variant_slices,
+                    &variant_blobs,
                 )
                 .await
         }));
@@ -459,9 +457,8 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         )
         .await
         .expect("genesis commit");
-        let slices: Vec<&[u8]> = commit0.iter().map(|b| b.as_slice()).collect();
         engine
-            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &slices)
+            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &commit0)
             .await
             .expect("bootstrap commit 0 failed");
 
@@ -499,10 +496,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         let pid = principal_ids[i].clone();
         let genesis = genesis_of(signers[i]);
         let blobs = commit1_blobs[i].clone();
-        tokio::spawn(async move {
-            let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-            engine.submit_commit(&pid, Some(genesis), &slices).await
-        })
+        tokio::spawn(async move { engine.submit_commit(&pid, Some(genesis), &blobs).await })
     };
     let a = submit(0);
     {
@@ -576,7 +570,7 @@ async fn push_new_principal_happy_path() {
     let body: serde_json::Value =
         serde_json::from_str(&build_genesis_push_body(&pool, &principal_id, now).await)
             .expect("push body");
-    let blobs = body["blobs"].as_array().expect("blobs").clone();
+    let blobs = common::wire_cozies(&body);
     let typs: Vec<String> = blobs
         .iter()
         .map(|b| {
@@ -625,7 +619,7 @@ async fn push_new_principal_happy_path() {
     let entries = patch["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1, "one commit was pushed");
     assert_eq!(
-        entries[0]["blobs"].as_array().unwrap().len(),
+        common::wire_cozies(&entries[0]).len(),
         blobs.len(),
         "patch should return every blob from the pushed commit"
     );

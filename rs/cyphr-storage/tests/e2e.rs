@@ -147,14 +147,10 @@ async fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestInten
 
     // Debug: dump pre values from commit cozies
     for (ci, commit) in commits.iter().enumerate() {
-        for (ti, cz) in commit.cozies.iter().enumerate() {
-            if let Some(pay) = cz.get("pay") {
-                if let Some(pre) = pay.get("pre") {
-                    eprintln!("  [{}:{}] pre: {}", ci, ti, pre);
-                }
-            }
-            if let Some(key) = cz.get("key") {
-                eprintln!("  [{}:{}] key.tmb: {:?}", ci, ti, key.get("tmb"));
+        let cozies = commit.actions.iter().chain(commit.txs.iter().flatten());
+        for (ti, cz) in cozies.enumerate() {
+            if let Some(pre) = cz.get("pay").and_then(|pay| pay.get("pre")) {
+                eprintln!("  [{}:{}] pre: {}", ci, ti, pre);
             }
         }
     }
@@ -345,29 +341,6 @@ async fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestInten
 
     let genesis = make_genesis(genesis_keys);
     let commit_vec = make_commits(commits);
-
-    // Apply setup modifiers (e.g., pre-revoke keys)
-    let mut principal = cyphr::Principal::implicit(genesis.key().expect("genesis key").clone())
-        .await
-        .expect("genesis");
-
-    if let Some(setup) = &test.setup {
-        if let Some(key_name) = &setup.revoke_key {
-            let rvk_time = setup.revoke_at.unwrap_or(0);
-            let pool_key = pool
-                .pool
-                .key
-                .iter()
-                .find(|k| k.name == *key_name)
-                .unwrap_or_else(|| {
-                    panic!("{}: setup.revoke_key '{}' not found", test.name, key_name)
-                });
-            let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
-            principal
-                .pre_revoke_key(&tmb, rvk_time)
-                .expect("pre_revoke_key failed");
-        }
-    }
 
     // Try to load principal - expect failure
     match load_principal_from_commits(genesis.clone(), &commit_vec).await {
@@ -680,23 +653,9 @@ async fn e2e_multihash_round_trip() {
 // Dead principal (SPEC 3.1, 3.7, 11)
 // ============================================================================
 
-/// Raw coz blobs of one golden commit, the shape `submit_commit` takes.
-fn blobs_of(commit: &CommitEntry) -> Vec<Vec<u8>> {
-    let mut keys = commit.keys.iter();
-    commit
-        .cozies
-        .iter()
-        .map(|cz| {
-            let mut cz = cz.clone();
-            let typ = cz["pay"]["typ"].as_str().unwrap_or("").to_owned();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
-                if let Some(k) = keys.next() {
-                    cz["key"] = serde_json::to_value(k).expect("key entry serializes");
-                }
-            }
-            serde_json::to_vec(&cz).expect("coz serializes")
-        })
-        .collect()
+/// One golden commit as the wire bundle `submit_commit` takes.
+fn bundle_of(commit: &CommitEntry) -> cyphr::replay::WireBundle {
+    commit.bundle().expect("golden line")
 }
 
 /// Backs SPEC 3.1/3.7/11 through the durable stack: a principal whose only
@@ -733,10 +692,8 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
 
     // The genesis commit, then the dying commit.
     for commit in dying.commits.as_ref().expect("commits") {
-        let blobs = blobs_of(commit);
-        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&principal_id, Some(genesis.clone()), &refs)
+            .submit_commit(&principal_id, Some(genesis.clone()), &bundle_of(commit))
             .await
             .expect("the dying commit is ingested");
     }
@@ -768,10 +725,9 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
         cyphr::lifecycle::LifecycleState::Dead
     );
 
-    let next = blobs_of(&after.commits.as_ref().expect("commits")[2]);
-    let refs: Vec<&[u8]> = next.iter().map(Vec::as_slice).collect();
+    let next = bundle_of(&after.commits.as_ref().expect("commits")[2]);
     let refused = engine
-        .submit_commit(&principal_id, Some(genesis), &refs)
+        .submit_commit(&principal_id, Some(genesis), &next)
         .await;
     assert!(refused.is_err(), "a Dead principal took a commit");
     let tip_after = engine

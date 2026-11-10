@@ -133,7 +133,7 @@ async fn refusals_are_never_signed() {
             attestor,
             "/push",
             "POST",
-            Some(serde_json::json!({ "principal_id": "p1", "blobs": [] }).to_string()),
+            Some(serde_json::json!({ "principal_id": "p1", "txs": [] }).to_string()),
             StatusCode::BAD_REQUEST,
         ),
         (

@@ -18,6 +18,7 @@
 use axum::Router;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::WireBundle;
 use cyphr::{Error, Key, MergeStatus, Principal, merge_status};
 use cyphr_server::build_router;
 use serde_json::{Value, json};
@@ -149,7 +150,7 @@ impl Peer {
         &mut self,
         pays: Vec<(Value, Option<Key>)>,
         now: i64,
-    ) -> Result<Vec<Vec<u8>>, Error> {
+    ) -> Result<WireBundle, Error> {
         let signed: Vec<_> = pays
             .iter()
             .map(|(p, k)| (self.sign(p), k.clone()))
@@ -180,34 +181,14 @@ impl Peer {
             self.id = id;
         }
 
-        let entries = cyphr_storage::export_commits(&self.principal).expect("export commits");
-        let entry = entries.last().expect("a commit after finalize");
-        // Every `key/create` discloses the key it creates (SPEC 5.2 TX0).
-        let blobs: Vec<Value> = entry
-            .cozies
-            .iter()
-            .map(|v| {
-                let mut coz = v.clone();
-                let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-                if cyphr::parsed_coz::typ::is_key_introducing(typ) {
-                    if let Some(k) = entry
-                        .keys
-                        .iter()
-                        .find(|k| coz["pay"]["id"].as_str() == Some(k.tmb.as_str()))
-                    {
-                        coz.as_object_mut().expect("object").insert(
-                            "key".to_owned(),
-                            json!({ "alg": k.alg, "pub": k.pub_key, "tmb": k.tmb }),
-                        );
-                    }
-                }
-                coz
-            })
-            .collect();
-        Ok(blobs
-            .iter()
-            .map(|b| serde_json::to_vec(b).expect("blob json"))
-            .collect())
+        // Every key a `key/create` creates travels in the bundle's `keys`
+        // (SPEC 4.6.2, 5.2).
+        let commit = self
+            .principal
+            .commits()
+            .last()
+            .expect("a commit after finalize");
+        Ok(WireBundle::of_commit(commit).expect("bundle"))
     }
 
     /// A copy that continues this peer's chain, for authoring a commit the
@@ -224,16 +205,12 @@ impl Peer {
         }
     }
 
-    fn push_body(&self, blobs: &[Vec<u8>]) -> String {
-        json!({
-            "principal_id": self.id(),
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-        .to_string()
+    fn push_body(&self, bundle: &WireBundle) -> String {
+        common::push_body(&self.id(), bundle)
     }
 }
 
-async fn push(app: &Router, peer: &Peer, blobs: &[Vec<u8>]) -> (StatusCode, Value) {
+async fn push(app: &Router, peer: &Peer, blobs: &WireBundle) -> (StatusCode, Value) {
     post_json(app.clone(), "/push", peer.push_body(blobs)).await
 }
 

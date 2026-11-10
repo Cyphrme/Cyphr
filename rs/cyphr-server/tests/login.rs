@@ -19,6 +19,13 @@ use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+/// A push body: `principal_id` and `bundle` in the wire form (SPEC 4.6.2).
+fn push_body(principal_id: &str, bundle: &cyphr::replay::WireBundle) -> String {
+    let mut body = serde_json::to_value(bundle).expect("bundle serializes");
+    body["principal_id"] = principal_id.into();
+    body.to_string()
+}
+
 // ========================================================================
 // Shared fixture helpers (mirrored from tests/e2e.rs, which is a separate
 // integration-test crate and cannot be imported here)
@@ -66,34 +73,13 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> cyphr_storage::Genesis {
     }
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key material.
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// Load the shared cryptographic key pool backing the golden fixtures.
@@ -257,11 +243,7 @@ async fn bootstrap_active_with_key(
     .expect("genesis commit");
     let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
-    let body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let body = push_body(&principal_id, &blobs);
     let (status, _) = post_json(app, "/push", body).await;
     assert_eq!(
         status,
@@ -288,11 +270,13 @@ async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
         .expect("fixture genesis derives an id");
 
     for commit in fixture["commits"].as_array().unwrap() {
-        let blobs = build_raw_blobs(commit);
-        let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
         state
             .engine
-            .submit_commit(&principal_id, Some(make_genesis(genesis_keys)), &slices)
+            .submit_commit(
+                &principal_id,
+                Some(make_genesis(genesis_keys)),
+                &build_bundle(commit),
+            )
             .await
             .expect("bootstrap lifecycle commit");
     }
@@ -309,7 +293,7 @@ async fn sign_key_revoke_commit<S: eml::Storage>(
     pool: &test_fixtures::Pool,
     signer_name: &str,
     rvk: i64,
-) -> Vec<Vec<u8>> {
+) -> cyphr::replay::WireBundle {
     let signer = pool.get(signer_name).expect("signer key in pool");
     let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
 
@@ -347,13 +331,8 @@ async fn sign_key_revoke_commit<S: eml::Storage>(
         .await
         .expect("commit should finalize");
 
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| serde_json::to_vec(v).expect("cozy serializes"))
-        .collect()
+    let commit = principal.commits().last().expect("the new commit");
+    cyphr::replay::WireBundle::of_commit(commit).expect("the new commit's bundle")
 }
 
 /// Bootstrap a principal with two active keys (`golden` + `revoked_key`)
@@ -384,10 +363,9 @@ async fn bootstrap_active_then_revoke(
         .await
         .expect("load principal");
     let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100).await;
-    let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
     state
         .engine
-        .submit_commit(principal_id, None, &slices)
+        .submit_commit(principal_id, None, &blobs)
         .await
         .expect("submit the revoke commit");
     principal_id.to_string()

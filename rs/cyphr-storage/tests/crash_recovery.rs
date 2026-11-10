@@ -35,6 +35,9 @@ const COMMIT_MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
 struct RawManifest<'a> {
     kind: &'a str,
     commit: &'a IndexableCommit,
+    /// How the blobs group into the commit's bundle: here one coz, one
+    /// transaction.
+    shape: serde_json::Value,
 }
 
 /// Build a durable-shaped commit for a given principal/sequence/timestamp,
@@ -85,6 +88,7 @@ async fn write_orphan_manifest(blob_store: &MemoryBlobStore, commit: &IndexableC
     let manifest = RawManifest {
         kind: COMMIT_MANIFEST_KIND,
         commit: &commit,
+        shape: serde_json::json!({"actions": 0, "txs": [1]}),
     };
     let mut bytes = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
     serde_json::to_writer(&mut bytes, &manifest).expect("manifest serialize");

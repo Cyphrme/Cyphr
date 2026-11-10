@@ -1,25 +1,28 @@
 //! Replay of stored commit bundles.
 //!
-//! A stored bundle is the cozies one push carried, in the order the
-//! principal signed them: at most one commit's transactions plus any data
-//! actions around them. Every consumer that rebuilds a principal from
-//! stored or fetched bundles (the storage engine's ingest, rebuild and
-//! load, a client following a peer) replays through [`replay_bundle`], so a
-//! bundle means one thing on every path: one kind table decides what is a
-//! transaction ([`typ::is_transaction`](crate::parsed_coz::typ::is_transaction)),
-//! and one order rule decides how the bundle is applied.
+//! A bundle is what one push carries, in the JSON wire form of SPEC 4.6.2:
+//! `txs`, the commit's transactions, each an ordered array of cozies with
+//! the commit transaction last; `keys`, the public keys the cozies of `txs`
+//! introduce; and `actions`, data actions (SPEC 4.8.1, not transactions)
+//! recorded before the transactions are applied. Every consumer that
+//! rebuilds a principal from stored or fetched bundles (the storage
+//! engine's ingest, rebuild and load, a client following a peer) replays
+//! through [`replay_bundle`], so a bundle means one thing on every path.
 //!
-//! The order rule is the one every path used before it lived here: data
-//! actions before the first transaction are recorded first, then every
-//! transaction is applied inside one commit scope and the commit is
-//! finalized, then the actions that followed the first transaction are
-//! recorded. A bundle with no transaction forms no commit: its actions are
-//! recorded in DT in `now` order, the lexical order of their digests
-//! breaking ties (SPEC 4.8.1: actions "are not chained, and are recorded in
-//! DT", "Ordered by `now`"; 3.7 step 2), whatever order they travelled in,
-//! so a later `ds/create` includes them (4.8.2). Transaction grouping
-//! (several cozies per transaction) is not decided here yet; each
-//! transaction coz is its own transaction.
+//! The order rule: the bundle's actions are recorded first, then every
+//! transaction is applied through [`CommitScope::apply_tx`] inside one
+//! commit scope and the commit is finalized. Each transaction's cozies are
+//! verified against the state the transaction meets and applied one by
+//! one, so the transaction is one leaf of TR, `TX = MR(czd0, czd1?, ...)`
+//! (SPEC 3.7.5), and all its cozies share one `typ` (4.1). Actions to be
+//! recorded after a commit travel in a following action-only bundle. A
+//! bundle with no transaction forms no commit: its actions are recorded in
+//! DT in `now` order, the lexical order of their digests breaking ties
+//! (SPEC 4.8.1: actions "are not chained, and are recorded in DT",
+//! "Ordered by `now`"; 3.7 step 2), whatever order they travelled in, so a
+//! later `ds/create` includes them (4.8.2).
+//!
+//! [`CommitScope::apply_tx`]: crate::commit::CommitScope::apply_tx
 
 use coz::Czd;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -32,7 +35,7 @@ use crate::principal::Principal;
 use crate::state::{HashAlg, PrincipalRoot, hash_alg_from_str};
 use crate::transaction_root::TransactionRoot;
 
-/// Why a wire blob is not a stored coz.
+/// Why a wire blob or bundle is not a stored one.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WireError {
@@ -54,19 +57,83 @@ pub enum WireError {
     /// The pay fails the core's header parse (`typ`, `tmb`, `now`).
     #[error("pay header: {0}")]
     Header(Error),
-    /// A key-introducing coz's `key` sidecar lacks `alg`, `pub` or `tmb`,
-    /// or one of them is not decodable.
-    #[error("key sidecar is malformed")]
+    /// An entry of `keys` lacks `alg`, `pub` or `tmb`, or one of them is
+    /// not decodable.
+    #[error("key entry is malformed")]
     KeyFields,
-    /// The sidecar's key fails the core's key checks (a `tmb` that is not
+    /// An entry of `keys` fails the core's key checks (a `tmb` that is not
     /// the thumbprint of `pub`).
-    #[error("key sidecar: {0}")]
+    #[error("key entry: {0}")]
     Key(Error),
+    /// A data action inside `txs`, or a transaction inside `actions`: SPEC
+    /// 4.6.2 `txs` holds transactions only, and 4.8.1 actions are not
+    /// transactions.
+    #[error(
+        "coz is in the wrong part of the bundle (a data action in txs or a transaction in actions)"
+    )]
+    Misplaced,
+    /// A transaction of no coz (SPEC 4.1: one or more).
+    #[error("a transaction holds no coz")]
+    EmptyTransaction,
+}
+
+/// One entry of a bundle's `keys` (SPEC 4.6.2, 5.2): the full public key a
+/// key-introducing coz names by `tmb` only. Unsigned material, bound to the
+/// signed pay by its thumbprint.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KeyEntry {
+    /// Algorithm identifier (e.g., "ES256").
+    pub alg: String,
+    /// Public key (base64url-encoded).
+    #[serde(rename = "pub")]
+    pub pub_key: String,
+    /// Key thumbprint (base64url-encoded).
+    pub tmb: String,
+    /// Optional human-readable label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Optional creation timestamp (maps to [`Key::first_seen`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<i64>,
+}
+
+impl KeyEntry {
+    /// The entry of `key`.
+    #[must_use]
+    pub fn of(key: &Key) -> Self {
+        Self {
+            alg: key.alg().to_owned(),
+            pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
+            tmb: key.tmb().to_b64(),
+            tag: key.tag().map(str::to_owned),
+            now: Some(key.first_seen()),
+        }
+    }
+
+    /// The entry as a [`Key`]: the one place wire key material becomes a
+    /// key, so the constructor's check that `tmb` is the thumbprint of
+    /// `pub` holds on every path.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::KeyFields`] for undecodable fields, [`WireError::Key`]
+    /// when the core refuses the key.
+    pub fn to_key(&self) -> Result<Key, WireError> {
+        let decode = |v: &str| Base64UrlUnpadded::decode_vec(v).map_err(|_| WireError::KeyFields);
+        let tmb = decode(&self.tmb)?;
+        let pub_key = decode(&self.pub_key)?;
+        Ok(
+            Key::new(self.alg.clone(), coz::Thumbprint::from_bytes(tmb), pub_key)
+                .map_err(WireError::Key)?
+                .with_first_seen(self.now.unwrap_or(0))
+                .with_tag(self.tag.clone()),
+        )
+    }
 }
 
 /// One coz of a stored bundle, decoded and canonicalized: the signed pay
-/// bytes (keys sorted, the form the signature covers), the signature, its
-/// digest, and the key it introduces, if any.
+/// bytes (keys sorted, the form the signature covers), the signature and
+/// its digest.
 #[derive(Debug, Clone)]
 pub struct StoredCoz {
     pay: Value,
@@ -76,13 +143,10 @@ pub struct StoredCoz {
     hash_alg: HashAlg,
     czd: Czd,
     header: CozHeader,
-    key: Option<Key>,
 }
 
 impl StoredCoz {
-    /// A coz from its `pay`, signature bytes and the key it introduces.
-    /// The key is kept only for a key-introducing `typ`; on any other coz a
-    /// key is meaningless and is dropped.
+    /// A coz from its `pay` and signature bytes.
     ///
     /// # Errors
     ///
@@ -90,7 +154,7 @@ impl StoredCoz {
     /// [`WireError::Protocol`]: [`Error::MalformedPayload`] for a pay with
     /// no `alg`, [`Error::UnknownAlg`] for one the algorithm table does not
     /// hold.
-    pub fn new(pay: &Value, sig: Vec<u8>, key: Option<Key>) -> Result<Self, WireError> {
+    pub fn new(pay: &Value, sig: Vec<u8>) -> Result<Self, WireError> {
         let mut pay = pay.clone();
         canonicalize(&mut pay);
         let header = CozHeader::parse(&pay).map_err(WireError::Header)?;
@@ -108,7 +172,6 @@ impl StoredCoz {
         // table row coz cannot compute, named rather than defaulted.
         let czd = compute_czd(&pay_json, &sig, &alg)
             .ok_or_else(|| WireError::Protocol(Error::UnsupportedAlgorithm(alg.clone())))?;
-        let key = key.filter(|_| typ::is_key_introducing(&header.typ));
         Ok(Self {
             pay,
             pay_json,
@@ -117,14 +180,12 @@ impl StoredCoz {
             hash_alg,
             czd,
             header,
-            key,
         })
     }
 
-    /// A coz from its stored wire form, `{pay, sig, key?}` JSON with `sig`
-    /// in base64url. The unsigned `key` sidecar is read only on a
-    /// key-introducing coz; on any other coz it is never interpreted, so
-    /// junk there cannot refuse a bundle whose signed content is valid.
+    /// A coz from its stored wire form, `{pay, sig}` JSON with `sig` in
+    /// base64url. Key material is never read from a coz: it travels in the
+    /// bundle's `keys` (SPEC 4.6.2).
     ///
     /// # Errors
     ///
@@ -137,15 +198,7 @@ impl StoredCoz {
             .and_then(Value::as_str)
             .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
             .ok_or(WireError::BadSig)?;
-        let introduces = pay
-            .get("typ")
-            .and_then(Value::as_str)
-            .is_some_and(typ::is_key_introducing);
-        let key = match value.get("key") {
-            Some(sidecar) if introduces => Some(sidecar_key(sidecar)?),
-            _ => None,
-        };
-        Self::new(pay, sig, key)
+        Self::new(pay, sig)
     }
 
     /// The canonical pay.
@@ -191,35 +244,20 @@ impl StoredCoz {
         &self.header
     }
 
-    /// The key a key-introducing coz adds.
-    #[must_use]
-    pub fn key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
     /// Whether this coz is a transaction (by the core kind table) rather
     /// than a data action.
     #[must_use]
     pub fn is_transaction(&self) -> bool {
         typ::is_transaction(&self.header.typ)
     }
-}
 
-/// A `key` sidecar `{alg, pub, tmb, now?, tag?}` as a [`Key`].
-fn sidecar_key(sidecar: &Value) -> Result<Key, WireError> {
-    let field = |name| sidecar.get(name).and_then(Value::as_str);
-    let decode = |name| {
-        field(name)
-            .and_then(|v| Base64UrlUnpadded::decode_vec(v).ok())
-            .ok_or(WireError::KeyFields)
-    };
-    let alg = field("alg").ok_or(WireError::KeyFields)?;
-    let tmb = decode("tmb")?;
-    let pub_key = decode("pub")?;
-    Ok(Key::new(alg, coz::Thumbprint::from_bytes(tmb), pub_key)
-        .map_err(WireError::Key)?
-        .with_first_seen(sidecar.get("now").and_then(Value::as_i64).unwrap_or(0))
-        .with_tag(field("tag").map(str::to_string)))
+    /// The thumbprint a key-introducing coz names by its `id`; `None` for
+    /// any other coz.
+    fn introduces(&self) -> Option<&str> {
+        typ::is_key_introducing(&self.header.typ)
+            .then(|| self.pay.get("id").and_then(Value::as_str))
+            .flatten()
+    }
 }
 
 fn canonicalize(value: &mut Value) {
@@ -233,13 +271,282 @@ fn canonicalize(value: &mut Value) {
     }
 }
 
-/// What one replayed bundle was: the digests of its cozies in signed
+/// A bundle in its SPEC 4.6.2 wire form, the cozies still raw JSON bytes:
+/// what a push sends, a patch entry serves and the storage engine keeps.
+///
+/// Serializes as `{"txs": [[coz, ...], ...], "keys": [...], "actions":
+/// [coz, ...]}`, each coz a base64url string of its JSON (the transport
+/// form a coz has on every route), `keys` and `actions` omitted when empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WireBundle {
+    /// Data actions recorded before the transactions.
+    pub actions: Vec<Vec<u8>>,
+    /// The commit's transactions, each its cozies in signed order, the
+    /// commit transaction last.
+    pub txs: Vec<Vec<Vec<u8>>>,
+    /// The public keys the cozies of `txs` introduce.
+    pub keys: Vec<KeyEntry>,
+}
+
+/// The JSON shape of [`WireBundle`].
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WireBundleJson {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    txs: Vec<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    keys: Vec<KeyEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    actions: Vec<String>,
+}
+
+impl serde::Serialize for WireBundle {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let encode = |b: &Vec<u8>| Base64UrlUnpadded::encode_string(b);
+        WireBundleJson {
+            txs: self
+                .txs
+                .iter()
+                .map(|tx| tx.iter().map(encode).collect())
+                .collect(),
+            keys: self.keys.clone(),
+            actions: self.actions.iter().map(encode).collect(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for WireBundle {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let json = WireBundleJson::deserialize(deserializer)?;
+        let decode = |s: &String| {
+            Base64UrlUnpadded::decode_vec(s)
+                .map_err(|_| serde::de::Error::custom("coz is not base64url"))
+        };
+        Ok(Self {
+            txs: json
+                .txs
+                .iter()
+                .map(|tx| tx.iter().map(decode).collect())
+                .collect::<Result<_, _>>()?,
+            keys: json.keys,
+            actions: json.actions.iter().map(decode).collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl WireBundle {
+    /// An action-only bundle.
+    #[must_use]
+    pub fn actions(actions: Vec<Vec<u8>>) -> Self {
+        Self {
+            actions,
+            ..Self::default()
+        }
+    }
+
+    /// The bundle of a finalized commit: its transactions as signed, the
+    /// commit transaction last, and the keys they introduce.
+    ///
+    /// # Errors
+    ///
+    /// A coz that does not serialize (never, for a verified coz).
+    pub fn of_commit(commit: &crate::commit::Commit) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            actions: Vec::new(),
+            txs: commit
+                .transactions()
+                .iter()
+                .map(|tx| tx.0.iter().map(|c| serde_json::to_vec(c.raw())).collect())
+                .collect::<Result<_, _>>()?,
+            keys: commit
+                .iter_all_cozies()
+                .filter_map(|c| c.new_key())
+                .map(KeyEntry::of)
+                .collect(),
+        })
+    }
+
+    /// Whether the bundle carries no coz.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty() && self.txs.iter().all(Vec::is_empty)
+    }
+
+    /// Every coz of the bundle in bundle order: the actions, then each
+    /// transaction's cozies. A [`ReplayError::coz`] indexes this order.
+    pub fn cozies(&self) -> impl Iterator<Item = &[u8]> {
+        self.actions
+            .iter()
+            .chain(self.txs.iter().flatten())
+            .map(Vec::as_slice)
+    }
+
+    /// Apply `f` to every coz, keeping the shape (e.g. to canonicalize the
+    /// bytes before they are stored).
+    ///
+    /// # Errors
+    ///
+    /// The first error `f` returns, with the coz's index in bundle order.
+    pub fn try_map<E>(
+        &self,
+        mut f: impl FnMut(usize, &[u8]) -> Result<Vec<u8>, E>,
+    ) -> Result<Self, E> {
+        let mut i = 0;
+        let mut next = |b: &Vec<u8>| {
+            let out = f(i, b);
+            i += 1;
+            out
+        };
+        Ok(Self {
+            actions: self
+                .actions
+                .iter()
+                .map(&mut next)
+                .collect::<Result<_, _>>()?,
+            txs: self
+                .txs
+                .iter()
+                .map(|tx| tx.iter().map(&mut next).collect())
+                .collect::<Result<_, _>>()?,
+            keys: self.keys.clone(),
+        })
+    }
+
+    /// Decode every coz and key.
+    ///
+    /// # Errors
+    ///
+    /// The first malformed coz, with its index in bundle order; a
+    /// malformed key entry (`coz: None`); a misplaced coz or an empty
+    /// transaction.
+    pub fn decode(&self) -> Result<Bundle, BundleWireError> {
+        let at = |i| {
+            move |error| BundleWireError {
+                coz: Some(i),
+                error,
+            }
+        };
+        let mut i = 0;
+        let mut coz = |blob: &Vec<u8>| {
+            let out = StoredCoz::from_wire(blob).map_err(at(i));
+            i += 1;
+            out
+        };
+        let actions = self
+            .actions
+            .iter()
+            .map(&mut coz)
+            .collect::<Result<_, _>>()?;
+        let txs = self
+            .txs
+            .iter()
+            .map(|tx| tx.iter().map(&mut coz).collect())
+            .collect::<Result<_, _>>()?;
+        let keys = self
+            .keys
+            .iter()
+            .map(KeyEntry::to_key)
+            .collect::<Result<_, _>>()
+            .map_err(|error| BundleWireError { coz: None, error })?;
+        Bundle::new(actions, txs, keys)
+    }
+}
+
+/// A [`WireError`] in a bundle, and where.
+#[derive(Debug, thiserror::Error)]
+#[error("coz {coz:?}: {error}")]
+pub struct BundleWireError {
+    /// The coz's index in bundle order ([`WireBundle::cozies`]); `None`
+    /// for a key entry.
+    pub coz: Option<usize>,
+    /// What is malformed.
+    #[source]
+    pub error: WireError,
+}
+
+/// A decoded bundle: actions, transactions and keys (see the
+/// [module docs](self)).
+#[derive(Debug, Clone)]
+pub struct Bundle {
+    actions: Vec<StoredCoz>,
+    txs: Vec<Vec<StoredCoz>>,
+    keys: Vec<Key>,
+}
+
+impl Bundle {
+    /// A bundle of `actions` recorded before the transactions `txs`, whose
+    /// key-introducing cozies name keys of `keys`.
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::Misplaced`] for a data action in `txs` or a
+    /// transaction in `actions`; [`WireError::EmptyTransaction`] for a
+    /// transaction of no coz.
+    pub fn new(
+        actions: Vec<StoredCoz>,
+        txs: Vec<Vec<StoredCoz>>,
+        keys: Vec<Key>,
+    ) -> Result<Self, BundleWireError> {
+        let misplaced = |i| BundleWireError {
+            coz: Some(i),
+            error: WireError::Misplaced,
+        };
+        if let Some(i) = actions.iter().position(StoredCoz::is_transaction) {
+            return Err(misplaced(i));
+        }
+        let mut i = actions.len();
+        for tx in &txs {
+            if tx.is_empty() {
+                return Err(BundleWireError {
+                    coz: Some(i),
+                    error: WireError::EmptyTransaction,
+                });
+            }
+            if let Some(j) = tx.iter().position(|c| !c.is_transaction()) {
+                return Err(misplaced(i + j));
+            }
+            i += tx.len();
+        }
+        Ok(Self { actions, txs, keys })
+    }
+
+    /// The actions recorded before the transactions.
+    #[must_use]
+    pub fn action_cozies(&self) -> &[StoredCoz] {
+        &self.actions
+    }
+
+    /// The transactions, each its cozies in signed order.
+    #[must_use]
+    pub fn txs(&self) -> &[Vec<StoredCoz>] {
+        &self.txs
+    }
+
+    /// Every coz in bundle order: the actions, then each transaction's.
+    pub fn cozies(&self) -> impl Iterator<Item = &StoredCoz> {
+        self.actions.iter().chain(self.txs.iter().flatten())
+    }
+
+    /// The keys of the bundle a key-introducing coz names: exactly those
+    /// whose thumbprint some coz of `txs` names by `id`.
+    pub fn introduced_keys(&self) -> impl Iterator<Item = &Key> {
+        self.txs.iter().flatten().filter_map(|c| self.key_for(c))
+    }
+
+    /// The key `coz` introduces: the entry of `keys` its `id` names.
+    fn key_for(&self, coz: &StoredCoz) -> Option<&Key> {
+        let id = coz.introduces()?;
+        self.keys.iter().find(|k| k.tmb().to_b64() == id)
+    }
+}
+
+/// What one replayed bundle was: the digests of its cozies in bundle
 /// order, the TR of the commit it formed (none for an action-only bundle),
 /// and the PR the principal held after it. Two bundles with equal
 /// identities carry the same signed content and lead to the same state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleId {
-    /// Every coz digest of the bundle, in signed order.
+    /// Every coz digest of the bundle, in bundle order.
     pub czds: Vec<Czd>,
     /// The TR of the commit the bundle formed, if it formed one.
     pub tr: Option<TransactionRoot>,
@@ -251,9 +558,10 @@ pub struct BundleId {
 #[derive(Debug, thiserror::Error)]
 #[error("coz {coz:?}: {source}")]
 pub struct ReplayError {
-    /// The index within the bundle of the coz refused; `None` when the
-    /// refusal is the bundle's own (empty, or the commit fails to
-    /// finalize).
+    /// The index in bundle order ([`Bundle::cozies`]) of the coz refused;
+    /// `None` when the refusal is the bundle's own (empty, or the commit
+    /// fails to finalize) or a whole transaction's (its cozies do not
+    /// share one `typ`).
     pub coz: Option<usize>,
     /// The core's refusal.
     #[source]
@@ -269,13 +577,12 @@ pub enum StagedBundle<'a, S: eml::Storage> {
     /// A bundle with no transaction: its actions are recorded on the
     /// principal already, in memory, and there is nothing to write.
     Actions(BundleId),
-    /// A bundle that forms a commit, staged: every coz is verified, the
-    /// actions after the first transaction on the staged state.
+    /// A bundle that forms a commit, staged: every coz is verified.
     Commit {
-        /// The staged commit, its trailing actions recorded on its state
-        /// (boxed: it carries the principal's whole staged state).
+        /// The staged commit (boxed: it carries the principal's whole
+        /// staged state).
         staged: Box<crate::commit::StagedCommit<'a, S>>,
-        /// Every coz digest of the bundle, in signed order.
+        /// Every coz digest of the bundle, in bundle order.
         czds: Vec<Czd>,
     },
 }
@@ -326,21 +633,22 @@ impl<S: eml::Storage> StagedBundle<'_, S> {
 
 /// Verify one stored bundle onto `principal` through the verifying commit
 /// scope, by the order rule in the [module docs](self), and stage it: the
-/// commit's log append is computed and nothing is written. Every coz,
-/// actions after the commit included, is verified before
-/// [`StagedBundle::commit`] writes, so a refused bundle leaves no log leaf.
+/// commit's log append is computed and nothing is written. Every coz is
+/// verified before [`StagedBundle::commit`] writes, so a refused bundle
+/// leaves no log leaf.
 ///
-/// On error `principal` may hold the actions recorded before the first
-/// transaction (in memory only); a caller that needs all-or-nothing
-/// replays onto a principal it can discard.
+/// On error `principal` may hold the bundle's actions (in memory only); a
+/// caller that needs all-or-nothing replays onto a principal it can
+/// discard.
 ///
 /// # Errors
 ///
-/// [`ReplayError`] with [`Error::EmptyCommit`] for an empty bundle, or the
-/// core's refusal of a coz or of the commit.
+/// [`ReplayError`] with [`Error::EmptyCommit`] for an empty bundle,
+/// [`Error::MixedTransactionTyp`] for a transaction whose cozies do not
+/// share one `typ`, or the core's refusal of a coz or of the commit.
 pub async fn stage_bundle<'a, S: eml::Storage>(
     principal: &'a mut Principal<S>,
-    cozies: &[StoredCoz],
+    bundle: &Bundle,
 ) -> Result<StagedBundle<'a, S>, ReplayError> {
     let at = |i: usize| {
         move |source| ReplayError {
@@ -349,10 +657,10 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
         }
     };
     let whole = |source| ReplayError { coz: None, source };
-    if cozies.is_empty() {
+    let czds: Vec<Czd> = bundle.cozies().map(|c| c.czd.clone()).collect();
+    if czds.is_empty() {
         return Err(whole(Error::EmptyCommit));
     }
-    let czds = cozies.iter().map(|c| c.czd.clone()).collect();
     let record = |principal: &mut Principal<S>, i: usize, c: &StoredCoz| {
         principal
             .verify_and_record_action(&c.pay_json, &c.sig, c.czd.clone())
@@ -360,8 +668,8 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
             .map_err(at(i))
     };
 
-    let Some(first_tx) = cozies.iter().position(StoredCoz::is_transaction) else {
-        let mut order: Vec<(usize, &StoredCoz)> = cozies.iter().enumerate().collect();
+    if bundle.txs.is_empty() {
+        let mut order: Vec<(usize, &StoredCoz)> = bundle.actions.iter().enumerate().collect();
         order.sort_by(|(_, a), (_, b)| {
             (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
         });
@@ -373,28 +681,39 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
             tr: None,
             pr: principal.pr().clone(),
         }));
-    };
+    }
 
-    for (i, c) in cozies.iter().enumerate().take(first_tx) {
+    for (i, c) in bundle.actions.iter().enumerate() {
         record(principal, i, c)?;
     }
-    let mut deferred = Vec::new();
     let mut scope = principal.begin_commit();
-    for (i, c) in cozies.iter().enumerate().skip(first_tx) {
-        if c.is_transaction() {
-            scope
-                .verify_and_apply(&c.pay_json, &c.sig, c.czd.clone(), c.key.clone())
-                .map_err(at(i))?;
-        } else {
-            deferred.push((i, c));
-        }
+    let mut i = bundle.actions.len();
+    for tx in &bundle.txs {
+        // Every coz of a transaction is verified against the state the
+        // transaction meets, then the transaction is applied as one TR
+        // leaf; `apply_tx` refuses a mix of `typ`s before applying any.
+        let verified = tx
+            .iter()
+            .enumerate()
+            .map(|(j, c)| {
+                scope
+                    .verify(
+                        &c.pay_json,
+                        &c.sig,
+                        c.czd.clone(),
+                        bundle.key_for(c).cloned(),
+                    )
+                    .map_err(at(i + j))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        scope.apply_tx(verified).map_err(|source| ReplayError {
+            // A refusal of the whole transaction names no single coz.
+            coz: (tx.len() == 1).then_some(i),
+            source,
+        })?;
+        i += tx.len();
     }
-    let mut staged = scope.stage().await.map_err(whole)?;
-    for (i, c) in deferred {
-        staged
-            .verify_and_record_action(&c.pay_json, &c.sig, c.czd.clone())
-            .map_err(at(i))?;
-    }
+    let staged = scope.stage().await.map_err(whole)?;
     Ok(StagedBundle::Commit {
         staged: Box::new(staged),
         czds,
@@ -409,7 +728,7 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
 /// As [`stage_bundle`] and [`StagedBundle::commit`].
 pub async fn replay_bundle<S: eml::Storage>(
     principal: &mut Principal<S>,
-    cozies: &[StoredCoz],
+    bundle: &Bundle,
 ) -> Result<BundleId, ReplayError> {
-    stage_bundle(principal, cozies).await?.commit().await
+    stage_bundle(principal, bundle).await?.commit().await
 }

@@ -22,24 +22,26 @@ mod error;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cyphr::replay::WireBundle;
 use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
 
+use crate::KeyEntry;
 use crate::blob::{Blake3Hash, BlobStore};
 use crate::index::{
     CommitRef, DeriveToken, IndexableCommit, IndexableCoz, Indexer, IndexerWrite, TipState,
 };
 
-/// A commit's metadata paired with its blob contents.
+/// A commit's metadata paired with its bundle.
 ///
-/// Each entry in `blobs` corresponds positionally to a
-/// `CommitRef::blob_hashes` entry.
+/// The bundle's cozies, in bundle order ([`WireBundle::cozies`]), are the
+/// blobs `commit.blob_hashes` names, in order.
 #[derive(Debug, Clone)]
 pub struct PatchEntry {
     /// Commit metadata from the index.
     pub commit: CommitRef,
-    /// Raw blob contents, ordered to match `commit.blob_hashes`.
-    pub blobs: Vec<Vec<u8>>,
+    /// The commit's bundle, grouped by transaction as it was accepted.
+    pub bundle: WireBundle,
 }
 
 /// Response from [`StorageEngine::get_patch`].
@@ -176,6 +178,73 @@ pub const COMMIT_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/commit-manifest/v1\0
 struct CommitManifest {
     kind: String,
     commit: IndexableCommit,
+    /// How the commit's blobs group into its bundle; required, so a
+    /// manifest written before grouping was recorded is malformed rather
+    /// than read as one transaction per coz.
+    shape: Shape,
+}
+
+/// How a commit's blobs (`IndexableCommit::blob_hashes`, in bundle order)
+/// group into its bundle: the first `actions` are its data actions, then
+/// each entry of `txs` is the coz count of one transaction (SPEC 4.6.2).
+/// The bundle's order is retained at ingest, never recovered (root U1).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Shape {
+    actions: usize,
+    txs: Vec<usize>,
+}
+
+impl Shape {
+    fn of(bundle: &WireBundle) -> Self {
+        Self {
+            actions: bundle.actions.len(),
+            txs: bundle.txs.iter().map(Vec::len).collect(),
+        }
+    }
+
+    /// How many blobs the shape groups.
+    fn len(&self) -> usize {
+        self.actions + self.txs.iter().sum::<usize>()
+    }
+
+    /// `blobs` grouped by this shape, with `keys`; `None` when the count
+    /// differs.
+    fn group(&self, mut blobs: Vec<Vec<u8>>, keys: Vec<KeyEntry>) -> Option<WireBundle> {
+        if blobs.len() != self.len() {
+            return None;
+        }
+        let rest = blobs.split_off(self.actions);
+        let mut rest = rest.into_iter();
+        let txs = self
+            .txs
+            .iter()
+            .map(|&n| rest.by_ref().take(n).collect())
+            .collect();
+        Some(WireBundle {
+            actions: blobs,
+            txs,
+            keys,
+        })
+    }
+}
+
+/// How a stored chain commit's blobs group into its bundle, and the keys
+/// it introduced: what the index's commit record lacks to serve the bundle.
+type Frame = (Shape, Vec<KeyEntry>);
+
+/// The key entries of a commit's index keys: what the engine keeps of a
+/// bundle's `keys` (`alg`, `pub`, `tmb`; `tag` and `now` are unsigned
+/// labels).
+fn key_entries(keys: &[crate::PublicKeyInfo]) -> Vec<KeyEntry> {
+    keys.iter()
+        .map(|k| KeyEntry {
+            alg: k.algorithm.clone(),
+            pub_key: k.public_key.clone(),
+            tmb: k.thumbprint.clone(),
+            tag: None,
+            now: None,
+        })
+        .collect()
 }
 
 /// Discriminator of a [`CommitManifest`] that records a retained branch
@@ -243,7 +312,7 @@ struct StoredActions {
 struct ActionBundle {
     manifest: Blake3Hash,
     blobs: Vec<Blake3Hash>,
-    cozies: Vec<cyphr::replay::StoredCoz>,
+    bundle: cyphr::replay::Bundle,
 }
 
 /// A principal's action-only bundles by the chain position they were
@@ -258,6 +327,8 @@ struct Retained {
     tip: BranchTip,
     signer: String,
     blobs: Vec<Blake3Hash>,
+    shape: Shape,
+    keys: Vec<KeyEntry>,
 }
 
 /// The key that signed a commit: its closing `commit/create` coz, else
@@ -287,10 +358,10 @@ pub struct ForkEvidence {
     pub sequence: u64,
     /// The Principal Root both extend, tagged; `None` at sequence 0.
     pub pre: Option<String>,
-    /// The canonical commit's raw coz blobs.
-    pub canonical: Vec<Vec<u8>>,
-    /// The retained rival's raw coz blobs.
-    pub rival: Vec<Vec<u8>>,
+    /// The canonical commit's bundle.
+    pub canonical: WireBundle,
+    /// The retained rival's bundle.
+    pub rival: WireBundle,
 }
 
 /// One branch head of a principal: its canonical chain's tip or a
@@ -410,7 +481,7 @@ const _: () = {
     fn submit_commit_is_send<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage>(
         engine: &StorageEngine<B, I, S>,
     ) {
-        assert_send(&engine.submit_commit("", None, &[]));
+        assert_send(&engine.submit_commit("", None, &WireBundle::default()));
     }
 };
 
@@ -477,6 +548,11 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// manifests in the blob store (I1), filled by the rebuild scan and by
     /// ingest.
     actions: std::sync::Mutex<HashMap<String, Vec<StoredActions>>>,
+    /// How each stored chain commit's blobs group into its bundle, and the
+    /// keys it introduced, by principal id and commit id: a cache of the
+    /// commit manifests in the blob store (I1), filled by the rebuild scan
+    /// and by ingest. The index's commit records name blobs only.
+    frames: std::sync::Mutex<HashMap<(String, String), Frame>>,
     /// Stored commits [`Self::retain_rival`] has replayed, ever. Retention
     /// is paid by refused bundles, so its cost is the quantity tests pin.
     retention_replays: std::sync::atomic::AtomicU64,
@@ -501,6 +577,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
+            frames: std::sync::Mutex::new(HashMap::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
@@ -527,6 +604,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
+            frames: std::sync::Mutex::new(HashMap::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
@@ -664,19 +742,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
         let mut entries = Vec::with_capacity(chain.len());
         for commit_ref in chain {
-            let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
-            for hash in &commit_ref.blob_hashes {
-                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!(
-                        "blob {hash} referenced by index commit {} missing",
-                        commit_ref.commit_id
-                    ))
-                })?;
-                blobs.push(data);
-            }
+            let bundle = self.commit_bundle(principal_id, &commit_ref).await?;
             entries.push(PatchEntry {
                 commit: commit_ref,
-                blobs,
+                bundle,
             });
         }
 
@@ -760,6 +829,70 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                  {principal_id})"
             ))
         })
+    }
+
+    /// The bundle of a stored chain commit of `principal_id`: its blobs,
+    /// grouped as the commit was accepted, with the keys it introduced.
+    async fn commit_bundle(
+        &self,
+        principal_id: &str,
+        commit: &CommitRef,
+    ) -> Result<WireBundle, EngineError> {
+        let mut blobs = Vec::with_capacity(commit.blob_hashes.len());
+        for hash in &commit.blob_hashes {
+            blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
+                EngineError::NotFound(format!(
+                    "blob {hash} referenced by index commit {} missing",
+                    commit.commit_id
+                ))
+            })?);
+        }
+        // An index entry no manifest backs (a corrupt or planted index:
+        // the index is a cache of the blob store, I1) has no recorded
+        // grouping. It is served as its blobs, one transaction each and no
+        // keys, vouched for by nothing: a verifier replays and refuses it,
+        // as it would any entry the record does not back.
+        let Some((shape, keys)) = self.frame(principal_id, commit) else {
+            tracing::warn!(
+                principal = %principal_id,
+                commit = %commit.commit_id,
+                "index entry with no commit manifest; serving its blobs ungrouped"
+            );
+            return Ok(WireBundle {
+                txs: blobs.into_iter().map(|b| vec![b]).collect(),
+                ..WireBundle::default()
+            });
+        };
+        shape.group(blobs, keys).ok_or_else(|| {
+            EngineError::MalformedBlob(format!(
+                "commit {}: its manifest groups a different number of blobs",
+                commit.commit_id
+            ))
+        })
+    }
+
+    /// How the stored chain commit `commit` groups its blobs, if a manifest
+    /// recorded it.
+    fn frame(&self, principal_id: &str, commit: &CommitRef) -> Option<Frame> {
+        self.frames
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(principal_id.to_string(), commit.commit_id.clone()))
+            .cloned()
+    }
+
+    /// Record how a chain commit groups its blobs, in the `frames` cache.
+    fn record_frame(&self, commit: &IndexableCommit, shape: &Shape) {
+        let Some(id) = commit.commit_ids.first() else {
+            return;
+        };
+        self.frames
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                (commit.principal_id.clone(), id.clone()),
+                (shape.clone(), key_entries(&commit.keys)),
+            );
     }
 
     /// Resolve a tagged digest to its raw blob content.
@@ -846,10 +979,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// whose manifest landed but whose index write did not.
     async fn store_blobs_and_manifest(
         &self,
-        blobs: &[&[u8]],
+        bundle: &WireBundle,
         commit: IndexableCommit,
     ) -> Result<(IndexableCommit, Blake3Hash), EngineError> {
-        self.store_manifest(blobs, commit, COMMIT_MANIFEST_PREFIX, COMMIT_MANIFEST_KIND)
+        self.store_manifest(bundle, commit, COMMIT_MANIFEST_PREFIX, COMMIT_MANIFEST_KIND)
             .await
     }
 
@@ -857,14 +990,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// a chain commit, or a retained branch ([`Self::keep_branch`]).
     async fn store_manifest(
         &self,
-        blobs: &[&[u8]],
+        bundle: &WireBundle,
         mut commit: IndexableCommit,
         prefix: &[u8],
         kind: &str,
     ) -> Result<(IndexableCommit, Blake3Hash), EngineError> {
-        // Store each blob.
-        let mut blob_hashes = Vec::with_capacity(blobs.len());
-        for (i, blob) in blobs.iter().enumerate() {
+        // Store each blob, in bundle order.
+        let mut blob_hashes = Vec::with_capacity(commit.cozies.len());
+        for (i, blob) in bundle.cozies().enumerate() {
             let hash = self.blob_store.put(blob).await?;
             blob_hashes.push(hash);
             if i < commit.cozies.len() {
@@ -875,10 +1008,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
         // Durable commit point: once this manifest is stored, the full
         // IndexableCommit -- including the exact ingest-time order of its
-        // cozies -- is recoverable from the blob store alone.
+        // cozies and how they group into transactions -- is recoverable
+        // from the blob store alone.
         let manifest = CommitManifest {
             kind: kind.to_string(),
             commit: commit.clone(),
+            shape: Shape::of(bundle),
         };
         let mut manifest_bytes = prefix.to_vec();
         serde_json::to_writer(&mut manifest_bytes, &manifest)
@@ -890,11 +1025,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// Ingest a pre-validated commit: store blobs and index metadata.
     ///
-    /// Each entry in `blobs` is a raw coz byte slice. The engine:
+    /// Each coz of `bundle` is a raw coz byte slice. The engine:
     /// 1. Puts each blob into the blob store (content-addressed)
     /// 2. Builds an `IndexableCommit` from the metadata + blob hashes
-    /// 3. Stores a durable [`CommitManifest`] recording that `IndexableCommit` (see
-    ///    [`Self::store_blobs_and_manifest`]) -- the crash-safe commit point
+    /// 3. Stores a durable [`CommitManifest`] recording that `IndexableCommit` and how its cozies
+    ///    group into transactions (see [`Self::store_blobs_and_manifest`]) -- the crash-safe commit
+    ///    point
     /// 4. Calls the indexer to record the commit's index entries
     ///
     /// Returns the BLAKE3 hashes of the stored blobs.
@@ -921,21 +1057,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// #         cyphr_storage::blob::MemoryBlobStore,
     /// #         cyphr_storage::index::MemoryIndexer,
     /// #     >,
-    /// #     blobs: &[&[u8]],
+    /// #     bundle: &cyphr::replay::WireBundle,
     /// #     commit: cyphr_storage::index::IndexableCommit,
     /// # ) {
     /// // ingest_commit is pub(crate): unreachable from outside this crate,
     /// // so a caller cannot bypass submit_commit's serialization lock.
-    /// let _ = engine.ingest_commit(blobs, commit).await;
+    /// let _ = engine.ingest_commit(bundle, commit).await;
     /// # }
     /// ```
     pub(crate) async fn ingest_commit<T: cyphr::eml::Storage>(
         &self,
-        blobs: &[&[u8]],
+        bundle: &WireBundle,
         build: StagedBuild<'_, T>,
     ) -> Result<IngestResult, EngineError> {
         let StagedBuild { commit, staged } = build;
-        self.ingest(blobs, commit, Some(staged)).await
+        self.ingest(bundle, commit, Some(staged)).await
     }
 
     /// [`Self::ingest_commit`] of index metadata built by hand, with no
@@ -943,25 +1079,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[cfg(test)]
     pub(crate) async fn ingest_metadata(
         &self,
-        blobs: &[&[u8]],
+        bundle: &WireBundle,
         commit: IndexableCommit,
     ) -> Result<IngestResult, EngineError> {
-        self.ingest::<cyphr::eml::MemoryStorage>(blobs, commit, None)
+        self.ingest::<cyphr::eml::MemoryStorage>(bundle, commit, None)
             .await
     }
 
     /// Store blobs and manifest, then the commit-log append (when there is
     /// a core commit), then the index: the I1 order.
     #[tracing::instrument(
-        skip(self, blobs, commit, staged),
+        skip(self, bundle, commit, staged),
         fields(
             principal_id = %commit.principal_id,
-            blob_count = blobs.len()
+            blob_count = bundle.cozies().count()
         )
     )]
     async fn ingest<T: cyphr::eml::Storage>(
         &self,
-        blobs: &[&[u8]],
+        bundle: &WireBundle,
         commit: IndexableCommit,
         staged: Option<cyphr::replay::StagedBundle<'_, T>>,
     ) -> Result<IngestResult, EngineError> {
@@ -986,7 +1122,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer
             .check_commit(&commit, &DeriveToken::new())
             .await?;
-        let (commit, manifest_hash) = self.store_blobs_and_manifest(blobs, commit).await?;
+        let (commit, manifest_hash) = self.store_blobs_and_manifest(bundle, commit).await?;
         let blob_hashes = commit.blob_hashes.clone();
 
         // The blob store now records the commit (I1), so its commit-log
@@ -1009,6 +1145,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.indexer
             .index_commit(&commit, &DeriveToken::new())
             .await?;
+        self.record_frame(&commit, &Shape::of(bundle));
 
         Ok(IngestResult {
             principal_id: commit.principal_id.clone(),
@@ -1117,7 +1254,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // costs only its own listing, never a chain position.
                 match serde_json::from_slice::<CommitManifest>(json) {
                     Ok(m) if m.kind == BRANCH_MANIFEST_KIND => {
-                        match self.check_manifest_supported(&hash, &m.commit).await? {
+                        match self.check_manifest_supported(&hash, &m).await? {
                             Ok(()) => branch_manifests.push((hash, m)),
                             Err(reason) => quarantined.push(QuarantinedManifest {
                                 manifest: hash,
@@ -1163,10 +1300,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     continue;
                 },
             };
-            if let Err(reason) = self
-                .check_manifest_supported(&hash, &manifest.commit)
-                .await?
-            {
+            if let Err(reason) = self.check_manifest_supported(&hash, &manifest).await? {
                 broken_from
                     .entry(manifest.commit.principal_id.clone())
                     .and_modify(|from| *from = (*from).min(manifest.commit.sequence))
@@ -1248,7 +1382,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         .get(&commit.principal_id)
                         .and_then(|h| h.get(&commit.sequence))
                         .map_or(&[][..], Vec::as_slice);
-                    self.replay_manifest(&mut replays, commit, actions, &mut refused_actions)
+                    self.replay_manifest(&mut replays, &manifest, actions, &mut refused_actions)
                         .await?
                 },
                 None => Ok(()),
@@ -1265,7 +1399,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             match self.indexer.index_commit(commit, &DeriveToken::new()).await {
-                Ok(()) => indexed += 1,
+                Ok(()) => {
+                    self.record_frame(commit, &manifest.shape);
+                    indexed += 1;
+                },
                 Err(crate::index::IndexerError::Conflict(why)) => {
                     quarantined.push(QuarantinedManifest {
                         manifest: hash,
@@ -1299,7 +1436,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             let actions = histories.get(principal_id).and_then(|h| h.get(&tip));
             for bundle in actions.into_iter().flatten() {
-                if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies).await {
+                if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.bundle).await {
                     refused_actions.push((bundle.manifest, e.to_string()));
                 }
             }
@@ -1368,8 +1505,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 };
                 blobs.push(data);
             }
-            match action_cozies(&blobs) {
-                Ok(cozies) => histories
+            match action_bundle(blobs) {
+                Ok(bundle) => histories
                     .entry(manifest.principal_id.clone())
                     .or_default()
                     .entry(manifest.after)
@@ -1377,7 +1514,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .push(ActionBundle {
                         manifest: hash,
                         blobs: manifest.blob_hashes,
-                        cozies,
+                        bundle,
                     }),
                 Err(why) => reject(QuarantineReason::Malformed(format!(
                     "action manifest {hash}: {why}"
@@ -1450,7 +1587,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         branch_manifests.sort_by_key(|(hash, _)| *hash.as_bytes());
         let mut kept: HashMap<String, Vec<Retained>> = HashMap::new();
         for (hash, manifest) in branch_manifests {
-            let commit = manifest.commit;
+            let CommitManifest { commit, shape, .. } = manifest;
             let tip = commit.commit_ids.first().cloned().unwrap_or_default();
             let mut reject = |reason: QuarantineReason| {
                 quarantined.push(QuarantinedManifest {
@@ -1506,7 +1643,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     canonical: false,
                 },
                 signer,
+                keys: key_entries(&commit.keys),
                 blobs: commit.blob_hashes,
+                shape,
             });
         }
         Ok(kept)
@@ -1552,16 +1691,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 );
                 continue;
             };
-            let mut blobs = Vec::with_capacity(first.commit.blob_hashes.len());
-            for blob in &first.commit.blob_hashes {
-                blobs.push(self.blob_store.get(blob).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!("blob {blob} of a sequence-0 manifest"))
-                })?);
-            }
+            let bundle = self.manifest_bundle(first).await?;
             // Without a disclosed genesis the id cannot be proven from
             // blobs; this pass does not judge it (the replaying rebuild
             // quarantines it).
-            let genesis = match disclosed_genesis(&blobs) {
+            let genesis = match disclosed_genesis(&bundle) {
                 Some(Ok(genesis)) => genesis,
                 None => continue,
                 Some(Err(e)) => {
@@ -1575,7 +1709,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // The key is a function of the record (I1: not of what a
             // manifest claims), so that one commit is replayed, not the
             // chain ([`record_key`]).
-            let derived = record_key(&genesis, &blobs).await;
+            let derived = record_key(&genesis, &bundle).await;
             // Strict by decision: the project is pre-1.0 with nothing
             // deployed, so a store keyed by a PG-to-be exists only in test
             // runs and needs no lenient branch.
@@ -1604,20 +1738,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     async fn replay_manifest(
         &self,
         replays: &mut HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>>,
-        commit: &IndexableCommit,
+        manifest: &CommitManifest,
         actions: &[ActionBundle],
         refused: &mut Vec<(Blake3Hash, String)>,
     ) -> Result<Result<(), String>, EngineError> {
-        let mut blobs = Vec::with_capacity(commit.blob_hashes.len());
-        for hash in &commit.blob_hashes {
-            blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
-                EngineError::NotFound(format!("blob {hash} of a commit manifest"))
-            })?);
-        }
+        let commit = &manifest.commit;
+        let bundle = self.manifest_bundle(manifest).await?;
         let principal = match replays.entry(commit.principal_id.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
-                let Some(genesis) = disclosed_genesis(&blobs) else {
+                let Some(genesis) = disclosed_genesis(&bundle) else {
                     return Ok(Err("its first commit discloses no genesis".into()));
                 };
                 let opened = match genesis {
@@ -1633,16 +1763,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
             },
         };
-        for bundle in actions {
-            if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.cozies).await {
-                refused.push((bundle.manifest, e.to_string()));
+        for held in actions {
+            if let Err(e) = cyphr::replay::replay_bundle(principal, &held.bundle).await {
+                refused.push((held.manifest, e.to_string()));
             }
         }
-        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         let StagedBuild {
             commit: mut replayed,
             staged,
-        } = match Self::build_commit(principal, &refs, &commit.principal_id, commit.sequence).await
+        } = match Self::build_commit(principal, &bundle, &commit.principal_id, commit.sequence)
+            .await
         {
             Ok(Some(build)) => build,
             Ok(None) => return Ok(Err("its blobs form no commit".into())),
@@ -1664,15 +1794,36 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         })
     }
 
+    /// The bundle a commit manifest records: its blobs grouped by its
+    /// shape, with the keys its commit introduced.
+    async fn manifest_bundle(&self, manifest: &CommitManifest) -> Result<WireBundle, EngineError> {
+        let blobs = self.read_blobs(&manifest.commit.blob_hashes).await?;
+        manifest
+            .shape
+            .group(blobs, key_entries(&manifest.commit.keys))
+            .ok_or_else(|| {
+                EngineError::MalformedBlob(
+                    "a commit manifest's shape groups a different number of blobs".into(),
+                )
+            })
+    }
+
     /// Whether a manifest's commit names blobs the store holds: the index
     /// is a cache of the blobs (I1), so a manifest field the blobs do not
     /// support must not reach it. `Ok(Err(reason))` is a manifest to
     /// quarantine; `Err` is a backend failure.
     async fn check_manifest_supported(
         &self,
-        manifest: &Blake3Hash,
-        commit: &IndexableCommit,
+        manifest_hash: &Blake3Hash,
+        manifest: &CommitManifest,
     ) -> Result<Result<(), QuarantineReason>, EngineError> {
+        let commit = &manifest.commit;
+        if manifest.shape.len() != commit.blob_hashes.len() {
+            return Ok(Err(QuarantineReason::Malformed(format!(
+                "commit manifest {manifest_hash}: its shape groups a different number of blobs"
+            ))));
+        }
+        let manifest = manifest_hash;
         if commit.blob_hashes.is_empty()
             || commit.cozies.len() != commit.blob_hashes.len()
             || commit
@@ -1804,13 +1955,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut history = ActionHistory::new();
         for stored in held {
             let blobs = self.read_blobs(&stored.blobs).await?;
-            let cozies = action_cozies(&blobs).map_err(|why| {
+            let bundle = action_bundle(blobs).map_err(|why| {
                 EngineError::MalformedBlob(format!("action manifest {}: {why}", stored.manifest))
             })?;
             history.entry(stored.after).or_default().push(ActionBundle {
                 manifest: stored.manifest,
                 blobs: stored.blobs,
-                cozies,
+                bundle,
             });
         }
         for bundles in history.values_mut() {
@@ -1831,8 +1982,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// The first `through` stored commits (all for `None`) of
-    /// `principal_id` as replayable entries: blobs read and parsed, key
-    /// material taken from each coz's `key` member. No protocol check.
+    /// `principal_id` as replayable entries: each commit's bundle read and
+    /// parsed. No protocol check.
     async fn stored_entries(
         &self,
         principal_id: &str,
@@ -1851,19 +2002,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(Vec::new());
         }
 
-        // 3. For each CommitRef, fetch blobs and build a CommitEntry.
         let mut commit_entries = Vec::with_capacity(chain.len());
         for commit_ref in &chain {
-            let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
-            for hash in &commit_ref.blob_hashes {
-                blobs.push(self.blob_store.get(hash).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!(
-                        "blob {hash} referenced by index commit {} missing",
-                        commit_ref.commit_id
-                    ))
-                })?);
-            }
-            commit_entries.push(replay_entry(&blobs, &commit_ref.commit_id, &commit_ref.pr)?);
+            let bundle = self.commit_bundle(principal_id, commit_ref).await?;
+            commit_entries.push(replay_entry(
+                &bundle,
+                &commit_ref.commit_id,
+                &commit_ref.pr,
+            )?);
         }
 
         Ok(commit_entries)
@@ -1881,8 +2027,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// 1. Resolve genesis (from argument, storage, or submitted blobs)
     /// 2. Load existing principal from storage (or construct from genesis)
     /// 3. Open a `CommitScope`
-    /// 4. For each raw coz blob: parse `{pay, sig}`, extract key material, compute `czd`, call
-    ///    `scope.verify_and_apply()`
+    /// 4. Record the bundle's actions; for each transaction, verify its cozies (`{pay, sig}`, the
+    ///    key a coz introduces taken from the bundle's `keys`) and apply them as one transaction
+    ///    (`scope.apply_tx()`)
     /// 5. Finalize the scope → immutable `Commit`
     /// 6. Extract state digests from the finalized `Commit`
     /// 7. Store blobs + index via `ingest_commit`
@@ -1896,34 +2043,34 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///   key, and the id reported back, is the PG in the labelled spelling ([`record_key`]).
     /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
     ///   storage (existing principal) or from the submitted blobs (new principal).
-    /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
+    /// * `bundle` — The pushed bundle (SPEC 4.6.2): `txs`, each transaction's raw coz JSON
+    ///   envelopes (`{pay, sig}`), the commit transaction last; `keys`; and `actions`, data actions
+    ///   recorded before the transactions.
     ///
     /// # Errors
     ///
     /// Any protocol violation (bad signature, broken chain, unknown signer,
     /// etc.) causes the entire submit to fail with no side effects — blobs
-    #[tracing::instrument(skip(self, genesis, raw_blobs), fields(blob_count = raw_blobs.len()))]
+    #[tracing::instrument(
+        skip(self, genesis, bundle),
+        fields(blob_count = bundle.cozies().count())
+    )]
     pub async fn submit_commit(
         &self,
         principal_id: &str,
         genesis: Option<crate::Genesis>,
-        raw_blobs: &[&[u8]],
+        bundle: &WireBundle,
     ) -> Result<IngestResult, EngineError> {
         self.ensure_healed().await?;
 
-        if raw_blobs.is_empty() {
+        if bundle.is_empty() {
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
         }
 
         // Everything below, storage included, sees only the canonical
-        // coz, never the caller's bytes.
-        let canonical = raw_blobs
-            .iter()
-            .enumerate()
-            .map(|(i, blob)| canonical_coz(blob, i))
-            .collect::<Result<Vec<_>, _>>()?;
-        let raw_blobs: Vec<&[u8]> = canonical.iter().map(Vec::as_slice).collect();
-        let raw_blobs = raw_blobs.as_slice();
+        // bundle, never the caller's bytes.
+        let canonical = canonical_bundle(bundle)?;
+        let bundle = &canonical;
 
         // 1. Resolve the principal's storage key.
         //
@@ -1949,12 +2096,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // the keys their `key/create`s disclose are its genesis.
                 // Only when they disclose none does the caller's genesis
                 // stand, for the core to refuse the commit with its reason.
-                let genesis = match (disclosed_genesis(raw_blobs), genesis) {
+                let genesis = match (disclosed_genesis(bundle), genesis) {
                     (Some(disclosed), _) => disclosed?,
                     (None, Some(given)) => given,
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
-                let key = record_key(&genesis, raw_blobs).await;
+                let key = record_key(&genesis, bundle).await;
                 let names_key = key
                     .as_ref()
                     .is_some_and(|key| claimed == key || claimed == bare_digest(key));
@@ -1988,16 +2135,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
 
-        let build = match Self::build_commit(&mut principal, raw_blobs, principal_id, next_seq)
-            .await
-        {
+        let build = match Self::build_commit(&mut principal, bundle, principal_id, next_seq).await {
             Ok(Some(build)) => build,
             Ok(None) => {
                 // Action-only bundle: no commit is formed and nothing is
                 // indexed, but its actions are in DT from now on, so every
                 // later replay records them here (`after` = `next_seq`).
                 let blob_hashes = self
-                    .store_actions(principal_id, next_seq, raw_blobs)
+                    .store_actions(principal_id, next_seq, &bundle.actions)
                     .await?;
                 // Built from the tip read before any write: once the blobs are
                 // durable this response cannot fail (an error would report a
@@ -2026,7 +2171,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // replay happened to refuse first. A replay of the stored
                 // genesis itself stays the reuse it is (SPEC 7.6).
                 let reuse = matches!(refused, EngineError::Protocol(cyphr::Error::CozReuse));
-                let refused = if tip_before.is_some() && !reuse && is_genesis_bundle(raw_blobs) {
+                let refused = if tip_before.is_some() && !reuse && is_genesis_bundle(bundle) {
                     EngineError::Protocol(cyphr::Error::CommitMismatch)
                 } else {
                     refused
@@ -2034,7 +2179,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
-                    match self.retain_rival(principal_id, genesis, raw_blobs).await {
+                    match self.retain_rival(principal_id, genesis, bundle).await {
                         Ok(()) => {},
                         // The one retention outcome that is a refusal in
                         // its own right: no slot left for this key.
@@ -2052,7 +2197,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 return Err(refused);
             },
         };
-        self.ingest_commit(raw_blobs, build).await
+        self.ingest_commit(bundle, build).await
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],
@@ -2061,10 +2206,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         &self,
         principal_id: &str,
         after: u64,
-        raw_blobs: &[&[u8]],
+        blobs: &[Vec<u8>],
     ) -> Result<Vec<Blake3Hash>, EngineError> {
-        let mut blob_hashes = Vec::with_capacity(raw_blobs.len());
-        for blob in raw_blobs {
+        let mut blob_hashes = Vec::with_capacity(blobs.len());
+        for blob in blobs {
             blob_hashes.push(self.blob_store.put(blob).await?);
         }
         let manifest = ActionManifest {
@@ -2089,7 +2234,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(blob_hashes)
     }
 
-    /// Verify `raw_blobs` against `principal`'s current state and build the
+    /// Verify `bundle` against `principal`'s current state and build the
     /// commit they would form at `next_seq`, staged: nothing is written,
     /// to storage or to the principal's commit log, until the caller
     /// commits the returned [`StagedBuild`]. `Ok(None)` is an action-only
@@ -2100,30 +2245,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// state ([`Self::retain_rival`]) by the same code that admits a tip.
     async fn build_commit<'p, T: cyphr::eml::Storage>(
         principal: &'p mut cyphr::Principal<T>,
-        raw_blobs: &[&[u8]],
+        bundle: &WireBundle,
         principal_id: &str,
         next_seq: u64,
     ) -> Result<Option<StagedBuild<'p, T>>, EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        use cyphr::replay::{StoredCoz, WireError};
 
         let active_algs = principal.active_algs().to_vec();
 
-        let cozies = raw_blobs
-            .iter()
-            .enumerate()
-            .map(|(i, blob)| {
-                StoredCoz::from_wire(blob).map_err(|e| match e {
-                    // e.g. `TmbMismatch`: a client-facing protocol
-                    // refusal, not an infrastructure failure.
-                    WireError::Key(p) | WireError::Protocol(p) => EngineError::Protocol(p),
-                    other => EngineError::MalformedBlob(format!("blob {i}: {other}")),
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let extracted_keys: Vec<crate::PublicKeyInfo> = cozies
-            .iter()
-            .filter_map(StoredCoz::key)
+        let decoded = decode_bundle(bundle)?;
+        let cozies: Vec<&cyphr::replay::StoredCoz> = decoded.cozies().collect();
+        let extracted_keys: Vec<crate::PublicKeyInfo> = decoded
+            .introduced_keys()
             .map(|key| crate::PublicKeyInfo {
                 thumbprint: key.tmb().to_b64(),
                 algorithm: key.alg().to_string(),
@@ -2144,7 +2277,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
         let had_pg = principal.pg().is_some();
 
-        let staged = cyphr::replay::stage_bundle(principal, &cozies)
+        let staged = cyphr::replay::stage_bundle(principal, &decoded)
             .await
             .map_err(|e| EngineError::Protocol(e.source))?;
         let principal = match &staged {
@@ -2178,7 +2311,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             };
 
             let mut indexed = Vec::with_capacity(cozies.len());
-            for coz in &cozies {
+            for coz in cozies {
                 let source_alg = coz.hash_alg();
                 let tagged = cyphr::state::TaggedCzd::new(coz.czd(), source_alg);
 
@@ -2249,15 +2382,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         &self,
         principal_id: &str,
         genesis: crate::Genesis,
-        raw_blobs: &[&[u8]],
+        bundle: &WireBundle,
     ) -> Result<(), EngineError> {
         use crate::import::replay_commits;
 
-        if self.is_already_stored(principal_id, raw_blobs).await? {
+        if self.is_already_stored(principal_id, bundle).await? {
             return Ok(());
         }
         let entries = self.stored_entries(principal_id, None).await?;
-        let Some(signers) = authenticated_signers(raw_blobs, &genesis, &entries) else {
+        let Some(signers) = authenticated_signers(bundle, &genesis, &entries) else {
             return Ok(());
         };
         let actions = self.action_history(principal_id).await?;
@@ -2274,10 +2407,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // is dropped, and only its manifest is kept.
                 let mut candidate = principal.fork().await?;
                 if let Ok(Some(build)) =
-                    Self::build_commit(&mut candidate, raw_blobs, principal_id, position as u64)
-                        .await
+                    Self::build_commit(&mut candidate, bundle, principal_id, position as u64).await
                 {
-                    return self.keep_branch(raw_blobs, build.commit).await;
+                    return self.keep_branch(bundle, build.commit).await;
                 }
             }
             // The last commit's own state is never a `pre` of a rival.
@@ -2290,7 +2422,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
-    /// Whether `raw_blobs` are, byte for byte, a commit this engine already
+    /// Whether `bundle` is, byte for byte and in its grouping, a commit this engine already
     /// holds: on the canonical chain or retained as a rival. Such a bundle
     /// is nobody's rival at any other position, since its arrow binds
     /// exactly one `pre`, so it settles with no replay and no clone. This
@@ -2301,27 +2433,35 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     async fn is_already_stored(
         &self,
         principal_id: &str,
-        raw_blobs: &[&[u8]],
+        bundle: &WireBundle,
     ) -> Result<bool, EngineError> {
-        let hashes: Vec<Blake3Hash> = raw_blobs
-            .iter()
+        let hashes: Vec<Blake3Hash> = bundle
+            .cozies()
             .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
             .collect();
+        // The same cozies grouped otherwise are another commit (its arrow
+        // binds another TMR), so the grouping is part of the identity.
+        let shape = Shape::of(bundle);
         let kept = self
             .branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(principal_id)
-            .is_some_and(|rs| rs.iter().any(|r| r.blobs == hashes));
+            .is_some_and(|rs| rs.iter().any(|r| r.blobs == hashes && r.shape == shape));
         if kept {
             return Ok(true);
         }
-        Ok(self
+        let chain = self
             .indexer
             .get_commit_chain(principal_id, None, None)
-            .await?
-            .iter()
-            .any(|c| c.blob_hashes == hashes))
+            .await?;
+        let frames = self.frames.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(chain.iter().any(|c| {
+            c.blob_hashes == hashes
+                && frames
+                    .get(&(principal_id.to_string(), c.commit_id.clone()))
+                    .is_some_and(|(s, _)| *s == shape)
+        }))
     }
 
     /// Store a verified rival `commit` and its blobs behind
@@ -2331,7 +2471,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// is [`EngineError::BranchLimit`] and stores nothing.
     async fn keep_branch(
         &self,
-        raw_blobs: &[&[u8]],
+        bundle: &WireBundle,
         commit: IndexableCommit,
     ) -> Result<(), EngineError> {
         let tip = commit.commit_ids.first().cloned().unwrap_or_default();
@@ -2370,12 +2510,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
         let principal_id = commit.principal_id.clone();
         let (stored, _) = self
-            .store_manifest(
-                raw_blobs,
-                commit,
-                BRANCH_MANIFEST_PREFIX,
-                BRANCH_MANIFEST_KIND,
-            )
+            .store_manifest(bundle, commit, BRANCH_MANIFEST_PREFIX, BRANCH_MANIFEST_KIND)
             .await?;
         self.branches
             .lock()
@@ -2385,7 +2520,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .push(Retained {
                 tip: branch,
                 signer,
+                keys: key_entries(&stored.keys),
                 blobs: stored.blob_hashes,
+                shape: Shape::of(bundle),
             });
         Ok(())
     }
@@ -2485,14 +2622,30 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Some(canonical) = chain.first() else {
                 continue;
             };
+            let rival_bundle = rival
+                .shape
+                .group(self.read_blobs(&rival.blobs).await?, rival.keys.clone())
+                .ok_or_else(|| {
+                    EngineError::MalformedBlob(
+                        "a retained branch's shape groups a different number of blobs".into(),
+                    )
+                })?;
             out.push(ForkEvidence {
                 sequence: at,
                 pre: rival.tip.pre.clone(),
-                canonical: self.read_blobs(&canonical.blob_hashes).await?,
-                rival: self.read_blobs(&rival.blobs).await?,
+                canonical: self.commit_bundle(&principal_id, canonical).await?,
+                rival: rival_bundle,
             });
         }
-        out.sort_by(|a, b| (a.sequence, &a.rival).cmp(&(b.sequence, &b.rival)));
+        out.sort_by(|a, b| {
+            let key = |e: &ForkEvidence| {
+                (
+                    e.sequence,
+                    e.rival.cozies().map(<[u8]>::to_vec).collect::<Vec<_>>(),
+                )
+            };
+            key(a).cmp(&key(b))
+        });
         Ok((principal_id, out))
     }
 
@@ -2513,14 +2666,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// - If the principal already exists in storage, extracts key material from the first stored
     ///   commit's blobs.
-    /// - If the principal is new, extracts key material from the first submitted commit's blobs.
+    /// - If the principal is new, extracts key material from the first of the caller's `submitted`
+    ///   bundles, its genesis commit.
     ///
     /// Both cases apply the identical genesis-discovery rule ([`disclosed_genesis`]) over their
-    /// respective blob set.
+    /// respective bundle.
     pub async fn resolve_genesis(
         &self,
         principal_id: &str,
-        raw_blobs: &[&[u8]],
+        submitted: &[WireBundle],
     ) -> Result<crate::Genesis, EngineError> {
         self.ensure_healed().await?;
 
@@ -2528,8 +2682,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Existing principal: its genesis is in its first stored commit.
             self.genesis_of_stored(&stored_id).await
         } else {
-            // New principal — the caller's own submitted blobs are the first commit.
-            Self::genesis_from_raw_blobs(raw_blobs)
+            // New principal — the caller's own first bundle is its first commit.
+            Self::genesis_from_bundle(submitted.first())
         }
     }
 
@@ -2543,15 +2697,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let first_commit = chain.first().ok_or_else(|| {
             EngineError::NotFound(format!("principal {stored_id} has no stored commits"))
         })?;
-        let mut blobs = Vec::with_capacity(first_commit.blob_hashes.len());
-        for hash in &first_commit.blob_hashes {
-            let data =
-                self.blob_store.get(hash).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!("blob {hash} not found in store"))
-                })?;
-            blobs.push(data);
-        }
-        Self::genesis_from_raw_blobs(&blobs)
+        let bundle = self.commit_bundle(stored_id, first_commit).await?;
+        Self::genesis_from_bundle(Some(&bundle))
     }
 
     /// The spelling under which `principal_id` is stored, if a principal is.
@@ -2609,13 +2756,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`disclosed_genesis`]). Every chain begins with a genesis commit
     /// whose `key/create`s disclose its keys (SPEC 5.1), so a bundle that
     /// discloses none names no principal.
-    fn genesis_from_raw_blobs<D: AsRef<[u8]>>(blobs: &[D]) -> Result<crate::Genesis, EngineError> {
-        if blobs.is_empty() {
+    fn genesis_from_bundle(bundle: Option<&WireBundle>) -> Result<crate::Genesis, EngineError> {
+        let Some(bundle) = bundle.filter(|b| !b.is_empty()) else {
             return Err(EngineError::NotFound(
                 "no blobs to resolve genesis from".into(),
             ));
-        }
-        disclosed_genesis(blobs).unwrap_or_else(|| Err(no_disclosed_genesis()))
+        };
+        disclosed_genesis(bundle).unwrap_or_else(|| Err(no_disclosed_genesis()))
     }
 
     /// Discard the index and rebuild it from every durable manifest.
@@ -2663,13 +2810,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 }
 
-/// The thumbprints that sign the transactions of `raw_blobs`, if every coz
+/// The thumbprints that sign the transactions of `bundle`, if every coz
 /// of the bundle is signed by a key the principal has ever held and its
 /// signature verifies under that key; `None` otherwise, or if the bundle
 /// has no transaction. Reads no principal state: `genesis` and the keys the
 /// stored `entries` introduced are the whole key history.
 fn authenticated_signers(
-    raw_blobs: &[&[u8]],
+    bundle: &WireBundle,
     genesis: &crate::Genesis,
     entries: &[crate::CommitEntry],
 ) -> Option<Vec<coz::Thumbprint>> {
@@ -2693,7 +2840,7 @@ fn authenticated_signers(
     }
 
     let mut signers = Vec::new();
-    for blob in raw_blobs {
+    for blob in bundle.cozies() {
         let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
         let mut pay = value.get("pay")?.clone();
         crate::import::canonicalize_value(&mut pay);
@@ -2711,27 +2858,35 @@ fn authenticated_signers(
     (!signers.is_empty()).then_some(signers)
 }
 
-/// The genesis a principal's first commit discloses in its blobs, in wire
-/// order: every key a `key/create` discloses before the `principal/create`,
-/// the genesis key first (SPEC 5.1 steps 1-2, 5.3, 7.7 Example 1); with one
-/// such key it is that key's genesis. `None` when the blobs carry no
-/// `principal/create`, or no `key/create` before it: such a bundle is no
-/// genesis commit, so its principal cannot be read from its blobs. A key
-/// the genesis creates beyond its first gives the same state whether it is
-/// read as a genesis key or as one added in the genesis commit.
-fn disclosed_genesis(blobs: &[impl AsRef<[u8]>]) -> Option<Result<crate::Genesis, EngineError>> {
+/// The genesis a principal's first commit discloses, in wire order: every
+/// key a `key/create` transaction before the `principal/create` introduces
+/// (the bundle's `keys` entry its `id` names), the genesis key first (SPEC
+/// 5.1 steps 1-2, 5.3, 7.7 Example 1); with one such key it is that key's
+/// genesis. `None` when the bundle carries no `principal/create`, or no
+/// `key/create` before it: such a bundle is no genesis commit, so its
+/// principal cannot be read from it. A key the genesis creates beyond its
+/// first gives the same state whether it is read as a genesis key or as one
+/// added in the genesis commit.
+fn disclosed_genesis(bundle: &WireBundle) -> Option<Result<crate::Genesis, EngineError>> {
     use cyphr::parsed_coz::typ::{KEY_CREATE, PRINCIPAL_CREATE, has_suffix};
 
-    let values: Vec<serde_json::Value> = blobs
+    let values: Vec<serde_json::Value> = bundle
+        .txs
         .iter()
-        .filter_map(|b| serde_json::from_slice(b.as_ref()).ok())
+        .flatten()
+        .filter_map(|b| serde_json::from_slice(b).ok())
         .collect();
     let typ = |v: &serde_json::Value| v.pointer("/pay/typ")?.as_str().map(str::to_owned);
     let to_key = |v: &serde_json::Value| -> Result<cyphr::Key, EngineError> {
-        let entry = v.get("key").and_then(key_value_to_entry).ok_or_else(|| {
-            EngineError::MalformedBlob("a genesis key/create discloses no key".into())
-        })?;
-        crate::import::key_entry_to_key(&entry)
+        let id = v.pointer("/pay/id").and_then(serde_json::Value::as_str);
+        let entry = bundle
+            .keys
+            .iter()
+            .find(|k| Some(k.tmb.as_str()) == id)
+            .ok_or_else(|| {
+                EngineError::MalformedBlob("a genesis key/create discloses no key".into())
+            })?;
+        crate::import::key_entry_to_key(entry)
             .map_err(|e| EngineError::MalformedBlob(format!("genesis key conversion: {e}")))
     };
     if let Some(pc) = values
@@ -2776,25 +2931,23 @@ async fn replay_actions_at<T: cyphr::eml::Storage>(
     history: &ActionHistory,
     position: u64,
 ) -> Result<(), EngineError> {
-    for bundle in history.get(&position).into_iter().flatten() {
-        cyphr::replay::replay_bundle(principal, &bundle.cozies)
+    for held in history.get(&position).into_iter().flatten() {
+        cyphr::replay::replay_bundle(principal, &held.bundle)
             .await
             .map_err(|e| crate::import::LoadError::Protocol(e.source))?;
     }
     Ok(())
 }
 
-/// The cozies of an action-only bundle's stored blobs, or why they are not
-/// one.
-fn action_cozies(blobs: &[Vec<u8>]) -> Result<Vec<cyphr::replay::StoredCoz>, String> {
-    let cozies = blobs
-        .iter()
-        .map(|b| cyphr::replay::StoredCoz::from_wire(b).map_err(|e| e.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    if cozies.is_empty() || cozies.iter().any(cyphr::replay::StoredCoz::is_transaction) {
+/// The action-only bundle of an action manifest's stored blobs, or why
+/// they are not one.
+fn action_bundle(blobs: Vec<Vec<u8>>) -> Result<cyphr::replay::Bundle, String> {
+    if blobs.is_empty() {
         return Err("not an action-only bundle".into());
     }
-    Ok(cozies)
+    WireBundle::actions(blobs)
+        .decode()
+        .map_err(|e| e.to_string())
 }
 
 /// Order the action-only bundles accepted at one position as they were
@@ -2805,59 +2958,42 @@ fn action_cozies(blobs: &[Vec<u8>]) -> Result<Vec<cyphr::replay::StoredCoz>, Str
 /// DT (DR sorts by `now`, then digest, SPEC 3.7.7).
 fn replay_order(bundles: &mut [ActionBundle]) {
     bundles.sort_by_cached_key(|b| {
-        let first = b.cozies.iter().map(|c| c.header().now).min();
+        let first = b.bundle.cozies().map(|c| c.header().now).min();
         (first, *b.manifest.as_bytes())
     });
 }
 
 /// The [`CommitEntry`](crate::CommitEntry) replay reads from a stored
-/// commit's `blobs`: the cozies plus the key material their envelopes
-/// carry. State digest fields are inert during replay.
+/// commit's bundle. State digest fields are inert during replay.
 fn replay_entry(
-    blobs: &[Vec<u8>],
+    bundle: &WireBundle,
     commit_id: &str,
     pr: &str,
 ) -> Result<crate::CommitEntry, EngineError> {
-    let mut cozies = Vec::with_capacity(blobs.len());
-    let mut keys = Vec::new();
-    for data in blobs {
-        let value: serde_json::Value = serde_json::from_slice(data).map_err(|e| {
-            EngineError::MalformedBlob(format!("commit {commit_id} blob is not valid JSON: {e}"))
-        })?;
-        // Key material of a key-introducing transaction.
-        if let Some(ke) = value.get("key").and_then(key_value_to_entry) {
-            keys.push(ke);
-        }
-        cozies.push(value);
-    }
-    Ok(crate::CommitEntry::new(
-        cozies,
-        keys,
-        commit_id.to_string(),
-        None,
-        None,
-        pr.to_string(),
-    ))
+    let entry = crate::CommitEntry::from_bundle(bundle).map_err(|e| {
+        EngineError::MalformedBlob(format!("commit {commit_id} blob is not valid JSON: {e}"))
+    })?;
+    Ok(crate::CommitEntry {
+        commit_id: commit_id.to_string(),
+        pr: pr.to_string(),
+        ..entry
+    })
 }
 
-/// The principal `raw_blobs` replay to as its first bundle, or `None`
-/// when they do not replay from `genesis`.
-async fn replay_first(
-    genesis: &crate::Genesis,
-    raw_blobs: &[impl AsRef<[u8]>],
-) -> Option<cyphr::Principal> {
-    let blobs: Vec<Vec<u8>> = raw_blobs.iter().map(|b| b.as_ref().to_vec()).collect();
+/// The principal `bundle` replays to as its first bundle, or `None` when
+/// it does not replay from `genesis`.
+async fn replay_first(genesis: &crate::Genesis, bundle: &WireBundle) -> Option<cyphr::Principal> {
     let mut principal = cyphr::Principal::implicit(genesis.key()?.clone())
         .await
         .ok()?;
-    let entry = replay_entry(&blobs, "", "").ok()?;
+    let entry = replay_entry(bundle, "", "").ok()?;
     crate::import::replay_commits(&mut principal, &[entry])
         .await
         .ok()?;
     Some(principal)
 }
 
-/// The storage key a principal's first bundle `raw_blobs` derives, a
+/// The storage key a principal's first bundle derives, a
 /// function of the record alone (I1). A genesis commit (SPEC 5.1) keys it
 /// by its PG, in the spelling of [`genesis_principal_id`] (the first active
 /// algorithm); the PG is the state at `principal/create`, so a nonce in the
@@ -2865,10 +3001,10 @@ async fn replay_first(
 /// unique PG"). A bundle of data actions alone forms no commit: a Level 1/2
 /// principal is keyed by its genesis PR. `None` when the bundle does not
 /// replay.
-async fn record_key(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) -> Option<String> {
+async fn record_key(genesis: &crate::Genesis, bundle: &WireBundle) -> Option<String> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let principal = replay_first(genesis, raw_blobs).await?;
+    let principal = replay_first(genesis, bundle).await?;
     let Some(pg) = principal.pg() else {
         return (principal.commits().next().is_none())
             .then(|| genesis_principal_id(genesis).ok())
@@ -2882,10 +3018,11 @@ async fn record_key(genesis: &crate::Genesis, raw_blobs: &[impl AsRef<[u8]>]) ->
     ))
 }
 
-/// Whether `blobs` carry a `principal/create`: a genesis commit (SPEC 5.1).
-fn is_genesis_bundle(blobs: &[impl AsRef<[u8]>]) -> bool {
-    blobs.iter().any(|blob| {
-        serde_json::from_slice::<serde_json::Value>(blob.as_ref())
+/// Whether `bundle` carries a `principal/create`: a genesis commit (SPEC
+/// 5.1).
+fn is_genesis_bundle(bundle: &WireBundle) -> bool {
+    bundle.txs.iter().flatten().any(|blob| {
+        serde_json::from_slice::<serde_json::Value>(blob)
             .ok()
             .and_then(|v| v.pointer("/pay/typ")?.as_str().map(str::to_owned))
             .is_some_and(|typ| {
@@ -2897,11 +3034,20 @@ fn is_genesis_bundle(blobs: &[impl AsRef<[u8]>]) -> bool {
 /// Whether `data` parses as the pre-keyspace manifest shape. Parsed, not
 /// searched: JSON lets any member name be spelled with escapes.
 fn is_legacy_manifest(data: &[u8]) -> bool {
-    serde_json::from_slice::<CommitManifest>(data).is_ok_and(|m| m.kind == COMMIT_MANIFEST_KIND)
+    /// The pre-keyspace manifest's shape: a kind and a commit, whatever
+    /// else it carried (it predates the recorded transaction shape).
+    #[derive(serde::Deserialize)]
+    struct Legacy {
+        kind: String,
+        #[serde(rename = "commit")]
+        _commit: IndexableCommit,
+    }
+    serde_json::from_slice::<Legacy>(data).is_ok_and(|m| m.kind == COMMIT_MANIFEST_KIND)
 }
 
 /// The members of a stored wire coz: exactly what the signature and the
-/// protocol need (`pay`, `sig`, and a disclosed `key`). Coz allows
+/// protocol need (`pay` and `sig`; key material travels in the bundle's
+/// `keys`, SPEC 4.6.2). Coz allows
 /// applications to add members, so extras are tolerated on the wire but
 /// never stored; `cad`/`czd` are recalculatable, so a present value is
 /// recomputed and a mismatch refused (and the value dropped, as any
@@ -2962,38 +3108,68 @@ fn canonical_coz(blob: &[u8], i: usize) -> Result<Vec<u8>, EngineError> {
     let mut canonical = serde_json::Map::new();
     canonical.insert("pay".into(), pay);
     canonical.insert("sig".into(), sig.into());
-    // The unsigned `key` member is kept only where the protocol needs it:
-    // on a key-introducing coz, and only once its `tmb` is checked to be the
-    // thumbprint of its `pub`. Every other coz is stored without it and
-    // resolved by `tmb`, so a czd names exactly one canonical blob: a
-    // replayer cannot attach a `key` of its choosing to bytes that
-    // `/e/{czd}` then serves.
-    let typ = canonical
-        .get("pay")
-        .and_then(|p| p.get("typ"))
-        .and_then(|t| t.as_str());
-    let introduces = typ.is_some_and(crate::import::is_key_introducing_typ);
-    if let Some(key) = members.get("key").filter(|_| introduces) {
-        let entry = key_value_to_entry(key)
-            .ok_or_else(|| bad("'key' missing required fields (alg, pub, tmb)".into()))?;
-        crate::import::key_entry_to_key(&entry).map_err(|e| match e {
-            // e.g. `TmbMismatch`: a client-facing protocol refusal, not a
-            // malformed blob (the status the sidecar check always gave).
-            crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
-            other => bad(format!("'key' is not a valid key: {other}")),
-        })?;
-        // Only `alg`, `pub` and `tmb` are kept: `tag` and `now` are unsigned
-        // labels, and the protocol sets a key's first-seen time from the
-        // signed `pay.now` when it applies the introducing coz.
-        let mut key = serde_json::Map::new();
-        key.insert("alg".into(), entry.alg.into());
-        key.insert("pub".into(), entry.pub_key.into());
-        key.insert("tmb".into(), entry.tmb.into());
-        canonical.insert("key".into(), key.into());
-    }
     let mut canonical = serde_json::Value::Object(canonical);
     crate::import::canonicalize_value(&mut canonical);
     serde_json::to_vec(&canonical).map_err(|e| bad(format!("serialize: {e}")))
+}
+
+/// A pushed bundle in the form the engine verifies and stores: each coz
+/// canonical ([`canonical_coz`]), and of `keys` exactly one entry per key a
+/// coz of `txs` introduces, holding `alg`, `pub` and `tmb` once the core has
+/// checked `tmb` is the thumbprint of `pub`. `tag` and `now` are unsigned
+/// labels, and the protocol sets a key's first-seen time from the signed
+/// `pay.now` when it applies the introducing coz; an entry no coz names is
+/// not stored, so a commit has one stored form whatever unsigned material
+/// travelled with it.
+fn canonical_bundle(bundle: &WireBundle) -> Result<WireBundle, EngineError> {
+    let mut canonical = bundle.try_map(|i, blob| canonical_coz(blob, i))?;
+    let named: std::collections::HashSet<String> = canonical
+        .txs
+        .iter()
+        .flatten()
+        .filter_map(|blob| {
+            let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
+            let typ = value.pointer("/pay/typ")?.as_str()?;
+            crate::import::is_key_introducing_typ(typ)
+                .then(|| value.pointer("/pay/id")?.as_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect();
+    let mut keys: Vec<KeyEntry> = Vec::new();
+    for entry in &bundle.keys {
+        if !named.contains(&entry.tmb) || keys.iter().any(|k| k.tmb == entry.tmb) {
+            continue;
+        }
+        crate::import::key_entry_to_key(entry).map_err(|e| match e {
+            // e.g. `TmbMismatch`: a client-facing protocol refusal, not a
+            // malformed bundle.
+            crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
+            other => {
+                EngineError::MalformedBlob(format!("key {} is not a valid key: {other}", entry.tmb))
+            },
+        })?;
+        keys.push(KeyEntry {
+            tag: None,
+            now: None,
+            ..entry.clone()
+        });
+    }
+    canonical.keys = keys;
+    Ok(canonical)
+}
+
+/// A canonical bundle decoded for the core.
+fn decode_bundle(bundle: &WireBundle) -> Result<cyphr::replay::Bundle, EngineError> {
+    use cyphr::replay::WireError;
+    bundle.decode().map_err(|e| match e.error {
+        // e.g. `TmbMismatch`: a client-facing protocol refusal, not an
+        // infrastructure failure.
+        WireError::Key(p) | WireError::Protocol(p) => EngineError::Protocol(p),
+        other => match e.coz {
+            Some(i) => EngineError::MalformedBlob(format!("blob {i}: {other}")),
+            None => EngineError::MalformedBlob(format!("keys: {other}")),
+        },
+    })
 }
 
 /// Hash labels an identifier may carry. A bare digest is mapped to one of
@@ -3022,28 +3198,6 @@ pub fn bare_digest(id: &str) -> &str {
 pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
     let key = genesis.key().ok_or(cyphr::Error::NoActiveKeys)?;
     Ok(cyphr::PrincipalState::genesis(key.clone())?.pr_tagged()?)
-}
-
-/// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.
-///
-/// Returns `None` if the object is missing required fields.
-fn key_value_to_entry(key_obj: &serde_json::Value) -> Option<crate::KeyEntry> {
-    let alg = key_obj.get("alg")?.as_str()?;
-    let pub_key = key_obj.get("pub")?.as_str()?;
-    let tmb = key_obj.get("tmb")?.as_str()?;
-    let tag = key_obj
-        .get("tag")
-        .and_then(|t| t.as_str())
-        .map(String::from);
-    let now = key_obj.get("now").and_then(|n| n.as_i64());
-
-    Some(crate::KeyEntry {
-        alg: alg.to_string(),
-        pub_key: pub_key.to_string(),
-        tmb: tmb.to_string(),
-        tag,
-        now,
-    })
 }
 
 /// Format all variants of a [`MultihashDigest`] as tagged digest strings (`"alg:base64url"`).

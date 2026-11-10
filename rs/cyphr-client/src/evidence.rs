@@ -13,7 +13,7 @@
 //!
 //! Each item is self-describing, with a `kind` and the principal's `pg`:
 //!
-//! - `principal-fork`: `{pg, height, pre, a, b}` where `a` and `b` are `{blobs: [base64url coz]}`,
+//! - `principal-fork`: `{pg, height, pre, a, b}` where `a` and `b` are commit bundles (SPEC 4.6.2),
 //!   two distinct commits that both verify against the principal's state at `pre`, the Principal
 //!   Root after commit `height - 1` (`null` at height 0). Checked by [`verify_principal_fork`],
 //!   which replays the commits from that state; no server signature takes part, so it convicts no
@@ -31,6 +31,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::{MemoryStorage, Storage};
+use cyphr::replay::WireBundle;
 use cyphr::state::TaggedDigest;
 use cyphr::{Commit, Key, Principal};
 use serde::Deserialize as _;
@@ -131,10 +132,10 @@ pub enum EvidenceItem {
         height: u64,
         /// The Principal Root both extend; `None` at height 0.
         pre: Option<String>,
-        /// The first commit's coz blobs.
-        a: Vec<Vec<u8>>,
-        /// The second commit's coz blobs.
-        b: Vec<Vec<u8>>,
+        /// The first commit's bundle.
+        a: WireBundle,
+        /// The second commit's bundle.
+        b: WireBundle,
     },
     /// Two statements of one peer about one principal.
     PeerEquivocation {
@@ -206,22 +207,17 @@ impl EvidenceItem {
     }
 }
 
-fn commit_blobs(commit: Option<&Value>) -> Result<Vec<Vec<u8>>, EvidenceFailure> {
-    let blobs = commit
-        .and_then(|c| c.get("blobs"))
-        .and_then(Value::as_array)
-        .ok_or(EvidenceFailure::Malformed("commit has no blobs array"))?;
-    if blobs.is_empty() || blobs.len() > MAX_COMMIT_BLOBS {
+fn commit_blobs(commit: Option<&Value>) -> Result<WireBundle, EvidenceFailure> {
+    let commit = commit
+        .filter(|c| c.get("txs").is_some_and(Value::is_array))
+        .ok_or(EvidenceFailure::Malformed("commit has no txs array"))?;
+    let bundle = WireBundle::deserialize(commit)
+        .map_err(|_| EvidenceFailure::Malformed("commit is not a bundle of base64url cozies"))?;
+    let count = bundle.cozies().count();
+    if count == 0 || count > MAX_COMMIT_BLOBS {
         return Err(EvidenceFailure::Malformed("commit blob count out of range"));
     }
-    blobs
-        .iter()
-        .map(|b| {
-            b.as_str()
-                .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
-                .ok_or(EvidenceFailure::Malformed("blob is not base64url"))
-        })
-        .collect()
+    Ok(bundle)
 }
 
 /// What a verified principal fork proves.
@@ -257,14 +253,14 @@ pub async fn replay_chain(
     entries: &[PatchEntry],
 ) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
     for (index, entry) in entries.iter().enumerate() {
-        let blobs = entry
-            .blobs
+        let bundle = entry
+            .bundle
             .as_ref()
             .map_err(|_| EvidenceFailure::BadCommit {
                 commit: index,
                 what: "entry is undecodable",
             })?;
-        replay_commit(&mut base, index, blobs).await?;
+        replay_commit(&mut base, index, bundle).await?;
     }
     Ok(base)
 }
@@ -325,8 +321,8 @@ pub async fn verify_principal_fork(
     let genesis_commit = match prefix.first() {
         Some(first) => Some(
             first
-                .blobs
-                .as_deref()
+                .bundle
+                .as_ref()
                 .map_err(|_| EvidenceFailure::BadCommit {
                     commit: 0,
                     what: "undecodable blobs",
@@ -357,7 +353,7 @@ pub async fn verify_principal_fork(
     }
     let at = prefix.len();
     let branch = async |which,
-                        blobs: &[Vec<u8>]|
+                        blobs: &WireBundle|
            -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
         let mut copy = state
             .fork()
@@ -653,23 +649,24 @@ fn pg_names(principal: &Principal<MemoryStorage>, pg: &str) -> bool {
     })
 }
 
-/// Whether the commit `blobs` opens with a coz signed by `genesis_key` (a
+/// Whether the commit `bundle` opens with a coz signed by `genesis_key` (a
 /// genesis commit opens with its genesis key's own `key/create`, SPEC 5.1).
-fn opens_with(blobs: &[Vec<u8>], genesis_key: &str) -> bool {
-    blobs
-        .first()
+fn opens_with(bundle: &WireBundle, genesis_key: &str) -> bool {
+    bundle
+        .cozies()
+        .next()
         .and_then(|blob| serde_json::from_slice::<Value>(blob).ok())
         .is_some_and(|coz| coz.pointer("/pay/tmb").and_then(Value::as_str) == Some(genesis_key))
 }
 
-/// Replay one entry's blobs onto `principal` through the core's one replay
-/// entry point, as [`PeerChain`](crate::PeerChain) does.
+/// Replay one entry's bundle onto `principal` through the core's one
+/// replay entry point, as [`PeerChain`](crate::PeerChain) does.
 async fn replay_commit(
     principal: &mut Principal<MemoryStorage>,
     commit: usize,
-    blobs: &[Vec<u8>],
+    bundle: &WireBundle,
 ) -> Result<(), EvidenceFailure> {
-    crate::peer::replay_entry(principal, blobs)
+    crate::peer::replay_entry(principal, bundle)
         .await
         .map(|_| ())
         .map_err(|refusal| match refusal {

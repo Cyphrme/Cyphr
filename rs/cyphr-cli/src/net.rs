@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::WireBundle;
 use cyphr_client::{
     ConnectError, Connector, HttpConnector, HttpOptions, PatchFailure, Request, verify_patch_body,
 };
@@ -105,13 +105,13 @@ impl PeerError {
     }
 }
 
-/// A peer's history: its commits' blobs, and its action-only bundles each
+/// A peer's history: its commits' bundles, and its action-only bundles each
 /// with the number of commits the peer held when it accepted the bundle (the
 /// bundle precedes the commit at that position, SPEC 4.8.2).
 #[derive(Debug, Default)]
 pub struct PeerHistory {
-    /// One blob list per commit, oldest first.
-    pub commits: Vec<Vec<Vec<u8>>>,
+    /// One bundle per commit, oldest first.
+    pub commits: Vec<WireBundle>,
     /// `(after, blobs)` per action-only bundle, in accepted order.
     pub actions: Vec<(usize, Vec<Vec<u8>>)>,
 }
@@ -199,7 +199,7 @@ impl Peer {
             .entries
             .into_iter()
             .map(|e| {
-                e.blobs
+                e.bundle
                     .map_err(|defect| self.malformed(format!("entry {}: {defect:?}", e.sequence)))
             })
             .collect::<Result<_, _>>()?;
@@ -218,17 +218,15 @@ impl Peer {
         Ok(PeerHistory { commits, actions })
     }
 
-    /// Send one commit's blobs to the peer.
+    /// Send one bundle to the peer: a commit's, or an action-only one.
     ///
     /// # Errors
     ///
     /// [`PeerError::Stale`] when the peer answers 409 (its tip has moved
     /// past the commit's predecessor); other [`PeerError`]s otherwise.
-    pub async fn push_commit(&self, principal: &str, blobs: &[Vec<u8>]) -> Result<(), PeerError> {
-        let body = serde_json::json!({
-            "principal_id": principal,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        });
+    pub async fn push_commit(&self, principal: &str, bundle: &WireBundle) -> Result<(), PeerError> {
+        let mut body = serde_json::to_value(bundle).map_err(|e| self.malformed(e.to_string()))?;
+        body["principal_id"] = principal.into();
         let bytes = serde_json::to_vec(&body).map_err(|e| self.malformed(e.to_string()))?;
         match self.send(&Request::post("/push", bytes)).await {
             Ok(_) => Ok(()),

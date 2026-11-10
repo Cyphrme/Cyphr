@@ -273,7 +273,11 @@ async fn grouped_transaction_end_to_end() {
     spec_4_example(&mut p, true).await;
     let commit = p.commits().last().unwrap().clone();
     let bundle = wire(&commit);
-    assert_eq!(shape(&bundle), vec![2, 1, 1], "premise: the example's shape");
+    assert_eq!(
+        shape(&bundle),
+        vec![2, 1, 1],
+        "premise: the example's shape"
+    );
 
     // The TR the grouping yields, from the czds alone.
     let c = czds(&commit);
@@ -345,13 +349,22 @@ async fn grouped_transaction_end_to_end() {
         .load_principal(&pg, genesis.clone())
         .await
         .expect("replay from the store");
-    assert_eq!(loaded.pr_tagged().unwrap(), p.pr_tagged().unwrap(), "replay PR");
+    assert_eq!(
+        loaded.pr_tagged().unwrap(),
+        p.pr_tagged().unwrap(),
+        "replay PR"
+    );
     let lines: Vec<Value> = cyphr_storage::export_commits(&loaded)
         .expect("export")
         .iter()
         .map(|l| serde_json::to_value(l).unwrap())
         .collect();
-    assert_eq!(shape(&lines[2]), vec![2, 1, 1], "export shape: {}", lines[2]);
+    assert_eq!(
+        shape(&lines[2]),
+        vec![2, 1, 1],
+        "export shape: {}",
+        lines[2]
+    );
     let entries: Vec<cyphr_storage::CommitEntry> = lines
         .into_iter()
         .map(|l| serde_json::from_value(l).expect("a line reads back"))
@@ -359,7 +372,11 @@ async fn grouped_transaction_end_to_end() {
     let imported = cyphr_storage::load_principal_from_commits(genesis, &entries)
         .await
         .expect("import");
-    assert_eq!(imported.pr_tagged().unwrap(), p.pr_tagged().unwrap(), "import PR");
+    assert_eq!(
+        imported.pr_tagged().unwrap(),
+        p.pr_tagged().unwrap(),
+        "import PR"
+    );
 
     // The same pair as two transactions is another commit.
     spec_4_example(&mut split, false).await;
@@ -375,7 +392,11 @@ async fn grouped_transaction_end_to_end() {
         json!(expected_tr),
         "two transactions must give another TR"
     );
-    assert_ne!(split.pr_tagged().unwrap(), p.pr_tagged().unwrap(), "and another PR");
+    assert_ne!(
+        split.pr_tagged().unwrap(),
+        p.pr_tagged().unwrap(),
+        "and another PR"
+    );
     drop(dir);
 }
 

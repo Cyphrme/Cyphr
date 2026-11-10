@@ -82,17 +82,23 @@ fn digest(u: &mut Unstructured<'_>) -> Value {
     json!(format!("{label}:{}", b64(&bytes)))
 }
 
+/// One patch entry: a bundle of up to three transactions of up to three
+/// cozies each (SPEC 4.6.2), each coz usually base64url and sometimes not.
 fn entry(u: &mut Unstructured<'_>) -> Value {
-    let blobs: Vec<Value> = (0..u8::arbitrary(u).unwrap_or(0) % 4)
+    let coz = |u: &mut Unstructured<'_>| {
+        if bool::arbitrary(u).unwrap_or(true) {
+            json!(b64(&Vec::<u8>::arbitrary(u).unwrap_or_default()))
+        } else {
+            json!(String::arbitrary(u).unwrap_or_default())
+        }
+    };
+    let txs: Vec<Value> = (0..u8::arbitrary(u).unwrap_or(0) % 4)
         .map(|_| {
-            if bool::arbitrary(u).unwrap_or(true) {
-                json!(b64(&Vec::<u8>::arbitrary(u).unwrap_or_default()))
-            } else {
-                json!(String::arbitrary(u).unwrap_or_default())
-            }
+            let n = u8::arbitrary(u).unwrap_or(1) % 4;
+            Value::Array((0..n).map(|_| coz(u)).collect())
         })
         .collect();
-    json!({ "sequence": int_field(u), "blobs": blobs })
+    json!({ "sequence": int_field(u), "txs": txs })
 }
 
 fuzz_target!(|data: &[u8]| {

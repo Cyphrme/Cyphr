@@ -33,56 +33,40 @@ mod export;
 mod import;
 pub mod index;
 
+/// Key material for a commit (SPEC 4.6.2 `keys`, 5.2): the public keys
+/// the commit's key-introducing cozies name by thumbprint.
+pub use cyphr::replay::KeyEntry;
 pub use export::{ExportError, export_commits};
 pub use import::{Genesis, LoadError, load_principal_from_commits};
 pub use index::PublicKeyInfo;
 
-/// Key material for a commit (SPEC §6).
+/// A stored bundle line: one finalized commit, or the data actions
+/// recorded between two commits.
 ///
-/// Keys are stored at commit level per SPEC §5.2/§5.3, not embedded
-/// per-coz. Optional fields (`tag`, `now`) are semantically
-/// optional — not all keys have human-readable labels or creation
-/// timestamps at export time.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct KeyEntry {
-    /// Algorithm identifier (e.g., "ES256").
-    pub alg: String,
-    /// Public key (base64url-encoded).
-    #[serde(rename = "pub")]
-    pub pub_key: String,
-    /// Key thumbprint (base64url-encoded).
-    pub tmb: String,
-    /// Optional human-readable label.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
-    /// Optional creation timestamp (maps to Key.first_seen).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub now: Option<i64>,
-}
-
-/// A stored commit bundle for the commit-based JSONL format.
-///
-/// Each line in the JSONL file represents one finalized commit containing:
-/// - `cozies`: Array of coz entries (signed coz messages)
-/// - `keys`: Key material introduced in this commit (SPEC §5.2/§5.3)
-/// - `commit_id`: Commit ID (Merkle root of commit's coz czds)
-/// - `ar`: Auth Root (derived from KR)
-/// - `sr`: State Root (derived from AR and DR?)
-/// - `pr`: Principal Root (derived from SR and CR)
+/// Each line holds, in the SPEC 4.6.2 JSON wire form:
+/// - `txs`: the commit's transactions, each an array of its cozies in signed order, the commit
+///   transaction last (empty on an action-only line)
+/// - `keys`: the public keys the commit's key-introducing cozies name (SPEC 5.2)
+/// - `actions`: data actions recorded before the transactions (an action-only line holds only
+///   these)
+/// - `commit_id`: the commit's TR
+/// - `ar`, `sr`, `pr`: the roots after the line
 ///
 /// The derived state digests enable efficient indexing and verification
 /// without replaying the full coz history.
 ///
 /// Serialized with a top-level `v` (the bundle format version). A reader
 /// takes a line without `v` (from before versions) as v1 and refuses any
-/// other version as [`BundleError::UnsupportedVersion`].
-#[derive(Debug, Clone)]
+/// version but the supported one as [`BundleError::UnsupportedVersion`].
+#[derive(Debug, Clone, Default)]
 pub struct CommitEntry {
-    /// ParsedCoz entries in this commit bundle.
-    pub cozies: Vec<serde_json::Value>,
+    /// Data actions recorded before the transactions.
+    pub actions: Vec<serde_json::Value>,
+    /// The commit's transactions, each its cozies in signed order.
+    pub txs: Vec<Vec<serde_json::Value>>,
     /// Key material introduced in this commit.
     pub keys: Vec<KeyEntry>,
-    /// Commit ID (per-commit Merkle root of coz czds).
+    /// Commit ID: the commit's TR (empty on an action-only line).
     pub commit_id: String,
     /// Auth Root after this commit; `None` when the commit left the
     /// principal with no key (Dead, SPEC §3.7), written as JSON `null`.
@@ -96,8 +80,10 @@ pub struct CommitEntry {
     pub pr: String,
 }
 
-/// The one bundle-line format version this build reads and writes.
-const BUNDLE_VERSION: u64 = 1;
+/// The one bundle-line format version this build reads and writes. Version
+/// 2 nests `txs` by transaction (SPEC 4.6.2) and carries data actions in
+/// `actions`; a version 1 line's flat `txs` is not read as either.
+const BUNDLE_VERSION: u64 = 2;
 
 /// Why a bundle line could not be read.
 #[derive(Debug, thiserror::Error)]
@@ -124,8 +110,9 @@ pub enum BundleError {
 struct Line {
     #[serde(default, skip_deserializing)]
     v: u64,
-    #[serde(rename = "txs")]
-    cozies: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    actions: Vec<serde_json::Value>,
+    txs: Vec<Vec<serde_json::Value>>,
     keys: Vec<KeyEntry>,
     commit_id: String,
     // No `default`: an absent root is `null`, and a missing field is a
@@ -150,7 +137,8 @@ impl serde::Serialize for CommitEntry {
         // bundle line is exported once, not on a hot path.
         Line {
             v: BUNDLE_VERSION,
-            cozies: self.cozies.clone(),
+            actions: self.actions.clone(),
+            txs: self.txs.clone(),
             keys: self.keys.clone(),
             commit_id: self.commit_id.clone(),
             auth_root: self.auth_root.clone(),
@@ -169,25 +157,6 @@ impl<'de> serde::Deserialize<'de> for CommitEntry {
 }
 
 impl CommitEntry {
-    /// Create a new commit entry from components.
-    pub fn new(
-        cozies: Vec<serde_json::Value>,
-        keys: Vec<KeyEntry>,
-        commit_id: String,
-        auth_root: Option<String>,
-        sr: Option<String>,
-        pr: String,
-    ) -> Self {
-        Self {
-            cozies,
-            keys,
-            commit_id,
-            auth_root,
-            sr,
-            pr,
-        }
-    }
-
     /// Get the raw JSON string for this commit entry.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
@@ -204,23 +173,66 @@ impl CommitEntry {
         Self::from_value(serde_json::from_str(json)?)
     }
 
+    /// The line's bundle in the wire form a push carries.
+    ///
+    /// # Errors
+    ///
+    /// A coz value that does not serialize (never, for parsed JSON).
+    pub fn bundle(&self) -> Result<cyphr::replay::WireBundle, serde_json::Error> {
+        Ok(cyphr::replay::WireBundle {
+            actions: self
+                .actions
+                .iter()
+                .map(serde_json::to_vec)
+                .collect::<Result<_, _>>()?,
+            txs: self
+                .txs
+                .iter()
+                .map(|tx| tx.iter().map(serde_json::to_vec).collect())
+                .collect::<Result<_, _>>()?,
+            keys: self.keys.clone(),
+        })
+    }
+
+    /// The line of `bundle` (its roots left empty): each coz parsed as
+    /// JSON.
+    ///
+    /// # Errors
+    ///
+    /// A coz that is not JSON.
+    pub fn from_bundle(bundle: &cyphr::replay::WireBundle) -> Result<Self, serde_json::Error> {
+        let value = |blob: &Vec<u8>| serde_json::from_slice(blob);
+        Ok(Self {
+            actions: bundle.actions.iter().map(value).collect::<Result<_, _>>()?,
+            txs: bundle
+                .txs
+                .iter()
+                .map(|tx| tx.iter().map(value).collect())
+                .collect::<Result<_, _>>()?,
+            keys: bundle.keys.clone(),
+            ..Self::default()
+        })
+    }
+
     fn from_value(doc: serde_json::Value) -> Result<Self, BundleError> {
-        // Version first, so a future line's differently shaped body reads
-        // as an unsupported version, never as a malformed one.
-        if let Some(v) = doc.get("v") {
-            let found = v.as_u64().ok_or_else(|| {
+        // Version first, so a line of another version reads as an
+        // unsupported version, never as a malformed one.
+        let found = match doc.get("v") {
+            None => 1,
+            Some(v) => v.as_u64().ok_or_else(|| {
                 <serde_json::Error as serde::de::Error>::custom("`v` is not an unsigned integer")
-            })?;
-            if found != BUNDLE_VERSION {
-                return Err(BundleError::UnsupportedVersion {
-                    found,
-                    supported: BUNDLE_VERSION,
-                });
-            }
+            })?,
+        };
+        if found != BUNDLE_VERSION {
+            return Err(BundleError::UnsupportedVersion {
+                found,
+                supported: BUNDLE_VERSION,
+            });
         }
         let line: Line = serde_json::from_value(doc)?;
         Ok(Self {
-            cozies: line.cozies,
+            actions: line.actions,
+            txs: line.txs,
             keys: line.keys,
             commit_id: line.commit_id,
             auth_root: line.auth_root,

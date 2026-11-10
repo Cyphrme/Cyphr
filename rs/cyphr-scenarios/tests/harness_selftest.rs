@@ -466,7 +466,7 @@ async fn harness_evidence_items_are_verified_offline() {
     let ok = async |item: &Value| verify_evidence(item, "PG", &keys, &peers, &chain).await;
 
     let fork = json!({"kind": "principal-fork", "pg": "PG", "height": 0, "pre": null,
-                      "a": {"blobs": ["AA"]}, "b": {"blobs": ["BB"]}});
+                      "a": {"txs": [["AA"]]}, "b": {"txs": [["BB"]]}});
     assert!(ok(&fork).await.is_err(), "no chain to replay a fork from");
     let mut other = fork.clone();
     other["pg"] = "OTHER".into();
@@ -572,26 +572,16 @@ async fn create_key(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i6
         .expect("finalize");
 }
 
-/// The `POST /push` body of commit `i` of `p`: key-introducing cozies carry
-/// their key (in the genesis commit, the genesis key's own `key/create`
-/// discloses it).
+/// The `POST /push` body of commit `i` of `p` in the wire form (SPEC
+/// 4.6.2): the keys its `key/create`s name travel in `keys` (in the genesis
+/// commit, the genesis key's own).
 fn push_body(p: &cyphr::Principal, i: usize, id: &str) -> serde_json::Value {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     let commit = p.commits().nth(i).expect("commit");
-    let cozies: Vec<_> = commit.iter_all_cozies().collect();
-    let blobs: Vec<String> = cozies
-        .iter()
-        .map(|vc| {
-            let mut c = serde_json::to_value(vc.coz().raw()).expect("coz");
-            if let Some(k) = vc.new_key() {
-                c["key"] = serde_json::json!({"alg": k.alg(),
-                    "pub": Base64UrlUnpadded::encode_string(k.pub_key()), "tmb": k.tmb().to_b64()});
-            }
-            Base64UrlUnpadded::encode_string(&serde_json::to_vec(&c).expect("blob"))
-        })
-        .collect();
-    serde_json::json!({"principal_id": id, "blobs": blobs})
+    let mut body =
+        serde_json::to_value(cyphr::replay::WireBundle::of_commit(commit).expect("bundle"))
+            .expect("bundle json");
+    body["principal_id"] = id.into();
+    body
 }
 
 // Claim: the oracle verifies a real fork end to end. A principal's key signs

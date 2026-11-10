@@ -33,7 +33,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
-use cyphr::replay::{BundleId, StoredCoz, WireError, replay_bundle};
+use cyphr::replay::{BundleId, WireBundle, WireError, replay_bundle};
 use cyphr::{Key, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -273,11 +273,11 @@ impl PeerChain {
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
         let mut offered = Vec::with_capacity(patch.entries.len());
         for (index, entry) in patch.entries.iter().enumerate() {
-            let blobs = entry.blobs.as_ref().map_err(|defect| PeerFailure::Entry {
+            let bundle = entry.bundle.as_ref().map_err(|defect| PeerFailure::Entry {
                 index,
                 defect: *defect,
             })?;
-            offered.push(replay_entry(&mut candidate, blobs).await.map_err(
+            offered.push(replay_entry(&mut candidate, bundle).await.map_err(
                 |refusal| match refusal {
                     EntryRefusal::Malformed(what) => PeerFailure::Malformed {
                         commit: index,
@@ -429,32 +429,25 @@ pub(crate) enum EntryRefusal {
     Replay(cyphr::Error),
 }
 
-/// Decode one entry's wire blobs and replay them onto `principal` through
-/// the core's one replay entry point, returning the bundle's identity.
-/// Shared by [`PeerChain::follow`] and the evidence verifier, so a fetched
-/// entry means one thing on both.
+/// Decode one entry's bundle and replay it onto `principal` through the
+/// core's one replay entry point, returning the bundle's identity. Shared
+/// by [`PeerChain::follow`] and the evidence verifier, so a fetched entry
+/// means one thing on both.
 pub(crate) async fn replay_entry(
     principal: &mut Principal<MemoryStorage>,
-    blobs: &[Vec<u8>],
+    bundle: &WireBundle,
 ) -> Result<BundleId, EntryRefusal> {
-    let cozies = blobs
-        .iter()
-        .map(|blob| {
-            StoredCoz::from_wire(blob).map_err(|e| match e {
-                WireError::Header(source) | WireError::Protocol(source) => {
-                    EntryRefusal::Replay(source)
-                },
-                WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
-                WireError::MissingPay => EntryRefusal::Malformed("no pay"),
-                WireError::BadSig => EntryRefusal::Malformed("sig is not base64url"),
-                WireError::KeyFields | WireError::Key(_) => {
-                    EntryRefusal::Malformed("key sidecar is malformed")
-                },
-                _ => EntryRefusal::Malformed("malformed coz"),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    replay_bundle(principal, &cozies)
+    let decoded = bundle.decode().map_err(|e| match e.error {
+        WireError::Header(source) | WireError::Protocol(source) => EntryRefusal::Replay(source),
+        WireError::NotJson => EntryRefusal::Malformed("blob is not JSON"),
+        WireError::MissingPay => EntryRefusal::Malformed("no pay"),
+        WireError::BadSig => EntryRefusal::Malformed("sig is not base64url"),
+        WireError::KeyFields | WireError::Key(_) => EntryRefusal::Malformed("a key is malformed"),
+        WireError::Misplaced => EntryRefusal::Malformed("a coz is in the wrong part of the bundle"),
+        WireError::EmptyTransaction => EntryRefusal::Malformed("a transaction holds no coz"),
+        _ => EntryRefusal::Malformed("malformed coz"),
+    })?;
+    replay_bundle(principal, &decoded)
         .await
         .map_err(|e| EntryRefusal::Replay(e.source))
 }

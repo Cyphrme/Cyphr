@@ -127,8 +127,7 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
                         now,
                         signer,
                         target: Some(target),
-                        msg: None,
-                        rvk: None,
+                        ..Default::default()
                     }]);
 
                     if finalize_commit {
@@ -154,8 +153,8 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
                         now,
                         signer,
                         target: Some(target),
-                        msg: None,
                         rvk: Some(now + 5),
+                        ..Default::default()
                     }]);
 
                     if finalize_commit {
@@ -201,8 +200,7 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
                 now: now + 10,
                 signer,
                 target: Some(target),
-                msg: None,
-                rvk: None,
+                ..Default::default()
             }]],
         });
     }
@@ -210,11 +208,9 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
     test_fixtures::intent::TestIntent {
         name: format!("prop_test_{}", genesis_key_idx),
         principal: vec![genesis_key],
-        setup: None,
         commit: commits,
         action: actions,
-        override_: None,
-        expected: None,
+        ..Default::default()
     }
 }
 
@@ -244,36 +240,21 @@ async fn run_engine_recovery_test<B, I>(
         None => return,
     };
 
-    // Merge action pseudo-commits into the next transaction commit
+    // Carry each action-only line's actions into the next commit's bundle,
+    // recorded before its transactions (SPEC 4.6.2 `actions`).
     let mut merged_commits = Vec::new();
-    let mut pending_cozies = Vec::new();
+    let mut pending_actions = Vec::new();
 
     for commit in commits {
-        let is_tx = commit.cozies.iter().any(|coz| {
-            if let Some(typ) = coz
-                .get("pay")
-                .and_then(|p| p.get("typ"))
-                .and_then(|t| t.as_str())
-            {
-                cyphr::parsed_coz::typ::is_transaction(typ)
-            } else {
-                false
-            }
-        });
-
-        if is_tx {
-            let mut merged_cozies = std::mem::take(&mut pending_cozies);
-            merged_cozies.extend(commit.cozies.clone());
-            merged_commits.push(CommitEntry::new(
-                merged_cozies,
-                commit.keys.clone(),
-                commit.commit_id.clone(),
-                commit.auth_root.clone(),
-                commit.sr.clone(),
-                commit.pr.clone(),
-            ));
+        if commit.txs.is_empty() {
+            pending_actions.extend(commit.actions.clone());
         } else {
-            pending_cozies.extend(commit.cozies.clone());
+            let mut actions = std::mem::take(&mut pending_actions);
+            actions.extend(commit.actions.clone());
+            merged_commits.push(CommitEntry {
+                actions,
+                ..commit.clone()
+            });
         }
     }
 
@@ -294,31 +275,7 @@ async fn run_engine_recovery_test<B, I>(
     async {
         // Ingest commits sequentially
         for commit in &merged_commits {
-            let mut raw_blobs = Vec::new();
-            let mut key_idx = 0;
-            for coz in &commit.cozies {
-                let mut coz_val = coz.clone();
-                if let Some(typ) = coz_val
-                    .get("pay")
-                    .and_then(|p| p.get("typ"))
-                    .and_then(|t| t.as_str())
-                {
-                    let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-                    if is_key_introducing && key_idx < commit.keys.len() {
-                        let key_entry = &commit.keys[key_idx];
-                        let key_val = serde_json::to_value(key_entry).unwrap();
-                        coz_val
-                            .as_object_mut()
-                            .unwrap()
-                            .insert("key".to_string(), key_val);
-                        key_idx += 1;
-                    }
-                }
-                let bytes = serde_json::to_vec(&coz_val).unwrap();
-                raw_blobs.push(bytes);
-            }
-            let blob_slices: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
-
+            let bundle = commit.bundle().unwrap();
             let genesis = if genesis_keys.len() == 1 {
                 Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
             } else {
@@ -326,7 +283,7 @@ async fn run_engine_recovery_test<B, I>(
             };
 
             engine
-                .submit_commit(&principal_id, Some(genesis), &blob_slices)
+                .submit_commit(&principal_id, Some(genesis), &bundle)
                 .await
                 .expect("submit_commit failed");
         }
@@ -350,30 +307,7 @@ async fn run_engine_recovery_test<B, I>(
 
         // Re-submit the last commit to test idempotency
         let last_commit = merged_commits.last().unwrap();
-        let mut raw_blobs = Vec::new();
-        let mut key_idx = 0;
-        for coz in &last_commit.cozies {
-            let mut coz_val = coz.clone();
-            if let Some(typ) = coz_val
-                .get("pay")
-                .and_then(|p| p.get("typ"))
-                .and_then(|t| t.as_str())
-            {
-                let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-                if is_key_introducing && key_idx < last_commit.keys.len() {
-                    let key_entry = &last_commit.keys[key_idx];
-                    let key_val = serde_json::to_value(key_entry).unwrap();
-                    coz_val
-                        .as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), key_val);
-                    key_idx += 1;
-                }
-            }
-            let bytes = serde_json::to_vec(&coz_val).unwrap();
-            raw_blobs.push(bytes);
-        }
-        let blob_slices: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
+        let bundle = last_commit.bundle().unwrap();
         let genesis = if genesis_keys.len() == 1 {
             Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
         } else {
@@ -381,7 +315,7 @@ async fn run_engine_recovery_test<B, I>(
         };
 
         let _ = engine
-            .submit_commit(&principal_id, Some(genesis), &blob_slices)
+            .submit_commit(&principal_id, Some(genesis), &bundle)
             .await;
 
         let tip_after_dup = engine

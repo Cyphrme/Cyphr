@@ -25,14 +25,13 @@ type Durable =
 
 /// A bundle line as the CLI's `export` writes it.
 fn entry() -> CommitEntry {
-    CommitEntry::new(
-        vec![],
-        vec![],
-        "c".into(),
-        Some("a".into()),
-        Some("s".into()),
-        "p".into(),
-    )
+    CommitEntry {
+        commit_id: "c".into(),
+        auth_root: Some("a".into()),
+        sr: Some("s".into()),
+        pr: "p".into(),
+        ..CommitEntry::default()
+    }
 }
 
 /// Claim: an exported bundle line states the format version it was written
@@ -93,24 +92,11 @@ fn genesis_of(fx: &serde_json::Value) -> Genesis {
 }
 
 /// Wire blobs for a fixture commit: each key-introducing coz carries its key.
-fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let keys = commit["keys"].as_array().cloned().unwrap_or_default();
-    let mut next = keys.into_iter();
-    commit["txs"]
-        .as_array()
-        .expect("txs")
-        .iter()
-        .map(|t| {
-            let mut coz = t.clone();
-            if cyphr::parsed_coz::typ::is_key_introducing(coz["pay"]["typ"].as_str().unwrap_or(""))
-            {
-                if let Some(k) = next.next() {
-                    coz["key"] = k;
-                }
-            }
-            serde_json::to_vec(&coz).unwrap()
-        })
-        .collect()
+fn wire_blobs(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<CommitEntry>(commit.clone())
+        .expect("fixture line")
+        .bundle()
+        .expect("bundle")
 }
 
 fn open_durable(dir: &std::path::Path) -> Durable {
@@ -162,9 +148,8 @@ async fn legacy_store_index_is_rebuilt_from_blobs() {
     let engine = open_durable(dir.path());
     for commit in fx["commits"].as_array().unwrap() {
         let blobs = wire_blobs(commit);
-        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         engine
-            .submit_commit(&pid, Some(genesis.clone()), &refs)
+            .submit_commit(&pid, Some(genesis.clone()), &blobs)
             .await
             .expect("ingest");
     }

@@ -12,38 +12,44 @@
   ],
   "commits": [
     {
-      "v": 1,
+      "v": 2,
       "txs": [
-        {
-          "pay": {
-            "alg": "ES384",
-            "id": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-            "now": 1700000000,
-            "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-            "typ": "cyphr.me/cyphr/key/create"
-          },
-          "sig": "Y5pzs71OaAmMsegxydalj3oWBADV5K-tSQh7i-zhYqtQdbPFERU5C8fL1FK4I7RDYG64zrN1olfk80zp5l43gq6KYzQ4KRJ7lq8ltn_X0n1W8a0dcz82r1cWaNPzxgY2"
-        },
-        {
-          "pay": {
-            "alg": "ES384",
-            "id": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-            "now": 1700000000,
-            "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-            "typ": "cyphr.me/cyphr/principal/create"
-          },
-          "sig": "ERCqCoq2IMvj4BnqaG49EZxdxmCiZPI88tn251nvaHb9ASHCJYQwSmKHi_ryeN1ydfzabzHnGa868UbEZGfn99dEShEnGB-Qia_WQ_o9z6lPC2QdMpiffFI15bqoRrIA"
-        },
-        {
-          "pay": {
-            "alg": "ES384",
-            "arrow": "SHA-384:mjWdmVFkahEm678iJOIu5yvppjtdaS_f7GuY24dzbjfafdcYwbxKlyhjd2NgRjlS",
-            "now": 1700000000,
-            "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-            "typ": "cyphr.me/cyphr/commit/create"
-          },
-          "sig": "YcE6I-xYKVs8F-thJvsrWpetbHFUiS6F5LDjKL62gMuVqpBQ7VwxVbs28sJidscpR9W8RJFiMpCMAKLd3QWi1pTiTwNn6h1mQ1D7H1g2k8y67WVkzrYOhL-w_pwX_G41"
-        }
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "id": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/key/create"
+            },
+            "sig": "Y5pzs71OaAmMsegxydalj3oWBADV5K-tSQh7i-zhYqtQdbPFERU5C8fL1FK4I7RDYG64zrN1olfk80zp5l43gq6KYzQ4KRJ7lq8ltn_X0n1W8a0dcz82r1cWaNPzxgY2"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "id": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/principal/create"
+            },
+            "sig": "ERCqCoq2IMvj4BnqaG49EZxdxmCiZPI88tn251nvaHb9ASHCJYQwSmKHi_ryeN1ydfzabzHnGa868UbEZGfn99dEShEnGB-Qia_WQ_o9z6lPC2QdMpiffFI15bqoRrIA"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "arrow": "SHA-384:mjWdmVFkahEm678iJOIu5yvppjtdaS_f7GuY24dzbjfafdcYwbxKlyhjd2NgRjlS",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/commit/create"
+            },
+            "sig": "YcE6I-xYKVs8F-thJvsrWpetbHFUiS6F5LDjKL62gMuVqpBQ7VwxVbs28sJidscpR9W8RJFiMpCMAKLd3QWi1pTiTwNn6h1mQ1D7H1g2k8y67WVkzrYOhL-w_pwX_G41"
+          }
+        ]
       ],
       "keys": [
         {
@@ -60,18 +66,20 @@
       "pr": "SHA-384:7OVMK-OBxaAG21XGUoIOHUk4ALU3F1wxMrWUfQlSTkJZvx7AIDOW5NgSYVHmRP0A"
     },
     {
-      "v": 1,
+      "v": 2,
       "txs": [
-        {
-          "pay": {
-            "alg": "ES384",
-            "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "now": 1700000000,
-            "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-            "typ": "cyphr.me/cyphr/AT/nonce/create"
-          },
-          "sig": "y5rJ03luTyD1dT8YvWfa0KNS5KAJKRXFqa5bB9oCeeaxUbUvyZikjUPe0vlqFubtNLZlEPs53CsDo_s8Wx2-FYu7Eoxky3nY_wGtch1mDjAiVbUJsEbe-lf8WzEUE27N"
-        }
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/AT/nonce/create"
+            },
+            "sig": "y5rJ03luTyD1dT8YvWfa0KNS5KAJKRXFqa5bB9oCeeaxUbUvyZikjUPe0vlqFubtNLZlEPs53CsDo_s8Wx2-FYu7Eoxky3nY_wGtch1mDjAiVbUJsEbe-lf8WzEUE27N"
+          }
+        ]
       ],
       "keys": [],
       "commit_id": "",

@@ -19,6 +19,7 @@
 use std::fmt::Write as _;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::replay::WireBundle;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -68,11 +69,13 @@ impl PatchRequest<'_> {
 /// Why one patch entry cannot be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryDefect {
-    /// The entry carries no `blobs` array.
+    /// The entry carries no `txs` array, or an action bundle no `blobs`
+    /// array.
     NoBlobsArray,
-    /// A blob is not a base64url string.
+    /// A blob is not a base64url string, or the entry is not a bundle of
+    /// the SPEC 4.6.2 shape.
     BadBlobEncoding,
-    /// The `blobs` array decodes to nothing.
+    /// The entry decodes to no coz.
     EmptyBlobs,
     /// An action bundle's `after` is missing or not a non-negative integer.
     BadAfter,
@@ -84,8 +87,8 @@ pub enum EntryDefect {
 pub struct PatchEntry {
     /// The entry's declared sequence (`0` when absent). Advisory only.
     pub sequence: u64,
-    /// The decoded blobs, or why they cannot be applied.
-    pub blobs: Result<Vec<Vec<u8>>, EntryDefect>,
+    /// The decoded bundle, or why it cannot be applied.
+    pub bundle: Result<WireBundle, EntryDefect>,
 }
 
 /// One decoded action-only bundle (SPEC 4.8.1): it precedes the commit at
@@ -271,8 +274,20 @@ fn decode_entry(entry: &Value) -> PatchEntry {
     let sequence = entry.get("sequence").and_then(Value::as_u64).unwrap_or(0);
     PatchEntry {
         sequence,
-        blobs: decode_blobs(entry),
+        bundle: decode_bundle(entry),
     }
+}
+
+/// An entry's bundle: `txs` (SPEC 4.6.2), `keys` and `actions`.
+fn decode_bundle(entry: &Value) -> Result<WireBundle, EntryDefect> {
+    if !entry.get("txs").is_some_and(Value::is_array) {
+        return Err(EntryDefect::NoBlobsArray);
+    }
+    let bundle = WireBundle::deserialize(entry).map_err(|_| EntryDefect::BadBlobEncoding)?;
+    if bundle.is_empty() {
+        return Err(EntryDefect::EmptyBlobs);
+    }
+    Ok(bundle)
 }
 
 fn decode_blobs(entry: &Value) -> Result<Vec<Vec<u8>>, EntryDefect> {

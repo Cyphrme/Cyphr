@@ -36,7 +36,7 @@ pub struct Intent {
 }
 
 /// A single test case intent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TestIntent {
     /// Test name.
     pub name: String,
@@ -51,6 +51,9 @@ pub struct TestIntent {
     /// Action sequence (Level 4 data recording).
     #[serde(default)]
     pub action: Vec<ActionIntent>,
+    /// The second principal, for a test about two (a merge).
+    #[serde(default)]
+    pub peer: Option<PeerIntent>,
     /// Override fields (for error tests).
     #[serde(default, rename = "override")]
     pub override_: Option<OverrideIntent>,
@@ -72,7 +75,7 @@ pub struct CommitIntent {
 /// A single coz within a commit.
 ///
 /// Flat struct merging the old `PayIntent` + `CryptoIntent` fields.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TxIntent {
     /// ParsedCoz type (e.g., "cyphr.me/key/create").
     pub typ: String,
@@ -80,10 +83,25 @@ pub struct TxIntent {
     pub now: i64,
     /// Signer key name (from pool).
     pub signer: String,
-    /// Target key name (for key/create, key/revoke). `raw:<id>` instead
-    /// states the pay `id` verbatim.
+    /// Target key name (for key/create, key/revoke): the pay `id` is its
+    /// thumbprint.
     #[serde(default)]
     pub target: Option<String>,
+    /// The pay `id` stated verbatim, for values no pool key's thumbprint
+    /// can express (a nonce, an off-by-one width, a `principal/create` or
+    /// `ds/create` naming a state it does not reach). Takes the place of
+    /// `target` and of a derived `id`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// `merge_from` of a `principal/merge` or `principal/merge-ack` (SPEC
+    /// 11.5.1): PRs named by reference, `self:<n>` or `peer:<n>` for the
+    /// PR that principal held after its `n`-th commit (`0` the genesis
+    /// commit). The test's principal is `self`, its `peer` the other.
+    #[serde(default)]
+    pub merge_from: Option<Vec<String>>,
+    /// `merge_to_pr` of a merge or merge-ack, by the same reference.
+    #[serde(default)]
+    pub merge_to_pr: Option<String>,
     /// Optional message.
     #[serde(default)]
     pub msg: Option<String>,
@@ -95,12 +113,26 @@ pub struct TxIntent {
 /// Setup modifiers for test.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SetupIntent {
-    /// Key name to pre-revoke before test.
+    /// A key of `principal` that is already revoked when the principal is
+    /// created: genesis is given it carrying a revocation at `revoke_at`
+    /// (SPEC 6.4: a revoked key is never trusted again; 7.7: genesis
+    /// creates every key, its first included).
     #[serde(default)]
     pub revoke_key: Option<String>,
     /// Timestamp for the revocation.
     #[serde(default)]
     pub revoke_at: Option<i64>,
+}
+
+/// The second principal of a two-principal test (SPEC 11.5.1 merge): its
+/// genesis keys and commits, generated after the test principal's.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PeerIntent {
+    /// Genesis key set (key names from pool).
+    pub principal: Vec<String>,
+    /// Commit sequence.
+    #[serde(default)]
+    pub commit: Vec<CommitIntent>,
 }
 
 /// Override fields for error tests.
@@ -171,6 +203,10 @@ pub struct ExpectedAssertions {
     /// Expected `Principal::is_frozen()` (SPEC.md §11.1 `Frozen`).
     #[serde(default)]
     pub frozen: Option<bool>,
+    /// Expected `merge_status` of the test principal (the source) into its
+    /// peer (the target): `None`, `Pending` or `Merged` (SPEC 11.5.1).
+    #[serde(default)]
+    pub merge_status: Option<String>,
 }
 
 impl Intent {
@@ -195,9 +231,11 @@ impl Intent {
         let mut intent: Self = doc.try_into().map_err(toml_err)?;
         for test in &mut intent.test {
             test.principal = expand_principal(&test.name, &test.principal)?;
+            let peer = test.peer.iter_mut().flat_map(|p| p.commit.iter_mut());
             for coz in test
                 .commit
                 .iter_mut()
+                .chain(peer)
                 .flat_map(|c| c.tx.iter_mut().flatten())
             {
                 resolve_nonce(&test.name, coz)?;
@@ -257,7 +295,7 @@ fn nonce_id(n: u32) -> Option<String> {
     ))
 }
 
-/// Resolve a `nonce:<n>` target to the `raw:` id it stands for.
+/// Resolve a `nonce:<n>` target to the `id` it stands for.
 fn resolve_nonce(test: &str, coz: &mut TxIntent) -> Result<(), Error> {
     let Some(item) = coz.target.as_deref().and_then(|t| t.strip_prefix("nonce:")) else {
         return Ok(());
@@ -267,7 +305,8 @@ fn resolve_nonce(test: &str, coz: &mut TxIntent) -> Result<(), Error> {
         .ok()
         .and_then(nonce_id)
         .ok_or_else(|| invalid(test, format!("bad nonce item '{item}', want 0..=65535")))?;
-    coz.target = Some(format!("raw:{id}"));
+    coz.target = None;
+    coz.id = Some(id);
     Ok(())
 }
 

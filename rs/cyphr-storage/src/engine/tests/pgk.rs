@@ -179,7 +179,7 @@ async fn holders_patch_anchor_held_only_by_another_principal_is_refused() {
         let blob = format!("{{\"pay\":{{\"now\":{seq}}}}}");
         engine
             .ingest_metadata(
-                &[blob.as_bytes()],
+                &singles(&[blob.as_bytes()]),
                 make_meta("alice", seq, 1000 + seq as i64),
             )
             .await
@@ -187,7 +187,7 @@ async fn holders_patch_anchor_held_only_by_another_principal_is_refused() {
     }
     engine
         .ingest_metadata(
-            &[b"{\"pay\":{\"now\":9}}"],
+            &singles(&[b"{\"pay\":{\"now\":9}}"]),
             meta_with_pr("bob", 0, DIGEST_A),
         )
         .await
@@ -304,7 +304,10 @@ async fn alias_race_equal_pg_ingests_leave_one_winner_and_no_residue() {
         MemoryIndexer::new(),
     );
     control
-        .ingest_metadata(&[b"{\"pay\":{\"now\":1}}"], meta_claiming_pg("alice"))
+        .ingest_metadata(
+            &singles(&[b"{\"pay\":{\"now\":1}}"]),
+            meta_claiming_pg("alice"),
+        )
         .await
         .expect("control ingest");
     let one_winner_blobs = stored_count(&control_blobs).await;
@@ -318,9 +321,13 @@ async fn alias_race_equal_pg_ingests_leave_one_winner_and_no_residue() {
         },
         MemoryIndexer::new(),
     );
+    let (first, second) = (
+        singles(&[b"{\"pay\":{\"now\":1}}"]),
+        singles(&[b"{\"pay\":{\"now\":2}}"]),
+    );
     let (a, b) = tokio::join!(
-        engine.ingest_metadata(&[b"{\"pay\":{\"now\":1}}"], meta_claiming_pg("alice")),
-        engine.ingest_metadata(&[b"{\"pay\":{\"now\":2}}"], meta_claiming_pg("bob")),
+        engine.ingest_metadata(&first, meta_claiming_pg("alice")),
+        engine.ingest_metadata(&second, meta_claiming_pg("bob")),
     );
     let (winner, loser) = match (&a, &b) {
         (Ok(_), Err(e)) | (Err(e), Ok(_)) => ("one", e),
@@ -385,31 +392,17 @@ fn signed(g: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     (bytes, sig, czd)
 }
 
-/// Wire blobs of commit `i` of `p`: each key-introducing coz discloses its
-/// key, so a genesis commit's `key/create`s disclose the genesis (SPEC 5.1).
-fn wire_blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
-    let entry = &crate::export_commits(p).expect("export")[i];
-    let mut keys = entry.keys.iter();
-    entry
-        .cozies
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
-            if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
-                let k = keys.next().expect("a key per key-introducing coz");
-                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
-            }
-            serde_json::to_vec(&c).expect("blob")
-        })
-        .collect()
+/// The wire bundle of commit `i` of `p` (SPEC 4.6.2): a genesis commit's
+/// `key/create`s name the genesis in its `keys` (SPEC 5.1).
+fn wire_blobs(p: &cyphr::Principal, i: usize) -> WireBundle {
+    WireBundle::of_commit(p.commits().nth(i).expect("commit")).expect("bundle")
 }
 
 /// The single-key principal on `g` after its genesis commit at `now` (SPEC
 /// 5.1: `g` creates itself, then the principal), its wire blobs and its PR
 /// after that commit. Its PG, and so its key, is the bare-tmb id whatever
 /// `now` is; distinct `now` values give distinct commits at position 0.
-async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, Vec<Vec<u8>>, String) {
+async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, WireBundle, String) {
     let mut p = cyphr::Principal::implicit(key_of(g))
         .await
         .expect("genesis");
@@ -437,24 +430,21 @@ async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = test_engine();
     let (_, honest, _) = genesis_commit(&g, NOW).await;
-    let refs: Vec<&[u8]> = honest.iter().map(Vec::as_slice).collect();
     engine
-        .submit_commit(&id, Some(genesis.clone()), &refs)
+        .submit_commit(&id, Some(genesis.clone()), &honest)
         .await
         .expect("honest commit 0");
     let before = engine.get_tip(&id).await.expect("tip").expect("stored");
 
     let (_, rival, _) = genesis_commit(&g, NOW + 5).await;
     assert_ne!(rival, honest, "premise: the rival is another commit");
-    let refs: Vec<&[u8]> = rival.iter().map(Vec::as_slice).collect();
     let refused = engine
-        .submit_commit(&id, Some(genesis.clone()), &refs)
+        .submit_commit(&id, Some(genesis.clone()), &rival)
         .await;
     assert!(refused.is_err(), "a rival at position 0 was accepted");
     // The outcome of replaying the accepted commit is not pinned (it may be
     // a no-op or a refusal); what is pinned is that it adds no position.
-    let refs: Vec<&[u8]> = honest.iter().map(Vec::as_slice).collect();
-    let _ = engine.submit_commit(&id, Some(genesis), &refs).await;
+    let _ = engine.submit_commit(&id, Some(genesis), &honest).await;
 
     let after = engine.get_tip(&id).await.expect("tip").expect("stored");
     assert_eq!(after.commit_count, 1, "a second position appeared");
@@ -589,10 +579,9 @@ async fn resolve_all(
 async fn submit<B: BlobStore>(
     engine: &StorageEngine<B, MemoryIndexer, cyphr::eml::MemoryStorage>,
     claim: &str,
-    blobs: &[Vec<u8>],
+    blobs: &WireBundle,
 ) -> Result<IngestResult, EngineError> {
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-    engine.submit_commit(claim, None, &refs).await
+    engine.submit_commit(claim, None, blobs).await
 }
 
 /// Claim: a principal with no nonce is stored under its genesis PR (its PG:

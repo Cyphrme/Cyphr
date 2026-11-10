@@ -272,7 +272,7 @@ async fn invite_token_not_consumed_on_protocol_rejection() {
     let bad = server
         .post(
             "/push",
-            "{\"principal_id\":\"refund-bad\",\"blobs\":[]}",
+            "{\"principal_id\":\"refund-bad\",\"txs\":[]}",
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -347,7 +347,7 @@ async fn non_push_requests_are_never_gated() {
 #[tokio::test]
 async fn push_without_principal_id_passes_through_to_handler() {
     let server = TestServer::start_invite().await;
-    let r = server.post("/push", "{\"blobs\":[\"QUFBQQ\"]}", &[]).await;
+    let r = server.post("/push", "{\"txs\":[[\"QUFBQQ\"]]}", &[]).await;
     assert_ne!(
         r.status, 403,
         "a body with no parseable principal_id must fail open, not be gated: {} {}",

@@ -499,8 +499,9 @@ async fn append_key_create(
 
     let mut key_idx = 0;
     new_commit
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|v| {
             let mut coz = v.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
@@ -731,7 +732,7 @@ async fn sync_recovers_after_bad_entry() {
                 "commit_id": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                 "sequence": 0,
                 "pr": bad_pr,
-                "blobs": [],
+                "txs": [],
             });
             if let Some(entries) = body["payload"]["entries"].as_array_mut() {
                 entries.insert(0, bad_entry);
@@ -824,7 +825,7 @@ async fn sync_recovers_after_unverifiable_entry() {
             // re-encode. Everything about the entry still decodes and parses;
             // only the cryptographic check can reject it.
             let mut bad = genuine.clone();
-            let blob_b64 = bad["blobs"][0]
+            let blob_b64 = bad["txs"][0][0]
                 .as_str()
                 .expect("genuine entry blob is a base64 string")
                 .to_string();
@@ -839,7 +840,7 @@ async fn sync_recovers_after_unverifiable_entry() {
             let flipped = if sig.starts_with('A') { "B" } else { "A" };
             sig.replace_range(0..1, flipped);
             coz["sig"] = sig.into();
-            bad["blobs"][0] =
+            bad["txs"][0][0] =
                 Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
 
             entries.insert(0, bad);
@@ -1345,7 +1346,7 @@ async fn decoy_top_entry_withholding_rejected() {
                             "commit_id": e["commit_id"].clone(),
                             "sequence": e["sequence"].clone(),
                             "pr": e["pr"].clone(),
-                            "blobs": [Base64UrlUnpadded::encode_string(b"{}")],
+                            "txs": [[Base64UrlUnpadded::encode_string(b"{}")]],
                         });
                     }
                 }
@@ -1678,15 +1679,9 @@ async fn build_chained_push_bodies(
     .await
     .expect("genesis commit");
 
-    let body = |blobs: &[Vec<u8>]| {
-        serde_json::json!({
-            "principal_id": principal_id,
-            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-        })
-        .to_string()
-    };
+    let body = |blobs: &[Vec<u8>]| common::push_blobs(principal_id, blobs);
 
-    let mut bodies = vec![body(&c0)];
+    let mut bodies = vec![common::push_body(principal_id, &c0)];
     for (i, name) in key_names.iter().enumerate().skip(1) {
         let c = append_key_create(&mut principal, pool, "golden", name, now + i as i64).await;
         bodies.push(body(&c));
@@ -2256,13 +2251,13 @@ async fn sync_converges_and_refuses_tampered_or_missigned() {
                 .as_array_mut()
                 .expect("authority serves entries");
             for entry in entries {
-                let blob = Base64UrlUnpadded::decode_vec(entry["blobs"][0].as_str().unwrap())
+                let blob = Base64UrlUnpadded::decode_vec(entry["txs"][0][0].as_str().unwrap())
                     .expect("entry blob decodes");
                 let mut coz: serde_json::Value = serde_json::from_slice(&blob).unwrap();
                 let sig = coz["sig"].as_str().unwrap().to_string();
                 let flipped = if sig.starts_with('A') { "B" } else { "A" };
                 coz["sig"] = format!("{flipped}{}", &sig[1..]).into();
-                entry["blobs"][0] =
+                entry["txs"][0][0] =
                     Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
             }
             body

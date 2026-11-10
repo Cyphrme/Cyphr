@@ -420,21 +420,13 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
         cyphr_storage::index::MemoryIndexer::new(),
     );
     for entry in entries {
-        let blobs: Vec<Vec<u8>> = entry["blobs"]
-            .as_array()
-            .expect("entry blobs")
-            .iter()
-            .map(|b| {
-                Base64UrlUnpadded::decode_vec(b.as_str().expect("blob is base64url string"))
-                    .expect("valid blob base64")
-            })
-            .collect();
-        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        let blobs: cyphr::replay::WireBundle =
+            serde_json::from_value(entry.clone()).expect("entry bundle");
         local_engine
             .submit_commit(
                 &pinned_pg,
                 Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
-                &blob_refs,
+                &blobs,
             )
             .await
             .expect("replay a server-chain commit into the local engine");

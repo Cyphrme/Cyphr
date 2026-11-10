@@ -27,7 +27,7 @@ tx = [
     { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
-    { now = 1700000000, signer = "golden", target = "raw:SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI", typ = "cyphr.me/cyphr/principal/create" },
+    { now = 1700000000, signer = "golden", id = "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
 
@@ -170,7 +170,7 @@ typ    = "cyphr.me/action"
 [[test.commit]]
 tx = [
   [
-    { now = 1700000002, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU", typ = "cyphr.me/cyphr/ds/create" },
+    { now = 1700000002, signer = "golden", id = "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU", typ = "cyphr.me/cyphr/ds/create" },
   ],
 ]
 
@@ -414,7 +414,7 @@ tx = [
 [test.expected]
 error = "MalformedPayload"
 
-# Raw ids (`raw:` target) reach widths no pool thumbprint has.
+# Stated ids (`id`) reach widths no pool thumbprint has.
 [[test]]
 name      = "nonce_sha256_with_31_bytes_fails"
 principal = ["golden"]
@@ -422,7 +422,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpQ", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+    { now = 1700000000, signer = "golden", id = "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpQ", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
   ],
 ]
 
@@ -436,7 +436,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+    { now = 1700000000, signer = "golden", id = "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
   ],
 ]
 
