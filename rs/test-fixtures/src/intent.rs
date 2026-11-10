@@ -7,6 +7,18 @@
 //! Transactions use `[[test.commit]]` + `[[test.commit.tx]]`.
 //! Actions use `[[test.action]]`.
 //! See `.sketches/2026-02-18-fixture-format-alignment.md` for design rationale.
+//!
+//! ## Numbered keys and repeated items
+//!
+//! Two shorthands keep large vectors readable; both are expanded when an
+//! intent is loaded, so the generator only ever sees the long form:
+//!
+//! - A `principal` entry `"#a..#b"` stands for the numbered keys `#a` through `#b` inclusive (see
+//!   [`crate::pool::NumberedKeys`]).
+//! - A commit with `repeat = { from = 0, count = 255 }` repeats its `tx` list for each `n` in
+//!   `from..from + count`, replacing `{n}` in every `target`. A target `nonce:<n>` is the nonce
+//!   value of item `n`: the SHA-256 digest-shaped id whose bytes are `n` as big-endian `u16`
+//!   followed by thirty `0xEE` bytes.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -162,25 +174,158 @@ pub struct ExpectedAssertions {
 }
 
 impl Intent {
-    /// Load an intent file from TOML.
+    /// Load an intent file from TOML and expand its shorthands.
     pub fn load(path: &Path) -> Result<Self, Error> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::Read {
             path: path.display().to_string(),
             source: e,
         })?;
-        toml::from_str(&content).map_err(|e| Error::TomlParse {
-            path: path.display().to_string(),
-            source: e,
-        })
+        Self::parse(&content, &path.display().to_string())
+    }
+
+    /// Parse TOML text, expanding the numbered-key and repeat shorthands
+    /// to their long form. `origin` names the source in errors.
+    fn parse(text: &str, origin: &str) -> Result<Self, Error> {
+        let toml_err = |source| Error::TomlParse {
+            path: origin.to_string(),
+            source,
+        };
+        let mut doc: toml::Table = toml::from_str(text).map_err(toml_err)?;
+        expand_repeats(&mut doc)?;
+        let mut intent: Self = doc.try_into().map_err(toml_err)?;
+        for test in &mut intent.test {
+            test.principal = expand_principal(&test.name, &test.principal)?;
+            for coz in test
+                .commit
+                .iter_mut()
+                .flat_map(|c| c.tx.iter_mut().flatten())
+            {
+                resolve_nonce(&test.name, coz)?;
+            }
+        }
+        Ok(intent)
     }
 }
 
 impl FromStr for Intent {
-    type Err = toml::de::Error;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        toml::from_str(s)
+        Self::parse(s, "<string>")
     }
+}
+
+fn invalid(test: &str, why: String) -> Error {
+    Error::InvalidIntent {
+        message: format!("test '{test}': {why}"),
+    }
+}
+
+/// Expand `"#a..#b"` entries (inclusive) to the numbered keys they name.
+fn expand_principal(test: &str, names: &[String]) -> Result<Vec<String>, Error> {
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let Some((lo, hi)) = name.split_once("..") else {
+            out.push(name.clone());
+            continue;
+        };
+        let number = |s: &str| {
+            s.strip_prefix('#')
+                .and_then(|n| n.parse::<u32>().ok())
+                .ok_or_else(|| invalid(test, format!("bad key range '{name}', want \"#a..#b\"")))
+        };
+        let (lo, hi) = (number(lo)?, number(hi)?);
+        if lo > hi {
+            return Err(invalid(test, format!("empty key range '{name}'")));
+        }
+        out.extend((lo..=hi).map(|n| format!("#{n}")));
+    }
+    Ok(out)
+}
+
+/// The nonce value of item `n`: SHA-256 digest-shaped, `n` as big-endian
+/// `u16` then thirty `0xEE` bytes.
+fn nonce_id(n: u32) -> Option<String> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let n = u16::try_from(n).ok()?;
+    let mut raw = [0xEE_u8; 32];
+    raw[..2].copy_from_slice(&n.to_be_bytes());
+    Some(format!(
+        "SHA-256:{}",
+        Base64UrlUnpadded::encode_string(&raw)
+    ))
+}
+
+/// Resolve a `nonce:<n>` target to the `raw:` id it stands for.
+fn resolve_nonce(test: &str, coz: &mut TxIntent) -> Result<(), Error> {
+    let Some(item) = coz.target.as_deref().and_then(|t| t.strip_prefix("nonce:")) else {
+        return Ok(());
+    };
+    let id = item
+        .parse::<u32>()
+        .ok()
+        .and_then(nonce_id)
+        .ok_or_else(|| invalid(test, format!("bad nonce item '{item}', want 0..=65535")))?;
+    coz.target = Some(format!("raw:{id}"));
+    Ok(())
+}
+
+/// Expand every commit's `repeat = { from, count }` in the raw document.
+///
+/// Done on the TOML tree, before typing, so the typed `CommitIntent` has no
+/// shorthand-only field: the `tx` list is repeated for each item number and
+/// `{n}` in every `target` becomes that number.
+fn expand_repeats(doc: &mut toml::Table) -> Result<(), Error> {
+    use toml::Value;
+
+    let bad = |why: &str| Error::InvalidIntent {
+        message: format!("commit repeat: {why}"),
+    };
+    let tests = doc.get_mut("test").and_then(Value::as_array_mut);
+    let commits = tests
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.get_mut("commit").and_then(Value::as_array_mut))
+        .flatten();
+    for commit in commits {
+        let Some(table) = commit.as_table_mut() else {
+            continue;
+        };
+        let Some(repeat) = table.remove("repeat") else {
+            continue;
+        };
+        let field = |k: &str| {
+            repeat
+                .get(k)
+                .and_then(Value::as_integer)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| bad("want repeat = { from = <u32>, count = <u32> }"))
+        };
+        let (from, count) = (field("from")?, field("count")?);
+        let template = table
+            .get("tx")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut txs = Vec::new();
+        for n in from..from.saturating_add(count) {
+            let mut round = template.clone();
+            for coz in round
+                .iter_mut()
+                .filter_map(Value::as_array_mut)
+                .flatten()
+                .filter_map(Value::as_table_mut)
+            {
+                if let Some(Value::String(t)) = coz.get_mut("target") {
+                    *t = t.replace("{n}", &n.to_string());
+                }
+            }
+            txs.extend(round);
+        }
+        table.insert("tx".to_string(), Value::Array(txs));
+    }
+    Ok(())
 }
 
 impl TestIntent {

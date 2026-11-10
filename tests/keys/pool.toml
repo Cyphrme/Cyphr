@@ -7,6 +7,14 @@
 [pool]
 version = "0.1.0"
 
+# Numbered keys `#0 .. #299`: Ed25519 keys derived on load from this public
+# seed (private half = SHA-256(seed "/" n)), never stored here. Intents name
+# them by number; see tests/README.md. Test material only. Changing the seed
+# or lowering the count changes or removes every numbered vector.
+[pool.numbered]
+count = 300
+seed  = "cyphr-test-numbered-keys-v1"
+
 [[pool.key]]
 alg  = "ES256"
 name = "golden"

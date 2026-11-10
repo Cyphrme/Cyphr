@@ -16,7 +16,7 @@ Implementors in any language can consume the golden JSON files directly. The int
 ```
 tests/
 ├── keys/
-│   └── pool.toml         # Shared key pool (public + private keys)
+│   └── pool.toml         # Shared key pool (named keys; numbered keys derive from its seed)
 ├── intents/
 │   └── *.toml            # Source intent files that regenerate golden/ fixtures
 ├── e2e/
@@ -182,6 +182,41 @@ The `keys/pool.toml` contains all test keys. Use key `name` fields from `princip
 | `diana_es384`     | ES384     | Algorithm diversity (SHA-384)      |
 | `eve_ed25519`     | Ed25519   | Algorithm diversity (SHA-512)      |
 | `unsupported_key` | RS256     | Error test (unsupported algorithm) |
+
+### Numbered keys and repeated items
+
+Large vectors (more than 256 keys or collection items, SPEC §4) would be
+unreadable if every key and item were written out, so intents have two
+shorthands. The generator expands both when it loads an intent; golden
+files carry the long form, so a consumer sees only plain names and ids.
+
+**Numbered keys.** The pool derives keys `#0` to `#299` on load from a
+public seed (the `[pool.numbered]` table in `keys/pool.toml`): key `#n` is
+the Ed25519 key whose private half is `SHA-256(seed "/" n)`, `n` in
+decimal. The same number always gives the same key. A `principal` entry
+`"#a..#b"` names the numbered keys `#a` through `#b` inclusive, so
+`principal = ["#0..#256"]` is 257 genesis keys. A single `"#n"` works
+anywhere a key name does (`signer`, `target`). These keys are generated
+test material, not secrets; a consumer resolves `#n` through the same
+derivation or reads the `genesis_keys` in the golden.
+
+**Repeated items.** A commit with `repeat = { from = 0, count = 255 }`
+repeats its `tx` list once for each `n` in `from` to `from + count`
+(excluding the end), replacing `{n}` in every `target`. A `target` of
+`nonce:<n>` is the id of nonce item `n`: the SHA-256-shaped value whose
+bytes are `n` as a big-endian `u16` followed by thirty `0xEE` bytes. This
+is how the n-arity vectors in `intents/mutations.toml` state 300 nonce
+transactions in a few lines:
+
+```toml
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+```
 
 ---
 
