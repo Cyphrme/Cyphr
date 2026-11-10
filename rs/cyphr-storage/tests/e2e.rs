@@ -290,6 +290,7 @@ fn load_error_name(e: &LoadError) -> &'static str {
             cyphr::Error::MalformedPayload => "MalformedPayload",
             cyphr::Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
             cyphr::Error::EmptyCommit => "EmptyCommit",
+            cyphr::Error::GenesisIncomplete => "GenesisIncomplete",
             _ => "UnknownProtocolError",
         },
         LoadError::Json { .. } => "JsonError",
@@ -663,7 +664,8 @@ fn e2e_multihash_round_trip() {
 
         // PG check: None for L1/L2, has genesis variant for L3+
         if let Some(pg) = principal.pg() {
-            let genesis_alg = principal.hash_alg();
+            let genesis_alg = cyphr::state::hash_alg_from_str(&genesis_keys[0].alg)
+                .expect("genesis key algorithm");
             let principal_pg = pg.get(genesis_alg);
             assert!(
                 principal_pg.is_some(),
@@ -770,13 +772,15 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
         },
     );
 
-    let commits = dying.commits.as_ref().expect("commits");
-    let blobs = blobs_of(&commits[0]);
-    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
-    engine
-        .submit_commit(&principal_id, Some(genesis.clone()), &refs)
-        .await
-        .expect("the dying commit is ingested");
+    // The genesis commit, then the dying commit.
+    for commit in dying.commits.as_ref().expect("commits") {
+        let blobs = blobs_of(commit);
+        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&principal_id, Some(genesis.clone()), &refs)
+            .await
+            .expect("the dying commit is ingested");
+    }
 
     let tip = engine
         .get_tip(&principal_id)
@@ -805,7 +809,7 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
         cyphr::lifecycle::LifecycleState::Dead
     );
 
-    let next = blobs_of(&after.commits.as_ref().expect("commits")[1]);
+    let next = blobs_of(&after.commits.as_ref().expect("commits")[2]);
     let refs: Vec<&[u8]> = next.iter().map(Vec::as_slice).collect();
     let refused = engine
         .submit_commit(&principal_id, Some(genesis), &refs)
@@ -817,7 +821,7 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
         .expect("tip")
         .expect("tip");
     assert_eq!(
-        tip_after.commit_count, 1,
+        tip_after.commit_count, 2,
         "the refused commit left no trace"
     );
 }

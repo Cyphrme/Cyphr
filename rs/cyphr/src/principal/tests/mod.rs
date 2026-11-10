@@ -32,7 +32,8 @@ fn dummy_coz_json() -> coz::CozJson {
     }
 }
 
-/// Helper: build a principal with N commits via key/create transactions.
+/// Helper: build a principal with its genesis commit and then N commits via
+/// key/create transactions.
 /// Returns the principal and the list of keys (genesis + added).
 fn build_principal_with_commits(n_commits: usize) -> (Principal, Vec<Key>) {
     use coz::Czd;
@@ -40,6 +41,7 @@ fn build_principal_with_commits(n_commits: usize) -> (Principal, Vec<Key>) {
     use crate::parsed_coz::{CozKind, ParsedCoz};
     let mut keys = vec![make_test_key(0x01)];
     let mut principal = Principal::implicit(keys[0].clone()).unwrap();
+    principal.genesis_test().unwrap();
 
     for i in 0..n_commits {
         let new_key = make_test_key((i + 2) as u8);

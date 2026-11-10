@@ -24,6 +24,8 @@ use http_body_util::BodyExt;
 use proptest::prelude::*;
 use tower::ServiceExt;
 
+mod common;
+
 /// Drive a receipt constructor from a synchronous `proptest!` body, which
 /// has no runtime of its own.
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
@@ -46,119 +48,6 @@ fn load_pool() -> test_fixtures::Pool {
         .unwrap()
         .join("tests/keys/pool.toml");
     test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
-}
-
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key::new(
-        new_key.alg.clone(),
-        coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-    )
-    .expect("key binds its tmb")
-    .with_first_seen(now);
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
-}
-
-fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-    )
-    .expect("key binds its tmb");
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
 }
 
 /// Write a fresh signing key file for a fixed 32-byte Ed25519 seed and
@@ -335,16 +224,12 @@ async fn same_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    // The principal id must be the genesis-derived id (SPEC 3.1): the
-    // implicit genesis key's thumbprint.
-    let principal_id = pool
-        .get("golden")
-        .expect("golden key in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb");
+    // The principal id must be the genesis-derived id: the PG of the
+    // genesis commit pushed below (SPEC 5.1).
+    let principal_id = common::golden_principal_id(&pool);
     let principal_id = principal_id.as_str();
     let now = 1_700_100_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = common::build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
@@ -400,16 +285,12 @@ async fn cross_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    // The principal id must be the genesis-derived id (SPEC 3.1): the
-    // implicit genesis key's thumbprint.
-    let principal_id = pool
-        .get("golden")
-        .expect("golden key in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb");
+    // The principal id must be the genesis-derived id: the PG of the
+    // genesis commit pushed below (SPEC 5.1).
+    let principal_id = common::golden_principal_id(&pool);
     let principal_id = principal_id.as_str();
     let now = 1_700_200_000;
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = common::build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 

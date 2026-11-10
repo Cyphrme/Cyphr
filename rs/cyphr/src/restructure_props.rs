@@ -152,6 +152,7 @@ proptest! {
         let mut targets = order.into_iter().filter(|n| *n != genesis_name);
         let mut active: Vec<&test_fixtures::PoolKey> = vec![genesis];
         let mut principal = Principal::implicit(domain_key(genesis)).expect("genesis");
+        principal.genesis_test().expect("genesis commit");
         let mut now = T0;
 
         for plan in plans {
@@ -286,6 +287,7 @@ fn signer_lookup_refuses_alike_at_every_site() {
 
     // golden + key_a + alice active, then key_a moved to the revoked set.
     let mut principal = Principal::implicit(domain_key(genesis)).expect("genesis");
+    principal.genesis_test().expect("genesis commit");
     for (i, target) in [revoked, filler].into_iter().enumerate() {
         let now = T0 + 2 * i as i64;
         let mut scope = principal.begin_commit();

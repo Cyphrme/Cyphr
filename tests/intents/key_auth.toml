@@ -12,14 +12,17 @@
 name      = "revoked_key_readd_fails"
 principal = ["golden", "key_a"]
 
-[test.setup]
-revoke_at  = 1699999999
-revoke_key = "key_a"
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 

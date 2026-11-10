@@ -81,6 +81,7 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::NotFrozen => "NotFrozen",
         Error::DuplicateNonce => "DuplicateNonce",
         Error::UnknownNonce => "UnknownNonce",
+        Error::GenesisIncomplete => "GenesisIncomplete",
         _ => "UnknownError",
     }
 }

@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 mod common;
 
-use common::{attestor_server, get_json, implicit_principal_id, load_pool, post_json};
+use common::{attestor_server, get_json, load_pool, post_json};
 
 const MERGE_TYP: &str = "cyphr.me/cyphr/principal/merge";
 const ACK_TYP: &str = "cyphr.me/cyphr/principal/merge-ack";
@@ -38,8 +38,9 @@ struct Peer {
     pub_key: Vec<u8>,
     tmb: coz::Thumbprint,
     principal: Principal,
-    /// The genesis key must ride on the first commit's closing cozy.
-    pushed_genesis: bool,
+    /// The server-side id, the PG (SPEC 3.1, 5.1): set once the genesis
+    /// commit is authored.
+    id: Option<String>,
 }
 
 impl Peer {
@@ -57,13 +58,15 @@ impl Peer {
             pub_key,
             tmb,
             principal: Principal::implicit(key).expect("implicit genesis"),
-            pushed_genesis: false,
+            id: None,
         }
     }
 
-    /// The server-side id: the implicit genesis key's thumbprint (SPEC 3.1).
+    /// The server-side id: the PG its genesis commit fixed (SPEC 3.1, 5.1).
     fn id(&self) -> String {
-        implicit_principal_id(&load_pool(), &self.name)
+        self.id
+            .clone()
+            .expect("the genesis commit is authored first")
     }
 
     /// The CURRENT tagged PR (SPEC 3.7.1: it moves with every commit).
@@ -137,7 +140,9 @@ impl Peer {
     }
 
     /// Apply `pays` as one commit to the local principal and return the
-    /// wire blobs for `/push`. The local principal advances even when the
+    /// wire blobs for `/push`. The first commit is the genesis commit
+    /// (SPEC 5.1): the genesis key's own `key/create`, then `pays`, then
+    /// `principal/create`. The local principal advances even when the
     /// server later refuses, so a test that expects a refusal authors that
     /// commit on a peer it does not reuse.
     fn commit_blobs(
@@ -149,53 +154,52 @@ impl Peer {
             .iter()
             .map(|(p, k)| (self.sign(p), k.clone()))
             .collect();
+        let signer =
+            cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pub_key, &self.tmb);
+        let genesis = self.id.is_none();
         let mut scope = self.principal.begin_commit();
+        if genesis {
+            scope.create_genesis_keys(&signer, now, "cyphr.me")?;
+        }
         for ((bytes, sig, czd), key) in signed {
             scope.verify_and_apply(&bytes, &sig, czd, key)?;
         }
-        scope.finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pub_key, &self.tmb),
-            now,
-            "cyphr.me",
-        )?;
+        let id = if genesis {
+            let id = scope.genesis_id()?;
+            scope.create_principal(&signer, now, "cyphr.me")?;
+            Some(id)
+        } else {
+            None
+        };
+        scope.finalize_with_software(&signer, now, "cyphr.me")?;
+        if id.is_some() {
+            self.id = id;
+        }
 
         let entries = cyphr_storage::export_commits(&self.principal).expect("export commits");
         let entry = entries.last().expect("a commit after finalize");
-        let mut key_idx = 0;
-        let mut blobs: Vec<Value> = entry
+        // Every `key/create` discloses the key it creates (SPEC 5.2 TX0).
+        let blobs: Vec<Value> = entry
             .cozies
             .iter()
             .map(|v| {
                 let mut coz = v.clone();
                 let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-                if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < entry.keys.len() {
-                    let k = &entry.keys[key_idx];
-                    coz.as_object_mut().expect("object").insert(
-                        "key".to_owned(),
-                        json!({ "alg": k.alg, "pub": k.pub_key, "tmb": k.tmb }),
-                    );
-                    key_idx += 1;
+                if cyphr::parsed_coz::typ::is_key_introducing(typ) {
+                    if let Some(k) = entry
+                        .keys
+                        .iter()
+                        .find(|k| coz["pay"]["id"].as_str() == Some(k.tmb.as_str()))
+                    {
+                        coz.as_object_mut().expect("object").insert(
+                            "key".to_owned(),
+                            json!({ "alg": k.alg, "pub": k.pub_key, "tmb": k.tmb }),
+                        );
+                    }
                 }
                 coz
             })
             .collect();
-        if !self.pushed_genesis {
-            // `resolve_genesis` needs the genesis key on the closing cozy.
-            blobs
-                .last_mut()
-                .expect("closing cozy")
-                .as_object_mut()
-                .expect("object")
-                .insert(
-                    "key".to_owned(),
-                    json!({
-                        "alg": self.alg,
-                        "pub": Base64UrlUnpadded::encode_string(&self.pub_key),
-                        "tmb": self.tmb.to_b64(),
-                    }),
-                );
-            self.pushed_genesis = true;
-        }
         Ok(blobs
             .iter()
             .map(|b| serde_json::to_vec(b).expect("blob json"))
@@ -212,7 +216,7 @@ impl Peer {
             pub_key: self.pub_key.clone(),
             tmb: self.tmb.clone(),
             principal: self.principal.clone(),
-            pushed_genesis: self.pushed_genesis,
+            id: self.id.clone(),
         }
     }
 
@@ -229,7 +233,8 @@ async fn push(app: &Router, peer: &Peer, blobs: &[Vec<u8>]) -> (StatusCode, Valu
     post_json(app.clone(), "/push", peer.push_body(blobs)).await
 }
 
-/// Create the principal on the server: genesis key plus one added key.
+/// Create the principal on the server: its genesis commit, in which the
+/// genesis key creates itself and one added key.
 async fn bootstrap(app: &Router, peer: &mut Peer, added_key: &str, now: i64) {
     let pays = vec![peer.key_create(added_key, now)];
     let blobs = peer

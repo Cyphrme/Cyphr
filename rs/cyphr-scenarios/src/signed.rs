@@ -90,9 +90,11 @@ pub struct ChainView {
 impl ChainView {
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare).
     ///
-    /// The genesis key is read from the first commit's sidecar and is only
-    /// accepted if it derives `pg`. A patch that does not replay, or whose
-    /// stated roots or commit ids disagree with the replay, is an error.
+    /// The genesis is read from the first commit, the genesis commit (SPEC
+    /// 5.1): the keys its `key/create`s disclose before its
+    /// `principal/create`, the genesis key first. It is only accepted if it
+    /// derives `pg`. A patch that does not replay, or whose stated roots or
+    /// commit ids disagree with the replay, is an error.
     pub fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
@@ -103,17 +105,30 @@ impl ChainView {
             .blobs
             .as_ref()
             .map_err(|e| format!("first commit is undecodable: {e:?}"))?;
-        let key = first
+        let cozies: Vec<Value> = first
             .iter()
             .filter_map(|b| serde_json::from_slice::<Value>(b).ok())
-            .filter(|c| {
-                c["pay"]["typ"]
-                    .as_str()
-                    .is_some_and(|t| t.ends_with("/cyphr/commit/create"))
-            })
-            .find_map(|c| genesis_key(&c["key"]))
-            .ok_or("the first commit carries no genesis key")?;
-        Self::replay(body, pg, key, patch.entries)
+            .collect();
+        let typ_is = |c: &Value, suffix: &str| {
+            c["pay"]["typ"]
+                .as_str()
+                .is_some_and(|t| t.ends_with(suffix))
+        };
+        let created = cozies
+            .iter()
+            .position(|c| typ_is(c, "/cyphr/principal/create"))
+            .ok_or("the first commit is no genesis commit")?;
+        let keys: Vec<Key> = cozies[..created]
+            .iter()
+            .filter(|c| typ_is(c, "/cyphr/key/create"))
+            .map(|c| genesis_key(&c["key"]).ok_or("a genesis key/create discloses no key"))
+            .collect::<Result<_, _>>()?;
+        let genesis = match <[Key; 1]>::try_from(keys) {
+            Ok([key]) => Principal::implicit(key),
+            Err(keys) => Principal::explicit(keys),
+        }
+        .map_err(|e| format!("genesis: {e}"))?;
+        Self::replay(body, pg, genesis, patch.entries)
     }
 
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare)
@@ -123,18 +138,31 @@ impl ChainView {
     pub fn from_patch_with_genesis(body: &[u8], pg: &str, key: Key) -> Result<Self, String> {
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
-        Self::replay(body, pg, key, patch.entries)
+        let genesis = Principal::implicit(key).map_err(|e| format!("genesis: {e}"))?;
+        Self::replay(body, pg, genesis, patch.entries)
     }
 
-    fn replay(body: &[u8], pg: &str, key: Key, entries: Vec<PatchEntry>) -> Result<Self, String> {
+    fn replay(
+        body: &[u8],
+        pg: &str,
+        genesis: Principal,
+        entries: Vec<PatchEntry>,
+    ) -> Result<Self, String> {
         let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
-        let genesis = Principal::implicit(key.clone()).map_err(|e| format!("genesis: {e}"))?;
         let derives = genesis
             .pr_tagged()
             .is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
         if !derives {
-            return Err("the first commit's genesis key does not derive the principal".into());
+            return Err("the first commit's genesis does not derive the principal".into());
         }
+        // The first genesis key: the one whose `key/create` opens the
+        // genesis commit (SPEC 5.1).
+        let key = genesis
+            .genesis_keys()
+            .first()
+            .and_then(|tmb| Base64UrlUnpadded::decode_vec(tmb).ok())
+            .and_then(|tmb| genesis.get_key(&coz::Thumbprint::from_bytes(tmb)).cloned())
+            .ok_or("the genesis holds no genesis key")?;
         let chain = replay_chain(genesis.clone(), &entries)
             .map_err(|e| format!("the patch does not replay from its genesis: {e}"))?;
 

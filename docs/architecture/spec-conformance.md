@@ -269,7 +269,9 @@ SPEC 3.1, line 298. Disposition: `covered`.
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_revoke_leaves_dead]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/dead_principal_rejects_commit]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_delete_leaves_dead]`
+  - `rs/cyphr-server/tests/transport.rs::a_never_pushed_level_one_key_can_be_naked_revoked`
 - fails when: a self-revoke of a principal's only key is refused (it was, with `NoActiveKeys`), or deleting the last key is refused, or the dying commit's roots are not the ruled ones (KR and AR derived from the nonces that remain and absent without any, SR equal to DR or absent, PR equal to CR when SR is absent, hashed under the pre-commit algorithm set), or the Dead principal accepts anything further. SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. Refusing the revoke leaves Mallory, who copied Alice's only key, a usable key after Alice's revoke.
+- note: the commit-borne tests above are the Level 3 case (a principal with a genesis commit revokes its last key in a commit). A Level 1 principal makes no commit (3.1 "No commit", 5.1 "No commit or PG exists"), so its self-revoke is a naked revoke (6.4: "signed outside of a commit"): the server records it with no prior knowledge of the key, and the key is then locked out (`a_never_pushed_level_one_key_can_be_naked_revoked`). A `key/revoke` in a commit on a principal that never committed is refused `GenesisIncomplete`.
 
 ```claim
 kind: requirement
@@ -566,8 +568,10 @@ SPEC 6.4, line 1075. Disposition: `covered`.
   - `rs/cyphr/tests/signer_seam.rs::revoked_signer_is_key_revoked`
   - `rs/cyphr-server/tests/naked_revoke.rs::revoked_key_refused_at_push`
   - `rs/cyphr-server/tests/naked_revoke.rs::revoked_key_refused_at_login_sibling_survives`
+  - `rs/cyphr-server/tests/transport.rs::a_never_pushed_level_one_key_can_be_naked_revoked`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/action_revoked_key_fails]`
 - fails when: a revoked key signs a commit, a push, a login or an action and is accepted. The in-tree copy has drifted here (see the drift table).
+- note: a naked revoke needs no prior knowledge of its key: a Level 1 key signs nothing a peer could have seen, so the revoke route verifies only the self-signature against the disclosed key and its thumbprint bind; revokes of keys no stored principal holds are bounded by the operator's `[limits] max_dead_keys` (refused `507` past it) and the `/revoke` rate buckets, while a held key's revoke is recorded even past it (`the_ceiling_never_refuses_a_held_keys_revoke`); residual: while the set is full, an unseen Level 1 key's revoke is refused. Third-party revokes stay refused.
 
 ```claim
 kind: requirement
@@ -641,9 +645,14 @@ SPEC 7.7, line 1287. Disposition: `covered`.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s7_7_fork_create_does_not_create_a_principal`
   - `rs/cyphr-server/tests/explicit_genesis.rs::genesis_omitting_a_key_create_is_refused`
+  - `rs/cyphr-server/tests/explicit_genesis.rs::a_created_genesis_key_may_create_the_next`
+  - `rs/cyphr-server/tests/explicit_genesis.rs::a_first_commit_without_principal_create_is_refused`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/principal_create_without_genesis_key_create_fails]`
-- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300); or a `principal/create` is accepted while a genesis key has no `key/create` (Example 1: the genesis commit carries a `key/create` for every genesis key, SPEC 5.1 step 1, 5.2, 5.3).
-- note: the core currently requires the first genesis key to sign every genesis `key/create` (`rs/cyphr/src/principal/apply.rs`, the `KeyCreate` arm). SPEC 3.3 lets any key `key/create` any other key, so this is over-strict; GEN0b relaxes it to "the signer is a genesis key already created in this scope", pinned by the ignored `rs/cyphr-server/tests/explicit_genesis.rs::a_created_genesis_key_may_create_the_next` (`RED(GEN0b)`).
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/genesis_not_opened_by_self_create_fails]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/mutation_after_principal_create_fails]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/uncreated_genesis_key_signs_fails]`
+- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300); or a `principal/create` is accepted while a genesis key has no `key/create` (Example 1: the genesis commit carries a `key/create` for every genesis key, SPEC 5.1 step 1, 5.2, 5.3); or a genesis commit opens with anything but the genesis key's own `key/create`; or a commit is finalized before its principal's `principal/create`.
+- note: the genesis signer rule is SPEC 5.1 steps 1-2 ("The genesis key (the first key) is explicitly added"; "Adding additional keys, rules, or any other AR components require additional transactions") read with 13.2 step 3 ("`tmb` belongs to a key in current KR"): before any `key/create` the KR is empty, so the first genesis transaction can only be the genesis key's own `key/create`, and every later one is signed by a key already created in that commit (any key may `key/create` another, 3.3). The `principal/create` names the future SR (5.1 step 3, 5.2 "ID == PG == SR"), the state every genesis transaction before it reached, so only the `commit/create` may follow it. A commit chain begins with this commit: there is no committed state without a PG. Refusals: `UnknownKey` for a signer not yet created, `GenesisIncomplete` for a `principal/create` with a genesis key uncreated, a transaction after it, or a commit finalized without it (`rs/cyphr/src/principal/apply.rs`).
 
 ```claim
 kind: requirement
@@ -1341,11 +1350,11 @@ Open points this node raised that the resolved set did not cover:
   backdating check would reject every golden vector. Only the future side is
   tested.
 - **O2 (line 1287), closed.** Example 1 says genesis does not implicitly
-  create the genesis key. The genesis commit now carries a `key/create` for
-  every genesis key, and `principal/create` refuses while one is missing
-  (row `sc-l1287`). Implicit genesis (Levels 1 and 2) has no commit and is
-  unchanged; an implicit principal's first commit is its genesis commit and
-  is brought to §5.1 by GEN0b.
+  create the genesis key. Every commit chain begins with a genesis commit
+  carrying a `key/create` for every genesis key, the genesis key's own
+  first, and `principal/create` refuses while one is missing (row
+  `sc-l1287`). Implicit genesis (Levels 1 and 2) makes no commit; an
+  implicit principal's first commit is its genesis commit.
 - **O3 (lines 535 and 860).** `seq` for multi-coz commit transactions and
   `TRANSACTION_ORDER_UNKNOWN` have no counterpart in the Rust wire format; are
   they still wanted at Levels 1-4?

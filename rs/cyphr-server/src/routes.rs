@@ -843,16 +843,45 @@ pub async fn revoke(
     AppJson(envelope): AppJson<crate::revoke::NakedRevokeEnvelope>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr_storage::index::Indexer;
 
-    let verified = crate::revoke::interpret(&envelope, state.engine.indexer()).await?;
+    let verified = crate::revoke::interpret(&envelope).await?;
 
     // Store the full `{pay, sig, key}` envelope: self-contained evidence any
-    // later reader can re-verify with no index.
-    state
+    // later reader can re-verify with no index. Once the death set is at its
+    // ceiling, only a key some stored principal holds is still recorded: the
+    // ceiling bounds junk revokes of keys nobody here holds, and must never
+    // deny the emergency revoke of a held key (SPEC 6.4). The index is read
+    // for presence only, never content.
+    match state
         .observations
-        .record(&verified.revoked_tmb, verified.evidence)
+        .record(&verified.revoked_tmb, verified.evidence.clone())
         .await
-        .map_err(AppError::observation)?;
+    {
+        Ok(()) => {},
+        Err(full @ crate::observation::ObservationError::Full { .. }) => {
+            let tmb_b64 = Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes());
+            let held = state
+                .engine
+                .indexer()
+                .get_key(&tmb_b64)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "naked-revoke presence lookup failed");
+                    AppError::internal("key index lookup failed")
+                })?
+                .is_some();
+            if !held {
+                return Err(AppError::observation(full));
+            }
+            state
+                .observations
+                .record_seen(&verified.revoked_tmb, verified.evidence)
+                .await
+                .map_err(AppError::observation)?;
+        },
+        Err(e) => return Err(AppError::observation(e)),
+    }
 
     let payload = RevokeResponse {
         revoked_tmb: Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes()),
@@ -995,14 +1024,9 @@ mod commit_count_underflow_tests {
         // bootstrap the server's own principal purely to satisfy that
         // gate. The fixture tip each test below actually signs comes from
         // a SEPARATE, purpose-built genesis push (`push_test_genesis`),
-        // not the server's own chain: `rederive_roots`'s auto-detection
-        // (`resolve_genesis` -> `genesis_from_raw_blobs`) requires the
-        // genesis key embedded on the CLOSING `commit/create` cozy, a wire
-        // shape `build_genesis` (used here) does not produce -- it hands
-        // `submit_commit` an already-resolved `Genesis::Explicit`
-        // directly, bypassing that auto-detection entirely. A test push
-        // must go through the same auto-detecting shape a real client
-        // request does.
+        // not the server's own chain, so it goes through the same
+        // blob-only genesis read (`submit_commit` with no `Genesis`) a
+        // real client request does.
         let sp =
             ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
                 .await
@@ -1012,19 +1036,19 @@ mod commit_count_underflow_tests {
         (Arc::new(state), dir)
     }
 
-    /// Push a minimal, data-free genesis commit for `principal_id` through
-    /// the engine directly -- an implicit-genesis key closed by a
-    /// `commit/create` introducing one further key, the genesis key
-    /// embedded on the CLOSING cozy exactly as `submit_commit`'s
-    /// auto-detection (`genesis_from_raw_blobs`) requires. Mirrors
-    /// `tests/common/mod.rs::build_genesis_push_body` +
-    /// `sign_key_create_commit`'s wire shape, duplicated here (with a
-    /// freshly generated keypair rather than the shared `test_fixtures`
-    /// pool) because that helper lives in the separate integration-test
-    /// crate this unit-test module cannot depend on.
+    /// Push a minimal, data-free genesis commit for a fresh principal
+    /// through the engine directly -- a genesis key that creates itself and
+    /// one further key, then signs the `principal/create` and
+    /// `commit/create` (SPEC 5.1), every `key/create` disclosing its key
+    /// so `submit_commit` reads the genesis from the blobs alone. Mirrors
+    /// `tests/common/mod.rs::build_genesis_push_body`'s wire shape,
+    /// duplicated here (with freshly generated keypairs rather than the
+    /// shared `test_fixtures` pool) because that helper lives in the
+    /// separate integration-test crate this unit-test module cannot depend
+    /// on.
     ///
-    /// Returns the principal id the genesis derives (SPEC §3.1), the only
-    /// id the engine accepts for this commit.
+    /// Returns the principal id the genesis derives (its PG, SPEC 5.1), the
+    /// only id the engine accepts for this commit.
     async fn push_test_genesis(state: &AppState, now: i64) -> String {
         push_test_genesis_ingest(state, now).await.0
     }
@@ -1034,63 +1058,26 @@ mod commit_count_underflow_tests {
         state: &AppState,
         now: i64,
     ) -> (String, cyphr_storage::engine::IngestResult) {
+        let key_of = |kp: &coz::KeyPair| {
+            let tmb = kp
+                .alg
+                .compute_thumbprint(&kp.pub_bytes)
+                .expect("thumbprint");
+            let key = cyphr::Key::new(kp.alg.name().to_string(), tmb.clone(), kp.pub_bytes.clone())
+                .expect("key binds its tmb");
+            (key, tmb)
+        };
         let golden_kp = coz::Alg::Ed25519.generate_keypair();
-        let golden_tmb = golden_kp
-            .alg
-            .compute_thumbprint(&golden_kp.pub_bytes)
-            .expect("golden thumbprint");
-        let golden_key = cyphr::Key::new(
-            golden_kp.alg.name().to_string(),
-            golden_tmb.clone(),
-            golden_kp.pub_bytes.clone(),
-        )
-        .expect("key binds its tmb");
-
-        let new_kp = coz::Alg::Ed25519.generate_keypair();
-        let new_tmb = new_kp
-            .alg
-            .compute_thumbprint(&new_kp.pub_bytes)
-            .expect("new-key thumbprint");
-        let new_tmb_b64 = Base64UrlUnpadded::encode_string(new_tmb.as_bytes());
-        let golden_tmb_b64 = Base64UrlUnpadded::encode_string(golden_tmb.as_bytes());
-
-        let pay_value = serde_json::json!({
-            "alg": golden_kp.alg.name(),
-            "id": new_tmb_b64,
-            "now": now,
-            "tmb": golden_tmb_b64,
-            "typ": "cyphr.me/cyphr/key/create",
-        });
-        let mut pay_obj = pay_value.clone();
-        pay_obj.as_object_mut().unwrap().sort_keys();
-        let pay_vec = serde_json::to_vec(&pay_obj).unwrap();
-
-        let (sig_bytes, cad) = coz::sign_json(
-            &pay_vec,
-            golden_kp.alg.name(),
-            &golden_kp.prv_bytes,
-            &golden_kp.pub_bytes,
-        )
-        .expect("signing supported for Ed25519");
-        let czd =
-            coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
-
-        let new_key = cyphr::Key::new(
-            new_kp.alg.name().to_string(),
-            new_tmb,
-            new_kp.pub_bytes.clone(),
-        )
-        .expect("key binds its tmb")
-        .with_first_seen(now);
+        let (golden_key, golden_tmb) = key_of(&golden_kp);
+        let (new_key, _) = key_of(&coz::Alg::Ed25519.generate_keypair());
 
         let mut principal =
-            cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-        let mut scope = principal.begin_commit();
-        scope
-            .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key))
-            .expect("key/create verifies against the starting principal state");
-        scope
-            .finalize_with_software(
+            cyphr::Principal::explicit(vec![golden_key, new_key]).expect("explicit genesis");
+        // The PG is the principal state over the genesis keys, before the
+        // `principal/create` commits it.
+        let principal_id = principal.pr_tagged().expect("genesis PR");
+        let cozies = principal
+            .commit_genesis(
                 &cyphr::signer::SoftwareSigner::new(
                     golden_kp.alg.name(),
                     &golden_kp.prv_bytes,
@@ -1100,58 +1087,13 @@ mod commit_count_underflow_tests {
                 now,
                 "cyphr.me",
             )
-            .expect("commit finalizes");
-
-        let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-        let commit = entries.last().expect("at least one commit after finalize");
-
-        let mut key_idx = 0;
-        let blobs: Vec<Vec<u8>> = commit
-            .cozies
+            .expect("genesis commits");
+        let blobs: Vec<Vec<u8>> = cozies
             .iter()
-            .map(|v| {
-                let mut coz = v.clone();
-                let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-                if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < commit.keys.len() {
-                    let key = &commit.keys[key_idx];
-                    coz.as_object_mut().unwrap().insert(
-                        "key".to_string(),
-                        serde_json::json!({
-                            "alg": key.alg,
-                            "pub": key.pub_key,
-                            "tmb": key.tmb,
-                        }),
-                    );
-                    key_idx += 1;
-                }
-                serde_json::to_vec(&coz).expect("cozy serializes")
-            })
+            .map(|c| serde_json::to_vec(c).expect("cozy serializes"))
             .collect();
 
-        // The genesis key is embedded on the CLOSING `commit/create` cozy
-        // (`resolve_genesis`'s auto-detection wire contract for a
-        // never-before-seen principal), not on the `key/create` cozy above.
-        let closing_idx = blobs.len() - 1;
-        let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-        closing.as_object_mut().unwrap().insert(
-            "key".to_string(),
-            serde_json::json!({
-                "alg": golden_key.alg(),
-                "pub": Base64UrlUnpadded::encode_string(golden_key.pub_key()),
-                "tmb": golden_tmb_b64,
-            }),
-        );
-        let closing_blob = serde_json::to_vec(&closing).unwrap();
-
-        let mut all_blobs = blobs;
-        let last = all_blobs.len() - 1;
-        all_blobs[last] = closing_blob;
-
-        let principal_id = cyphr_storage::engine::genesis_principal_id(
-            &cyphr_storage::Genesis::Implicit(golden_key.clone()),
-        )
-        .expect("genesis-derived principal id");
-        let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
+        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         let ingest = state
             .engine
             .submit_commit(&principal_id, None, &blob_refs)

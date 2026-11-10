@@ -117,12 +117,12 @@ struct HttpResponse {
 // ========================================================================
 
 /// A brand-new principal's genesis push body, wire-ready, for the principal
-/// whose implicit genesis key is pool key `genesis_name` (its id is derived
-/// from that key, SPEC 3.1). Distinct genesis keys are distinct
+/// whose genesis key is pool key `genesis_name` (with `key_a`; its id is
+/// the PG that genesis derives, SPEC 5.1). Distinct genesis keys are distinct
 /// new-principal residency facts; `now` does not distinguish principals.
 fn genesis_body(genesis_name: &str, now: i64) -> String {
     let pool = common::load_pool();
-    let principal_id = common::implicit_principal_id(&pool, genesis_name);
+    let principal_id = common::genesis_push_id(&pool, genesis_name, "key_a");
     common::build_genesis_push_body_with(&pool, genesis_name, "key_a", &principal_id, now)
 }
 

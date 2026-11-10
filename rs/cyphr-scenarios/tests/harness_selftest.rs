@@ -564,25 +564,20 @@ fn create_key(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i64) {
 }
 
 /// The `POST /push` body of commit `i` of `p`: key-introducing cozies carry
-/// their key, and commit 0's closing coz carries the genesis key.
-fn push_body(p: &cyphr::Principal, i: usize, genesis: &Signer, id: &str) -> serde_json::Value {
+/// their key (in the genesis commit, the genesis key's own `key/create`
+/// discloses it).
+fn push_body(p: &cyphr::Principal, i: usize, id: &str) -> serde_json::Value {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let commit = p.commits().nth(i).expect("commit");
     let cozies: Vec<_> = commit.iter_all_cozies().collect();
     let blobs: Vec<String> = cozies
         .iter()
-        .enumerate()
-        .map(|(n, vc)| {
+        .map(|vc| {
             let mut c = serde_json::to_value(vc.coz().raw()).expect("coz");
             if let Some(k) = vc.new_key() {
                 c["key"] = serde_json::json!({"alg": k.alg(),
                     "pub": Base64UrlUnpadded::encode_string(k.pub_key()), "tmb": k.tmb().to_b64()});
-            }
-            if i == 0 && n + 1 == cozies.len() {
-                c["key"] = serde_json::json!({"alg": genesis.alg,
-                    "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-                    "tmb": genesis.tmb.to_b64()});
             }
             Base64UrlUnpadded::encode_string(&serde_json::to_vec(&c).expect("blob"))
         })
@@ -605,7 +600,14 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     let h = Harness::start(&["p1"]).await.expect("start peer");
     let (g, k1, k2, k3) = (signer(), signer(), signer(), signer());
     let mut base = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    // A single-key genesis: the PG is the genesis key's thumbprint.
     let id = g.tmb.to_b64();
+    base.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
+        1_700_099_999,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
     create_key(&mut base, &g, &k1, 1_700_100_000);
     let (mut first, mut rival) = (base.clone(), base.clone());
     create_key(&mut first, &g, &k2, 1_700_100_001);
@@ -613,7 +615,7 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
 
     let addr = h.peer("p1").addr;
     let push = |p: &cyphr::Principal, i: usize| {
-        let body = push_body(p, i, &g, &id);
+        let body = push_body(p, i, &id);
         let http = h.http.clone();
         async move {
             http.post(format!("http://{addr}/push"))
@@ -624,10 +626,11 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
                 .status()
         }
     };
-    assert!(push(&base, 0).await.is_success());
-    assert!(push(&first, 1).await.is_success());
+    assert!(push(&base, 0).await.is_success(), "the genesis commit");
+    assert!(push(&base, 1).await.is_success());
+    assert!(push(&first, 2).await.is_success());
     assert_eq!(
-        push(&rival, 1).await,
+        push(&rival, 2).await,
         reqwest::StatusCode::CONFLICT,
         "the second commit at the position is refused as the tip"
     );

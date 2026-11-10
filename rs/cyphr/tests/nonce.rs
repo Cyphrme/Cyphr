@@ -68,6 +68,19 @@ fn key_of(k: &Kp) -> Key {
     Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
 }
 
+/// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
+/// genesis key's `key/create` of itself, the `principal/create` and the
+/// `commit/create`), signed by its genesis key `k`.
+fn genesis_of(mut p: Principal, k: &Kp) -> Principal {
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb),
+        1,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
 fn b64(t: &coz::Thumbprint) -> String {
     Base64UrlUnpadded::encode_string(t.as_bytes())
 }
@@ -159,7 +172,7 @@ fn key_create(signer: &Kp, id: &Kp, now: i64) -> Signed {
 /// `PR = H(SR || CR)` and `SR == AR == KR`.
 fn base() -> (Principal, Kp, Kp) {
     let (g, a) = (pool_key("golden"), pool_key("key_a"));
-    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
     commit_one(&mut p, &g, key_create(&g, &a, T), Some(key_of(&a)), T).expect("add key_a");
     (p, g, a)
 }
@@ -719,7 +732,7 @@ fn dead_principal_roots_keep_the_nonces_that_remain() {
     for (way, die) in ways {
         for (kt, at) in [(true, false), (false, true), (true, true)] {
             let g = pool_key("golden");
-            let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+            let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
             let mut now = T;
             if kt {
                 commit_one(&mut p, &g, create(Level::Kt, &g, &n_kt, now), None, now)

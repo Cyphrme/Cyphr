@@ -127,6 +127,14 @@ pub enum Error {
     #[error("empty commit")]
     EmptyCommit,
 
+    /// The genesis is incomplete: a commit on a principal not yet created
+    /// lacks its `principal/create` (a commit chain begins with the
+    /// genesis commit, SPEC 5.1 steps 3-4), or a `principal/create` comes
+    /// while a genesis key has no `key/create` (SPEC 5.1 step 1, 7.7
+    /// Example 1).
+    #[error("genesis incomplete")]
+    GenesisIncomplete,
+
     /// `commit` field appears on a non-terminal coz in the commit array.
     ///
     /// Per SPEC §4.4, `commit` MUST only appear on the last coz.

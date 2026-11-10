@@ -284,7 +284,9 @@ fn test_inspect_genesis() {
     assert_eq!(keys.len(), 1);
 }
 
-/// Backs: inspect after a key add shows the new KS, one commit and two active keys.
+/// Backs: inspect after a key add shows the PG established (the CLI commits the
+/// genesis before its first key add; a single-key PG is the key's thumbprint),
+/// the new KS, two commits (genesis, add) and two active keys.
 #[test]
 fn test_inspect_after_transactions() {
     let cli = CliTest::new();
@@ -302,14 +304,15 @@ fn test_inspect_after_transactions() {
     // Inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // PG is still <none> until a principal/create coz establishes it
-    assert_eq!(inspect["pg"].as_str().unwrap(), "<none>");
+    // The genesis commit's principal/create established the PG; for a
+    // single-key genesis it is that key's thumbprint.
+    assert_eq!(inspect["pg"].as_str().unwrap(), genesis_tmb);
     assert_ne!(
         inspect["ks"].as_str().unwrap(),
         genesis_tmb,
         "KS should change after key add"
     );
-    assert_eq!(inspect["commit_count"], 1);
+    assert_eq!(inspect["commit_count"], 2, "genesis commit + key add");
 
     let keys = inspect["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 2, "should have 2 keys after add");
@@ -396,23 +399,23 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
     let identity_arg = format!("--identity={pr}");
     let signer_arg = format!("--signer={key1_tmb}");
 
-    // Commit #1 on top of the fresh multi-key genesis -- the exact F40
-    // scenario ("a second commit is signed on top of it", counting
-    // genesis itself as the first "commit").
+    // The first key add on top of the fresh multi-key genesis -- the exact
+    // F40 scenario. The CLI first commits the genesis commit (both genesis
+    // keys' key/creates + principal/create), then the add.
     let add1 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key3_tmb = add1["added_key"].as_str().unwrap().to_string();
 
-    // Commit #2: reload (replaying the one stored commit) and resubmit.
+    // Second add: reload (replaying the stored commits) and resubmit.
     let add2 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key4_tmb = add2["added_key"].as_str().unwrap().to_string();
 
-    // Commit #3, for good measure -- proves this isn't merely "the second
+    // Third add, for good measure -- proves this isn't merely "the second
     // commit specifically" but genuinely fixed for the general case.
     let add3 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key5_tmb = add3["added_key"].as_str().unwrap().to_string();
 
     let inspect = cli.run_json(&["inspect", &identity_arg]);
-    assert_eq!(inspect["commit_count"], 3);
+    assert_eq!(inspect["commit_count"], 4, "genesis commit + 3 adds");
     let active_keys: Vec<_> = inspect["active_keys"]
         .as_array()
         .unwrap()
@@ -490,13 +493,15 @@ fn test_full_workflow() {
     let key_list = cli.run_json(&["key", "list", &identity_arg]);
     assert_eq!(key_list["active_keys"].as_array().unwrap().len(), 2);
 
-    // 7. Check tx list after coz (mutation + commit/create per commit)
+    // 7. Check tx list after coz: the genesis commit (key/create of the
+    // genesis key, principal/create, commit/create) then the add (mutation +
+    // commit/create)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-    assert_eq!(tx_list["transaction_count"], 2);
+    assert_eq!(tx_list["transaction_count"], 5);
 
-    // 8. Check inspect after coz
+    // 8. Check inspect after coz (genesis commit + add)
     let inspect = cli.run_json(&["inspect", &identity_arg]);
-    assert_eq!(inspect["commit_count"], 1);
+    assert_eq!(inspect["commit_count"], 2);
     assert_eq!(inspect["active_keys"].as_array().unwrap().len(), 2);
 
     // 9. Export
@@ -521,9 +526,10 @@ fn test_full_workflow() {
         "genesis key should be in final active keys"
     );
 
-    // 12. Check tx list shows 4 cozies (2 commits × 2 each: mutation + commit/create)
+    // 12. Check tx list shows 7 cozies: the genesis commit's 3, then 2 commits
+    // × 2 each (mutation + commit/create)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-    assert_eq!(tx_list["transaction_count"], 4);
+    assert_eq!(tx_list["transaction_count"], 7);
 }
 
 /// Backs: tx verify accepts a real commit chain (PR/arrow consistency, SPEC 4).
@@ -537,7 +543,7 @@ fn test_tx_verify_after_transactions() {
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
 
-    // Add a key (creates first coz)
+    // Add a key (the CLI commits the genesis commit first, then the add)
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Verify coz chain - THIS IS THE CRITICAL TEST
@@ -545,8 +551,9 @@ fn test_tx_verify_after_transactions() {
     let verify = cli.run_json(&["tx", "verify", &identity_arg]);
 
     assert_eq!(verify["status"], "OK", "tx verify should succeed");
-    assert_eq!(verify["commits_verified"], 1);
-    assert_eq!(verify["transactions_verified"], 2);
+    // genesis commit (3 cozies) + add (2 cozies)
+    assert_eq!(verify["commits_verified"], 2);
+    assert_eq!(verify["transactions_verified"], 5);
 }
 
 /// Backs: tx verify fails loudly when stored commit data is unreadable, never reporting a false OK.
@@ -569,7 +576,7 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
     let verify_before = cli.run_json(&["tx", "verify", &identity_arg]);
     assert_eq!(verify_before["status"], "OK");
-    assert_eq!(verify_before["commits_verified"], 1);
+    assert_eq!(verify_before["commits_verified"], 2, "genesis commit + add");
 
     // Simulate real data loss: wipe the blob store contents while
     // leaving the index's references to them intact, so retrieving this

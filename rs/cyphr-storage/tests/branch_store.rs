@@ -108,18 +108,20 @@ fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
     );
 }
 
+fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
+}
+
 /// Wire blobs of commit `i` of `p`: key-introducing cozies carry their key,
-/// and commit 0's last blob carries the genesis key so the principal's
-/// genesis is recoverable from its first commit.
-fn blobs(p: &cyphr::Principal, genesis: &Kp, i: usize) -> Vec<Vec<u8>> {
+/// so the principal's genesis is recoverable from its genesis commit's
+/// `key/create`s (SPEC 5.1).
+fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
     let entry = &cyphr_storage::export_commits(p).expect("export")[i];
     let mut key_idx = 0;
-    let last = entry.cozies.len() - 1;
     entry
         .cozies
         .iter()
-        .enumerate()
-        .map(|(n, c)| {
+        .map(|c| {
             let mut c = c.clone();
             let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
             if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
@@ -127,21 +129,25 @@ fn blobs(p: &cyphr::Principal, genesis: &Kp, i: usize) -> Vec<Vec<u8>> {
                 c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
                 key_idx += 1;
             }
-            if i == 0 && n == last {
-                c["key"] = serde_json::json!({
-                    "alg": genesis.alg,
-                    "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-                    "tmb": genesis.tmb.to_b64(),
-                });
-            }
             serde_json::to_vec(&c).expect("blob")
         })
         .collect()
 }
 
-/// A principal with one shared commit (position 0) and any number of
-/// rival commits at position 1, every one signed by `golden`, a key active
-/// at their common `pre` (the Principal Root after commit 0).
+/// The principal with genesis keys `keys` (the first signs), after its
+/// genesis commit at `now` (SPEC 5.1).
+fn genesis_of(keys: &[&Kp], now: i64) -> cyphr::Principal {
+    let mut p =
+        cyphr::Principal::explicit(keys.iter().map(|k| key_of(k)).collect()).expect("genesis");
+    p.commit_genesis(&signer_of(keys[0]), now, "cyphr.me")
+        .expect("genesis commit");
+    p
+}
+
+/// A principal with one shared commit (position 0, its genesis commit, in
+/// which `golden` creates itself and `key_a`) and any number of rival
+/// commits at position 1, every one signed by `golden`, a key active at
+/// their common `pre` (the Principal Root after commit 0).
 struct Fork {
     genesis: Genesis,
     id: String,
@@ -159,12 +165,12 @@ impl Fork {
     fn new(rivals: usize) -> Self {
         let pool = load_pool();
         let golden = kp(&pool, "golden");
-        let genesis = Genesis::Implicit(key_of(&golden));
-        let mut base = cyphr::Principal::implicit(key_of(&golden)).expect("genesis");
-        let id = base.pr_tagged().expect("genesis id");
-        create_key(&mut base, &golden, &kp(&pool, "key_a"), NOW);
+        let key_a = kp(&pool, "key_a");
+        let genesis = Genesis::Explicit(vec![key_of(&golden), key_of(&key_a)]);
+        let id = cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis id");
+        let base = genesis_of(&[&golden, &key_a], NOW);
         let pre = base.pr_tagged().expect("pr after commit 0");
-        let first = blobs(&base, &golden, 0);
+        let first = blobs(&base, 0);
         let mut fork = Self {
             genesis,
             id,
@@ -192,15 +198,14 @@ impl Fork {
     /// One more valid commit at position 1; `salt` makes it distinct.
     fn add_rival(&mut self, salt: i64) {
         let p = self.rival_state(salt);
-        self.rivals.push(blobs(&p, &self.golden, 1));
+        self.rivals.push(blobs(&p, 1));
     }
 
-    /// A second, divergent commit 0 from the same genesis key.
+    /// A second, divergent genesis commit of the same principal (the same
+    /// genesis keys, so the same PG, at another time).
     fn second_genesis(&self) -> Vec<Vec<u8>> {
-        let pool = load_pool();
-        let mut p = cyphr::Principal::implicit(key_of(&self.golden)).expect("genesis");
-        create_key(&mut p, &self.golden, &kp(&pool, "key_b"), NOW + 7);
-        blobs(&p, &self.golden, 0)
+        let key_a = kp(&load_pool(), "key_a");
+        blobs(&genesis_of(&[&self.golden, &key_a], NOW + 7), 0)
     }
 
     async fn submit(
@@ -365,7 +370,7 @@ fn revoked() -> Revoked {
     );
     let mut rival = f.base.clone();
     create_key(&mut rival, &f.golden, &kp(&pool, "key_b"), NOW + 11);
-    let theft = blobs(&rival, &f.golden, 1);
+    let theft = blobs(&rival, 1);
     Revoked {
         f,
         key_a,
@@ -384,7 +389,7 @@ fn after_revocation(r: &Revoked) -> Vec<Vec<u8>> {
     let pool = load_pool();
     let mut q = r.canonical.clone();
     create_key(&mut q, &r.key_a, &kp(&pool, "bob"), NOW + 12);
-    let mut bundle = blobs(&q, &r.f.golden, 2);
+    let mut bundle = blobs(&q, 2);
     let mut coz_v: serde_json::Value = serde_json::from_slice(&bundle[0]).expect("tx coz");
     coz_v["pay"]["tmb"] = serde_json::json!(r.f.golden.tmb.to_b64());
     coz_v["pay"]["alg"] = serde_json::json!(r.f.golden.alg);
@@ -411,7 +416,7 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
     let (e, _) = {
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
-        r.f.submit(&e, &blobs(&r.canonical, &r.f.golden, 1))
+        r.f.submit(&e, &blobs(&r.canonical, 1))
             .await
             .expect("revocation");
         (e, ())
@@ -423,12 +428,12 @@ async fn revoked_key_bundle_is_refused_and_stores_nothing() {
     let pool = load_pool();
     let mut ok = r.canonical.clone();
     create_key(&mut ok, &r.key_a, &kp(&pool, "bob"), NOW + 12);
-    let ok_blobs = blobs(&ok, &r.f.golden, 2);
+    let ok_blobs = blobs(&ok, 2);
     let control = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     r.f.submit(&control, &r.f.first)
         .await
         .expect("control commit 0");
-    r.f.submit(&control, &blobs(&r.canonical, &r.f.golden, 1))
+    r.f.submit(&control, &blobs(&r.canonical, 1))
         .await
         .expect("control revocation");
     r.f.submit(&control, &ok_blobs)
@@ -569,14 +574,14 @@ mod retained {
         let names = ["key_b", "alice", "bob", "diana_es384", "eve_ed25519"];
         for (i, name) in names.iter().take(n - 1).enumerate() {
             create_key(&mut p, &f.golden, &kp(&pool, name), NOW + 100 + i as i64);
-            f.submit(&e, &blobs(&p, &f.golden, i + 1))
+            f.submit(&e, &blobs(&p, i + 1))
                 .await
                 .expect("canonical commit");
             states.push(p.clone());
         }
         let mut r = f.base.clone();
         create_key(&mut r, &f.golden, &kp(&pool, "eve_ed25519"), NOW + 900);
-        let rival = blobs(&r, &f.golden, 1);
+        let rival = blobs(&r, 1);
         (f, e, rival, states)
     }
 
@@ -596,10 +601,9 @@ mod retained {
         // Unknown signer: carol never held a key of this principal.
         let pool = load_pool();
         let carol = kp(&pool, "carol");
-        let mut stranger = cyphr::Principal::implicit(key_of(&carol)).expect("genesis");
-        create_key(&mut stranger, &carol, &kp(&pool, "bob"), NOW + 5);
+        let stranger = genesis_of(&[&carol, &kp(&pool, "bob")], NOW + 5);
         let before = e.retention_replays();
-        assert!(f.submit(&e, &blobs(&stranger, &carol, 0)).await.is_err());
+        assert!(f.submit(&e, &blobs(&stranger, 0)).await.is_err());
         assert_eq!(e.retention_replays(), before, "unknown signer was replayed");
 
         // Failed signature by a real key.
@@ -631,7 +635,7 @@ mod retained {
         let mut late = states[3].clone();
         create_key(&mut late, &alice, &kp(&pool, "carol"), NOW + 950);
         let trials = e.retention_trials();
-        assert!(f.submit(&e, &blobs(&late, &f.golden, 4)).await.is_err());
+        assert!(f.submit(&e, &blobs(&late, 4)).await.is_err());
         assert_eq!(
             e.retention_trials() - trials,
             2,
@@ -706,7 +710,7 @@ mod retained {
         fn rival_by(&self, signer: &Kp, salt: i64) -> Vec<Vec<u8>> {
             let mut p = self.base.clone();
             create_key(&mut p, signer, &fresh_kp(), NOW + 1 + salt);
-            blobs(&p, &self.golden, 1)
+            blobs(&p, 1)
         }
     }
 
@@ -792,13 +796,13 @@ mod retained {
         const SIGNERS: usize = 9;
         let golden = kp(&load_pool(), "golden");
         let signers: Vec<Kp> = (0..SIGNERS).map(|_| fresh_kp()).collect();
-        let mut base = cyphr::Principal::implicit(key_of(&golden)).expect("genesis");
-        let id = base.pr_tagged().expect("id");
+        let mut base = genesis_of(&[&golden], NOW);
+        let genesis = Genesis::Implicit(key_of(&golden));
+        let id = cyphr_storage::engine::genesis_principal_id(&genesis).expect("id");
         for (i, k) in signers.iter().enumerate() {
-            create_key(&mut base, &golden, k, NOW + i as i64);
+            create_key(&mut base, &golden, k, NOW + 1 + i as i64);
         }
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-        let genesis = Genesis::Implicit(key_of(&golden));
         let submit = |b: Vec<Vec<u8>>| {
             let (e, id, genesis) = (&e, id.clone(), genesis.clone());
             async move {
@@ -806,15 +810,14 @@ mod retained {
                 e.submit_commit(&id, Some(genesis), &refs).await.map(|_| ())
             }
         };
-        for i in 0..SIGNERS {
-            submit(blobs(&base, &golden, i))
-                .await
-                .expect("shared prefix");
+        // The genesis commit, then one commit per signer.
+        for i in 0..=SIGNERS {
+            submit(blobs(&base, i)).await.expect("shared prefix");
         }
         let rival = |signer: &Kp, salt: i64| {
             let mut p = base.clone();
             create_key(&mut p, signer, &fresh_kp(), NOW + 1000 + salt);
-            blobs(&p, &golden, SIGNERS)
+            blobs(&p, SIGNERS + 1)
         };
         // Signer 0's first rival takes the position; signers 1..=8 then fill
         // all sixteen slots.
@@ -996,7 +999,7 @@ mod retained {
         let r = revoked();
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
-        r.f.submit(&e, &blobs(&r.canonical, &r.f.golden, 1))
+        r.f.submit(&e, &blobs(&r.canonical, 1))
             .await
             .expect("revocation");
         let tip = e.get_tip(&r.f.id).await.expect("tip").expect("stored");
@@ -1032,7 +1035,7 @@ mod retained {
         let r = revoked();
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         r.f.submit(&e, &r.f.first).await.expect("commit 0");
-        r.f.submit(&e, &blobs(&r.canonical, &r.f.golden, 1))
+        r.f.submit(&e, &blobs(&r.canonical, 1))
             .await
             .expect("revocation");
         let listed = branches(&e, &r.f.id).await;

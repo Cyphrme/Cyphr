@@ -26,6 +26,7 @@ fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<K
 
     let mut keys = vec![make_test_key(0x01), make_test_key_ed25519(0x02)];
     let mut principal = Principal::explicit(keys.clone()).unwrap();
+    principal.genesis_test().unwrap();
     let signer = keys[0].tmb().clone();
 
     for i in 0..n_commits {
@@ -81,7 +82,10 @@ fn two_step_verification_accepts_every_commit_every_algorithm() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 8, "2 algorithms x 4 commits must all be checked");
+    assert_eq!(
+        checked, 10,
+        "2 algorithms x (genesis + 4) commits must all be checked"
+    );
 }
 
 /// SPEC 12.1 / EML: a TR lacking the algorithm being verified is not
@@ -412,10 +416,10 @@ fn proof_requests_out_of_range_are_refused() {
     let (principal, _keys) = build_principal_with_commits(3);
     let alg = principal.hash_alg();
 
-    assert!(principal.inclusion_proof(alg, 3).is_err());
+    assert!(principal.inclusion_proof(alg, 4).is_err());
     assert!(principal.inclusion_proof(alg, 999).is_err());
     assert!(principal.consistency_proof(alg, 0).is_err());
-    assert!(principal.consistency_proof(alg, 3).is_err());
+    assert!(principal.consistency_proof(alg, 4).is_err());
     // SHA-384 was never introduced (all test keys use ES256/SHA-256).
     assert!(principal.inclusion_proof(HashAlg::Sha384, 0).is_err());
     assert!(principal.consistency_proof(HashAlg::Sha384, 1).is_err());

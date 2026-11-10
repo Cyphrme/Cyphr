@@ -299,101 +299,8 @@ async fn login_status(state: &Arc<AppState>, pool: &Pool, signer: &str, pid: &st
 
 // ========================================================================
 // Push helpers (a follow-up commit signed by a named key, so a *dead* signing
-// key can be exercised at the push gate). These mirror tests/route_protection.rs
-// -- a separate integration crate that cannot be imported; the common harness's
-// `sign_key_create_commit` does not return the CommitEntry a replay needs, so
-// the entry-returning variant is reproduced here.
+// key can be exercised at the push gate).
 // ========================================================================
-
-/// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name`. Returns the new commit's raw coz blobs (wire-ready) plus its
-/// `CommitEntry`, the latter so a caller can replay it onto a FRESH principal
-/// (`Principal::clone()` shares the durable log rather than deep-copying, so
-/// two clones both appending "the next commit" collide on one leaf).
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> (Vec<Vec<u8>>, cyphr_storage::CommitEntry) {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key::new(
-        new_key.alg.clone(),
-        coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-    )
-    .expect("key binds its tmb")
-    .with_first_seen(now);
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    let blobs = new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect();
-
-    (blobs, new_commit.clone())
-}
 
 /// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
 fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
@@ -404,23 +311,9 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
     .to_string()
 }
 
-/// The genesis `cyphr::Key` for pool key `name` (first_seen 0, like a fixture
-/// genesis).
-fn genesis_key(pool: &Pool, name: &str) -> cyphr::Key {
-    let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key::new(
-        k.alg.clone(),
-        k.compute_tmb().expect("genesis tmb"),
-        Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-    )
-    .expect("key binds its tmb")
-}
-
-/// Bootstrap `pid` over real HTTP with an implicit `genesis_name` genesis that
-/// adds `added_name`, and return the genesis key + entry so a follow-up push
-/// can chain onto it. An HTTP-bootstrapped principal is the only valid target
-/// for a genesis-less follow-up push (`resolve_genesis` re-derives genesis
-/// from the first stored commit's embedded key).
+/// Bootstrap `pid` over real HTTP with its genesis commit (SPEC 5.1), in
+/// which `genesis_name` creates itself and `added_name`. `pid` must be that
+/// genesis's PG (`common::genesis_push_id`).
 async fn bootstrap_via_push(
     state: &Arc<AppState>,
     pool: &Pool,
@@ -428,54 +321,35 @@ async fn bootstrap_via_push(
     genesis_name: &str,
     added_name: &str,
     now: i64,
-) -> (cyphr::Key, cyphr_storage::CommitEntry) {
-    let gkey = genesis_key(pool, genesis_name);
-    let principal = cyphr::Principal::implicit(gkey.clone()).expect("implicit genesis");
-    let (mut blobs, entry) = sign_key_create_commit(principal, pool, genesis_name, added_name, now);
-
-    // The closing cozy of a never-before-seen principal's genesis carries the
-    // embedded genesis key `resolve_genesis` needs.
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": gkey.alg(),
-            "pub": pool.get(genesis_name).unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    let (status, json) =
-        common::post_json(build_router(state.clone()), "/push", push_body(pid, &blobs)).await;
+) {
+    let body = common::build_genesis_push_body_with(pool, genesis_name, added_name, pid, now);
+    let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
         "genesis bootstrap push for {pid} must succeed: {json:?}"
     );
-    (gkey, entry)
 }
 
-/// Build a genesis-less follow-up push body for the existing `pid`: replay the
-/// genesis commit onto a fresh principal, then a fresh "add `added_name`"
-/// commit signed by `signer_name`. The signing key `signer_name` is the one
-/// the push gate must death-check.
+/// Build a follow-up push body for the existing `pid` (bootstrapped by
+/// [`bootstrap_via_push`] with `genesis_name` + `genesis_added` at
+/// `genesis_now`): a fresh "add `added_name`" commit signed by
+/// `signer_name`, chained onto the genesis commit. The signing key
+/// `signer_name` is the one the push gate must death-check.
+#[allow(clippy::too_many_arguments)]
 fn followup_push_body(
     pool: &Pool,
     pid: &str,
-    genesis_key: cyphr::Key,
-    genesis_entry: &cyphr_storage::CommitEntry,
+    genesis_name: &str,
+    genesis_added: &str,
+    genesis_now: i64,
     signer_name: &str,
     added_name: &str,
     now: i64,
 ) -> String {
-    let replayed = cyphr_storage::load_principal_from_commits(
-        cyphr_storage::Genesis::Implicit(genesis_key),
-        std::slice::from_ref(genesis_entry),
-    )
-    .expect("replay the genesis commit onto a fresh principal");
-    let (blobs, _entry) = sign_key_create_commit(replayed, pool, signer_name, added_name, now);
+    let principal =
+        common::genesis_pushed_principal(pool, genesis_name, genesis_added, genesis_now);
+    let blobs = common::sign_key_create_commit(principal, pool, signer_name, added_name, now);
     push_body(pid, &blobs)
 }
 
@@ -662,8 +536,7 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
     // Attack: try to overwrite index[V] -> attacker (alice) pub via a fresh
     // attacker principal's unauthenticated genesis push with a swapped sidecar
     // pub. `alice` is a distinct key whose private half the attacker holds.
-    let body =
-        poison_genesis_push_body(&pool, &tmb_b64(&pool, "bob"), "bob", "key_a", "alice", RVK);
+    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK);
     let (pstatus, pjson) = post_push(&state, body).await;
     assert!(
         pstatus.is_client_error(),
@@ -761,24 +634,80 @@ async fn rejects_wrong_typ() {
     assert_rejected(status, &json, "typ is not key/revoke");
 }
 
-/// A revoke for a `tmb` this server never indexed is rejected by the PRESENCE
-/// fence: the global key index has no entry for it, so the revoke is refused
-/// even with a valid disclosed self-signed key (the head-ratified conservative
-/// bound -- unknown keys are refused). `alice` is a valid pool key never pushed
-/// to this server, self-signing and disclosing its own revoke.
-///
-/// Behavior: green on both servers (both refuse an unindexed `tmb`); the
-/// reworked server refuses at the presence fence, the merged server at the
-/// key-index miss.
+/// The operator's quota bounds revokes of keys nobody here holds, never the
+/// revoke of a held key (SPEC 6.4): with `[limits] max_dead_keys = 1` and the
+/// set filled by an unseen key's revoke, the self-revoke of a key a pushed
+/// principal holds is still recorded and the key is dead, while a second
+/// unseen key's revoke is refused `507` and stays alive. Turns red if the
+/// ceiling denies the held key's emergency revoke, or does not bound unseen
+/// keys. End-to-end: yes (`/push`, `/revoke` over HTTP).
 #[tokio::test]
-async fn rejects_unknown_tmb() {
-    let (state, _dir) = fresh_keyed_state();
+async fn the_ceiling_never_refuses_a_held_keys_revoke() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let mut config = ServerConfig {
+        data_dir: dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: Some(AUDIENCE.to_string()),
+        ..Default::default()
+    };
+    config.limits.max_dead_keys = 1;
+    let state = Arc::new(AppState::new(config).expect("open keyed AppState"));
     let pool = common::load_pool();
     bootstrap_golden_key_a(&state, &pool).await;
+    let tmb = |name: &str| {
+        pool.get(name)
+            .expect("pool key")
+            .compute_tmb()
+            .expect("tmb")
+    };
 
-    let coz = self_revoke_coz(&pool, "alice", serde_json::json!(RVK));
-    let (status, json) = post_revoke(&state, coz).await;
-    assert_rejected(status, &json, "tmb never indexed by this server");
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "alice", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "an unseen key fills the set: {status} {json:?}"
+    );
+
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "key_a", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "a held key's revoke is recorded past the ceiling: {status} {json:?}"
+    );
+    assert!(
+        state
+            .observations
+            .is_dead(&tmb("key_a"))
+            .await
+            .expect("death set"),
+        "the held key is dead"
+    );
+
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "bob", serde_json::json!(RVK)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a second unseen key past the ceiling is refused: {json:?}"
+    );
+    assert!(
+        !state
+            .observations
+            .is_dead(&tmb("bob"))
+            .await
+            .expect("death set"),
+        "the refused revoke recorded nothing"
+    );
 }
 
 // ========================================================================
@@ -946,7 +875,7 @@ async fn revoked_key_refused_at_push() {
     let pool = common::load_pool();
     let pid = common::golden_principal_id(&pool);
     let pid = pid.as_str();
-    let (gkey, gentry) = bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
+    bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (rstatus, rjson) = post_revoke(&state, coz).await;
@@ -957,7 +886,16 @@ async fn revoked_key_refused_at_push() {
     );
 
     // A follow-up commit signed by the now-dead key_a.
-    let body = followup_push_body(&pool, pid, gkey, &gentry, "key_a", "carol", RVK + 100);
+    let body = followup_push_body(
+        &pool,
+        pid,
+        "golden",
+        "key_a",
+        RVK,
+        "key_a",
+        "carol",
+        RVK + 100,
+    );
     let (status, json) = post_push(&state, body).await;
     assert!(
         status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
@@ -986,7 +924,7 @@ async fn sibling_key_still_pushes_after_revoke() {
     let pool = common::load_pool();
     let pid = common::golden_principal_id(&pool);
     let pid = pid.as_str();
-    let (gkey, gentry) = bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
+    bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (rstatus, rjson) = post_revoke(&state, coz).await;
@@ -996,7 +934,16 @@ async fn sibling_key_still_pushes_after_revoke() {
     );
 
     // A follow-up commit signed by the still-live golden.
-    let body = followup_push_body(&pool, pid, gkey, &gentry, "golden", "carol", RVK + 100);
+    let body = followup_push_body(
+        &pool,
+        pid,
+        "golden",
+        "key_a",
+        RVK,
+        "golden",
+        "carol",
+        RVK + 100,
+    );
     let (status, json) = post_push(&state, body).await;
     assert_eq!(
         status,
@@ -1025,8 +972,8 @@ async fn sibling_key_still_pushes_after_revoke() {
 async fn revoked_key_dead_globally_across_principals() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid1 = common::implicit_principal_id(&pool, "golden");
-    let pid2 = common::implicit_principal_id(&pool, "bob");
+    let pid1 = common::genesis_push_id(&pool, "golden", "key_a");
+    let pid2 = common::genesis_push_id(&pool, "bob", "key_a");
     let (pid1, pid2) = (pid1.as_str(), pid2.as_str());
 
     // Two independent principals, distinct genesis keys, both holding key_a.
@@ -1267,123 +1214,58 @@ async fn poison_index_directly(
 /// resolve to the attacker's key. The attacker holds `attacker_key_name`'s
 /// private key and would sign the forged revoke with it.
 ///
-/// The commit is built honestly through `Principal` (a forged `Key` cannot be
-/// constructed: `tmb` is bound to `pub`), then the sidecar is rewritten on the
-/// wire, which is the only place the attack remains expressible. Only the
-/// server's key-binding check stands between this body and the index.
+/// The genesis commit is built honestly through `Principal` (a forged `Key`
+/// cannot be constructed: `tmb` is bound to `pub`): `genesis_name` creates
+/// itself and the victim key. Then the victim `key/create`'s sidecar is
+/// rewritten on the wire, which is the only place the attack remains
+/// expressible. The push names the genesis's own PG, so only the server's
+/// key-binding check stands between this body and the index.
 fn poison_genesis_push_body(
     pool: &Pool,
-    attacker_pid: &str,
     genesis_name: &str,
     victim_key_name: &str,
     attacker_key_name: &str,
     now: i64,
 ) -> String {
-    let victim = pool.get(victim_key_name).expect("victim key in pool");
-    let declared_tmb_b64 = victim.compute_tmb_b64().expect("victim tmb");
-    let declared_tmb_b64 = declared_tmb_b64.as_str();
-    let genesis = pool.get(genesis_name).expect("genesis key in pool");
+    let attacker_pid = common::genesis_push_id(pool, genesis_name, victim_key_name);
+    let victim_tmb = tmb_b64(pool, victim_key_name);
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
+    };
+    let mut principal = cyphr::Principal::explicit(vec![key(genesis_name), key(victim_key_name)])
+        .expect("explicit genesis");
+    let signer = pool
+        .get(genesis_name)
+        .expect("genesis key in pool")
+        .software_signer()
+        .expect("genesis signer");
+    let cozies = principal
+        .commit_genesis(&signer, now, "cyphr.me")
+        .expect("the honest genesis commits before the sidecar is swapped");
 
-    let genesis_tmb_b64 = genesis.compute_tmb_b64().expect("genesis tmb");
-    let genesis_prv = Base64UrlUnpadded::decode_vec(genesis.prv.as_ref().expect("genesis prv"))
-        .expect("genesis prv b64");
-    let genesis_pub = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub b64");
-
-    // A key/create whose DECLARED new-key id is the victim's thumbprint.
-    let pay_value = serde_json::json!({
-        "alg": genesis.alg,
-        "id": declared_tmb_b64,
-        "now": now,
-        "tmb": genesis_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &genesis.alg, &genesis_prv, &genesis_pub)
-        .expect("signing supported");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &genesis.alg).expect("czd for this algorithm");
-
-    // The POISONED key: declared thumbprint = the victim's V, but the actual
+    // The POISONED sidecar: declared thumbprint = the victim's V, but the
     // public key is the attacker's own (whose private key signs the revoke).
-    let victim_pub = Base64UrlUnpadded::decode_vec(&victim.pub_key).expect("victim pub b64");
-    let honest_victim_key = cyphr::Key::new(
-        victim.alg.clone(),
-        victim.compute_tmb().expect("victim tmb"),
-        victim_pub,
-    )
-    .expect("the victim key binds its tmb")
-    .with_first_seen(now);
-
-    let genesis_key = cyphr::Key::new(
-        genesis.alg.clone(),
-        genesis.compute_tmb().expect("genesis tmb"),
-        genesis_pub.clone(),
-    )
-    .expect("key binds its tmb");
-    let mut principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(honest_victim_key))
-        .expect("the honest key/create verifies before the sidecar is swapped");
-    let genesis_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&genesis_tmb_b64).expect("genesis tmb base64"),
-    );
-    scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(
-                &genesis.alg,
-                &genesis_prv,
-                &genesis_pub,
-                &genesis_tmb,
-            ),
-            now,
-            "cyphr.me",
-        )
-        .expect("poison commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the poison commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    // Embed the (swapped-pub) key block on the key-introducing cozy, then the
-    // genesis key on the closing cozy -- the never-before-seen-principal wire
-    // contract `resolve_genesis` requires.
-    let mut key_idx = 0;
-    let mut blobs: Vec<Vec<u8>> = new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": attacker.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
+    let mut swapped = 0;
+    let blobs: Vec<Vec<u8>> = cozies
+        .into_iter()
+        .map(|mut coz| {
+            if coz["key"]["tmb"].as_str() == Some(victim_tmb.as_str()) {
+                coz["key"]["pub"] = serde_json::json!(attacker.pub_key);
+                swapped += 1;
             }
             serde_json::to_vec(&coz).expect("cozy serializes")
         })
         .collect();
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": genesis_key.alg(),
-            "pub": genesis.pub_key,
-            "tmb": genesis_tmb_b64,
-        }),
+    assert_eq!(
+        swapped, 1,
+        "exactly the victim key/create's sidecar is swapped"
     );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
 
-    push_body(attacker_pid, &blobs)
+    push_body(&attacker_pid, &blobs)
 }
 
 /// The BLOCKING R1 exploit, mounted end-to-end: an unauthenticated attacker
@@ -1425,8 +1307,7 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
     // `pub` is swapped. `alice` is a distinct key whose private half the
     // attacker holds (to sign the forge). The attacker principal's id is its
     // genesis-derived id, so the refusal below is for the swapped sidecar.
-    let body =
-        poison_genesis_push_body(&pool, &tmb_b64(&pool, "bob"), "bob", "key_a", "alice", RVK);
+    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK);
     let (pstatus, pjson) = post_push(&state, body).await;
     assert!(
         pstatus.is_client_error(),

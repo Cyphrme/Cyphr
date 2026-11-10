@@ -45,6 +45,19 @@ fn domain_key(s: &Signer) -> Key {
         .with_first_seen(1_700_000_000)
 }
 
+/// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
+/// genesis key's `key/create` of itself, the `principal/create` and the
+/// `commit/create`), signed by its genesis key `k`.
+fn genesis_of<S: cyphr::eml::Storage>(mut p: Principal<S>, k: &Signer) -> Principal<S> {
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
+        1,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
 type Wire = Vec<(Vec<u8>, Vec<u8>, coz::Czd)>;
 
 fn delete_pay(signer: &Signer, target: &Signer, now: i64) -> (Vec<u8>, Vec<u8>, coz::Czd) {
@@ -103,7 +116,12 @@ fn replay(p: &mut Principal, wire: &Wire) -> Result<String, Error> {
 #[test]
 fn fork_branches_verify_from_fresh_ancestors() {
     let (g, a) = (signer("golden"), signer("key_a"));
-    let fresh = || Principal::explicit(vec![domain_key(&g), domain_key(&a)]).expect("ancestor");
+    let fresh = || {
+        genesis_of(
+            Principal::explicit(vec![domain_key(&g), domain_key(&a)]).expect("ancestor"),
+            &g,
+        )
+    };
 
     // Branch A: golden deletes key_a. Branch B: key_a deletes golden. Same pre.
     let wire_a = delete_commit(&mut fresh(), &g, &a, 1_700_000_100).expect("branch A builds");
@@ -131,8 +149,10 @@ fn fork_branches_verify_from_fresh_ancestors() {
 #[test]
 fn fork_branches_from_cloned_ancestor() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
-    let ancestor =
-        Principal::explicit(vec![domain_key(&golden), domain_key(&key_a)]).expect("ancestor");
+    let ancestor = genesis_of(
+        Principal::explicit(vec![domain_key(&golden), domain_key(&key_a)]).expect("ancestor"),
+        &golden,
+    );
 
     let mut a = ancestor.clone();
     let ra = delete_commit(&mut a, &golden, &key_a, 1_700_000_100);
@@ -197,7 +217,7 @@ mod clone_independence {
             let targets: Vec<Signer> = order[..take].iter().map(|n| signer(n)).collect();
             let mut keys = vec![domain_key(&golden), domain_key(&key_a)];
             keys.extend(["alice", "bob"].iter().map(|n| domain_key(&signer(n))));
-            let ancestor = Principal::explicit(keys).expect("ancestor");
+            let ancestor = genesis_of(Principal::explicit(keys).expect("ancestor"), &golden);
 
             let mut a = ancestor.clone();
             let mut b = ancestor.clone();
@@ -209,7 +229,8 @@ mod clone_independence {
                 delete_commit(&mut a, &golden, t, 1_700_000_100 + i as i64)
                     .expect("A's commit sequence is valid");
             }
-            prop_assert_eq!(a.commits().count(), take);
+            // The genesis commit precedes the sequence on every branch.
+            prop_assert_eq!(a.commits().count(), take + 1);
 
             // B and the ancestor itself are untouched by A's commits.
             prop_assert_eq!(snapshot(&b), before.clone(), "A's commits leaked into clone B");
@@ -219,7 +240,7 @@ mod clone_independence {
             let a_after = snapshot(&a);
             delete_commit(&mut b, &key_a, &golden, 1_700_000_500)
                 .expect("B can still commit after A committed on a clone of the same ancestor");
-            prop_assert_eq!(b.commits().count(), 1);
+            prop_assert_eq!(b.commits().count(), 2);
             prop_assert_ne!(snapshot(&b).0, a_after.0.clone(), "branches reached the same PR");
             prop_assert_eq!(snapshot(&a), a_after, "B's commit leaked into A");
         }
@@ -272,10 +293,16 @@ fn commit_scope_records_to_own_principal_memory_and_durable() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let keys = || vec![domain_key(&golden), domain_key(&key_a)];
 
-    let mut mem = Principal::explicit(keys()).expect("memory principal");
+    let mut mem = genesis_of(
+        Principal::explicit(keys()).expect("memory principal"),
+        &golden,
+    );
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage_fjall::FjallStorage::open(dir.path()).expect("open fjall");
-    let mut disk = Principal::explicit_with_storage(keys(), storage).expect("durable principal");
+    let mut disk = genesis_of(
+        Principal::explicit_with_storage(keys(), storage).expect("durable principal"),
+        &golden,
+    );
 
     let (mem_pr, disk_pr) = (format!("{:?}", mem.pr()), format!("{:?}", disk.pr()));
     delete_commit(&mut mem, &golden, &key_a, 1_700_000_100).expect("memory commit");
@@ -298,8 +325,8 @@ fn commit_scope_records_to_own_principal_memory_and_durable() {
         ),
     ] {
         assert_eq!(
-            count, 1,
-            "{name}: commit recorded on the scope's own principal"
+            count, 2,
+            "{name}: commit recorded on the scope's own principal (after the genesis)"
         );
         assert!(cr, "{name}: CR present after finalize");
         assert_ne!(

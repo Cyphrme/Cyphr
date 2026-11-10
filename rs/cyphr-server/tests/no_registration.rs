@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 
 mod common;
 
-use common::{attestor_server, build_genesis_push_body, load_pool, post_json};
+use common::{attestor_server, build_genesis_push_body, golden_principal_id, load_pool, post_json};
 
 const NOW: i64 = 1_700_000_000;
 
@@ -57,7 +57,7 @@ async fn register_route_is_gone_and_push_never_dials_out() {
     let peer_url = format!("http://{}", peer.local_addr().expect("peer addr"));
 
     let pool = load_pool();
-    let pid = pool.get("golden").unwrap().compute_tmb_b64().unwrap();
+    let pid = golden_principal_id(&pool);
 
     let (reg_status, _) = post_json(
         app.clone(),

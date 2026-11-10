@@ -31,6 +31,9 @@ use crate::pool::{Pool, PoolKey};
 
 type CozSignerInfo = (String, Vec<u8>, Vec<u8>, String, i64);
 
+/// `now` of a generated genesis commit for a test that states no time.
+const GENESIS_NOW: i64 = 1_700_000_000;
+
 /// A golden test case with real cryptographic values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Golden {
@@ -205,6 +208,7 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::NotFrozen => "NotFrozen",
         Error::DuplicateNonce => "DuplicateNonce",
         Error::UnknownNonce => "UnknownNonce",
+        Error::GenesisIncomplete => "GenesisIncomplete",
         _ => "UnknownError",
     }
 }
@@ -304,6 +308,8 @@ impl<'a> Generator<'a> {
             self.apply_setup(&mut principal, setup, &test.name)?;
         }
 
+        self.commit_generated_genesis(test, &mut principal)?;
+
         // Dispatch based on test type
         if test.is_genesis_only() {
             self.generate_genesis_only(test, &principal)
@@ -352,6 +358,115 @@ impl<'a> Generator<'a> {
             revoke_key: s.revoke_key.clone(),
             revoke_at: s.revoke_at,
         })
+    }
+
+    /// Commit the genesis a test's intent does not state itself (SPEC 5.1,
+    /// 5.2, 5.3): the first genesis key creates itself and every further
+    /// genesis key, signs the `principal/create` and the `commit/create`.
+    ///
+    /// Every commit chain begins with a genesis commit, so a test that
+    /// commits gets one first, and a principal of more than one key
+    /// (Level 3+) exists only through one. A single-key principal that
+    /// never commits stays at Level 1/2 and has none. An intent states its
+    /// own genesis by carrying the `principal/create` in its first commit
+    /// (to pin a genesis rule); a `principal/create` in any later commit
+    /// would need a commit before the genesis, which does not exist.
+    fn commit_generated_genesis(
+        &self,
+        test: &TestIntent,
+        principal: &mut cyphr::Principal,
+    ) -> Result<(), Error> {
+        let invalid = |why: &str| Error::InvalidIntent {
+            message: format!("test '{}': {why}", test.name),
+        };
+        let creates = |c: &CommitIntent| {
+            c.tx.iter()
+                .flatten()
+                .any(|t| t.typ.ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE))
+        };
+        match test.commit.iter().position(creates) {
+            Some(0) => return Ok(()),
+            Some(_) => {
+                return Err(invalid(
+                    "principal/create must be in the first commit (SPEC 5.1)",
+                ));
+            },
+            None if test.commit.is_empty() && test.principal.len() < 2 => return Ok(()),
+            None => {},
+        }
+        if test.setup.is_some() {
+            return Err(invalid(
+                "setup acts before the genesis commit; state it in-band instead",
+            ));
+        }
+        // Every later coz keeps a `now` at or after the genesis's.
+        let now = test
+            .commit
+            .iter()
+            .flat_map(|c| c.tx.iter().flatten().map(|t| t.now))
+            .chain(test.action.iter().map(|a| a.now))
+            .min()
+            .unwrap_or(GENESIS_NOW);
+        let genesis = test
+            .principal
+            .first()
+            .ok_or_else(|| invalid("no genesis key"))?;
+        let signer = self.resolve_key(genesis)?.software_signer()?;
+        principal
+            .commit_genesis(&signer, now, "cyphr.me")
+            .map_err(|e| Error::Generation {
+                name: test.name.clone(),
+                reason: format!("genesis commit: {e}"),
+            })?;
+        Ok(())
+    }
+
+    /// Sign the cozies of an error test's last commit and apply them in
+    /// order until one is refused; return them through the refused one.
+    /// The refusal is what the vector pins, so cozies after it are never
+    /// reached. A one-coz commit returns that coz (a refusal the test
+    /// declares may come at finalize or replay instead).
+    fn failing_commit(
+        &self,
+        test: &TestIntent,
+        commit: &CommitIntent,
+        principal: &mut cyphr::Principal,
+        pre: &str,
+    ) -> Result<Vec<GoldenCoz>, Error> {
+        let mut scope = principal.begin_commit();
+        let mut cozies = Vec::new();
+        for (i, tx) in commit.tx.iter().flatten().enumerate() {
+            let tx = match test.override_.as_ref().and_then(|o| o.now) {
+                Some(now) if i == 0 => TxIntent { now, ..tx.clone() },
+                _ => tx.clone(),
+            };
+            // A `principal/create` names the future SR (SPEC 5.1 step 3);
+            // when the scope cannot derive one, the coz carries `pre` and
+            // the refusal is what the vector pins.
+            let own_pr = match scope.genesis_id() {
+                Ok(id) if tx.typ.ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE) => id,
+                _ => pre.to_string(),
+            };
+            let (coz, sig, czd) = self.build_golden_coz(&tx, &test.name, Some(&own_pr))?;
+            // A key the core cannot hold (an unsupported algorithm) is
+            // itself the refusal the vector pins.
+            let new_key = match (&coz.key, &tx.target) {
+                (Some(_), Some(target)) => match self.pool_key_to_cyphr_key(target, &test.name) {
+                    Ok(key) => Some(key),
+                    Err(_) => {
+                        cozies.push(coz);
+                        break;
+                    },
+                },
+                _ => None,
+            };
+            let pay = coz.pay.get().as_bytes().to_vec();
+            cozies.push(coz);
+            if scope.verify_and_apply(&pay, &sig, czd, new_key).is_err() {
+                break;
+            }
+        }
+        Ok(cozies)
     }
 
     /// Build genesis_keys from pool key names.
@@ -444,43 +559,35 @@ impl<'a> Generator<'a> {
         Ok((commits, digests))
     }
 
-    /// Convert a GoldenCoz to a CommitEntry for error tests.
-    /// Used for error tests where the failing entry is not in Principal.
-    /// Wraps the single failing coz as a commit with placeholder state digests.
-    ///
-    /// Note: For error tests, the state digests are meaningless since the
-    /// coz failed validation. We use empty strings as placeholders.
-    fn coz_to_commit_entry(coz: &GoldenCoz) -> CommitEntry {
-        // Build JSON object for the failing coz (no embedded key)
-        let tx_json = serde_json::json!({
-            "pay": serde_json::from_str::<Value>(coz.pay.get()).expect("valid pay JSON"),
-            "sig": coz.sig,
-        });
-
-        // Move key to commit-level keys[] if present
-        let keys = coz
-            .key
-            .as_ref()
-            .map(|k| {
-                vec![KeyEntry {
-                    alg: k.alg.clone(),
-                    pub_key: k.pub_key.clone(),
-                    tmb: k.tmb.clone(),
-                    tag: None,
-                    now: None,
-                }]
-            })
-            .unwrap_or_default();
-
-        // Wrap as a single-coz commit with placeholder state digests
-        CommitEntry::new(
-            vec![tx_json],
+    /// The commit entry of an error test's failing cozies: each `{pay,
+    /// sig}` with the keys they introduce at commit level. Its state digests
+    /// are placeholders, as the commit never formed.
+    fn cozies_to_commit_entry(cozies: &[GoldenCoz]) -> Result<CommitEntry, Error> {
+        let mut txs = Vec::with_capacity(cozies.len());
+        let mut keys = Vec::new();
+        for coz in cozies {
+            let pay: Value =
+                serde_json::from_str(coz.pay.get()).map_err(|e| Error::Generation {
+                    name: String::new(),
+                    reason: format!("failing coz pay is not JSON: {e}"),
+                })?;
+            txs.push(serde_json::json!({ "pay": pay, "sig": coz.sig }));
+            keys.extend(coz.key.as_ref().map(|k| KeyEntry {
+                alg: k.alg.clone(),
+                pub_key: k.pub_key.clone(),
+                tmb: k.tmb.clone(),
+                tag: None,
+                now: None,
+            }));
+        }
+        Ok(CommitEntry::new(
+            txs,
             keys,
-            String::new(), // commit_id placeholder for error tests
-            None,          // ar placeholder for error tests
-            None,          // sr placeholder for error tests
-            String::new(), // pr placeholder for error tests
-        )
+            String::new(),
+            None,
+            None,
+            String::new(),
+        ))
     }
 
     /// Create a Principal from genesis key names.
@@ -609,6 +716,7 @@ impl<'a> Generator<'a> {
         let mut first_coz_signer: Option<CozSignerInfo> = None;
         let mut last_new_key_signer: Option<CozSignerInfo> = None;
         let mut czds = Vec::new();
+        let mut latest_now = i64::MIN;
 
         for tx_group in &commit_intent.tx {
             for tx_cz in tx_group {
@@ -634,7 +742,21 @@ impl<'a> Generator<'a> {
 
                 // Build pay value for this cozy. `pre` only matters for a
                 // principal/create's `id` field; other cozy types ignore it.
-                let pay_value = self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(pre))?;
+                let genesis_id;
+                let own_pr = if tx_cz
+                    .typ
+                    .ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE)
+                {
+                    genesis_id = scope.genesis_id().map_err(|e| Error::Generation {
+                        name: test_name.to_string(),
+                        reason: format!("principal/create id: {e}"),
+                    })?;
+                    &genesis_id
+                } else {
+                    pre
+                };
+                let pay_value =
+                    self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(own_pr))?;
                 let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
                     name: test_name.to_string(),
                     reason: e.to_string(),
@@ -670,6 +792,7 @@ impl<'a> Generator<'a> {
                     })?;
 
                 czds.push(czd.to_b64());
+                latest_now = latest_now.max(tx_cz.now);
 
                 if first_coz_signer.is_none() {
                     first_coz_signer = Some((
@@ -695,7 +818,9 @@ impl<'a> Generator<'a> {
         scope
             .finalize_with_software(
                 &cyphr::signer::SoftwareSigner::new(&alg, &prv, &pub_k, &tmb),
-                coz_now,
+                // The commit/create comes last, so no earlier than any coz
+                // of the commit (SPEC 14.1).
+                coz_now.max(latest_now),
                 "cyphr.me",
             )
             .map_err(|e| Error::Generation {
@@ -742,17 +867,20 @@ impl<'a> Generator<'a> {
             });
         }
 
-        let cz = test
+        if test
             .commit
             .first()
             .and_then(|c| c.tx.first())
             .and_then(|t| t.first())
-            .ok_or_else(|| Error::InvalidIntent {
+            .is_none()
+        {
+            return Err(Error::InvalidIntent {
                 message: format!(
                     "test '{}': single-commit test requires at least one coz",
                     test.name
                 ),
-            })?;
+            });
+        }
 
         // Check if this is an error test
         let is_error_test = test
@@ -764,42 +892,21 @@ impl<'a> Generator<'a> {
         // Capture the current PR (used only for principal/create's `id` field).
         let current_pr = Self::format_pr_tagged(principal)?;
 
-        // Apply override.now if specified (for TimestampPast tests)
-        let cz_modified;
-        let cz = if let Some(override_now) = test.override_.as_ref().and_then(|o| o.now) {
-            cz_modified = TxIntent {
-                now: override_now,
-                ..cz.clone()
-            };
-            &cz_modified
-        } else {
-            cz
-        };
-
-        let coz = if is_error_test {
+        // override.now (TimestampPast tests) applies to the failing commit's
+        // first coz; see failing_commit.
+        let commit_intent = test.commit.first().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': single-commit test requires at least one commit",
+                test.name
+            ),
+        })?;
+        let failing = if is_error_test {
             // Error tests: sign manually — CommitScope would reject invalid payloads.
             // We need valid signatures over intentionally bad data.
-            let (coz, _sig_bytes, _czd) =
-                self.build_golden_coz(cz, &test.name, Some(&current_pr))?;
-            coz
+            self.failing_commit(test, commit_intent, principal, &current_pr)?
         } else {
-            let commit_intent = test.commit.first().ok_or_else(|| Error::InvalidIntent {
-                message: format!(
-                    "test '{}': single-commit test requires at least one commit",
-                    test.name
-                ),
-            })?;
-
             self.sign_and_apply_commit(&test.name, commit_intent, principal, &current_pr)?;
-
-            // Return a placeholder GoldenCoz since it's not used in happy path (commits are
-            // exported from principal directly)
-            GoldenCoz {
-                pay: RawValue::from_string("{}".to_string()).unwrap(),
-                sig: String::new(),
-                czd: String::new(),
-                key: None,
-            }
+            Vec::new()
         };
 
         // Build expected with computed state digests (or error)
@@ -808,11 +915,11 @@ impl<'a> Generator<'a> {
         // Build genesis_keys, entries, and digests
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
-        // For error tests, the coz was not applied - add it manually
+        // For error tests, the failing cozies were not committed - add them
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
-            commits.push(Self::coz_to_commit_entry(&coz));
-            digests.push(coz.czd.clone());
+            commits.push(Self::cozies_to_commit_entry(&failing)?);
+            digests.extend(failing.iter().map(|c| c.czd.clone()));
         }
 
         Ok(Golden {
@@ -832,7 +939,7 @@ impl<'a> Generator<'a> {
         test: &TestIntent,
         principal: &mut cyphr::Principal,
     ) -> Result<Golden, Error> {
-        let mut coz_sequence = Vec::with_capacity(test.commit.len());
+        let mut failing = Vec::new();
 
         // Check if this is an error test (applies to last commit)
         let is_error_test = test
@@ -844,42 +951,27 @@ impl<'a> Generator<'a> {
         let commit_count = test.commit.len();
         for (i, commit) in test.commit.iter().enumerate() {
             let is_last_commit = i == commit_count - 1;
-            let cz =
-                commit
-                    .tx
-                    .first()
-                    .and_then(|t| t.first())
-                    .ok_or_else(|| Error::InvalidIntent {
-                        message: format!("test '{}': commit {} has no cozies", test.name, i + 1),
-                    })?;
+            if commit.tx.first().and_then(|t| t.first()).is_none() {
+                return Err(Error::InvalidIntent {
+                    message: format!("test '{}': commit {} has no cozies", test.name, i + 1),
+                });
+            }
 
             // Capture pre before this commit (alg:digest format)
             let pre = Self::format_pr_tagged(principal)?;
 
-            let coz = if is_last_commit && is_error_test {
+            if is_last_commit && is_error_test {
                 // Error tests: sign last commit manually
-                let (coz, _sig_bytes, _czd) = self
-                    .build_golden_coz(cz, &test.name, Some(&pre))
+                failing = self
+                    .failing_commit(test, commit, principal, &pre)
                     .map_err(|e| Error::Generation {
                         name: test.name.clone(),
                         reason: format!("commit {}: {}", i + 1, e),
                     })?;
-                coz
             } else {
                 // Happy path: apply all cozies in all transactions of the commit
                 self.sign_and_apply_commit(&test.name, commit, principal, &pre)?;
-
-                // Return a placeholder GoldenCoz since it's not used in happy path (commits are
-                // exported from principal directly)
-                GoldenCoz {
-                    pay: RawValue::from_string("{}".to_string()).unwrap(),
-                    sig: String::new(),
-                    czd: String::new(),
-                    key: None,
-                }
-            };
-
-            coz_sequence.push(coz);
+            }
         }
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
@@ -889,11 +981,10 @@ impl<'a> Generator<'a> {
 
         // For error tests, we need to combine exported entries with the failing entry
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
-        if is_error_test && !coz_sequence.is_empty() {
-            // The last step was not applied - add it from coz_sequence
-            let failing_coz = coz_sequence.last().unwrap();
-            commits.push(Self::coz_to_commit_entry(failing_coz));
-            digests.push(failing_coz.czd.clone());
+        if is_error_test {
+            // The last commit was not applied - add its failing cozies
+            commits.push(Self::cozies_to_commit_entry(&failing)?);
+            digests.extend(failing.iter().map(|c| c.czd.clone()));
         }
 
         Ok(Golden {
@@ -907,7 +998,7 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Generate a genesis-only test case (no cozies or actions).
+    /// Generate a genesis-only test case (no cozies or actions of its own).
     fn generate_genesis_only(
         &self,
         test: &TestIntent,
@@ -915,16 +1006,17 @@ impl<'a> Generator<'a> {
     ) -> Result<Golden, Error> {
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
-        // Genesis-only: no entries or digests
+        // Genesis-only: the generated genesis commit, if any (Level 3+).
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+        let (commits, digests) = Self::export_principal_commits(principal)?;
 
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            commits: Some(vec![]),
-            digests: Some(vec![]),
+            commits: Some(commits),
+            digests: Some(digests),
             expected,
         })
     }
@@ -970,8 +1062,23 @@ impl<'a> Generator<'a> {
 
         let mut digests = Vec::new();
         let mut action_entries = Vec::new();
+        // An error test pins the refusal of its last event, a data action.
+        let is_error_test = test
+            .expected
+            .as_ref()
+            .and_then(|e| e.error.as_ref())
+            .is_some();
+        let events = timeline.len();
 
-        for event in timeline {
+        for (i, event) in timeline.into_iter().enumerate() {
+            if let (true, true, TimelineEvent::Action(action_intent)) =
+                (is_error_test, i + 1 == events, &event)
+            {
+                let (coz, _, czd) = self.build_action_coz(action_intent, None, &test.name)?;
+                digests.push(czd.to_b64());
+                action_entries.push(Self::cozies_to_commit_entry(std::slice::from_ref(&coz))?);
+                continue;
+            }
             match event {
                 TimelineEvent::Commit(commit_intent) => {
                     // Apply all cozies in all transactions of the commit
@@ -1154,7 +1261,9 @@ impl<'a> Generator<'a> {
         // For error tests, the action was not applied - add it manually
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
-            commits.push(Self::coz_to_commit_entry(&action_coz));
+            commits.push(Self::cozies_to_commit_entry(std::slice::from_ref(
+                &action_coz,
+            ))?);
             digests.push(action_coz.czd.clone());
         }
 
@@ -1238,7 +1347,9 @@ impl<'a> Generator<'a> {
         if is_error_test && !action_sequence.is_empty() {
             // The last action was not applied - add it from action_sequence
             let failing_coz = action_sequence.last().unwrap();
-            commits.push(Self::coz_to_commit_entry(failing_coz));
+            commits.push(Self::cozies_to_commit_entry(std::slice::from_ref(
+                failing_coz,
+            ))?);
             digests.push(failing_coz.czd.clone());
         }
 
@@ -1250,7 +1361,7 @@ impl<'a> Generator<'a> {
             let mut seen = std::collections::HashSet::new();
             for coz in &action_sequence {
                 if !seen.insert(coz.czd.clone()) {
-                    commits.push(Self::coz_to_commit_entry(coz));
+                    commits.push(Self::cozies_to_commit_entry(std::slice::from_ref(coz))?);
                     digests.push(coz.czd.clone());
                 }
             }
@@ -1774,15 +1885,21 @@ level = 3
         // Verify we have commits and digests
         let commits = golden.commits.as_ref().expect("missing commits");
         let digests = golden.digests.as_ref().expect("missing digests");
-        assert_eq!(commits.len(), 1, "single-step should have 1 commit");
+        // The generated genesis commit (self key/create, principal/create,
+        // commit/create) precedes the intent's commit.
+        assert_eq!(
+            commits.len(),
+            2,
+            "single-step should have genesis + 1 commit"
+        );
         assert_eq!(
             digests.len(),
-            2,
-            "single-step should have 2 digests (mutation + commit)"
+            5,
+            "single-step should have 5 digests (genesis 3, mutation + commit)"
         );
 
         // Verify commit has correct structure
-        let commit = &commits[0];
+        let commit = &commits[1];
         assert_eq!(
             commit.cozies.len(),
             2,
@@ -1837,6 +1954,9 @@ level = 3
         let mut principal2 = generator
             .create_principal(&intent.test[0].principal, &intent.test[0].name)
             .expect("failed to reconstruct principal");
+        generator
+            .commit_generated_genesis(&intent.test[0], &mut principal2)
+            .expect("failed to commit the genesis");
         generator
             .generate_single_commit(&intent.test[0], &mut principal2)
             .expect("failed to regenerate golden");

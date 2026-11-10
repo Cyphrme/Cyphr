@@ -344,6 +344,8 @@ impl User {
         r.json()
     }
 
+    /// A fresh identity with two commits: the genesis commit the CLI makes
+    /// before its first key add, then that key add.
     fn new_identity(&self) -> String {
         let g = self.setup(&["key", "generate", "--algo", "ES256"]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
@@ -475,7 +477,11 @@ fn reserialized_chain_does_not_break_rebase() {
         r.stderr
     );
     assert_eq!(r.json()["rebased"], 0);
-    assert_eq!(a.commit_count(&id), 2, "local history untouched");
+    assert_eq!(
+        a.commit_count(&id),
+        3,
+        "local history untouched: genesis, setup add, our add"
+    );
     assert!(
         siblings(&a.store(), "data.").is_empty(),
         "no scratch or backup left"
@@ -525,7 +531,11 @@ fn unsigned_additions_do_not_break_rebase() {
         r.stderr
     );
     assert_eq!(r.json()["rebased"], 0);
-    assert_eq!(a.commit_count(&id), 2, "local history untouched");
+    assert_eq!(
+        a.commit_count(&id),
+        3,
+        "local history untouched: genesis, setup add, our add"
+    );
     assert!(
         siblings(&a.store(), "data.").is_empty(),
         "no scratch or backup left"
@@ -571,7 +581,11 @@ fn failed_rebase_cleans_up_its_scratch_store() {
         "the retry must fail for the real cause, not the leftover: {}",
         second.stderr
     );
-    assert_eq!(a.commit_count(&id), 2, "the original store is intact");
+    assert_eq!(
+        a.commit_count(&id),
+        3,
+        "the original store is intact: genesis, setup add, our add"
+    );
 }
 
 // ------------------------------------------------- 3. interrupted swap

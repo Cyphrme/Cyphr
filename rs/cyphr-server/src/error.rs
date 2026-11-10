@@ -86,7 +86,18 @@ impl AppError {
     /// server infrastructure, so a failure to read or write it is a server
     /// fault, never a client error. The specific cause is logged, not
     /// leaked to the client.
+    ///
+    /// The one exception is a full death set: the operator's ceiling
+    /// refusing a new record is storage pressure relieved by refusal (507),
+    /// logged as a warning, not a fault.
     pub fn observation(err: crate::observation::ObservationError) -> Self {
+        if let crate::observation::ObservationError::Full { .. } = err {
+            tracing::warn!(error = %err, "naked revoke refused: death set at its ceiling");
+            return Self {
+                status: StatusCode::INSUFFICIENT_STORAGE,
+                message: err.to_string(),
+            };
+        }
         tracing::error!(error = %err, "naked-revoke observation store error");
         Self::internal("observation store error")
     }

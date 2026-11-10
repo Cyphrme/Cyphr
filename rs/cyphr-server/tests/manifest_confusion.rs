@@ -35,8 +35,8 @@ use cyphr_storage::index::{IndexableCommit, IndexableCoz, Indexer, TipState};
 mod common;
 
 use common::{
-    build_genesis_push_body, build_genesis_push_body_with, get_json, implicit_principal_id,
-    keyless_server, load_pool, post_json,
+    build_genesis_push_body, build_genesis_push_body_with, genesis_push_id, get_json,
+    golden_principal_id, keyless_server, load_pool, post_json,
 };
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -145,7 +145,7 @@ async fn world() -> World {
     let pool = load_pool();
     let (state, dir) = keyless_server();
     let app = build_router(state.clone());
-    let victim = implicit_principal_id(&pool, "golden");
+    let victim = golden_principal_id(&pool);
     let (s, b) = post_json(
         app.clone(),
         "/push",
@@ -170,9 +170,9 @@ impl World {
     /// Index principals other than the attacker's own, which the crafted
     /// push legitimately creates when it is accepted.
     async fn others(&self) -> Vec<(String, String, u64)> {
-        let attacker = implicit_principal_id(&self.pool, "alice");
+        let attacker = genesis_push_id(&self.pool, "alice", "carol");
         let mut p = principals(&self.state).await;
-        p.retain(|x| !x.0.ends_with(&attacker));
+        p.retain(|x| !x.0.ends_with(cyphr_storage::engine::bare_digest(&attacker)));
         p
     }
 
@@ -180,7 +180,7 @@ impl World {
     /// signed genesis carrying `forge`. Returns the status; a fix may
     /// refuse (4xx) or accept (201), but never anything else.
     async fn push_forged(&self, forge: &Forge) -> StatusCode {
-        let attacker = implicit_principal_id(&self.pool, "alice");
+        let attacker = genesis_push_id(&self.pool, "alice", "carol");
         let honest =
             build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001);
         let (s, b) = post_json(
@@ -199,7 +199,7 @@ impl World {
     /// The victim's own first-blob hash helper for attacker-controlled
     /// content: the attacker's honest key/create blob (raw, as stored).
     fn attacker_blob_hash(&self) -> Blake3Hash {
-        let attacker = implicit_principal_id(&self.pool, "alice");
+        let attacker = genesis_push_id(&self.pool, "alice", "carol");
         let body =
             build_genesis_push_body_with(&self.pool, "alice", "carol", &attacker, 1_700_000_001);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -296,9 +296,7 @@ async fn pushed_coz_cannot_poison_a_scratch_rebuild() {
 /// name for good). The forged commit claims a fresh digest as its own `pg`
 /// variant. That digest resolves to nothing before the push (it is no
 /// principal's id, PR or PG), so it must still resolve to nothing after the
-/// push and a rebuild: any answer would come from the alias table. (The
-/// victim's own PR is a poor probe: a principal with no PG answers to its
-/// current PR as the PG-to-be, SPEC 3.7.1, which masks a planted alias.)
+/// push and a rebuild: any answer would come from the alias table.
 /// Mutant caught: a fix that validates `principal_id` but leaves `pg`
 /// unchecked.
 #[tokio::test]
@@ -379,7 +377,7 @@ async fn pushed_coz_cannot_redirect_victim_digest_on_rebuild() {
 #[tokio::test]
 async fn rebuild_recovers_exactly_the_honest_manifests() {
     let w = world().await;
-    let other = implicit_principal_id(&w.pool, "alice");
+    let other = genesis_push_id(&w.pool, "alice", "carol");
     let (s, b) = post_json(
         w.app.clone(),
         "/push",

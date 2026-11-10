@@ -10,18 +10,21 @@
 //! that does not hash to the named `tmb` fails the bind -- together they are the
 //! self-signed-only rule, so there is no third-party path.
 //!
-//! The global key index is a CACHE, never an authority: its CONTENT is never
-//! dereferenced in this verification path. Its only remaining role is a
-//! **presence fence** -- the named `tmb` must be a key the server has indexed --
-//! which bounds the death-set to keys the server has seen (anti-spam) without
-//! ever reading the indexed value. Because verification depends only on the
-//! material the client discloses, a poisoned index entry (an attacker's pub
-//! stored under a victim's `tmb`) cannot block the victim's own emergency
-//! revoke -- the §6.4 availability property.
+//! Verification reads no server state: it depends only on the material the
+//! client discloses, so a poisoned index entry (an attacker's pub stored under
+//! a victim's `tmb`) cannot block the victim's own emergency revoke -- the
+//! §6.4 availability property. Nor does it require the server to have seen
+//! the key: a Level 1 principal signs nothing a peer could have seen (SPEC
+//! 3.1, 5.1: no commit), yet its self-revoke must be recordable. The death
+//! set is bounded instead by the operator's quota (`[limits] max_dead_keys`)
+//! and the `/revoke` rate buckets. Past the quota, the revoke of a key some
+//! stored principal holds is still recorded (the route checks presence only
+//! then). Residual risk: while the set is full, the revoke of a Level 1 key
+//! this server never saw is refused (`507`), so a flood of junk revokes can
+//! deny that one case until the operator raises the quota.
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_storage::index::Indexer;
 use serde::Deserialize;
 
 use crate::error::AppError;
@@ -77,8 +80,7 @@ fn is_revoke_typ(typ: &str) -> bool {
 }
 
 /// Parse, validate, and verify a naked-revoke request against its DISCLOSED
-/// key -- replay-free, self-signed-only, and independent of the index's
-/// content.
+/// key -- replay-free, self-signed-only, and reading no server state.
 ///
 /// Verification order, each a distinct rejection:
 /// 1. the body discloses a `key` (else 400 -- a naked revoke must disclose it);
@@ -86,21 +88,15 @@ fn is_revoke_typ(typ: &str) -> bool {
 /// 3. `rvk` is a integer in 1..=2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is NOT
 ///    checked, so a pre-signed `rvk`=1 is valid;
 /// 4. the serialized payload is within `RVK_MAX_SIZE`;
-/// 5. PRESENCE FENCE: the named `tmb` is a key the engine has indexed (`Some`) -- the indexed
-///    value's CONTENT is never read; `None` (a key this server never saw) is a rejection that
-///    bounds the death-set to seen keys;
-/// 6. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), welding the
+/// 5. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), welding the
 ///    disclosed key to the thumbprint before it is trusted;
-/// 7. VERIFY: the signature verifies against the DISCLOSED key. A revoke signed by any key OTHER
+/// 6. VERIFY: the signature verifies against the DISCLOSED key. A revoke signed by any key OTHER
 ///    than the one `tmb` names fails here -- the entire self-signed-only rule.
 ///
-/// A missing key, malformed payload, bad `rvk`, wrong `typ`, an unknown `tmb`,
-/// or a disclosed key that does not hash to its `tmb` is a 400; a signature that
-/// does not verify is a 401; an index infrastructure failure is a 500.
-pub async fn interpret<I: Indexer>(
-    envelope: &NakedRevokeEnvelope,
-    indexer: &I,
-) -> Result<VerifiedRevoke, AppError> {
+/// A missing key, malformed payload, bad `rvk`, wrong `typ`, or a disclosed
+/// key that does not hash to its `tmb` is a 400; a signature that does not
+/// verify is a 401.
+pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke, AppError> {
     let key = envelope
         .key
         .as_ref()
@@ -138,23 +134,6 @@ pub async fn interpret<I: Indexer>(
         .tmb
         .clone()
         .ok_or_else(|| AppError::bad_request("revoke payload names no key (tmb)"))?;
-    let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
-
-    // PRESENCE FENCE: the named `tmb` must be a key the engine has indexed. This
-    // is the index's ONLY remaining role -- presence, never content. The
-    // returned value is deliberately never read: verification below runs
-    // entirely off the DISCLOSED key, so a poisoned index entry (an attacker's
-    // pub under a victim's `tmb`) still passes this fence but cannot influence
-    // the outcome. `None` bounds the death-set to keys the server has seen.
-    let indexed = indexer.get_key(&tmb_b64).await.map_err(|e| {
-        tracing::error!(error = %e, "naked-revoke presence-fence lookup failed");
-        AppError::internal("key index lookup failed")
-    })?;
-    if indexed.is_none() {
-        return Err(AppError::bad_request(
-            "revoke names a key this server has not indexed",
-        ));
-    }
 
     // BIND: the disclosed key must hash back to the named `tmb` (`tmb = H(pub)`).
     // This weld is what keeps the revoke self-signed-only and forge-proof: to

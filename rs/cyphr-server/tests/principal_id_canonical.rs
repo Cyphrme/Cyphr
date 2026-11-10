@@ -1,6 +1,6 @@
 //! One genesis-derived identity has one stored spelling (SPEC 3.1).
 //!
-//! A principal id may be written bare (`X`, an implicit genesis's tmb) or
+//! A principal id may be written bare (`X`, the PG's digest) or
 //! algorithm-labelled (`SHA-256:X`). If the server keyed storage on whichever
 //! spelling arrived, the same identity could be stored as two independent
 //! principals: a fork refused under one spelling would be accepted under the
@@ -9,20 +9,31 @@
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::StateDigest;
 use cyphr_server::build_router;
 
 mod common;
 
 use common::{
-    build_genesis_push_body_with, envelope_payload, get_json, keyless_server, load_pool, post_json,
+    build_genesis_push_body_with, build_second_commit_push_body, envelope_payload, get_json,
+    keyless_server, load_pool, post_json,
 };
 
 const NOW: i64 = 1_700_100_000;
 
-/// The two spellings of the golden implicit genesis's id: bare `X` and
-/// labelled `SHA-256:X` (golden is an ES256 key).
+/// The two spellings of the standard principal's id (the PG of the genesis
+/// in which `golden` creates itself and `key_a`): bare `X` and labelled
+/// `SHA-256:X` (golden is an ES256 key).
 fn spellings(pool: &test_fixtures::Pool) -> (String, String) {
-    let bare = common::golden_principal_id(pool);
+    let labelled = common::golden_principal_id(pool);
+    let bare = labelled.split_once(':').expect("labelled PG").1.to_string();
+    (bare, labelled)
+}
+
+/// The two spellings of the id of a principal whose genesis creates only
+/// `golden` (no nonce): its bare tmb `X` and `SHA-256:X` (SPEC 5.1).
+fn implicit_spellings(pool: &test_fixtures::Pool) -> (String, String) {
+    let bare = common::implicit_principal_id(pool, "golden");
     let labelled = format!("SHA-256:{bare}");
     (bare, labelled)
 }
@@ -37,11 +48,13 @@ async fn tip(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
     (status, payload)
 }
 
-/// Backs: a divergent first commit is refused (409) under BOTH spellings of
-/// an already-stored identity, and both spellings read the one chain. Turns
-/// red if the alias keys a second, independent principal: the divergent
-/// genesis is then accepted (201) under the labelled spelling. End to end:
-/// yes.
+/// Backs: a divergent commit is refused (409) under BOTH spellings of an
+/// already-stored identity, and both spellings read the one chain. The
+/// divergent commit continues another genesis of the same keys (signed at
+/// another `now`, so the same PG but another post-genesis state), so its
+/// `pre` forks the stored chain at its root. Turns red if the alias keys a
+/// second, independent principal: the divergent commit is then accepted
+/// under the labelled spelling. End to end: yes.
 #[tokio::test]
 async fn alias_spelling_cannot_fork_a_stored_principal() {
     let (state, _dir) = keyless_server();
@@ -57,21 +70,21 @@ async fn alias_spelling_cannot_fork_a_stored_principal() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
 
-    // Control: a divergent genesis (key_b instead of key_a) under the same
-    // spelling is a fork and is refused.
+    // Control: a commit on a divergent genesis (the same keys, signed at
+    // another `now`) under the same spelling is a fork and is refused.
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body_with(&pool, "golden", "key_b", &bare, NOW),
+        build_second_commit_push_body(&pool, &bare, NOW + 5, NOW + 10),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "control: {body:?}");
 
-    // The same divergent genesis under the other spelling is the same fork.
+    // The same divergent commit under the other spelling is the same fork.
     let (status, body) = post_json(
         app.clone(),
         "/push",
-        build_genesis_push_body_with(&pool, "golden", "key_b", &labelled, NOW),
+        build_second_commit_push_body(&pool, &labelled, NOW + 5, NOW + 10),
     )
     .await;
     assert_eq!(
@@ -118,7 +131,36 @@ fn sign(k: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     (bytes, sig, czd)
 }
 
-/// One commit: apply `parts` (signed by `author`), finalize with `finalizer`.
+fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
+}
+
+/// A signed transaction and the key it discloses, if any.
+type Tx = ((Vec<u8>, Vec<u8>, coz::Czd), Option<cyphr::Key>);
+
+/// The genesis commit (SPEC 5.1): `g` (the principal's genesis key)
+/// creates itself, then `extra` is applied (key/creates of further keys, a
+/// nonce, all signed by `g`), then `principal/create` and `commit/create`.
+fn genesis_commit(p: &mut cyphr::Principal, g: &Kp, extra: Vec<Tx>, now: i64) {
+    let signer = signer_of(g);
+    let mut scope = p.begin_commit();
+    scope
+        .create_genesis_keys(&signer, now, "cyphr.me")
+        .expect("genesis key/create");
+    for ((pay, sig, czd), sidecar) in extra {
+        scope
+            .verify_and_apply(&pay, &sig, czd, sidecar)
+            .expect("genesis transaction");
+    }
+    scope
+        .create_principal(&signer, now, "cyphr.me")
+        .expect("principal/create");
+    scope
+        .finalize_with_software(&signer, now, "cyphr.me")
+        .expect("finalize genesis");
+}
+
+/// One commit after genesis: apply `parts`, finalize with `finalizer`.
 fn commit_one(
     p: &mut cyphr::Principal,
     finalizer: &Kp,
@@ -128,48 +170,33 @@ fn commit_one(
 ) {
     let (pay, sig, czd) = parts;
     let mut scope = p.begin_commit();
-    if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
-        v["typ"]
-            .as_str()
-            .is_some_and(|t| t.ends_with("cyphr/principal/create"))
-    }) {
-        scope
-            .create_genesis_keys(
-                &cyphr::signer::SoftwareSigner::new(
-                    &finalizer.alg,
-                    &finalizer.prv,
-                    &finalizer.pubb,
-                    &finalizer.tmb,
-                ),
-                now,
-                "cyphr.me",
-            )
-            .expect("genesis key/creates (SPEC 7.7 Example 1)");
-    }
     scope
         .verify_and_apply(&pay, &sig, czd, sidecar)
         .expect("apply");
     scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(
-                &finalizer.alg,
-                &finalizer.prv,
-                &finalizer.pubb,
-                &finalizer.tmb,
-            ),
-            now,
-            "cyphr.me",
-        )
+        .finalize_with_software(&signer_of(finalizer), now, "cyphr.me")
         .expect("finalize");
 }
 
-/// Push body for commit `i` of `p` under `id`; commit 0 also embeds the
-/// genesis key on its closing cozy, as the wire contract requires.
-fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
+/// `signer` signs a `key/create` of `new` at `now`.
+fn key_create(signer: &Kp, new: &Kp, now: i64) -> Tx {
+    (
+        sign(
+            signer,
+            serde_json::json!({"alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
+                               "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        ),
+        Some(key_of(new)),
+    )
+}
+
+/// Push body for commit `i` of `p` under `id`; every `key/create`
+/// (the genesis commit's included) discloses its key.
+fn wire(p: &cyphr::Principal, i: usize, id: &str) -> String {
     let entries = cyphr_storage::export_commits(p).expect("export");
     let entry = &entries[i];
     let mut key_idx = 0;
-    let mut blobs: Vec<serde_json::Value> = entry
+    let blobs: Vec<serde_json::Value> = entry
         .cozies
         .iter()
         .map(|c| {
@@ -183,14 +210,6 @@ fn wire(p: &cyphr::Principal, i: usize, genesis: &Kp, id: &str) -> String {
             c
         })
         .collect();
-    if i == 0 {
-        let last = blobs.len() - 1;
-        blobs[last]["key"] = serde_json::json!({
-            "alg": genesis.alg,
-            "pub": Base64UrlUnpadded::encode_string(&genesis.pubb),
-            "tmb": genesis.tmb.to_b64(),
-        });
-    }
     serde_json::json!({
         "principal_id": id,
         "blobs": blobs
@@ -212,18 +231,11 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     let pool = load_pool();
     let (g, a, b) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "key_b"));
     let (bare, labelled) = spellings(&pool);
-    let create = |signer: &Kp, id: &Kp, now: i64| {
-        sign(
-            signer,
-            serde_json::json!({"alg": signer.alg, "id": id.tmb.to_b64(), "now": now,
-                               "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        )
-    };
 
-    // Owner: genesis(golden) + key/create key_a; then golden self-revokes,
-    // the commit finalized by key_a.
+    // Owner: the genesis commit in which golden creates itself and key_a;
+    // then golden self-revokes, the commit finalized by key_a.
     let mut owner = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(&mut owner, &g, create(&g, &a, NOW), Some(key_of(&a)), NOW);
+    genesis_commit(&mut owner, &g, vec![key_create(&g, &a, NOW)], NOW);
     commit_one(
         &mut owner,
         &a,
@@ -239,7 +251,7 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     for i in 0..2 {
-        let (status, body) = post_json(app.clone(), "/push", wire(&owner, i, &g, &bare)).await;
+        let (status, body) = post_json(app.clone(), "/push", wire(&owner, i, &bare)).await;
         assert_eq!(status, StatusCode::CREATED, "owner commit {i}: {body:?}");
     }
     let (_, before) = tip(app.clone(), &bare).await;
@@ -247,23 +259,12 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     // The attacker holds the revoked golden key and builds its own
     // continuation of the public genesis, adding key_b.
     let mut attacker = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(
-        &mut attacker,
-        &g,
-        create(&g, &a, NOW),
-        Some(key_of(&a)),
-        NOW,
-    );
-    commit_one(
-        &mut attacker,
-        &g,
-        create(&g, &b, NOW + 20),
-        Some(key_of(&b)),
-        NOW + 20,
-    );
+    genesis_commit(&mut attacker, &g, vec![key_create(&g, &a, NOW)], NOW);
+    let (parts, sidecar) = key_create(&g, &b, NOW + 20);
+    commit_one(&mut attacker, &g, parts, sidecar, NOW + 20);
 
     // Control: under the spelling the owner used, the revoked key is refused.
-    let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &g, &bare)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &bare)).await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -272,12 +273,12 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
 
     // Replaying the owner's public first commit under the other spelling
     // must not open a second, pre-revocation copy of the principal.
-    let (status, body) = post_json(app.clone(), "/push", wire(&owner, 0, &g, &labelled)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&owner, 0, &labelled)).await;
     assert!(
         status.is_client_error(),
         "the public genesis was accepted afresh under the alias: {status} {body:?}"
     );
-    let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &g, &labelled)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &labelled)).await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -293,45 +294,20 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
 }
 
 /// Backs SPEC §3.7.1 ("PG is an immutable principal identifier"): a
-/// principal that added a key BEFORE `principal/create` is established
-/// with a PG that differs from its genesis-time Principal Root (the PG is
-/// the PR at `principal/create`), and must be pushable under that PG.
-/// Turns red (as it is today) because the engine accepts only the
-/// genesis-derived id, so the push under the PG is refused with 400.
-/// End to end: yes.
+/// principal whose genesis commit creates a key besides its genesis key
+/// BEFORE `principal/create` has a PG (the PR at `principal/create`) that
+/// differs from the lone genesis key's id, and is pushable under that PG.
+/// Turns red if the engine accepts only the lone genesis key's id, so the
+/// push under the PG is refused with 400. End to end: yes.
 #[tokio::test]
 async fn principal_with_keys_before_create_is_pushable_under_its_pg() {
-    use cyphr::StateDigest;
-
     let pool = load_pool();
     let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
 
-    // genesis(golden); commit 0 adds key_a; commit 1 is principal/create
-    // whose `id` is the PR after commit 0, so PG != the genesis tmb.
+    // genesis(golden): golden creates itself, then key_a, then
+    // principal/create, whose `id` is the PR over both keys.
     let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(
-        &mut p,
-        &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": a.tmb.to_b64(), "now": NOW,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        ),
-        Some(key_of(&a)),
-        NOW,
-    );
-    let pr_after_keys = p.pr_tagged().expect("pr");
-    commit_one(
-        &mut p,
-        &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 1,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        None,
-        NOW + 1,
-    );
+    genesis_commit(&mut p, &g, vec![key_create(&g, &a, NOW)], NOW);
     let pg = p
         .pg()
         .expect("principal/create establishes the PG")
@@ -339,29 +315,25 @@ async fn principal_with_keys_before_create_is_pushable_under_its_pg() {
         .tagged_first()
         .expect("PG digest")
         .to_string();
-    let genesis_id = common::golden_principal_id(&pool);
+    let lone_key_id = implicit_spellings(&pool).1;
     assert_ne!(
-        pg,
-        format!("SHA-256:{genesis_id}"),
-        "premise: the PG differs from the genesis-time id"
+        pg, lone_key_id,
+        "premise: the PG differs from the lone genesis key's id"
     );
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    for i in 0..2 {
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &pg)).await;
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "commit {i} pushed under the principal's PG {pg}: {body:?}"
-        );
-    }
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &pg)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the genesis commit pushed under the principal's PG {pg}: {body:?}"
+    );
 }
 
 /// Every spelling a principal's PG has: each hash-variant label (`ALG:d`)
 /// and each bare digest.
 fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
-    use cyphr::StateDigest;
     let mh = p
         .pg()
         .expect("established principal has a PG")
@@ -408,32 +380,18 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
     let pool = load_pool();
     let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
     let (d, e) = (kp(&pool, "diana_es384"), kp(&pool, "eve_ed25519"));
-    let add = |signer: &Kp, new: &Kp, now: i64| {
-        sign(
-            signer,
-            serde_json::json!({"alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
-                               "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        )
-    };
 
-    // genesis(golden, ES256); commit 0 adds diana (ES384); commit 1 adds
-    // eve (Ed25519); commit 2 is principal/create; commit 3 adds key_a.
+    // Commit 0 is the genesis: golden (ES256) creates itself, diana (ES384)
+    // and eve (Ed25519), then principal/create; commit 1 adds key_a.
     let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(&mut p, &g, add(&g, &d, NOW), Some(key_of(&d)), NOW);
-    commit_one(&mut p, &g, add(&g, &e, NOW + 1), Some(key_of(&e)), NOW + 1);
-    let pr_after_keys = p.pr_tagged().expect("pr");
-    commit_one(
+    genesis_commit(
         &mut p,
         &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 2,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        None,
-        NOW + 2,
+        vec![key_create(&g, &d, NOW), key_create(&g, &e, NOW)],
+        NOW,
     );
-    commit_one(&mut p, &g, add(&g, &a, NOW + 3), Some(key_of(&a)), NOW + 3);
+    let (parts, sidecar) = key_create(&g, &a, NOW + 3);
+    commit_one(&mut p, &g, parts, sidecar, NOW + 3);
 
     let pg_all = pg_spellings(&p);
     assert_eq!(
@@ -450,19 +408,15 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
     };
     let (pg256, pg384) = (label("SHA-256"), label("SHA-384"));
 
-    // Created under the genesis-derived id (which the engine accepts today),
-    // so this test isolates PG-variant resolution from PG-as-push-id (the
-    let genesis_id = self::spellings(&pool).1;
+    // Created under the SHA-256 variant, the stored spelling.
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    for i in 0..3 {
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &genesis_id)).await;
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "commit {i} under {genesis_id}: {body:?}"
-        );
-    }
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &pg256)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "genesis under {pg256}: {body:?}"
+    );
 
     // Every spelling reads the same tip and the same chain.
     let (status, want_tip) = tip(app.clone(), &pg256).await;
@@ -489,11 +443,11 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
 
     // A push under a variant other than the creating one extends the one
     // principal: it lands (201), and every spelling then reads the new tip.
-    let (status, body) = post_json(app.clone(), "/push", wire(&p, 3, &g, &pg384)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 1, &pg384)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "commit 3 under {pg384}: {body:?}"
+        "commit 1 under {pg384}: {body:?}"
     );
     let (_, new_tip) = tip(app.clone(), &pg256).await;
     let new_tip = without_now(new_tip);
@@ -523,7 +477,7 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
             status.is_client_error(),
             "a label the PG does not have was accepted for read: {forged} {status} {body:?}"
         );
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, 3, &g, &forged)).await;
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, 1, &forged)).await;
         assert!(
             status.is_client_error(),
             "a label the PG does not have was accepted for push: {forged} {status} {body:?}"
@@ -538,27 +492,17 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
 }
 
 /// Backs SPEC §3.7.1 (the PG is THE permanent identifier; no other root is
-/// an id): a Principal Root the principal held in the past that is not its
-/// PG -- one before the PG was established, and one after -- names nothing.
+/// an id): a Principal Root the principal has held that is not its PG --
+/// the PR after its genesis commit, and the PR at its tip -- names nothing.
 /// A read or a push under either is refused with a client error and moves
-/// nothing, while the PG and the genesis-derived id keep working. Turns red
-/// if the index aliases every PR the principal has had: the historical PR
-/// then reads the principal (200) or accepts its push (201). End to end:
-/// yes.
+/// nothing, while the PG keeps working. Turns red if the index aliases
+/// every PR the principal has had: the historical PR then reads the
+/// principal (200) or accepts its push (201). End to end: yes.
 #[tokio::test]
 async fn historical_pr_is_not_an_alias() {
-    use cyphr::StateDigest;
-
     let pool = load_pool();
-    let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let (g, a, b) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "key_b"));
     let (d, e) = (kp(&pool, "diana_es384"), kp(&pool, "eve_ed25519"));
-    let add = |signer: &Kp, new: &Kp, now: i64| {
-        sign(
-            signer,
-            serde_json::json!({"alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
-                               "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        )
-    };
     let tagged_pr = |p: &cyphr::Principal| {
         p.pr()
             .as_multihash()
@@ -567,49 +511,41 @@ async fn historical_pr_is_not_an_alias() {
             .to_string()
     };
 
-    // commit 0 adds diana, commit 1 adds eve, commit 2 is principal/create
-    // (PG = the PR after commit 1), commit 3 adds key_a.
+    // Commit 0 is the genesis (golden creates itself, diana and eve, then
+    // principal/create); commit 1 adds key_a; commit 2 adds key_b.
     let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(&mut p, &g, add(&g, &d, NOW), Some(key_of(&d)), NOW);
-    let pr_before_pg = tagged_pr(&p);
-    commit_one(&mut p, &g, add(&g, &e, NOW + 1), Some(key_of(&e)), NOW + 1);
-    let pr_after_keys = p.pr_tagged().expect("pr");
-    commit_one(
+    genesis_commit(
         &mut p,
         &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 2,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        None,
-        NOW + 2,
+        vec![key_create(&g, &d, NOW), key_create(&g, &e, NOW)],
+        NOW,
     );
-    let pr_after_create = tagged_pr(&p);
-    commit_one(&mut p, &g, add(&g, &a, NOW + 3), Some(key_of(&a)), NOW + 3);
+    let pr_after_genesis = tagged_pr(&p);
+    let (parts, sidecar) = key_create(&g, &a, NOW + 3);
+    commit_one(&mut p, &g, parts, sidecar, NOW + 3);
+    let pr_at_tip = tagged_pr(&p);
+    let (parts, sidecar) = key_create(&g, &b, NOW + 4);
+    commit_one(&mut p, &g, parts, sidecar, NOW + 4);
 
     let pg = pg_spellings(&p);
-    let genesis_id = spellings(&pool).1;
-    let historical = [pr_before_pg, pr_after_create];
+    let historical = [pr_after_genesis, pr_at_tip];
     for h in &historical {
         assert!(
-            !pg.contains(h) && *h != genesis_id,
-            "premise: {h} is a historical PR, not the PG or the genesis id"
+            !pg.contains(h),
+            "premise: {h} is a historical PR, not the PG"
         );
     }
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    for i in 0..3 {
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &genesis_id)).await;
+    for i in 0..2 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &pg[0])).await;
         assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
     }
-    let (status, want) = tip(app.clone(), &genesis_id).await;
-    assert_eq!(status, StatusCode::OK, "control: {want:?}");
-    let want = without_now(want);
     // Control: the PG reads the principal.
-    let (status, body) = tip(app.clone(), &pg[0]).await;
-    assert_eq!(status, StatusCode::OK, "control, the PG: {body:?}");
+    let (status, want) = tip(app.clone(), &pg[0]).await;
+    assert_eq!(status, StatusCode::OK, "control, the PG: {want:?}");
+    let want = without_now(want);
 
     for h in &historical {
         let (status, body) = tip(app.clone(), h).await;
@@ -617,13 +553,13 @@ async fn historical_pr_is_not_an_alias() {
             status.is_client_error(),
             "historical PR {h} read the principal: {status} {body:?}"
         );
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, 3, &g, h)).await;
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, 2, h)).await;
         assert!(
             status.is_client_error(),
             "historical PR {h} accepted a push: {status} {body:?}"
         );
     }
-    let (_, after) = tip(app, &genesis_id).await;
+    let (_, after) = tip(app, &pg[0]).await;
     assert_eq!(
         without_now(after),
         want,
@@ -631,41 +567,18 @@ async fn historical_pr_is_not_an_alias() {
     );
 }
 
-/// Backs SPEC §3.7.1 on an attestor-mode server: a principal that added
-/// keys before `principal/create` is pushed under its PG exactly as on a
-/// keyless server, and the receipt is signed. Turns red if the attestor
-/// route gate (`principal_id` must be genesis-shaped, routes.rs) refuses
-/// the PG, or if the push lands without an attestation. End to end: yes.
+/// Backs SPEC §3.7.1 on an attestor-mode server: a principal whose genesis
+/// commit creates a key besides its genesis key before `principal/create`
+/// is pushed under its PG exactly as on a keyless server, and the receipt is
+/// signed. Turns red if the attestor route gate (`principal_id` must be
+/// genesis-shaped, routes.rs) refuses the PG, or if the push lands without
+/// an attestation. End to end: yes.
 #[tokio::test]
 async fn attestor_server_accepts_a_push_under_the_pg() {
-    use cyphr::StateDigest;
-
     let pool = load_pool();
     let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
     let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(
-        &mut p,
-        &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": a.tmb.to_b64(), "now": NOW,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        ),
-        Some(key_of(&a)),
-        NOW,
-    );
-    let pr_after_keys = p.pr_tagged().expect("pr");
-    commit_one(
-        &mut p,
-        &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 1,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        None,
-        NOW + 1,
-    );
+    genesis_commit(&mut p, &g, vec![key_create(&g, &a, NOW)], NOW);
     let pg = p
         .pg()
         .expect("PG")
@@ -676,120 +589,32 @@ async fn attestor_server_accepts_a_push_under_the_pg() {
 
     let (state, _identity, _dir) = common::attestor_server().await;
     let app = build_router(state);
-    for i in 0..2 {
-        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &pg)).await;
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "attestor: commit {i} pushed under the PG {pg}: {body:?}"
-        );
-        assert_eq!(
-            body["statement"]["kind"],
-            serde_json::json!("signed"),
-            "attestor: commit {i} landed without a signed receipt: {body:?}"
-        );
-    }
-}
-
-/// A nascent principal (genesis golden, then key_a, then diana added in two
-/// non-create commits) and the PR it holds after commit 0 -- its PG-to-be.
-fn nascent_principal(pool: &test_fixtures::Pool) -> (cyphr::Principal, Kp, String) {
-    let (g, a, d) = (
-        kp(pool, "golden"),
-        kp(pool, "key_a"),
-        kp(pool, "diana_es384"),
-    );
-    let add = |new: &Kp, now: i64| {
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": new.tmb.to_b64(), "now": now,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        )
-    };
-    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(&mut p, &g, add(&a, NOW), Some(key_of(&a)), NOW);
-    let pg_to_be = p.pr_tagged().expect("pr");
-    commit_one(&mut p, &g, add(&d, NOW + 1), Some(key_of(&d)), NOW + 1);
-    (p, g, pg_to_be)
-}
-
-/// Backs "a stored commit is never reported as a failure": a non-create
-/// commit pushed under the PG-to-be moves the principal's PR, so the
-/// claimed id is historical by the time the route reads the result back.
-/// The push must still answer 201 with the new tip (and, on an attestor, a
-/// signed receipt for the canonical principal), not 500 "accepted commit
-/// has no tip" with the commit already stored (whose retry is then 422).
-/// Turns red on the 500. End to end: yes.
-async fn push_under_pg_to_be_reports_the_stored_commit(attestor: bool) {
-    let pool = load_pool();
-    let (p, g, pg_to_be) = nascent_principal(&pool);
-    let genesis_id = spellings(&pool).1;
-    let (state, _dir) = if attestor {
-        let (state, _identity, dir) = common::attestor_server().await;
-        (state, dir)
-    } else {
-        keyless_server()
-    };
-    let app = build_router(state);
-
-    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &g, &genesis_id)).await;
-    assert_eq!(status, StatusCode::CREATED, "commit 0: {body:?}");
-    let (status, body) = post_json(app.clone(), "/push", wire(&p, 1, &g, &pg_to_be)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &pg)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "a stored commit under the PG-to-be {pg_to_be} was not reported: {body:?}"
+        "attestor: genesis pushed under the PG {pg}: {body:?}"
     );
-    assert_eq!(body["payload"]["sequence"], serde_json::json!(1));
-    if attestor {
-        assert_eq!(body["statement"]["kind"], serde_json::json!("signed"));
-    }
-    if !attestor {
-        // `tip` reads an unsigned envelope, so only a keyless server can use it.
-        let (status, t) = tip(app, &genesis_id).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(t["commit_count"], serde_json::json!(2), "{t:?}");
-    }
+    assert_eq!(
+        body["statement"]["kind"],
+        serde_json::json!("signed"),
+        "attestor: genesis landed without a signed receipt: {body:?}"
+    );
 }
 
-/// Backs: a push under the PG of a principal that added keys before
-/// `principal/create` reports the stored commit, on a keyless server (SPEC 3.7.1).
-#[tokio::test]
-async fn keyless_push_under_pg_to_be_reports_the_stored_commit() {
-    push_under_pg_to_be_reports_the_stored_commit(false).await;
-}
-
-/// Backs: the same report-the-stored-commit rule on an attestor server (SPEC 3.7.1).
-#[tokio::test]
-async fn attestor_push_under_pg_to_be_reports_the_stored_commit() {
-    push_under_pg_to_be_reports_the_stored_commit(true).await;
-}
-
-/// Backs option B on the first push: a principal that establishes its PG in
-/// commit 0 has the genesis-time PR as its PG, so its own post-commit PR is
-/// a historical root, not an id. Pushing commit 0 under that PR is refused
-/// with a client error and stores nothing (it used to be stored, then
-/// reported as a 500 because the claimed id resolved to nothing). Turns red
-/// on the 500 or on a stored principal. End to end: yes.
+/// Backs option B on the first push: a principal's genesis commit
+/// establishes its PG, so its own post-commit PR is a historical root, not
+/// an id. Pushing the genesis commit under that PR is refused with a client
+/// error and stores nothing (it used to be stored, then reported as a 500
+/// because the claimed id resolved to nothing). Turns red on the 500 or on
+/// a stored principal. End to end: yes.
 #[tokio::test]
 async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
-    use cyphr::StateDigest;
-
     let pool = load_pool();
     let g = kp(&pool, "golden");
-    let genesis_id = spellings(&pool).1;
+    let genesis_id = implicit_spellings(&pool).1;
     let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    commit_one(
-        &mut p,
-        &g,
-        sign(
-            &g,
-            serde_json::json!({"alg": g.alg, "id": genesis_id, "now": NOW,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        None,
-        NOW,
-    );
+    genesis_commit(&mut p, &g, Vec::new(), NOW);
     let post = p
         .pr()
         .as_multihash()
@@ -803,7 +628,7 @@ async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &g, &post)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &post)).await;
     assert!(
         status.is_client_error(),
         "a non-PG historical root was accepted or failed as a server error: {status} {body:?}"
@@ -816,39 +641,31 @@ async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
     );
 }
 
-/// A nonce-embedded principal on `g`: commit 0 inserts `nonce` at the KT
-/// root (so its PR differs from the bare key's), commit 1 is
-/// `principal/create` at that PR. Returns it with its PG (`SHA-256:` form).
+/// A nonce-embedded principal on `g`: its genesis commit inserts `nonce` at
+/// the KT root after golden's own `key/create`, so its PG differs from the
+/// bare key's. Returns it with the id it is stored under: its PG (`SHA-256:`
+/// form), which the nonce makes unique (SPEC 5.1 step 3 and "a nonce
+/// embedding for a unique PG").
 fn nonce_principal(g: &Kp, nonce: u8) -> (cyphr::Principal, String) {
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
-    commit_one(
-        &mut p,
+    let nonce_create = sign(
         g,
-        sign(
-            g,
-            serde_json::json!({
-                "alg": g.alg,
-                "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[nonce; 32])),
-                "now": NOW, "tmb": g.tmb.to_b64(),
-                "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
-            }),
-        ),
-        None,
-        NOW,
+        serde_json::json!({
+            "alg": g.alg,
+            "id": format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[nonce; 32])),
+            "now": NOW, "tmb": g.tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/AT/KT/nonce/create",
+        }),
     );
-    let pg = p.pr_tagged().expect("pr");
-    commit_one(
-        &mut p,
-        g,
-        sign(
-            g,
-            serde_json::json!({"alg": g.alg, "id": pg, "now": NOW + 1, "tmb": g.tmb.to_b64(),
-                               "typ": "cyphr.me/cyphr/principal/create"}),
-        ),
-        None,
-        NOW + 1,
-    );
-    (p, pg)
+    genesis_commit(&mut p, g, vec![(nonce_create, None)], NOW);
+    let id = p
+        .pg()
+        .expect("the genesis commit establishes the PG")
+        .as_multihash()
+        .tagged_first()
+        .expect("pg")
+        .to_string();
+    (p, id)
 }
 
 /// Backs SPEC be0663f 5.1 l764 (the bare key thumbprint is the identity of
@@ -866,18 +683,18 @@ async fn bare_tmb_never_resolves_to_a_nonce_principal() {
     let pool = load_pool();
     let g = kp(&pool, "golden");
     let (n, pg) = nonce_principal(&g, 0x11);
-    let (bare, labelled) = spellings(&pool);
+    let (bare, labelled) = implicit_spellings(&pool);
     let (state, _dir) = keyless_server();
     let app = build_router(state);
 
-    let (status, body) = post_json(app.clone(), "/push", wire(&n, 0, &g, &pg)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&n, 0, &pg)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
         "nonce principal commit 0: {body:?}"
     );
     let (status, t) = tip(app.clone(), &pg).await;
-    assert_eq!(status, StatusCode::OK, "control: its own PG-to-be: {t:?}");
+    assert_eq!(status, StatusCode::OK, "control: its own id: {t:?}");
     for id in [&bare, &labelled] {
         let (status, t) = tip(app.clone(), id).await;
         assert_ne!(
@@ -901,13 +718,20 @@ async fn bare_tmb_resolves_to_the_no_nonce_principal_beside_a_nonce_sibling() {
         let pool = load_pool();
         let g = kp(&pool, "golden");
         let (n, pg) = nonce_principal(&g, 0x22);
-        let (plain, _, plain_pr_0) = nascent_principal(&pool);
-        let (bare, labelled) = spellings(&pool);
+        let mut plain = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+        genesis_commit(&mut plain, &g, Vec::new(), NOW);
+        let plain_pr_0 = plain
+            .pr()
+            .as_multihash()
+            .tagged_first()
+            .expect("pr")
+            .to_string();
+        let (bare, labelled) = implicit_spellings(&pool);
         let (state, _dir) = keyless_server();
         let app = build_router(state);
 
-        let push_nonce = || post_json(app.clone(), "/push", wire(&n, 0, &g, &pg));
-        let push_plain = || post_json(app.clone(), "/push", wire(&plain, 0, &g, &labelled));
+        let push_nonce = || post_json(app.clone(), "/push", wire(&n, 0, &pg));
+        let push_plain = || post_json(app.clone(), "/push", wire(&plain, 0, &labelled));
         let (a, b) = if nonce_first {
             let a = push_nonce().await;
             (a, push_plain().await)

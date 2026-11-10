@@ -19,8 +19,8 @@ use proptest::prelude::*;
 
 const NOW: i64 = 1_700_100_000;
 
-/// Pool keys that can be added after `golden`, spanning ES256, ES384 and
-/// Ed25519 so the PG gains SHA-256, SHA-384 and SHA-512 variants.
+/// Pool keys a genesis can create after `golden`, spanning ES256, ES384
+/// and Ed25519 so the PG gains SHA-256, SHA-384 and SHA-512 variants.
 const ADDABLE: &[&str] = &["key_a", "alice", "diana_es384", "eve_ed25519"];
 
 struct Kp {
@@ -61,65 +61,37 @@ fn sign(k: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     (bytes, sig, czd)
 }
 
-fn commit_one(
-    p: &mut cyphr::Principal,
-    signer: &Kp,
-    pay: serde_json::Value,
-    sidecar: Option<cyphr::Key>,
-    now: i64,
-) {
-    let (pay, sig, czd) = sign(signer, pay);
+fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
+    cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
+}
+
+/// Commit, on the established `p`, `signer`'s `key/create` of `added`.
+fn commit_key_create(p: &mut cyphr::Principal, signer: &Kp, added: &Kp, now: i64) {
+    let (pay, sig, czd) = sign(
+        signer,
+        serde_json::json!({"alg": signer.alg, "id": added.tmb.to_b64(), "now": now,
+                           "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+    );
     let mut scope = p.begin_commit();
-    if serde_json::from_slice::<serde_json::Value>(&pay).is_ok_and(|v| {
-        v["typ"]
-            .as_str()
-            .is_some_and(|t| t.ends_with("cyphr/principal/create"))
-    }) {
-        scope
-            .create_genesis_keys(
-                &cyphr::signer::SoftwareSigner::new(
-                    &signer.alg,
-                    &signer.prv,
-                    &signer.pubb,
-                    &signer.tmb,
-                ),
-                now,
-                "cyphr.me",
-            )
-            .expect("genesis key/creates (SPEC 7.7 Example 1)");
-    }
     scope
-        .verify_and_apply(&pay, &sig, czd, sidecar)
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(added)))
         .expect("apply");
     scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(
-                &signer.alg,
-                &signer.prv,
-                &signer.pubb,
-                &signer.tmb,
-            ),
-            now,
-            "cyphr.me",
-        )
+        .finalize_with_software(&signer_of(signer), now, "cyphr.me")
         .expect("finalize");
 }
 
 /// Raw wire blobs of commit `i` of `p`: key-introducing cozies carry the
-/// new key, as the engine's ingest requires, and commit 0's last blob
-/// carries the `golden` genesis key (as the server's wire form does), so a
-/// stored principal's genesis is recoverable from its first commit's blobs
-/// -- a replay of it succeeds rather than failing on an unknown signer.
+/// new key, as the engine's ingest requires, so a stored principal's
+/// genesis is recoverable from its genesis commit's `key/create`s (SPEC
+/// 5.1) and every later key from its own `key/create`.
 fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
     let entry = &cyphr_storage::export_commits(p).expect("export")[i];
     let mut key_idx = 0;
-    let genesis_key = kp(&load_pool(), "golden");
-    let last = entry.cozies.len() - 1;
     entry
         .cozies
         .iter()
-        .enumerate()
-        .map(|(n, c)| {
+        .map(|c| {
             let mut c = c.clone();
             let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
             if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
@@ -127,49 +99,32 @@ fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
                 c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
                 key_idx += 1;
             }
-            if i == 0 && n == last {
-                c["key"] = serde_json::json!({
-                    "alg": genesis_key.alg,
-                    "pub": Base64UrlUnpadded::encode_string(&genesis_key.pubb),
-                    "tmb": genesis_key.tmb.to_b64(),
-                });
-            }
             serde_json::to_vec(&c).expect("blob")
         })
         .collect()
 }
 
-/// A principal rooted at `golden` that adds `added` (each in its own
-/// commit), then establishes its PG. Returns the principal, the genesis key
-/// and the genesis-derived id.
-fn build(pool: &test_fixtures::Pool, added: &[&str]) -> (cyphr::Principal, Genesis, String) {
+/// A principal whose genesis commit (SPEC 5.1) creates `golden` and then
+/// `genesis` (so its PG spans their algorithms), then adds each of `later`
+/// in its own commit. Returns the principal, its genesis and its id (the
+/// PG, in its first-algorithm spelling).
+fn build(
+    pool: &test_fixtures::Pool,
+    genesis: &[&str],
+    later: &[&str],
+) -> (cyphr::Principal, Genesis, String) {
     let g = kp(pool, "golden");
-    let genesis = Genesis::Implicit(key_of(&g));
-    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let keys: Vec<cyphr::Key> = std::iter::once(key_of(&g))
+        .chain(genesis.iter().map(|name| key_of(&kp(pool, name))))
+        .collect();
+    let mut p = cyphr::Principal::explicit(keys.clone()).expect("genesis");
     let id = p.pr_tagged().expect("genesis id");
-    for (n, name) in added.iter().enumerate() {
-        let k = kp(pool, name);
-        let now = NOW + n as i64;
-        commit_one(
-            &mut p,
-            &g,
-            serde_json::json!({"alg": g.alg, "id": k.tmb.to_b64(), "now": now,
-                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-            Some(key_of(&k)),
-            now,
-        );
+    p.commit_genesis(&signer_of(&g), NOW, "cyphr.me")
+        .expect("genesis commit");
+    for (n, name) in later.iter().enumerate() {
+        commit_key_create(&mut p, &g, &kp(pool, name), NOW + 1 + n as i64);
     }
-    let pr = p.pr_tagged().expect("pr");
-    let now = NOW + added.len() as i64;
-    commit_one(
-        &mut p,
-        &g,
-        serde_json::json!({"alg": g.alg, "id": pr, "now": now,
-                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        None,
-        now,
-    );
-    (p, genesis, id)
+    (p, Genesis::Explicit(keys), id)
 }
 
 /// Every PG spelling: each hash-variant label and each bare digest.
@@ -207,15 +162,16 @@ where
     out
 }
 
-/// Submit `added`-key principal, then check alias resolution before and
-/// after `rebuild_index_from_scratch`.
+/// Submit a principal whose genesis creates `golden` and `added`, then one
+/// more commit (so the tip is past the PG), then check alias resolution
+/// before and after `rebuild_index_from_scratch`.
 async fn check<B, I>(engine: StorageEngine<B, I>, pool: &test_fixtures::Pool, added: &[&str])
 where
     B: cyphr_storage::blob::BlobStore,
     I: Indexer + IndexerWrite,
 {
-    let (p, genesis, id) = build(pool, added);
-    let commits = added.len() + 1;
+    let (p, genesis, id) = build(pool, added, &["bob"]);
+    let commits = 2;
     for i in 0..commits {
         let raw = blobs(&p, i);
         let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
@@ -248,7 +204,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
 
     /// Backs I1 (the alias table is a rebuildable cache): for a random
-    /// subset and order of added keys (so the PG has one, two or three
+    /// subset and order of genesis keys (so the PG has one, two or three
     /// hash variants), every PG spelling resolves to the stored principal
     /// before `rebuild_index_from_scratch` and to the identical principal
     /// and tip after it. Turns red if an alias is never recorded (not
@@ -296,22 +252,7 @@ async fn alias_resolution_survives_reindex_on_fjall() {
 #[tokio::test]
 async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant() {
     let pool = load_pool();
-    let (g, d, e) = (
-        kp(&pool, "golden"),
-        kp(&pool, "diana_es384"),
-        kp(&pool, "eve_ed25519"),
-    );
-    let keys = vec![key_of(&g), key_of(&d), key_of(&e)];
-    let mut p = cyphr::Principal::explicit(keys.clone()).expect("explicit genesis");
-    let id = p.pr_tagged().expect("genesis id");
-    commit_one(
-        &mut p,
-        &g,
-        serde_json::json!({"alg": g.alg, "id": id, "now": NOW,
-                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
-        None,
-        NOW,
-    );
+    let (p, genesis, id) = build(&pool, &["diana_es384", "eve_ed25519"], &[]);
     let spellings = pg_spellings(&p);
     assert_eq!(
         spellings.len(),
@@ -327,7 +268,7 @@ async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant(
     let raw = blobs(&p, 0);
     let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
     engine
-        .submit_commit(&id, Some(Genesis::Explicit(keys)), &refs)
+        .submit_commit(&id, Some(genesis), &refs)
         .await
         .expect("create in commit 0");
 
@@ -350,7 +291,7 @@ async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant(
 #[tokio::test]
 async fn commit_pre_is_the_previous_commits_pr() {
     let pool = load_pool();
-    let (p, genesis, id) = build(&pool, &["key_a", "diana_es384"]);
+    let (p, genesis, id) = build(&pool, &["key_a"], &["diana_es384", "bob"]);
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     for i in 0..3 {
         let raw = blobs(&p, i);
@@ -431,7 +372,7 @@ impl cyphr_storage::blob::BlobStore for CountingBlobs {
 #[tokio::test]
 async fn established_principal_current_pr_is_refused_without_replay() {
     let pool = load_pool();
-    let (p, genesis, id) = build(&pool, &["key_a", "diana_es384"]);
+    let (p, genesis, id) = build(&pool, &["key_a"], &["diana_es384", "bob"]);
     let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let engine = StorageEngine::new(
         CountingBlobs {
@@ -476,29 +417,22 @@ async fn established_principal_current_pr_is_refused_without_replay() {
     );
 }
 
-/// Backs the pre-establishment DoS bound: before a principal has a PG, only
-/// its current PR (the PG-to-be) may name it, and any other digest of its
-/// latest commit (commit id, state root, auth root) is refused WITHOUT
-/// replaying its history. Turns red if such a digest triggers a replay
-/// (blob reads) before being refused. The control shows the PR itself still
-/// resolves. Not a scenario: the amplification is only observable as a
-/// blob-read count.
+/// Backs the read-path DoS bound for digests of the latest commit: a
+/// principal's id is its PG (any variant) or storage key, and any other
+/// digest of its latest commit (commit id, state root, auth root) is
+/// refused WITHOUT replaying its history. The latest commit follows the
+/// genesis commit: the genesis commit's own AR and SR are the PG, which
+/// names the principal by right. (A principal is no longer addressable
+/// before its PG: every chain begins with the genesis commit that
+/// establishes it, SPEC 5.1.) Turns red if
+/// such a digest triggers a replay (blob reads) or names the principal. The
+/// control shows the PG still resolves. Not a scenario: the amplification
+/// is only observable as a blob-read count.
 #[tokio::test]
 async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
     let pool = load_pool();
-    let g = kp(&pool, "golden");
-    let k = kp(&pool, "key_a");
-    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
-    let id = p.pr_tagged().expect("genesis id");
-    commit_one(
-        &mut p,
-        &g,
-        serde_json::json!({"alg": g.alg, "id": k.tmb.to_b64(), "now": NOW,
-                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
-        Some(key_of(&k)),
-        NOW,
-    );
-    let entry = cyphr_storage::export_commits(&p).expect("export").remove(0);
+    let (p, _, id) = build(&pool, &["key_a"], &["bob"]);
+    let entry = cyphr_storage::export_commits(&p).expect("export").remove(1);
 
     let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let engine = StorageEngine::new(
@@ -508,13 +442,16 @@ async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
         },
         MemoryIndexer::new(),
     );
-    let raw = blobs(&p, 0);
-    let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
-    engine
-        .submit_commit(&id, None, &refs)
-        .await
-        .expect("commit 0");
+    for i in 0..2 {
+        let raw = blobs(&p, i);
+        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, None, &refs)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e}"));
+    }
 
+    let pg = pg_spellings(&p);
     let before = gets.load(std::sync::atomic::Ordering::SeqCst);
     let sr = entry.sr.clone().expect("a live principal has an SR");
     let ar = entry.auth_root.clone().expect("a live principal has an AR");
@@ -524,6 +461,7 @@ async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
             digest.to_string(),
             cyphr_storage::engine::bare_digest(digest).to_string(),
         ] {
+            assert!(!pg.contains(&spelling), "premise: {spelling} is not the PG");
             let resolved = engine
                 .canonical_principal_id(&spelling)
                 .await
@@ -536,13 +474,10 @@ async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
         before,
         "a non-PR digest of the latest commit replayed the principal's history"
     );
-    // Control: the PG-to-be (the current PR) does name the principal.
+    // Control: the PG does name the principal.
     assert_eq!(
-        engine
-            .canonical_principal_id(&entry.pr)
-            .await
-            .expect("resolve"),
+        engine.canonical_principal_id(&id).await.expect("resolve"),
         id,
-        "control: the current PR must resolve while the PG is unestablished"
+        "control: the PG must resolve"
     );
 }

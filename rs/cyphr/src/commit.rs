@@ -580,9 +580,10 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         };
 
         // 3. Compute Arrow = MR(pre, sr, tmr)
-        let Ok(computed_digest) =
-            arrow_digest(signer_hash_alg, &self.principal.pr, sr.as_ref(), &tmr)
-        else {
+        let Ok(pre) = self.projected.arrow_pre() else {
+            return false;
+        };
+        let Ok(computed_digest) = arrow_digest(signer_hash_alg, &pre, sr.as_ref(), &tmr) else {
             return false;
         };
 
@@ -667,7 +668,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
         // 2. Compute Arrow = MR(pre, sr, tmr); pre is the previous state's principal root.
-        let arrow = arrow_digest(signer_hash_alg, &self.principal.pr, sr.as_ref(), &tmr)?;
+        let pre = self.projected.arrow_pre()?;
+        let arrow = arrow_digest(signer_hash_alg, &pre, sr.as_ref(), &tmr)?;
         let arrow_tagged = format!(
             "{}:{}",
             signer_hash_alg,
@@ -865,6 +867,68 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         }
         Ok(cozies)
     }
+
+    /// The `id` a `principal/create` applied next in this scope must carry:
+    /// the future SR, the state the scope has reached promoted to PR with no
+    /// CR (SPEC 5.1 step 3, 5.2 TX1 "ID == PG == SR"), as a tagged digest
+    /// in the principal's first active algorithm.
+    ///
+    /// # Errors
+    ///
+    /// `NoActiveKeys` if the scope holds no key; a root derivation error
+    /// otherwise.
+    pub fn genesis_id(&self) -> crate::error::Result<String> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let pg = self.projected.genesis_pr()?;
+        let alg = self
+            .projected
+            .active_algs()
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.projected.hash_alg());
+        let bytes = pg.0.get_or_err(alg)?;
+        Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+    }
+
+    /// Sign with `signer` and apply the `principal/create` that closes a
+    /// genesis (SPEC 5.1 step 3): its `id` is [`genesis_id`](Self::genesis_id),
+    /// the PG-to-be. Returns it as a wire coz (`pay`, `sig`).
+    ///
+    /// # Errors
+    ///
+    /// `Signer` if signing fails; otherwise as
+    /// [`verify_and_apply`](Self::verify_and_apply), e.g.
+    /// `GenesisIncomplete` while a genesis key has no `key/create`.
+    pub fn create_principal(
+        &mut self,
+        signer: &SoftwareSigner,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<serde_json::Value> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        use serde_json::json;
+
+        use crate::error::Error;
+
+        let mut pay = json!({
+            "alg": signer.alg(),
+            "id": self.genesis_id()?,
+            "now": now,
+            "tmb": signer.tmb().to_b64(),
+            "typ": format!("{authority}/{}", crate::parsed_coz::typ::PRINCIPAL_CREATE),
+        });
+        if let Some(obj) = pay.as_object_mut() {
+            obj.sort_keys();
+        }
+        let pay_vec = serde_json::to_vec(&pay).map_err(|_| Error::MalformedPayload)?;
+        let cad = coz::canonical_hash_for_alg(&pay_vec, signer.alg(), None)
+            .ok_or(Error::MalformedPayload)?;
+        let sig = signer.sign_now(&cad)?;
+        let czd = coz::czd_for_alg(&cad, &sig, signer.alg()).ok_or(Error::MalformedPayload)?;
+        self.verify_and_apply(&pay_vec, &sig, czd, None)?;
+        Ok(json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) }))
+    }
 }
 
 /// Output of [`CommitScope::prepare_commit`]: the unsigned `commit/create`
@@ -883,6 +947,12 @@ impl PreparedCommit {
     /// The canonical hash of the commit pay: the message to sign.
     pub fn cad(&self) -> &coz::Cad {
         &self.cad
+    }
+
+    /// The `commit/create` pay the signature covers, for a signer that
+    /// carries the coz itself (the wire form is this pay and its `sig`).
+    pub fn pay(&self) -> &serde_json::Value {
+        &self.pay_obj
     }
 }
 
@@ -1106,6 +1176,7 @@ mod tests {
 
         let mut principal = crate::principal::Principal::implicit(fold_domain_key(genesis))
             .expect("genesis principal");
+        principal.genesis_test().expect("genesis commit");
         let mut scope = principal.begin_commit();
 
         let (pay1, sig1, czd1) = fold_signed_key_create(genesis, &genesis_tmb_b64, diana, now);
@@ -1228,6 +1299,7 @@ mod tests {
         // Sole-key genesis on the ES384 key.
         let mut principal = crate::principal::Principal::implicit(fold_domain_key(old_key))
             .expect("genesis principal");
+        principal.genesis_test().expect("genesis commit");
 
         // Sign the ES384 -> ES256 key/replace ONCE; replay the identical
         // bytes onto a byte-identical clone so production (scope_a) and
@@ -1444,6 +1516,7 @@ mod tests {
         let mut principal =
             crate::principal::Principal::implicit_with_storage(fold_domain_key(genesis), storage)
                 .expect("genesis principal");
+        principal.genesis_test().expect("genesis commit");
 
         // Snapshot observable pre-commit state to compare against after the
         // injected failure.

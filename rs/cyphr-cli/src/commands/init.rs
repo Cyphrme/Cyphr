@@ -1,8 +1,6 @@
 //! Identity initialization command.
 
 use cyphr::{Principal, StateDigest};
-use indexmap::IndexMap;
-use serde_json::Value;
 
 use super::common::{
     current_timestamp, decode_b64, generate_key, get_principal_id_from_principal,
@@ -11,45 +9,29 @@ use super::common::{
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, Error, OutputFormat};
 
-/// Commit the principal's genesis (SPEC 5.1, 5.2, 5.3): the genesis key
-/// (the first) signs a `key/create` for itself and for each further genesis
-/// key, then a `principal/create` whose `id` is the principal's state, and
-/// the commit transaction finalizes it.
-fn commit_genesis<S: cyphr::eml::Storage>(
+/// Commit the principal's genesis (SPEC 5.1, 5.2, 5.3) if it has none:
+/// the genesis key (the first) signs a `key/create` for itself and for each
+/// further genesis key, the `principal/create` and the commit transaction.
+/// Every commit chain begins with this commit, so it precedes the first
+/// commit any command makes.
+pub(crate) fn commit_genesis<S: cyphr::eml::Storage>(
     principal: &mut Principal<S>,
     keystore: &JsonKeyStore,
-    signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
-    let signer = keystore.get(signer_tmb)?;
-    let now = current_timestamp();
-
-    let mut pay = IndexMap::new();
-    pay.insert("alg", Value::String(signer.alg.clone()));
-    pay.insert("id", Value::String(principal.pr_tagged()?));
-    pay.insert("now", Value::Number(now.into()));
-    pay.insert("tmb", Value::String(signer_tmb.to_owned()));
-    pay.insert(
-        "typ",
-        Value::String(format!(
-            "{authority}/{}",
-            cyphr::parsed_coz::typ::PRINCIPAL_CREATE
-        )),
-    );
-    let pay_vec = serde_json::to_vec(&pay)?;
-
-    let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer.prv_key, &signer.pub_key)
-        .ok_or_else(|| Error::Signing("sign_json failed".into()))?;
-    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg)
-        .ok_or_else(|| Error::Signing("czd_for_alg failed".into()))?;
-    let tmb = coz::Thumbprint::from_bytes(decode_b64(signer_tmb)?);
-
+    if principal.pg().is_some() {
+        return Ok(());
+    }
+    let genesis = principal
+        .genesis_keys()
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::InvalidArgument("genesis has no key".into()))?;
+    let signer = keystore.get(&genesis)?;
+    let tmb = coz::Thumbprint::from_bytes(decode_b64(&genesis)?);
     let software =
         cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv_key, &signer.pub_key, &tmb);
-    let mut scope = principal.begin_commit();
-    scope.create_genesis_keys(&software, now, authority)?;
-    scope.verify_and_apply(&pay_vec, &sig, czd, None)?;
-    scope.finalize_with_software(&software, now, authority)?;
+    principal.commit_genesis(&software, current_timestamp(), authority)?;
     Ok(())
 }
 
@@ -104,12 +86,7 @@ pub fn run(
     };
 
     if genesis_commit {
-        let genesis_key = principal
-            .genesis_keys()
-            .first()
-            .cloned()
-            .ok_or_else(|| Error::InvalidArgument("genesis has no key".into()))?;
-        commit_genesis(&mut principal, &keystore, &genesis_key, &cli.authority)?;
+        commit_genesis(&mut principal, &keystore, &cli.authority)?;
     }
 
     // Get identity string for output: PG if available, else PR

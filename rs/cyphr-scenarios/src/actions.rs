@@ -87,10 +87,8 @@ fn unsupported<T>(action: &'static str, capability: Capability) -> ActionResult<
 }
 
 /// A principal's canonical address: the PG once it is established, or the
-/// genesis tmb (equal to its PR) while it is a nascent Level 1-2 principal.
-/// A principal that added keys before `principal/create` has a PG that
-/// differs from its genesis tmb, so the handle can change spelling over its
-/// life. Peers report it as a bare digest, so compare handles with
+/// genesis tmb (equal to its PR) while it is a Level 1-2 principal that has
+/// not committed. Peers report it as a bare digest, so compare handles with
 /// [`Principal::bare`], never as raw strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal(pub String);

@@ -59,6 +59,19 @@ fn signer(name: &str) -> Signer {
     }
 }
 
+/// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
+/// genesis key's `key/create` of itself, the `principal/create` and the
+/// `commit/create`), signed by its genesis key `k`.
+fn genesis_of(mut p: Principal, k: &Signer) -> Principal {
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
+        1,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
 /// One principal under test: an implicit-genesis principal and its key.
 struct Peer {
     signer: Signer,
@@ -75,7 +88,7 @@ impl Peer {
         )
         .expect("key binds its tmb")
         .with_first_seen(NOW);
-        let principal = Principal::implicit(key).expect("implicit genesis");
+        let principal = genesis_of(Principal::implicit(key).expect("implicit genesis"), &signer);
         Self { signer, principal }
     }
 
@@ -286,8 +299,8 @@ fn an_ack_naming_another_target_is_refused() {
     assert_eq!(bob.pr(), before);
     assert_eq!(
         bob.principal.commits().count(),
-        0,
-        "a refused ack leaves no commit behind"
+        1,
+        "a refused ack leaves no commit behind the genesis"
     );
 }
 

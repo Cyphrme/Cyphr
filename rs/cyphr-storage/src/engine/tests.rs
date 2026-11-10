@@ -690,11 +690,18 @@ async fn crash_between_manifest_and_index_write_is_recoverable() {
 #[tokio::test]
 async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
     let engine = test_engine();
-    let blob = b"{\"pay\":{\"now\":1000}}";
+    // A conformant principal (its genesis commit, SPEC 5.1): the scratch
+    // rebuild replays every manifest and quarantines placeholder blobs.
+    let pool = load_pool();
+    let golden = pool.get("golden").expect("golden");
+    let mut principal = cyphr::Principal::implicit(pool_key_to_domain(golden)).unwrap();
+    let alice = principal.pr_tagged().unwrap();
+    let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, 1000).unwrap();
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     engine
-        .ingest_commit(&[blob.as_slice()], make_meta("alice", 0, 1000))
+        .submit_commit(&alice, None, &refs)
         .await
-        .expect("ingest_commit failed");
+        .expect("genesis commit");
 
     // An indexed commit with no manifest: what a corrupted or stale index
     // holds that the blob store cannot account for.
@@ -716,7 +723,7 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
         "an entry with no backing manifest must not survive a from-scratch rebuild"
     );
     assert!(
-        engine.indexer().get_tip("alice").await.unwrap().is_some(),
+        engine.indexer().get_tip(&alice).await.unwrap().is_some(),
         "the manifest-backed principal must be rebuilt"
     );
 }
@@ -1342,15 +1349,17 @@ fn coz_disclosing(typ: &str, who: &str) -> Vec<u8> {
     .unwrap()
 }
 
-/// Claim: the unsigned `key` member survives canonicalization only on the
-/// protocol's own genesis carrier, judged by the protocol predicate (the
-/// typ's authority-qualified suffix), never by substring: an application
-/// typ that merely contains `/commit/create` is an ordinary coz, keeps no
-/// key, and two copies differing only in `key` store as the same bytes.
-/// A unit test: the engine's action classifier is substring-based, so such
-/// a typ cannot be pushed end to end. Turns red if `key` is kept on it.
+/// Claim: the unsigned `key` member survives canonicalization only on a
+/// key-introducing coz, judged by the protocol predicate (the typ's
+/// authority-qualified suffix), never by substring. A `commit/create`
+/// introduces no key (a genesis is read only from its commit's
+/// `key/create`s, SPEC 5.1), and an application typ that merely contains
+/// `/commit/create` is an ordinary coz: neither keeps a key, and two copies
+/// differing only in `key` store as the same bytes. A unit test: the
+/// engine's action classifier is substring-based, so such a typ cannot be
+/// pushed end to end. Turns red if `key` is kept on either.
 #[test]
-fn canonical_key_is_kept_only_on_the_protocol_genesis_carrier() {
+fn canonical_key_is_kept_only_on_a_key_introducing_coz() {
     let kept = |typ: &str, who: &str| {
         let bytes = canonical_coz(&coz_disclosing(typ, who), 0).expect("canonical");
         serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -1359,8 +1368,8 @@ fn canonical_key_is_kept_only_on_the_protocol_genesis_carrier() {
             .is_some()
     };
     assert!(
-        kept("cyphr.me/cyphr/commit/create", "alice"),
-        "the genesis carrier keeps its key"
+        !kept("cyphr.me/cyphr/commit/create", "alice"),
+        "a commit/create introduces no key, so keeps none"
     );
     assert!(
         kept("cyphr.me/cyphr/key/create", "golden"),
@@ -1420,12 +1429,11 @@ proptest::proptest! {
     /// Property: whatever unsigned members a replayer or relayer attaches to
     /// the `key` sidecar (a `tag`, a `now`, any extra member, any member
     /// order), `canonical_coz` returns the same bytes, for every coz kind
-    /// that keeps `key` (key/create, key/replace, and the commit/create
-    /// genesis carrier signed by its own key). For kinds that keep no key
-    /// (an action, key/delete) and for a commit/create carrying a foreign
-    /// key, the output equals the output with no key at all. One czd, one
-    /// blob. Turns red if any unsigned sidecar member, or a foreign key on a
-    /// carrier, survives.
+    /// that keeps `key` (key/create, key/replace). For kinds that keep no
+    /// key (an action, key/delete, commit/create), the output equals the
+    /// output with no key at all. One czd, one blob. Turns red if any
+    /// unsigned sidecar member, or a key on a kind that introduces none,
+    /// survives.
     #[test]
     fn canonical_coz_is_independent_of_the_unsigned_sidecar(
         tag in proptest::option::of("[ -~]{0,12}"),
@@ -1444,11 +1452,10 @@ proptest::proptest! {
             for (k, v) in entries { m.insert(k, v); }
             serde_json::Value::Object(m)
         };
-        // Kinds that keep the key: the key is the introduced / carried one.
+        // Kinds that keep the key: the key is the introduced one.
         for (typ, signer, shown) in [
             ("cyphr.me/cyphr/key/create", "alice", "golden"),
             ("cyphr.me/cyphr/key/replace", "alice", "golden"),
-            ("cyphr.me/cyphr/commit/create", "alice", "alice"),
         ] {
             let shown = key_json_of(shown);
             let plain =
@@ -1461,7 +1468,7 @@ proptest::proptest! {
             proptest::prop_assert_eq!(&plain, &varied, "{} sidecar changed the blob", typ);
             proptest::prop_assert!(serde_json::from_slice::<serde_json::Value>(&plain).unwrap().get("key").is_some());
         }
-        // Kinds that keep no key, and a carrier with a foreign key.
+        // Kinds that keep no key.
         for (typ, signer) in [
             ("cyphr.me/action", "alice"),
             ("cyphr.me/cyphr/key/delete", "alice"),

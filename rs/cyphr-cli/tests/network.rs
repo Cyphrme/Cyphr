@@ -176,6 +176,8 @@ impl User {
         self.new_identity_alg("ES256")
     }
 
+    /// A fresh identity with two commits: the genesis commit the CLI makes
+    /// before its first key add, then that key add.
     fn new_identity_alg(&self, algo: &str) -> String {
         let g = self.setup(&["key", "generate", "--algo", algo]);
         let tmb = g["tmb"].as_str().expect("tmb").to_owned();
@@ -290,7 +292,11 @@ fn push_stale_is_refused_then_rebased_is_accepted() {
         &format!("--peer={}", server.url),
     ]);
     assert!(f.ok, "fetch must succeed: {}", f.stderr);
-    assert_eq!(b.commit_count(&id), 3, "genesis commit + B's + rebased A's");
+    assert_eq!(
+        b.commit_count(&id),
+        4,
+        "genesis commit + setup add + B's + rebased A's"
+    );
 }
 
 /// Claim: the CLI accepts an identity whose genesis key is not ES256. The
@@ -308,7 +314,11 @@ fn push_accepts_ed25519_and_other_key_algorithms() {
         let u = User::new();
         let id = u.new_identity_alg(algo);
         accepted(&u.push(&id, &server.url), &format!("{algo} identity push"));
-        assert_eq!(u.commit_count(&id), 1, "{algo}: one genesis commit");
+        assert_eq!(
+            u.commit_count(&id),
+            2,
+            "{algo}: the genesis commit + the setup key add"
+        );
     }
 }
 

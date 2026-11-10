@@ -12,7 +12,9 @@ use cyphr_server::build_router;
 
 mod common;
 
-use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
+use common::{
+    attestor_server, build_genesis_push_body, get_json, golden_principal_id, load_pool, post_json,
+};
 
 /// A client-supplied identifier the engine will happily index a genesis
 /// commit under (any string is a usable storage key), but that is not a
@@ -110,12 +112,8 @@ async fn push_with_canonical_principal_id_is_accepted_and_receipted() {
     let app = build_router(state);
 
     let pool = load_pool();
-    // SPEC 3.1: the id is the implicit genesis key's tmb, not a free choice.
-    let principal_id = pool
-        .get("golden")
-        .expect("golden in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb");
+    // SPEC 3.1, 5.1: the id is the genesis commit's PG, not a free choice.
+    let principal_id = golden_principal_id(&pool);
     let now = 1_700_100_100;
     let push_body = build_genesis_push_body(&pool, &principal_id, now);
 

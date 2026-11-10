@@ -6,6 +6,7 @@
 //! - **Pool**: Key pool parsing and validation (`pool.toml`)
 //! - **Intent**: Test intent definitions (`*.toml`)
 //! - **Golden**: Generated test output (`*.json`)
+//! - **Bundle**: Conformant wire bundles (a genesis commit) for engine tests
 //!
 //! ## Architecture
 //!
@@ -21,6 +22,7 @@
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
+pub mod bundle;
 pub mod error;
 pub mod golden;
 pub mod intent;

@@ -17,6 +17,8 @@ use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+mod common;
+
 // ========================================================================
 // Shared fixture helpers (mirrored from tests/e2e.rs and tests/login.rs,
 // which are separate integration-test crates and cannot be imported here)
@@ -207,12 +209,10 @@ fn fixture_principal_id(fixture: &serde_json::Value) -> String {
         .expect("fixture genesis derives an id")
 }
 
-/// The id the standard `golden` implicit genesis derives (SPEC 3.1).
+/// The id (the PG, SPEC 3.1) of the standard principal whose genesis
+/// commit `build_genesis_push_body` pushes.
 fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
-    pool.get("golden")
-        .expect("golden key in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb")
+    common::golden_principal_id(pool)
 }
 
 /// Bootstrap a principal into the engine via the validated write path
@@ -283,39 +283,12 @@ async fn send(req: Request<Body>, app: axum::Router) -> (StatusCode, serde_json:
     (status, json)
 }
 
-/// Build a brand-new principal's genesis push HTTP body: the same wire
-/// contract `push_new_principal_happy_path` (`tests/e2e.rs`) exercises --
-/// a `key/create` closed by `commit/create` with the genesis key embedded
-/// on the closing cozy. Shared by the admission-knob tests below, which
-/// only differ in what (if any) bearer token they attach.
+/// Build a brand-new principal's genesis push HTTP body: its genesis
+/// commit (SPEC 5.1), in which `golden` creates itself and `key_a`
+/// (`common::build_genesis_push_body`). Shared by the admission-knob tests
+/// below, which only differ in what (if any) bearer token they attach.
 fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-    )
-    .expect("key binds its tmb");
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let (mut blobs, _entry) = sign_key_create_commit(principal, pool, "golden", "key_a", now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+    common::build_genesis_push_body(pool, principal_id, now)
 }
 
 fn push_request(body: String, bearer: Option<&str>) -> Request<Body> {
@@ -394,7 +367,8 @@ async fn push_with_matching_token_pr_succeeds() {
         .as_ref()
         .unwrap()
         .issue_login_token(
-            principal_id,
+            // A token's subject is the canonical bare digest.
+            cyphr_storage::engine::bare_digest(principal_id),
             &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["read".to_string(), "write".to_string()],
             real_now(),
@@ -416,47 +390,17 @@ async fn push_with_matching_token_pr_succeeds() {
 /// genuinely optional beyond the genesis-bootstrap case, not merely
 /// untested by omission.
 ///
-/// The principal is bootstrapped over real HTTP first (genesis
-/// auto-detection, same wire contract as `push_new_principal_happy_path`
-/// in `tests/e2e.rs`) rather than via the engine's explicit-genesis API:
-/// `resolve_genesis`'s existing-principal branch re-derives genesis by
-/// re-scanning the first STORED commit's own wire blobs for an embedded
-/// key, which an explicit-genesis bootstrap never carries (that key is
-/// supplied out-of-band instead) -- so only an HTTP-bootstrapped
-/// principal is a valid target for a genesis-less follow-up push.
+/// The principal is bootstrapped over real HTTP first by pushing its
+/// genesis commit (same wire contract as `push_new_principal_happy_path`
+/// in `tests/e2e.rs`), whose `key/create`s disclose the genesis keys the
+/// server re-derives the principal from for the follow-up push.
 #[tokio::test]
 async fn push_for_existing_principal_with_no_token_succeeds() {
     let pool = load_pool();
     let principal_id = golden_principal_id(&pool);
     let principal_id = principal_id.as_str();
 
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key::new(
-        golden.alg.clone(),
-        golden.compute_tmb().expect("golden tmb"),
-        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-    )
-    .expect("key binds its tmb");
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let (mut genesis_blobs, genesis_entry) =
-        sign_key_create_commit(principal, &pool, "golden", "key_a", 1_700_000_000);
-    let closing_idx = genesis_blobs.len() - 1;
-    let mut closing: serde_json::Value =
-        serde_json::from_slice(&genesis_blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg(),
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
-        }),
-    );
-    genesis_blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-    let genesis_body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": genesis_blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let genesis_body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
 
     let state = test_state();
     let app = build_router(state);
@@ -468,25 +412,11 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
         "genesis bootstrap push must succeed: {genesis_json:?}"
     );
 
-    // Follow-up commit for the now-existing principal: replay the
-    // genesis commit onto a FRESH principal (a live clone of `principal`
-    // would share the same durable commit log and collide on the same
-    // leaf position rather than chain -- see `sign_key_create_commit`'s
-    // doc comment). No embedded genesis key on this one (only a
-    // genuinely new principal's wire blobs carry one), and no bearer
-    // token.
-    let replayed = cyphr_storage::load_principal_from_commits(
-        cyphr_storage::Genesis::Implicit(golden_key),
-        std::slice::from_ref(&genesis_entry),
-    )
-    .expect("replay the genesis commit onto a fresh principal");
-    let (followup_blobs, _followup_entry) =
-        sign_key_create_commit(replayed, &pool, "golden", "key_b", 1_700_000_100);
-    let followup_body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": followup_blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    // Follow-up commit for the now-existing principal: a non-genesis
+    // "golden adds key_b" commit chained onto the pushed genesis, with no
+    // bearer token.
+    let followup_body =
+        common::build_second_commit_push_body(&pool, principal_id, 1_700_000_000, 1_700_000_100);
 
     let (status, json) = send(push_request(followup_body, None), app).await;
     assert_eq!(
@@ -835,7 +765,8 @@ async fn bearer_refuses_server_signed_non_token() {
 async fn token_key_absent_or_missing_is_refused_at_push() {
     let (state, followup, _revoked, _survivor) = revoked_key_session().await;
     let pool = load_pool();
-    let pid = golden_principal_id(&pool);
+    // A token's subject is the canonical bare digest.
+    let pid = cyphr_storage::engine::bare_digest(&golden_principal_id(&pool)).to_string();
     let identity = state.identity.as_ref().unwrap();
     let stranger = coz::Alg::Ed25519
         .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)

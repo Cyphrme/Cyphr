@@ -73,6 +73,7 @@ fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
 fn abandoned_commit_scope_does_not_leak_state() {
     let key1 = make_test_key(0x11);
     let mut principal = Principal::implicit(key1.clone()).unwrap();
+    principal.genesis_test().unwrap();
 
     let pr_before = principal.pr().clone();
     let sr_before = principal.sr().cloned();
@@ -122,6 +123,7 @@ fn revoked_key_algorithm_drops_from_pr_variants() {
     let key_ed25519 = make_test_key_ed25519(0x22);
 
     let mut principal = Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
+    principal.genesis_test().unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -178,6 +180,7 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
     let key_ed25519 = make_test_key_ed25519(0x22);
 
     let mut principal = Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
+    principal.genesis_test().unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -266,6 +269,7 @@ fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
 
     let key = make_test_key(0x11);
     let mut principal = Principal::implicit(key.clone()).unwrap();
+    principal.genesis_test().unwrap();
 
     let action = make_test_action(key.tmb());
     principal.record_action(action).unwrap();
@@ -452,12 +456,13 @@ fn establish_pg_works_for_disk_backed_storage() {
     );
 
     // PG is set exactly once: a second principal/create must fail, not
-    // silently re-establish or panic.
+    // silently re-establish or panic. In the same genesis commit nothing
+    // but the commit/create may follow the first (SPEC 5.1 steps 3-4).
     let second_cz = make_principal_create_tx(&disk_principal, &key, 0x55);
     let second_vtx = VerifiedCoz::from_transaction_unsafe(second_cz, None);
     let result = disk_principal.apply_verified_internal(second_vtx);
     assert!(
-        matches!(result, Err(Error::StateMismatch)),
+        matches!(result, Err(Error::GenesisIncomplete)),
         "a second principal/create must fail — PG is already established"
     );
 }

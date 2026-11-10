@@ -32,50 +32,122 @@ tx = [
   [
     { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
 ]
+
+[test.expected]
+error = "GenesisIncomplete"
+
+# A genesis opens with the genesis key's own key/create (SPEC 5.1 steps 1-2,
+# 5.3; 13.2 step 3: before it KR is empty, so no other coz verifies). Here
+# the genesis key first creates another key, before creating itself.
+[[test]]
+name      = "genesis_not_opened_by_self_create_fails"
+principal = ["golden"]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
 
 [test.expected]
 error = "UnknownKey"
 
+# A genesis key signs only once its own key/create is applied (SPEC 5.1
+# steps 1-2; 13.2 step 3: the signer's tmb must be in the current KR). Here
+# key_a, a genesis key not yet created, signs the key/create of alice.
+[[test]]
+name      = "uncreated_genesis_key_signs_fails"
+principal = ["golden", "key_a", "alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "key_a", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
+# The PG is the state at the principal/create (SPEC 5.1 step 3: its id is
+# the future SR), so only the commit/create may follow it in the genesis
+# commit; a key/create after it is refused.
+[[test]]
+name      = "mutation_after_principal_create_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "GenesisIncomplete"
+
 # ============================================================================
 # Revoked key tests
 # Need setup.revoke_key to pre-revoke a key before the test
 # ============================================================================
 
-# Transaction signed by pre-revoked key fails with KeyRevoked
+# Transaction signed by a revoked key fails with KeyRevoked (key_a revokes
+# itself in the commit after the genesis)
 [[test]]
 name      = "revoked_key_fails"
 principal = ["golden", "key_a"]
 
-[test.setup]
-revoke_at  = 1699999999
-revoke_key = "key_a"
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+    { now = 1700000001, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
   ],
 ]
 
 [test.expected]
 error = "KeyRevoked"
 
-# Action signed by pre-revoked key fails with KeyRevoked
+# Action signed by a revoked key fails with KeyRevoked
 [[test]]
 name      = "action_revoked_key_fails"
 principal = ["golden", "key_a"]
 
-[test.setup]
-revoke_at  = 1699999999
-revoke_key = "key_a"
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
 
 [[test.action]]
 msg    = "Action from revoked key"
@@ -93,21 +165,14 @@ error = "KeyRevoked"
 
 [[test]]
 name      = "duplicate_key_fails"
-principal = ["golden"]
+principal = ["golden", "key_a"]
 
-# The first key/create is the genesis key's own explicit add (SPEC 5.2
-# TX0); the second re-adds a key already created.
+# The genesis commit already created both keys (SPEC 5.3); this key/create
+# re-adds the genesis key.
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000001, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 

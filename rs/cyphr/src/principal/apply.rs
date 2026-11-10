@@ -52,6 +52,35 @@ impl<S: eml::Storage> Principal<S> {
         scope.finalize()
     }
 
+    /// Commit this principal's genesis (SPEC 5.1-5.3), signed by `signer`,
+    /// the genesis key: its `key/create` of itself and of every further
+    /// genesis key, the `principal/create` and the `commit/create`.
+    ///
+    /// Returns the commit's wire cozies in order; each `key/create`
+    /// discloses its key, so the genesis reads from the cozies alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`CommitScope::create_genesis_keys`],
+    /// [`CommitScope::create_principal`] and
+    /// [`CommitScope::finalize_with_software`]; `UnknownKey` when `signer`
+    /// is not the genesis key or the genesis is already committed.
+    pub fn commit_genesis(
+        &mut self,
+        signer: &crate::signer::SoftwareSigner,
+        now: i64,
+        authority: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut scope = self.begin_commit();
+        let mut cozies = scope.create_genesis_keys(signer, now, authority)?;
+        cozies.push(scope.create_principal(signer, now, authority)?);
+        let commit = scope.finalize_with_software(signer, now, authority)?;
+        let closing = commit.commit_tx().0.first().ok_or(Error::MissingCommit)?;
+        let closing = serde_json::to_value(closing.raw()).map_err(|_| Error::MalformedPayload)?;
+        cozies.push(closing);
+        Ok(cozies)
+    }
+
     // ========================================================================
     // ParsedCoz application (internal)
     // ========================================================================
@@ -88,18 +117,80 @@ impl<S: eml::Storage> Principal<S> {
         cz: crate::parsed_coz::ParsedCoz,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
+        self.commit_test(vec![(cz, new_key)])
+    }
+
+    /// Commit the genesis without signatures (test-only): the first
+    /// genesis key creates itself and every other genesis key, then signs
+    /// the `principal/create` (SPEC 5.1). Unit tests build principals from
+    /// dummy keys that cannot sign, so they reach an established principal
+    /// through this rather than through a signed genesis commit.
+    #[cfg(test)]
+    pub(crate) fn genesis_test(&mut self) -> Result<&Commit> {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+        use crate::state::AuthRoot;
+
+        // The earliest `now` every later coz may still use (SPEC 14.1: `now`
+        // is at least 1 and never earlier than the latest seen).
+        let now = self.latest_timestamp.max(1);
+        let signer = self
+            .auth
+            .keys
+            .get(self.genesis_keys.first().ok_or(Error::NoActiveKeys)?)
+            .ok_or(Error::UnknownKey)?
+            .tmb()
+            .clone();
+        let coz = |kind, byte: u8| ParsedCoz {
+            kind,
+            signer: signer.clone(),
+            now,
+            czd: coz::Czd::from_bytes(vec![byte; 32]),
+            hash_alg: HashAlg::Sha256,
+            arrow: None,
+            raw: coz::CozJson {
+                pay: serde_json::json!({ "typ": "cyphr.me/test", "alg": "ES256", "now": now }),
+                sig: vec![0; 64],
+            },
+        };
+        let mut cozies = Vec::new();
+        for (i, tmb) in self.uncreated_genesis.iter().enumerate() {
+            let key = self.auth.keys.get(tmb).ok_or(Error::UnknownKey)?.clone();
+            let kind = CozKind::KeyCreate {
+                id: key.tmb().clone(),
+            };
+            cozies.push((coz(kind, 0xF0 - i as u8), Some(key)));
+        }
+        // `id` is the PR the creates leave, which is the genesis PR: they
+        // add no key the KT does not already hold.
+        let id = AuthRoot(self.pr.0.clone());
+        cozies.push((coz(CozKind::PrincipalCreate { id }, 0xF1), None));
+        self.commit_test(cozies)
+    }
+
+    /// Apply `cozies` without signature verification and close them with
+    /// a synthetic `commit/create` (test-only).
+    #[cfg(test)]
+    fn commit_test(
+        &mut self,
+        cozies: Vec<(crate::parsed_coz::ParsedCoz, Option<Key>)>,
+    ) -> Result<&Commit> {
         use crate::commit::PendingCommit;
         use crate::multihash::MultihashDigest;
         use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
 
-        // Apply mutation eagerly (same as apply_verified_internal)
-        let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
-        self.apply_verified_internal(mutation_vtx)?;
-
-        // Push mutation coz to transactions (no arrow)
         let mut pending = PendingCommit::new();
-        let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
-        pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
+        let mut last = None;
+        for (cz, new_key) in cozies {
+            // Apply mutation eagerly (same as apply_verified_internal)
+            let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
+            self.apply_verified_internal(mutation_vtx)?;
+            // Push mutation coz to transactions (no arrow)
+            pending.push_tx(crate::transaction::Transaction(vec![
+                VerifiedCoz::from_transaction_unsafe(cz.clone(), None),
+            ]));
+            last = Some(cz);
+        }
+        let cz = last.ok_or(Error::EmptyCommit)?;
 
         // KT → AR-node → SR-node from post-mutation key set (local, does not
         // mutate self). DR is refreshed to the current active_algs rather
@@ -129,7 +220,8 @@ impl<S: eml::Storage> Principal<S> {
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
         let tmr = tmr_opt.ok_or(Error::EmptyCommit)?;
 
-        let arrow_digest = crate::commit::arrow_digest(tx_alg, &self.pr, sr.as_ref(), &tmr)?;
+        let pre = self.arrow_pre()?;
+        let arrow_digest = crate::commit::arrow_digest(tx_alg, &pre, sr.as_ref(), &tmr)?;
         let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest)?;
         // Create synthetic commit/create coz with arrow
         let commit_coz = ParsedCoz {
@@ -147,6 +239,36 @@ impl<S: eml::Storage> Principal<S> {
         pending.push_tx(crate::transaction::Transaction(vec![commit_vtx]));
 
         self.finalize_commit(pending)
+    }
+
+    /// The genesis signer rule. Before the genesis commit has created a
+    /// key, KR is empty, so a transaction can only verify as the genesis
+    /// key's own `key/create` (SPEC 5.1 steps 1-2, 5.3 "a genesis key
+    /// constructs AT by adding itself", 13.2 step 3 "`tmb` belongs to a
+    /// key in current KR"). After it, a genesis key signs only once its
+    /// own `key/create` has been applied; any key so created may create
+    /// another (SPEC 3.3).
+    ///
+    /// The genesis keys sit in the KT from construction so the PG is known
+    /// before the genesis commit is signed (`principal/create` carries it
+    /// as `id`); `uncreated_genesis` is what tells those seeded keys apart
+    /// from keys in KR. A principal that never commits (Levels 1 and 2)
+    /// signs data actions with its key uncreated; this rule binds
+    /// transactions only.
+    fn check_genesis_signer(&self, cz: &crate::parsed_coz::ParsedCoz) -> Result<()> {
+        use crate::parsed_coz::CozKind;
+
+        let signer = cz.signer.to_b64();
+        if self.uncreated_genesis.len() == self.genesis_keys.len() {
+            let opens = matches!(&cz.kind, CozKind::KeyCreate { id } if id.to_b64() == signer)
+                && self.genesis_keys.first() == Some(&signer);
+            if !opens {
+                return Err(Error::UnknownKey);
+            }
+        } else if self.uncreated_genesis.contains(&signer) {
+            return Err(Error::UnknownKey);
+        }
+        Ok(())
     }
 
     /// Internal coz application logic.
@@ -182,6 +304,12 @@ impl<S: eml::Storage> Principal<S> {
         );
         if !skip_active_check {
             self.active_signer(&cz.signer)?;
+        }
+        self.check_genesis_signer(cz)?;
+        // The PG is the state at the `principal/create`, so nothing but
+        // the commit/create may follow it in the genesis commit.
+        if self.genesis_pending && !matches!(cz.kind, CozKind::CommitCreate { .. }) {
+            return Err(Error::GenesisIncomplete);
         }
 
         // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
@@ -270,19 +398,17 @@ impl<S: eml::Storage> Principal<S> {
                     return Err(Error::KeyRevoked);
                 }
                 let tmb = id.to_b64();
-                if self.uncreated_genesis.first() == Some(&tmb) && self.auth.keys.contains_key(&tmb)
-                {
+                let uncreated = self.uncreated_genesis.iter().position(|t| *t == tmb);
+                if let Some(at) = uncreated.filter(|_| self.auth.keys.contains_key(&tmb)) {
                     // SPEC 5.1 step 1, 5.3, 7.7 Example 1: a genesis key is
                     // in the KT from construction, and its `key/create` is
-                    // the explicit add the genesis carries. The first
-                    // genesis key signs every one of them, in genesis
-                    // order, and the key it discloses must be the one held.
-                    if self.genesis_keys.first() != Some(&cz.signer.to_b64())
-                        || self.auth.keys.get(&tmb).map(Key::pub_key) != Some(key.pub_key())
-                    {
+                    // the explicit add the genesis carries; the key it
+                    // discloses must be the one held. Who may sign it is
+                    // `check_genesis_signer`'s rule.
+                    if self.auth.keys.get(&tmb).map(Key::pub_key) != Some(key.pub_key()) {
                         return Err(Error::UnknownKey);
                     }
-                    self.core_mut().uncreated_genesis.remove(0);
+                    self.core_mut().uncreated_genesis.remove(at);
                 } else if self.auth.keys.contains_key(&tmb) {
                     return Err(Error::DuplicateKey);
                 } else {
@@ -323,10 +449,10 @@ impl<S: eml::Storage> Principal<S> {
                 self.core_mut().nonces.remove(*level, nonce)?;
             },
             CozKind::PrincipalCreate { id } => {
-                // Genesis finalization (SPEC §5.1)
-                // Verify signer is a genesis key
-                let signer_b64 = cz.signer.to_b64();
-                if !self.genesis_keys.contains(&signer_b64) {
+                // Genesis finalization (SPEC 5.1): signed by the genesis key
+                // (the first key; 5.2 TX1, 5.3 TX2), so the rule reads the
+                // same however the producer seeded the other keys.
+                if self.genesis_keys.first() != Some(&cz.signer.to_b64()) {
                     return Err(Error::UnknownKey);
                 }
                 // SPEC 7.7 Example 1: genesis does not create a key
@@ -337,18 +463,19 @@ impl<S: eml::Storage> Principal<S> {
                     .iter()
                     .any(|tmb| self.auth.keys.contains_key(tmb))
                 {
-                    return Err(Error::UnknownKey);
+                    return Err(Error::GenesisIncomplete);
                 }
-                // Verify that `id` matches the computed PR (SPEC §5.1 step 3:
-                // `id` equals the future SR, which equals the current PR here
-                // since no CR exists yet)
-                if !id.0.matches(&self.pr.0) {
+                // SPEC 5.1 step 3, 5.2 TX1 "ID == PG == SR": `id` is the
+                // future SR, the state every genesis mutation before this
+                // one reached (keys, nonces), promoted to PR with no CR.
+                let pg = self.genesis_pr()?;
+                if !id.0.matches(&pg.0) {
                     return Err(Error::StateMismatch);
                 }
-                // Freeze PG at the current PR (SPEC §5.1 step 3: "principal/create ... establishes
-                // PG") establish_pg() is the ONLY code path that transitions
+                // establish_pg() is the ONLY code path that transitions
                 // Nascent → Established.
-                self.establish_pg(PrincipalGenesis::from_initial(&self.pr))?;
+                self.establish_pg(PrincipalGenesis::from_initial(&pg))?;
+                self.core_mut().genesis_pending = true;
             },
             // SPEC 11.5.1: a merge and its ack are each the signer's own
             // statement, accepted into the signer's chain alone. Neither
@@ -437,6 +564,9 @@ impl<S: eml::Storage> Principal<S> {
         if pending.is_finalizer_only() {
             return Err(Error::EmptyCommit);
         }
+        if self.pg().is_none() {
+            return Err(Error::GenesisIncomplete);
+        }
 
         // Validate arrow field placement: only last cz may have it,
         // and last cz MUST have it (SPEC §4.4).
@@ -519,11 +649,12 @@ impl<S: eml::Storage> Principal<S> {
             let (tmr, _tcr, _tr) = pending.compute_roots(&tx_algs);
             let tmr = tmr.ok_or(Error::EmptyCommit)?;
 
-            // pre is the PR *before* this commit. core.pr has not been updated
-            // yet (that happens at the end of this function), so it correctly
-            // holds the prior value.
+            // pre is the PR *before* this commit (core.pr is updated only at
+            // the end of this function), or in the genesis commit the
+            // genesis key's own PR (`arrow_pre`).
             let tx_alg = tx_algs[0];
-            let computed_digest = crate::commit::arrow_digest(tx_alg, &core.pr, sr.as_ref(), &tmr)?;
+            let pre = core.arrow_pre()?;
+            let computed_digest = crate::commit::arrow_digest(tx_alg, &pre, sr.as_ref(), &tmr)?;
 
             let claimed_digest = claimed_arrow.get(tx_alg).ok_or(Error::CommitMismatch)?;
             if claimed_digest != computed_digest.as_slice() {
@@ -604,6 +735,7 @@ impl<S: eml::Storage> Principal<S> {
         // carried is no longer "this commit's own pending delete" for a
         // future commit's CommitCreate exemption (skip_deleted_check).
         core.deleted_pending = false;
+        core.genesis_pending = false;
 
         // The borrow is safe: we just pushed, so last() is guaranteed Some.
         core.auth.commits.last().ok_or(Error::EmptyCommit)

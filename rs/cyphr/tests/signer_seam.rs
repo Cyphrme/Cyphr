@@ -91,6 +91,25 @@ fn domain_key(pk: &test_fixtures::PoolKey) -> Key {
     .expect("key binds its tmb")
 }
 
+/// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
+/// genesis key's `key/create` of itself, the `principal/create` and the
+/// `commit/create`), signed by its genesis key `k`.
+fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey) -> Principal {
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(
+            &k.alg,
+            &coz::base64ct::Base64UrlUnpadded::decode_vec(k.prv.as_deref().expect("prv"))
+                .expect("prv b64"),
+            &coz::base64ct::Base64UrlUnpadded::decode_vec(&k.pub_key).expect("pub b64"),
+            &k.compute_tmb().expect("tmb"),
+        ),
+        1,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
 /// Software signer whose private key is unreachable from outside this
 /// struct: no accessor, no `Debug` of the bytes. Stands in for a hardware /
 /// WebCrypto key — the test bodies below never hold private-key bytes.
@@ -282,24 +301,26 @@ fn finalize<'a, S: Signer>(
 // Claim 1 + golden: finalize through a key-opaque signer; bytes unchanged
 // ============================================================================
 
-/// Legacy vectors, produced by the pre-seam raw-key finalize over the
-/// same inputs (pool key -> `key_a` key/create at NOW -> commit at NOW+1) and
-/// stable across repeated runs (RFC 6979 / Ed25519 are deterministic).
+/// Vectors over fixed inputs (pool key -> its genesis commit -> `key_a`
+/// key/create at NOW -> commit at NOW+1), stable across repeated runs (RFC
+/// 6979 / Ed25519 are deterministic). First recorded from the pre-seam
+/// raw-key finalize; re-recorded when every chain gained its genesis
+/// commit, which changes the commit's `pre` and so its bytes.
 const GOLDEN: &[(&str, &str, &str)] = &[
     (
         "golden",
-        "O8JXvZIzVvng9GkVncDII3YhKyvcATO32MKQ5blqsJo",
-        "OubUA5zQPEhKg6ZFAvIOVGO-YyL9pWFeHdZjqxKhyONxErCObT5j-bWVH8nPIO_G7Gm2l83IBtlfvd5aew-lmw",
+        "006vWQObsbUlQV6Fhj9EbMp84lH4neXQU0bgu5V_4sA",
+        "jNKkpbdKLzkRwMgOKr4HI-gmk1_ymQmeQ-eICE7Oo1QGzd05VX471uCvsbU3-jMY4SgMohtfwvLYAccefu8tsw",
     ),
     (
         "diana_es384",
-        "2hrzD178aRyswMFSiJ0D1WFF4FbxWtBbXk0KM5YpsVxrgYNb_I_ixQHXNbhT05r0",
-        "sDCj6lInP50aulnbV9gB545QbTFDZqbg-l-dd-Pigj92VjY7W1jTJtwNCCYfVbmvN7K2P2NPkUh5kXO-HNJMhjuZOX0eJroJ2Wd_DGCBvmqtGZsJuuiuqXvNZfANEkLZ",
+        "4bFvJ-O_Z2afd0a1KvG2vwCXbEunAfoXkjXT5IE89hy5j_wX7jp79gy3moMOi4gM",
+        "MwptCH44-mK-s4xjCpjreJ4tvAuF5ZvA3eAwjG9Bmo16vbbBGfKMZpSckrYwyrXfb74AglctquFEBp0vQm3p3Y5j4QmMQvfwZIjRNTiOhoh-5-pn2iDyDoU7TFVGBemv",
     ),
     (
         "eve_ed25519",
-        "P6wwurmEv7iBL0920CEb1bLSx76KdGE75nwXnFYT_BNuJzi8ywliVOVObzCK6qude4zNZigpTdRuPaxyMH9QXw",
-        "N6VvTfyVUn5C9XXM0Aj2RYY6bxiLrncRsAnKQW_8Eq6F6jp7Dkdaa7ChpaybejZdZe-vOEPispInbz-LBMnxCQ",
+        "7duH24qhxNWDREI7tO3Ix5khgMMxiLKpvxkzmH8XrfAkYC2Vv2VNCX4uNGFlQtDRDJMaCT5rfDOvXF-bc5MVUQ",
+        "QxYs1lWGGtJVdciL_3Jzh52Djy75qlh4XCQSHKlMqkY_teGQU_h-dQTNIwOWfNpVm_z3wjlMjz-z_qeSEM1vCg",
     ),
 ];
 
@@ -319,8 +340,11 @@ fn opaque_signer_finalizes_commit_with_legacy_bytes() {
     for (name, want_czd, want_sig) in GOLDEN {
         let signer = OpaqueSigner::from_pool(&pool, name);
         let target = pool.get("key_a").expect("key_a");
-        let mut principal = Principal::implicit(domain_key(pool.get(name).expect("genesis")))
-            .expect("genesis principal");
+        let mut principal = genesis_of(
+            Principal::implicit(domain_key(pool.get(name).expect("genesis")))
+                .expect("genesis principal"),
+            pool.get(name).expect("genesis"),
+        );
         let scope = open_scope(&mut principal, &signer, target);
 
         let commit = finalize(scope, &signer).unwrap_or_else(|e| panic!("{name}: finalize: {e}"));
@@ -344,7 +368,11 @@ fn opaque_signer_finalizes_commit_with_legacy_bytes() {
             want_sig,
             "{name}: commit sig drifted"
         );
-        assert_eq!(principal.commits().count(), 1, "{name}: exactly one commit");
+        assert_eq!(
+            principal.commits().count(),
+            2,
+            "{name}: the genesis, then exactly one commit"
+        );
     }
 }
 
@@ -417,8 +445,11 @@ fn not_send_suspending_signer_finalizes_exactly_once() {
         seen_cad: Rc::clone(&seen_cad),
     };
     let target = pool.get("key_a").expect("key_a");
-    let mut principal = Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
-        .expect("genesis principal");
+    let mut principal = genesis_of(
+        Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .expect("genesis principal"),
+        pool.get("golden").expect("genesis"),
+    );
     // Mutation signing also goes through the signer; reset the counter after.
     let scope = open_scope(&mut principal, &signer, target);
     calls.set(0);
@@ -449,8 +480,11 @@ fn split_api_works_under_a_futures_executor() {
     let pool = pool();
     let signer = OpaqueSigner::from_pool(&pool, "golden");
     let target = pool.get("key_a").expect("key_a");
-    let mut principal = Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
-        .expect("genesis principal");
+    let mut principal = genesis_of(
+        Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .expect("genesis principal"),
+        pool.get("golden").expect("genesis"),
+    );
     let scope = open_scope(&mut principal, &signer, target);
 
     let prepared = scope
@@ -467,9 +501,10 @@ fn split_api_works_under_a_futures_executor() {
 // ============================================================================
 
 fn assert_no_commit(principal: &Principal, pr_before: &str, what: &str) {
+    // The genesis commit is the only one.
     assert_eq!(
         principal.commits().count(),
-        0,
+        1,
         "{what}: no commit may be recorded"
     );
     assert_eq!(
@@ -485,8 +520,11 @@ fn faulty_finalize_err(pool: &test_fixtures::Pool, name: &str, fault: Fault) -> 
     let what = format!("{name}/{fault:?}");
     let good = OpaqueSigner::from_pool(pool, name);
     let target = pool.get("key_a").expect("key_a");
-    let mut principal = Principal::implicit(domain_key(pool.get(name).expect("genesis")))
-        .expect("genesis principal");
+    let mut principal = genesis_of(
+        Principal::implicit(domain_key(pool.get(name).expect("genesis")))
+            .expect("genesis principal"),
+        pool.get(name).expect("genesis"),
+    );
     let pr_before = principal.pr_tagged().expect("pr");
     // The mutation is signed by the honest signer; only the commit signer is faulty.
     let scope = open_scope(&mut principal, &good, target);
@@ -574,8 +612,11 @@ fn high_s_signature_is_rejected_not_normalized() {
 
     // Counterpart: genuine low-S passes through the identical path.
     let target = pool.get("key_a").expect("key_a");
-    let mut principal = Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
-        .expect("genesis principal");
+    let mut principal = genesis_of(
+        Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .expect("genesis principal"),
+        pool.get("golden").expect("genesis"),
+    );
     let scope = open_scope(&mut principal, &good, target);
     finalize(scope, &good).expect("low-S signature commits");
 }
@@ -676,8 +717,11 @@ fn signer_outside_principal_is_unknown_key() {
         let what = format!("{genesis}/outsider {outsider}");
         let honest = OpaqueSigner::from_pool(&pool, genesis);
         let foreign = OpaqueSigner::from_pool(&pool, outsider);
-        let mut principal = Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
-            .expect("genesis principal");
+        let mut principal = genesis_of(
+            Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
+                .expect("genesis principal"),
+            pool.get(genesis).expect("genesis"),
+        );
         let e = commit_err(&mut principal, &honest, "key_a", &foreign, &pool, &what);
         assert!(
             matches!(e, Error::UnknownKey),
@@ -711,8 +755,11 @@ fn signer_claiming_anothers_tmb_is_rejected() {
             tmb: honest.tmb().clone(),
             key: OpaqueSigner::from_pool(&pool, impostor),
         };
-        let mut principal = Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
-            .expect("genesis principal");
+        let mut principal = genesis_of(
+            Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
+                .expect("genesis principal"),
+            pool.get(genesis).expect("genesis"),
+        );
         let e = commit_err(&mut principal, &honest, "key_a", &claimed, &pool, &what);
         if genesis == "golden" {
             assert!(
@@ -736,8 +783,11 @@ fn revoked_signer_is_key_revoked() {
         let what = format!("revoked {revoked_name}");
         let genesis = OpaqueSigner::from_pool(&pool, "golden");
         let revoked = OpaqueSigner::from_pool(&pool, revoked_name);
-        let mut principal = Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
-            .expect("genesis principal");
+        let mut principal = genesis_of(
+            Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+                .expect("genesis principal"),
+            pool.get("golden").expect("genesis"),
+        );
 
         // Commit 1: genesis adds the key that will later be revoked.
         let scope = open_scope(
