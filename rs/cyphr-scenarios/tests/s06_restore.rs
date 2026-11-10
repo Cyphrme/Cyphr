@@ -4,7 +4,7 @@
 // Must hold: P2 does not sign a lower tip; re-push fills the gap; no client holds
 // peer-equivocation evidence against P2.
 //
-// Required capabilities: transport,peer-backup,evidence.
+// Required capabilities: transport,peer-backup,evidence,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -24,6 +24,7 @@ async fn s06_restore() {
         Capability::Transport,
         Capability::PeerBackup,
         Capability::Evidence,
+        Capability::DataCommit,
     ])
     .await;
 

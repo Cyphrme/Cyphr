@@ -3,7 +3,7 @@
 // Alice moves to P3, updates her self-claim; P1 goes away.
 // Must hold: Bob follows the claim to P3; only his verdict's peer list changes.
 //
-// Required capabilities: transport,cli-network,discovery,evidence.
+// Required capabilities: transport,cli-network,discovery,evidence,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -26,6 +26,7 @@ async fn s09_migration() {
         Capability::CliNetwork,
         Capability::Discovery,
         Capability::Evidence,
+        Capability::DataCommit,
     ])
     .await;
 

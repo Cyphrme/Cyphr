@@ -5,7 +5,7 @@
 // Must hold: the forgery is rejected by every peer; replays leave state unchanged
 // (SPEC 7.6).
 //
-// Required capabilities: transport,cli-network,evidence,idempotency.
+// Required capabilities: transport,cli-network,evidence,idempotency,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -22,6 +22,7 @@ async fn s08_forgery() {
         Capability::CliNetwork,
         Capability::Evidence,
         Capability::Idempotency,
+        Capability::DataCommit,
     ])
     .await;
 

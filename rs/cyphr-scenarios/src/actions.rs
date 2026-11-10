@@ -597,11 +597,17 @@ impl Client<'_> {
     // ---- commits and publication ----
 
     /// Commit a data change locally, on top of this device's current local
-    /// tip. It does not pull first, as an offline device would not; pulling
-    /// is the separate, explicit [`Client::sync`]. The CLI signs no data
-    /// commit.
-    pub async fn commit_data(&self, _p: &Principal, _msg: &str) -> ActionResult<Tip> {
-        unsupported("commit_data", Capability::DataCommit)
+    /// tip: a signed data action, then the `ds/create` that includes it
+    /// (`cyphr data action`, `cyphr data commit`). It does not pull first, as
+    /// an offline device would not; pulling is the separate, explicit
+    /// [`Client::sync`].
+    pub async fn commit_data(&self, p: &Principal, msg: &str) -> ActionResult<Tip> {
+        let (id, signer) = (format!("--identity={}", p.0), self.signer(p)?);
+        let signer = format!("--signer={signer}");
+        self.cyphr(&["data", "action", &id, &signer, &format!("--msg={msg}")])
+            .await?;
+        let v = self.cyphr(&["data", "commit", &id, &signer]).await?;
+        field(&v, "commit_id").map(Tip)
     }
 
     /// Pull the peers' latest state for `p` into this device's local view
@@ -825,17 +831,70 @@ impl Client<'_> {
 
     // ---- data actions ----
 
-    pub async fn data_action(&self, _p: &Principal, _msg: &str) -> ActionResult<Action> {
-        unsupported("data_action", Capability::DataCommit)
+    /// A data action signed by this device's key and not yet sent anywhere
+    /// (`cyphr data action --sign-only`): the CLI's answer, which names the
+    /// principal and carries the signed coz.
+    pub async fn data_action(&self, p: &Principal, msg: &str) -> ActionResult<Action> {
+        self.sign_action(p, &self.signer(p)?, msg, None).await
     }
 
-    /// A data action signed by `key` but dated before `key` was retired.
-    pub async fn forge_backdated(&self, _p: &Principal, _key: &KeyRef) -> ActionResult<Action> {
-        unsupported("forge_backdated", Capability::DataCommit)
+    /// A data action signed by `key` but dated an hour before now, so before
+    /// `key` was retired when it was retired within the hour.
+    pub async fn forge_backdated(&self, p: &Principal, key: &KeyRef) -> ActionResult<Action> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| ActionError::Failed(format!("clock before the epoch: {e}")))?
+            .as_secs();
+        let then = now.saturating_sub(3600);
+        self.sign_action(p, &key.0, "forged", Some(then)).await
     }
 
-    pub async fn submit(&self, _a: &Action, _to: &str) -> ActionResult<PushOutcome> {
-        unsupported("submit", Capability::DataCommit)
+    async fn sign_action(
+        &self,
+        p: &Principal,
+        signer: &str,
+        msg: &str,
+        now: Option<u64>,
+    ) -> ActionResult<Action> {
+        let mut args = vec![
+            "data".to_owned(),
+            "action".to_owned(),
+            "--sign-only".to_owned(),
+            format!("--identity={}", p.0),
+            format!("--signer={signer}"),
+            format!("--msg={msg}"),
+        ];
+        if let Some(now) = now {
+            args.push(format!("--now={now}"));
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(Action(self.cyphr(&args).await?.to_string()))
+    }
+
+    /// Send a signed action to `to` as an action-only bundle
+    /// (`cyphr data submit`); the peer's refusal is the outcome.
+    pub async fn submit(&self, a: &Action, to: &str) -> ActionResult<PushOutcome> {
+        let signed: serde_json::Value = serde_json::from_str(&a.0)
+            .map_err(|e| ActionError::Failed(format!("not a signed action ({e}): {}", a.0)))?;
+        let file = self.dev.scratch("action.json");
+        std::fs::write(&file, &a.0)
+            .map_err(|e| ActionError::Failed(format!("writing {}: {e}", file.display())))?;
+        let url = self.url(to).await;
+        let identity = format!("--identity={}", field(&signed, "identity")?);
+        let result = self
+            .cyphr(&[
+                "data",
+                "submit",
+                &identity,
+                &format!("--peer={url}"),
+                &format!("--file={}", file.display()),
+            ])
+            .await;
+        match result {
+            Ok(v) => Ok(PushOutcome::Accepted(Tip(field(&v, "tip")?))),
+            Err(ActionError::Refused(r)) => Ok(PushOutcome::Refused(r)),
+            Err(e) => Err(e),
+        }
     }
 
     /// Push again, verbatim, the commit at `height` (1-based) of the chain

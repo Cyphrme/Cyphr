@@ -124,9 +124,7 @@ impl Capability {
             Self::PeerRollover => "N20R",
             Self::RelyingParty => "SO2",
             Self::SessionBinding => "SO3",
-            // No node owns a CLI command that signs a data action or a data
-            // commit; the CLI signs only key transactions.
-            Self::DataCommit => "unowned",
+            Self::DataCommit => "CLI2",
         }
     }
 
@@ -168,7 +166,7 @@ impl Capability {
             },
             // Needs a signed-in session and a second connection.
             Self::SessionBinding => Probe::Pending("SO3"),
-            Self::DataCommit => Probe::Pending("unowned"),
+            Self::DataCommit => Probe::Cli(&["data", "commit", "--help"], None),
         }
     }
 }
