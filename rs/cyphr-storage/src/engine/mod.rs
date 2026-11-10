@@ -847,21 +847,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 ))
             })?);
         }
-        // An index entry no manifest backs (a corrupt or planted index:
-        // the index is a cache of the blob store, I1) has no recorded
-        // grouping. It is served as its blobs, one transaction each and no
-        // keys, vouched for by nothing: a verifier replays and refuses it,
-        // as it would any entry the record does not back.
+        // An index entry no manifest backs is a corrupt index: the index is
+        // a cache of the blob store (I1), and nothing recorded how its blobs
+        // group. It is refused, never served.
         let Some((shape, keys)) = self.frame(principal_id, commit) else {
             tracing::warn!(
                 principal = %principal_id,
                 commit = %commit.commit_id,
-                "index entry with no commit manifest; serving its blobs ungrouped"
+                "index entry with no commit manifest; refusing it as an inconsistent index"
             );
-            return Ok(WireBundle {
-                txs: blobs.into_iter().map(|b| vec![b]).collect(),
-                ..WireBundle::default()
-            });
+            return Err(EngineError::Indexer(
+                crate::index::IndexerError::Consistency(format!(
+                    "index commit {} of {principal_id} has no commit manifest",
+                    commit.commit_id
+                )),
+            ));
         };
         shape.group(blobs, keys).ok_or_else(|| {
             EngineError::MalformedBlob(format!(
