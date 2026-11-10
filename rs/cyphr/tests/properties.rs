@@ -186,6 +186,25 @@ fn arrow_domain_key(pk: &test_fixtures::PoolKey) -> Key {
     Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
+/// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
+/// genesis key's `key/create` of itself, the `principal/create` and the
+/// `commit/create`), signed by its genesis key `k`.
+fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey) -> Principal {
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(
+            &k.alg,
+            &coz::base64ct::Base64UrlUnpadded::decode_vec(k.prv.as_deref().expect("prv"))
+                .expect("prv b64"),
+            &coz::base64ct::Base64UrlUnpadded::decode_vec(&k.pub_key).expect("pub b64"),
+            &k.compute_tmb().expect("tmb"),
+        ),
+        1,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
 fn arrow_prv_bytes(pk: &test_fixtures::PoolKey) -> Vec<u8> {
     let prv_b64 = pk
         .prv
@@ -334,8 +353,8 @@ proptest! {
         // genesis material, kept in lockstep by replaying the SAME signed
         // mutation bytes onto both (never re-signed — ECDSA signing is
         // randomized per call, so re-signing would desync their state).
-        let mut principal_a = Principal::implicit(arrow_domain_key(genesis)).expect("genesis a");
-        let mut principal_b = Principal::implicit(arrow_domain_key(genesis)).expect("genesis b");
+        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis);
+        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis);
         let mut scope_a = principal_a.begin_commit();
         let mut scope_b = principal_b.begin_commit();
 
@@ -391,8 +410,8 @@ proptest! {
         let genesis_tmb = genesis.compute_tmb().expect("genesis tmb");
         let now = 1_700_000_000i64;
 
-        let mut principal_a = Principal::implicit(arrow_domain_key(genesis)).expect("genesis a");
-        let mut principal_b = Principal::implicit(arrow_domain_key(genesis)).expect("genesis b");
+        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis);
+        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis);
         let mut scope_a = principal_a.begin_commit();
         let mut scope_b = principal_b.begin_commit();
 
@@ -459,7 +478,7 @@ proptest! {
         // Reference principal: learn the genuine arrow for this exact
         // mutation, so the tamper is a real single-byte flip of a value
         // that would otherwise be accepted — not arbitrary noise.
-        let mut principal_ref = Principal::implicit(arrow_domain_key(genesis)).expect("genesis ref");
+        let mut principal_ref = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis ref"), genesis);
         let mut scope_ref = principal_ref.begin_commit();
         scope_ref
             .verify_and_apply(
@@ -491,7 +510,7 @@ proptest! {
         // Test principal: byte-identical mutation replay, then a REAL
         // signed commit/create coz carrying the tampered arrow, through
         // the actual write path (verify_and_apply, then finalize()).
-        let mut principal = Principal::implicit(arrow_domain_key(genesis)).expect("genesis test");
+        let mut principal = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis test"), genesis);
         let mut scope = principal.begin_commit();
         scope
             .verify_and_apply(
@@ -617,8 +636,8 @@ proptest! {
         let pool = arrow_pool();
         let golden = arrow_pool_key(&pool, "golden");
         let signer = arrow_pool_key(&pool, signer_name);
-        let mut p = Principal::explicit(vec![arrow_domain_key(golden), arrow_domain_key(signer)])
-            .expect("principal");
+        let keys = vec![arrow_domain_key(golden), arrow_domain_key(signer)];
+        let mut p = genesis_of(Principal::explicit(keys).expect("principal"), golden);
 
         let pay = serde_json::to_vec(&serde_json::json!({
             "alg": signer.alg,

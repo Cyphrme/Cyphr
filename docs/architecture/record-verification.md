@@ -400,16 +400,20 @@ evaluator: test
 Backed by `s2_3_2_no_operation_changes_the_principal_genesis` in
 `rs/cyphr/tests/spec_conformance.rs`, which asserts `StateMismatch` for the
 second create. The first `principal/create`, which is accepted before the
-second is refused, is its only control. `principal/create` signed by a key that
-is not a genesis key is refused with `UnknownKey`, and one whose `id` is not the
-current PR with `StateMismatch`; no bound test exercises either. `StateMismatch`
+second is refused, is its only control. `principal/create` signed by a key other
+than the genesis key (the first) is refused with `UnknownKey`, and one whose
+`id` is not the future SR (the state at the `principal/create`, SPEC 5.1 step 3)
+with `StateMismatch`; no bound test exercises either. `StateMismatch`
 is also raised for an `id` that is not the current PR on `principal/delete`,
 `freeze/create` and `freeze/delete`; see
 [rv-lifecycle-transitions](#rv-lifecycle-transitions). The rule is class C because it depends on whether a PG was
 already written. Not bound here: that a genesis is well-formed.
 `d1_implicit_genesis_rejects_unbound_key` and its siblings in
 `rs/cyphr/tests/key_auth.rs` pin that a genesis key must bind its own
-thumbprint.
+thumbprint. A PG is written only by a complete genesis commit:
+`GenesisIncomplete` refuses a commit finalized before its `principal/create`
+and a `principal/create` while a genesis key has no `key/create` (SPEC 5.1);
+the golden error vectors pin both, and no test bound here exercises them.
 
 ### Commit structure and reuse
 
@@ -778,6 +782,7 @@ paths have no row; its source gives the reason for each.
 | `UnsupportedAlgorithm` | `rv-alg-support`           |
 | `Storage`              | `rv-storage-backend`       |
 | `EmptyCommit`          | `rv-commit-nonempty`       |
+| `GenesisIncomplete`    | `rv-genesis-immutable`     |
 | `CommitNotLast`        | `rv-intra-commit-shape`    |
 | `MissingCommit`        | `rv-commit-nonempty`       |
 | `CommitMismatch`       | `rv-arrow-chain`           |

@@ -383,14 +383,10 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
@@ -408,14 +404,10 @@ principal = ["bob"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "bob", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "bob", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
@@ -433,14 +425,10 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
@@ -458,14 +446,10 @@ principal = ["diana_es384"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "diana_es384", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "diana_es384", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "diana_es384", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "diana_es384", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "diana_es384", typ = "cyphr.me/cyphr/principal/create" },
@@ -483,14 +467,10 @@ principal = ["eve_ed25519"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "eve_ed25519", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "eve_ed25519", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "eve_ed25519", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "eve_ed25519", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "eve_ed25519", typ = "cyphr.me/cyphr/principal/create" },
@@ -1691,19 +1671,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1719,19 +1691,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1747,19 +1711,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1775,19 +1731,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1803,19 +1751,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -2721,14 +2661,10 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
@@ -2911,14 +2847,10 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
@@ -2943,15 +2875,13 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
@@ -3029,15 +2959,13 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "alice", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "alice", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
@@ -3134,14 +3062,10 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },

@@ -33,43 +33,21 @@
         {
           "pay": {
             "alg": "ES256",
-            "arrow": "SHA-256:LYnaVlcMuMEQO0foQOXtYgdBeJ2-wxp0WOVwpLCiEns",
+            "id": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "now": 1700000000,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "typ": "cyphr.me/cyphr/commit/create"
+            "typ": "cyphr.me/cyphr/principal/create"
           },
-          "sig": "Jf55ZrfJpqxt88OPEU-x2EVk2WKb9C1ZqA0ADn0UmVgfIjEV-a3e6rXXeT97WasdhdMuAiU1CEPHP-3fc0PSVQ"
+          "sig": "oRfWTJp01POD4Cgp5QGVOQK4u8CupBjqVX42v_9CNcl7lrTKkvB7pMLkzH1ZE6eDqdDyp9bHvTorXxXTXX7gqw"
         }
       ],
       "keys": [
         {
           "alg": "ES256",
           "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          "tag": "Zami's Majuscule Key (SPEC §15.1)",
-          "now": 0
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
         }
       ],
-      "commit_id": "SHA-256:wysGPtiaAaGQ8ifHqjvciOhVeOYDGYTeAuDOgpnPj_Y",
-      "ar": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-      "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-      "pr": "SHA-256:33w__xaohc40rmm6kitlCFwJMIpLGthBI-tnatG0cY8"
-    },
-    {
-      "v": 1,
-      "txs": [
-        {
-          "pay": {
-            "alg": "ES256",
-            "id": "SHA-256:33w__xaohc40rmm6kitlCFwJMIpLGthBI-tnatG0cY8",
-            "now": 1700000001,
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "typ": "cyphr.me/cyphr/principal/create"
-          },
-          "sig": "CFBaF1k8BQLhUiFnX681-o6pjvlFgliK1hMlKCvGgYI-vEVeN9wXun9250Ab1GnBnpoF5gD1fjhs6NswyO1GQA"
-        }
-      ],
-      "keys": [],
       "commit_id": "",
       "ar": null,
       "sr": null,
@@ -78,20 +56,17 @@
   ],
   "digests": [
     "bw1uwrvH0G_YM6DftXUREAuyCpmgJagKRTHjmBMn10I",
-    "Do96AL1EcrKxyWTHX8AVxqyEC2J1wgykeUV8w0s0csI",
-    "yPD01srU9VD74oR5b2VZ-YcVBOJA_hwx7D1Og89pA08"
+    "yyKESdqyqJwcuHCtb_aqvlw3Uxpp2Hcg9piWyVIRgqY"
   ],
   "expected": {
     "key_count": 2,
     "level": 3,
     "kr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "ar": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "pr": "SHA-256:33w__xaohc40rmm6kitlCFwJMIpLGthBI-tnatG0cY8",
-    "cr": "SHA-256:wysGPtiaAaGQ8ifHqjvciOhVeOYDGYTeAuDOgpnPj_Y",
-    "tr": "SHA-256:wysGPtiaAaGQ8ifHqjvciOhVeOYDGYTeAuDOgpnPj_Y",
+    "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pg": "",
-    "error": "UnknownKey",
+    "error": "GenesisIncomplete",
     "deleted": false,
     "frozen": false
   }

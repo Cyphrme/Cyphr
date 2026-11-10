@@ -17,6 +17,54 @@
         {
           "pay": {
             "alg": "ES256",
+            "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/key/create"
+          },
+          "sig": "-FCNYXlZfktL0Ap8gLRbKUoYxm2H_mP1QH5sHf9eRE5OOEnMb8WO4H1c_ikF4cLrc2Rwxz9h4XysrHLCrArSwA"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/principal/create"
+          },
+          "sig": "TJo4bJHic2iRSwu7q7HE4b462B3nBKo_vUOVJBKef1kF4Ewep7wNm7AWsPgIGvfEhE41P0YFA8oLX7ubGSNiIw"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "arrow": "SHA-256:d523iS0q879s0pRJhHv2kWjKVbnF4PFYjW8jYUgExzc",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/commit/create"
+          },
+          "sig": "ebr9_LCjZ-OzEGf9eAZaqo1rRyS3binKa-zVs45486tYsBD5EbiP94ERT9KEnXCsfSL-MbvZYiXAcOXgWtK05g"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tag": "Zami's Majuscule Key (SPEC §15.1)",
+          "now": 0
+        }
+      ],
+      "commit_id": "SHA-256:7Mfl8UWSjH9HWJYrG-IfnN4J099B6hFzzubSy8Xmz1c",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:jb2rNNoANZHoljTGoYjg1LcY2MPNOx_5gB3PgfLYSO4"
+    },
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
             "now": 1700000000,
             "rvk": 1700000000,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -27,19 +75,19 @@
         {
           "pay": {
             "alg": "ES256",
-            "arrow": "SHA-256:YhpVuHSoh1B_RoCHf6t-L5cOOa74viF9Bdc359_Yrtc",
+            "arrow": "SHA-256:qmXnje_CXoQC31gdJxtRgNFV3ohy_3lcLF3UMU1rMWA",
             "now": 1700000000,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/cyphr/commit/create"
           },
-          "sig": "fxFlu3YKBNUyVL5buKTqgA-HhmMPCXflP2W0a63ckrZsuEGZinNeUE1hM1UpWS1xStZBcTRwdcPUCws45Z0A-Q"
+          "sig": "wz0L08WPBktmheeAROgAzrdG0HVVe6Zks-m7IyjZX0trpDiAj1Q_Rx1QmTuDVYNEMRAUGZPM94EeZiUhqsz0ew"
         }
       ],
       "keys": [],
-      "commit_id": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
+      "commit_id": "SHA-256:gF00RKh-tSI9kPqZFuuVVPqIFvYl4QvFy4os9An1sVk",
       "ar": null,
       "sr": null,
-      "pr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8"
+      "pr": "SHA-256:zxMitSJQ35M1_IaK6_h7GIgZpDjvQMto5s-Cx8nbVZ8"
     },
     {
       "v": 1,
@@ -69,8 +117,11 @@
     }
   ],
   "digests": [
+    "bw1uwrvH0G_YM6DftXUREAuyCpmgJagKRTHjmBMn10I",
+    "41Mgu9G96DMWi0SumCWNJlsRkECRO4gBLi1IDL2UJl4",
+    "j_fzNsa3sAV9efSKZdsBNzUgVSSbnIjZzyqHpw5KmIQ",
     "kuipFn-QtK1M6F1KLivfGdiSliRptSRvxF8afDwLky4",
-    "WH2jOhJ13A7kCQnzW2emIZ2Bw1EnAbOFeg5-Ys73dw8",
+    "YSv2RBfWoYQVQ2JYQ-r5HIT5lm1A3dbincoMF_q07lU",
     "j0CjxVWs82mEoI7GYNvqXM6l1XS89iGg8qo_9B_jPCE"
   ],
   "expected": {
@@ -78,11 +129,11 @@
     "level": 3,
     "kr": null,
     "ar": null,
-    "pr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
-    "cr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
-    "tr": "SHA-256:oDs0oJsjQAsG20soNfWHcKCYH-1_ur7HXLf1eNy43y8",
+    "pr": "SHA-256:zxMitSJQ35M1_IaK6_h7GIgZpDjvQMto5s-Cx8nbVZ8",
+    "cr": "SHA-256:zxMitSJQ35M1_IaK6_h7GIgZpDjvQMto5s-Cx8nbVZ8",
+    "tr": "SHA-256:gF00RKh-tSI9kPqZFuuVVPqIFvYl4QvFy4os9An1sVk",
     "sr": null,
-    "pg": "",
+    "pg": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "error": "KeyRevoked",
     "deleted": false,
     "frozen": false

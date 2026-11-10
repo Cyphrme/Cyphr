@@ -146,6 +146,7 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
     let tmb = key.tmb().clone();
     let frozen = || {
         let mut p = Principal::implicit(key.clone()).unwrap();
+        p.genesis_test().unwrap();
         let freeze = make_lifecycle_cz(CozKind::FreezeCreate { id: p.pr().clone() }, &tmb, 2000);
         p.apply_transaction_test(freeze, None).unwrap();
         assert!(p.is_frozen(), "premise: principal is frozen");
@@ -214,6 +215,7 @@ fn principal_delete_from_frozen_succeeds_and_clears_frozen() {
     let key = make_test_key(0xE1);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
+    principal.genesis_test().unwrap();
 
     let freeze_cz = make_lifecycle_cz(
         CozKind::FreezeCreate {
@@ -252,6 +254,7 @@ fn freeze_create_on_deleted_is_rejected() {
     let key = make_test_key(0xE2);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
+    principal.genesis_test().unwrap();
 
     let delete_cz = make_lifecycle_cz(
         CozKind::PrincipalDelete {
@@ -289,6 +292,7 @@ fn freeze_delete_on_non_frozen_is_rejected() {
     let key = make_test_key(0xE4);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
+    principal.genesis_test().unwrap();
 
     assert!(!principal.is_frozen());
 
@@ -328,6 +332,7 @@ fn build_deleted_principal() -> (Principal, Key, Key) {
     let key1 = make_test_key(0xD1);
     let key2 = make_test_key(0xD2);
     let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
+    principal.genesis_test().unwrap();
 
     let delete_cz = make_lifecycle_cz(
         CozKind::PrincipalDelete {
@@ -444,6 +449,7 @@ fn same_commit_delete_and_own_finalizer_succeeds() {
     let key = make_test_key(0xDA);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
+    principal.genesis_test().unwrap();
 
     let delete_cz = ParsedCoz {
         kind: CozKind::PrincipalDelete {
@@ -581,6 +587,7 @@ fn duplicate_nonce_and_absent_delete_are_typed_refusals() {
     let key = make_test_key(0xE5);
     let tmb = key.tmb().clone();
     let mut p = Principal::implicit(key).unwrap();
+    p.genesis_test().unwrap();
     let nonce = Nonce::parse(
         "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         HashAlg::Sha256,

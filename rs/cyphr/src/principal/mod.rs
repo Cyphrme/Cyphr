@@ -199,6 +199,11 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// separately-finalized commit against an already-deleted principal
     /// is not.
     pub(crate) deleted_pending: bool,
+    /// `true` from an applied `principal/create` until the genesis commit
+    /// carrying it is finalized. The PG is the state at the
+    /// `principal/create`, so only the `commit/create` may follow it in
+    /// that commit (SPEC 5.1 steps 3-4).
+    pub(crate) genesis_pending: bool,
     /// `freeze/create` is active and `freeze/delete` has not yet been signed
     /// (SPEC.md §11.1 `Frozen`). No transaction sets this yet — see `deleted`.
     pub(crate) frozen: bool,
@@ -248,6 +253,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             uncreated_genesis: self.uncreated_genesis.clone(),
             deleted: self.deleted,
             deleted_pending: self.deleted_pending,
+            genesis_pending: self.genesis_pending,
             frozen: self.frozen,
             errored: self.errored,
         }
@@ -277,6 +283,7 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("uncreated_genesis", &self.uncreated_genesis)
             .field("deleted", &self.deleted)
             .field("deleted_pending", &self.deleted_pending)
+            .field("genesis_pending", &self.genesis_pending)
             .field("frozen", &self.frozen)
             .field("errored", &self.errored)
             .finish()
@@ -527,6 +534,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             genesis_keys,
             deleted: false,
             deleted_pending: false,
+            genesis_pending: false,
             frozen: false,
             errored: false,
         }
@@ -559,6 +567,56 @@ impl<S: eml::Storage> PrincipalCore<S> {
     /// one its PR was last hashed under (SPEC 3.7: the dying commit hashes
     /// under the set in force before it). Read mid-commit, `pr` is still
     /// the pre-commit PR, so the same rule gives the dying commit its set.
+    /// The `pre` the arrow of the commit being formed binds (SPEC 4.2): the
+    /// PR before it, except in the genesis commit, whose `pre` references
+    /// the genesis key (SPEC 5.1 step 4): that key's own PR, its `tmb` by
+    /// singleton promotion (3.1), whatever other keys the principal was
+    /// built with. So a genesis commit reads the same from its blobs
+    /// however its producer seeded the key set.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownKey` if the genesis key left the key set within the genesis
+    /// commit; a root derivation error otherwise.
+    pub(crate) fn arrow_pre(&self) -> Result<PrincipalRoot> {
+        if !self.genesis_pending {
+            return Ok(self.pr.clone());
+        }
+        let genesis = self
+            .genesis_keys
+            .first()
+            .and_then(|tmb| self.auth.keys.get(tmb))
+            .ok_or(Error::UnknownKey)?;
+        let algs = self.active_algs();
+        let (_, _, sr) = crate::semantic_tree::derive_state_roots(&[genesis.tmb()], None, &algs)?;
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &algs)?;
+        pt.pr(&algs)
+    }
+
+    /// The PR the principal would have if its genesis committed now: the
+    /// Principal Tree over the current SR (keys, nonces, data) and the PR
+    /// nonces, with no CR. This is the PG a `principal/create` establishes
+    /// (SPEC 5.1 step 3: `id` is the future SR; 3.3: with no CR, SR is
+    /// promoted to PR, which is PG).
+    pub(crate) fn genesis_pr(&self) -> Result<PrincipalRoot> {
+        let algs = self.active_algs();
+        let actions: Vec<&Action> = self.data.actions.iter().collect();
+        let dr = crate::state::compute_dr(&actions, None, &algs)?;
+        let tmbs: Vec<&Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
+        let (_, _, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
+            &tmbs,
+            dr.as_ref(),
+            &self.nonces,
+            &algs,
+        )?;
+        let sr = sr.ok_or(Error::NoActiveKeys)?;
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &algs)?;
+        pt.set_nonces(&self.nonces.at_level(NonceLevel::Pr), &algs)?;
+        pt.pr(&algs)
+    }
+
     pub(crate) fn active_algs(&self) -> Vec<HashAlg> {
         let key_refs: Vec<&crate::key::Key> = self.auth.keys.values().collect();
         let algs = crate::state::derive_hash_algs(&key_refs);

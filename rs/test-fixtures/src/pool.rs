@@ -69,6 +69,56 @@ impl PoolKey {
         }
     }
 
+    /// This key as a [`cyphr::Key`] (its `alg`, `pub` and thumbprint).
+    ///
+    /// # Errors
+    ///
+    /// `PoolValidation` if `pub` is not base64url or the key is refused by
+    /// the core (an algorithm it does not support).
+    pub fn key(&self) -> Result<cyphr::Key, Error> {
+        use coz::base64ct::Encoding;
+
+        let pub_bytes =
+            coz::base64ct::Base64UrlUnpadded::decode_vec(&self.pub_key).map_err(|e| {
+                Error::PoolValidation {
+                    message: format!("key '{}': invalid base64url pub: {e}", self.name),
+                }
+            })?;
+        cyphr::Key::new(self.alg.clone(), self.compute_tmb()?, pub_bytes).map_err(|e| {
+            Error::PoolValidation {
+                message: format!("key '{}': {e}", self.name),
+            }
+        })
+    }
+
+    /// A software signer over this key's private half.
+    ///
+    /// # Errors
+    ///
+    /// `MissingPrivateKey` for a public-only key; `PoolValidation` if a
+    /// half is not base64url.
+    pub fn software_signer(&self) -> Result<cyphr::signer::SoftwareSigner, Error> {
+        use coz::base64ct::Encoding;
+
+        let decode = |what: &str, v: &str| {
+            coz::base64ct::Base64UrlUnpadded::decode_vec(v).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid base64url {what}: {e}", self.name),
+            })
+        };
+        let prv = self
+            .prv
+            .as_deref()
+            .ok_or_else(|| Error::MissingPrivateKey {
+                name: self.name.clone(),
+            })?;
+        Ok(cyphr::signer::SoftwareSigner::new(
+            &self.alg,
+            &decode("prv", prv)?,
+            &decode("pub", &self.pub_key)?,
+            &self.compute_tmb()?,
+        ))
+    }
+
     /// Compute thumbprint as base64url string.
     pub fn compute_tmb_b64(&self) -> Result<String, Error> {
         use coz::base64ct::Encoding;

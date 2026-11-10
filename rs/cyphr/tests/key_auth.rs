@@ -94,6 +94,19 @@ fn honest(k: &Kp) -> Key {
     try_key_with_tmb(k, k.tmb.clone()).expect("honest key binds its tmb")
 }
 
+/// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
+/// genesis key's `key/create` of itself, the `principal/create` and the
+/// `commit/create`), signed by its genesis key `k`.
+fn genesis_of(mut p: Principal, k: &Kp) -> Principal {
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb),
+        1,
+        "cyphr.me",
+    )
+    .expect("genesis commit");
+    p
+}
+
 fn b64(t: &coz::Thumbprint) -> String {
     Base64UrlUnpadded::encode_string(t.as_bytes())
 }
@@ -212,7 +225,7 @@ fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
     let attacker = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("honest genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("honest genesis"), &g);
     let before = snapshot(&p);
     assert_forgery_refused(&attacker, &victim);
 
@@ -246,7 +259,7 @@ fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
     let attacker = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("honest genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("honest genesis"), &g);
     let before = snapshot(&p);
     assert_forgery_refused(&attacker, &victim);
 
@@ -271,7 +284,7 @@ fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
 fn d1_control_honest_key_create_activates_signer() {
     let g = kp();
     let k2 = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     commit_one(
         &mut p,
         &g,
@@ -292,7 +305,7 @@ fn d1_control_honest_key_create_activates_signer() {
 
 /// genesis g, `key/create` K2, K2 self-revokes. Returns the principal.
 fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
-    let mut p = Principal::implicit(honest(g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(g)).expect("genesis"), g);
     commit_one(
         &mut p,
         g,
@@ -389,7 +402,7 @@ fn d3_revoked_key_cannot_sign_after_readd_attempt() {
 fn d3_control_deleted_key_may_be_readded() {
     let g = kp();
     let k2 = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     commit_one(
         &mut p,
         &g,
@@ -420,7 +433,7 @@ fn d3_control_deleted_key_may_be_readded() {
 #[test]
 fn d4_action_pay_alg_must_equal_key_alg() {
     let g = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let (pay, sig, czd) = action(&g, &g.tmb, T, "ES256");
 
     let before = snapshot(&p);
@@ -441,7 +454,7 @@ fn d4_action_pay_alg_must_equal_key_alg() {
 fn d4_commit_coz_pay_alg_must_equal_key_alg() {
     let g = kp();
     let k2 = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let parts = sign(
         &g,
         json!({"alg": "ES256", "id": b64(&k2.tmb), "now": T, "tmb": b64(&g.tmb),
@@ -462,7 +475,7 @@ fn d4_commit_coz_pay_alg_must_equal_key_alg() {
 #[test]
 fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
     let g = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let (pay, sig, true_czd) = action(&g, &g.tmb, T, "Ed25519");
     let bogus = coz::Czd::from_bytes(vec![7u8; CZD_LEN]);
     assert_ne!(bogus.as_bytes(), true_czd.as_bytes(), "premise");
@@ -485,7 +498,7 @@ fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
 fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
     let g = kp();
     let k2 = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let (pay, sig, true_czd) = key_create(&g, &k2.tmb, T);
     let bogus = coz::Czd::from_bytes(vec![7u8; CZD_LEN]);
     assert_ne!(bogus.as_bytes(), true_czd.as_bytes(), "premise");
@@ -522,7 +535,7 @@ fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
 #[test]
 fn d4_control_es256_matching_alg_action_accepted() {
     let g = golden_es256();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let (pay, sig, czd) = action(&g, &g.tmb, T, "ES256");
     p.verify_and_record_action(&pay, &sig, czd)
         .expect("ES256 action with matching pay.alg");
@@ -535,7 +548,7 @@ fn d4_control_es256_matching_alg_action_accepted() {
 #[test]
 fn d4_es256_action_pay_alg_must_equal_key_alg() {
     let g = golden_es256();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let (pay, sig, czd) = action(&g, &g.tmb, T, "Ed25519");
     let before = snapshot(&p);
 
@@ -553,7 +566,7 @@ fn d4_es256_action_pay_alg_must_equal_key_alg() {
 fn d4_es256_commit_coz_pay_alg_must_equal_key_alg() {
     let g = golden_es256();
     let k2 = kp();
-    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let mut p = genesis_of(Principal::implicit(honest(&g)).expect("genesis"), &g);
     let before = snapshot(&p);
     let parts = sign(
         &g,

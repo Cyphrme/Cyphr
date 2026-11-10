@@ -218,20 +218,19 @@ key_count = 1
 name      = "nonce_kt_principal_reaches_distinct_pg"
 principal = ["golden"]
 
+# The genesis commit opens with the genesis key's own key/create (SPEC 5.1
+# step 1); the nonce follows, before the principal/create whose id is the
+# future SR (step 3), so the nonce is in the PG.
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
-  ],
-  [
-    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
 
