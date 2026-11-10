@@ -697,7 +697,7 @@ pub fn verify_coz(
     };
 
     // Derive hash algorithm from signing key's algorithm
-    let hash_alg = crate::state::hash_alg_from_str(key.alg())?;
+    let hash_alg = key.hash_alg();
 
     // Create coz from parsed Pay
     let cz = ParsedCoz::from_pay(&pay, czd, hash_alg, raw)?;

@@ -627,8 +627,6 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
-        use crate::state::hash_alg_from_str;
-
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
@@ -640,7 +638,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             return Err(crate::error::Error::InvalidSignature);
         }
         let alg = stored.alg();
-        let signer_hash_alg = hash_alg_from_str(alg)?;
+        let signer_hash_alg = stored.hash_alg();
 
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
         //    reads the projected state.

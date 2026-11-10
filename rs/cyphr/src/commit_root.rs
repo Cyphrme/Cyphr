@@ -387,7 +387,8 @@ impl<S: eml::Storage> CloneableLog<S> {
 /// meant before this type became generic.
 pub type CommitTrees<S = eml::MemoryStorage> = CloneableLog<S>;
 
-/// Maps HashAlg to algorithm ID for EML.
+/// Maps HashAlg to algorithm ID for EML. A persisted value: never
+/// renumber a row.
 pub fn hash_alg_to_u64(alg: HashAlg) -> u64 {
     match alg {
         HashAlg::Sha256 => 1,
@@ -396,14 +397,13 @@ pub fn hash_alg_to_u64(alg: HashAlg) -> u64 {
     }
 }
 
-/// Maps algorithm ID to HashAlg.
+/// Maps algorithm ID to HashAlg: the supported algorithm whose
+/// [`hash_alg_to_u64`] is `id`.
 pub fn u64_to_hash_alg(id: u64) -> crate::error::Result<HashAlg> {
-    match id {
-        1 => Ok(HashAlg::Sha256),
-        2 => Ok(HashAlg::Sha384),
-        3 => Ok(HashAlg::Sha512),
-        _ => Err(crate::error::Error::UnsupportedAlgorithm(id.to_string())),
-    }
+    crate::state::HASH_ALGS
+        .into_iter()
+        .find(|&alg| hash_alg_to_u64(alg) == id)
+        .ok_or_else(|| crate::error::Error::UnsupportedAlgorithm(id.to_string()))
 }
 
 /// Assemble a `CommitRoot` `MultihashDigest` from the EML Log.

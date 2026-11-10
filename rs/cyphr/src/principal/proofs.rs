@@ -100,7 +100,7 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// The returned proof can be verified standalone with
     /// [`malt::verify_inclusion`] using the tree's root and the
-    /// corresponding [`CyphrHasher`](crate::commit_root::CyphrHasher).
+    /// corresponding [`MaltHasher`](crate::commit_root::MaltHasher).
     ///
     /// # Errors
     ///

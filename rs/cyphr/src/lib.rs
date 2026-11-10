@@ -23,7 +23,6 @@ pub mod commit;
 /// Commit Root logic.
 pub mod commit_root;
 pub mod error;
-pub mod hasher;
 /// Portable inclusion-proof verification (F9) — free functions taking proof
 /// material and a trusted root as plain parameters, with no `Principal`
 /// dependency.

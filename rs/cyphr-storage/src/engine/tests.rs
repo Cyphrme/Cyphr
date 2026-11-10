@@ -243,7 +243,7 @@ async fn ingest_fixture(
             let czd_bytes = coz::czd_for_alg(&cad, &sig, &alg).unwrap();
 
             let source_alg =
-                cyphr::state::hash_alg_from_str(&alg).unwrap_or(cyphr::state::HashAlg::Sha256);
+                cyphr::state::hash_alg_from_str(&alg).expect("pool alg is in the table");
             let tagged = cyphr::state::TaggedCzd::new(&czd_bytes, source_alg);
             let converted = tagged.convert_to(source_alg);
             let czd = format!(
