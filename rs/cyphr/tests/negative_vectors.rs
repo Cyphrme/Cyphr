@@ -210,8 +210,23 @@ fn ed25519_non_canonical_s_is_rejected() {
 // C3: deleted-key backdating
 // ---------------------------------------------------------------------------
 
-/// Principal {golden, key_a}; key_a signs a genuine action at t=10; golden
-/// deletes key_a at t=100. Returns the principal with key_a deleted.
+/// The `ds/create` (SPEC 4.8.2) golden signs at t=100 to include DR, `id`
+/// being the DT root of the scope it is applied in.
+fn ds_create(golden: &Signer, scope: &cyphr::CommitScope<'_>) -> Signed {
+    let id = scope
+        .data_tree_id()
+        .expect("DT id")
+        .expect("DT holds an action");
+    sign(
+        golden,
+        serde_json::json!({"alg": golden.alg, "tmb": golden.tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/ds/create", "id": id, "now": 1_700_000_100}),
+    )
+}
+
+/// Principal {golden, key_a}; key_a signs a genuine action at t=10; at
+/// t=100 golden includes it into DR (`ds/create`) and deletes key_a in one
+/// commit. Returns the principal with key_a deleted.
 fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
     let mut p = genesis_of(
         Principal::explicit(vec![domain_key(golden), domain_key(key_a)]).expect("principal"),
@@ -224,6 +239,10 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
             "typ": "cyphr.me/cyphr/key/delete", "id": key_a.tmb.to_b64(), "now": 1_700_000_100}),
     );
     let mut scope = p.begin_commit();
+    let (ds_pay, ds_sig, ds_czd) = ds_create(golden, &scope);
+    scope
+        .verify_and_apply(&ds_pay, &ds_sig, ds_czd, None)
+        .expect("ds/create applies");
     scope
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("delete applies");
@@ -252,9 +271,8 @@ fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let mut p = principal_with_deleted_key(&golden, &key_a);
     // The genuine pre-delete action is still recorded after the delete.
-    let (dr, count) = (p.data_root().cloned(), p.action_count());
+    let count = p.action_count();
     assert_eq!(count, 1, "genuine pre-delete action stays recorded");
-    assert!(dr.is_some(), "data root still reflects the genuine action");
 
     let r = record(
         &mut p,
@@ -265,11 +283,6 @@ fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
         "expected Err(UnknownKey), got {r:?}"
     );
     assert_eq!(p.action_count(), count, "rejection recorded nothing");
-    assert_eq!(
-        p.data_root().cloned(),
-        dr,
-        "rejection left the data root unchanged"
-    );
 }
 
 // Practice: SPEC.md section 6.2 (`key/delete`): "actions signed after it has been removed are
@@ -287,11 +300,10 @@ fn deleted_key_action_dated_after_delete_is_rejected() {
     );
 }
 
-// Practice: SPEC.md section 4.2 (`arrow`) with section 3.7.2 (SR = MR(AR, DR)): the delete commit's
-// signed arrow commits to the state root including the data root as it stood, so history rewritten
-// to hold a later forged action cannot re-verify. Claim C3c. Mutation that turns this red:
-// excluding the data root (DR) from the state root that `arrow` commits to, or skipping the arrow
-// check in `finalize`.
+// Practice: SPEC.md section 4.8.2 (a `ds/create` names DR = MR(DT)) with section 4.2 (`arrow`):
+// the delete commit includes DR as it stood, so history rewritten to hold a later forged action
+// cannot re-verify. Claim C3c. Mutation that turns this red: not checking a `ds/create`'s `id`
+// against the Data Tree it is applied to.
 // @docket: rv-state-recomputed :: scripts/docket-run rv-state-recomputed
 #[test]
 fn forged_action_spliced_before_delete_commit_breaks_replay() {
@@ -329,17 +341,16 @@ fn forged_action_spliced_before_delete_commit_breaks_replay() {
     )
     .expect("key_a is still active at this position in the forged history");
 
+    // The delete commit's `ds/create` named DR over the genuine action
+    // alone; over the spliced DT it names a state this history is not in.
     let mut scope = p.begin_commit();
-    for vc in &cozies {
+    let r = cozies.iter().try_for_each(|vc| {
         let raw = vc.raw();
         let bytes = serde_json::to_vec(&raw.pay).expect("serialize pay");
-        scope
-            .verify_and_apply(&bytes, &raw.sig, vc.czd().clone(), None)
-            .expect("each coz of the honest delete commit is individually valid");
-    }
-    let r = scope.finalize().map(|_| ());
+        scope.verify_and_apply(&bytes, &raw.sig, vc.czd().clone(), None)
+    });
     assert!(
-        matches!(r, Err(Error::CommitMismatch)),
-        "expected Err(CommitMismatch), got {r:?}"
+        matches!(r, Err(Error::StateMismatch)),
+        "expected Err(StateMismatch), got {r:?}"
     );
 }

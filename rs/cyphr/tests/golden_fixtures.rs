@@ -82,6 +82,7 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::DuplicateNonce => "DuplicateNonce",
         Error::UnknownNonce => "UnknownNonce",
         Error::GenesisIncomplete => "GenesisIncomplete",
+        Error::StateMismatch => "StateMismatch",
         _ => "UnknownError",
     }
 }
@@ -482,15 +483,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 });
 
                 let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
-                let is_transaction = typ.contains("/key/")
-                    || typ.contains("/principal/create")
-                    || typ.contains("/principal/delete")
-                    || typ.contains("/freeze/create")
-                    || typ.contains("/freeze/delete")
-                    || typ.contains("/nonce/")
-                    || typ.contains("/commit/create");
-
-                if is_transaction {
+                if cyphr::parsed_coz::typ::is_transaction(typ) {
                     // Consume next key from commit-level keys if key-introducing
                     let new_key = if typ.contains("/key/create") || typ.contains("/key/replace") {
                         key_iter.next().map(|ke| {

@@ -159,6 +159,64 @@ typ    = "cyphr.me/action"
 error = "KeyRevoked"
 
 # ============================================================================
+# ds/create naming a DR that is not MR(DT) fails with StateMismatch
+# (SPEC 4.8.2: the id is the computed new DR)
+# ============================================================================
+
+[[test]]
+name      = "ds_create_wrong_id_fails"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Recorded action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "raw:SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[test.expected]
+error = "StateMismatch"
+
+# ============================================================================
+# ds/create on a deleted principal fails with AlreadyDeleted
+# (SPEC 11.4: no transactions or actions on a closed account). The id is
+# MR(DT) over the recorded action, so only the lifecycle gate refuses it.
+# ============================================================================
+
+[[test]]
+name      = "ds_create_after_delete_fails"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Recorded action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/principal/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "golden", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[test.expected]
+error = "AlreadyDeleted"
+
+# ============================================================================
 # Duplicate key test
 # Adding key already in KS fails with DuplicateKey
 # ============================================================================

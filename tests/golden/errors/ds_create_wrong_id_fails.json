@@ -1,0 +1,121 @@
+{
+  "name": "ds_create_wrong_id_fails",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/key/create"
+          },
+          "sig": "kcW7vCzIO3kxs6FNME4EUIA8gkQfsCoWhwElU2qCNjhbHlvHhWewXg-HRuLQl29sdOA7NZlxpdQvP16khkVi5g"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/principal/create"
+          },
+          "sig": "sGOkqv2zHQwoNJtFVZfVhQahYFHV93XqXL4sSliJ_hN7zpkJXUvbL0JwpZWPmCjL4GhuN11H1SW6vtriNXiZYQ"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "arrow": "SHA-256:MYgDG3iOszlFurJ1tgSHz-H23AiB9puTjqwlqli5MFM",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/commit/create"
+          },
+          "sig": "PLyyBcblMjaxjPb8-sBErbRejpRG6Jz237RBjfwqANtNJPq9maoxiAhlDdV0u1qzwmN5Miy9RlpATC61lE0Qew"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tag": "Zami's Majuscule Key (SPEC §15.1)",
+          "now": 0
+        }
+      ],
+      "commit_id": "SHA-256:k_31aJq4FjgPrUZr78JEnfZ6gWvGik_AeWtJnDzVWMY",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk"
+    },
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Recorded action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "1pwkhuxoRxgx2SgxQ4hxfF5h07YtWcqrx0_EuyOOwcondGtdAtX6FeH5l81leYcSj5HcQ9Eatub24rHe-BUq_Q"
+        }
+      ],
+      "keys": [],
+      "commit_id": "k_31aJq4FjgPrUZr78JEnfZ6gWvGik_AeWtJnDzVWMY",
+      "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk"
+    },
+    {
+      "v": 1,
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU",
+            "now": 1700000002,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/ds/create"
+          },
+          "sig": "DhvagBNnPS14kFEm4ufmTkoYt_g5uUbJNEJvN5GgWalcDBOPCfWM4QpfHS37-OnYYd1xuXKb02FY7vISGl4FBA"
+        }
+      ],
+      "keys": [],
+      "commit_id": "",
+      "ar": null,
+      "sr": null,
+      "pr": ""
+    }
+  ],
+  "digests": [
+    "3smLunC4XUD4K6aYHA-f_Qxv-5wntZmAgaOSasoNLaM",
+    "KLe_CW8d5Q5i3GvY2qm0-VrdIYM1kE3eWOOSNhXwkJI"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 4,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:K-BZYCgkPUmkGnPM0Fyvp2nK9ITSGeNguD3LX4Pwxfk",
+    "cr": "SHA-256:k_31aJq4FjgPrUZr78JEnfZ6gWvGik_AeWtJnDzVWMY",
+    "tr": "SHA-256:k_31aJq4FjgPrUZr78JEnfZ6gWvGik_AeWtJnDzVWMY",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pg": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "error": "StateMismatch",
+    "deleted": false,
+    "frozen": false
+  }
+}

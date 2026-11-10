@@ -1,5 +1,5 @@
 {
-  "name": "action_changes_ps",
+  "name": "action_alone_leaves_pr",
   "principal": [
     "golden"
   ],
@@ -28,8 +28,8 @@
       "keys": [],
       "commit_id": "",
       "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "sr": "TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0",
-      "pr": "TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0"
+      "sr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
     }
   ],
   "digests": [
@@ -40,9 +40,8 @@
     "level": 4,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0",
-    "sr": "SHA-256:TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0",
-    "dr": "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4",
+    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
     "deleted": false,
     "frozen": false

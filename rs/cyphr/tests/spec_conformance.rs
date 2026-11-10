@@ -1973,10 +1973,11 @@ fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
 
 /// Backs SPEC 3.7 (SR = MR(AR, DR?); a lone child is promoted) for a
 /// keyless principal that holds data. Scenario: a lone key records an
-/// action (Level 4), then revokes itself. AR is absent, so SR is the
-/// promoted DR; KR and AR stay absent; PR is MR(SR, CR), different from
-/// both. Turns red if SR is absent despite data, SR differs from DR, or PR
-/// drops SR. End to end: yes.
+/// action (Level 4), then in one commit includes DR with `ds/create`
+/// (SPEC 4.8.2) and revokes itself. AR is absent, so SR is the promoted
+/// DR; KR and AR stay absent; PR is MR(SR, CR), different from both.
+/// Turns red if SR is absent despite included data, SR differs from DR, or
+/// PR drops SR. End to end: yes.
 #[test]
 fn dead_principal_roots_state_root_is_the_data_root() {
     let g = kp();
@@ -1987,14 +1988,26 @@ fn dead_principal_roots_state_root_is_the_data_root() {
                "typ": "cyphr.me/comment/create"}),
     );
     p.verify_and_record_action(&pay, &sig, czd).expect("action");
-    commit_one(
-        &mut p,
+    let mut scope = p.begin_commit();
+    let id = scope
+        .data_tree_id()
+        .expect("DT id")
+        .expect("DT holds the action");
+    let (pay, sig, czd) = sign(
         &g,
-        sign(&g, revoke_pay(&g, T + 1, json!(T + 1))),
-        None,
-        T + 2,
-    )
-    .expect("the only key's revoke is accepted");
+        json!({"alg": g.alg, "id": id, "now": T + 1, "tmb": b64(&g.tmb),
+               "typ": "cyphr.me/cyphr/ds/create"}),
+    );
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("ds/create");
+    let (pay, sig, czd) = sign(&g, revoke_pay(&g, T + 1, json!(T + 1)));
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("the only key's revoke is accepted");
+    scope
+        .finalize_with_software(&software(&g), T + 2, "cyphr.me")
+        .expect("the dying commit");
     assert!(p.key_root().is_none() && p.auth_root().is_none());
     let dr = p.data_root().expect("DR survives death");
     let sr = p.sr().expect("data makes an SR");

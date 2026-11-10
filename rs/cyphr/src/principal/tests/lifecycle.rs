@@ -131,7 +131,8 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
             | CozKind::NonceDelete { .. }
             | CozKind::Merge(_)
             | CozKind::MergeAck(_)
-            | CozKind::PrincipalCreate { .. } => Expect::Frozen,
+            | CozKind::PrincipalCreate { .. }
+            | CozKind::DataRootCreate { .. } => Expect::Frozen,
             CozKind::FreezeCreate { .. } => Expect::AlreadyFrozen,
             // CommitCreate stays exempt: it finalizes the very commit that
             // carries freeze/create or freeze/delete, so denying it would
@@ -191,6 +192,11 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
         },
         CozKind::CommitCreate {
             arrow: MultihashDigest::from_single(HashAlg::Sha256, vec![0; 32]).unwrap(),
+        },
+        CozKind::DataRootCreate {
+            id: crate::state::DataRoot(
+                MultihashDigest::from_single(HashAlg::Sha256, vec![0; 32]).unwrap(),
+            ),
         },
     ];
     for kind in kinds {

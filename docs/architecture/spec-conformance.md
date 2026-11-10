@@ -48,12 +48,12 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   54 |
+| `covered`      |   56 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
-| `not-testable` |   12 |
+| `not-testable` |   11 |
 | `out-of-scope` |    6 |
-| `total`        |   72 |
+| `total`        |   73 |
 
 ## Rows
 
@@ -199,18 +199,20 @@ evaluator: test
 
 ### [sc-l248]
 
-SPEC 2.3.2, line 248. Disposition: `not-testable`.
+SPEC 2.3.2, line 248. Disposition: `covered`.
 
 - spec-line: 248
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: 2. **Capability gate**: The principal must have the components required for an
-- tests: none
-- reason: The gate reads component presence, and §3.3 makes a key-only principal's first commit its genesis, so there is no contradiction. The one candidate input, a data action with no DT commit inclusion, has no decidable observable form: the core records data actions into the data root directly (they move PR with no commit), and the text does not say whether that is the inclusion it requires. The RT constraints in the sentence are Level 5.
+- tests:
+  - `rs/cyphr-server/tests/data_root.rs::data_root_enters_pr_only_by_a_signed_ds_create`
+  - `rs/cyphr/tests/negative_vectors.rs::forged_action_spliced_before_delete_commit_breaks_replay`
+- fails when: a data action reaches PR without DT commit inclusion: the core records it in DT, and only a signed `cyphr/ds/create` whose `id` is the computed DR = MR(DT) puts DR into PR (SPEC 4.8.2, row [sc-l689](#sc-l689)), so the test turns red if an action alone moves PR or a `ds/create` is accepted for a DT it does not name. "Principal genesis is required for commits" is §3.3's rule: a key-only principal's first commit is its genesis. The RT constraints in the sentence are Level 5.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l252]
@@ -357,6 +359,27 @@ SPEC 4.6.2, line 592. Disposition: `covered`.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s4_6_commit_coz_must_be_last_in_txs`
 - fails when: a commit whose `commit/create` coz is not last is accepted.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+### [sc-l689]
+
+SPEC 4.8.2, line 689. Disposition: `covered`.
+
+- spec-line: 689
+- source: supplement
+- disposition: covered
+- spec-text: to be implicitly promoted to PR. To explicitly include DR into PR, a DR
+- tests:
+  - `rs/cyphr-server/tests/data_root.rs::data_root_enters_pr_only_by_a_signed_ds_create`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_actions[actions/action_alone_leaves_pr]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_actions[actions/single_action_promotes_ds]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_actions[actions/multiple_actions_sorted]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/ds_create_wrong_id_fails]`
+- fails when: a data action alone changes PR, a `cyphr/ds/create` naming the computed DR = MR(DT) does not put DR into PR, or one naming any other DR (a stale one over HTTP, an arbitrary one in the vector) is accepted instead of refused with `StateMismatch`.
 
 ```claim
 kind: requirement

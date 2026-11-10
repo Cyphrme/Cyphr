@@ -440,13 +440,10 @@ impl<'a> Generator<'a> {
                 Some(now) if i == 0 => TxIntent { now, ..tx.clone() },
                 _ => tx.clone(),
             };
-            // A `principal/create` names the future SR (SPEC 5.1 step 3);
-            // when the scope cannot derive one, the coz carries `pre` and
-            // the refusal is what the vector pins.
-            let own_pr = match scope.genesis_id() {
-                Ok(id) if tx.typ.ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE) => id,
-                _ => pre.to_string(),
-            };
+            let own_pr = Self::derived_id(&scope, &tx.typ, pre).map_err(|e| Error::Generation {
+                name: test.name.clone(),
+                reason: format!("{} id: {e}", tx.typ),
+            })?;
             let (coz, sig, czd) = self.build_golden_coz(&tx, &test.name, Some(&own_pr))?;
             // A key the core cannot hold (an unsupported algorithm) is
             // itself the refusal the vector pins.
@@ -467,6 +464,26 @@ impl<'a> Generator<'a> {
             }
         }
         Ok(cozies)
+    }
+
+    /// The `id` a coz of kind `typ` names when the intent states none: a
+    /// `principal/create` names the future SR (SPEC 5.1 step 3), a
+    /// `ds/create` the computed DR = MR(DT) (SPEC 4.8.2), and the lifecycle
+    /// transactions the PR `pre` before the commit.
+    fn derived_id(
+        scope: &cyphr::CommitScope<'_>,
+        typ: &str,
+        pre: &str,
+    ) -> cyphr::error::Result<String> {
+        use cyphr::parsed_coz::typ::{DS_CREATE, PRINCIPAL_CREATE, has_suffix};
+
+        if has_suffix(typ, PRINCIPAL_CREATE) {
+            scope.genesis_id()
+        } else if has_suffix(typ, DS_CREATE) {
+            Ok(scope.data_tree_id()?.unwrap_or_else(|| pre.to_string()))
+        } else {
+            Ok(pre.to_string())
+        }
     }
 
     /// Build genesis_keys from pool key names.
@@ -740,23 +757,16 @@ impl<'a> Generator<'a> {
                     }
                 })?;
 
-                // Build pay value for this cozy. `pre` only matters for a
-                // principal/create's `id` field; other cozy types ignore it.
-                let genesis_id;
-                let own_pr = if tx_cz
-                    .typ
-                    .ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE)
-                {
-                    genesis_id = scope.genesis_id().map_err(|e| Error::Generation {
+                // Build pay value for this cozy. The derived `id` matters
+                // only to the kinds whose `id` names a state (see
+                // `derived_id`); other cozy types ignore it.
+                let own_pr =
+                    Self::derived_id(&scope, &tx_cz.typ, pre).map_err(|e| Error::Generation {
                         name: test_name.to_string(),
-                        reason: format!("principal/create id: {e}"),
+                        reason: format!("{} id: {e}", tx_cz.typ),
                     })?;
-                    &genesis_id
-                } else {
-                    pre
-                };
                 let pay_value =
-                    self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(own_pr))?;
+                    self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(&own_pr))?;
                 let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
                     name: test_name.to_string(),
                     reason: e.to_string(),
@@ -1062,7 +1072,9 @@ impl<'a> Generator<'a> {
 
         let mut digests = Vec::new();
         let mut action_entries = Vec::new();
-        // An error test pins the refusal of its last event, a data action.
+        let mut failing = Vec::new();
+        // An error test pins the refusal of its last event: a data action,
+        // or a commit (signed coz by coz until one is refused).
         let is_error_test = test
             .expected
             .as_ref()
@@ -1077,6 +1089,13 @@ impl<'a> Generator<'a> {
                 let (coz, _, czd) = self.build_action_coz(action_intent, None, &test.name)?;
                 digests.push(czd.to_b64());
                 action_entries.push(Self::cozies_to_commit_entry(std::slice::from_ref(&coz))?);
+                continue;
+            }
+            if let (true, true, TimelineEvent::Commit(commit_intent)) =
+                (is_error_test, i + 1 == events, &event)
+            {
+                let pre = Self::format_pr_tagged(principal)?;
+                failing = self.failing_commit(test, commit_intent, principal, &pre)?;
                 continue;
             }
             match event {
@@ -1183,6 +1202,10 @@ impl<'a> Generator<'a> {
 
         // Interleave action pseudo-commits
         commits.extend(action_entries);
+        if !failing.is_empty() {
+            digests.extend(failing.iter().map(|c| c.czd.clone()));
+            commits.push(Self::cozies_to_commit_entry(&failing)?);
+        }
 
         // Sort chronologically by first cozy's timestamp
         commits.sort_by_key(|entry| {
@@ -1561,17 +1584,19 @@ impl<'a> Generator<'a> {
         let targets_own_pr = cz.typ.contains("principal/create")
             || cz.typ.contains("principal/delete")
             || cz.typ.contains("freeze/create")
-            || cz.typ.contains("freeze/delete");
-        if targets_own_pr {
+            || cz.typ.contains("freeze/delete")
+            || cz.typ.contains("ds/create");
+        if let Some(raw_id) = cz.target.as_deref().and_then(|t| t.strip_prefix("raw:")) {
+            // `raw:<id>` states the `id` verbatim, for values no pool key's
+            // thumbprint can express (e.g. a nonce of an off-by-one width,
+            // or a `ds/create` naming a DR that is not MR(DT)).
+            fields.insert("id".to_string(), Value::String(raw_id.to_string()));
+        } else if targets_own_pr {
             let pr_val = current_pr.ok_or_else(|| Error::Generation {
                 name: "build_pay_value".to_string(),
-                reason: "this coz type requires current PR for id field".to_string(),
+                reason: "this coz type requires its derived id".to_string(),
             })?;
             fields.insert("id".to_string(), Value::String(pr_val.to_string()));
-        } else if let Some(raw_id) = cz.target.as_deref().and_then(|t| t.strip_prefix("raw:")) {
-            // `raw:<id>` states the `id` verbatim, for values no pool key's
-            // thumbprint can express (e.g. a nonce of an off-by-one width).
-            fields.insert("id".to_string(), Value::String(raw_id.to_string()));
         } else if let Some(target_name) = &cz.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;

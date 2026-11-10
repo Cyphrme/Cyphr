@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::merge::MergeClaim;
 use crate::nonce::{Nonce, NonceLevel};
-use crate::state::{AuthRoot, PrincipalRoot};
+use crate::state::{AuthRoot, DataRoot, PrincipalRoot};
 
 // ============================================================================
 // ParsedCoz Types (SPEC §4.2)
@@ -49,6 +49,8 @@ pub mod typ {
     pub const FREEZE_CREATE: &str = "cyphr/freeze/create";
     /// `<authority>/cyphr/freeze/delete` - Thaw (SPEC §14.9.3)
     pub const FREEZE_DELETE: &str = "cyphr/freeze/delete";
+    /// `<authority>/cyphr/ds/create` - Include DR = MR(DT) into the Principal Tree (SPEC 4.8.2)
+    pub const DS_CREATE: &str = "cyphr/ds/create";
     /// `<authority>/cyphr/nonce/create` - Insert a nonce at the Principal Root (SPEC §10.1)
     pub const NONCE_CREATE_PR: &str = "cyphr/nonce/create";
     /// `<authority>/cyphr/nonce/delete` - Remove a nonce at the Principal Root
@@ -97,6 +99,7 @@ pub mod typ {
             MERGE_ACK,
             FREEZE_CREATE,
             FREEZE_DELETE,
+            DS_CREATE,
         ]
         .iter()
         .any(|suffix| has_suffix(typ, suffix))
@@ -203,6 +206,12 @@ pub enum CozKind {
         /// Targeted Principal Root (the signer's own PR).
         id: PrincipalRoot,
     },
+
+    /// Include the Data Tree's root into the Principal Tree - SPEC 4.8.2
+    DataRootCreate {
+        /// The DR being included: the computed MR(DT).
+        id: DataRoot,
+    },
 }
 
 impl std::fmt::Display for CozKind {
@@ -221,6 +230,7 @@ impl std::fmt::Display for CozKind {
             CozKind::MergeAck(_) => write!(f, "{}", typ::MERGE_ACK),
             CozKind::FreezeCreate { .. } => write!(f, "{}", typ::FREEZE_CREATE),
             CozKind::FreezeDelete { .. } => write!(f, "{}", typ::FREEZE_DELETE),
+            CozKind::DataRootCreate { .. } => write!(f, "{}", typ::DS_CREATE),
         }
     }
 }
@@ -377,6 +387,9 @@ impl ParsedCoz {
         } else if typ::has_suffix(typ, typ::FREEZE_DELETE) {
             let id = Self::extract_pr(pay)?;
             Ok(CozKind::FreezeDelete { id })
+        } else if typ::has_suffix(typ, typ::DS_CREATE) {
+            let id = DataRoot(Self::extract_tagged(pay)?);
+            Ok(CozKind::DataRootCreate { id })
         } else if let Some((level, create)) = typ::nonce_path(typ) {
             let id = pay
                 .extra
@@ -412,19 +425,7 @@ impl ParsedCoz {
     /// Per SPEC §5.1, the `id` field in principal/create contains the
     /// Auth State bundle identifier. Expects `alg:digest` format.
     fn extract_as(pay: &Pay) -> Result<AuthRoot> {
-        use crate::multihash::MultihashDigest;
-        use crate::state::TaggedDigest;
-
-        let id_value = pay.extra.get("id").ok_or(Error::MalformedPayload)?;
-        let id_str = id_value.as_str().ok_or(Error::MalformedPayload)?;
-
-        // Parse tagged digest (validates algorithm and length)
-        let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
-
-        Ok(AuthRoot(
-            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
-                .map_err(|_| Error::MalformedPayload)?,
-        ))
+        Self::extract_tagged(pay).map(AuthRoot)
     }
 
     /// Extract `id` field as PrincipalRoot (for the lifecycle transactions:
@@ -437,18 +438,24 @@ impl ParsedCoz {
     /// rather than `AuthRoot`, matching what these transactions actually
     /// reference).
     fn extract_pr(pay: &Pay) -> Result<PrincipalRoot> {
+        Self::extract_tagged(pay).map(PrincipalRoot)
+    }
+
+    /// Extract the `id` field as one tagged `alg:digest` digest, validating
+    /// the algorithm and length (`principal/create`, the lifecycle
+    /// transactions and `ds/create` share this form).
+    fn extract_tagged(pay: &Pay) -> Result<crate::multihash::MultihashDigest> {
         use crate::multihash::MultihashDigest;
         use crate::state::TaggedDigest;
 
-        let id_value = pay.extra.get("id").ok_or(Error::MalformedPayload)?;
-        let id_str = id_value.as_str().ok_or(Error::MalformedPayload)?;
-
+        let id_str = pay
+            .extra
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(Error::MalformedPayload)?;
         let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
-
-        Ok(PrincipalRoot(
-            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
-                .map_err(|_| Error::MalformedPayload)?,
-        ))
+        MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
+            .map_err(|_| Error::MalformedPayload)
     }
 
     /// Extract `merge_from` (a non-empty array of tagged PRs) and
