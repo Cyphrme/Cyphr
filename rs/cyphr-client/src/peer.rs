@@ -31,8 +31,11 @@
 //! statement (a Noise responder, gossip) can verify it against the chain
 //! without HTTP.
 
+use std::collections::BTreeMap;
+
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
+use cyphr::principal::{Clock, system_clock};
 use cyphr::replay::{BundleId, WireBundle, WireError, replay_bundle};
 use cyphr::{Key, Principal};
 use serde::Deserialize as _;
@@ -40,10 +43,11 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector};
 use crate::patch::{
-    AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, fetch_patch,
-    verify_authenticated_envelope,
+    AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, Step, fetch_patch,
+    replay_order, verify_authenticated_envelope,
 };
 use crate::report::{TipReport, ViewFailure, ViewStatement, verify_view};
+use crate::revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 
 /// The wire version of the response envelope a tip arrives in.
 const ENVELOPE_VERSION: u64 = 1;
@@ -112,12 +116,74 @@ pub enum PeerFailure {
         /// The core's refusal.
         source: cyphr::Error,
     },
+    /// The verifier's anchor is a genesis commit id, and the chain the peer
+    /// served opens with a different commit.
+    #[error("the served genesis commit is not the anchored one")]
+    AnchorMismatch,
+    /// The chain the peer served, replayed from the anchor, is not the
+    /// principal asked about.
+    #[error("the served chain does not derive the requested principal {id}")]
+    PrincipalMismatch {
+        /// The principal the verifier asked for.
+        id: String,
+    },
+    /// A statement-triggered follow came inside the configured interval of
+    /// the previous fetch from this peer, so nothing was fetched.
+    #[error("the peer was fetched recently; a statement may follow again in {retry_after_secs}s")]
+    FetchTooSoon {
+        /// Seconds until the next statement-triggered follow is allowed.
+        retry_after_secs: u64,
+    },
+    /// The peer's patch is longer than the configured cap; nothing was
+    /// replayed.
+    #[error("the peer offered {offered} entries, over the cap of {cap}")]
+    PatchTooLarge {
+        /// Entries offered.
+        offered: usize,
+        /// The cap.
+        cap: usize,
+    },
+    /// The statement's signing key has a verified naked revoke (SPEC 6.4)
+    /// and the statement is not before it.
+    #[error("signing key {tmb} carries a verified naked revoke")]
+    KeyRevoked {
+        /// The revoked signing key.
+        tmb: String,
+    },
+    /// A served naked revoke did not verify.
+    #[error("naked revoke: {0}")]
+    Revoke(#[from] RevokeFailure),
     /// The tip's envelope or signature was refused.
     #[error("tip: {0}")]
     Tip(PatchFailure),
     /// The view statement was refused.
     #[error("view: {0}")]
     View(ViewFailure),
+}
+
+/// How much a peer may make the client fetch and replay.
+///
+/// The defaults bound a hostile or merely chatty peer: an unverified
+/// statement naming an unknown key can cost one full `/patch` fetch per
+/// minute (a legitimate rotation is learned within that minute), and a
+/// patch is refused past 10 000 entries (replay is the cost, and a chain of
+/// that length is far beyond any principal's expected history).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerLimits {
+    /// Seconds that must pass between statement-triggered follows
+    /// ([`PeerChain::verify_tip_following`]) of one peer.
+    pub min_follow_interval_secs: u64,
+    /// Most patch entries one follow replays.
+    pub max_patch_entries: usize,
+}
+
+impl Default for PeerLimits {
+    fn default() -> Self {
+        Self {
+            min_follow_interval_secs: 60,
+            max_patch_entries: 10_000,
+        }
+    }
 }
 
 /// The extent of a held peer chain.
@@ -148,6 +214,17 @@ pub struct PeerChain {
     /// Whether a follow has ever completed. A bare pin holds only the
     /// genesis key, which is key bytes and not yet a chain.
     followed: bool,
+    /// The verifier's time source: replays the chain and times the
+    /// follow interval, so a wasm host can inject one (the default clock
+    /// reads 0 there).
+    clock: Clock,
+    limits: PeerLimits,
+    /// The clock reading at the latest fetch, for the follow interval.
+    last_fetch: Option<i64>,
+    /// Keys with a verified naked revoke, by thumbprint, and when each
+    /// declared the revocation. A naked revoke mutates no chain (SPEC
+    /// 6.4), so it is held beside the chain and outlives every follow.
+    dead: BTreeMap<String, i64>,
 }
 
 impl PeerChain {
@@ -186,6 +263,57 @@ impl PeerChain {
             pin,
             bundles: Vec::new(),
             followed: false,
+            clock: system_clock,
+            limits: PeerLimits::default(),
+            last_fetch: None,
+            dead: BTreeMap::new(),
+        }
+    }
+
+    /// Use `clock` for every replay and for the follow interval, instead of
+    /// the system clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        if let Pin::Held(chain) = &mut self.pin {
+            chain.set_clock(clock);
+        }
+        self
+    }
+
+    /// Replace the default [`PeerLimits`].
+    #[must_use]
+    pub fn with_limits(mut self, limits: PeerLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Record a naked revoke served by anyone, after verifying that the key
+    /// it names signed it. From then on a statement by that key at or after
+    /// the revoke's `rvk` is refused ([`PeerFailure::KeyRevoked`]), as is
+    /// the key for [`active_key`](Self::active_key), which carries no
+    /// statement time.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerFailure::Revoke`] when the envelope does not verify.
+    pub fn observe_naked_revoke(&mut self, envelope: &Value) -> Result<NakedRevoke, PeerFailure> {
+        let revoke = verify_naked_revoke(envelope)?;
+        self.dead
+            .entry(revoke.tmb.to_b64())
+            .and_modify(|rvk| *rvk = (*rvk).min(revoke.rvk))
+            .or_insert(revoke.rvk);
+        Ok(revoke)
+    }
+
+    /// Refuse `tmb` when it has a verified naked revoke and the statement
+    /// (`now`, or unknown) is not before it.
+    fn refuse_dead(&self, tmb: &coz::Thumbprint, now: Option<i64>) -> Result<(), PeerFailure> {
+        match self.dead.get(&tmb.to_b64()) {
+            Some(rvk) if now.is_none_or(|n| n >= *rvk) => {
+                Err(PeerFailure::KeyRevoked { tmb: tmb.to_b64() })
+            },
+            _ => Ok(()),
         }
     }
 
@@ -214,8 +342,10 @@ impl PeerChain {
     ///
     /// [`PeerFailure::KeyNotActive`] when no active key has that
     /// thumbprint (never held, or revoked or replaced);
+    /// [`PeerFailure::KeyRevoked`] when it has a verified naked revoke;
     /// [`PeerFailure::PinMismatch`] for a refused pin.
     pub fn active_key(&self, tmb: &coz::Thumbprint) -> Result<&Key, PeerFailure> {
+        self.refuse_dead(tmb, None)?;
         self.chain()?
             .active_keys()
             .find(|k| k.tmb() == tmb)
@@ -265,30 +395,55 @@ impl PeerChain {
             None,
         )
         .await?;
+        if patch.entries.len() > self.limits.max_patch_entries {
+            return Err(PeerFailure::PatchTooLarge {
+                offered: patch.entries.len(),
+                cap: self.limits.max_patch_entries,
+            });
+        }
 
         // The replay root is a fresh principal from the pinned genesis,
         // never the held (already extended) one.
         let mut candidate = Principal::implicit(self.genesis.clone())
             .await
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
+        candidate.set_clock(self.clock);
         let mut offered = Vec::with_capacity(patch.entries.len());
-        for (index, entry) in patch.entries.iter().enumerate() {
-            let bundle = entry.bundle.as_ref().map_err(|defect| PeerFailure::Entry {
-                index,
-                defect: *defect,
-            })?;
-            offered.push(replay_entry(&mut candidate, bundle).await.map_err(
-                |refusal| match refusal {
-                    EntryRefusal::Malformed(what) => PeerFailure::Malformed {
-                        commit: index,
-                        what,
-                    },
-                    EntryRefusal::Replay(source) => PeerFailure::Replay {
-                        commit: index,
-                        source,
-                    },
+        // A server serves data actions as action-only bundles beside the
+        // commits, each before the commit at its `after`; replay in that
+        // order or a data commit has no actions to include.
+        for step in replay_order(0, &patch.entries, &patch.actions) {
+            let (index, bundle) = match step {
+                Step::Commit(index, entry) => (
+                    index,
+                    entry
+                        .bundle
+                        .clone()
+                        .map_err(|defect| PeerFailure::Entry { index, defect })?,
+                ),
+                Step::Actions(a) => {
+                    let index = usize::try_from(a.after).unwrap_or(usize::MAX);
+                    let blobs = a
+                        .blobs
+                        .clone()
+                        .map_err(|defect| PeerFailure::Entry { index, defect })?;
+                    (index, WireBundle::actions(blobs))
                 },
-            )?);
+            };
+            offered.push(
+                replay_entry(&mut candidate, &bundle)
+                    .await
+                    .map_err(|refusal| match refusal {
+                        EntryRefusal::Malformed(what) => PeerFailure::Malformed {
+                            commit: index,
+                            what,
+                        },
+                        EntryRefusal::Replay(source) => PeerFailure::Replay {
+                            commit: index,
+                            source,
+                        },
+                    })?,
+            );
         }
 
         // Every held bundle is compared, the action-only ones after the
@@ -321,8 +476,10 @@ impl PeerChain {
     /// # Errors
     ///
     /// [`PeerFailure::KeyNotActive`] when the signing key is not active in
-    /// the held chain; [`PeerFailure::Tip`] for any other refusal of the
-    /// envelope; [`PeerFailure::PinMismatch`] for a refused pin.
+    /// the held chain; [`PeerFailure::KeyRevoked`] when it has a verified
+    /// naked revoke at or before the statement's `now`;
+    /// [`PeerFailure::Tip`] for any other refusal of the envelope;
+    /// [`PeerFailure::PinMismatch`] for a refused pin.
     pub fn verify_tip(&self, body: &Value, principal_id: &str) -> Result<TipReport, PeerFailure> {
         let chain = self.chain()?;
         let found = body.get("v").and_then(Value::as_u64).unwrap_or(0);
@@ -340,6 +497,7 @@ impl PeerChain {
         };
         let tmb =
             claimed_tmb(&coz).ok_or(PeerFailure::Tip(PatchFailure::EnvelopeUnsignedOrMisSigned))?;
+        self.refuse_dead(&tmb, coz.pay["now"].as_i64())?;
         // ACTIVE keys only: `get_key` also returns revoked ones.
         let key = chain
             .active_keys()
@@ -366,6 +524,9 @@ impl PeerChain {
         coz: &coz::CozJson,
         pr: &coz::Thumbprint,
     ) -> Result<ViewStatement, PeerFailure> {
+        if let Some(tmb) = claimed_tmb(coz) {
+            self.refuse_dead(&tmb, coz.pay["now"].as_i64())?;
+        }
         verify_view(coz, self.chain()?, pr).map_err(|failure| match failure {
             ViewFailure::KeyNotActive => PeerFailure::KeyNotActive {
                 tmb: claimed_tmb(coz).map_or_else(String::new, |t| t.to_b64()),
@@ -394,17 +555,32 @@ impl PeerChain {
         body: &Value,
         principal_id: &str,
     ) -> Result<TipReport, PeerFailure> {
-        if !self.followed {
-            self.follow(connector).await?;
+        let needs_follow = !self.followed
+            || matches!(
+                self.verify_tip(body, principal_id),
+                Err(PeerFailure::KeyNotActive { .. })
+            );
+        if !needs_follow {
             return self.verify_tip(body, principal_id);
         }
-        match self.verify_tip(body, principal_id) {
-            Err(PeerFailure::KeyNotActive { .. }) => {
-                self.follow(connector).await?;
-                self.verify_tip(body, principal_id)
-            },
-            other => other,
+        // The body is unverified, so what it can cost is bounded: one
+        // follow per interval, however many bodies arrive, a failed fetch
+        // included.
+        if let Some(last) = self.last_fetch {
+            let elapsed = u64::try_from((self.clock)().saturating_sub(last)).unwrap_or(0);
+            let interval = self.limits.min_follow_interval_secs;
+            if elapsed < interval {
+                return Err(PeerFailure::FetchTooSoon {
+                    retry_after_secs: interval - elapsed,
+                });
+            }
         }
+        // Counted before the fetch: a fetch that fails still cost the peer.
+        // Only statement-triggered fetches spend the budget; a caller's own
+        // `follow` is its policy, not an unverified peer's demand.
+        self.last_fetch = Some((self.clock)());
+        self.follow(connector).await?;
+        self.verify_tip(body, principal_id)
     }
 }
 

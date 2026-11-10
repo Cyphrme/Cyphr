@@ -257,6 +257,39 @@ impl Peer {
         Ok(())
     }
 
+    /// Configure the peer to gossip with `peers` every `interval_secs` and
+    /// start it again (a peer's own address is only known once it runs, so
+    /// the list cannot be given at first start). `peers` are the proxy
+    /// routes by which this peer dials the others, so the proxy carries,
+    /// and can cut, the gossip link.
+    pub async fn enable_gossip(
+        &self,
+        bins: &Bins,
+        peers: &[SocketAddr],
+        interval_secs: u64,
+    ) -> Result<(), PeerError> {
+        let io_err = |what| {
+            let name = self.name.clone();
+            move |source| PeerError::Io { name, what, source }
+        };
+        let mut config = match std::fs::read_to_string(&self.launch.config) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(io_err("reading config")(e)),
+        };
+        let list = peers
+            .iter()
+            .map(|a| format!("\"http://{a}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        config.push_str(&format!(
+            "\n[gossip]\npeers = [{list}]\ninterval_secs = {interval_secs}\n"
+        ));
+        std::fs::write(&self.launch.config, config).map_err(io_err("writing config"))?;
+        self.stop().await?;
+        self.restart(bins).await
+    }
+
     /// Rotate the peer's signing key with the shipped offline command
     /// (`cyphr-server rotate-key`), which needs the peer stopped, then
     /// start it again. Returns the rotated-in key's thumbprint.

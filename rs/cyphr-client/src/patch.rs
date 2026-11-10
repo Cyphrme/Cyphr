@@ -101,6 +101,41 @@ pub struct ActionBundle {
     pub blobs: Result<Vec<Vec<u8>>, EntryDefect>,
 }
 
+/// One step of replaying a patch, in the order the chain was written.
+pub(crate) enum Step<'a> {
+    /// An action-only bundle, recorded before the commit at its `after`.
+    Actions(&'a ActionBundle),
+    /// The commit at this absolute chain position.
+    Commit(usize, &'a PatchEntry),
+}
+
+/// The order to replay `entries` (the commits from position `held`) and
+/// `actions` in. An action-only bundle precedes the commit at its `after`
+/// (SPEC 4.8.2: a `ds/create` includes exactly the actions before it), so
+/// replaying commits alone leaves a data commit without its actions. Those
+/// before `held` belong to a prefix the replayer already holds; those at or
+/// past the last commit trail it.
+pub(crate) fn replay_order<'a>(
+    held: usize,
+    entries: &'a [PatchEntry],
+    actions: &'a [ActionBundle],
+) -> Vec<Step<'a>> {
+    let mut pending: Vec<&ActionBundle> =
+        actions.iter().filter(|a| a.after >= held as u64).collect();
+    pending.sort_by_key(|a| a.after);
+    let mut pending = pending.into_iter().peekable();
+    let mut order = Vec::with_capacity(entries.len() + actions.len());
+    for (offset, entry) in entries.iter().enumerate() {
+        let at = held + offset;
+        while let Some(bundle) = pending.next_if(|a| a.after <= at as u64) {
+            order.push(Step::Actions(bundle));
+        }
+        order.push(Step::Commit(at, entry));
+    }
+    order.extend(pending.map(Step::Actions));
+    order
+}
+
 /// A patch response that passed every carrier-independent check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPatch {
@@ -391,7 +426,7 @@ fn bare_digest(id: &str) -> &str {
 /// Percent-encode `value` for use as one query-string component, escaping
 /// every byte outside RFC 3986's `unreserved` set (`ALPHA` / `DIGIT` / `-` /
 /// `.` / `_` / `~`) as `%XX`.
-fn percent_encode_query_value(value: &str) -> String {
+pub(crate) fn percent_encode_query_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {

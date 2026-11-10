@@ -18,9 +18,11 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(peer-gossip): G2"]
+#[ignore = "RED(cli-rebase): G3 (cyphr rebase of a ds/create, resolve_fork); gossip is G2, landed"]
 async fn s03_offline() {
-    let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
     h.require(&[
         Capability::Transport,
         Capability::CliNetwork,
@@ -137,7 +139,6 @@ async fn s03_offline() {
         h.peer_view("p1", &pr).await.map(|v| v.tip),
         Some(pt.clone())
     );
-    // PROVISIONAL: red until peers gossip through the proxy (G2).
     h.eventually(
         "a peer-to-peer attempt on the cut link",
         CONVERGE,

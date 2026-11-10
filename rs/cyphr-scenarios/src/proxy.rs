@@ -33,7 +33,12 @@ pub struct LinkStats {
 
 type Stats = Arc<Mutex<std::collections::BTreeMap<Link, LinkStats>>>;
 
+/// The address a route currently forwards to, shared by every route to one
+/// node so [`Proxy::redirect`] re-points them all at once.
+type Upstream = Arc<Mutex<SocketAddr>>;
+
 pub struct Proxy {
+    upstreams: Mutex<std::collections::BTreeMap<String, Upstream>>,
     carrier: Arc<dyn Carrier>,
     world: Shared,
     rng: Arc<Mutex<ChaCha8Rng>>,
@@ -45,6 +50,7 @@ impl Proxy {
     /// `seed` drives the per-connection drop decisions.
     pub fn new(carrier: Arc<dyn Carrier>, seed: u64) -> Self {
         Self {
+            upstreams: Mutex::default(),
             carrier,
             world: Arc::new(watch::channel(World::default()).0),
             rng: Arc::new(Mutex::new(ChaCha8Rng::seed_from_u64(seed))),
@@ -63,6 +69,13 @@ impl Proxy {
     ) -> io::Result<SocketAddr> {
         let acceptor = self.carrier.bind().await?;
         let addr = acceptor.local_addr();
+        let upstream = Arc::clone(
+            self.upstreams
+                .lock()
+                .expect("proxy upstreams")
+                .entry(to.to_owned())
+                .or_insert_with(|| Arc::new(Mutex::new(upstream))),
+        );
         let task = tokio::spawn(accept_loop(
             acceptor,
             Link::new(from, to),
@@ -74,6 +87,14 @@ impl Proxy {
         ));
         self.tasks.lock().expect("proxy task list").push(task);
         Ok(addr)
+    }
+
+    /// Forward every route to `to`, existing and future, to `upstream`
+    /// instead: how a scenario puts a rigged responder in a peer's place.
+    pub fn redirect(&self, to: &str, upstream: SocketAddr) {
+        if let Some(cell) = self.upstreams.lock().expect("proxy upstreams").get(to) {
+            *cell.lock().expect("proxy upstream") = upstream;
+        }
     }
 
     pub fn apply(&self, fault: &FaultKind) {
@@ -139,19 +160,20 @@ impl Drop for Proxy {
 async fn accept_loop(
     mut acceptor: Box<dyn Accept>,
     link: Link,
-    upstream: SocketAddr,
+    upstream: Upstream,
     carrier: Arc<dyn Carrier>,
     world: Shared,
     rng: Arc<Mutex<ChaCha8Rng>>,
     stats: Stats,
 ) {
     while let Ok((client, _)) = acceptor.accept().await {
-        let (link, carrier, world, rng, stats) = (
+        let (link, carrier, world, rng, stats, upstream) = (
             link.clone(),
             Arc::clone(&carrier),
             Arc::clone(&world),
             Arc::clone(&rng),
             Arc::clone(&stats),
+            Arc::clone(&upstream),
         );
         tokio::spawn(async move {
             let fault = {
@@ -181,7 +203,8 @@ async fn accept_loop(
             {
                 return;
             }
-            let Ok(up) = carrier.connect(upstream).await else {
+            let target = *upstream.lock().expect("proxy upstream");
+            let Ok(up) = carrier.connect(target).await else {
                 return;
             };
             let (cr, cw) = tokio::io::split(client);

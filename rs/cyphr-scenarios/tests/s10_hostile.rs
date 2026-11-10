@@ -14,7 +14,8 @@ use cyphr_scenarios::peer::Limits;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(peer-gossip): G2"]
+#[ignore = "RED(cli-verify): G3 (verify reports an all-peers version refusal as unreachable); \
+            flood is G2, landed"]
 async fn s10_hostile() {
     // The body limit is pinned in the peers' own config and the oversized
     // blob derived from it, so a change to the compiled default cannot make
@@ -97,20 +98,22 @@ async fn s10_hostile() {
     }
 
     h.ok(h.flood_evidence("p1", 10_000).await);
+    // The peer's per-IP fence may refuse the flood's tail (and, for a
+    // moment, this request, which shares the loopback address): bounded
+    // means it refuses, then answers again within seconds, never that it
+    // hangs or dies.
     let t = Instant::now();
-    assert!(
-        h.http
-            .get(format!("{url}/server"))
-            .send()
-            .await
-            .expect("answers after flood")
-            .status()
-            .is_success()
-    );
-    assert!(
-        t.elapsed() < Duration::from_secs(2),
-        "peer stalled under an evidence flood"
-    );
+    loop {
+        let answer = h.http.get(format!("{url}/server")).send().await;
+        if answer.is_ok_and(|r| r.status().is_success()) {
+            break;
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "peer did not recover within 2s of an evidence flood"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // A client fails closed on an envelope version it does not know.
     let pr = h.ok(alice.create_principal().await);

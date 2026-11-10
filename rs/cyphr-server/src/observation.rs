@@ -260,6 +260,25 @@ impl ObservationStore {
         self.is_dead(&Thumbprint::from_bytes(id)).await
     }
 
+    /// The revoke envelope recorded for `tmb`, as it was received, or
+    /// `None` when the key is not dead. Served by `GET /revoked` so a peer's
+    /// readers can verify the death themselves.
+    pub async fn revoke_of(
+        &self,
+        tmb: &Thumbprint,
+    ) -> Result<Option<serde_json::Value>, ObservationError> {
+        let key = tmb.as_bytes().to_vec();
+        let dead_keys = self.dead_keys.clone();
+        let stored = tokio::task::spawn_blocking(move || dead_keys.get(&key).map_err(backend))
+            .await
+            .map_err(|e| ObservationError::Join(e.to_string()))??;
+        stored
+            .map(|raw| {
+                serde_json::from_slice(&raw).map_err(|e| ObservationError::Serialize(e.to_string()))
+            })
+            .transpose()
+    }
+
     /// Whether `tmb` is dead (carries a naked-revoke record). A true here
     /// refuses the key for every capability, even though it may still be
     /// active on-chain.

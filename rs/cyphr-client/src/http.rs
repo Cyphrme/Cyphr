@@ -53,6 +53,35 @@ impl HttpConnector {
         }
     }
 
+    /// Whether `base_url` is a URL the carrier would use: the scheme check
+    /// of [`HttpConnector::connect`], without building a client.
+    ///
+    /// # Errors
+    ///
+    /// As [`HttpConnector::with_client`].
+    pub fn check_url(base_url: &str, allow_cleartext: bool) -> Result<(), ConnectError> {
+        check_scheme(base_url, allow_cleartext)
+    }
+
+    /// [`HttpConnector::new`] over the caller's `client`, after the scheme
+    /// check [`HttpConnector::connect`] applies: for a caller that owns a
+    /// shared client but still must not send plain `http://` to a
+    /// non-loopback host.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError::CleartextRefused`] for `http://` to a non-loopback
+    /// host without `allow_cleartext`; [`ConnectError::Unreachable`] for a
+    /// URL that is not `http(s)://host`.
+    pub fn with_client(
+        client: reqwest::Client,
+        base_url: &str,
+        allow_cleartext: bool,
+    ) -> Result<Self, ConnectError> {
+        check_scheme(base_url, allow_cleartext)?;
+        Ok(Self::new(client, base_url))
+    }
+
     /// Carry requests to `base_url` over a client built for an untrusted
     /// peer: TLS verified against the bundled web roots, a total timeout,
     /// and no redirect (one could leave the peer the caller chose,
@@ -65,27 +94,8 @@ impl HttpConnector {
     /// [`ConnectError::Unreachable`] for a URL that is not `http(s)://host`
     /// or a client that cannot be built.
     pub fn connect(base_url: &str, options: &HttpOptions) -> Result<Self, ConnectError> {
+        check_scheme(base_url, options.allow_cleartext)?;
         let unusable = |why: String| ConnectError::Unreachable(why);
-        let url = reqwest::Url::parse(base_url)
-            .map_err(|e| unusable(format!("peer URL `{base_url}`: {e}")))?;
-        match url.scheme() {
-            "https" => {},
-            "http" => {
-                let host = url
-                    .host_str()
-                    .ok_or_else(|| unusable(format!("peer URL `{base_url}` has no host")))?;
-                if !options.allow_cleartext && !is_loopback(host) {
-                    return Err(ConnectError::CleartextRefused {
-                        host: host.to_string(),
-                    });
-                }
-            },
-            other => {
-                return Err(unusable(format!(
-                    "peer URL scheme `{other}` is not http(s)"
-                )));
-            },
-        }
         let mut builder = reqwest::Client::builder()
             .timeout(options.timeout)
             .redirect(reqwest::redirect::Policy::none());
@@ -98,6 +108,31 @@ impl HttpConnector {
             .build()
             .map_err(|e| unusable(format!("cannot build the HTTP client: {e}")))?;
         Ok(Self::new(client, base_url))
+    }
+}
+
+/// Refuse a URL the carrier must not use: not `http(s)://host`, or plain
+/// `http://` to a non-loopback host without `allow_cleartext`.
+fn check_scheme(base_url: &str, allow_cleartext: bool) -> Result<(), ConnectError> {
+    let unusable = |why: String| ConnectError::Unreachable(why);
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|e| unusable(format!("peer URL `{base_url}`: {e}")))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = url
+                .host_str()
+                .ok_or_else(|| unusable(format!("peer URL `{base_url}` has no host")))?;
+            if !allow_cleartext && !is_loopback(host) {
+                return Err(ConnectError::CleartextRefused {
+                    host: host.to_string(),
+                });
+            }
+            Ok(())
+        },
+        other => Err(unusable(format!(
+            "peer URL scheme `{other}` is not http(s)"
+        ))),
     }
 }
 

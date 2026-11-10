@@ -214,6 +214,41 @@ async fn fetch_from_hostile(
 // These claims back the probes in `capability.rs` that observe the
 // transport. They live here, beside the code they exercise, because no
 // scenario reaches a probe's own controls.
+/// A hostile HTTP responder on loopback: it answers every request with a
+/// valid-shaped envelope stating version `v`, then closes. The task lives as
+/// long as the test's runtime. Returns its address.
+pub async fn serve_http_envelope_version(v: u64) -> Result<SocketAddr, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| e.to_string())?;
+    let addr = listener.local_addr().map_err(|e| e.to_string())?;
+    let body = serde_json::json!({
+        "v": v, "payload": { "entries": [], "branches": [], "items": [] },
+        "statement": { "kind": "unsigned" },
+    })
+    .to_string();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let body = body.clone();
+            tokio::spawn(async move {
+                // Read the request head, then answer; the body is ignored.
+                let mut head = [0u8; 4096];
+                let _ = stream.read(&mut head).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: \
+                     {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    Ok(addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

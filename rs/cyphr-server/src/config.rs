@@ -170,6 +170,25 @@ pub struct ServeArgs {
     /// Target authority URL for witness mode sync.
     #[arg(long, env = "CYPHR_AUTHORITY_URL")]
     pub authority_url: Option<String>,
+
+    /// A peer to gossip with (repeatable, or comma-separated): its base
+    /// URL, dialled exactly as given. Replaces the `[gossip] peers` list.
+    #[arg(
+        long = "gossip-peer",
+        env = "CYPHR_GOSSIP_PEERS",
+        value_delimiter = ','
+    )]
+    pub gossip_peers: Vec<String>,
+
+    /// Seconds between gossip rounds (`[gossip] interval_secs`).
+    #[arg(long, env = "CYPHR_GOSSIP_INTERVAL_SECS")]
+    pub gossip_interval_secs: Option<u64>,
+
+    /// Allow plain `http://` to a non-loopback upstream (the witness
+    /// authority and gossip peers). Off by default: every byte would cross
+    /// the network readable and forgeable.
+    #[arg(long, env = "CYPHR_ALLOW_CLEARTEXT_UPSTREAM")]
+    pub allow_cleartext_upstream: bool,
 }
 
 // ========================================================================
@@ -212,6 +231,17 @@ pub struct ServerConfig {
     #[serde(default)]
     pub authority_url: Option<String>,
 
+    /// Whether upstream calls (the witness authority and gossip peers) may
+    /// use plain `http://` to a host that is not loopback. Off by default:
+    /// a tip report or a patch could be rewritten in transit. `https://`
+    /// and loopback never need it.
+    #[serde(default)]
+    pub allow_cleartext_upstream: bool,
+
+    /// Peer-side anti-entropy (the `[gossip]` TOML table).
+    #[serde(default)]
+    pub gossip: GossipConfig,
+
     /// The expected upstream-authority signing identity a witness verifies
     /// a `GET /patch` envelope's signature against before consuming any
     /// entry (the authenticated-channel identity, K10). `None` preserves the
@@ -237,6 +267,37 @@ pub struct ServerConfig {
     /// bounded rather than unlimited.
     #[serde(default)]
     pub limits: LimitsConfig,
+}
+
+/// Peer-side anti-entropy (the `[gossip]` TOML table): a timer that runs
+/// the verifier's pull step (`cyphr_client::pull`) against configured
+/// peers for every principal this server holds, and stores what verifies.
+///
+/// Peers are mirrors of principal-signed objects, so the list is this
+/// operator's choice of whom to ask, not a trust list. It is dialled at the
+/// address given, so a deployment (or the scenario proxy) can carry and cut
+/// that link.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GossipConfig {
+    /// Base URLs of the peers to pull from. Empty (the default) keeps
+    /// gossip off.
+    pub peers: Vec<String>,
+
+    /// Seconds between rounds. A round replays each held principal from its
+    /// stored chain (replay-cost caching is deferred), so the default is
+    /// minutes of slack, not seconds; a deployment that wants faster
+    /// convergence pays for it here.
+    pub interval_secs: u64,
+}
+
+impl Default for GossipConfig {
+    fn default() -> Self {
+        Self {
+            peers: Vec::new(),
+            interval_secs: 60,
+        }
+    }
 }
 
 /// Resource-fence limits (the `[limits]` TOML table). Additive to
@@ -468,6 +529,8 @@ impl Default for ServerConfig {
             audience: None,
             authority_url: None,
             authority_identity: None,
+            allow_cleartext_upstream: false,
+            gossip: GossipConfig::default(),
             admission: AdmissionConfig::default(),
             limits: LimitsConfig::default(),
         }
@@ -580,6 +643,37 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if let Some(ref authority_url) = args.authority_url {
             config.authority_url = Some(authority_url.clone());
         }
+        if !args.gossip_peers.is_empty() {
+            config.gossip.peers = args.gossip_peers.clone();
+        }
+        if let Some(interval) = args.gossip_interval_secs {
+            config.gossip.interval_secs = interval;
+        }
+        if args.allow_cleartext_upstream {
+            config.allow_cleartext_upstream = true;
+        }
+    }
+
+    // An upstream the server would dial in cleartext is refused here, at
+    // startup, rather than discovered as a stalled sync.
+    if config.gossip.interval_secs == 0 {
+        return Err(ConfigError::GossipIntervalZero);
+    }
+    for url in config.authority_url.iter().chain(&config.gossip.peers) {
+        cyphr_client::HttpConnector::check_url(url, config.allow_cleartext_upstream).map_err(
+            |source| match source {
+                cyphr_client::ConnectError::CleartextRefused { host } => {
+                    ConfigError::CleartextUpstream {
+                        url: url.clone(),
+                        host,
+                    }
+                },
+                other => ConfigError::UpstreamUrl {
+                    url: url.clone(),
+                    reason: other.to_string(),
+                },
+            },
+        )?;
     }
 
     // Deployment-safety warning, not a refusal to start (see
@@ -632,6 +726,34 @@ pub enum ConfigError {
          intended per-principal commit cap"
     )]
     LimitsCountQuotaZero,
+
+    /// An upstream (the witness authority or a gossip peer) is plain
+    /// `http://` to a host that is not loopback.
+    #[error(
+        "upstream {url} is plain http to non-loopback host `{host}`: a tip report or patch could \
+         be rewritten in transit; use https, or set `allow_cleartext_upstream = true` \
+         (--allow-cleartext-upstream) to accept that"
+    )]
+    CleartextUpstream {
+        /// The configured URL.
+        url: String,
+        /// The host it names.
+        host: String,
+    },
+
+    /// An upstream URL is not a usable `http(s)://host` URL.
+    #[error("upstream {url} is not usable: {reason}")]
+    UpstreamUrl {
+        /// The configured URL.
+        url: String,
+        /// Why it cannot be used.
+        reason: String,
+    },
+
+    /// `[gossip] interval_secs = 0` was configured, which would spin the
+    /// gossip loop.
+    #[error("gossip.interval_secs is 0 -- set it to the seconds between gossip rounds")]
+    GossipIntervalZero,
 
     /// `[limits] max_dead_keys = 0` was configured, which refuses every
     /// naked revoke.
@@ -702,6 +824,9 @@ mod tests {
                 signing_key_path: None,
                 audience: None,
                 authority_url: None,
+                gossip_peers: Vec::new(),
+                gossip_interval_secs: None,
+                allow_cleartext_upstream: false,
             }),
         }
     }

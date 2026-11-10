@@ -18,6 +18,7 @@ pub mod auth;
 pub mod config;
 pub mod envelope;
 pub mod error;
+pub mod gossip;
 pub mod logging;
 pub mod metrics;
 pub mod observation;
@@ -302,6 +303,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/evidence", axum::routing::get(routes::evidence))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
+        .route("/revoked", axum::routing::get(routes::revoked))
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route("/healthz", axum::routing::get(routes::healthz))
@@ -475,6 +477,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 
     let state = Arc::new(state);
     let app = build_app_router(state.clone())?;
+    let gossip = gossip::spawn(&state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;
@@ -520,6 +523,9 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     .await?;
 
     if let Some(handle) = transport {
+        handle.abort();
+    }
+    if let Some(handle) = gossip {
         handle.abort();
     }
     tracing::info!("server stopped");

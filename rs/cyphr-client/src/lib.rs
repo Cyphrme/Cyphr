@@ -13,6 +13,14 @@ pub mod evidence;
 mod patch;
 mod peer;
 mod report;
+mod revoke;
+mod sync;
+
+pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
+pub use sync::{
+    Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerOutcome, PeerStanding, PullPeer, PullReport,
+    Record, RecordTip, RevokedKey, fetch_revoked, pull,
+};
 
 #[cfg(feature = "http")]
 mod http;
@@ -29,7 +37,7 @@ pub use patch::{
     ActionBundle, AuthorityKey, EntryDefect, PatchEntry, PatchFailure, PatchRequest, Statement,
     VerifiedPatch, fetch_patch, verify_authenticated_envelope, verify_patch_body,
 };
-pub use peer::{HeldTip, PeerChain, PeerFailure};
+pub use peer::{HeldTip, PeerChain, PeerFailure, PeerLimits};
 pub use report::{
     TipReport, TipReportParseError, TipReportRoots, VIEW_STATEMENT_TYP, ViewFailure, ViewStatement,
     ViewStatementParseError, verify_view, verify_view_statement,

@@ -17,9 +17,11 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(peer-gossip): G2"]
+#[ignore = "RED(pinning): G3 (watch), with N22 rotate_key; the gossip it needs is G2, landed"]
 async fn s02_partition() {
-    let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
     h.require(&[
         Capability::Transport,
         Capability::CliNetwork,
@@ -60,7 +62,6 @@ async fn s02_partition() {
 
     // The peer-to-peer link must be exercised, not merely declared: the
     // partition has to have blocked real traffic between the peers.
-    // PROVISIONAL: red until peers gossip through the proxy (G2).
     h.eventually(
         "a peer-to-peer attempt on the cut link",
         CONVERGE,
