@@ -1,11 +1,11 @@
 //! Data-layer action recording (Level 4).
 
-use super::Principal;
+use super::{Principal, PrincipalState};
 use crate::action::Action;
 use crate::error::{Error, Result};
 use crate::state::PrincipalRoot;
 
-impl<S: eml::Storage> Principal<S> {
+impl PrincipalState {
     /// Record an action in the Data Tree (Level 4+).
     ///
     /// The action enters DT only: DR, and so SR and PR, change when a
@@ -62,7 +62,7 @@ impl<S: eml::Storage> Principal<S> {
     /// - `KeyRevoked`: Signer key has been revoked
     /// - `TimestampPast`: Action timestamp is older than latest seen
     /// - `TimestampFuture`: Action timestamp is too far in the future
-    pub fn verify_and_record_action(
+    pub(crate) fn verify_and_record_action(
         &mut self,
         pay_json: &[u8],
         sig: &[u8],
@@ -151,5 +151,28 @@ impl<S: eml::Storage> Principal<S> {
 
         // Record the action
         self.record_action(action)
+    }
+}
+
+impl<S: eml::Storage> Principal<S> {
+    /// Verify signature and record an action in one step.
+    ///
+    /// This is the primary method for processing incoming actions. An
+    /// action enters DT only, in memory: nothing reaches the commit log.
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidSignature`: Signature doesn't verify
+    /// - `UnknownKey`: Signer not in active key set
+    /// - `KeyRevoked`: Signer key has been revoked
+    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `TimestampFuture`: Action timestamp is too far in the future
+    pub fn verify_and_record_action(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+    ) -> Result<&PrincipalRoot> {
+        self.state.verify_and_record_action(pay_json, sig, czd)
     }
 }

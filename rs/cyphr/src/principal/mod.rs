@@ -139,8 +139,8 @@ pub enum Level {
 // Principal — Enum-based type safety for PR (Approach C)
 // ============================================================================
 
-/// Shared internal state for all Principal variants, generic over the
-/// storage backend `S` backing [`Self::commit_trees`].
+/// Shared internal state for all Principal variants: everything but the
+/// commit log, which [`Principal`] owns beside it.
 ///
 /// Every field *except* PR lives here. PR is structurally absent for Nascent
 /// principals and structurally present for Established ones — invalid states
@@ -148,19 +148,11 @@ pub enum Level {
 ///
 /// # Visibility
 ///
-/// `pub` to satisfy `Deref<Target = PrincipalCore<S>>` on `Principal<S>`.
+/// `pub` to satisfy `Deref<Target = PrincipalCore>` on [`PrincipalState`].
 /// All fields are `pub(crate)` — external code cannot access them.
-///
-/// # Manual `Debug`/`Clone`
-///
-/// Implemented by hand below rather than derived: `#[derive(...)]` would add
-/// an `S: Debug`/`S: Clone` bound that isn't actually needed (both traits
-/// pass straight through to [`crate::commit_root::CommitTrees`], which
-/// already implements them unconditionally for any `S: eml::Storage`), and
-/// `storage_fjall::FjallStorage` deliberately implements neither — a derived
-/// bound would make `PrincipalCore<FjallStorage>` uninstantiable.
 #[doc(hidden)]
-pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
+#[derive(Debug, Clone)]
+pub struct PrincipalCore {
     /// Current Principal State.
     pub(crate) pr: PrincipalRoot,
     /// Every PR this principal has held, oldest first: the PR it was born
@@ -174,8 +166,6 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) kr: Option<KeyRoot>,
     /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
-    /// Per-algorithm MALT trees for computing Commit Root (CR).
-    pub(crate) commit_trees: crate::commit_root::CommitTrees<S>,
     /// Principal Tree (PT): the `EpochTree` backing PR. Cell 0 = SR, cell 1 =
     /// CR. The source of truth for PR; `sr`/`cr` below are a cache mirroring
     /// its cell contents (kept in lockstep by
@@ -222,13 +212,13 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// [`crate::lifecycle`] to read; it is always `false` at this node's tip.
     pub(crate) deleted: bool,
     /// `true` from the moment a `principal/delete` cozy is applied until
-    /// the commit carrying it is successfully finalized (cleared at the
-    /// end of `finalize_commit`). Scopes the `CommitCreate` exemption
-    /// from [no-transactions-on-deleted] to same-commit finalization
-    /// only: a commit/create finalizing a delete applied earlier in this
-    /// same, still-open commit is exempt; a commit/create in a later,
-    /// separately-finalized commit against an already-deleted principal
-    /// is not.
+    /// the commit carrying it is successfully finalized (cleared when the
+    /// commit is staged, on the projected state the commit adopts). Scopes
+    /// the `CommitCreate` exemption from [no-transactions-on-deleted] to
+    /// same-commit finalization only: a commit/create finalizing a delete
+    /// applied earlier in this same, still-open commit is exempt; a
+    /// commit/create in a later, separately-finalized commit against an
+    /// already-deleted principal is not.
     pub(crate) deleted_pending: bool,
     /// `true` from an applied `principal/create` until the genesis commit
     /// carrying it is finalized. The PG is the state at the
@@ -245,203 +235,142 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) errored: bool,
 }
 
-impl<S: eml::Storage> PrincipalCore<S> {
-    /// Copy with the commit log aliased, not duplicated; see
-    /// [`crate::commit_root::CloneableLog`].
-    pub(crate) fn share(&self) -> Self {
-        self.with_trees(self.commit_trees.share())
-    }
-}
-
-impl<S: eml::Storage + Clone> Clone for PrincipalCore<S> {
-    fn clone(&self) -> Self {
-        self.with_trees(self.commit_trees.clone())
-    }
-}
-
-impl<S: eml::Storage> PrincipalCore<S> {
-    /// Clone every field except the commit log, which the caller supplies.
-    fn with_trees(&self, commit_trees: crate::commit_root::CommitTrees<S>) -> Self {
-        Self {
-            pr: self.pr.clone(),
-            held_prs: self.held_prs.clone(),
-            kr: self.kr.clone(),
-            tr: self.tr.clone(),
-            commit_trees,
-            pt: self.pt.clone(),
-            cr: self.cr.clone(),
-            sr: self.sr.clone(),
-            ar: self.ar.clone(),
-            dr: self.dr.clone(),
-            auth: self.auth.clone(),
-            data: self.data.clone(),
-            included_czds: self.included_czds.clone(),
-            nonces: self.nonces.clone(),
-            latest_timestamp: self.latest_timestamp,
-            max_clock_skew: self.max_clock_skew,
-            clock: self.clock,
-            genesis_key: self.genesis_key.clone(),
-            genesis_created: self.genesis_created,
-            deleted: self.deleted,
-            deleted_pending: self.deleted_pending,
-            genesis_pending: self.genesis_pending,
-            frozen: self.frozen,
-            errored: self.errored,
-        }
-    }
-}
-
-impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PrincipalCore")
-            .field("pr", &self.pr)
-            .field("held_prs", &self.held_prs)
-            .field("kr", &self.kr)
-            .field("tr", &self.tr)
-            .field("commit_trees", &self.commit_trees)
-            .field("pt", &self.pt)
-            .field("cr", &self.cr)
-            .field("sr", &self.sr)
-            .field("ar", &self.ar)
-            .field("dr", &self.dr)
-            .field("auth", &self.auth)
-            .field("data", &self.data)
-            .field("nonces", &self.nonces)
-            .field("latest_timestamp", &self.latest_timestamp)
-            .field("max_clock_skew", &self.max_clock_skew)
-            .field("clock", &(self.clock as usize))
-            .field("genesis_key", &self.genesis_key)
-            .field("genesis_created", &self.genesis_created)
-            .field("deleted", &self.deleted)
-            .field("deleted_pending", &self.deleted_pending)
-            .field("genesis_pending", &self.genesis_pending)
-            .field("frozen", &self.frozen)
-            .field("errored", &self.errored)
-            .finish()
-    }
-}
-
 /// Internal variant: tracks whether PG has been established.
 ///
 /// - **Nascent**: L1/L2 — no PG exists. Cannot fabricate one.
 /// - **Established**: L3+ — PG is frozen from the initial PR. Cannot remove it.
-enum PrincipalKind<S: eml::Storage = eml::MemoryStorage> {
+#[derive(Debug, Clone)]
+enum PrincipalKind {
     /// Pre-genesis-finalization: no PG field at all.
-    Nascent(PrincipalCore<S>),
+    Nascent(PrincipalCore),
     /// Post-principal/create: PG is structurally required.
     Established {
-        core: PrincipalCore<S>,
+        core: PrincipalCore,
         pg: PrincipalGenesis,
     },
 }
 
-impl<S: eml::Storage> PrincipalKind<S> {
-    fn share(&self) -> Self {
-        match self {
-            Self::Nascent(core) => Self::Nascent(core.share()),
-            Self::Established { core, pg } => Self::Established {
-                core: core.share(),
-                pg: pg.clone(),
-            },
-        }
-    }
-}
-
-impl<S: eml::Storage + Clone> Clone for PrincipalKind<S> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Nascent(core) => Self::Nascent(core.clone()),
-            Self::Established { core, pg } => Self::Established {
-                core: core.clone(),
-                pg: pg.clone(),
-            },
-        }
-    }
-}
-
-impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Nascent(core) => f.debug_tuple("Nascent").field(core).finish(),
-            Self::Established { core, pg } => f
-                .debug_struct("Established")
-                .field("core", core)
-                .field("pg", pg)
-                .finish(),
-        }
-    }
-}
-
-/// A Cyphr Principal (self-sovereign identity), generic over the storage
-/// backend `S` backing its Commit Tree (defaults to
-/// [`eml::MemoryStorage`], so every pre-existing use of the bare
-/// `Principal` type continues to mean exactly what it meant before this
-/// type became generic).
+/// The state of a principal: everything but its commit log.
 ///
-/// # Type Safety
+/// A [`CommitScope`](crate::commit::CommitScope) applies a commit's cozies
+/// to a copy of this state (the projected state) and the commit adopts it
+/// whole, so a refused commit leaves the principal as it was. Copying it
+/// never copies or aliases the log, which only [`Principal`] holds.
 ///
 /// PG is represented via an internal enum:
 /// - **Nascent** (L1/L2): PG does not exist — cannot be forged.
 /// - **Established** (L3+): PG is frozen — cannot be removed.
 ///
-/// All shared state is accessed via `Deref<Target = PrincipalCore<S>>`, so
-/// `self.pr`, `self.kr`, etc. work transparently in all code paths.
+/// All shared fields are reached via `Deref<Target = PrincipalCore>`.
 ///
 /// # `Option`-wrapped inner kind
 ///
-/// The inner [`PrincipalKind<S>`] is wrapped in `Option` solely so
-/// [`Self::establish_pg`] can `.take()` it by value without requiring
-/// `S: Default` (which `storage_fjall::FjallStorage` cannot reasonably
-/// implement — see that method's doc comment). The `Option` is `None` only
-/// for the instant inside `establish_pg` between the `.take()` and the
-/// following assignment; every other method observes it as always `Some`.
-pub struct Principal<S: eml::Storage = eml::MemoryStorage>(Option<PrincipalKind<S>>);
+/// The inner kind is wrapped in `Option` so [`Self::establish_pg`] can move
+/// the core by value from Nascent into Established with no placeholder
+/// value to swap in. The `Option` is `None` only for the instant inside
+/// `establish_pg` between the `.take()` and the following assignment;
+/// every other method observes it as always `Some`.
+#[derive(Debug, Clone)]
+pub struct PrincipalState(Option<PrincipalKind>);
 
-impl<S: eml::Storage> Principal<S> {
-    /// Copy that aliases this principal's commit log; used by
-    /// [`crate::commit::CommitScope`] to record to its own principal.
-    pub(crate) fn share(&self) -> Self {
-        Self(self.0.as_ref().map(PrincipalKind::share))
-    }
-}
-
-impl<S: eml::Storage + Clone> Clone for Principal<S> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<S: eml::Storage> std::fmt::Debug for Principal<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Principal").field(&self.0).finish()
-    }
-}
-
-impl<S: eml::Storage> Principal<S> {
+impl PrincipalState {
     /// Borrow the inner kind.
     ///
     /// Panics only if called while a `establish_pg` call is itself
     /// mid-flight on the same value, which cannot happen — `establish_pg`
-    /// takes `&mut self` and never calls back out to any other `Principal`
-    /// method before restoring `self.0` to `Some`.
-    fn kind(&self) -> &PrincipalKind<S> {
+    /// takes `&mut self` and never calls back out to any other method
+    /// before restoring `self.0` to `Some`.
+    fn kind(&self) -> &PrincipalKind {
         self.0
             .as_ref()
             .expect("Principal's inner kind is only None transiently inside establish_pg")
     }
+
+    fn core_mut(&mut self) -> &mut PrincipalCore {
+        match self
+            .0
+            .as_mut()
+            .expect("Principal's inner kind is only None transiently inside establish_pg")
+        {
+            PrincipalKind::Nascent(core) => core,
+            PrincipalKind::Established { core, .. } => core,
+        }
+    }
 }
 
-// Deref delegates field access to PrincipalCore transparently.
-// This means `self.pr`, `self.kr`, `self.ar`, etc. all
-// resolve automatically — zero changes needed in existing methods.
-impl<S: eml::Storage> std::ops::Deref for Principal<S> {
-    type Target = PrincipalCore<S>;
+impl std::ops::Deref for PrincipalState {
+    type Target = PrincipalCore;
 
-    fn deref(&self) -> &PrincipalCore<S> {
+    fn deref(&self) -> &PrincipalCore {
         match self.kind() {
             PrincipalKind::Nascent(core) => core,
             PrincipalKind::Established { core, .. } => core,
         }
+    }
+}
+
+/// A Cyphr Principal (self-sovereign identity): its state and the commit
+/// log it owns, generic over the storage backend `S` of that log (defaults
+/// to [`eml::MemoryStorage`]).
+///
+/// The principal is the one writer of its log. Every read accessor is on
+/// [`PrincipalState`], reached through `Deref`; mutation goes through the
+/// principal's own methods, so state and log cannot be separated or swapped.
+///
+/// # Async and `Send`
+///
+/// Everything that reads or writes the log is `async`. The storage bound
+/// `eml::Storage: Send + Sync` makes those futures `Send` whenever `S` is,
+/// so a multi-threaded runtime can drive them. A [`crate::signer::Signer`]'s
+/// `sign` future is deliberately not `Send`; the prepare, sign, finish
+/// split keeps it out of every core future except the generic
+/// conveniences that await it.
+///
+/// # No `Clone`
+///
+/// A principal is copied only by [`Self::fork`], where its storage copies
+/// into an independent store ([`crate::commit_root::ForkStorage`]). Cloning
+/// a handle to a shared durable store would make two writers of one log.
+pub struct Principal<S: eml::Storage = eml::MemoryStorage> {
+    state: PrincipalState,
+    log: crate::commit_root::CommitTrees<S>,
+}
+
+impl<S: eml::Storage> std::fmt::Debug for Principal<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Principal")
+            .field("state", &self.state)
+            .field("log", &self.log)
+            .finish()
+    }
+}
+
+impl<S: eml::Storage> std::ops::Deref for Principal<S> {
+    type Target = PrincipalState;
+
+    fn deref(&self) -> &PrincipalState {
+        &self.state
+    }
+}
+
+impl<S: crate::commit_root::ForkStorage> Principal<S> {
+    /// An independent copy of this principal over a forked store: two
+    /// principals from one ancestor can each commit without perturbing the
+    /// other (SPEC 15.8: witnesses hold both branches of a fork).
+    ///
+    /// # Errors
+    ///
+    /// `Storage` if the store cannot be copied or the copy does not reopen.
+    pub async fn fork(&self) -> Result<Self> {
+        let log = self
+            .log
+            .fork()
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        Ok(Self {
+            state: self.state.clone(),
+            log,
+        })
     }
 }
 
@@ -486,21 +415,21 @@ impl StartingRoots {
 }
 
 /// Open the Commit Tree over a caller-supplied storage backend.
-fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::CommitTrees<S>> {
-    crate::commit_root::CommitTrees::open(storage).map_err(|e| Error::Storage(e.to_string()))
+async fn open_commit_trees<S: eml::Storage>(
+    storage: S,
+) -> Result<crate::commit_root::CommitTrees<S>> {
+    crate::commit_root::CommitTrees::open(storage)
+        .await
+        .map_err(|e| Error::Storage(e.to_string()))
 }
 
-impl<S: eml::Storage> PrincipalCore<S> {
-    /// Assemble a principal's state from its genesis key, starting roots
-    /// and Commit Tree. The caller has refused a revoked key, so the
+impl PrincipalCore {
+    /// Assemble a principal's state from its genesis key and starting
+    /// roots. The caller has refused a revoked key, so the
     /// active set never holds one. Every construction ends here, so a
     /// field added to `PrincipalCore` or a change to how a fresh principal
     /// is filled is made once.
-    fn new(
-        key: Key,
-        roots: StartingRoots,
-        commit_trees: crate::commit_root::CommitTrees<S>,
-    ) -> Self {
+    fn new(key: Key, roots: StartingRoots) -> Self {
         let genesis_key = key.tmb().to_b64();
         let mut key_map = IndexMap::new();
         key_map.insert(genesis_key.clone(), key);
@@ -517,7 +446,6 @@ impl<S: eml::Storage> PrincipalCore<S> {
             pr,
             kr: Some(kr),
             tr: None,
-            commit_trees,
             pt,
             cr,
             sr: Some(sr),
@@ -661,14 +589,39 @@ impl<S: eml::Storage> PrincipalCore<S> {
 }
 
 impl<S: eml::Storage> Principal<S> {
-    fn core_mut(&mut self) -> &mut PrincipalCore<S> {
-        match self
-            .0
-            .as_mut()
-            .expect("Principal's inner kind is only None transiently inside establish_pg")
-        {
-            PrincipalKind::Nascent(core) => core,
-            PrincipalKind::Established { core, .. } => core,
+    fn core_mut(&mut self) -> &mut PrincipalCore {
+        self.state.core_mut()
+    }
+
+    /// The principal's state, without its log.
+    pub(crate) fn state(&self) -> &PrincipalState {
+        &self.state
+    }
+
+    /// The principal's state, mutable, for unit tests that drive the
+    /// state's internal transitions directly.
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut PrincipalState {
+        &mut self.state
+    }
+
+    /// Make a staged commit durable and adopt its state: the second phase
+    /// of [`crate::commit::StagedCommit::commit`]. The one log write comes
+    /// first; the state is adopted in the same poll the write returns in,
+    /// with no `.await` between, so a dropped future either wrote nothing
+    /// or has adopted. A failed write leaves both unchanged.
+    pub(crate) async fn adopt(
+        &mut self,
+        state: PrincipalState,
+        staged: Option<polydigest::Staged<S>>,
+    ) -> Result<&Commit> {
+        if let Some(staged) = staged {
+            self.log
+                .commit(staged)
+                .await
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
+        self.state = state;
+        self.state.auth.commits.last().ok_or(Error::EmptyCommit)
     }
 }

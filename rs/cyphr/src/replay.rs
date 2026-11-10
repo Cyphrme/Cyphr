@@ -260,21 +260,88 @@ pub struct ReplayError {
     pub source: Error,
 }
 
-/// Replay one stored bundle onto `principal` through the verifying commit
-/// scope, by the order rule in the [module docs](self).
+/// A stored bundle verified onto a principal, with nothing written to its
+/// commit log: phase one of [`replay_bundle`], for a caller that must make
+/// the bundle durable elsewhere before the log (the storage engine records
+/// it in the blob store first, its source of truth).
+#[must_use = "a staged bundle that forms a commit writes nothing until .commit() is awaited"]
+pub enum StagedBundle<'a, S: eml::Storage> {
+    /// A bundle with no transaction: its actions are recorded on the
+    /// principal already, in memory, and there is nothing to write.
+    Actions(BundleId),
+    /// A bundle that forms a commit, staged: every coz is verified, the
+    /// actions after the first transaction on the staged state.
+    Commit {
+        /// The staged commit, its trailing actions recorded on its state
+        /// (boxed: it carries the principal's whole staged state).
+        staged: Box<crate::commit::StagedCommit<'a, S>>,
+        /// Every coz digest of the bundle, in signed order.
+        czds: Vec<Czd>,
+    },
+}
+
+impl<S: eml::Storage> StagedBundle<'_, S> {
+    /// The identity the bundle will have once committed.
+    ///
+    /// # Errors
+    ///
+    /// `MissingCommit` if a staged commit holds no commit (never, by
+    /// construction).
+    pub fn id(&self) -> Result<BundleId, ReplayError> {
+        match self {
+            Self::Actions(id) => Ok(id.clone()),
+            Self::Commit { staged, czds } => {
+                let state = staged.state();
+                let commit = state.commits().last().ok_or(ReplayError {
+                    coz: None,
+                    source: Error::MissingCommit,
+                })?;
+                Ok(BundleId {
+                    czds: czds.clone(),
+                    tr: Some(commit.tr().clone()),
+                    pr: state.pr().clone(),
+                })
+            },
+        }
+    }
+
+    /// Phase two: write the commit's log append (if the bundle forms one)
+    /// and adopt the staged state.
+    ///
+    /// # Errors
+    ///
+    /// [`ReplayError`] with [`Error::Storage`] if the log write fails; the
+    /// principal is then as it was before the commit.
+    pub async fn commit(self) -> Result<BundleId, ReplayError> {
+        let id = self.id()?;
+        if let Self::Commit { staged, .. } = self {
+            staged
+                .commit()
+                .await
+                .map_err(|source| ReplayError { coz: None, source })?;
+        }
+        Ok(id)
+    }
+}
+
+/// Verify one stored bundle onto `principal` through the verifying commit
+/// scope, by the order rule in the [module docs](self), and stage it: the
+/// commit's log append is computed and nothing is written. Every coz,
+/// actions after the commit included, is verified before
+/// [`StagedBundle::commit`] writes, so a refused bundle leaves no log leaf.
 ///
-/// On error `principal` may hold the actions recorded before the refusal;
-/// a caller that needs all-or-nothing replays onto a principal it can
-/// discard.
+/// On error `principal` may hold the actions recorded before the first
+/// transaction (in memory only); a caller that needs all-or-nothing
+/// replays onto a principal it can discard.
 ///
 /// # Errors
 ///
 /// [`ReplayError`] with [`Error::EmptyCommit`] for an empty bundle, or the
 /// core's refusal of a coz or of the commit.
-pub fn replay_bundle<S: eml::Storage>(
-    principal: &mut Principal<S>,
+pub async fn stage_bundle<'a, S: eml::Storage>(
+    principal: &'a mut Principal<S>,
     cozies: &[StoredCoz],
-) -> Result<BundleId, ReplayError> {
+) -> Result<StagedBundle<'a, S>, ReplayError> {
     let at = |i: usize| {
         move |source| ReplayError {
             coz: Some(i),
@@ -301,11 +368,11 @@ pub fn replay_bundle<S: eml::Storage>(
         for (i, c) in order {
             record(principal, i, c)?;
         }
-        return Ok(BundleId {
+        return Ok(StagedBundle::Actions(BundleId {
             czds,
             tr: None,
             pr: principal.pr().clone(),
-        });
+        }));
     };
 
     for (i, c) in cozies.iter().enumerate().take(first_tx) {
@@ -322,13 +389,27 @@ pub fn replay_bundle<S: eml::Storage>(
             deferred.push((i, c));
         }
     }
-    let tr = scope.finalize().map_err(whole)?.tr().clone();
+    let mut staged = scope.stage().await.map_err(whole)?;
     for (i, c) in deferred {
-        record(principal, i, c)?;
+        staged
+            .verify_and_record_action(&c.pay_json, &c.sig, c.czd.clone())
+            .map_err(at(i))?;
     }
-    Ok(BundleId {
+    Ok(StagedBundle::Commit {
+        staged: Box::new(staged),
         czds,
-        tr: Some(tr),
-        pr: principal.pr().clone(),
     })
+}
+
+/// Replay one stored bundle onto `principal`: [`stage_bundle`], then
+/// [`StagedBundle::commit`].
+///
+/// # Errors
+///
+/// As [`stage_bundle`] and [`StagedBundle::commit`].
+pub async fn replay_bundle<S: eml::Storage>(
+    principal: &mut Principal<S>,
+    cozies: &[StoredCoz],
+) -> Result<BundleId, ReplayError> {
+    stage_bundle(principal, cozies).await?.commit().await
 }

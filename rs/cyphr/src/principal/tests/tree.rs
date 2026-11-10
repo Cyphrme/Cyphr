@@ -16,13 +16,13 @@ use super::*;
 /// in, wrong) — both coincide when only one algorithm is registered. This
 /// test's ES256 (SHA-256) + Ed25519 (SHA-512) key set is what makes the
 /// distinction observable.
-#[test]
-fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
+#[tokio::test]
+async fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
     let key_es256 = make_test_key(0x11);
     let key_ed25519 = make_test_key_ed25519(0x22);
 
-    let mut principal = Principal::implicit(key_es256).unwrap();
-    principal.genesis_test(vec![key_ed25519]).unwrap();
+    let mut principal = Principal::implicit(key_es256).await.unwrap();
+    principal.genesis_test(vec![key_ed25519]).await.unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -46,12 +46,12 @@ fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
 /// covered structurally by the borrow checker + explicit copy-back), and
 /// not PR/SR/PT, which is the new hazard this node introduces (SR now
 /// lives inside a PT cell that would be shared state if `PrincipalTree`
-/// were `Arc`-wrapped like `CommitTrees`/`CloneableLog`).
-#[test]
-fn abandoned_commit_scope_does_not_leak_state() {
+/// were `Arc`-wrapped).
+#[tokio::test]
+async fn abandoned_commit_scope_does_not_leak_state() {
     let key1 = make_test_key(0x11);
-    let mut principal = Principal::implicit(key1.clone()).unwrap();
-    principal.genesis_test(Vec::new()).unwrap();
+    let mut principal = Principal::implicit(key1.clone()).await.unwrap();
+    principal.genesis_test(Vec::new()).await.unwrap();
 
     let pr_before = principal.pr().clone();
     let sr_before = principal.sr().cloned();
@@ -90,18 +90,21 @@ fn abandoned_commit_scope_does_not_leak_state() {
 /// underlying `EpochTree` — there is no de-registration API. If PR were
 /// assembled from the tree's registered algorithms instead of being
 /// re-derived from `active_algs` on every mutation (see
-/// `finalize_commit`'s `[alg-set-evolution]` comment), revoking a
+/// `stage_commit`'s `[alg-set-evolution]` comment), revoking a
 /// principal's only SHA-512 key would leave a stale SHA-512 entry in PR
 /// forever, since the tree itself never forgets it was once registered.
-#[test]
-fn revoked_key_algorithm_drops_from_pr_variants() {
+#[tokio::test]
+async fn revoked_key_algorithm_drops_from_pr_variants() {
     use crate::parsed_coz::{CozKind, ParsedCoz};
 
     let key_es256 = make_test_key(0x11);
     let key_ed25519 = make_test_key_ed25519(0x22);
 
-    let mut principal = Principal::implicit(key_es256.clone()).unwrap();
-    principal.genesis_test(vec![key_ed25519.clone()]).unwrap();
+    let mut principal = Principal::implicit(key_es256.clone()).await.unwrap();
+    principal
+        .genesis_test(vec![key_ed25519.clone()])
+        .await
+        .unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -122,7 +125,7 @@ fn revoked_key_algorithm_drops_from_pr_variants() {
         arrow: None,
         raw: dummy_coz_json(),
     };
-    principal.apply_transaction_test(cz, None).unwrap();
+    principal.apply_transaction_test(cz, None).await.unwrap();
 
     assert!(
         !principal.is_key_active(key_ed25519.tmb()),
@@ -150,15 +153,18 @@ fn revoked_key_algorithm_drops_from_pr_variants() {
 /// to every new tree level, not just PR: KT, AR-node, and SR-node are
 /// rebuilt fresh from the post-revocation key set on every mutation, so
 /// a dropped algorithm cannot survive in KR/AR/SR either.
-#[test]
-fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
+#[tokio::test]
+async fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
     use crate::parsed_coz::{CozKind, ParsedCoz};
 
     let key_es256 = make_test_key(0x11);
     let key_ed25519 = make_test_key_ed25519(0x22);
 
-    let mut principal = Principal::implicit(key_es256.clone()).unwrap();
-    principal.genesis_test(vec![key_ed25519.clone()]).unwrap();
+    let mut principal = Principal::implicit(key_es256.clone()).await.unwrap();
+    principal
+        .genesis_test(vec![key_ed25519.clone()])
+        .await
+        .unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -188,7 +194,7 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
         arrow: None,
         raw: dummy_coz_json(),
     };
-    principal.apply_transaction_test(cz, None).unwrap();
+    principal.apply_transaction_test(cz, None).await.unwrap();
 
     assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
     assert!(
@@ -238,19 +244,19 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
 /// algorithm, and `MultihashDigest::get_or_err`'s "first available
 /// variant" fallback silently substitutes a wrong-width value, which
 /// the tree's width-uniform fold contract correctly rejects.
-#[test]
-fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
+#[tokio::test]
+async fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
     use coz::Czd;
     use serde_json::json;
 
     use crate::parsed_coz::CozKind;
 
     let key = make_test_key(0x11);
-    let mut principal = Principal::implicit(key.clone()).unwrap();
-    principal.genesis_test(Vec::new()).unwrap();
+    let mut principal = Principal::implicit(key.clone()).await.unwrap();
+    principal.genesis_test(Vec::new()).await.unwrap();
 
     let action = make_test_action(key.tmb());
-    principal.record_action(action).unwrap();
+    principal.state_mut().record_action(action).unwrap();
     assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
 
     // A key/create tx timestamped after the action (make_test_action
@@ -280,6 +286,7 @@ fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
     };
     principal
         .apply_transaction_test(cz, Some(key2.clone()))
+        .await
         .unwrap();
 
     assert_eq!(
@@ -295,11 +302,11 @@ fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
 /// principal, `tmb == KR == AR == SR == PR`, byte-for-byte, for every
 /// registered algorithm. Every hop is the same native 1-cell promotion
 /// mechanism, composed recursively — no special-case machinery.
-#[test]
-fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
+#[tokio::test]
+async fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
     let key = make_test_key_ed25519(0xCC);
     let tmb_bytes = key.tmb().as_bytes().to_vec();
-    let principal = Principal::implicit(key).unwrap();
+    let principal = Principal::implicit(key).await.unwrap();
 
     let alg = principal.hash_alg();
     assert_eq!(principal.active_algs(), vec![alg]);
@@ -358,6 +365,7 @@ fn create_genesis_keys<S: eml::Storage>(
             raw: dummy_coz_json(),
         };
         principal
+            .state_mut()
             .apply_verified_internal(VerifiedCoz::from_transaction_unsafe(cz, Some(key)))
             .unwrap();
     }
@@ -394,8 +402,8 @@ fn make_principal_create_tx<S: eml::Storage>(
 /// Default` and without a fake/panicking `Default` on `FjallStorage`.
 /// PG must be set exactly once, and byte-identical to what the same
 /// operations produce under `Principal<eml::MemoryStorage>`.
-#[test]
-fn establish_pg_works_for_disk_backed_storage() {
+#[tokio::test]
+async fn establish_pg_works_for_disk_backed_storage() {
     use crate::parsed_coz::VerifiedCoz;
 
     let key = make_test_key(0x11);
@@ -403,7 +411,7 @@ fn establish_pg_works_for_disk_backed_storage() {
     // Disk-backed principal.
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage_fjall::FjallStorage::open(dir.path()).expect("open fjall storage");
-    let mut disk_principal = Principal::implicit_with_storage(key.clone(), storage).unwrap();
+    let mut disk_principal = Principal::open(key.clone(), storage).await.unwrap();
     assert!(
         disk_principal.pg().is_none(),
         "PG must be absent before principal/create"
@@ -412,7 +420,10 @@ fn establish_pg_works_for_disk_backed_storage() {
     create_genesis_keys(&mut disk_principal, &key, &[], 0x10);
     let cz = make_principal_create_tx(&disk_principal, &key, 0x44);
     let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
-    disk_principal.apply_verified_internal(vtx).unwrap();
+    disk_principal
+        .state_mut()
+        .apply_verified_internal(vtx)
+        .unwrap();
     let pg_disk = disk_principal
         .pg()
         .expect("establish_pg must set PG for a disk-backed Principal")
@@ -420,11 +431,14 @@ fn establish_pg_works_for_disk_backed_storage() {
 
     // The equivalent in-memory principal, driven through the identical
     // sequence of operations.
-    let mut mem_principal = Principal::implicit(key.clone()).unwrap();
+    let mut mem_principal = Principal::implicit(key.clone()).await.unwrap();
     create_genesis_keys(&mut mem_principal, &key, &[], 0x10);
     let mem_cz = make_principal_create_tx(&mem_principal, &key, 0x44);
     let mem_vtx = VerifiedCoz::from_transaction_unsafe(mem_cz, None);
-    mem_principal.apply_verified_internal(mem_vtx).unwrap();
+    mem_principal
+        .state_mut()
+        .apply_verified_internal(mem_vtx)
+        .unwrap();
     let pg_mem = mem_principal
         .pg()
         .expect("establish_pg must set PG for an in-memory Principal")
@@ -441,7 +455,9 @@ fn establish_pg_works_for_disk_backed_storage() {
     // but the commit/create may follow the first (SPEC 5.1 steps 3-4).
     let second_cz = make_principal_create_tx(&disk_principal, &key, 0x55);
     let second_vtx = VerifiedCoz::from_transaction_unsafe(second_cz, None);
-    let result = disk_principal.apply_verified_internal(second_vtx);
+    let result = disk_principal
+        .state_mut()
+        .apply_verified_internal(second_vtx);
     assert!(
         matches!(result, Err(Error::GenesisIncomplete)),
         "a second principal/create must fail — PG is already established"

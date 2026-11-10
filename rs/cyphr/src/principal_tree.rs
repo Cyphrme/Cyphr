@@ -250,13 +250,12 @@ impl Default for PrincipalTree {
 /// Deep clone: reconstructs a fresh, independent `EpochTree` with the same
 /// registered algorithms and cell contents, rather than sharing state.
 ///
-/// Deliberately **not** an `Arc<Mutex<...>>` sharing pattern (unlike
-/// [`crate::commit_root::CloneableLog`], the Commit Tree's wrapper): SR is
+/// Deliberately **not** an `Arc<Mutex<...>>` sharing pattern: SR is
 /// rewritten on every principal mutation, including mutations `CommitScope`
-/// applies to its `projected` clone before `finalize()`. A shared PT would
-/// leak an abandoned scope's writes into the live principal; deep-cloning on
-/// every `Principal::clone()` preserves the isolation `CommitScope` depends
-/// on. This is cheap regardless: the tree holds SR, CR and a few nonces.
+/// applies to its projected state copy before `finalize()`. A shared PT
+/// would leak an abandoned scope's writes into the live principal;
+/// deep-cloning on every state copy preserves the isolation `CommitScope`
+/// depends on. This is cheap regardless: the tree holds SR, CR and a few nonces.
 impl Clone for PrincipalTree {
     fn clone(&self) -> Self {
         let mut tree = Self {

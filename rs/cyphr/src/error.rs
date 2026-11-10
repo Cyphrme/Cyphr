@@ -158,10 +158,13 @@ pub enum Error {
     /// The leaf durably stored at a commit's position does not match the
     /// TR just computed for that commit.
     ///
-    /// Signals a crash-window orphan leaf (a prior `finalize_commit` call
-    /// durably appended its leaf but crashed before the index recorded the
-    /// commit), not a genuine replay — the mismatched leaf's root must
-    /// never be silently adopted as this commit's CR.
+    /// Signals an orphan leaf: a log leaf with no commit behind it, which
+    /// the mismatched leaf's root must never be adopted for. Reachable only
+    /// for a log written before the two-phase commit, when a commit's leaf
+    /// was appended before the commit was recorded and a crash or refusal
+    /// in between left it behind; a commit's leaf is now written only after
+    /// its commit is staged whole and, through the storage engine, recorded
+    /// in the blob store.
     #[error("durable leaf at index {0} does not match this commit's TR")]
     DurableLeafMismatch(u64),
 

@@ -309,7 +309,7 @@ impl PendingCommit {
 /// The single definition shared by the write path
 /// ([`CommitScope::prepare_commit`]), the pre-finalize check
 /// ([`CommitScope::matches_arrow`]) and the verifier
-/// (`Principal::finalize_commit`), so the Arrow a commit signs and the one
+/// (`PrincipalState::stage_commit`), so the Arrow a commit signs and the one
 /// it is checked against cannot drift apart. Each component is resolved
 /// through [`MultihashDigest::arrow_component_bytes`], which covers a
 /// component that does not carry `alg` (e.g. a `pre` predating the
@@ -370,22 +370,24 @@ pub(crate) fn arrow_digest(
 /// let mut scope = principal.begin_commit();
 /// scope.apply(vtx1)?;
 /// scope.apply(vtx2)?;
-/// let commit = scope.finalize()?;
+/// let commit = scope.finalize().await?;
 ///
 /// // Single-coz commit (convenience):
-/// let commit = principal.apply_transaction(vtx)?;
+/// let commit = principal.apply_transaction(vtx).await?;
 /// ```
 #[must_use = "a CommitScope must be finalized via .finalize() to produce a Commit"]
 pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
     principal: &'a mut crate::principal::Principal<S>,
     pending: PendingCommit,
-    projected: crate::principal::Principal<S>,
+    /// A copy of the principal's state the cozies are applied to. It holds
+    /// no log, so applying never writes; the commit adopts it whole.
+    projected: crate::principal::PrincipalState,
 }
 
 impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Create a new commit scope for the given principal.
     pub(crate) fn new(principal: &'a mut crate::principal::Principal<S>) -> Self {
-        let projected = principal.share();
+        let projected = principal.state().clone();
         Self {
             principal,
             pending: PendingCommit::new(),
@@ -436,40 +438,47 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         Ok(())
     }
 
-    /// Finalize the commit scope, producing an immutable `Commit`.
+    /// Phase one of the two-phase commit: verify the commit and compute
+    /// every root, the commit-log append included, with nothing written.
     ///
-    /// Validates and durably records the batch on `projected` — the
-    /// independent clone `CommitScope::new` took at scope creation — and
-    /// only copies it into the live principal once that succeeds. A
-    /// `finalize_commit` failure therefore leaves the live principal
-    /// byte-identical to how it was before this call, `deleted_pending`
-    /// included: that flag is cleared inside `finalize_commit` itself,
-    /// after its durable writes, so folding the whole clone into the live
-    /// principal in one gated move carries that clear along with every
-    /// other `finalize_commit`-internal mutation (GitHub issue #77 and its
-    /// `deleted_pending` sibling — previously this assigned `*self.principal
-    /// = self.projected` *before* calling `finalize_commit`, so a failure
-    /// partway through left the live principal already mutated).
+    /// The returned [`StagedCommit`] exposes the finalized [`Commit`] and
+    /// the roots it produces, so a caller can make the commit durable
+    /// elsewhere first (the storage engine records it in the blob store,
+    /// its source of truth) and only then write the log with
+    /// [`StagedCommit::commit`]. Dropping it instead aborts: the live
+    /// principal and its log are as they were.
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if no cozies were applied.
-    pub fn finalize(mut self) -> crate::error::Result<&'a Commit> {
-        self.projected.finalize_commit(self.pending)?;
-        *self.principal = self.projected;
+    /// Any refusal of the commit (`EmptyCommit`, `MissingCommit`,
+    /// `CommitMismatch`, ...); the scope is consumed and nothing changes.
+    pub async fn stage(self) -> crate::error::Result<StagedCommit<'a, S>> {
+        let Self {
+            principal,
+            pending,
+            mut projected,
+        } = self;
+        let staged = projected
+            .stage_commit(pending, principal.commit_trees())
+            .await?;
+        Ok(StagedCommit {
+            principal,
+            projected,
+            staged,
+        })
+    }
 
-        // `finalize_commit`'s returned reference borrowed `self.projected`,
-        // which the move above consumed, so it cannot be reused here. No
-        // second clone is needed to recover it: `finalize_commit` always
-        // pushes its result as the last entry of `auth.commits` immediately
-        // before returning it (`principal.rs`), so re-deriving the
-        // reference from the now-live principal yields the identical
-        // `Commit`.
-        self.principal
-            .auth
-            .commits
-            .last()
-            .ok_or(crate::error::Error::EmptyCommit)
+    /// Finalize the commit scope, producing an immutable `Commit`: both
+    /// phases, [`stage`](Self::stage) then [`StagedCommit::commit`].
+    ///
+    /// A refusal or a failed log write leaves the live principal and its
+    /// log exactly as they were.
+    ///
+    /// # Errors
+    ///
+    /// As [`stage`](Self::stage), or `Storage` if the log write fails.
+    pub async fn finalize(self) -> crate::error::Result<&'a Commit> {
+        self.stage().await?.commit().await
     }
 
     /// Verify a coz signature and apply it within this commit scope.
@@ -558,7 +567,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
-        // finalize_commit's identical refresh for the full rationale).
+        // stage_commit's identical refresh for the full rationale).
         let Ok(dr) = self.projected.data.included_root(&active_algs) else {
             return false;
         };
@@ -658,7 +667,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
-        // finalize_commit's identical refresh for the full rationale).
+        // stage_commit's identical refresh for the full rationale).
         let dr = self.projected.data.included_root(&active_algs)?;
 
         let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
@@ -713,22 +722,17 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     }
 
     /// Step 3 of the three-step finalize: verify `sig` over the prepared pay
-    /// and append the commit. A signature that does not verify under the
-    /// principal's stored key for the signer (resolved in `prepare_commit`,
-    /// not the signer's own copy) (empty, malformed, wrong message, high-S) is
-    /// `InvalidSignature` and the scope is dropped unchanged; the core never
-    /// normalizes S (see [`crate::signer`]).
-    ///
-    /// This is synchronous and reaches the commit-root bridge's
-    /// `futures::executor::block_on`, so it must not run inside a
-    /// `futures` executor; the bridge stays until the async chain lands.
-    /// Await the signature
-    /// first, then call this outside any such executor.
+    /// and commit. A signature that does not verify under the principal's
+    /// stored key for the signer (resolved in `prepare_commit`, not the
+    /// signer's own copy) (empty, malformed, wrong message, high-S) is
+    /// `InvalidSignature` before anything is staged or written; the core
+    /// never normalizes S (see [`crate::signer`]).
     ///
     /// # Errors
     ///
     /// - `InvalidSignature`: `sig` does not verify.
-    pub fn finish_commit(
+    /// - As [`finalize`](Self::finalize).
+    pub async fn finish_commit(
         mut self,
         prepared: PreparedCommit,
         sig: Vec<u8>,
@@ -763,17 +767,11 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // Push commit marker and finalize
         self.pending
             .push_tx(crate::transaction::Transaction(vec![arrow_vtx]));
-        self.finalize()
+        self.finalize().await
     }
 
-    /// Async convenience over prepare, sign, finish.
-    ///
-    /// Do NOT drive this future with a `futures::executor` (`block_on`,
-    /// `LocalPool`): the commit-root bridge's `block_on` stays until the
-    /// async chain lands, and the finish step would nest executors and panic. Tokio and
-    /// wasm-bindgen-futures are fine. Under a `futures` executor, call the
-    /// three steps separately with the sign step awaited there and
-    /// `finish_commit` called after it returns.
+    /// Async convenience over prepare, sign, finish. The future is `Send`
+    /// only when `signer`'s `sign` future is (see [`crate::signer`]).
     ///
     /// # Errors
     ///
@@ -788,16 +786,18 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ) -> crate::error::Result<&'a Commit> {
         let prepared = self.prepare_commit(signer, now, authority)?;
         let sig = signer.sign(prepared.cad()).await?;
-        self.finish_commit(prepared, sig)
+        self.finish_commit(prepared, sig).await
     }
 
-    /// Synchronous finalize for an in-memory [`SoftwareSigner`], which never
-    /// suspends. Safe under any executor.
+    /// [`finalize_with_signer`](Self::finalize_with_signer) for an
+    /// in-memory [`SoftwareSigner`], which never suspends. Its future is
+    /// `Send` whenever the storage is, which the generic form cannot
+    /// promise for an arbitrary signer.
     ///
     /// # Errors
     ///
     /// As [`finalize_with_signer`](Self::finalize_with_signer).
-    pub fn finalize_with_software(
+    pub async fn finalize_with_software(
         self,
         signer: &SoftwareSigner,
         now: i64,
@@ -805,39 +805,29 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ) -> crate::error::Result<&'a Commit> {
         let prepared = self.prepare_commit(signer, now, authority)?;
         let sig = signer.sign_now(prepared.cad())?;
-        self.finish_commit(prepared, sig)
+        self.finish_commit(prepared, sig).await
     }
 
-    /// Sign with `signer`, the genesis key, and apply the `key/create` of
+    /// Prepare, for `signer` (the genesis key) to sign, the `key/create` of
     /// the genesis key, then of each of `others` in order: the genesis key
     /// adds itself, then each further key (SPEC 5.1 steps 1-2, 5.2, 5.3,
     /// 7.7 Example 1). A genesis commit carries these before its
-    /// `principal/create`.
-    ///
-    /// Returns each as a wire coz (`pay`, `sig` and the disclosed `key`):
-    /// the key material rides on its own `key/create`, so a genesis is
-    /// readable from the commit's cozies alone.
+    /// `principal/create`. Sign each [`PreparedCoz::cad`] and apply it, in
+    /// order, with [`finish_coz`](Self::finish_coz).
     ///
     /// # Errors
     ///
-    /// `Signer` if signing fails; otherwise as
-    /// [`verify_and_apply`](Self::verify_and_apply), e.g. `UnknownKey` when
-    /// `signer` is not the genesis key or the genesis key is already
-    /// created, `DuplicateKey` when a key repeats.
-    pub fn create_genesis_keys(
-        &mut self,
-        signer: &SoftwareSigner,
+    /// `UnknownKey` when the genesis key is already created.
+    pub fn prepare_genesis_keys<K: Signer + ?Sized>(
+        &self,
+        signer: &K,
         others: &[crate::key::Key],
         now: i64,
         authority: &str,
-    ) -> crate::error::Result<Vec<serde_json::Value>> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    ) -> crate::error::Result<Vec<PreparedCoz>> {
         use serde_json::json;
 
-        use crate::error::Error;
-
         let typ = format!("{authority}/{}", crate::parsed_coz::typ::KEY_CREATE);
-        let mut cozies = Vec::new();
         let genesis = self
             .projected
             .auth
@@ -845,36 +835,20 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .get(self.projected.genesis_key())
             .filter(|_| !self.projected.genesis_created)
             .cloned()
-            .ok_or(Error::UnknownKey)?;
-        for key in std::iter::once(genesis).chain(others.iter().cloned()) {
-            let tmb = key.tmb().to_b64();
-            let mut pay = json!({
-                "alg": signer.alg(),
-                "id": tmb,
-                "now": now,
-                "tmb": signer.tmb().to_b64(),
-                "typ": typ,
-            });
-            if let Some(obj) = pay.as_object_mut() {
-                obj.sort_keys();
-            }
-            let pay_vec = serde_json::to_vec(&pay).map_err(|_| Error::MalformedPayload)?;
-            let cad = coz::canonical_hash_for_alg(&pay_vec, signer.alg(), None)
-                .ok_or(Error::MalformedPayload)?;
-            let sig = signer.sign_now(&cad)?;
-            let czd = coz::czd_for_alg(&cad, &sig, signer.alg()).ok_or(Error::MalformedPayload)?;
-            self.verify_and_apply(&pay_vec, &sig, czd, Some(key.clone()))?;
-            cozies.push(json!({
-                "pay": pay,
-                "sig": Base64UrlUnpadded::encode_string(&sig),
-                "key": {
-                    "alg": key.alg(),
-                    "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
-                    "tmb": tmb,
-                },
-            }));
-        }
-        Ok(cozies)
+            .ok_or(crate::error::Error::UnknownKey)?;
+        std::iter::once(genesis)
+            .chain(others.iter().cloned())
+            .map(|key| {
+                let pay = json!({
+                    "alg": signer.alg(),
+                    "id": key.tmb().to_b64(),
+                    "now": now,
+                    "tmb": signer.tmb().to_b64(),
+                    "typ": typ,
+                });
+                PreparedCoz::new(pay, signer.alg(), Some(key))
+            })
+            .collect()
     }
 
     /// The `id` a `principal/create` applied next in this scope must carry:
@@ -926,43 +900,160 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         )))
     }
 
-    /// Sign with `signer` and apply the `principal/create` that closes a
-    /// genesis (SPEC 5.1 step 3): its `id` is [`genesis_id`](Self::genesis_id),
-    /// the PG-to-be. Returns it as a wire coz (`pay`, `sig`).
+    /// Prepare, for `signer` to sign, the `principal/create` that closes a
+    /// genesis (SPEC 5.1 step 3): its `id` is
+    /// [`genesis_id`](Self::genesis_id), the PG-to-be, so prepare it after
+    /// the genesis key/creates are applied. Apply it with
+    /// [`finish_coz`](Self::finish_coz).
     ///
     /// # Errors
     ///
-    /// `Signer` if signing fails; otherwise as
-    /// [`verify_and_apply`](Self::verify_and_apply), e.g.
-    /// `UnknownKey` while the genesis key has no `key/create`.
-    pub fn create_principal(
-        &mut self,
-        signer: &SoftwareSigner,
+    /// As [`genesis_id`](Self::genesis_id).
+    pub fn prepare_create_principal<K: Signer + ?Sized>(
+        &self,
+        signer: &K,
         now: i64,
         authority: &str,
-    ) -> crate::error::Result<serde_json::Value> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        use serde_json::json;
-
-        use crate::error::Error;
-
-        let mut pay = json!({
+    ) -> crate::error::Result<PreparedCoz> {
+        let pay = serde_json::json!({
             "alg": signer.alg(),
             "id": self.genesis_id()?,
             "now": now,
             "tmb": signer.tmb().to_b64(),
             "typ": format!("{authority}/{}", crate::parsed_coz::typ::PRINCIPAL_CREATE),
         });
+        PreparedCoz::new(pay, signer.alg(), None)
+    }
+
+    /// Sign with `signer` (the genesis key) and apply the `key/create` of the
+    /// genesis key, then of each of `others` in order: the async convenience
+    /// over [`prepare_genesis_keys`](Self::prepare_genesis_keys), `sign` and
+    /// [`finish_coz`](Self::finish_coz). Returns each as a wire coz.
+    ///
+    /// # Errors
+    ///
+    /// `Signer` if signing fails; otherwise as the two steps.
+    pub async fn create_genesis_keys<K: Signer + ?Sized>(
+        &mut self,
+        signer: &K,
+        others: &[crate::key::Key],
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<Vec<serde_json::Value>> {
+        let mut cozies = Vec::with_capacity(others.len() + 1);
+        for prepared in self.prepare_genesis_keys(signer, others, now, authority)? {
+            let sig = signer.sign(prepared.cad()).await?;
+            cozies.push(self.finish_coz(prepared, sig)?);
+        }
+        Ok(cozies)
+    }
+
+    /// Sign with `signer` and apply the `principal/create` that closes a
+    /// genesis: the async convenience over
+    /// [`prepare_create_principal`](Self::prepare_create_principal), `sign`
+    /// and [`finish_coz`](Self::finish_coz). Returns it as a wire coz.
+    ///
+    /// # Errors
+    ///
+    /// `Signer` if signing fails; otherwise as the two steps.
+    pub async fn create_principal<K: Signer + ?Sized>(
+        &mut self,
+        signer: &K,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<serde_json::Value> {
+        let prepared = self.prepare_create_principal(signer, now, authority)?;
+        let sig = signer.sign(prepared.cad()).await?;
+        self.finish_coz(prepared, sig)
+    }
+
+    /// Apply a prepared coz with its signature `sig` (the finish step after
+    /// [`prepare_genesis_keys`](Self::prepare_genesis_keys) or
+    /// [`prepare_create_principal`](Self::prepare_create_principal)), and
+    /// return it as a wire coz: `pay`, `sig` and, for a `key/create`, the
+    /// disclosed `key`, so a genesis reads from its cozies alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`verify_and_apply`](Self::verify_and_apply), e.g.
+    /// `InvalidSignature` when `sig` does not verify, `UnknownKey` when the
+    /// signer is not the genesis key, `DuplicateKey` when a key repeats.
+    pub fn finish_coz(
+        &mut self,
+        prepared: PreparedCoz,
+        sig: Vec<u8>,
+    ) -> crate::error::Result<serde_json::Value> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let PreparedCoz {
+            pay,
+            pay_vec,
+            alg,
+            cad,
+            key,
+        } = prepared;
+        let czd =
+            coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
+        self.verify_and_apply(&pay_vec, &sig, czd, key.clone())?;
+        let mut wire = serde_json::json!({
+            "pay": pay,
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+        });
+        if let Some(key) = key {
+            wire["key"] = serde_json::json!({
+                "alg": key.alg(),
+                "pub": Base64UrlUnpadded::encode_string(key.pub_key()),
+                "tmb": key.tmb().to_b64(),
+            });
+        }
+        Ok(wire)
+    }
+}
+
+/// A transaction coz prepared for signing by a scope's prepare step: its
+/// canonical pay and the `cad` to sign, and the key it discloses, if any.
+/// Applied with [`CommitScope::finish_coz`].
+#[derive(Debug)]
+pub struct PreparedCoz {
+    pay: serde_json::Value,
+    pay_vec: Vec<u8>,
+    alg: String,
+    cad: coz::Cad,
+    key: Option<crate::key::Key>,
+}
+
+impl PreparedCoz {
+    /// Canonicalize `pay` (keys sorted, the form the signature covers) and
+    /// hash it under `alg`.
+    fn new(
+        mut pay: serde_json::Value,
+        alg: &str,
+        key: Option<crate::key::Key>,
+    ) -> crate::error::Result<Self> {
         if let Some(obj) = pay.as_object_mut() {
             obj.sort_keys();
         }
-        let pay_vec = serde_json::to_vec(&pay).map_err(|_| Error::MalformedPayload)?;
-        let cad = coz::canonical_hash_for_alg(&pay_vec, signer.alg(), None)
-            .ok_or(Error::MalformedPayload)?;
-        let sig = signer.sign_now(&cad)?;
-        let czd = coz::czd_for_alg(&cad, &sig, signer.alg()).ok_or(Error::MalformedPayload)?;
-        self.verify_and_apply(&pay_vec, &sig, czd, None)?;
-        Ok(json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) }))
+        let pay_vec =
+            serde_json::to_vec(&pay).map_err(|_| crate::error::Error::MalformedPayload)?;
+        let cad = coz::canonical_hash_for_alg(&pay_vec, alg, None)
+            .ok_or(crate::error::Error::MalformedPayload)?;
+        Ok(Self {
+            pay,
+            pay_vec,
+            alg: alg.to_string(),
+            cad,
+            key,
+        })
+    }
+
+    /// The canonical hash of the pay: the message to sign.
+    pub fn cad(&self) -> &coz::Cad {
+        &self.cad
+    }
+
+    /// The pay the signature covers.
+    pub fn pay(&self) -> &serde_json::Value {
+        &self.pay
     }
 }
 
@@ -988,6 +1079,85 @@ impl PreparedCommit {
     /// carries the coz itself (the wire form is this pay and its `sig`).
     pub fn pay(&self) -> &serde_json::Value {
         &self.pay_obj
+    }
+}
+
+// Compile-time proof that the commit path's futures are `Send` for every
+// storage: `eml::Storage: Send + Sync` and its futures are `Send`, so a
+// multi-threaded runtime can drive a commit over any backend, the durable
+// one included. A regression (a `!Send` value held across an await) fails
+// the build here rather than at a distant server route.
+const _: () = {
+    fn assert_send<T: Send>(_: &T) {}
+    #[allow(dead_code)]
+    fn commit_path_is_send<S: eml::Storage>(
+        scope: CommitScope<'_, S>,
+        principal: &mut crate::principal::Principal<S>,
+        signer: &SoftwareSigner,
+        cozies: &[crate::replay::StoredCoz],
+    ) {
+        assert_send(&scope.finalize_with_software(signer, 0, ""));
+        assert_send(&crate::replay::replay_bundle(principal, cozies));
+    }
+};
+
+// ============================================================================
+// StagedCommit
+// ============================================================================
+
+/// A commit verified and computed, with nothing written: phase one of the
+/// two-phase commit ([`CommitScope::stage`]).
+///
+/// It holds the principal's state as the commit leaves it and the one log
+/// write that makes the commit durable. [`Self::commit`] performs that
+/// write and adopts the state; dropping it aborts with the principal and
+/// its log unchanged. Holding the principal by `&mut` between the two
+/// phases is what keeps the staged write valid: nothing else can mutate
+/// the log in between.
+#[must_use = "a StagedCommit writes nothing until .commit() is awaited"]
+pub struct StagedCommit<'a, S: eml::Storage = eml::MemoryStorage> {
+    principal: &'a mut crate::principal::Principal<S>,
+    projected: crate::principal::PrincipalState,
+    /// `None` when the log already holds this commit's leaf (replay over a
+    /// durable log): committing then only adopts the state.
+    staged: Option<polydigest::Staged<S>>,
+}
+
+impl<'a, S: eml::Storage> StagedCommit<'a, S> {
+    /// The principal's state once this commit is committed: its roots
+    /// (`pr`, `sr`, `cr`, `auth_root`, `pg`) and its last commit, the one
+    /// staged here.
+    pub fn state(&self) -> &crate::principal::PrincipalState {
+        &self.projected
+    }
+
+    /// Verify and record a data action on the staged state, as if recorded
+    /// right after the commit: a bundle's actions that follow its commit
+    /// are checked before the commit is written, so a refused action
+    /// leaves nothing durable.
+    ///
+    /// # Errors
+    ///
+    /// As [`Principal::verify_and_record_action`](crate::Principal::verify_and_record_action).
+    pub fn verify_and_record_action(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+    ) -> crate::error::Result<&PrincipalRoot> {
+        self.projected.verify_and_record_action(pay_json, sig, czd)
+    }
+
+    /// Phase two: write the staged log append in one atomic
+    /// `Storage::apply`, then adopt the staged state with no `.await`
+    /// between, so a dropped future either wrote nothing or has adopted.
+    ///
+    /// # Errors
+    ///
+    /// `Storage` if the write fails; the principal and its log are then
+    /// unchanged.
+    pub async fn commit(self) -> crate::error::Result<&'a Commit> {
+        self.principal.adopt(self.projected, self.staged).await
     }
 }
 
@@ -1198,8 +1368,8 @@ mod tests {
     /// `finalize_with_software` (construction) must succeed, and
     /// `matches_arrow` (independent verification) must accept the
     /// resulting arrow via the same fallback.
-    #[test]
-    fn matches_arrow_accepts_multi_variant_fold() {
+    #[tokio::test]
+    async fn matches_arrow_accepts_multi_variant_fold() {
         let pool = fold_pool();
         let genesis = fold_pool_key(&pool, "golden");
         let diana = fold_pool_key(&pool, "diana_es384");
@@ -1210,8 +1380,12 @@ mod tests {
         let now = 1_700_000_000i64;
 
         let mut principal = crate::principal::Principal::implicit(fold_domain_key(genesis))
+            .await
             .expect("genesis principal");
-        principal.genesis_test(Vec::new()).expect("genesis commit");
+        principal
+            .genesis_test(Vec::new())
+            .await
+            .expect("genesis commit");
         let mut scope = principal.begin_commit();
 
         let (pay1, sig1, czd1) = fold_signed_key_create(genesis, &genesis_tmb_b64, diana, now);
@@ -1232,13 +1406,14 @@ mod tests {
                 now + 1,
                 "cyphr.me",
             )
+            .await
             .expect("commit1 (key creates) should finalize");
 
         // Clone post-commit1 state so both branches replay the identical
         // self-revoke bytes onto byte-identical starting states, the same
         // technique properties.rs uses to keep a/b in lockstep without
         // re-signing (ECDSA signing is randomized per call).
-        let mut principal_b = principal.clone();
+        let mut principal_b = principal.fork().await.expect("fork");
 
         let diana_tmb_b64 = diana.compute_tmb_b64().expect("diana tmb b64");
         let diana_tmb = diana.compute_tmb().expect("diana tmb");
@@ -1262,6 +1437,7 @@ mod tests {
                 now + 3,
                 "cyphr.me",
             )
+            .await
             .expect("self-revoke commit should finalize via the multi-variant fold");
         let genuine_arrow = commit2
             .commit_tx()
@@ -1321,8 +1497,8 @@ mod tests {
     /// returns its lone SHA-256 variant for the requested SHA-384.
     /// `finalize_with_software` (construction) and `matches_arrow` (independent
     /// verification) MUST agree. This is the scenario behind forge issue #51.
-    #[test]
-    fn matches_arrow_accepts_sole_key_algorithm_change() {
+    #[tokio::test]
+    async fn matches_arrow_accepts_sole_key_algorithm_change() {
         let pool = fold_pool();
         let old_key = fold_pool_key(&pool, "diana_es384"); // ES384 -> SHA-384
         let new_key = fold_pool_key(&pool, "golden"); // ES256 -> SHA-256
@@ -1333,8 +1509,12 @@ mod tests {
 
         // Sole-key genesis on the ES384 key.
         let mut principal = crate::principal::Principal::implicit(fold_domain_key(old_key))
+            .await
             .expect("genesis principal");
-        principal.genesis_test(Vec::new()).expect("genesis commit");
+        principal
+            .genesis_test(Vec::new())
+            .await
+            .expect("genesis commit");
 
         // Sign the ES384 -> ES256 key/replace ONCE; replay the identical
         // bytes onto a byte-identical clone so production (scope_a) and
@@ -1342,7 +1522,7 @@ mod tests {
         // is randomized per call).
         let (pay, sig, czd) = fold_signed_key_replace(old_key, &old_tmb_b64, new_key, now);
 
-        let mut principal_b = principal.clone();
+        let mut principal_b = principal.fork().await.expect("fork");
 
         let mut scope_a = principal.begin_commit();
         scope_a
@@ -1365,6 +1545,7 @@ mod tests {
                 now + 1,
                 "cyphr.me",
             )
+            .await
             .expect("sole-key algorithm-change commit should finalize via genesis promotion");
         let genuine_arrow = commit
             .commit_tx()
@@ -1384,7 +1565,7 @@ mod tests {
 
     // ========================================================================
     // finalize() state-ordering (GitHub issue #77 and its deleted_pending
-    // sibling): a finalize_commit failure must never leave the live
+    // sibling): a stage_commit failure must never leave the live
     // principal reflecting projected mutations that were never durably
     // recorded.
     // ========================================================================
@@ -1393,7 +1574,7 @@ mod tests {
     /// armed, then fails every operation. Genesis setup (and any mutation
     /// apply, which never touches storage) succeeds normally; arming right
     /// before `finalize`/`finalize_with_software` isolates the injected
-    /// failure to `finalize_commit`'s own durable-write path.
+    /// failure to `stage_commit`'s own durable-write path.
     #[derive(Debug)]
     struct ToggledFailureStorage {
         inner: eml::MemoryStorage,
@@ -1405,7 +1586,7 @@ mod tests {
 
     impl std::fmt::Display for InjectedFinalizeFailure {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "injected finalize_commit failure")
+            write!(f, "injected commit failure")
         }
     }
 
@@ -1487,11 +1668,11 @@ mod tests {
     }
 
     /// RED-first regression test for GitHub issue #77 (and its
-    /// `deleted_pending` sibling, same seam): a `finalize_commit` failure
+    /// `deleted_pending` sibling, same seam): a `stage_commit` failure
     /// must never leave the live principal reflecting projected mutations
     /// that were never durably recorded.
-    #[test]
-    fn finalize_failure_leaves_principal_unmutated() {
+    #[tokio::test]
+    async fn finalize_failure_leaves_principal_unmutated() {
         let pool = fold_pool();
         let genesis = fold_pool_key(&pool, "golden");
         let genesis_tmb_b64 = genesis.compute_tmb_b64().expect("genesis tmb b64");
@@ -1499,10 +1680,13 @@ mod tests {
         let now = 1_700_000_000i64;
 
         let (storage, armed) = ToggledFailureStorage::new();
-        let mut principal =
-            crate::principal::Principal::implicit_with_storage(fold_domain_key(genesis), storage)
-                .expect("genesis principal");
-        principal.genesis_test(Vec::new()).expect("genesis commit");
+        let mut principal = crate::principal::Principal::open(fold_domain_key(genesis), storage)
+            .await
+            .expect("genesis principal");
+        principal
+            .genesis_test(Vec::new())
+            .await
+            .expect("genesis commit");
 
         // Snapshot observable pre-commit state to compare against after the
         // injected failure.
@@ -1547,14 +1731,13 @@ mod tests {
 
         // Arm the storage failure only now: genesis setup and the mutation
         // apply above never touch storage, so this isolates the injected
-        // failure to finalize_commit's own durable-write path.
+        // failure to stage_commit's own durable-write path.
         armed.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let result = scope.finalize_with_software(
-            &SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb),
-            now + 1,
-            "cyphr.me",
-        );
+        let signer = SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb);
+        let result = scope
+            .finalize_with_software(&signer, now + 1, "cyphr.me")
+            .await;
 
         assert!(
             result.is_err(),

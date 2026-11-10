@@ -1,14 +1,12 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 use eml;
-use futures;
 
 use crate::HashAlg;
 use crate::multihash::MultihashDigest;
 use crate::state::StateDigest;
 
-/// The EML log type backing [`CloneableLog`], generic over its storage
+/// The EML log type backing [`CommitTrees`], generic over its storage
 /// backend `S`.
 type Log<S> = eml::NaryMerkleLog<S>;
 
@@ -168,84 +166,79 @@ impl StateDigest for CommitRoot {
     }
 }
 
-/// A shareable wrapper around [`Log`], generic over the storage backend `S`.
+/// A principal's commit log: the EML over storage backend `S`, owned by
+/// exactly one [`crate::Principal`].
 ///
-/// The inner mutex is only ever contended by the synchronous `block_on` bridge
-/// below, on a single logical caller; a poisoned lock therefore means a prior
-/// call already panicked mid-mutation, an unrecoverable state, so lock
-/// acquisition here panics too rather than plumbing a synthetic storage error.
+/// There is one writer of a principal's log and no alias to it: the
+/// principal holds it by value and hands out only `&CommitTrees`, so every
+/// mutation goes through the principal's own two-phase commit
+/// ([`crate::commit::CommitScope::stage`] then
+/// [`crate::commit::StagedCommit::commit`]). The free-standing mutators
+/// ([`Self::add_algorithm`], [`Self::append`]) serve logs built outside a
+/// principal, such as a verifier assembling proof material.
 ///
-/// # Two ways to duplicate a handle
+/// # Async boundary
 ///
-/// - [`Clone`] (public, only where `S: Clone`) deep-copies the storage and rebuilds an independent
-///   log, so two principals derived from one ancestor can each commit without perturbing the other
-///   (SPEC.md section 15.8: witnesses hold both branches of a fork). Durable storages such as
-///   `storage_fjall::FjallStorage` have no copy primitive in eml 0.11 and implement no `Clone`, so
-///   cloning them is a compile error rather than a silent share of one on-disk log.
-/// - [`Self::share`] (crate-private) aliases the same log. A [`crate::commit::CommitScope`]
-///   projects state onto a copy of its own principal but must record durably to the principal's
-///   log, so it shares.
+/// Every call that reads nodes or leaves, or writes, is `async`: storage is
+/// [`eml::Storage`], whose futures are `Send` (`Storage: Send + Sync`), so
+/// these futures are `Send` whenever `S` is. Calls that read only the
+/// in-memory frontier (roots at the tip, sizes) stay synchronous.
 ///
 /// # Manual `Debug`
 ///
-/// Implemented by hand: `#[derive(Debug)]` would add an `S: Debug` bound the
-/// impl never needs, and `FjallStorage` implements no `Debug`.
-pub struct CloneableLog<S: eml::Storage>(pub Arc<Mutex<Log<S>>>);
-
-impl<S: eml::Storage> CloneableLog<S> {
-    /// Alias the same underlying log (not an independent copy).
-    pub(crate) fn share(&self) -> Self {
-        Self(self.0.clone())
-    }
+/// Implemented by hand: `#[derive(Debug)]` would add an `S: Debug` bound,
+/// and `storage_fjall::FjallStorage` implements no `Debug`.
+pub struct CommitTrees<S: eml::Storage = eml::MemoryStorage> {
+    log: Log<S>,
 }
 
-impl<S: eml::Storage + Clone> Clone for CloneableLog<S> {
-    fn clone(&self) -> Self {
-        let storage = self
-            .0
-            .lock()
-            .expect("commit tree mutex poisoned")
-            .storage()
-            .clone();
-        // `open` re-reads registered algorithms and rebuilds the log from
-        // storage that this very log wrote and validated, so reconstruction
-        // failing means the copied storage is corrupt, which `Clone` has no
-        // channel to report.
-        Self::open(storage).expect("a log reopens over a faithful copy of its own storage")
-    }
-}
-
-impl<S: eml::Storage> std::fmt::Debug for CloneableLog<S> {
+impl<S: eml::Storage> std::fmt::Debug for CommitTrees<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CloneableLog").finish_non_exhaustive()
+        f.debug_struct("CommitTrees")
+            .field("size", &self.log.size())
+            .finish_non_exhaustive()
     }
 }
 
-impl<S: eml::Storage> CloneableLog<S> {
-    /// Create a new cloneable log with no algorithms registered, backed by
-    /// `storage`.
-    pub fn new(storage: S) -> Self {
-        let log = futures::executor::block_on(eml::from_storage(storage, Vec::new()))
-            .expect("fresh empty log construction cannot fail");
-        Self(Arc::new(Mutex::new(log)))
-    }
-
-    /// Open a log over `storage`, reconstructing from whatever algorithm
-    /// metadata (and leaves) are already durably present, or creating a
-    /// fresh empty log if `storage` genuinely has none.
+/// A storage backend that can be copied into an independent store: writes
+/// to the copy never reach the original. Only such a backend lets a
+/// principal be forked ([`crate::Principal::fork`]); a durable backend whose
+/// handles share one physical store (e.g. `storage_fjall::FjallStorage`)
+/// must not implement it, since a "copy" would be a second writer of the
+/// same log.
+pub trait ForkStorage: eml::Storage + Sized {
+    /// An independent copy of this store's contents.
     ///
-    /// Unlike [`Self::new`], safe to call against storage that may already
-    /// carry state from a prior session at the same physical location —
-    /// `new` always passes an empty hasher list to `eml::from_storage`,
-    /// which only succeeds when the storage has zero registered algorithms;
-    /// against real prior state it returns `OrphanedMetadata` (surfaced by
-    /// `new` as a panic). `open` first reads which algorithm IDs are
-    /// already registered and reconstructs the matching [`MaltHasher`] for
-    /// each — the only hasher this crate's commit trees ever use — so
-    /// reconstruction succeeds whether `storage` is fresh or already
-    /// populated.
-    pub fn open(storage: S) -> LogResult<Self, S> {
-        let metas = futures::executor::block_on(storage.load_algorithm_metas())
+    /// # Errors
+    ///
+    /// The backend's own error when the copy cannot be made.
+    fn fork(&self) -> impl std::future::Future<Output = Result<Self, Self::Error>> + Send;
+}
+
+impl ForkStorage for eml::MemoryStorage {
+    async fn fork(&self) -> Result<Self, Self::Error> {
+        Ok(self.clone())
+    }
+}
+
+impl<S: eml::Storage> CommitTrees<S> {
+    /// Open a log over `storage`, reconstructing from whatever algorithm
+    /// metadata (and leaves) are already durably present, or starting an
+    /// empty log if `storage` has none.
+    ///
+    /// Reads which algorithm IDs are registered and reconstructs the
+    /// matching [`MaltHasher`] for each, the only hasher this crate's commit
+    /// log uses, so reconstruction succeeds whether `storage` is fresh or
+    /// already populated.
+    ///
+    /// # Errors
+    ///
+    /// A storage error, or `UnknownAlgorithm` for a registered ID this
+    /// crate does not map.
+    pub async fn open(storage: S) -> LogResult<Self, S> {
+        let metas = storage
+            .load_algorithm_metas()
+            .await
             .map_err(LogError::<S>::Storage)?;
         let mut hashers: Vec<(u64, Box<dyn eml::Hasher>)> = Vec::with_capacity(metas.len());
         for (alg_id, _) in metas {
@@ -253,88 +246,139 @@ impl<S: eml::Storage> CloneableLog<S> {
                 u64_to_hash_alg(alg_id).map_err(|_| LogError::<S>::UnknownAlgorithm(alg_id))?;
             hashers.push((alg_id, Box::new(MaltHasher::new(alg))));
         }
-        let log = futures::executor::block_on(eml::from_storage(storage, hashers))?;
-        Ok(Self(Arc::new(Mutex::new(log))))
+        let log = eml::from_storage(storage, hashers).await?;
+        Ok(Self { log })
+    }
+
+    /// An independent copy of this log over a forked store.
+    pub(crate) async fn fork(&self) -> LogResult<Self, S>
+    where
+        S: ForkStorage,
+    {
+        let storage = self
+            .log
+            .storage()
+            .fork()
+            .await
+            .map_err(LogError::<S>::Storage)?;
+        Self::open(storage).await
     }
 
     /// Check if the algorithm is registered.
     pub fn has_algorithm(&self, alg_id: u64) -> bool {
-        self.0
-            .lock()
-            .expect("commit tree mutex poisoned")
-            .frontier_for(alg_id)
-            .is_some()
+        self.log.frontier_for(alg_id).is_some()
     }
 
-    /// Add a new hasher algorithm.
-    pub fn add_algorithm(&self, alg_id: u64, hasher: Box<dyn eml::Hasher>) -> LogResult<(), S> {
-        let mut log = self.0.lock().expect("commit tree mutex poisoned");
-        futures::executor::block_on(log.add_algorithm(alg_id, hasher))
+    /// Register a new hasher algorithm, active from the current size.
+    ///
+    /// # Errors
+    ///
+    /// A duplicate registration or a storage error.
+    pub async fn add_algorithm(
+        &mut self,
+        alg_id: u64,
+        hasher: Box<dyn eml::Hasher>,
+    ) -> LogResult<(), S> {
+        self.log.add_algorithm(alg_id, hasher).await
     }
 
     /// Append a leaf payload.
-    pub fn append(&self, data: &[u8]) -> LogResult<(), S> {
-        let mut log = self.0.lock().expect("commit tree mutex poisoned");
-        futures::executor::block_on(log.append_leaf(data))
+    ///
+    /// # Errors
+    ///
+    /// No active algorithm, or a storage error.
+    pub async fn append(&mut self, data: &[u8]) -> LogResult<(), S> {
+        self.log.append_leaf(data).await
+    }
+
+    /// Snapshot the log into a [`polydigest::Staged`] that algorithm
+    /// activations and an append are applied to in memory, written later by
+    /// [`Self::commit`] in one atomic `Storage::apply`.
+    pub(crate) fn stage(&self) -> polydigest::Staged<S> {
+        self.log.stage()
+    }
+
+    /// Write `staged` in one atomic `Storage::apply` and adopt it. `staged`
+    /// must come from [`Self::stage`] on this log with no mutation between;
+    /// holding the principal by `&mut` across both makes that the only
+    /// possible order.
+    pub(crate) async fn commit(&mut self, staged: polydigest::Staged<S>) -> LogResult<(), S> {
+        self.log.commit(staged).await
     }
 
     /// Read the raw leaf payload durably stored at `index`.
     ///
-    /// Used by [`crate::principal::PrincipalCore::finalize_commit`] to
-    /// verify that a leaf already occupying this commit's position is
-    /// genuinely this commit's own TR, not an orphan left behind by a
-    /// crash between a prior `finalize_commit`'s durable EML append and
-    /// its index write.
-    pub fn get_leaf(&self, index: u64) -> LogResult<Vec<u8>, S> {
-        let log = self.0.lock().expect("commit tree mutex poisoned");
-        futures::executor::block_on(log.storage().get_leaf(index)).map_err(LogError::<S>::Storage)
+    /// Used on replay to check that a leaf already occupying a commit's
+    /// position is that commit's own TR.
+    ///
+    /// # Errors
+    ///
+    /// A storage error, including an index past the stored leaves.
+    pub async fn get_leaf(&self, index: u64) -> LogResult<Vec<u8>, S> {
+        self.log
+            .storage()
+            .get_leaf(index)
+            .await
+            .map_err(LogError::<S>::Storage)
     }
 
     /// Get root hash for the algorithm.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm` if `alg_id` is not registered.
     pub fn root(&self, alg_id: u64) -> LogResult<Vec<u8>, S> {
-        self.0
-            .lock()
-            .expect("commit tree mutex poisoned")
-            .root_for(alg_id)
+        self.log.root_for(alg_id)
     }
 
-    /// Get the algorithm's root hash as of a historical tree size — the
+    /// Get the algorithm's root hash as of a historical tree size: the
     /// root the tree had immediately after its `size`-th leaf was
-    /// appended, not the tree's live/current root.
+    /// appended, not the tree's current root.
     ///
-    /// Used by [`crate::principal::PrincipalCore::finalize_commit`] to
-    /// make replay idempotent: a leaf durably present from a prior
-    /// session must report the root as of its own position, not the
-    /// live root of a tree that may already carry leaves beyond it.
-    pub fn root_at(&self, alg_id: u64, size: u64) -> LogResult<Vec<u8>, S> {
-        let log = self.0.lock().expect("commit tree mutex poisoned");
-        futures::executor::block_on(log.root_for_at(alg_id, size))
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm`, an out-of-range size, or a storage error.
+    pub async fn root_at(&self, alg_id: u64, size: u64) -> LogResult<Vec<u8>, S> {
+        self.log.root_for_at(alg_id, size).await
     }
 
     /// Generate an inclusion proof for the leaf at `index`, against the
     /// log's current tree size.
-    pub fn inclusion_proof(&self, alg_id: u64, index: u64) -> LogResult<eml::InclusionProof, S> {
-        let log = self.0.lock().expect("commit tree mutex poisoned");
-        let tree_size = log.size();
-        futures::executor::block_on(log.inclusion_proof_for(alg_id, index, tree_size))?
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm`, `IndexOutOfBounds`, or a storage error.
+    pub async fn inclusion_proof(
+        &self,
+        alg_id: u64,
+        index: u64,
+    ) -> LogResult<eml::InclusionProof, S> {
+        let tree_size = self.log.size();
+        self.log
+            .inclusion_proof_for(alg_id, index, tree_size)
+            .await?
             .ok_or(LogError::<S>::IndexOutOfBounds { index, tree_size })
     }
 
     /// Generate a consistency proof from `old_size` to the log's current
     /// tree size.
-    pub fn consistency_proof(
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm`, `IndexOutOfBounds`, or a storage error.
+    pub async fn consistency_proof(
         &self,
         alg_id: u64,
         old_size: u64,
     ) -> LogResult<eml::ConsistencyProof, S> {
-        let log = self.0.lock().expect("commit tree mutex poisoned");
-        let new_size = log.size();
-        futures::executor::block_on(log.consistency_proof_for(alg_id, old_size, new_size))?.ok_or(
-            LogError::<S>::IndexOutOfBounds {
+        let new_size = self.log.size();
+        self.log
+            .consistency_proof_for(alg_id, old_size, new_size)
+            .await?
+            .ok_or(LogError::<S>::IndexOutOfBounds {
                 index: old_size,
                 tree_size: new_size,
-            },
-        )
+            })
     }
 
     /// Get the tree size for the algorithm.
@@ -342,50 +386,31 @@ impl<S: eml::Storage> CloneableLog<S> {
     /// Node addressing is by global append position (not a per-algorithm
     /// local offset), so an active algorithm's tree size is always the log's
     /// current global size.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm` if `alg_id` is not registered.
     pub fn tree_size(&self, alg_id: u64) -> LogResult<u64, S> {
-        let log = self.0.lock().expect("commit tree mutex poisoned");
-        if log.frontier_for(alg_id).is_none() {
+        if !self.has_algorithm(alg_id) {
             return Err(LogError::<S>::UnknownAlgorithm(alg_id));
         }
-        Ok(log.size())
+        Ok(self.log.size())
     }
 
-    /// Check if the log has no leaves appended yet.
-    ///
-    /// Keys off the global leaf count ([`Self::global_size`]'s own
-    /// `log.size()` read), not `committed_epochs_at`: the latter returns a
-    /// non-empty `Vec` for any *registered* algorithm even at zero leaves
-    /// (each contributes its own trivial epoch-at-zero entry), so it
-    /// reports `false` for an algorithm-registered zero-leaf log -- wrong
-    /// for every call site that means "no prior commits yet" (e.g.
-    /// whether a genesis-fresh principal has a CR yet).
-    /// Mirrors [`crate::principal::PrincipalCore::finalize_commit`]'s own
-    /// use of `global_size()` for the same "has anything actually been
-    /// appended" question.
+    /// Check if the log has no leaves appended yet, whatever algorithms are
+    /// registered.
     pub fn is_empty(&self) -> bool {
-        let log = self.0.lock().expect("commit tree mutex poisoned");
-        log.size() == 0
+        self.log.size() == 0
     }
 
     /// The log's total append count (leaves for a flat log), independent of
-    /// any specific algorithm's registration.
-    ///
-    /// Used by [`crate::principal::PrincipalCore::finalize_commit`] to make
-    /// a durable-backed log's append idempotent under replay: leaf
-    /// addressing is global (shared by every registered algorithm — see
-    /// [`Self::tree_size`]'s docs), so this count is exactly "how many
-    /// commits this log has ever had appended to it", including leaves that
-    /// arrived in a prior session against the same physical storage.
+    /// any specific algorithm's registration: how many commits this log
+    /// holds, including leaves written in a prior session to the same
+    /// storage.
     pub fn global_size(&self) -> u64 {
-        self.0.lock().expect("commit tree mutex poisoned").size()
+        self.log.size()
     }
 }
-
-/// Type alias representing the EML commit trees, generic over the storage
-/// backend `S`. Defaults to [`eml::MemoryStorage`] so every existing call
-/// site that spells the bare `CommitTrees` continues to mean exactly what it
-/// meant before this type became generic.
-pub type CommitTrees<S = eml::MemoryStorage> = CloneableLog<S>;
 
 /// Maps HashAlg to algorithm ID for EML. A persisted value: never
 /// renumber a row.
@@ -424,12 +449,15 @@ pub fn commit_root_from_trees<S: eml::Storage>(
 }
 
 /// Assemble a `CommitRoot` `MultihashDigest` from the EML Log as of a
-/// historical size — the idempotent-replay counterpart to
-/// [`commit_root_from_trees`], which always reads the tree's live/current
-/// root. Used when finalizing a commit whose leaf a prior durable session
-/// already appended, so the CR reflects the tree as it stood right after
-/// that leaf rather than any leaves appended since.
-pub fn commit_root_from_trees_at<S: eml::Storage>(
+/// historical size: the replay counterpart to [`commit_root_from_trees`],
+/// which reads the live root. Used when finalizing a commit whose leaf a
+/// prior durable session already appended, so the CR reflects the tree as
+/// it stood right after that leaf rather than any leaves appended since.
+///
+/// # Errors
+///
+/// A storage error, or an algorithm the log does not hold.
+pub async fn commit_root_from_trees_at<S: eml::Storage>(
     log: &CommitTrees<S>,
     algs: &[HashAlg],
     size: u64,
@@ -439,11 +467,28 @@ pub fn commit_root_from_trees_at<S: eml::Storage>(
         let alg_id = hash_alg_to_u64(alg);
         let root = log
             .root_at(alg_id, size)
+            .await
             .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }
     let md = MultihashDigest::new(variants)?;
     Ok(CommitRoot(md))
+}
+
+/// Assemble a `CommitRoot` from a staged append: the CR the log will report
+/// once `staged` is committed, read before anything is written.
+pub(crate) fn commit_root_from_staged<S: eml::Storage>(
+    staged: &polydigest::Staged<S>,
+    algs: &[HashAlg],
+) -> crate::error::Result<CommitRoot> {
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        let root = staged
+            .root_for(hash_alg_to_u64(alg))
+            .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
+        variants.insert(alg, root.into_boxed_slice());
+    }
+    Ok(CommitRoot(MultihashDigest::new(variants)?))
 }
 
 #[cfg(test)]
@@ -452,7 +497,7 @@ mod tests {
 
     /// Backs the typed-error path of the commit-log leaf: a TR lacking an
     /// active algorithm's variant is refused with `MissingVariant`, never
-    /// hashed to a constant. Unit test: `finalize_commit` always computes TR
+    /// hashed to a constant. Unit test: `stage_commit` always computes TR
     /// over every active algorithm, so no scenario can reach the refusal.
     /// Turns red if `commit_leaf` serializes a partial TR.
     #[test]
@@ -465,16 +510,14 @@ mod tests {
         ));
     }
 
-    /// F4 -- `CloneableLog::is_empty()` must report empty for an
+    /// F4 -- `CommitTrees::is_empty()` must report empty for an
     /// algorithm-registered zero-leaf log, not only for a log with no
-    /// algorithms registered at all. Before this fix,
-    /// `committed_epochs_at(count())` returns a non-empty `Vec` for any
-    /// registered algorithm even at `count() == 0` (each registered
-    /// algorithm contributes its own -- empty -- epoch-at-zero entry), so
-    /// `is_empty()` wrongly reported `false`.
-    #[test]
-    fn is_empty_true_for_registered_algorithm_zero_leaves() {
-        let log = CloneableLog::new(eml::MemoryStorage::new());
+    /// algorithms registered at all. Unit test: every principal registers
+    /// and appends in one staged write, so no scenario observes a log with
+    /// an algorithm and no leaf.
+    #[tokio::test]
+    async fn is_empty_true_for_registered_algorithm_zero_leaves() {
+        let mut log = CommitTrees::open(eml::MemoryStorage::new()).await.unwrap();
         assert!(
             log.is_empty(),
             "a freshly constructed log with no algorithms must be empty"
@@ -484,6 +527,7 @@ mod tests {
             hash_alg_to_u64(HashAlg::Sha256),
             Box::new(MaltHasher::new(HashAlg::Sha256)),
         )
+        .await
         .expect("add_algorithm failed");
 
         assert!(
