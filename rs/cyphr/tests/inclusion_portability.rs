@@ -145,7 +145,12 @@ fn build_key_inclusion_material(
     let tmb_b = Thumbprint::from_bytes(vec![0x02; 32]);
     let thumbprints = vec![&tmb_a, &tmb_b];
 
-    let kt = KeyTree::build_tree(&thumbprints, &[alg]).unwrap();
+    // Synthetic 32-byte thumbprints: keys of a SHA-256 algorithm.
+    let leaves: Vec<_> = thumbprints
+        .iter()
+        .map(|t| (t.as_bytes(), HashAlg::Sha256))
+        .collect();
+    let kt = KeyTree::build_tree(&leaves, &[alg]).unwrap();
     let kr = kt.root(&[alg]).unwrap();
     let ar_node = AuthTree::build_tree(&kr, &[alg]).unwrap();
     let ar = ar_node.root(&[alg]).unwrap();
@@ -181,7 +186,12 @@ fn key_inclusion_verifies_without_principal() {
     let (hops, roots, tmb_a, _tmb_b) = build_key_inclusion_material(alg);
     let root_refs: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
 
-    assert!(cyphr::verify_key_inclusion(alg, &tmb_a, &hops, &root_refs));
+    assert!(cyphr::verify_key_inclusion(
+        alg,
+        (tmb_a.as_bytes(), HashAlg::Sha256),
+        &hops,
+        &root_refs
+    ));
 }
 
 /// The load-bearing regression this node exists to fix: hop material
@@ -196,5 +206,10 @@ fn key_inclusion_rejects_mismatched_thumbprint_without_principal() {
     let (hops, roots, _tmb_a, tmb_b) = build_key_inclusion_material(alg);
     let root_refs: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
 
-    assert!(!cyphr::verify_key_inclusion(alg, &tmb_b, &hops, &root_refs));
+    assert!(!cyphr::verify_key_inclusion(
+        alg,
+        (tmb_b.as_bytes(), HashAlg::Sha256),
+        &hops,
+        &root_refs
+    ));
 }

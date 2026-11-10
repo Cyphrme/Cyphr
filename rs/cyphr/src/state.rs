@@ -588,17 +588,6 @@ pub(crate) fn compute_sr(
     Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
-/// The supported hash algorithm whose digests are `len` bytes wide.
-///
-/// A guess, not a fact: two algorithms of one width would be told apart
-/// wrongly. Only the two public entry points that still take a bare
-/// thumbprint use it ([`crate::semantic_tree::KeyTree::build_tree`] and
-/// [`crate::inclusion::verify_key_inclusion`]); everything the crate builds
-/// itself names its algorithm.
-pub(crate) fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
-    HASH_ALGS.into_iter().find(|alg| alg.digest_size() == len)
-}
-
 /// Compute Data State (SPEC §7.4).
 ///
 /// - No actions, no nonce: DS = None

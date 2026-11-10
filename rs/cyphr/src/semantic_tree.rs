@@ -46,6 +46,7 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use coz::Thumbprint;
 
 use crate::commit_root::{MaltHasher, hash_alg_to_u64};
@@ -108,7 +109,7 @@ fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<
 pub type Leaf<'a> = (&'a [u8], HashAlg);
 
 /// A key's KT leaf: its thumbprint, in its key's hash algorithm.
-pub(crate) fn key_leaf(key: &Key) -> Leaf<'_> {
+pub fn key_leaf(key: &Key) -> Leaf<'_> {
     (key.tmb().as_bytes(), key.hash_alg())
 }
 
@@ -212,7 +213,8 @@ impl KeyTree {
         Ok(KeyRoot(assemble(&self.inner, algs)?))
     }
 
-    /// Build KT fresh from `thumbprints`, sorted lexically (matching
+    /// Build KT fresh from `members` (key leaves, see [`key_leaf`]), sorted
+    /// lexically by thumbprint (matching
     /// `compute_kr`'s existing sort-then-concat order), and return the tree
     /// itself (rather than just its root), so a caller can also generate
     /// inclusion proofs over it via [`Self::thumbprint_inclusion_proof`].
@@ -220,28 +222,8 @@ impl KeyTree {
     /// # Errors
     ///
     /// Returns `NoActiveKeys` if `algs` is empty.
-    /// Returns `UnsupportedAlgorithm` if a thumbprint's width is no
-    /// supported algorithm's.
-    pub fn build_tree(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<Self> {
-        // A bare thumbprint carries no algorithm, so this public entry
-        // still reads it from the width; the crate builds from keys
-        // (`key_leaf`). Taking keys here changes a public signature whose
-        // callers include the server's inclusion tests.
-        let leaves = thumbprints
-            .iter()
-            .map(|t| {
-                let bytes = t.as_bytes();
-                crate::state::infer_alg_from_len(bytes.len())
-                    .map(|alg| (bytes, alg))
-                    .ok_or_else(|| {
-                        Error::UnsupportedAlgorithm(format!(
-                            "invalid digest length: {}",
-                            bytes.len()
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Self::build_tree_with_nonces(&leaves, &[], algs)
+    pub fn build_tree(members: &[Leaf<'_>], algs: &[HashAlg]) -> Result<Self> {
+        Self::build_tree_with_nonces(members, &[], algs)
     }
 
     /// KT from `members` (key leaves, see [`key_leaf`]) with the KT-level
@@ -272,13 +254,13 @@ impl KeyTree {
         Ok(kt)
     }
 
-    /// Build KT fresh from `thumbprints` and return its root as [`KeyRoot`].
+    /// Build KT fresh from `members` and return its root as [`KeyRoot`].
     ///
     /// # Errors
     ///
     /// See [`Self::build_tree`].
-    pub fn build(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<KeyRoot> {
-        Self::build_tree(thumbprints, algs)?.root(algs)
+    pub fn build(members: &[Leaf<'_>], algs: &[HashAlg]) -> Result<KeyRoot> {
+        Self::build_tree(members, algs)?.root(algs)
     }
 
     /// Generate a self-contained inclusion proof for the thumbprint at
@@ -630,7 +612,7 @@ mod tests {
 
     fn at_root(nonces: usize, algs: &[HashAlg]) -> Vec<u8> {
         let t = tmb(&[0xAA; 32]);
-        let kr = KeyTree::build(&[&t], algs).unwrap();
+        let kr = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], algs).unwrap();
         let nv = nonce_values(nonces);
         let nr: Vec<Leaf<'_>> = nv.iter().map(|n| (n.as_slice(), HashAlg::Sha256)).collect();
         let at = AuthTree::build_tree_with_nonces(&kr, &nr, algs)
@@ -686,8 +668,8 @@ mod tests {
             seen.push(r);
         }
         let raw = distinct_tmbs(1000);
-        let fwd: Vec<&Thumbprint> = raw.iter().collect();
-        let rev: Vec<&Thumbprint> = raw.iter().rev().collect();
+        let fwd: Vec<Leaf<'_>> = raw.iter().map(|t| (t.as_bytes(), a[0])).collect();
+        let rev: Vec<Leaf<'_>> = fwd.iter().rev().copied().collect();
         assert_eq!(
             KeyTree::build(&fwd, &a).unwrap().0.get(a[0]),
             KeyTree::build(&rev, &a).unwrap().0.get(a[0]),
@@ -834,10 +816,11 @@ mod oracle_properties {
             tagged in prop::collection::vec(tagged_thumbprint_strategy(), 2..12),
         ) {
             let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
+            let leaves: Vec<Leaf<'_>> = tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
             let all_native = tagged.iter().all(|(alg, _)| *alg == target_alg);
 
             let old = compute_kr(&thumbprints, None, &[target_alg]).unwrap();
-            let new = KeyTree::build(&thumbprints, &[target_alg]).unwrap();
+            let new = KeyTree::build(&leaves, &[target_alg]).unwrap();
 
             if all_native {
                 prop_assert_eq!(old.get(target_alg), new.get(target_alg));
@@ -856,7 +839,7 @@ mod oracle_properties {
         ) {
             let t = Thumbprint::from_bytes(bytes);
             let old = compute_kr(&[&t], None, &[alg]).unwrap();
-            let new = KeyTree::build(&[&t], &[alg]).unwrap();
+            let new = KeyTree::build(&[(t.as_bytes(), alg)], &[alg]).unwrap();
             prop_assert_eq!(old.get(alg), new.get(alg));
         }
 
@@ -869,8 +852,8 @@ mod oracle_properties {
             target_alg in hash_alg_strategy(),
             tagged in prop::collection::vec(tagged_thumbprint_strategy(), 1..12),
         ) {
-            let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
-            let kr = KeyTree::build(&thumbprints, &[target_alg]).unwrap();
+            let leaves: Vec<Leaf<'_>> = tagged.iter().map(|(alg, t)| (t.as_bytes(), *alg)).collect();
+            let kr = KeyTree::build(&leaves, &[target_alg]).unwrap();
 
             let old = compute_ar(&kr, None, None, &[target_alg]).unwrap();
             let new = AuthTree::build(&kr, &[target_alg]).unwrap();
@@ -946,7 +929,7 @@ mod liveness_tests {
     fn kt_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
         let t = Thumbprint::from_bytes(vec![0xAA; 32]);
         let algs = [HashAlg::Sha256];
-        let root_before = KeyTree::build(&[&t], &algs).unwrap();
+        let root_before = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], &algs).unwrap();
 
         // Manually build the same tree, but with a foreign algorithm's
         // variant spliced into the live cell's payload map.
@@ -968,7 +951,7 @@ mod liveness_tests {
     fn ar_node_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
         let t = Thumbprint::from_bytes(vec![0xAA; 32]);
         let algs = [HashAlg::Sha256];
-        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let kr = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], &algs).unwrap();
         let root_before = AuthTree::build(&kr, &algs).unwrap();
 
         let mut inner = new_tree(ROLE_ARITY);
@@ -989,7 +972,7 @@ mod liveness_tests {
     fn sr_node_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
         let t = Thumbprint::from_bytes(vec![0xAA; 32]);
         let algs = [HashAlg::Sha256];
-        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let kr = KeyTree::build(&[(t.as_bytes(), HashAlg::Sha256)], &algs).unwrap();
         let ar = AuthTree::build(&kr, &algs).unwrap();
         let root_before = StateTree::build(&ar, None, &algs).unwrap();
 

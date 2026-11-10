@@ -343,8 +343,12 @@ impl<S: eml::Storage> Principal<S> {
         let hops: Vec<polydigest::LeafProof> = path.hops.iter().map(|h| h.proof.clone()).collect();
         let roots: [&[u8]; 4] = [kr_bytes, ar_bytes, sr_bytes, pr_bytes];
 
+        let key = self.auth.keys.get(&tmb.to_b64()).ok_or(Error::UnknownKey)?;
         Ok(crate::inclusion::verify_key_inclusion(
-            alg, tmb, &hops, &roots,
+            alg,
+            key_leaf(key),
+            &hops,
+            &roots,
         ))
     }
 }
