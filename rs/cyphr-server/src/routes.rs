@@ -843,16 +843,45 @@ pub async fn revoke(
     AppJson(envelope): AppJson<crate::revoke::NakedRevokeEnvelope>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr_storage::index::Indexer;
 
     let verified = crate::revoke::interpret(&envelope).await?;
 
     // Store the full `{pay, sig, key}` envelope: self-contained evidence any
-    // later reader can re-verify with no index.
-    state
+    // later reader can re-verify with no index. Once the death set is at its
+    // ceiling, only a key some stored principal holds is still recorded: the
+    // ceiling bounds junk revokes of keys nobody here holds, and must never
+    // deny the emergency revoke of a held key (SPEC 6.4). The index is read
+    // for presence only, never content.
+    match state
         .observations
-        .record(&verified.revoked_tmb, verified.evidence)
+        .record(&verified.revoked_tmb, verified.evidence.clone())
         .await
-        .map_err(AppError::observation)?;
+    {
+        Ok(()) => {},
+        Err(full @ crate::observation::ObservationError::Full { .. }) => {
+            let tmb_b64 = Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes());
+            let held = state
+                .engine
+                .indexer()
+                .get_key(&tmb_b64)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "naked-revoke presence lookup failed");
+                    AppError::internal("key index lookup failed")
+                })?
+                .is_some();
+            if !held {
+                return Err(AppError::observation(full));
+            }
+            state
+                .observations
+                .record_seen(&verified.revoked_tmb, verified.evidence)
+                .await
+                .map_err(AppError::observation)?;
+        },
+        Err(e) => return Err(AppError::observation(e)),
+    }
 
     let payload = RevokeResponse {
         revoked_tmb: Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes()),

@@ -634,15 +634,15 @@ async fn rejects_wrong_typ() {
     assert_rejected(status, &json, "typ is not key/revoke");
 }
 
-/// The death set is bounded by the operator's quota, not by what the server
-/// has seen: with `[limits] max_dead_keys = 1`, a first self-signed revoke
-/// is recorded, a second key's is refused `507` (storage pressure relieved
-/// by refusal) and that key stays alive, while a re-revoke of the dead key
-/// is still accepted (it adds nothing). Turns red if the ceiling is not
-/// enforced (the second revoke is recorded) or a re-revoke of a recorded
-/// key is refused. End-to-end: yes (`/revoke` over HTTP).
+/// The operator's quota bounds revokes of keys nobody here holds, never the
+/// revoke of a held key (SPEC 6.4): with `[limits] max_dead_keys = 1` and the
+/// set filled by an unseen key's revoke, the self-revoke of a key a pushed
+/// principal holds is still recorded and the key is dead, while a second
+/// unseen key's revoke is refused `507` and stays alive. Turns red if the
+/// ceiling denies the held key's emergency revoke, or does not bound unseen
+/// keys. End-to-end: yes (`/push`, `/revoke` over HTTP).
 #[tokio::test]
-async fn death_set_is_bounded_by_the_operator_ceiling() {
+async fn the_ceiling_never_refuses_a_held_keys_revoke() {
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = common::write_signing_key(dir.path());
     let mut config = ServerConfig {
@@ -654,31 +654,59 @@ async fn death_set_is_bounded_by_the_operator_ceiling() {
     config.limits.max_dead_keys = 1;
     let state = Arc::new(AppState::new(config).expect("open keyed AppState"));
     let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+    let tmb = |name: &str| {
+        pool.get(name)
+            .expect("pool key")
+            .compute_tmb()
+            .expect("tmb")
+    };
 
-    let first = self_revoke_coz(&pool, "alice", serde_json::json!(RVK));
-    let (status, json) = post_revoke(&state, first.clone()).await;
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "alice", serde_json::json!(RVK)),
+    )
+    .await;
     assert!(
         status.is_success(),
-        "the first revoke is recorded: {status} {json:?}"
+        "an unseen key fills the set: {status} {json:?}"
     );
 
-    let second = self_revoke_coz(&pool, "bob", serde_json::json!(RVK));
-    let (status, json) = post_revoke(&state, second).await;
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "key_a", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "a held key's revoke is recorded past the ceiling: {status} {json:?}"
+    );
+    assert!(
+        state
+            .observations
+            .is_dead(&tmb("key_a"))
+            .await
+            .expect("death set"),
+        "the held key is dead"
+    );
+
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "bob", serde_json::json!(RVK)),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::INSUFFICIENT_STORAGE,
-        "a revoke past the ceiling is refused: {json:?}"
+        "a second unseen key past the ceiling is refused: {json:?}"
     );
-    let bob = pool.get("bob").expect("bob").compute_tmb().expect("tmb");
     assert!(
-        !state.observations.is_dead(&bob).await.expect("death set"),
+        !state
+            .observations
+            .is_dead(&tmb("bob"))
+            .await
+            .expect("death set"),
         "the refused revoke recorded nothing"
-    );
-
-    let (status, json) = post_revoke(&state, first).await;
-    assert!(
-        status.is_success(),
-        "a re-revoke adds nothing: {status} {json:?}"
     );
 }
 

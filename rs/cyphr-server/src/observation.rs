@@ -151,11 +151,12 @@ impl ObservationStore {
         })
     }
 
-    /// Bound the death set to `ceiling` keys. A naked revoke needs no prior
-    /// knowledge of its key (a Level 1 key signs nothing a peer could have
-    /// seen, SPEC 6.4), so the set is bounded by this operator quota rather
-    /// than by what the server has seen; a revoke past it is refused
-    /// [`ObservationError::Full`] and nothing is stored.
+    /// Bound the death set to `ceiling` keys for [`Self::record`]. A naked
+    /// revoke needs no prior knowledge of its key (a Level 1 key signs
+    /// nothing a peer could have seen, SPEC 6.4), so revokes of unseen keys
+    /// are bounded by this operator quota; past it [`Self::record`] is
+    /// refused [`ObservationError::Full`] and stores nothing, while
+    /// [`Self::record_seen`] still records a key the server holds.
     #[must_use]
     pub fn with_ceiling(mut self, ceiling: u64) -> Self {
         self.ceiling = ceiling;
@@ -183,10 +184,34 @@ impl ObservationStore {
     /// fsync would only be amplification for whoever calls this -- a revoke is
     /// idempotent and pre-signed replays are accepted, so a cheap repeated
     /// POST would otherwise force one synchronous disk fsync each time.
+    ///
+    /// Past the ceiling ([`Self::with_ceiling`]) a new key is refused
+    /// [`ObservationError::Full`]; [`Self::record_seen`] records past it.
     pub async fn record(
         &self,
         tmb: &Thumbprint,
         coz: serde_json::Value,
+    ) -> Result<(), ObservationError> {
+        self.insert(tmb, coz, true).await
+    }
+
+    /// [`Self::record`] for a key the caller has established the server has
+    /// seen (one a stored principal holds), recorded even past the ceiling:
+    /// the ceiling bounds revokes of keys nobody here holds, and must never
+    /// deny the revoke of a key real principals hold (SPEC 6.4).
+    pub async fn record_seen(
+        &self,
+        tmb: &Thumbprint,
+        coz: serde_json::Value,
+    ) -> Result<(), ObservationError> {
+        self.insert(tmb, coz, false).await
+    }
+
+    async fn insert(
+        &self,
+        tmb: &Thumbprint,
+        coz: serde_json::Value,
+        bounded: bool,
     ) -> Result<(), ObservationError> {
         let key = tmb.as_bytes().to_vec();
         let value =
@@ -199,7 +224,7 @@ impl ObservationStore {
                 return Ok(());
             }
             let mut count = dead_count.lock().unwrap_or_else(|p| p.into_inner());
-            if *count >= ceiling {
+            if bounded && *count >= ceiling {
                 return Err(ObservationError::Full { ceiling });
             }
             dead_keys.insert(key, value).map_err(backend)?;

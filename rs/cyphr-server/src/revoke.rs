@@ -17,7 +17,11 @@
 //! the key: a Level 1 principal signs nothing a peer could have seen (SPEC
 //! 3.1, 5.1: no commit), yet its self-revoke must be recordable. The death
 //! set is bounded instead by the operator's quota (`[limits] max_dead_keys`)
-//! and the `/revoke` rate buckets.
+//! and the `/revoke` rate buckets. Past the quota, the revoke of a key some
+//! stored principal holds is still recorded (the route checks presence only
+//! then). Residual risk: while the set is full, the revoke of a Level 1 key
+//! this server never saw is refused (`507`), so a flood of junk revokes can
+//! deny that one case until the operator raises the quota.
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};

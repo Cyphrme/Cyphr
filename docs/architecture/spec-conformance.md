@@ -571,7 +571,7 @@ SPEC 6.4, line 1075. Disposition: `covered`.
   - `rs/cyphr-server/tests/transport.rs::a_never_pushed_level_one_key_can_be_naked_revoked`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/action_revoked_key_fails]`
 - fails when: a revoked key signs a commit, a push, a login or an action and is accepted. The in-tree copy has drifted here (see the drift table).
-- note: a naked revoke needs no prior knowledge of its key: a Level 1 key signs nothing a peer could have seen, so the revoke route verifies only the self-signature against the disclosed key and its thumbprint bind; the death set is bounded by the operator's `[limits] max_dead_keys` (refused `507` past it, `death_set_is_bounded_by_the_operator_ceiling`) and the `/revoke` rate buckets. Third-party revokes stay refused.
+- note: a naked revoke needs no prior knowledge of its key: a Level 1 key signs nothing a peer could have seen, so the revoke route verifies only the self-signature against the disclosed key and its thumbprint bind; revokes of keys no stored principal holds are bounded by the operator's `[limits] max_dead_keys` (refused `507` past it) and the `/revoke` rate buckets, while a held key's revoke is recorded even past it (`the_ceiling_never_refuses_a_held_keys_revoke`); residual: while the set is full, an unseen Level 1 key's revoke is refused. Third-party revokes stay refused.
 
 ```claim
 kind: requirement
