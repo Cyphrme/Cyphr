@@ -380,6 +380,9 @@ pub struct RevokedKey {
     pub rvk: i64,
     /// The first peer that served the revoke.
     pub peer: String,
+    /// The verified envelope (`{pay, sig, key}`), for a holder that keeps
+    /// revokes and serves them on.
+    pub envelope: Value,
 }
 
 /// The classification one [`pull`] reached.
@@ -778,6 +781,7 @@ async fn pull_revokes<C: Connector>(
                             tmb: revoke.tmb,
                             rvk: revoke.rvk,
                             peer: peer.name.to_owned(),
+                            envelope: envelope.clone(),
                         });
                     }
                 },

@@ -42,13 +42,18 @@
 use std::sync::Arc;
 
 use cyphr_client::{
-    AuthorityKey, BindingPolicy, HttpConnector, PatchFailure, PatchRequest, TipReport, fetch_patch,
+    AuthorityKey, BindingPolicy, ConnectError, HttpConnector, PatchFailure, PatchRequest,
+    TipReport, fetch_patch,
 };
 use cyphr_storage::index::types::TipState;
 use tracing::{error, warn};
 
 use crate::AppState;
 use crate::config::AuthorityIdentity;
+
+/// The config switch that allows a cleartext upstream, as the operator
+/// spells it.
+pub const CLEARTEXT_SWITCH: &str = "allow_cleartext_upstream";
 
 /// The result of one [`sync_from_authority`] attempt.
 ///
@@ -84,6 +89,14 @@ pub enum SyncFailure {
     /// The carrier fell short of the channel binding the witness requires;
     /// no request was sent.
     ChannelBindingRefused(cyphr_client::BindingError),
+    /// The upstream is plain `http://` to a non-loopback `host`; nothing was
+    /// sent. The operator opts in with the config `switch`.
+    CleartextRefused {
+        /// The host the upstream URL names.
+        host: String,
+        /// The config switch that allows it.
+        switch: &'static str,
+    },
     /// The upstream authority could not be reached (network/transport
     /// error).
     UpstreamUnreachable(String),
@@ -204,7 +217,31 @@ async fn sync_locked(
     let from_seq = local_tip.as_ref().map_or(0, |t| t.commit_count);
     let anchor_pr = local_tip.as_ref().map(|t| t.pr.clone());
 
-    let connector = HttpConnector::new(state.http_client.clone(), authority_url);
+    // The upstream path refuses plain `http://` to a non-loopback host
+    // unless the operator opted in, so a tip report cannot be rewritten in
+    // transit by default. `resolve_config` already refuses at startup; this
+    // is the same rule for a state built any other way.
+    let connector = match HttpConnector::with_client(
+        state.http_client.clone(),
+        authority_url,
+        state.config.allow_cleartext_upstream,
+    ) {
+        Ok(connector) => connector,
+        Err(ConnectError::CleartextRefused { host }) => {
+            warn!(principal = %principal_id, %host, "witness sync: cleartext upstream refused");
+            return SyncOutcome::Failed {
+                reason: SyncFailure::CleartextRefused {
+                    host,
+                    switch: CLEARTEXT_SWITCH,
+                },
+            };
+        },
+        Err(other) => {
+            return SyncOutcome::Failed {
+                reason: SyncFailure::UpstreamUnreachable(other.to_string()),
+            };
+        },
+    };
     let request = PatchRequest {
         principal_id,
         anchor: anchor_pr.as_deref(),
