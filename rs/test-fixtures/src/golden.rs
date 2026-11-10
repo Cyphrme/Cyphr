@@ -440,9 +440,10 @@ impl<'a> Generator<'a> {
                 Some(now) if i == 0 => TxIntent { now, ..tx.clone() },
                 _ => tx.clone(),
             };
-            // When the scope cannot derive the `id`, the coz carries `pre`
-            // and the refusal is what the vector pins.
-            let own_pr = Self::derived_id(&scope, &tx.typ, pre).unwrap_or_else(|_| pre.to_string());
+            let own_pr = Self::derived_id(&scope, &tx.typ, pre).map_err(|e| Error::Generation {
+                name: test.name.clone(),
+                reason: format!("{} id: {e}", tx.typ),
+            })?;
             let (coz, sig, czd) = self.build_golden_coz(&tx, &test.name, Some(&own_pr))?;
             // A key the core cannot hold (an unsupported algorithm) is
             // itself the refusal the vector pins.
