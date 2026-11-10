@@ -36,7 +36,7 @@ pub enum Error {
     /// was read from it.
     #[error("{file} version {found} is not the supported {supported}")]
     UnsupportedVersion {
-        /// Which file: the keystore or its genesis sidecar.
+        /// Which file was refused.
         file: &'static str,
         /// The version the file states.
         found: u64,
@@ -45,9 +45,9 @@ pub enum Error {
     },
 }
 
-/// The format version of the keystore and its genesis sidecar. Both are a
-/// flat map with a top-level `v`; a file from before versions has none and
-/// is v1 (same layout), and is stamped on its next save.
+/// The format version of the keystore: a flat map with a top-level `v`; a
+/// file from before versions has none and is v1 (same layout), and is
+/// stamped on its next save.
 const FORMAT_VERSION: u64 = 1;
 
 /// Read a versioned flat-map file, checking `v` before any entry is
@@ -126,14 +126,6 @@ pub trait KeyStore {
 pub struct JsonKeyStore {
     path: PathBuf,
     keys: HashMap<String, StoredKey>,
-    genesis_path: PathBuf,
-    /// Constituent key thumbprints of explicit multi-key genesis principals,
-    /// keyed by principal ID. An explicit genesis's principal ID is a
-    /// combined digest, not any single key's thumbprint, so unlike implicit
-    /// genesis it cannot be reconstructed from `keys` alone -- and no commit
-    /// exists yet to recover it from storage either. This is the only local
-    /// record of that key set until a real commit anchors it.
-    genesis: HashMap<String, Vec<String>>,
 }
 
 impl JsonKeyStore {
@@ -147,50 +139,12 @@ impl JsonKeyStore {
             HashMap::new()
         };
 
-        let genesis_path = Self::genesis_path_for(&path);
-        let genesis = if genesis_path.exists() {
-            read_versioned(&genesis_path, "keystore genesis sidecar")?
-        } else {
-            HashMap::new()
-        };
-
-        Ok(Self {
-            path,
-            keys,
-            genesis_path,
-            genesis,
-        })
+        Ok(Self { path, keys })
     }
 
     /// Get the path to the keystore file.
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    fn genesis_path_for(keystore_path: &Path) -> PathBuf {
-        let mut os = keystore_path.as_os_str().to_owned();
-        os.push(".genesis.json");
-        PathBuf::from(os)
-    }
-
-    /// Record the constituent key thumbprints of an explicit multi-key
-    /// genesis under its principal ID, persisting immediately to the
-    /// sidecar genesis file.
-    pub fn record_genesis(
-        &mut self,
-        principal_id: &str,
-        key_tmbs: Vec<String>,
-    ) -> Result<(), Error> {
-        self.genesis.insert(principal_id.to_string(), key_tmbs);
-        let content = to_versioned(&self.genesis)?;
-        fs::write(&self.genesis_path, content)?;
-        Ok(())
-    }
-
-    /// Look up the constituent key thumbprints of a previously-recorded
-    /// explicit multi-key genesis by principal ID.
-    pub fn lookup_genesis(&self, principal_id: &str) -> Option<&[String]> {
-        self.genesis.get(principal_id).map(Vec::as_slice)
     }
 }
 
@@ -255,7 +209,7 @@ mod tests {
         }
     }
 
-    /// Claim: the keystore file AND its genesis sidecar state their format
+    /// Claim: the keystore file states its format
     /// version, and `open` refuses one it does not know as a typed
     /// `UnsupportedVersion`, before any key is read out of it. The current
     /// version still round-trips. Turns red on files written unstamped, or an
@@ -266,38 +220,32 @@ mod tests {
     fn version_keystore_unknown_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.json");
-        let sidecar = JsonKeyStore::genesis_path_for(&path);
         let mut ks = JsonKeyStore::open(&path).unwrap();
         ks.store("tmb-1", stored()).unwrap();
         ks.save().unwrap();
-        ks.record_genesis("pid", vec!["tmb-1".into()]).unwrap();
         let reopened = JsonKeyStore::open(&path).expect("the current version reopens");
         reopened.get("tmb-1").expect("and still holds the key");
-        assert!(reopened.lookup_genesis("pid").is_some());
 
-        for file in [&path, &sidecar] {
-            let mut doc: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        let file = &path;
+        let mut doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        assert!(
+            doc["v"].is_u64(),
+            "{} must be stamped with a numeric `v`: {doc}",
+            file.display()
+        );
+        for unknown in [0u64, 99] {
+            doc["v"] = unknown.into();
+            std::fs::write(file, serde_json::to_vec(&doc).unwrap()).unwrap();
+            let refused = JsonKeyStore::open(&path).err();
             assert!(
-                doc["v"].is_u64(),
-                "{} must be stamped with a numeric `v`: {doc}",
+                matches!(
+                    refused,
+                    Some(Error::UnsupportedVersion { found, .. }) if found == unknown
+                ),
+                "{} v={unknown} must be refused as UnsupportedVersion: {refused:?}",
                 file.display()
             );
-            let original = doc.clone();
-            for unknown in [0u64, 99] {
-                doc["v"] = unknown.into();
-                std::fs::write(file, serde_json::to_vec(&doc).unwrap()).unwrap();
-                let refused = JsonKeyStore::open(&path).err();
-                assert!(
-                    matches!(
-                        refused,
-                        Some(Error::UnsupportedVersion { found, .. }) if found == unknown
-                    ),
-                    "{} v={unknown} must be refused as UnsupportedVersion: {refused:?}",
-                    file.display()
-                );
-            }
-            std::fs::write(file, serde_json::to_vec(&original).unwrap()).unwrap();
         }
     }
 }

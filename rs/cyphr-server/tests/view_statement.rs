@@ -553,8 +553,7 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
         let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
         cyphr::Key::new(kp.alg.name().to_string(), tmb, kp.pub_bytes.clone()).expect("key")
     };
-    let mut chain =
-        cyphr::Principal::explicit(vec![key_of(&active_kp), key_of(&revoked_kp)]).expect("chain");
+    let mut chain = cyphr::Principal::implicit(key_of(&active_kp)).expect("chain");
 
     // The chain begins with its genesis commit (SPEC 5.1): the active key
     // creates itself and the other key, then the principal.
@@ -570,6 +569,7 @@ async fn view_signed_by_a_revoked_key_is_refused_as_not_active() {
                 &active_kp.pub_bytes,
                 &active_tmb,
             ),
+            &[key_of(&revoked_kp)],
             1_700_000_050,
             "cyphr.me",
         )

@@ -246,7 +246,7 @@ pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 /// Established (Level 3+) principals key off `pg()`, which is frozen for
 /// life the moment `principal/create` sets it. A principal that has not
 /// committed yet (the CLI commits its genesis before its first key change)
-/// has no stable field to key off other than `genesis_keys()`, which is
+/// has no stable field to key off other than `genesis_key()`, which is
 /// fixed at construction and never mutated afterward. `pr()` is NOT stable here: it
 /// is the live, continuously-recomputed Principal State, which moves with
 /// every subsequent commit -- using it produced a different "stable" ID on
@@ -254,10 +254,10 @@ pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 /// the principal's own tip.
 ///
 /// So a nascent principal's ID is the genesis-time PR, recomputed by
-/// rebuilding a throwaway `Principal` from the original genesis keys
-/// (looked up in `keystore` by their still-immutable thumbprints) --
-/// byte-identical to what `init` computed and showed the user, regardless
-/// of how many mutations this principal has since accumulated.
+/// rebuilding a throwaway `Principal` from the genesis key (looked up in
+/// `keystore` by its still-immutable thumbprint) -- byte-identical to what
+/// `init` computed and showed the user, regardless of how many mutations
+/// this principal has since accumulated.
 pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
     keystore: &JsonKeyStore,
@@ -268,12 +268,8 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
         return Ok(pg.as_multihash().tagged_first()?.to_string());
     }
 
-    let genesis_keys = principal
-        .genesis_keys()
-        .iter()
-        .map(|tmb| load_key_from_keystore(keystore, tmb))
-        .collect::<crate::Result<Vec<_>>>()?;
-    let genesis_principal = cyphr::Principal::<cyphr::eml::MemoryStorage>::explicit(genesis_keys)?;
+    let genesis_key = load_key_from_keystore(keystore, principal.genesis_key())?;
+    let genesis_principal = cyphr::Principal::<cyphr::eml::MemoryStorage>::implicit(genesis_key)?;
     Ok(genesis_principal
         .pr()
         .as_multihash()
@@ -295,26 +291,13 @@ pub fn load_principal_from_engine(
 
         // `identity` matching a keystore thumbprint directly IS implicit
         // (single-key) genesis, independent of whether a tip has been
-        // stored yet -- this must be checked before falling back on
-        // `tip.is_none()`, otherwise a never-yet-pushed *explicit*
-        // multi-key genesis (whose identity is a combined digest, not any
-        // single key's thumbprint) gets misread as implicit and fails to
-        // reload with a confusing "key not found" error.
+        // stored yet. A multi-key principal exists only through its
+        // genesis commit (SPEC 5.1), so its genesis comes from storage.
         let is_implicit_genesis = keystore.get(identity).is_ok();
 
         let genesis = if is_implicit_genesis {
             let genesis_key = load_key_from_keystore(keystore, identity)?;
             cyphr_storage::Genesis::Implicit(genesis_key)
-        } else if let Some(tmbs) = keystore.lookup_genesis(&principal_id) {
-            // Explicit multi-key genesis recorded locally at `init` time
-            // (see `init`'s call to `record_genesis`) -- the only way to
-            // reconstruct it before any commit exists to anchor it in
-            // storage.
-            let keys = tmbs
-                .iter()
-                .map(|tmb| load_key_from_keystore(keystore, tmb))
-                .collect::<crate::Result<Vec<_>>>()?;
-            cyphr_storage::Genesis::Explicit(keys)
         } else if tip.is_none() {
             return Err(crate::Error::UnresolvableGenesis(identity.to_owned()));
         } else {
@@ -335,13 +318,13 @@ fn is_key_embedding_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::is_key_introducing(typ)
 }
 
-/// Resolve `principal`'s original genesis (implicit single-key, or explicit
-/// multi-key) from its own `genesis_keys()` and local `keystore` records —
-/// covering *every* genesis key, not just the first.
+/// Resolve `principal`'s genesis from its own `genesis_key()` and the local
+/// `keystore`. Every further key enters by a `key/create` its commits
+/// carry, so the genesis key alone replays it.
 ///
 /// # Errors
 ///
-/// Returns an error if any genesis key's thumbprint is not found in
+/// Returns an error if the genesis key's thumbprint is not found in
 /// `keystore` (e.g. an imported principal whose genesis material never
 /// lived in this local keystore) — callers fall back to reconstructing
 /// genesis from stored blob material instead (see
@@ -350,16 +333,10 @@ fn resolve_local_genesis<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
     keystore: &JsonKeyStore,
 ) -> crate::Result<Genesis> {
-    let keys = principal
-        .genesis_keys()
-        .iter()
-        .map(|tmb| load_key_from_keystore(keystore, tmb))
-        .collect::<crate::Result<Vec<_>>>()?;
-
-    Ok(match keys.len() {
-        1 => Genesis::Implicit(keys.into_iter().next().unwrap()),
-        _ => Genesis::Explicit(keys),
-    })
+    Ok(Genesis::Implicit(load_key_from_keystore(
+        keystore,
+        principal.genesis_key(),
+    )?))
 }
 
 /// Save a principal's new commits to the storage engine.
@@ -419,9 +396,9 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             }
             let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
 
-            // Resolve the genesis from what this caller knows locally
-            // (every genesis key, not just the first); the engine reads a
-            // stored principal's genesis from its first commit anyway.
+            // Resolve the genesis from what this caller knows locally (its
+            // genesis key); the engine reads a stored principal's genesis
+            // from its first commit anyway.
             let genesis = match resolve_local_genesis(principal, keystore) {
                 Ok(genesis) => genesis,
                 Err(_) => {
@@ -539,27 +516,15 @@ pub async fn raw_chain(
 }
 
 /// The genesis a locally held keystore can state for `identity`, if any:
-/// the key itself (implicit) or the multi-key genesis recorded at `init`.
-/// `None` means the genesis must come from stored blobs or the peer's.
-pub fn local_genesis(
-    keystore: &JsonKeyStore,
-    identity: &str,
-    principal_id: &str,
-) -> crate::Result<Option<Genesis>> {
+/// the key itself, when `identity` is a key's thumbprint. `None` means the
+/// genesis must come from stored blobs or the peer's.
+pub fn local_genesis(keystore: &JsonKeyStore, identity: &str) -> crate::Result<Option<Genesis>> {
     if keystore.get(identity).is_ok() {
         return Ok(Some(Genesis::Implicit(load_key_from_keystore(
             keystore, identity,
         )?)));
     }
-    keystore
-        .lookup_genesis(principal_id)
-        .map(|tmbs| {
-            tmbs.iter()
-                .map(|tmb| load_key_from_keystore(keystore, tmb))
-                .collect::<crate::Result<Vec<_>>>()
-                .map(Genesis::Explicit)
-        })
-        .transpose()
+    Ok(None)
 }
 
 /// Parse a base64url principal genesis string into a PrincipalGenesis.

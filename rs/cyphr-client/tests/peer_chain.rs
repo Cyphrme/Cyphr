@@ -72,7 +72,7 @@ impl<'a> Chain<'a> {
         let mut principal = cyphr::Principal::implicit(genesis.domain_key(1_700_000_000))
             .expect("implicit genesis");
         let genesis_commit = principal
-            .commit_genesis(&genesis.signer(), 1_700_000_000, "cyphr.me")
+            .commit_genesis(&genesis.signer(), &[], 1_700_000_000, "cyphr.me")
             .expect("genesis commit")
             .iter()
             .map(|coz| Base64UrlUnpadded::encode_string(&serde_json::to_vec(coz).expect("json")))

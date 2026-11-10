@@ -1236,15 +1236,14 @@ fn poison_genesis_push_body(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::explicit(vec![key(genesis_name), key(victim_key_name)])
-        .expect("explicit genesis");
+    let mut principal = cyphr::Principal::implicit(key(genesis_name)).expect("genesis");
     let signer = pool
         .get(genesis_name)
         .expect("genesis key in pool")
         .software_signer()
         .expect("genesis signer");
     let cozies = principal
-        .commit_genesis(&signer, now, "cyphr.me")
+        .commit_genesis(&signer, &[key(victim_key_name)], now, "cyphr.me")
         .expect("the honest genesis commits before the sidecar is swapped");
 
     // The POISONED sidecar: declared thumbprint = the victim's V, but the

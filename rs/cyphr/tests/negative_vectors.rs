@@ -45,10 +45,12 @@ fn domain_key(s: &Signer) -> Key {
 
 /// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
 /// genesis key's `key/create` of itself, the `principal/create` and the
-/// `commit/create`), signed by its genesis key `k`.
-fn genesis_of(mut p: Principal, k: &Signer) -> Principal {
+/// `commit/create`), signed by its genesis key `k`, which creates
+/// each of `others` after itself.
+fn genesis_of(mut p: Principal, k: &Signer, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
+        others,
         1,
         "cyphr.me",
     )
@@ -152,8 +154,9 @@ fn es256_high_s_signature_is_rejected() {
     };
 
     let mut p = genesis_of(
-        Principal::explicit(vec![domain_key(&golden), domain_key(&key)]).expect("principal"),
+        Principal::implicit(domain_key(&golden)).expect("principal"),
         &golden,
+        &[domain_key(&key)],
     );
 
     // Control: the low-S encoding of the same signature is accepted, so the
@@ -187,8 +190,9 @@ fn ed25519_non_canonical_s_is_rejected() {
     assert_ne!(bumped.as_slice(), s, "s + L differs from s");
 
     let mut p = genesis_of(
-        Principal::explicit(vec![domain_key(&golden), domain_key(&key)]).expect("principal"),
+        Principal::implicit(domain_key(&golden)).expect("principal"),
         &golden,
+        &[domain_key(&key)],
     );
 
     // s + L is the same scalar mod L, so only the canonicality check can
@@ -229,8 +233,9 @@ fn ds_create(golden: &Signer, scope: &cyphr::CommitScope<'_>) -> Signed {
 /// commit. Returns the principal with key_a deleted.
 fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
     let mut p = genesis_of(
-        Principal::explicit(vec![domain_key(golden), domain_key(key_a)]).expect("principal"),
+        Principal::implicit(domain_key(golden)).expect("principal"),
         golden,
+        &[domain_key(key_a)],
     );
     record(&mut p, action(key_a, 1_700_000_010, "genuine")).expect("genuine action accepted");
     let (pay, sig, czd) = sign(
@@ -314,8 +319,9 @@ fn forged_action_spliced_before_delete_commit_breaks_replay() {
     // Control: an honest replay without the forged action finalizes, so the
     // failure below comes only from the spliced action.
     let mut honest_replay = genesis_of(
-        Principal::explicit(vec![domain_key(&golden), domain_key(&key_a)]).expect("principal"),
+        Principal::implicit(domain_key(&golden)).expect("principal"),
         &golden,
+        &[domain_key(&key_a)],
     );
     record(&mut honest_replay, action(&key_a, 1_700_000_010, "genuine")).expect("genuine");
     let mut scope = honest_replay.begin_commit();
@@ -331,8 +337,9 @@ fn forged_action_spliced_before_delete_commit_breaks_replay() {
     // Replayer: the same genesis and genuine action, plus a forged action
     // dated inside key_a's active period, inserted before the delete commit.
     let mut p = genesis_of(
-        Principal::explicit(vec![domain_key(&golden), domain_key(&key_a)]).expect("principal"),
+        Principal::implicit(domain_key(&golden)).expect("principal"),
         &golden,
+        &[domain_key(&key_a)],
     );
     record(&mut p, action(&key_a, 1_700_000_010, "genuine")).expect("genuine");
     record(

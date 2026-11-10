@@ -78,11 +78,15 @@ fn signer_of(k: &Kp) -> cyphr::signer::SoftwareSigner {
 /// commit (SPEC 5.1) made at `now`, and its id: the PG, the principal
 /// state over those keys.
 fn genesis(keys: &[&Kp], now: i64) -> (cyphr::Principal, String) {
-    let mut p = cyphr::Principal::explicit(keys.iter().map(|k| key_of(k)).collect())
-        .expect("explicit genesis");
-    let id = p.pr_tagged().expect("PG");
-    p.commit_genesis(&signer_of(keys[0]), now, "cyphr.me")
-        .expect("genesis commit");
+    let mut p = cyphr::Principal::implicit(key_of(keys[0])).expect("genesis");
+    let others: Vec<cyphr::Key> = keys[1..].iter().map(|k| key_of(k)).collect();
+    let blobs: Vec<Vec<u8>> = p
+        .commit_genesis(&signer_of(keys[0]), &others, now, "cyphr.me")
+        .expect("genesis commit")
+        .iter()
+        .map(|c| serde_json::to_vec(c).expect("coz"))
+        .collect();
+    let id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
     (p, id)
 }
 

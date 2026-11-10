@@ -318,12 +318,14 @@ fn test_inspect_after_transactions() {
     assert_eq!(keys.len(), 2, "should have 2 keys after add");
 }
 
-/// Backs: a multi-key explicit genesis reloads before any commit (user-visible init/inspect).
+/// Backs: a multi-key genesis reloads with every genesis key before any push (user-visible
+/// init/inspect).
 #[test]
 fn test_explicit_multi_key_genesis_reload() {
-    // An identity created with explicit genesis (multiple keys) must be
-    // reloadable before any commit has ever been made against it -- e.g.
-    // before it has been pushed to a server. Regression test for a bug
+    // An identity created with a multi-key genesis must be reloadable
+    // before it has been pushed to a server; `init --keys` commits its
+    // genesis (SPEC 5.1: a multi-key principal is Level 3+, which exists
+    // only through its genesis commit). Regression test for a bug
     // where the load path unconditionally treated a never-yet-committed
     // identity as implicit (single-key) genesis, so it tried to look up
     // the combined multi-key digest as if it were a single key's
@@ -346,7 +348,7 @@ fn test_explicit_multi_key_genesis_reload() {
     let identity_arg = format!("--identity={pr}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    assert_eq!(inspect["commit_count"], 0);
+    assert_eq!(inspect["commit_count"], 1, "the genesis commit");
     let active_keys: Vec<_> = inspect["active_keys"]
         .as_array()
         .unwrap()
@@ -365,27 +367,13 @@ fn test_explicit_multi_key_genesis_reload() {
 /// Backs: commits chain on a multi-key explicit genesis across separate CLI invocations (F40).
 #[test]
 fn test_explicit_multi_key_genesis_accepts_commits() {
-    // F40 regression: a genuinely fresh explicit multi-key genesis (2+
-    // keys, zero prior commits) must accept commits signed on top of it --
+    // F40 regression: a genuinely fresh multi-key genesis (2+ keys) must
+    // accept commits signed on top of it --
     // not just reload (test_explicit_multi_key_genesis_reload, above).
-    //
-    // Root cause: `save_principal_to_engine` (cyphr-cli/src/commands/
-    // common.rs) reconstructed the `Genesis` it handed to
-    // `StorageEngine::submit_commit` from only `genesis_keys().first()`,
-    // silently collapsing a multi-key explicit genesis down to a
-    // single-key implicit one. The resubmitted commit's signer then didn't
-    // match the (wrongly narrowed) reconstructed principal's active key
-    // set, so `submit_commit`'s independent `load_principal` replay
-    // diverged from what the CLI had actually signed the arrow against --
-    // `finalize_commit`'s arrow-verification check (the sole surviving
-    // chain-integrity guard) correctly rejected the divergence with a
-    // "state root mismatch" error. A second, related bug at the same site
-    // affected only the second-and-later commit (this test's `key add`
-    // #2/#3): genesis was only supplied for the first commit, so later
-    // commits fell back to `StorageEngine::submit_commit`'s own
-    // server-side genesis reconstruction, which can only recover a
-    // *single* key from stored blob material and has no wire
-    // representation for a multi-key genesis at all.
+    // A multi-key principal replays from its genesis key alone: its
+    // genesis commit's key/creates add the rest (SPEC 5.1), so every
+    // commit after it is signed against, and replayed onto, the same key
+    // set.
     let cli = CliTest::new();
 
     let key1 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k1"]);
@@ -400,8 +388,8 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
     let signer_arg = format!("--signer={key1_tmb}");
 
     // The first key add on top of the fresh multi-key genesis -- the exact
-    // F40 scenario. The CLI first commits the genesis commit (both genesis
-    // keys' key/creates + principal/create), then the add.
+    // F40 scenario. `init` committed the genesis commit (both genesis
+    // keys' key/creates + principal/create); this is the second commit.
     let add1 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key3_tmb = add1["added_key"].as_str().unwrap().to_string();
 
@@ -434,8 +422,8 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
 /// Backs: an unknown identity is refused with a clear error, never misread as another genesis.
 #[test]
 fn test_unresolvable_identity_fails_loudly() {
-    // An identity that matches neither a keystore key, a recorded
-    // explicit genesis, nor any stored commit must fail with a clear
+    // An identity that matches neither a keystore key nor any stored
+    // commit must fail with a clear
     // error -- not silently misinterpret it as some other identity's
     // genesis.
     let cli = CliTest::new();

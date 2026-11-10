@@ -192,6 +192,7 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     let mut p = cyphr::Principal::implicit(dom(golden)).expect("genesis");
     p.commit_genesis(
         &golden.software_signer().expect("golden signer"),
+        &[],
         NOW,
         "cyphr.me",
     )

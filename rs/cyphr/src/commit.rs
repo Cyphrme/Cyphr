@@ -808,10 +808,10 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         self.finish_commit(prepared, sig)
     }
 
-    /// Sign with `signer`, the first genesis key, and apply the `key/create`
-    /// of every genesis key not yet created, in genesis order: the genesis
-    /// key adds itself, then each further genesis key (SPEC 5.1 step 1, 5.2,
-    /// 5.3, 7.7 Example 1). A genesis commit carries these before its
+    /// Sign with `signer`, the genesis key, and apply the `key/create` of
+    /// the genesis key, then of each of `others` in order: the genesis key
+    /// adds itself, then each further key (SPEC 5.1 steps 1-2, 5.2, 5.3,
+    /// 7.7 Example 1). A genesis commit carries these before its
     /// `principal/create`.
     ///
     /// Returns each as a wire coz (`pay`, `sig` and the disclosed `key`):
@@ -822,10 +822,12 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// `Signer` if signing fails; otherwise as
     /// [`verify_and_apply`](Self::verify_and_apply), e.g. `UnknownKey` when
-    /// `signer` is not the first genesis key.
+    /// `signer` is not the genesis key or the genesis key is already
+    /// created, `DuplicateKey` when a key repeats.
     pub fn create_genesis_keys(
         &mut self,
         signer: &SoftwareSigner,
+        others: &[crate::key::Key],
         now: i64,
         authority: &str,
     ) -> crate::error::Result<Vec<serde_json::Value>> {
@@ -836,14 +838,16 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         let typ = format!("{authority}/{}", crate::parsed_coz::typ::KEY_CREATE);
         let mut cozies = Vec::new();
-        for tmb in self.projected.uncreated_genesis.clone() {
-            let key = self
-                .projected
-                .auth
-                .keys
-                .get(&tmb)
-                .cloned()
-                .ok_or(Error::UnknownKey)?;
+        let genesis = self
+            .projected
+            .auth
+            .keys
+            .get(self.projected.genesis_key())
+            .filter(|_| !self.projected.genesis_created)
+            .cloned()
+            .ok_or(Error::UnknownKey)?;
+        for key in std::iter::once(genesis).chain(others.iter().cloned()) {
+            let tmb = key.tmb().to_b64();
             let mut pay = json!({
                 "alg": signer.alg(),
                 "id": tmb,
@@ -930,7 +934,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// `Signer` if signing fails; otherwise as
     /// [`verify_and_apply`](Self::verify_and_apply), e.g.
-    /// `GenesisIncomplete` while a genesis key has no `key/create`.
+    /// `UnknownKey` while the genesis key has no `key/create`.
     pub fn create_principal(
         &mut self,
         signer: &SoftwareSigner,
@@ -1207,7 +1211,7 @@ mod tests {
 
         let mut principal = crate::principal::Principal::implicit(fold_domain_key(genesis))
             .expect("genesis principal");
-        principal.genesis_test().expect("genesis commit");
+        principal.genesis_test(Vec::new()).expect("genesis commit");
         let mut scope = principal.begin_commit();
 
         let (pay1, sig1, czd1) = fold_signed_key_create(genesis, &genesis_tmb_b64, diana, now);
@@ -1330,7 +1334,7 @@ mod tests {
         // Sole-key genesis on the ES384 key.
         let mut principal = crate::principal::Principal::implicit(fold_domain_key(old_key))
             .expect("genesis principal");
-        principal.genesis_test().expect("genesis commit");
+        principal.genesis_test(Vec::new()).expect("genesis commit");
 
         // Sign the ES384 -> ES256 key/replace ONCE; replay the identical
         // bytes onto a byte-identical clone so production (scope_a) and
@@ -1547,7 +1551,7 @@ mod tests {
         let mut principal =
             crate::principal::Principal::implicit_with_storage(fold_domain_key(genesis), storage)
                 .expect("genesis principal");
-        principal.genesis_test().expect("genesis commit");
+        principal.genesis_test(Vec::new()).expect("genesis commit");
 
         // Snapshot observable pre-commit state to compare against after the
         // injected failure.

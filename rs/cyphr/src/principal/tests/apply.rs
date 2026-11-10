@@ -24,7 +24,7 @@ use super::*;
 fn key_add_sets_first_seen_from_tx_now() {
     let key1 = make_test_key(0x11);
     let mut principal = Principal::implicit(key1.clone()).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     let mut key2 = make_test_key(0x22);
     key2.set_first_seen(0); // Caller may not set this
@@ -56,7 +56,7 @@ fn key_add_sets_first_seen_from_tx_now() {
 fn transaction_updates_signer_last_used() {
     let key1 = make_test_key(0x11);
     let mut principal = Principal::implicit(key1.clone()).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
     // The genesis commit is the key's first use.
     assert_eq!(principal.get_key(key1.tmb()).unwrap().last_used(), Some(1));
 

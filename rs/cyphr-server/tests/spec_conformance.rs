@@ -204,7 +204,7 @@ proptest! {
         let mut p = cyphr::Principal::implicit(key_of(g, gtmb)).expect("genesis");
         let g_signer =
             cyphr::signer::SoftwareSigner::new(g.alg.name(), &g.prv_bytes, &g.pub_bytes, gtmb);
-        p.commit_genesis(&g_signer, 1_700_000_000, "cyphr.me").expect("genesis commit");
+        p.commit_genesis(&g_signer, &[], 1_700_000_000, "cyphr.me").expect("genesis commit");
         for (i, (k, tmb)) in keys.iter().enumerate().skip(1) {
             let now = 1_700_000_000 + i64::try_from(i).expect("small");
             let pay = serde_json::json!({

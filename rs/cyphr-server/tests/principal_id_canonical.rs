@@ -145,7 +145,7 @@ fn genesis_commit(p: &mut cyphr::Principal, g: &Kp, extra: Vec<Tx>, now: i64) {
     let signer = signer_of(g);
     let mut scope = p.begin_commit();
     scope
-        .create_genesis_keys(&signer, now, "cyphr.me")
+        .create_genesis_keys(&signer, &[], now, "cyphr.me")
         .expect("genesis key/create");
     for ((pay, sig, czd), sidecar) in extra {
         scope

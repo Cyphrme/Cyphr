@@ -93,8 +93,9 @@ fn domain_key(pk: &test_fixtures::PoolKey) -> Key {
 
 /// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
 /// genesis key's `key/create` of itself, the `principal/create` and the
-/// `commit/create`), signed by its genesis key `k`.
-fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey) -> Principal {
+/// `commit/create`), signed by its genesis key `k`, which creates
+/// each of `others` after itself.
+fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(
             &k.alg,
@@ -103,6 +104,7 @@ fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey) -> Principal {
             &coz::base64ct::Base64UrlUnpadded::decode_vec(&k.pub_key).expect("pub b64"),
             &k.compute_tmb().expect("tmb"),
         ),
+        others,
         1,
         "cyphr.me",
     )
@@ -344,6 +346,7 @@ fn opaque_signer_finalizes_commit_with_legacy_bytes() {
             Principal::implicit(domain_key(pool.get(name).expect("genesis")))
                 .expect("genesis principal"),
             pool.get(name).expect("genesis"),
+            &[],
         );
         let scope = open_scope(&mut principal, &signer, target);
 
@@ -449,6 +452,7 @@ fn not_send_suspending_signer_finalizes_exactly_once() {
         Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
             .expect("genesis principal"),
         pool.get("golden").expect("genesis"),
+        &[],
     );
     // Mutation signing also goes through the signer; reset the counter after.
     let scope = open_scope(&mut principal, &signer, target);
@@ -484,6 +488,7 @@ fn split_api_works_under_a_futures_executor() {
         Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
             .expect("genesis principal"),
         pool.get("golden").expect("genesis"),
+        &[],
     );
     let scope = open_scope(&mut principal, &signer, target);
 
@@ -524,6 +529,7 @@ fn faulty_finalize_err(pool: &test_fixtures::Pool, name: &str, fault: Fault) -> 
         Principal::implicit(domain_key(pool.get(name).expect("genesis")))
             .expect("genesis principal"),
         pool.get(name).expect("genesis"),
+        &[],
     );
     let pr_before = principal.pr_tagged().expect("pr");
     // The mutation is signed by the honest signer; only the commit signer is faulty.
@@ -616,6 +622,7 @@ fn high_s_signature_is_rejected_not_normalized() {
         Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
             .expect("genesis principal"),
         pool.get("golden").expect("genesis"),
+        &[],
     );
     let scope = open_scope(&mut principal, &good, target);
     finalize(scope, &good).expect("low-S signature commits");
@@ -721,6 +728,7 @@ fn signer_outside_principal_is_unknown_key() {
             Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
                 .expect("genesis principal"),
             pool.get(genesis).expect("genesis"),
+            &[],
         );
         let e = commit_err(&mut principal, &honest, "key_a", &foreign, &pool, &what);
         assert!(
@@ -759,6 +767,7 @@ fn signer_claiming_anothers_tmb_is_rejected() {
             Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
                 .expect("genesis principal"),
             pool.get(genesis).expect("genesis"),
+            &[],
         );
         let e = commit_err(&mut principal, &honest, "key_a", &claimed, &pool, &what);
         if genesis == "golden" {
@@ -787,6 +796,7 @@ fn revoked_signer_is_key_revoked() {
             Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
                 .expect("genesis principal"),
             pool.get("golden").expect("genesis"),
+            &[],
         );
 
         // Commit 1: genesis adds the key that will later be revoked.

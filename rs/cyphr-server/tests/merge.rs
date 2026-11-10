@@ -159,7 +159,7 @@ impl Peer {
         let genesis = self.id.is_none();
         let mut scope = self.principal.begin_commit();
         if genesis {
-            scope.create_genesis_keys(&signer, now, "cyphr.me")?;
+            scope.create_genesis_keys(&signer, &[], now, "cyphr.me")?;
         }
         for ((bytes, sig, czd), key) in signed {
             scope.verify_and_apply(&bytes, &sig, czd, key)?;

@@ -1096,11 +1096,7 @@ mod commit_count_underflow_tests {
         let (golden_key, golden_tmb) = key_of(&golden_kp);
         let (new_key, _) = key_of(&coz::Alg::Ed25519.generate_keypair());
 
-        let mut principal =
-            cyphr::Principal::explicit(vec![golden_key, new_key]).expect("explicit genesis");
-        // The PG is the principal state over the genesis keys, before the
-        // `principal/create` commits it.
-        let principal_id = principal.pr_tagged().expect("genesis PR");
+        let mut principal = cyphr::Principal::implicit(golden_key).expect("genesis");
         let cozies = principal
             .commit_genesis(
                 &cyphr::signer::SoftwareSigner::new(
@@ -1109,6 +1105,7 @@ mod commit_count_underflow_tests {
                     &golden_kp.pub_bytes,
                     &golden_tmb,
                 ),
+                &[new_key],
                 now,
                 "cyphr.me",
             )
@@ -1117,6 +1114,7 @@ mod commit_count_underflow_tests {
             .iter()
             .map(|c| serde_json::to_vec(c).expect("cozy serializes"))
             .collect();
+        let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("genesis PG");
 
         let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         let ingest = state

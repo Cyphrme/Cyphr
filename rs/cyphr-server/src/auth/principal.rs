@@ -575,13 +575,20 @@ fn build_genesis(
     let alg = identity.alg().name();
     let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes());
 
-    // The PG is the nascent PR of the fresh explicit genesis — computed
-    // before any commit and independent of timestamps, so it is the same
-    // every time this key bootstraps.
-    let mut client = cyphr::Principal::explicit(vec![genesis_key.clone()])?;
-    let pg = client.pr_tagged()?;
-
+    let mut client = cyphr::Principal::implicit(genesis_key.clone())?;
+    let signer = cyphr::signer::SoftwareSigner::new(
+        alg,
+        identity.prv_key(),
+        identity.pub_key(),
+        genesis_key.tmb(),
+    );
     let now = super::server_now();
+    let mut scope = client.begin_commit();
+    let creates = scope.create_genesis_keys(&signer, &[], now, CHAIN_AUTHORITY)?;
+    // The PG is the state the genesis key's own `key/create` reaches —
+    // independent of timestamps, so it is the same every time this key
+    // bootstraps.
+    let pg = scope.genesis_id()?;
     let pc_pay = canonical_pay(json!({
         "alg": alg,
         "id": pg,
@@ -595,14 +602,6 @@ fn build_genesis(
     let pc_czd = coz::czd_for_alg(&pc_cad, &pc_sig, alg)
         .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
 
-    let signer = cyphr::signer::SoftwareSigner::new(
-        alg,
-        identity.prv_key(),
-        identity.pub_key(),
-        genesis_key.tmb(),
-    );
-    let mut scope = client.begin_commit();
-    let creates = scope.create_genesis_keys(&signer, now, CHAIN_AUTHORITY)?;
     scope.verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)?;
     let commit = scope.finalize_with_software(&signer, now + 1, CHAIN_AUTHORITY)?;
 

@@ -91,9 +91,9 @@ impl ChainView {
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare).
     ///
     /// The genesis is read from the first commit, the genesis commit (SPEC
-    /// 5.1): the keys its `key/create`s disclose before its
-    /// `principal/create`, the genesis key first. It is only accepted if it
-    /// derives `pg`. A patch that does not replay, or whose stated roots or
+    /// 5.1): the key its first `key/create` discloses, the genesis key; the
+    /// replay adds the rest. It is only accepted if the replay derives
+    /// `pg`. A patch that does not replay, or whose stated roots or
     /// commit ids disagree with the replay, is an error.
     pub fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
         let patch = cyphr_client::verify_patch_body(body, pg, None)
@@ -118,16 +118,12 @@ impl ChainView {
             .iter()
             .position(|c| typ_is(c, "/cyphr/principal/create"))
             .ok_or("the first commit is no genesis commit")?;
-        let keys: Vec<Key> = cozies[..created]
+        let key = cozies[..created]
             .iter()
-            .filter(|c| typ_is(c, "/cyphr/key/create"))
-            .map(|c| genesis_key(&c["key"]).ok_or("a genesis key/create discloses no key"))
-            .collect::<Result<_, _>>()?;
-        let genesis = match <[Key; 1]>::try_from(keys) {
-            Ok([key]) => Principal::implicit(key),
-            Err(keys) => Principal::explicit(keys),
-        }
-        .map_err(|e| format!("genesis: {e}"))?;
+            .find(|c| typ_is(c, "/cyphr/key/create"))
+            .ok_or("the genesis commit creates no key")
+            .and_then(|c| genesis_key(&c["key"]).ok_or("a genesis key/create discloses no key"))?;
+        let genesis = Principal::implicit(key).map_err(|e| format!("genesis: {e}"))?;
         Self::replay(body, pg, genesis, patch.entries)
     }
 
@@ -149,22 +145,28 @@ impl ChainView {
         entries: Vec<PatchEntry>,
     ) -> Result<Self, String> {
         let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
-        let derives = genesis
-            .pr_tagged()
-            .is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
-        if !derives {
-            return Err("the first commit's genesis does not derive the principal".into());
-        }
-        // The first genesis key: the one whose `key/create` opens the
-        // genesis commit (SPEC 5.1).
-        let key = genesis
-            .genesis_keys()
-            .first()
-            .and_then(|tmb| Base64UrlUnpadded::decode_vec(tmb).ok())
+        // The genesis key: the one whose `key/create` opens the genesis
+        // commit (SPEC 5.1).
+        let key = Base64UrlUnpadded::decode_vec(genesis.genesis_key())
+            .ok()
             .and_then(|tmb| genesis.get_key(&coz::Thumbprint::from_bytes(tmb)).cloned())
             .ok_or("the genesis holds no genesis key")?;
         let chain = replay_chain(genesis.clone(), &entries)
             .map_err(|e| format!("the patch does not replay from its genesis: {e}"))?;
+        // A genesis commit names the principal by its PG; a chain with none
+        // by its genesis key's PR (SPEC 5.1).
+        let derived = match chain.pg() {
+            Some(g) => cyphr::StateDigest::as_multihash(g)
+                .tagged_first()
+                .map(|t| t.to_string())
+                .map_err(|e| e.to_string()),
+            None => genesis.pr_tagged().map_err(|e| e.to_string()),
+        };
+        let derives =
+            derived.is_ok_and(|g| g == pg || g.split_once(':').is_some_and(|(_, bare)| bare == pg));
+        if !derives {
+            return Err("the first commit's genesis does not derive the principal".into());
+        }
 
         let tagged = |m: &cyphr::MultihashDigest| -> Vec<String> {
             [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512]

@@ -119,7 +119,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
-    let genesis = local_genesis(&keystore, identity, &principal_id)?;
+    let genesis = local_genesis(&keystore, identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
 
     let fetched = block_on(async {
@@ -284,7 +284,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
-    let genesis = local_genesis(&keystore, identity, &principal_id)?
+    let genesis = local_genesis(&keystore, identity)?
         .ok_or_else(|| Error::UnresolvableGenesis(identity.to_owned()))?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     let path = store_path(cli)?.to_owned();
@@ -346,7 +346,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     continue;
                 }
                 let bare = bare_digest(&summary.principal_id);
-                let g = match local_genesis(&keystore, bare, &summary.principal_id)? {
+                let g = match local_genesis(&keystore, bare)? {
                     Some(g) => g,
                     None => old.resolve_genesis(&summary.principal_id, &[]).await?,
                 };
@@ -571,7 +571,7 @@ pub fn verify(
     let wire = wire_id(identity)?;
     // Replays the whole local history, so a bad signature is an error here.
     load_principal_from_engine(&store, &keystore, identity)?;
-    let genesis = local_genesis(&keystore, identity, &principal_id)?;
+    let genesis = local_genesis(&keystore, identity)?;
 
     let (anchor_value, anchor_source) = match anchor_flag.map(str::to_owned).or(choices.anchor) {
         Some(a) => (a, "pinned"),

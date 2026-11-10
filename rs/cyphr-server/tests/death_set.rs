@@ -178,19 +178,20 @@ fn genesis_push(
             .collect()
     };
     if typ == CREATE {
-        let mut p = cyphr::Principal::explicit(vec![key_of(g), key_of(t)]).expect("explicit");
-        let pid = p.pr_tagged().expect("PG");
-        let cozies = p
-            .commit_genesis(&signer_of(g), NOW, "cyphr.me")
-            .expect("genesis commit");
-        return (body(&pid, &wire(cozies)), pid, p);
+        let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
+        let blobs = wire(
+            p.commit_genesis(&signer_of(g), &[key_of(t)], NOW, "cyphr.me")
+                .expect("genesis commit"),
+        );
+        let pid = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
+        return (body(&pid, &blobs), pid, p);
     }
 
     let r = pool.get(REPLACER).expect("replacer key");
-    let mut p = cyphr::Principal::explicit(vec![key_of(g), key_of(r)]).expect("explicit");
+    let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
     let mut scope = p.begin_commit();
     let mut cozies = scope
-        .create_genesis_keys(&signer_of(g), NOW, "cyphr.me")
+        .create_genesis_keys(&signer_of(g), &[key_of(r)], NOW, "cyphr.me")
         .expect("genesis key/creates");
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": r.alg,

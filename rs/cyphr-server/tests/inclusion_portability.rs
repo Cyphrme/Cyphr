@@ -144,15 +144,15 @@ fn build_foreign_principal_and_push_body(
             .key()
             .expect("pool key")
     };
-    let mut principal =
-        cyphr::Principal::explicit(vec![key("golden"), key("key_a")]).expect("explicit genesis");
-    let principal_id = principal.pr_tagged().expect("PG");
+    let mut principal = cyphr::Principal::implicit(key("golden")).expect("genesis");
     let blobs = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get("golden").expect("golden key in pool"),
+        &[key("key_a")],
         now,
     )
     .expect("genesis commit");
+    let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
     let body = serde_json::json!({
         "principal_id": principal_id,
@@ -330,8 +330,8 @@ async fn build_fixture() -> PortabilityFixture {
     .expect("key binds its tmb")
     .with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
 
-    let client = cyphr::Principal::explicit(vec![genesis_key.clone()])
-        .expect("the published genesis key reconstructs an explicit genesis");
+    let client = cyphr::Principal::implicit(genesis_key.clone())
+        .expect("the published genesis key reconstructs the genesis");
     let derived_server_pg = client
         .pr_tagged()
         .expect("pr_tagged for the reconstructed genesis");

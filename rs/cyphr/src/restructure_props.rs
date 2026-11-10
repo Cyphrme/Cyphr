@@ -152,7 +152,7 @@ proptest! {
         let mut targets = order.into_iter().filter(|n| *n != genesis_name);
         let mut active: Vec<&test_fixtures::PoolKey> = vec![genesis];
         let mut principal = Principal::implicit(domain_key(genesis)).expect("genesis");
-        principal.genesis_test().expect("genesis commit");
+        principal.genesis_test(Vec::new()).expect("genesis commit");
         let mut now = T0;
 
         for plan in plans {
@@ -200,61 +200,6 @@ proptest! {
             );
         }
     }
-
-    /// Claim: every genesis constructor yields the same KR, AR, SR and PR
-    /// (and the same genesis-key list and active-key order) for the same
-    /// keys: `explicit`/`explicit_with_storage`, and
-    /// `implicit`/`implicit_with_storage` for a single key.
-    /// Turns red if: one constructor's copy of the root derivation, the
-    /// Principal Tree assembly, or the key-ledger fill drifts from the
-    /// others. Not an end-to-end scenario.
-    #[test]
-    fn constructors_agree_on_roots(
-        names in prop::sample::subsequence(POOL_NAMES.to_vec(), 1..=4)
-            .prop_shuffle(),
-    ) {
-        let pool = pool();
-        let keys: Vec<Key> = names.iter().map(|n| domain_key(pool_key(&pool, n))).collect();
-
-        let reference = Principal::explicit(keys.clone()).expect("explicit genesis");
-        let mut candidates = vec![
-            ("explicit_with_storage", Principal::explicit_with_storage(
-                keys.clone(), eml::MemoryStorage::new()).expect("explicit_with_storage")),
-        ];
-        if keys.len() == 1 {
-            candidates.push(("implicit", Principal::implicit(keys[0].clone()).expect("implicit")));
-            candidates.push(("implicit_with_storage", Principal::implicit_with_storage(
-                keys[0].clone(), eml::MemoryStorage::new()).expect("implicit_with_storage")));
-        }
-        for (name, p) in &candidates {
-            assert_same_state(name, &reference, p)?;
-        }
-    }
-}
-
-fn assert_same_state(
-    name: &str,
-    reference: &Principal,
-    p: &Principal,
-) -> std::result::Result<(), TestCaseError> {
-    prop_assert_eq!(p.key_root(), reference.key_root(), "{} KR", name);
-    prop_assert_eq!(p.auth_root(), reference.auth_root(), "{} AR", name);
-    prop_assert_eq!(p.sr(), reference.sr(), "{} SR", name);
-    prop_assert_eq!(p.pr(), reference.pr(), "{} PR", name);
-    prop_assert_eq!(p.cr(), reference.cr(), "{} CR", name);
-    prop_assert_eq!(
-        p.genesis_keys(),
-        reference.genesis_keys(),
-        "{} genesis keys",
-        name
-    );
-    let order = |q: &Principal| {
-        q.active_keys()
-            .map(|k| k.tmb().to_b64())
-            .collect::<Vec<_>>()
-    };
-    prop_assert_eq!(order(p), order(reference), "{} active-key order", name);
-    Ok(())
 }
 
 /// Which refusal a signer lookup produced, so results from different call
@@ -287,7 +232,7 @@ fn signer_lookup_refuses_alike_at_every_site() {
 
     // golden + key_a + alice active, then key_a moved to the revoked set.
     let mut principal = Principal::implicit(domain_key(genesis)).expect("genesis");
-    principal.genesis_test().expect("genesis commit");
+    principal.genesis_test(Vec::new()).expect("genesis commit");
     for (i, target) in [revoked, filler].into_iter().enumerate() {
         let now = T0 + 2 * i as i64;
         let mut scope = principal.begin_commit();

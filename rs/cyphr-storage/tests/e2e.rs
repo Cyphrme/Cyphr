@@ -343,14 +343,8 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let commit_vec = make_commits(commits);
 
     // Apply setup modifiers (e.g., pre-revoke keys)
-    let mut principal = match &genesis {
-        Genesis::Implicit(key) => {
-            cyphr::Principal::implicit(key.clone()).expect("implicit genesis failed")
-        },
-        Genesis::Explicit(keys) => {
-            cyphr::Principal::explicit(keys.clone()).expect("explicit genesis failed")
-        },
-    };
+    let mut principal =
+        cyphr::Principal::implicit(genesis.key().expect("genesis key").clone()).expect("genesis");
 
     if let Some(setup) = &test.setup {
         if let Some(key_name) = &setup.revoke_key {

@@ -137,9 +137,9 @@ fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
 /// The principal with genesis keys `keys` (the first signs), after its
 /// genesis commit at `now` (SPEC 5.1).
 fn genesis_of(keys: &[&Kp], now: i64) -> cyphr::Principal {
-    let mut p =
-        cyphr::Principal::explicit(keys.iter().map(|k| key_of(k)).collect()).expect("genesis");
-    p.commit_genesis(&signer_of(keys[0]), now, "cyphr.me")
+    let mut p = cyphr::Principal::implicit(key_of(keys[0])).expect("genesis");
+    let others: Vec<cyphr::Key> = keys[1..].iter().map(|k| key_of(k)).collect();
+    p.commit_genesis(&signer_of(keys[0]), &others, now, "cyphr.me")
         .expect("genesis commit");
     p
 }
@@ -167,10 +167,10 @@ impl Fork {
         let golden = kp(&pool, "golden");
         let key_a = kp(&pool, "key_a");
         let genesis = Genesis::Explicit(vec![key_of(&golden), key_of(&key_a)]);
-        let id = cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis id");
         let base = genesis_of(&[&golden, &key_a], NOW);
         let pre = base.pr_tagged().expect("pr after commit 0");
         let first = blobs(&base, 0);
+        let id = test_fixtures::bundle::genesis_id(&first).expect("genesis id");
         let mut fork = Self {
             genesis,
             id,

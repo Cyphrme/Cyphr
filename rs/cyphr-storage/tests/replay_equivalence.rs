@@ -122,11 +122,7 @@ fn wire_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 }
 
 fn principal(genesis: &Genesis) -> cyphr::Principal {
-    match genesis {
-        Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone()),
-        Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone()),
-    }
-    .expect("genesis")
+    cyphr::Principal::implicit(genesis.key().expect("genesis key").clone()).expect("genesis")
 }
 
 /// The id the engine stores `chain` under, derived by the core alone: the
@@ -562,6 +558,7 @@ async fn action_after_a_transaction_is_judged_after_the_commit() {
     let genesis_commit = test_fixtures::bundle::genesis_bundle(
         &mut writer,
         pool.get("golden").expect("golden"),
+        &[],
         1_700_000_050,
     )
     .expect("genesis commit");
@@ -769,9 +766,13 @@ async fn actions_pushed_alone_replay_alike_on_every_path() {
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let t = 1_700_000_000;
     let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
-    let genesis_commit =
-        test_fixtures::bundle::genesis_bundle(&mut writer, pool.get("golden").expect("golden"), t)
-            .expect("genesis commit");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        &[],
+        t,
+    )
+    .expect("genesis commit");
     // Two actions travel in one bundle, the later one first.
     let (early, late) = (
         golden.unrecorded_action(t + 10, "early"),
@@ -876,9 +877,13 @@ async fn forged_actions_are_quarantined_by_the_scratch_rebuild() {
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let t = 1_700_000_000;
     let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
-    let genesis_commit =
-        test_fixtures::bundle::genesis_bundle(&mut writer, pool.get("golden").expect("golden"), t)
-            .expect("genesis commit");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        &[],
+        t,
+    )
+    .expect("genesis commit");
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
@@ -989,9 +994,13 @@ async fn action_manifest_with_a_transaction_is_malformed() {
     let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
     let t = 1_700_000_000;
     let mut writer = cyphr::Principal::implicit(golden.key.clone()).expect("genesis");
-    let genesis_commit =
-        test_fixtures::bundle::genesis_bundle(&mut writer, pool.get("golden").expect("golden"), t)
-            .expect("genesis commit");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        &[],
+        t,
+    )
+    .expect("genesis commit");
     let genesis = Genesis::Implicit(golden.key.clone());
     let id = genesis_principal_id(&genesis).expect("id");
     let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
@@ -1066,6 +1075,7 @@ async fn actions_at_one_position_rebuild_in_now_order() {
         let commit = test_fixtures::bundle::genesis_bundle(
             &mut writer,
             pool.get("golden").expect("golden"),
+            &[],
             t,
         )
         .expect("genesis commit");

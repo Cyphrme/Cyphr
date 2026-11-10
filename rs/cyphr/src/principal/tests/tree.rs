@@ -18,37 +18,15 @@ use super::*;
 /// distinction observable.
 #[test]
 fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
-    use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
-
     let key_es256 = make_test_key(0x11);
     let key_ed25519 = make_test_key_ed25519(0x22);
 
-    let mut principal = Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
-    assert!(
-        principal.pg().is_none(),
-        "PR should be None before principal/create"
-    );
+    let mut principal = Principal::implicit(key_es256).unwrap();
+    principal.genesis_test(vec![key_ed25519]).unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
     );
-
-    let id = principal
-        .auth_root()
-        .expect("a live principal has an AR")
-        .clone();
-    let cz = ParsedCoz {
-        kind: CozKind::PrincipalCreate { id },
-        signer: key_es256.tmb().clone(),
-        now: 2000,
-        czd: coz::Czd::from_bytes(vec![0x33; 32]),
-        hash_alg: HashAlg::Sha256,
-        arrow: None,
-        raw: dummy_coz_json(),
-    };
-    create_genesis_keys(&mut principal, &key_es256, 0x10);
-    let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
-    principal.apply_verified_internal(vtx).unwrap();
 
     let pg = principal.pg().expect("principal/create must establish PG");
     let sr = principal.sr().expect("SR must exist after genesis");
@@ -73,7 +51,7 @@ fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
 fn abandoned_commit_scope_does_not_leak_state() {
     let key1 = make_test_key(0x11);
     let mut principal = Principal::implicit(key1.clone()).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     let pr_before = principal.pr().clone();
     let sr_before = principal.sr().cloned();
@@ -122,8 +100,8 @@ fn revoked_key_algorithm_drops_from_pr_variants() {
     let key_es256 = make_test_key(0x11);
     let key_ed25519 = make_test_key_ed25519(0x22);
 
-    let mut principal = Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
-    principal.genesis_test().unwrap();
+    let mut principal = Principal::implicit(key_es256.clone()).unwrap();
+    principal.genesis_test(vec![key_ed25519.clone()]).unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -179,8 +157,8 @@ fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
     let key_es256 = make_test_key(0x11);
     let key_ed25519 = make_test_key_ed25519(0x22);
 
-    let mut principal = Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
-    principal.genesis_test().unwrap();
+    let mut principal = Principal::implicit(key_es256.clone()).unwrap();
+    principal.genesis_test(vec![key_ed25519.clone()]).unwrap();
     assert_eq!(
         principal.active_algs(),
         vec![HashAlg::Sha256, HashAlg::Sha512]
@@ -269,7 +247,7 @@ fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
 
     let key = make_test_key(0x11);
     let mut principal = Principal::implicit(key.clone()).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     let action = make_test_action(key.tmb());
     principal.record_action(action).unwrap();
@@ -353,18 +331,21 @@ fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
 // c3/a3 — establish_pg works for any storage backend
 // ========================================================================
 
-/// Build an explicit-genesis `principal/create` coz for `key`, signed
-/// against `id` taken from the given principal — the minimal mutation
-/// that drives `establish_pg`'s Nascent → Established transition.
-/// Apply the `key/create` of every genesis key, signed by `signer`, which
-/// a `principal/create` requires first (SPEC 5.1 step 1, 7.7 Example 1).
-fn create_genesis_keys<S: eml::Storage>(principal: &mut Principal<S>, signer: &Key, czd_byte: u8) {
+/// Apply the `key/create` of the genesis key `signer`, then of each of
+/// `others`, all signed by `signer`; a `principal/create` requires the
+/// first (SPEC 5.1 step 1, 7.7 Example 1).
+fn create_genesis_keys<S: eml::Storage>(
+    principal: &mut Principal<S>,
+    signer: &Key,
+    others: &[Key],
+    czd_byte: u8,
+) {
     use coz::Czd;
 
     use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
 
-    let keys: Vec<Key> = principal.active_keys().cloned().collect();
-    for (i, key) in keys.into_iter().enumerate() {
+    let keys = std::iter::once(signer).chain(others).cloned();
+    for (i, key) in keys.enumerate() {
         let cz = ParsedCoz {
             kind: CozKind::KeyCreate {
                 id: key.tmb().clone(),
@@ -382,6 +363,9 @@ fn create_genesis_keys<S: eml::Storage>(principal: &mut Principal<S>, signer: &K
     }
 }
 
+/// Build a genesis `principal/create` coz for `key`, signed against the
+/// `id` the given principal's state names — the minimal mutation that
+/// drives `establish_pg`'s Nascent → Established transition.
 fn make_principal_create_tx<S: eml::Storage>(
     principal: &Principal<S>,
     key: &Key,
@@ -393,10 +377,7 @@ fn make_principal_create_tx<S: eml::Storage>(
 
     ParsedCoz {
         kind: CozKind::PrincipalCreate {
-            id: principal
-                .auth_root()
-                .expect("a live principal has an AR")
-                .clone(),
+            id: crate::state::AuthRoot(principal.genesis_pr().expect("genesis PR").0),
         },
         signer: key.tmb().clone(),
         now: 2000,
@@ -422,13 +403,13 @@ fn establish_pg_works_for_disk_backed_storage() {
     // Disk-backed principal.
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage_fjall::FjallStorage::open(dir.path()).expect("open fjall storage");
-    let mut disk_principal = Principal::explicit_with_storage(vec![key.clone()], storage).unwrap();
+    let mut disk_principal = Principal::implicit_with_storage(key.clone(), storage).unwrap();
     assert!(
         disk_principal.pg().is_none(),
         "PG must be absent before principal/create"
     );
 
-    create_genesis_keys(&mut disk_principal, &key, 0x10);
+    create_genesis_keys(&mut disk_principal, &key, &[], 0x10);
     let cz = make_principal_create_tx(&disk_principal, &key, 0x44);
     let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
     disk_principal.apply_verified_internal(vtx).unwrap();
@@ -439,8 +420,8 @@ fn establish_pg_works_for_disk_backed_storage() {
 
     // The equivalent in-memory principal, driven through the identical
     // sequence of operations.
-    let mut mem_principal = Principal::explicit(vec![key.clone()]).unwrap();
-    create_genesis_keys(&mut mem_principal, &key, 0x10);
+    let mut mem_principal = Principal::implicit(key.clone()).unwrap();
+    create_genesis_keys(&mut mem_principal, &key, &[], 0x10);
     let mem_cz = make_principal_create_tx(&mem_principal, &key, 0x44);
     let mem_vtx = VerifiedCoz::from_transaction_unsafe(mem_cz, None);
     mem_principal.apply_verified_internal(mem_vtx).unwrap();

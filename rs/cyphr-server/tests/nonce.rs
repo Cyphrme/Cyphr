@@ -63,7 +63,7 @@ fn principal_with_nonce(
 ) -> cyphr::error::Result<cyphr::Principal> {
     let mut p = cyphr::Principal::implicit(key_of(g))?;
     let mut scope = p.begin_commit();
-    scope.create_genesis_keys(&signer_of(g), NOW, "cyphr.me")?;
+    scope.create_genesis_keys(&signer_of(g), &[], NOW, "cyphr.me")?;
     let (pay, sig, czd) = sign(
         g,
         serde_json::json!({

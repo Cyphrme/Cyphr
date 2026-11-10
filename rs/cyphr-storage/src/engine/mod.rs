@@ -1732,24 +1732,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(history)
     }
 
-    /// A principal holding only its genesis keys, over `storage`.
+    /// A principal holding only its genesis key, over `storage`.
     fn principal_from_genesis<T: cyphr::eml::Storage>(
         genesis: crate::Genesis,
         storage: T,
     ) -> Result<cyphr::Principal<T>, EngineError> {
-        match genesis {
-            crate::Genesis::Implicit(key) => {
-                Ok(cyphr::Principal::implicit_with_storage(key, storage)?)
-            },
-            crate::Genesis::Explicit(keys) => {
-                if keys.is_empty() {
-                    return Err(EngineError::InvalidInput(
-                        "genesis requires at least one key".into(),
-                    ));
-                }
-                Ok(cyphr::Principal::explicit_with_storage(keys, storage)?)
-            },
-        }
+        let key = genesis
+            .key()
+            .ok_or_else(|| EngineError::InvalidInput("genesis requires at least one key".into()))?;
+        Ok(cyphr::Principal::implicit_with_storage(
+            key.clone(),
+            storage,
+        )?)
     }
 
     /// The first `through` stored commits (all for `None`) of
@@ -2756,11 +2750,7 @@ fn replay_first(
     raw_blobs: &[impl AsRef<[u8]>],
 ) -> Option<cyphr::Principal> {
     let blobs: Vec<Vec<u8>> = raw_blobs.iter().map(|b| b.as_ref().to_vec()).collect();
-    let mut principal = match genesis {
-        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone()),
-        crate::Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone()),
-    }
-    .ok()?;
+    let mut principal = cyphr::Principal::implicit(genesis.key()?.clone()).ok()?;
     let entry = replay_entry(&blobs, "", "").ok()?;
     crate::import::replay_commits(&mut principal, &[entry]).ok()?;
     Some(principal)
@@ -2918,21 +2908,19 @@ pub fn bare_digest(id: &str) -> &str {
     id.split_once(':').map_or(id, |(_, digest)| digest)
 }
 
-/// The id `genesis` derives (SPEC §3.1): its genesis-time Principal Root in
-/// the algorithm-labelled `ALG:digest` form, the one canonical spelling
-/// every storage and index key uses (for an implicit genesis the digest is
-/// the genesis key's `tmb`).
+/// The id `genesis` derives (SPEC §3.1): the Principal Root of its genesis
+/// key, by singleton promotion that key's `tmb`, in the algorithm-labelled
+/// `ALG:digest` form, the one canonical spelling every storage and index
+/// key uses. It keys a principal with no commit (Levels 1 and 2); a
+/// genesis commit keys its principal by PG instead (see `record_key`).
 ///
 /// # Errors
 ///
-/// Returns the protocol error genesis construction raises (e.g. an empty
-/// key set).
+/// `NoActiveKeys` for an explicit genesis listing no key; otherwise the
+/// protocol error genesis construction raises.
 pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
-    let principal = match genesis {
-        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone())?,
-        crate::Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone())?,
-    };
-    Ok(principal.pr_tagged()?)
+    let key = genesis.key().ok_or(cyphr::Error::NoActiveKeys)?;
+    Ok(cyphr::Principal::implicit(key.clone())?.pr_tagged()?)
 }
 
 /// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.

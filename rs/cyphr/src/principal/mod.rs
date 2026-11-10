@@ -208,13 +208,15 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) max_clock_skew: u64,
     /// Verifier time source for the future-timestamp bound.
     pub(crate) clock: Clock,
-    /// Base64 thumbprints of the genesis keys (keys present at construction).
-    pub(crate) genesis_keys: Vec<String>,
-    /// Genesis keys whose `key/create` has not yet been applied, in genesis
-    /// order. Every key enters through a `key/create`, the genesis keys
-    /// included (SPEC 5.1 step 1, 7.7 Example 1), so `principal/create`
-    /// refuses while one of these is still active.
-    pub(crate) uncreated_genesis: Vec<String>,
+    /// Base64 thumbprint of the genesis key, the key the principal was
+    /// constructed from.
+    pub(crate) genesis_key: String,
+    /// Whether the genesis key's own `key/create` has been applied. Every
+    /// key enters through a `key/create`, the genesis key included (SPEC
+    /// 5.1 step 1, 7.7 Example 1); the genesis key sits in the KT from
+    /// construction so a principal that never commits (Levels 1 and 2)
+    /// still has one, and this tells the two apart.
+    pub(crate) genesis_created: bool,
     /// `principal/delete` has been signed (SPEC.md §11.1 `Deleted`). No
     /// transaction sets this yet — the field exists for the derivation in
     /// [`crate::lifecycle`] to read; it is always `false` at this node's tip.
@@ -278,8 +280,8 @@ impl<S: eml::Storage> PrincipalCore<S> {
             latest_timestamp: self.latest_timestamp,
             max_clock_skew: self.max_clock_skew,
             clock: self.clock,
-            genesis_keys: self.genesis_keys.clone(),
-            uncreated_genesis: self.uncreated_genesis.clone(),
+            genesis_key: self.genesis_key.clone(),
+            genesis_created: self.genesis_created,
             deleted: self.deleted,
             deleted_pending: self.deleted_pending,
             genesis_pending: self.genesis_pending,
@@ -308,8 +310,8 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("latest_timestamp", &self.latest_timestamp)
             .field("max_clock_skew", &self.max_clock_skew)
             .field("clock", &(self.clock as usize))
-            .field("genesis_keys", &self.genesis_keys)
-            .field("uncreated_genesis", &self.uncreated_genesis)
+            .field("genesis_key", &self.genesis_key)
+            .field("genesis_created", &self.genesis_created)
             .field("deleted", &self.deleted)
             .field("deleted_pending", &self.deleted_pending)
             .field("genesis_pending", &self.genesis_pending)
@@ -483,53 +485,25 @@ impl StartingRoots {
     }
 }
 
-/// Validate the keys a principal is born with. Genesis is the one place a
-/// key enters the active set without a `key/create` replay, so it applies
-/// the refusals `key/create` gives: a revoked key is `KeyRevoked` (SPEC
-/// §7.7 requires a `key/create` for every key including the first; §6.4
-/// never trusts a revoked key again) and a repeated key is `DuplicateKey`,
-/// not silently collapsed. Revocation is checked for every key before
-/// duplication so both genesis paths report the same error for the same
-/// key. (An unsupported algorithm cannot reach here: [`Key`] has no
-/// constructor for one.)
-fn validate_genesis_keys(keys: &[Key]) -> Result<()> {
-    if keys.is_empty() {
-        return Err(Error::NoActiveKeys);
-    }
-    if keys.iter().any(|k| !k.is_active()) {
-        return Err(Error::KeyRevoked);
-    }
-    let mut seen = HashSet::with_capacity(keys.len());
-    if !keys.iter().all(|k| seen.insert(k.tmb().to_b64())) {
-        return Err(Error::DuplicateKey);
-    }
-    Ok(())
-}
-
 /// Open the Commit Tree over a caller-supplied storage backend.
 fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::CommitTrees<S>> {
     crate::commit_root::CommitTrees::open(storage).map_err(|e| Error::Storage(e.to_string()))
 }
 
 impl<S: eml::Storage> PrincipalCore<S> {
-    /// Assemble a principal's state from its keys, starting roots and
-    /// Commit Tree. Callers pass keys that [`validate_genesis_keys`]
-    /// accepted, so the active set never holds a revoked or repeated key.
-    /// Every constructor ends here, so a field added to
-    /// `PrincipalCore` or a change to how a fresh principal is filled is
-    /// made once. `keys` become both the active set and the genesis-key
-    /// list, in the order given.
+    /// Assemble a principal's state from its genesis key, starting roots
+    /// and Commit Tree. The caller has refused a revoked key, so the
+    /// active set never holds one. Every construction ends here, so a
+    /// field added to `PrincipalCore` or a change to how a fresh principal
+    /// is filled is made once.
     fn new(
-        keys: Vec<Key>,
+        key: Key,
         roots: StartingRoots,
         commit_trees: crate::commit_root::CommitTrees<S>,
     ) -> Self {
-        debug_assert!(validate_genesis_keys(&keys).is_ok());
-        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
+        let genesis_key = key.tmb().to_b64();
         let mut key_map = IndexMap::new();
-        for k in keys {
-            key_map.insert(k.tmb().to_b64(), k);
-        }
+        key_map.insert(genesis_key.clone(), key);
         let StartingRoots {
             kr,
             ar,
@@ -559,8 +533,8 @@ impl<S: eml::Storage> PrincipalCore<S> {
             latest_timestamp: 0,
             max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
             clock: system_clock,
-            uncreated_genesis: genesis_keys.clone(),
-            genesis_keys,
+            genesis_key,
+            genesis_created: false,
             deleted: false,
             deleted_pending: false,
             genesis_pending: false,
@@ -599,9 +573,8 @@ impl<S: eml::Storage> PrincipalCore<S> {
     /// The `pre` the arrow of the commit being formed binds (SPEC 4.2): the
     /// PR before it, except in the genesis commit, whose `pre` references
     /// the genesis key (SPEC 5.1 step 4): that key's own PR, its `tmb` by
-    /// singleton promotion (3.1), whatever other keys the principal was
-    /// built with. So a genesis commit reads the same from its blobs
-    /// however its producer seeded the key set.
+    /// singleton promotion (3.1), whatever other keys the genesis commit
+    /// creates.
     ///
     /// # Errors
     ///
@@ -612,9 +585,9 @@ impl<S: eml::Storage> PrincipalCore<S> {
             return Ok(self.pr.clone());
         }
         let genesis = self
-            .genesis_keys
-            .first()
-            .and_then(|tmb| self.auth.keys.get(tmb))
+            .auth
+            .keys
+            .get(&self.genesis_key)
             .ok_or(Error::UnknownKey)?;
         let algs = self.active_algs();
         let (_, _, sr) = crate::semantic_tree::derive_state_roots(
