@@ -246,6 +246,11 @@ pub struct LimitsConfig {
     /// Per-operation bucket for `POST /revoke`. Ordinary limits -- `/revoke`
     /// is not exempt from rate limiting.
     pub revoke: RateBucket,
+
+    /// The most keys the naked-revoke death set may hold. A naked revoke
+    /// needs no prior knowledge of its key, so this quota (with the rate
+    /// buckets) is what bounds the set; a revoke past it is refused `507`.
+    pub max_dead_keys: u64,
 }
 
 /// The expected upstream-authority signing identity for witness-mode sync
@@ -307,6 +312,7 @@ impl Default for LimitsConfig {
             push: writes,
             login: writes,
             revoke: writes,
+            max_dead_keys: 1_000_000,
         }
     }
 }
@@ -485,6 +491,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
     if config.limits.count_quota == 0 {
         return Err(ConfigError::LimitsCountQuotaZero);
     }
+    if config.limits.max_dead_keys == 0 {
+        return Err(ConfigError::LimitsMaxDeadKeysZero);
+    }
 
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::RotateKey(ref args) = cli.command {
@@ -572,6 +581,14 @@ pub enum ConfigError {
          intended per-principal commit cap"
     )]
     LimitsCountQuotaZero,
+
+    /// `[limits] max_dead_keys = 0` was configured, which refuses every
+    /// naked revoke.
+    #[error(
+        "limits.max_dead_keys is 0 -- this refuses every naked revoke; set it to the intended cap \
+         on the death set"
+    )]
+    LimitsMaxDeadKeysZero,
 }
 
 #[cfg(test)]

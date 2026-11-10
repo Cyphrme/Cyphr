@@ -844,7 +844,7 @@ pub async fn revoke(
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let verified = crate::revoke::interpret(&envelope, state.engine.indexer()).await?;
+    let verified = crate::revoke::interpret(&envelope).await?;
 
     // Store the full `{pay, sig, key}` envelope: self-contained evidence any
     // later reader can re-verify with no index.

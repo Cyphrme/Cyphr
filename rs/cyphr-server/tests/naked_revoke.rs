@@ -634,24 +634,52 @@ async fn rejects_wrong_typ() {
     assert_rejected(status, &json, "typ is not key/revoke");
 }
 
-/// A revoke for a `tmb` this server never indexed is rejected by the PRESENCE
-/// fence: the global key index has no entry for it, so the revoke is refused
-/// even with a valid disclosed self-signed key (the head-ratified conservative
-/// bound -- unknown keys are refused). `alice` is a valid pool key never pushed
-/// to this server, self-signing and disclosing its own revoke.
-///
-/// Behavior: green on both servers (both refuse an unindexed `tmb`); the
-/// reworked server refuses at the presence fence, the merged server at the
-/// key-index miss.
+/// The death set is bounded by the operator's quota, not by what the server
+/// has seen: with `[limits] max_dead_keys = 1`, a first self-signed revoke
+/// is recorded, a second key's is refused `507` (storage pressure relieved
+/// by refusal) and that key stays alive, while a re-revoke of the dead key
+/// is still accepted (it adds nothing). Turns red if the ceiling is not
+/// enforced (the second revoke is recorded) or a re-revoke of a recorded
+/// key is refused. End-to-end: yes (`/revoke` over HTTP).
 #[tokio::test]
-async fn rejects_unknown_tmb() {
-    let (state, _dir) = fresh_keyed_state();
+async fn death_set_is_bounded_by_the_operator_ceiling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let mut config = ServerConfig {
+        data_dir: dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: Some(AUDIENCE.to_string()),
+        ..Default::default()
+    };
+    config.limits.max_dead_keys = 1;
+    let state = Arc::new(AppState::new(config).expect("open keyed AppState"));
     let pool = common::load_pool();
-    bootstrap_golden_key_a(&state, &pool).await;
 
-    let coz = self_revoke_coz(&pool, "alice", serde_json::json!(RVK));
-    let (status, json) = post_revoke(&state, coz).await;
-    assert_rejected(status, &json, "tmb never indexed by this server");
+    let first = self_revoke_coz(&pool, "alice", serde_json::json!(RVK));
+    let (status, json) = post_revoke(&state, first.clone()).await;
+    assert!(
+        status.is_success(),
+        "the first revoke is recorded: {status} {json:?}"
+    );
+
+    let second = self_revoke_coz(&pool, "bob", serde_json::json!(RVK));
+    let (status, json) = post_revoke(&state, second).await;
+    assert_eq!(
+        status,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a revoke past the ceiling is refused: {json:?}"
+    );
+    let bob = pool.get("bob").expect("bob").compute_tmb().expect("tmb");
+    assert!(
+        !state.observations.is_dead(&bob).await.expect("death set"),
+        "the refused revoke recorded nothing"
+    );
+
+    let (status, json) = post_revoke(&state, first).await;
+    assert!(
+        status.is_success(),
+        "a re-revoke adds nothing: {status} {json:?}"
+    );
 }
 
 // ========================================================================

@@ -88,6 +88,10 @@ pub enum ObservationError {
     /// was read from it: a mis-decoded death set would un-revoke keys.
     #[error("death set format version {found} is not the supported {supported}")]
     UnsupportedVersion { found: u64, supported: u32 },
+    /// The death set already holds the operator's ceiling of keys
+    /// (`[limits] max_dead_keys`): a refusal of the new record, not a fault.
+    #[error("death set is full ({ceiling} keys)")]
+    Full { ceiling: u64 },
 }
 
 impl From<StampError> for ObservationError {
@@ -117,6 +121,11 @@ pub struct ObservationStore {
     /// per-insert durability is only `PersistMode::Buffer`).
     db: Database,
     dead_keys: Keyspace,
+    /// How many keys the death set holds, guarded so the ceiling check and
+    /// the insert are one step.
+    dead_count: std::sync::Arc<std::sync::Mutex<u64>>,
+    /// The most keys the death set may hold ([`Self::with_ceiling`]).
+    ceiling: u64,
 }
 
 impl ObservationStore {
@@ -129,7 +138,28 @@ impl ObservationStore {
         let dead_keys = db
             .keyspace("observations", KeyspaceCreateOptions::default)
             .map_err(backend)?;
-        Ok(Self { db, dead_keys })
+        let mut count = 0u64;
+        for entry in dead_keys.iter() {
+            entry.key().map_err(backend)?;
+            count += 1;
+        }
+        Ok(Self {
+            db,
+            dead_keys,
+            dead_count: std::sync::Arc::new(std::sync::Mutex::new(count)),
+            ceiling: u64::MAX,
+        })
+    }
+
+    /// Bound the death set to `ceiling` keys. A naked revoke needs no prior
+    /// knowledge of its key (a Level 1 key signs nothing a peer could have
+    /// seen, SPEC 6.4), so the set is bounded by this operator quota rather
+    /// than by what the server has seen; a revoke past it is refused
+    /// [`ObservationError::Full`] and nothing is stored.
+    #[must_use]
+    pub fn with_ceiling(mut self, ceiling: u64) -> Self {
+        self.ceiling = ceiling;
+        self
     }
 
     /// Record `tmb` as dead, retaining `coz` (the revoke as received) as the
@@ -163,12 +193,19 @@ impl ObservationStore {
             serde_json::to_vec(&coz).map_err(|e| ObservationError::Serialize(e.to_string()))?;
         let dead_keys = self.dead_keys.clone();
         let db = self.db.clone();
+        let (dead_count, ceiling) = (self.dead_count.clone(), self.ceiling);
         tokio::task::spawn_blocking(move || {
             if dead_keys.contains_key(&key).map_err(backend)? {
                 return Ok(());
             }
+            let mut count = dead_count.lock().unwrap_or_else(|p| p.into_inner());
+            if *count >= ceiling {
+                return Err(ObservationError::Full { ceiling });
+            }
             dead_keys.insert(key, value).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)
+            db.persist(PersistMode::SyncAll).map_err(backend)?;
+            *count += 1;
+            Ok(())
         })
         .await
         .map_err(|e| ObservationError::Join(e.to_string()))?

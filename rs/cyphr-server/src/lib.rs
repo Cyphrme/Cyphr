@@ -145,7 +145,8 @@ impl AppState {
             None => None,
         };
 
-        let observations = observation::ObservationStore::open(&config.observations_dir())?;
+        let observations = observation::ObservationStore::open(&config.observations_dir())?
+            .with_ceiling(config.limits.max_dead_keys);
 
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))

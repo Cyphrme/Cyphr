@@ -269,7 +269,9 @@ SPEC 3.1, line 298. Disposition: `covered`.
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_revoke_leaves_dead]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/dead_principal_rejects_commit]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/last_key_delete_leaves_dead]`
+  - `rs/cyphr-server/tests/transport.rs::a_never_pushed_level_one_key_can_be_naked_revoked`
 - fails when: a self-revoke of a principal's only key is refused (it was, with `NoActiveKeys`), or deleting the last key is refused, or the dying commit's roots are not the ruled ones (KR and AR derived from the nonces that remain and absent without any, SR equal to DR or absent, PR equal to CR when SR is absent, hashed under the pre-commit algorithm set), or the Dead principal accepts anything further. SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. Refusing the revoke leaves Mallory, who copied Alice's only key, a usable key after Alice's revoke.
+- note: the commit-borne tests above are the Level 3 case (a principal with a genesis commit revokes its last key in a commit). A Level 1 principal makes no commit (3.1 "No commit", 5.1 "No commit or PG exists"), so its self-revoke is a naked revoke (6.4: "signed outside of a commit"): the server records it with no prior knowledge of the key, and the key is then locked out (`a_never_pushed_level_one_key_can_be_naked_revoked`). A `key/revoke` in a commit on a principal that never committed is refused `GenesisIncomplete`.
 
 ```claim
 kind: requirement
@@ -566,8 +568,10 @@ SPEC 6.4, line 1075. Disposition: `covered`.
   - `rs/cyphr/tests/signer_seam.rs::revoked_signer_is_key_revoked`
   - `rs/cyphr-server/tests/naked_revoke.rs::revoked_key_refused_at_push`
   - `rs/cyphr-server/tests/naked_revoke.rs::revoked_key_refused_at_login_sibling_survives`
+  - `rs/cyphr-server/tests/transport.rs::a_never_pushed_level_one_key_can_be_naked_revoked`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/action_revoked_key_fails]`
 - fails when: a revoked key signs a commit, a push, a login or an action and is accepted. The in-tree copy has drifted here (see the drift table).
+- note: a naked revoke needs no prior knowledge of its key: a Level 1 key signs nothing a peer could have seen, so the revoke route verifies only the self-signature against the disclosed key and its thumbprint bind; the death set is bounded by the operator's `[limits] max_dead_keys` (refused `507` past it, `death_set_is_bounded_by_the_operator_ceiling`) and the `/revoke` rate buckets. Third-party revokes stay refused.
 
 ```claim
 kind: requirement

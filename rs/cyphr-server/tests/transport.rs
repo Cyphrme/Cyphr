@@ -881,6 +881,88 @@ async fn a_naked_revoked_initiator_key_is_refused() {
         .expect("the principal's other key still opens a session");
 }
 
+/// A naked revoke (SPEC 6.4) of `kp`'s key, self-signed, disclosing `disclosed`.
+fn naked_revoke_body(kp: &coz::KeyPair, tmb: &coz::Thumbprint, disclosed: &coz::KeyPair) -> String {
+    let pay = serde_json::json!({
+        "alg": kp.alg.name(),
+        "now": 1_700_000_000,
+        "rvk": 1_700_000_000,
+        "tmb": tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let (sig, _) = coz::sign_json(
+        &serde_json::to_vec(&pay).expect("pay"),
+        kp.alg.name(),
+        &kp.prv_bytes,
+        &kp.pub_bytes,
+    )
+    .expect("sign");
+    serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {
+            "alg": disclosed.alg.name(),
+            "pub": Base64UrlUnpadded::encode_string(&disclosed.pub_bytes),
+        },
+    })
+    .to_string()
+}
+
+/// Claim (SPEC 3.1 "Self-revoke results in permanent lockout", 6.4: a naked
+/// revoke is a self-signed declaration made outside any commit): the key of
+/// a Level 1 principal that never pushed anything, so no peer has seen it,
+/// can still be naked-revoked: the server records the revoke, and the key
+/// is then refused when it opens a session as its own principal. A revoke
+/// whose disclosed key does not thumbprint to the `tmb` it names is
+/// refused and kills nothing.
+///
+/// Turns red if: the revoke route requires the key to be known to the
+/// server (a presence fence), so a never-pushed key cannot be revoked; or
+/// a revoke binding a key to another key's thumbprint is accepted.
+/// End-to-end scenario: yes (Level 1 handshake, naked revoke over HTTP,
+/// handshake refused).
+#[tokio::test]
+async fn a_never_pushed_level_one_key_can_be_naked_revoked() {
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state.clone());
+    let (mut held, ..) = pinned_and_followed(&app).await;
+    let addr = start_noise(state).await;
+
+    let (kp, tmb) = fresh_key();
+    let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
+    NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+        .await
+        .expect("control: the Level 1 key opens a session before the revoke");
+
+    // A forgery: the revoke names the victim's thumbprint but discloses
+    // another key. It is refused and the victim stays alive.
+    let (other, _) = fresh_key();
+    let (status, resp) =
+        post_json(app.clone(), "/revoke", naked_revoke_body(&kp, &tmb, &other)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a disclosed key that does not thumbprint to tmb: {resp:?}"
+    );
+    NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+        .await
+        .expect("the refused forgery revoked nothing");
+
+    let (status, resp) = post_json(app.clone(), "/revoke", naked_revoke_body(&kp, &tmb, &kp)).await;
+    assert!(
+        status.is_success(),
+        "a never-pushed key's own revoke is accepted: {status} {resp:?}"
+    );
+    let err = NoiseConnector::connect(addr, &mut held, &signer, &tmb.to_b64())
+        .await
+        .err()
+        .expect("the naked-revoked Level 1 key is locked out");
+    assert!(
+        matches!(&err, TransportError::Refused { reason } if reason.contains("revoked")),
+        "{err:?}"
+    );
+}
+
 // ---- the transport carries the HTTP fences -------------------------------
 
 /// A keyed, bootstrapped server whose configuration `tweak` adjusts before
