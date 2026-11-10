@@ -25,6 +25,50 @@ pub struct PoolMeta {
     /// Named keys.
     #[serde(default)]
     pub key: Vec<PoolKey>,
+    /// Numbered keys: derived on load, never stored in the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numbered: Option<NumberedKeys>,
+}
+
+/// Recipe for the numbered keys `#0 .. #<count-1>`.
+///
+/// Key `#n` is the Ed25519 key whose private half is `SHA-256(seed "/" n)`
+/// (n in decimal). Ed25519 takes any 32 bytes as a private key, so the
+/// derivation needs no rejection loop. This is test material derived from a
+/// public seed: it protects nothing, and the seed is never a protocol hash
+/// input. Changing `seed` changes every numbered vector.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NumberedKeys {
+    /// Public seed mixed into every derivation.
+    pub seed: String,
+    /// How many numbered keys exist.
+    pub count: u32,
+}
+
+impl NumberedKeys {
+    /// The pool key named `#<n>`.
+    ///
+    /// # Errors
+    ///
+    /// `PoolValidation` if the Ed25519 public half cannot be derived.
+    pub fn key(&self, n: u32) -> Result<PoolKey, Error> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let prv = coz::HashAlg::Sha256.hash_bytes(format!("{}/{n}", self.seed).as_bytes());
+        let pub_key =
+            coz::Alg::Ed25519
+                .derive_public_key(&prv)
+                .ok_or_else(|| Error::PoolValidation {
+                    message: format!("numbered key #{n}: Ed25519 derivation failed"),
+                })?;
+        Ok(PoolKey {
+            name: format!("#{n}"),
+            alg: "Ed25519".to_string(),
+            pub_key: Base64UrlUnpadded::encode_string(&pub_key),
+            prv: Some(Base64UrlUnpadded::encode_string(&prv)),
+            tag: Some(format!("Numbered test key {n}")),
+        })
+    }
 }
 
 /// A key in the pool.
@@ -166,8 +210,21 @@ impl PoolKey {
 }
 
 impl Pool {
-    /// Load a pool from a TOML file.
+    /// Load a pool from a TOML file, with its numbered keys derived and
+    /// appended after the named ones.
     pub fn load(path: &Path) -> Result<Self, Error> {
+        let mut pool = Self::load_declared(path)?;
+        if let Some(numbered) = pool.pool.numbered.clone() {
+            for n in 0..numbered.count {
+                pool.pool.key.push(numbered.key(n)?);
+            }
+        }
+        Ok(pool)
+    }
+
+    /// Load a pool exactly as the file states it: named keys only. For
+    /// tools that rewrite the file, which must not persist derived keys.
+    pub fn load_declared(path: &Path) -> Result<Self, Error> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::Read {
             path: path.display().to_string(),
             source: e,
