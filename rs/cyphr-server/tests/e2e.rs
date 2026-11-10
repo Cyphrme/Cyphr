@@ -451,6 +451,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         let commit0 = test_fixtures::bundle::genesis_bundle(
             &mut principal,
             pool.get(signer).expect("signer key in pool"),
+            &[],
             1_700_000_100,
         )
         .expect("genesis commit");

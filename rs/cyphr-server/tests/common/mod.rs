@@ -172,12 +172,26 @@ pub fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
     blobs
 }
 
-/// The id the fixture's genesis derives (SPEC 3.1), i.e. the only
-/// `principal_id` `bootstrap_principal` may use for it.
+/// The id the fixture's genesis derives, i.e. the only `principal_id`
+/// `bootstrap_principal` may use for it: the PG its genesis commit names
+/// (SPEC 5.1), or for a fixture with none its genesis key's PR (SPEC 3.1).
 pub fn fixture_principal_id(fixture: &serde_json::Value) -> String {
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
-        .expect("fixture genesis derives an id")
+    let named = fixture["commits"]
+        .as_array()
+        .and_then(|commits| commits.first())
+        .and_then(|first| first["txs"].as_array())
+        .and_then(|txs| {
+            let blobs: Vec<Vec<u8>> = txs
+                .iter()
+                .filter_map(|tx| serde_json::to_vec(tx).ok())
+                .collect();
+            test_fixtures::bundle::genesis_id(&blobs)
+        });
+    named.unwrap_or_else(|| {
+        let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+        cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+            .expect("fixture genesis derives an id")
+    })
 }
 
 /// Bootstrap a principal into the engine via the validated write path, using
@@ -328,34 +342,42 @@ pub fn implicit_principal_id(pool: &test_fixtures::Pool, name: &str) -> String {
         .expect("pool key tmb")
 }
 
-/// The genesis keys [`build_genesis_push_body_with`] creates: `genesis_name`
-/// first, then `new_key_name`.
-fn genesis_push_principal(
+/// The principal [`build_genesis_push_body_with`] pushes and its genesis
+/// commit's blobs: `genesis_name` creates itself, then `new_key_name`.
+fn genesis_push(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
-) -> cyphr::Principal {
+    now: i64,
+) -> (cyphr::Principal, Vec<Vec<u8>>) {
     let key = |name: &str| {
         pool.get(name)
             .expect("key in pool")
             .key()
             .expect("pool key")
     };
-    cyphr::Principal::explicit(vec![key(genesis_name), key(new_key_name)])
-        .expect("explicit genesis")
+    let mut principal = cyphr::Principal::implicit(key(genesis_name)).expect("genesis");
+    let blobs = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get(genesis_name).expect("genesis key in pool"),
+        &[key(new_key_name)],
+        now,
+    )
+    .expect("genesis commit");
+    (principal, blobs)
 }
 
 /// The id (the PG) of the principal whose genesis commit
 /// [`build_genesis_push_body_with`] builds for `genesis_name` and
-/// `new_key_name`.
+/// `new_key_name`. The PG is the state the genesis keys root, whatever
+/// the commit's time.
 pub fn genesis_push_id(
     pool: &test_fixtures::Pool,
     genesis_name: &str,
     new_key_name: &str,
 ) -> String {
-    genesis_push_principal(pool, genesis_name, new_key_name)
-        .pr_tagged()
-        .expect("genesis PR")
+    let (_, blobs) = genesis_push(pool, genesis_name, new_key_name, 1);
+    test_fixtures::bundle::genesis_id(&blobs).expect("genesis PG")
 }
 
 /// The id of the standard test principal, the one `build_genesis_push_body`
@@ -372,14 +394,7 @@ pub fn genesis_pushed_principal(
     new_key_name: &str,
     now: i64,
 ) -> cyphr::Principal {
-    let mut principal = genesis_push_principal(pool, genesis_name, new_key_name);
-    test_fixtures::bundle::genesis_bundle(
-        &mut principal,
-        pool.get(genesis_name).expect("genesis key in pool"),
-        now,
-    )
-    .expect("genesis commit");
-    principal
+    genesis_push(pool, genesis_name, new_key_name, now).0
 }
 
 /// Build a brand-new principal's genesis push HTTP body: its genesis
@@ -395,13 +410,7 @@ pub fn build_genesis_push_body_with(
     principal_id: &str,
     now: i64,
 ) -> String {
-    let mut principal = genesis_push_principal(pool, genesis_name, new_key_name);
-    let blobs = test_fixtures::bundle::genesis_bundle(
-        &mut principal,
-        pool.get(genesis_name).expect("genesis key in pool"),
-        now,
-    )
-    .expect("genesis commit");
+    let (_, blobs) = genesis_push(pool, genesis_name, new_key_name, now);
     serde_json::json!({
         "principal_id": principal_id,
         "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),

@@ -144,7 +144,7 @@ fn build_chain(pool: &test_fixtures::Pool) -> Chain {
     .expect("key binds its tmb");
     let mut p = Principal::implicit(genesis_key).expect("implicit genesis");
     let id = p.pr_tagged().expect("PG");
-    let genesis_blobs = test_fixtures::bundle::genesis_bundle(&mut p, g, T).expect("genesis");
+    let genesis_blobs = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T).expect("genesis");
 
     let d = golden_tx(pool, "cyphr.me/cyphr/key/create", "key_a", true);
     let create_blobs = commit_blobs(&mut p, pool, &d);

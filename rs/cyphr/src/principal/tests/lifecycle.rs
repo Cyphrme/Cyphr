@@ -7,30 +7,6 @@ use crate::parsed_coz::VerifiedCoz;
 use crate::semantic_tree::{derive_state_roots, key_leaf};
 use crate::state::{compute_dr, derive_hash_algs};
 
-/// Backs SPEC 3.7 / levels: a multi-key explicit genesis is Level 3, has every key active and no
-/// principal genesis until `principal/create`. Unit: genesis is a constructor call; goldens start
-/// from an already-created principal.
-#[test]
-fn explicit_genesis_multi_key() {
-    let key1 = make_test_key(0x11);
-    let key2 = make_test_key(0x22);
-    let principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
-
-    // PR should be None (not yet established — needs principal/create)
-    assert!(
-        principal.pg().is_none(),
-        "PR should be None before principal/create"
-    );
-
-    // Should have 2 active keys
-    assert_eq!(principal.active_key_count(), 2);
-    assert!(principal.is_key_active(key1.tmb()));
-    assert!(principal.is_key_active(key2.tmb()));
-
-    // Level 3 due to multiple keys
-    assert_eq!(principal.level(), Level::L3);
-}
-
 // ========================================================================
 // Lifecycle state (SPEC.md §11)
 // ========================================================================
@@ -51,7 +27,8 @@ fn zombie_unreachable_across_constructed_principals() {
         crate::lifecycle::LifecycleState::Zombie
     );
 
-    let multi = Principal::explicit(vec![make_test_key(0xD3), make_test_key(0xD4)]).unwrap();
+    let mut multi = Principal::implicit(make_test_key(0xD3)).unwrap();
+    multi.genesis_test(vec![make_test_key(0xD4)]).unwrap();
     assert_ne!(
         multi.lifecycle_state(),
         crate::lifecycle::LifecycleState::Zombie
@@ -147,7 +124,7 @@ fn frozen_principal_is_default_deny_for_every_coz_kind() {
     let tmb = key.tmb().clone();
     let frozen = || {
         let mut p = Principal::implicit(key.clone()).unwrap();
-        p.genesis_test().unwrap();
+        p.genesis_test(Vec::new()).unwrap();
         let freeze = make_lifecycle_cz(CozKind::FreezeCreate { id: p.pr().clone() }, &tmb, 2000);
         p.apply_transaction_test(freeze, None).unwrap();
         assert!(p.is_frozen(), "premise: principal is frozen");
@@ -221,7 +198,7 @@ fn principal_delete_from_frozen_succeeds_and_clears_frozen() {
     let key = make_test_key(0xE1);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     let freeze_cz = make_lifecycle_cz(
         CozKind::FreezeCreate {
@@ -260,7 +237,7 @@ fn freeze_create_on_deleted_is_rejected() {
     let key = make_test_key(0xE2);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     let delete_cz = make_lifecycle_cz(
         CozKind::PrincipalDelete {
@@ -298,7 +275,7 @@ fn freeze_delete_on_non_frozen_is_rejected() {
     let key = make_test_key(0xE4);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     assert!(!principal.is_frozen());
 
@@ -337,8 +314,8 @@ fn build_deleted_principal() -> (Principal, Key, Key) {
 
     let key1 = make_test_key(0xD1);
     let key2 = make_test_key(0xD2);
-    let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
-    principal.genesis_test().unwrap();
+    let mut principal = Principal::implicit(key1.clone()).unwrap();
+    principal.genesis_test(vec![key2.clone()]).unwrap();
 
     let delete_cz = make_lifecycle_cz(
         CozKind::PrincipalDelete {
@@ -455,7 +432,7 @@ fn same_commit_delete_and_own_finalizer_succeeds() {
     let key = make_test_key(0xDA);
     let tmb = key.tmb().clone();
     let mut principal = Principal::implicit(key).unwrap();
-    principal.genesis_test().unwrap();
+    principal.genesis_test(Vec::new()).unwrap();
 
     let delete_cz = ParsedCoz {
         kind: CozKind::PrincipalDelete {
@@ -592,7 +569,7 @@ fn duplicate_nonce_and_absent_delete_are_typed_refusals() {
     let key = make_test_key(0xE5);
     let tmb = key.tmb().clone();
     let mut p = Principal::implicit(key).unwrap();
-    p.genesis_test().unwrap();
+    p.genesis_test(Vec::new()).unwrap();
     let nonce = Nonce::parse(
         "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         HashAlg::Sha256,

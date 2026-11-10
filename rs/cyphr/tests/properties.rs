@@ -188,8 +188,9 @@ fn arrow_domain_key(pk: &test_fixtures::PoolKey) -> Key {
 
 /// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
 /// genesis key's `key/create` of itself, the `principal/create` and the
-/// `commit/create`), signed by its genesis key `k`.
-fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey) -> Principal {
+/// `commit/create`), signed by its genesis key `k`, which creates
+/// each of `others` after itself.
+fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(
             &k.alg,
@@ -198,6 +199,7 @@ fn genesis_of(mut p: Principal, k: &test_fixtures::PoolKey) -> Principal {
             &coz::base64ct::Base64UrlUnpadded::decode_vec(&k.pub_key).expect("pub b64"),
             &k.compute_tmb().expect("tmb"),
         ),
+        others,
         1,
         "cyphr.me",
     )
@@ -353,8 +355,8 @@ proptest! {
         // genesis material, kept in lockstep by replaying the SAME signed
         // mutation bytes onto both (never re-signed — ECDSA signing is
         // randomized per call, so re-signing would desync their state).
-        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis);
-        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis);
+        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis, &[]);
+        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis, &[]);
         let mut scope_a = principal_a.begin_commit();
         let mut scope_b = principal_b.begin_commit();
 
@@ -410,8 +412,8 @@ proptest! {
         let genesis_tmb = genesis.compute_tmb().expect("genesis tmb");
         let now = 1_700_000_000i64;
 
-        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis);
-        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis);
+        let mut principal_a = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis a"), genesis, &[]);
+        let mut principal_b = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis b"), genesis, &[]);
         let mut scope_a = principal_a.begin_commit();
         let mut scope_b = principal_b.begin_commit();
 
@@ -478,7 +480,7 @@ proptest! {
         // Reference principal: learn the genuine arrow for this exact
         // mutation, so the tamper is a real single-byte flip of a value
         // that would otherwise be accepted — not arbitrary noise.
-        let mut principal_ref = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis ref"), genesis);
+        let mut principal_ref = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis ref"), genesis, &[]);
         let mut scope_ref = principal_ref.begin_commit();
         scope_ref
             .verify_and_apply(
@@ -510,7 +512,7 @@ proptest! {
         // Test principal: byte-identical mutation replay, then a REAL
         // signed commit/create coz carrying the tampered arrow, through
         // the actual write path (verify_and_apply, then finalize()).
-        let mut principal = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis test"), genesis);
+        let mut principal = genesis_of(Principal::implicit(arrow_domain_key(genesis)).expect("genesis test"), genesis, &[]);
         let mut scope = principal.begin_commit();
         scope
             .verify_and_apply(
@@ -536,7 +538,7 @@ proptest! {
     }
 }
 
-/// F40 regression: a genuinely fresh explicit multi-key genesis (2+ keys,
+/// F40 regression: a genuinely fresh multi-key genesis (2+ keys,
 /// zero prior commits) — signed and applied through the real production
 /// path (`CommitScope::verify_and_apply` + `finalize_with_software`, exactly
 /// as `cyphr-storage`'s write path and the CLI use it) — must accept a
@@ -557,30 +559,28 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
     let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
     let now = 1_700_000_000i64;
 
-    let mut principal = Principal::explicit(vec![arrow_domain_key(key_a), arrow_domain_key(key_b)])
-        .expect("explicit multi-key genesis construction");
+    let mut principal =
+        Principal::implicit(arrow_domain_key(key_a)).expect("genesis key construction");
     assert!(
         principal.pg().is_none(),
         "PG must not exist before principal/create"
     );
 
-    // pre-genesis PR == pre-genesis AR (singleton promotion, no CR/DR yet) —
-    // exactly what `principal/create`'s `id` field must carry per SPEC §5.1.
-    let id_tagged = principal
-        .pr_tagged()
-        .expect("pr_tagged should succeed for a fresh genesis");
-
     // ---- Commit #1: principal/create, establishing PG. ----
-    let (pc_pay, pc_sig, pc_czd) =
-        arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
     let mut scope1 = principal.begin_commit();
     scope1
         .create_genesis_keys(
             &cyphr::signer::SoftwareSigner::new("ES256", &prv_a, &pub_a, &tmb_a),
+            &[arrow_domain_key(key_b)],
             now,
             "cyphr.me",
         )
         .expect("genesis key/creates");
+    // The future SR after both creates, promoted to PR with no CR/DR —
+    // exactly what `principal/create`'s `id` field must carry per SPEC §5.1.
+    let id_tagged = scope1.genesis_id().expect("genesis id");
+    let (pc_pay, pc_sig, pc_czd) =
+        arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
     scope1
         .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis");
@@ -636,8 +636,11 @@ proptest! {
         let pool = arrow_pool();
         let golden = arrow_pool_key(&pool, "golden");
         let signer = arrow_pool_key(&pool, signer_name);
-        let keys = vec![arrow_domain_key(golden), arrow_domain_key(signer)];
-        let mut p = genesis_of(Principal::explicit(keys).expect("principal"), golden);
+        let mut p = genesis_of(
+            Principal::implicit(arrow_domain_key(golden)).expect("principal"),
+            golden,
+            &[arrow_domain_key(signer)],
+        );
 
         let pay = serde_json::to_vec(&serde_json::json!({
             "alg": signer.alg,

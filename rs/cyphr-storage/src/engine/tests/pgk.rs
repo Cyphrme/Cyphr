@@ -411,7 +411,7 @@ fn wire_blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
 /// `now` is; distinct `now` values give distinct commits at position 0.
 fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, Vec<Vec<u8>>, String) {
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
-    p.commit_genesis(&soft(g), now, "cyphr.me")
+    p.commit_genesis(&soft(g), &[], now, "cyphr.me")
         .expect("genesis commit");
     let blobs = wire_blobs(&p, 0);
     let pr = p.pr_tagged().expect("pr");
@@ -479,7 +479,7 @@ fn nonce_principal(g: &Kp, nonce: u8, later: u8) -> (cyphr::Principal, String, S
     let mut p = cyphr::Principal::implicit(key_of(g)).expect("genesis");
     let mut scope = p.begin_commit();
     scope
-        .create_genesis_keys(&soft(g), NOW, "cyphr.me")
+        .create_genesis_keys(&soft(g), &[], NOW, "cyphr.me")
         .expect("genesis key/create");
     let (pay, sig, czd) = signed(g, nonce_pay(nonce, NOW));
     scope

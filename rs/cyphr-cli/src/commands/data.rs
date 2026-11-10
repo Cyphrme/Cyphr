@@ -106,12 +106,12 @@ fn action(
         let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
         // An action is recorded against a committed principal, so the
         // genesis commit precedes the first action (as for any command).
-        super::init::commit_genesis(&mut principal, &keystore, &cli.authority)?;
+        super::init::commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
         save_principal_to_engine(&store, &keystore, &principal)?;
         principal.verify_and_record_action(&signed.pay_bytes, &signed.sig, signed.czd.clone())?;
 
         let principal_id = get_principal_id_from_principal(&principal, &keystore)?;
-        let genesis = local_genesis(&keystore, identity, &principal_id)?;
+        let genesis = local_genesis(&keystore, identity)?;
         let blob = serde_json::to_vec(&signed.wire())?;
         block_on(store.submit_commit(&principal_id, genesis, &[blob.as_slice()]))??;
     }
@@ -131,7 +131,7 @@ fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
     let key = keystore.get(signer_tmb)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
-    super::init::commit_genesis(&mut principal, &keystore, &cli.authority)?;
+    super::init::commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
 
     let now = current_timestamp();
     let mut scope = principal.begin_commit();

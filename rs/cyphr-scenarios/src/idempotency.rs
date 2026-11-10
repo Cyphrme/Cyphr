@@ -155,6 +155,7 @@ pub async fn replay_on_fresh_peer(
     let genesis = p
         .commit_genesis(
             &SoftwareSigner::new(&golden.alg, &golden.prv, &golden.pubb, &golden.tmb),
+            &[],
             T,
             "cyphr.me",
         )

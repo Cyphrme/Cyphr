@@ -696,7 +696,7 @@ async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
     let golden = pool.get("golden").expect("golden");
     let mut principal = cyphr::Principal::implicit(pool_key_to_domain(golden)).unwrap();
     let alice = principal.pr_tagged().unwrap();
-    let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, 1000).unwrap();
+    let blobs = test_fixtures::bundle::genesis_bundle(&mut principal, golden, &[], 1000).unwrap();
     let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
     engine
         .submit_commit(&alice, None, &refs)
@@ -938,22 +938,8 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     // Client-side principal: the sole source of truth for what a correctly
     // behaving signer computes as `pre`/arrow at each step. Never reloaded
     // via replay — mirrors a long-lived client session.
-    let mut client = cyphr::Principal::explicit(genesis_domain_keys).expect("client genesis");
-    let id_tagged = client
-        .pr_tagged()
-        .expect("pr_tagged should succeed for a fresh genesis");
-
-    // ---- Commit #1: principal/create + commit/create, establishing PG. ----
-    let pc_pay = serde_json::json!({
-        "alg": key_a.alg,
-        "id": id_tagged,
-        "now": now,
-        "tmb": a_tmb_b64,
-        "typ": "cyphr.me/cyphr/principal/create",
-    });
-    let (pc_pay_bytes, pc_sig) = sign_pay(key_a, pc_pay);
-    let pc_blob = raw_blob(&pc_pay_bytes, &pc_sig, None);
-
+    let mut client =
+        cyphr::Principal::implicit(genesis_domain_keys[0].clone()).expect("client genesis");
     let mut scope1 = client.begin_commit();
     use coz::base64ct::Encoding as _;
     let genesis_creates: Vec<Vec<u8>> = scope1
@@ -968,6 +954,7 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
                     .expect("golden pub base64"),
                 &tmb_a,
             ),
+            &genesis_domain_keys[1..],
             now,
             "cyphr.me",
         )
@@ -975,6 +962,21 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
         .iter()
         .map(|c| serde_json::to_vec(c).expect("key/create blob"))
         .collect();
+    // The future SR after every genesis key/create: the PG-to-be that
+    // `principal/create`'s `id` carries (SPEC 5.1 step 3).
+    let id_tagged = scope1.genesis_id().expect("genesis id");
+
+    // ---- Commit #1: principal/create + commit/create, establishing PG. ----
+    let pc_pay = serde_json::json!({
+        "alg": key_a.alg,
+        "id": &id_tagged,
+        "now": now,
+        "tmb": a_tmb_b64,
+        "typ": "cyphr.me/cyphr/principal/create",
+    });
+    let (pc_pay_bytes, pc_sig) = sign_pay(key_a, pc_pay);
+    let pc_blob = raw_blob(&pc_pay_bytes, &pc_sig, None);
+
     let pc_czd = {
         let cad = coz::canonical_hash_for_alg(&pc_pay_bytes, &key_a.alg, None).expect("cad");
         coz::czd_for_alg(&cad, &pc_sig, &key_a.alg).expect("czd")
@@ -1013,8 +1015,8 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     );
 
     let engine = test_engine();
-    let principal_id = genesis_principal_id(&genesis).unwrap();
-    let principal_id = principal_id.as_str();
+    // A genesis commit keys its principal by PG (SPEC 5.1).
+    let principal_id = id_tagged.as_str();
 
     engine
         .submit_commit(

@@ -387,12 +387,13 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         },
     };
 
-    // Create principal
-    let principal_res = if genesis_keys.len() == 1 {
-        Principal::implicit(genesis_keys.into_iter().next().unwrap())
-    } else {
-        Principal::explicit(genesis_keys)
-    };
+    // A principal is its genesis key, the first listed; every further key
+    // enters by a `key/create` the vector's commits carry (SPEC 5.1).
+    let genesis_key = genesis_keys
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("{}: no genesis key", fixture.name));
+    let principal_res = Principal::implicit(genesis_key);
 
     let mut principal = match principal_res {
         Ok(p) => p,

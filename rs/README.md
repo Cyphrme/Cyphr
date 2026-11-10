@@ -79,10 +79,10 @@ principal.record_action(action)?;
 
 ### Genesis
 
-| Function                    | Description                                   |
-| --------------------------- | --------------------------------------------- |
-| `Principal::implicit(key)`  | Single-key genesis, PR = key thumbprint       |
-| `Principal::explicit(keys)` | Multi-key genesis, PR = H(sorted thumbprints) |
+| Function                                         | Description                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------- |
+| `Principal::implicit(key)`                       | The only constructor: a principal is its genesis key, PR = key thumbprint |
+| `commit_genesis(signer, others, now, authority)` | Genesis commit (Level 3+): creates the genesis key and `others`, sets PG  |
 
 ### State Accessors
 

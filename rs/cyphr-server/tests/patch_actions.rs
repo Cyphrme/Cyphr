@@ -91,7 +91,7 @@ async fn fresh_client_replays_a_chain_holding_a_ds_create() {
     let g = pool.get("golden").expect("golden");
     let mut p = Principal::implicit(g.key().expect("golden key")).expect("implicit genesis");
     let id = p.pr_tagged().expect("PG");
-    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, T).expect("genesis");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T).expect("genesis");
     let (state, _dir) = keyless_server();
     let app = build_router(state);
     let (s, b) = post_json(app.clone(), "/push", push_body(&id, &genesis)).await;

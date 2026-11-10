@@ -389,8 +389,8 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 
     // Step 2: the genesis key is a HINT, made trustless by re-deriving the
     // PG from it alone -- never trusting discovery's `pg` claim directly.
-    let client = cyphr::Principal::explicit(vec![genesis_key.clone()])
-        .expect("the published genesis key reconstructs an explicit genesis");
+    let client = cyphr::Principal::implicit(genesis_key.clone())
+        .expect("the published genesis key reconstructs the genesis");
     let derived_pg = client
         .pr_tagged()
         .expect("pr_tagged for the reconstructed genesis");

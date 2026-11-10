@@ -1,10 +1,7 @@
 //! Genesis constructors, and the genesis finalization
 //! (`principal/create`) that freezes PG.
 
-use super::{
-    Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees,
-    validate_genesis_keys,
-};
+use super::{Principal, PrincipalCore, PrincipalKind, StartingRoots, open_commit_trees};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::semantic_tree::{derive_state_roots, key_leaf};
@@ -19,16 +16,20 @@ use crate::state::{PrincipalGenesis, derive_hash_algs};
 // every pre-existing call site that spells the bare `Principal` (which means
 // `Principal<eml::MemoryStorage>` via the type parameter's default) keeps
 // resolving to exactly these signatures with zero source changes. The
-// storage-parameterised siblings — `implicit_with_storage`,
-// `explicit_with_storage` — live on the generic impl block below.
+// storage-parameterised sibling, `implicit_with_storage`, lives on the
+// generic impl block below.
 impl Principal<eml::MemoryStorage> {
-    /// Create a principal with implicit genesis (single key).
+    /// Create a principal from its genesis key: the only constructor;
+    /// Levels 1-2 are this with no commit, Level 3+ commit their genesis
+    /// from it.
     ///
     /// Per SPEC §3.2: "Identity emerges from first key possession"
     /// - `PR = AR = KR = tmb` (fully promoted)
-    /// - PG is absent (L1/L2 have no PG per SPEC §5.1)
+    /// - PG is absent until a genesis commit's `principal/create` (SPEC 5.1)
     ///
-    /// This is the Level 1/2 genesis path.
+    /// A principal is its genesis key: every further key, those of a
+    /// multi-key genesis included, arrives by `key/create` (SPEC 5.1 step
+    /// 2, 5.3; see [`Principal::commit_genesis`]).
     ///
     /// # Errors
     ///
@@ -37,23 +38,6 @@ impl Principal<eml::MemoryStorage> {
     /// a revoked key is never trusted again (SPEC §6.4).
     pub fn implicit(key: Key) -> Result<Self> {
         Self::implicit_with_storage(key, eml::MemoryStorage::new())
-    }
-
-    /// Create a principal with explicit genesis (multiple keys), the first
-    /// being the genesis key.
-    ///
-    /// This is the Level 3+ genesis path. The keys form the KT the genesis
-    /// commit establishes, but none is created yet: the genesis commit
-    /// carries a `key/create` for each, signed by the genesis key, before
-    /// its `principal/create` (SPEC 5.1 step 1, 5.3, 7.7 Example 1; see
-    /// [`CommitScope::create_genesis_keys`](crate::commit::CommitScope::create_genesis_keys)).
-    ///
-    /// # Errors
-    ///
-    /// `NoActiveKeys` if `keys` is empty; `KeyRevoked` if any key carries
-    /// a revocation; `DuplicateKey` if a key appears twice.
-    pub fn explicit(keys: Vec<Key>) -> Result<Self> {
-        Self::explicit_with_storage(keys, eml::MemoryStorage::new())
     }
 }
 
@@ -93,11 +77,11 @@ impl<S: eml::Storage> Principal<S> {
     }
 
     // ========================================================================
-    // Genesis constructors (explicit storage)
+    // Genesis constructor (explicit storage)
     // ========================================================================
 
-    /// Create a principal with implicit genesis (single key), backed by the
-    /// given storage instance.
+    /// Create a principal from its genesis key, backed by the given storage
+    /// instance.
     ///
     /// See [`Principal::implicit`] for the SPEC-level contract; this is the
     /// same construction with the storage backend threaded through
@@ -107,39 +91,15 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// `KeyRevoked` if the key carries a revocation.
     pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
-        validate_genesis_keys(std::slice::from_ref(&key))?;
+        if !key.is_active() {
+            return Err(Error::KeyRevoked);
+        }
         let active_algs = derive_hash_algs(&[&key]);
 
         // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
         let (kr, ar, sr) = derive_state_roots(&[key_leaf(&key)], None, &active_algs)?;
         let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
-        let core = PrincipalCore::new(vec![key], roots, open_commit_trees(storage)?);
-        Ok(Self(Some(PrincipalKind::Nascent(core))))
-    }
-
-    /// Create a principal with explicit genesis (multiple keys), backed by
-    /// the given storage instance.
-    ///
-    /// See [`Principal::explicit`] for the SPEC-level contract; this is the
-    /// same construction with the storage backend threaded through
-    /// explicitly instead of defaulting to [`eml::MemoryStorage`].
-    ///
-    /// # Errors
-    ///
-    /// `NoActiveKeys` if `keys` is empty; `KeyRevoked` if any key carries
-    /// a revocation; `DuplicateKey` if a key appears twice.
-    pub fn explicit_with_storage(keys: Vec<Key>, storage: S) -> Result<Self> {
-        validate_genesis_keys(&keys)?;
-
-        // Derive active algorithms from all keys (SPEC §14)
-        let key_refs: Vec<&Key> = keys.iter().collect();
-        let active_algs = derive_hash_algs(&key_refs);
-
-        // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
-        let leaves: Vec<_> = keys.iter().map(key_leaf).collect();
-        let (kr, ar, sr) = derive_state_roots(&leaves, None, &active_algs)?;
-        let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
-        let core = PrincipalCore::new(keys, roots, open_commit_trees(storage)?);
+        let core = PrincipalCore::new(key, roots, open_commit_trees(storage)?);
         Ok(Self(Some(PrincipalKind::Nascent(core))))
     }
 }

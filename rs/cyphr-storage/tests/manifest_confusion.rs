@@ -1141,7 +1141,7 @@ mod replay {
     ) -> (String, cyphr::Principal) {
         let id = genesis_principal_id(&Genesis::Implicit(dk(pk))).unwrap();
         let mut client = cyphr::Principal::implicit(dk(pk)).unwrap();
-        let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, T).unwrap();
+        let blobs = test_fixtures::bundle::genesis_bundle(&mut client, pk, &[], T).unwrap();
         push(e, &id, &blobs).await.expect("genesis commit");
         (id, client)
     }

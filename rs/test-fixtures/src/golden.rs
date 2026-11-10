@@ -9,7 +9,7 @@
 //! ```
 //!
 //! The generator:
-//! 1. Creates a Principal from genesis keys (auto-promotion per spec)
+//! 1. Creates a Principal from its genesis key and commits its genesis
 //! 2. For each coz, captures `pre` from current state root
 //! 3. Builds and signs the Coz message
 //! 4. Applies the coz to the Principal
@@ -361,16 +361,19 @@ impl<'a> Generator<'a> {
     }
 
     /// Commit the genesis a test's intent does not state itself (SPEC 5.1,
-    /// 5.2, 5.3): the first genesis key creates itself and every further
-    /// genesis key, signs the `principal/create` and the `commit/create`.
+    /// 5.2, 5.3): the first listed key, the genesis key, creates itself and
+    /// every further listed key, signs the `principal/create` and the
+    /// `commit/create`.
     ///
     /// Every commit chain begins with a genesis commit, so a test that
     /// commits gets one first, and a principal of more than one key
     /// (Level 3+) exists only through one. A single-key principal that
     /// never commits stays at Level 1/2 and has none. An intent states its
     /// own genesis by carrying the `principal/create` in its first commit
-    /// (to pin a genesis rule); a `principal/create` in any later commit
-    /// would need a commit before the genesis, which does not exist.
+    /// (to pin a genesis rule), and then lists only its genesis key: every
+    /// further key enters by a `key/create` the intent states. A
+    /// `principal/create` in any later commit would need a commit before
+    /// the genesis, which does not exist.
     fn commit_generated_genesis(
         &self,
         test: &TestIntent,
@@ -385,6 +388,11 @@ impl<'a> Generator<'a> {
                 .any(|t| t.typ.ends_with(cyphr::parsed_coz::typ::PRINCIPAL_CREATE))
         };
         match test.commit.iter().position(creates) {
+            Some(0) if test.principal.len() > 1 => {
+                return Err(invalid(
+                    "an intent stating its own genesis lists only the genesis key",
+                ));
+            },
             Some(0) => return Ok(()),
             Some(_) => {
                 return Err(invalid(
@@ -412,8 +420,12 @@ impl<'a> Generator<'a> {
             .first()
             .ok_or_else(|| invalid("no genesis key"))?;
         let signer = self.resolve_key(genesis)?.software_signer()?;
+        let others = test.principal[1..]
+            .iter()
+            .map(|name| self.pool_key_to_cyphr_key(name, &test.name))
+            .collect::<Result<Vec<_>, _>>()?;
         principal
-            .commit_genesis(&signer, now, "cyphr.me")
+            .commit_genesis(&signer, &others, now, "cyphr.me")
             .map_err(|e| Error::Generation {
                 name: test.name.clone(),
                 reason: format!("genesis commit: {e}"),
@@ -567,42 +579,22 @@ impl<'a> Generator<'a> {
         ))
     }
 
-    /// Create a Principal from genesis key names.
-    ///
-    /// Uses auto-promotion rules per spec:
-    /// - 1 key → implicit genesis (Level 1/2)
-    /// - >1 keys → explicit genesis (Level 3+)
+    /// Create a Principal from its genesis key, the first of `key_names`
+    /// (SPEC 5.1 step 1). Every further key enters by `key/create`: the
+    /// generated genesis commit's, or the intent's own.
     fn create_principal(
         &self,
         key_names: &[String],
         test_name: &str,
     ) -> Result<cyphr::Principal, Error> {
-        if key_names.is_empty() {
-            return Err(Error::InvalidIntent {
-                message: format!("test '{}': principal requires at least one key", test_name),
-            });
-        }
-
-        // Convert pool keys to cyphr keys
-        let keys: Vec<cyphr::Key> = key_names
-            .iter()
-            .map(|name| self.pool_key_to_cyphr_key(name, test_name))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Auto-promotion: 1 key = implicit, >1 = explicit
-        if keys.len() == 1 {
-            cyphr::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|source| {
-                Error::GenesisFailed {
-                    name: test_name.to_string(),
-                    source,
-                }
-            })
-        } else {
-            cyphr::Principal::explicit(keys).map_err(|source| Error::GenesisFailed {
-                name: test_name.to_string(),
-                source,
-            })
-        }
+        let genesis = key_names.first().ok_or_else(|| Error::InvalidIntent {
+            message: format!("test '{}': principal requires at least one key", test_name),
+        })?;
+        let key = self.pool_key_to_cyphr_key(genesis, test_name)?;
+        cyphr::Principal::implicit(key).map_err(|source| Error::GenesisFailed {
+            name: test_name.to_string(),
+            source,
+        })
     }
 
     /// Convert a pool key name to a cyphr::Key.

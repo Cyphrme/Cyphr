@@ -61,10 +61,12 @@ fn signer(name: &str) -> Signer {
 
 /// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
 /// genesis key's `key/create` of itself, the `principal/create` and the
-/// `commit/create`), signed by its genesis key `k`.
-fn genesis_of(mut p: Principal, k: &Signer) -> Principal {
+/// `commit/create`), signed by its genesis key `k`, which creates
+/// each of `others` after itself.
+fn genesis_of(mut p: Principal, k: &Signer, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
+        others,
         1,
         "cyphr.me",
     )
@@ -88,7 +90,11 @@ impl Peer {
         )
         .expect("key binds its tmb")
         .with_first_seen(NOW);
-        let principal = genesis_of(Principal::implicit(key).expect("implicit genesis"), &signer);
+        let principal = genesis_of(
+            Principal::implicit(key).expect("implicit genesis"),
+            &signer,
+            &[],
+        );
         Self { signer, principal }
     }
 

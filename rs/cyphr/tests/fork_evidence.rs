@@ -47,10 +47,16 @@ fn domain_key(s: &Signer) -> Key {
 
 /// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
 /// genesis key's `key/create` of itself, the `principal/create` and the
-/// `commit/create`), signed by its genesis key `k`.
-fn genesis_of<S: cyphr::eml::Storage>(mut p: Principal<S>, k: &Signer) -> Principal<S> {
+/// `commit/create`), signed by its genesis key `k`, which creates
+/// each of `others` after itself.
+fn genesis_of<S: cyphr::eml::Storage>(
+    mut p: Principal<S>,
+    k: &Signer,
+    others: &[Key],
+) -> Principal<S> {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pub_key, &k.tmb),
+        others,
         1,
         "cyphr.me",
     )
@@ -118,8 +124,9 @@ fn fork_branches_verify_from_fresh_ancestors() {
     let (g, a) = (signer("golden"), signer("key_a"));
     let fresh = || {
         genesis_of(
-            Principal::explicit(vec![domain_key(&g), domain_key(&a)]).expect("ancestor"),
+            Principal::implicit(domain_key(&g)).expect("ancestor"),
             &g,
+            &[domain_key(&a)],
         )
     };
 
@@ -150,8 +157,9 @@ fn fork_branches_verify_from_fresh_ancestors() {
 fn fork_branches_from_cloned_ancestor() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let ancestor = genesis_of(
-        Principal::explicit(vec![domain_key(&golden), domain_key(&key_a)]).expect("ancestor"),
+        Principal::implicit(domain_key(&golden)).expect("ancestor"),
         &golden,
+        &[domain_key(&key_a)],
     );
 
     let mut a = ancestor.clone();
@@ -217,7 +225,11 @@ mod clone_independence {
             let targets: Vec<Signer> = order[..take].iter().map(|n| signer(n)).collect();
             let mut keys = vec![domain_key(&golden), domain_key(&key_a)];
             keys.extend(["alice", "bob"].iter().map(|n| domain_key(&signer(n))));
-            let ancestor = genesis_of(Principal::explicit(keys).expect("ancestor"), &golden);
+            let ancestor = genesis_of(
+                Principal::implicit(keys[0].clone()).expect("ancestor"),
+                &golden,
+                &keys[1..],
+            );
 
             let mut a = ancestor.clone();
             let mut b = ancestor.clone();
@@ -291,17 +303,19 @@ mod clone_independence {
 #[test]
 fn commit_scope_records_to_own_principal_memory_and_durable() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
-    let keys = || vec![domain_key(&golden), domain_key(&key_a)];
+    let others = [domain_key(&key_a)];
 
     let mut mem = genesis_of(
-        Principal::explicit(keys()).expect("memory principal"),
+        Principal::implicit(domain_key(&golden)).expect("memory principal"),
         &golden,
+        &others,
     );
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage_fjall::FjallStorage::open(dir.path()).expect("open fjall");
     let mut disk = genesis_of(
-        Principal::explicit_with_storage(keys(), storage).expect("durable principal"),
+        Principal::implicit_with_storage(domain_key(&golden), storage).expect("durable principal"),
         &golden,
+        &others,
     );
 
     let (mem_pr, disk_pr) = (format!("{:?}", mem.pr()), format!("{:?}", disk.pr()));

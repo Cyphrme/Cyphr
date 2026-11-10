@@ -97,8 +97,8 @@ fn create_key(p: &mut cyphr::Principal, signer: &Kp, new: &Kp, now: i64) {
 /// A principal over the genesis `keys` (the first signs) after its genesis
 /// commit (SPEC 5.1) at `now`.
 fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
-    let mut p = cyphr::Principal::explicit(keys.iter().map(|k| key_of(k)).collect())
-        .expect("explicit genesis");
+    let mut p = cyphr::Principal::implicit(key_of(keys[0])).expect("genesis");
+    let others: Vec<cyphr::Key> = keys[1..].iter().map(|k| key_of(k)).collect();
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(
             &keys[0].alg,
@@ -106,6 +106,7 @@ fn genesis_commit(keys: &[&Kp], now: i64) -> cyphr::Principal {
             &keys[0].pubb,
             &keys[0].tmb,
         ),
+        &others,
         now,
         "cyphr.me",
     )
@@ -251,8 +252,7 @@ impl Pr {
     /// The principal before its genesis commit: what a client replays the
     /// fetched chain onto.
     fn genesis(&self) -> cyphr::Principal {
-        cyphr::Principal::explicit(vec![key_of(&self.g), key_of(&self.a)])
-            .expect("explicit genesis")
+        cyphr::Principal::implicit(key_of(&self.g)).expect("genesis")
     }
 
     /// Another genesis commit of the same principal (same genesis keys,

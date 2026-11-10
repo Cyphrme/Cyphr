@@ -244,15 +244,15 @@ async fn bootstrap_active_with_key(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::explicit(vec![key(genesis_name), key(add_key)])
-        .expect("explicit genesis");
-    let principal_id = principal.pr_tagged().expect("PG");
+    let mut principal = cyphr::Principal::implicit(key(genesis_name)).expect("genesis");
     let blobs = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get(genesis_name).expect("genesis key in pool"),
+        &[key(add_key)],
         1_700_000_000,
     )
     .expect("genesis commit");
+    let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
     let body = serde_json::json!({
         "principal_id": principal_id,

@@ -604,6 +604,7 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     let id = g.tmb.to_b64();
     base.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
+        &[],
         1_700_099_999,
         "cyphr.me",
     )

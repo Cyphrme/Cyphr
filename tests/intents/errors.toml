@@ -13,19 +13,13 @@ principal = ["unsupported_key"]
 [test.expected]
 error = "UnknownAlg"
 
-# Genesis naming the same key twice is refused, not collapsed to one key
-[[test]]
-name      = "duplicate_genesis_key_fails"
-principal = ["golden", "key_a", "golden"]
-
-[test.expected]
-error = "DuplicateKey"
-
-# Genesis never creates a key implicitly (SPEC 5.1 step 1, 7.7 Example 1):
-# principal/create while a genesis key lacks its key/create is refused
+# Genesis never creates a key implicitly (SPEC 5.1 step 1, 7.7 Example 1,
+# 15.6): a principal/create naming as its id the two-key root over golden
+# and key_a, with no key/create of key_a, names a state the genesis never
+# reached and is refused
 [[test]]
 name      = "principal_create_without_genesis_key_create_fails"
-principal = ["golden", "key_a"]
+principal = ["golden"]
 
 [[test.commit]]
 tx = [
@@ -33,12 +27,12 @@ tx = [
     { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
   [
-    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+    { now = 1700000000, signer = "golden", target = "raw:SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
 
 [test.expected]
-error = "GenesisIncomplete"
+error = "StateMismatch"
 
 # A genesis opens with the genesis key's own key/create (SPEC 5.1 steps 1-2,
 # 5.3; 13.2 step 3: before it KR is empty, so no other coz verifies). Here
@@ -63,12 +57,12 @@ tx = [
 [test.expected]
 error = "UnknownKey"
 
-# A genesis key signs only once its own key/create is applied (SPEC 5.1
-# steps 1-2; 13.2 step 3: the signer's tmb must be in the current KR). Here
-# key_a, a genesis key not yet created, signs the key/create of alice.
+# A key signs only once its own key/create is applied (SPEC 5.1 steps 1-2;
+# 13.2 step 3: the signer's tmb must be in the current KR). Here key_a, a
+# key the genesis has not created, signs the key/create of alice.
 [[test]]
 name      = "uncreated_genesis_key_signs_fails"
-principal = ["golden", "key_a", "alice"]
+principal = ["golden"]
 
 [[test.commit]]
 tx = [

@@ -1661,11 +1661,11 @@ fn build_chained_push_bodies(
             .key()
             .expect("pool key")
     };
-    let mut principal = cyphr::Principal::explicit(vec![key("golden"), key(key_names[0])])
-        .expect("explicit genesis");
+    let mut principal = cyphr::Principal::implicit(key("golden")).expect("genesis");
     let c0 = test_fixtures::bundle::genesis_bundle(
         &mut principal,
         pool.get("golden").expect("golden key"),
+        &[key(key_names[0])],
         now,
     )
     .expect("genesis commit");

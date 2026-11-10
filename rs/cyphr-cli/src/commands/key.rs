@@ -164,7 +164,7 @@ pub(crate) fn apply_key_create(
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
-    super::init::commit_genesis(principal, keystore, authority)?;
+    super::init::commit_genesis(principal, keystore, &[], authority)?;
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 
@@ -226,7 +226,7 @@ pub(crate) fn apply_key_revoke(
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
-    super::init::commit_genesis(principal, keystore, authority)?;
+    super::init::commit_genesis(principal, keystore, &[], authority)?;
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 

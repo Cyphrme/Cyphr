@@ -157,10 +157,10 @@ impl PeerChain {
     /// refusal, so [`follow`](Self::follow) and every verification report
     /// [`PeerFailure::PinMismatch`] and trust nothing.
     ///
-    /// The pin is a single genesis key. A peer with a multi-key
-    /// explicit genesis derives its PG from the whole key set, so no one
-    /// key can match it: such a peer can never be pinned and fails closed
-    /// with `PinMismatch`.
+    /// The pin is a single genesis key. A peer whose genesis commit
+    /// creates further keys derives its PG from the whole key set, so the
+    /// genesis key alone cannot match it: such a peer can never be pinned
+    /// and fails closed with `PinMismatch`.
     #[must_use]
     pub fn pin(pg: &str, genesis: Key) -> Self {
         let pin = match Principal::implicit(genesis.clone()) {

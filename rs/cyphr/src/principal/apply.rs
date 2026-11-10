@@ -52,8 +52,9 @@ impl<S: eml::Storage> Principal<S> {
     }
 
     /// Commit this principal's genesis (SPEC 5.1-5.3), signed by `signer`,
-    /// the genesis key: its `key/create` of itself and of every further
-    /// genesis key, the `principal/create` and the `commit/create`.
+    /// the genesis key: its `key/create` of itself and of each of `others`
+    /// in order, the `principal/create` and the `commit/create`. A
+    /// single-key genesis passes no `others`.
     ///
     /// Returns the commit's wire cozies in order; each `key/create`
     /// discloses its key, so the genesis reads from the cozies alone.
@@ -67,11 +68,12 @@ impl<S: eml::Storage> Principal<S> {
     pub fn commit_genesis(
         &mut self,
         signer: &crate::signer::SoftwareSigner,
+        others: &[Key],
         now: i64,
         authority: &str,
     ) -> Result<Vec<serde_json::Value>> {
         let mut scope = self.begin_commit();
-        let mut cozies = scope.create_genesis_keys(signer, now, authority)?;
+        let mut cozies = scope.create_genesis_keys(signer, others, now, authority)?;
         cozies.push(scope.create_principal(signer, now, authority)?);
         let commit = scope.finalize_with_software(signer, now, authority)?;
         let closing = commit.commit_tx().0.first().ok_or(Error::MissingCommit)?;
@@ -119,26 +121,26 @@ impl<S: eml::Storage> Principal<S> {
         self.commit_test(vec![(cz, new_key)])
     }
 
-    /// Commit the genesis without signatures (test-only): the first
-    /// genesis key creates itself and every other genesis key, then signs
-    /// the `principal/create` (SPEC 5.1). Unit tests build principals from
+    /// Commit the genesis without signatures (test-only): the genesis key
+    /// creates itself and each of `others`, then signs the
+    /// `principal/create` (SPEC 5.1). Unit tests build principals from
     /// dummy keys that cannot sign, so they reach an established principal
     /// through this rather than through a signed genesis commit.
     #[cfg(test)]
-    pub(crate) fn genesis_test(&mut self) -> Result<&Commit> {
+    pub(crate) fn genesis_test(&mut self, others: Vec<Key>) -> Result<&Commit> {
         use crate::parsed_coz::{CozKind, ParsedCoz};
         use crate::state::AuthRoot;
 
         // The earliest `now` every later coz may still use (SPEC 14.1: `now`
         // is at least 1 and never earlier than the latest seen).
         let now = self.latest_timestamp.max(1);
-        let signer = self
+        let genesis = self
             .auth
             .keys
-            .get(self.genesis_keys.first().ok_or(Error::NoActiveKeys)?)
+            .get(&self.genesis_key)
             .ok_or(Error::UnknownKey)?
-            .tmb()
             .clone();
+        let signer = genesis.tmb().clone();
         let coz = |kind, byte: u8| ParsedCoz {
             kind,
             signer: signer.clone(),
@@ -152,16 +154,20 @@ impl<S: eml::Storage> Principal<S> {
             },
         };
         let mut cozies = Vec::new();
-        for (i, tmb) in self.uncreated_genesis.iter().enumerate() {
-            let key = self.auth.keys.get(tmb).ok_or(Error::UnknownKey)?.clone();
+        for (i, key) in std::iter::once(genesis).chain(others).enumerate() {
             let kind = CozKind::KeyCreate {
                 id: key.tmb().clone(),
             };
             cozies.push((coz(kind, 0xF0 - i as u8), Some(key)));
         }
-        // `id` is the PR the creates leave, which is the genesis PR: they
-        // add no key the KT does not already hold.
-        let id = AuthRoot(self.pr.0.clone());
+        // `id` is the future SR the creates leave (SPEC 5.1 step 3).
+        let mut projected = self.share();
+        for (cz, key) in &cozies {
+            projected.apply_verified_internal(
+                crate::parsed_coz::VerifiedCoz::from_transaction_unsafe(cz.clone(), key.clone()),
+            )?;
+        }
+        let id = AuthRoot(projected.genesis_pr()?.0);
         cozies.push((coz(CozKind::PrincipalCreate { id }, 0xF1), None));
         self.commit_test(cozies)
     }
@@ -243,30 +249,28 @@ impl<S: eml::Storage> Principal<S> {
     /// key, KR is empty, so a transaction can only verify as the genesis
     /// key's own `key/create` (SPEC 5.1 steps 1-2, 5.3 "a genesis key
     /// constructs AT by adding itself", 13.2 step 3 "`tmb` belongs to a
-    /// key in current KR"). After it, a genesis key signs only once its
-    /// own `key/create` has been applied; any key so created may create
-    /// another (SPEC 3.3).
+    /// key in current KR"). After it, any key in KR may sign, and a key
+    /// so created may create another (SPEC 3.3).
     ///
-    /// The genesis keys sit in the KT from construction so the PG is known
-    /// before the genesis commit is signed (`principal/create` carries it
-    /// as `id`); `uncreated_genesis` is what tells those seeded keys apart
-    /// from keys in KR. A principal that never commits (Levels 1 and 2)
+    /// The genesis key sits in the KT from construction, so a principal
+    /// that never commits (Levels 1 and 2) has one; `genesis_created` is
+    /// what tells that seeded key apart from a key in KR. Such a principal
     /// signs data actions with its key uncreated; this rule binds
     /// transactions only.
     fn check_genesis_signer(&self, cz: &crate::parsed_coz::ParsedCoz) -> Result<()> {
         use crate::parsed_coz::CozKind;
 
-        let signer = cz.signer.to_b64();
-        if self.uncreated_genesis.len() == self.genesis_keys.len() {
-            let opens = matches!(&cz.kind, CozKind::KeyCreate { id } if id.to_b64() == signer)
-                && self.genesis_keys.first() == Some(&signer);
-            if !opens {
-                return Err(Error::UnknownKey);
-            }
-        } else if self.uncreated_genesis.contains(&signer) {
-            return Err(Error::UnknownKey);
+        if self.genesis_created {
+            return Ok(());
         }
-        Ok(())
+        let signer = cz.signer.to_b64();
+        let opens = matches!(&cz.kind, CozKind::KeyCreate { id } if id.to_b64() == signer)
+            && self.genesis_key == signer;
+        if opens {
+            Ok(())
+        } else {
+            Err(Error::UnknownKey)
+        }
     }
 
     /// Internal coz application logic.
@@ -398,17 +402,16 @@ impl<S: eml::Storage> Principal<S> {
                     return Err(Error::KeyRevoked);
                 }
                 let tmb = id.to_b64();
-                let uncreated = self.uncreated_genesis.iter().position(|t| *t == tmb);
-                if let Some(at) = uncreated.filter(|_| self.auth.keys.contains_key(&tmb)) {
-                    // SPEC 5.1 step 1, 5.3, 7.7 Example 1: a genesis key is
-                    // in the KT from construction, and its `key/create` is
-                    // the explicit add the genesis carries; the key it
+                if !self.genesis_created && tmb == self.genesis_key {
+                    // SPEC 5.1 step 1, 5.3, 7.7 Example 1: the genesis key
+                    // is in the KT from construction, and its `key/create`
+                    // is the explicit add the genesis carries; the key it
                     // discloses must be the one held. Who may sign it is
                     // `check_genesis_signer`'s rule.
                     if self.auth.keys.get(&tmb).map(Key::pub_key) != Some(key.pub_key()) {
                         return Err(Error::UnknownKey);
                     }
-                    self.core_mut().uncreated_genesis.remove(at);
+                    self.core_mut().genesis_created = true;
                 } else if self.auth.keys.contains_key(&tmb) {
                     return Err(Error::DuplicateKey);
                 } else {
@@ -450,20 +453,12 @@ impl<S: eml::Storage> Principal<S> {
             },
             CozKind::PrincipalCreate { id } => {
                 // Genesis finalization (SPEC 5.1): signed by the genesis key
-                // (the first key; 5.2 TX1, 5.3 TX2), so the rule reads the
-                // same however the producer seeded the other keys.
-                if self.genesis_keys.first() != Some(&cz.signer.to_b64()) {
+                // (5.2 TX1, 5.3 TX2), so the rule reads the
+                // same whatever other keys the genesis creates. Its own
+                // `key/create` has already been applied: before it,
+                // `check_genesis_signer` refuses every other transaction.
+                if self.genesis_key != cz.signer.to_b64() {
                     return Err(Error::UnknownKey);
-                }
-                // SPEC 7.7 Example 1: genesis does not create a key
-                // implicitly. A genesis key still active without its
-                // `key/create` is a key the genesis never created.
-                if self
-                    .uncreated_genesis
-                    .iter()
-                    .any(|tmb| self.auth.keys.contains_key(tmb))
-                {
-                    return Err(Error::GenesisIncomplete);
                 }
                 // SPEC 5.1 step 3, 5.2 TX1 "ID == PG == SR": `id` is the
                 // future SR, the state every genesis mutation before this

@@ -43,10 +43,12 @@ fn key_of(k: &Kp) -> Key {
 
 /// `p` with its genesis committed (SPEC 5.1: a commit chain begins with the
 /// genesis key's `key/create` of itself, the `principal/create` and the
-/// `commit/create`), signed by its genesis key `k`.
-fn genesis_of(mut p: Principal, k: &Kp) -> Principal {
+/// `commit/create`), signed by its genesis key `k`, which creates
+/// each of `others` after itself.
+fn genesis_of(mut p: Principal, k: &Kp, others: &[Key]) -> Principal {
     p.commit_genesis(
         &cyphr::signer::SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb),
+        others,
         1,
         "cyphr.me",
     )
@@ -116,13 +118,14 @@ fn commit_one(
         .map(|_| ())
 }
 
-/// Two-key principal `{a, b}` (explicit genesis), the shape every
+/// Two-key principal `{a, b}` (a two-key genesis), the shape every
 /// lifecycle and revoke scenario below starts from.
 fn two_key_principal() -> (Principal, Kp, Kp) {
     let (a, b) = (kp(), kp());
     let p = genesis_of(
-        Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("explicit genesis"),
+        Principal::implicit(key_of(&a)).expect("genesis"),
         &a,
+        &[key_of(&b)],
     );
     (p, a, b)
 }
@@ -135,7 +138,7 @@ fn two_key_principal() -> (Principal, Kp, Kp) {
 /// accepted and finalized.
 fn create_missing_field(missing: &str) -> cyphr::error::Result<()> {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let before = snapshot(&p);
     let mut pay = key_create_pay(&g, &k2.tmb, T);
     pay.as_object_mut().expect("object").remove(missing);
@@ -166,7 +169,7 @@ fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
         );
     }
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     commit_one(
         &mut p,
         &g,
@@ -521,7 +524,7 @@ fn s6_4_one_key_cannot_revoke_another() {
 #[test]
 fn s4_6_commit_coz_must_be_last_in_txs() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let before = snapshot(&p);
     let arrow = format!("SHA-512:{}", Base64UrlUnpadded::encode_string(&[7u8; 64]));
     let finalizer = sign(
@@ -561,7 +564,7 @@ fn s4_6_commit_coz_must_be_last_in_txs() {
 #[test]
 fn s2_2_13_key_create_without_revealed_pub_is_rejected() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let before = snapshot(&p);
     let r = commit_one(
         &mut p,
@@ -626,8 +629,9 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
     let (k3, k4) = (kp(), kp());
     let ancestor = || {
         genesis_of(
-            Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("ancestor"),
+            Principal::implicit(key_of(&a)).expect("ancestor"),
             &a,
+            &[key_of(&b)],
         )
     };
 
@@ -671,22 +675,30 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
 
 /// Backs SPEC 4 ("Merkle tree primitive must support n-arity"): the Key Tree
 /// is a Merkle tree, so a principal must be able to hold more keys than a
-/// fixed fan-out. Scenario: explicit genesis of 257 distinct keys. Control:
-/// 256 keys build. Turns red if the tree refuses a key set the SPEC does not
-/// bound. End to end: no; a unit-level boundary, because no scenario reaches
-/// 257 keys more cheaply.
+/// fixed fan-out. Scenario: a genesis commit creating 257 distinct keys.
+/// Control: 256 keys build. Turns red if the tree refuses a key set the SPEC
+/// does not bound. End to end: no; a unit-level boundary, because no
+/// scenario reaches 257 keys more cheaply.
 #[test]
 fn s4_key_tree_supports_more_than_256_keys() {
-    let keys = |n: usize| -> Vec<Key> { (0..n).map(|_| key_of(&kp())).collect() };
-    Principal::explicit(keys(256)).expect("control: 256 keys build");
-    let p = Principal::explicit(keys(257)).unwrap_or_else(|e| panic!("257 keys refused: {e:?}"));
+    let a = kp();
+    let genesis = |others: usize| {
+        let others: Vec<Key> = (0..others).map(|_| key_of(&kp())).collect();
+        genesis_of(
+            Principal::implicit(key_of(&a)).expect("principal"),
+            &a,
+            &others,
+        )
+    };
+    genesis(255);
+    let p = genesis(256);
     assert_eq!(p.active_key_count(), 257, "not every key is active");
 }
 
 /// Backs SPEC 4 ("Merkle tree primitive must support n-arity") as a
 /// lifecycle: a principal at the old 256-key bound can grow past it by signed
 /// `key/create`, and `key/delete` returns it to the earlier Key Root. Scenario:
-/// explicit genesis of 256 keys (control: builds today); `a` creates keys
+/// a genesis of 256 keys (control: builds today); `a` creates keys
 /// 257-259 one commit each, every Key Root distinct from all before it; `a`
 /// then deletes them in reverse and each Key Root equals the one recorded
 /// when that size was first reached. Turns red if: the 257th key is refused
@@ -700,8 +712,9 @@ fn key_tree_arity_growth_past_256_and_delete_restores_the_key_root() {
     let mut keys = vec![key_of(&a)];
     keys.extend((1..256).map(|_| key_of(&kp())));
     let mut p = genesis_of(
-        Principal::explicit(keys).expect("control: 256 keys build"),
+        Principal::implicit(keys[0].clone()).expect("principal"),
         &a,
+        &keys[1..],
     );
     let mut roots = vec![p.key_root().expect("live KR").clone()];
     let extra: Vec<Kp> = (0..3).map(|_| kp()).collect();
@@ -1156,8 +1169,9 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
     let (a, b, k3) = (kp(), kp(), kp());
     let build = || {
         let mut p = genesis_of(
-            Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis"),
+            Principal::implicit(key_of(&a)).expect("genesis"),
             &a,
+            &[key_of(&b)],
         );
         let d = sign(&a, key_delete_pay(&a, &k3.tmb, T));
         commit_one(
@@ -1212,8 +1226,9 @@ fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
 /// what rejects a replay. Returns the principal, D and the keys.
 fn reuse_fixture(a: &Kp, b: &Kp, k3: &Kp, d_signer: &Kp) -> (Principal, Signed) {
     let mut p = genesis_of(
-        Principal::explicit(vec![key_of(a), key_of(b)]).expect("genesis"),
+        Principal::implicit(key_of(a)).expect("genesis"),
         a,
+        &[key_of(b)],
     );
     let d = sign(d_signer, key_delete_pay(d_signer, &k3.tmb, T));
     commit_one(
@@ -1274,8 +1289,9 @@ fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
     // applying the very same cozes C and D is not rejected.
     let c = sign(&a, key_create_pay(&a, &k3.tmb, T));
     let mut other = genesis_of(
-        Principal::explicit(vec![key_of(&a), key_of(&b), key_of(&c3)]).expect("other"),
+        Principal::implicit(key_of(&a)).expect("other"),
         &a,
+        &[key_of(&b), key_of(&c3)],
     );
     commit_one(&mut other, &a, c, Some(key_of(&k3)), T).expect("other: C accepted");
     commit_one(&mut other, &a, d.clone(), None, T)
@@ -1336,8 +1352,9 @@ fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
 fn every_active_algorithms_cr_variant_advances_with_every_commit() {
     let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
     let mut p = genesis_of(
-        Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis"),
+        Principal::implicit(key_of(&a)).expect("genesis"),
         &a,
+        &[key_of(&b)],
     );
     let cr_variants = |p: &Principal| {
         p.cr()
@@ -1395,7 +1412,7 @@ fn s15_9_future_dated_message_is_rejected_by_default() {
     let now = unix_now();
     let outcome = |at: i64| {
         let (g, k2) = (kp(), kp());
-        let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+        let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
         let (pay, sig, czd) = sign(
             &g,
             json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
@@ -1436,7 +1453,7 @@ fn s15_9_future_dated_message_is_rejected_by_default() {
 /// `key/create` commit) on a default `Principal`, returning each outcome.
 fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let (pay, sig, czd) = sign(
         &g,
         json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
@@ -1500,7 +1517,7 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
     let alias = non_canonical_alias(&canonical);
     assert_ne!(alias, canonical, "premise: the alias differs");
 
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let mut pay = key_create_pay(&g, &k2.tmb, T);
     pay["id"] = json!(alias);
     let before = snapshot(&p);
@@ -1521,8 +1538,8 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
 // SPEC 2.3.2 (line 240): Principal Genesis is immutable
 // ============================================================================
 
-/// Backs SPEC 2.3.2: "No operation can change a PG." Scenario: an explicit
-/// principal establishes its PG, a second `principal/create` (the only
+/// Backs SPEC 2.3.2: "No operation can change a PG." Scenario: a two-key
+/// genesis establishes its PG, a second `principal/create` (the only
 /// writer of the PG) is refused with `StateMismatch`, then it runs every key operation (create,
 /// replace, delete of a genesis key, revoke); its PG is compared after each. Turns red if any
 /// operation changes the recorded PG. End to end: yes.
@@ -1531,14 +1548,14 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
 #[test]
 fn s2_3_2_no_operation_changes_the_principal_genesis() {
     let (a, b) = (kp(), kp());
-    let mut p = Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("explicit genesis");
-    let establish = json!({"alg": a.alg, "id": p.pr_tagged().expect("pr"), "now": T,
-                           "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
-    let (pay, sig, czd) = sign(&a, establish);
+    let mut p = Principal::implicit(key_of(&a)).expect("genesis");
     let mut scope = p.begin_commit();
     scope
-        .create_genesis_keys(&software(&a), T, "cyphr.me")
+        .create_genesis_keys(&software(&a), &[key_of(&b)], T, "cyphr.me")
         .expect("genesis key/creates");
+    let establish = json!({"alg": a.alg, "id": scope.genesis_id().expect("id"), "now": T,
+                           "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
+    let (pay, sig, czd) = sign(&a, establish);
     scope
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("principal/create establishes PG");
@@ -1635,7 +1652,7 @@ fn s7_7_fork_create_does_not_create_a_principal() {
 #[test]
 fn s11_2_dead_principal_accepts_no_transaction_or_action() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     p.pre_revoke_key(&g.tmb, T).expect("revoke the only key");
     assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
     let before = snapshot(&p);
@@ -1796,7 +1813,7 @@ proptest! {
             .iter()
             .map(|&ed| kp_alg(if ed { coz::Alg::Ed25519 } else { coz::Alg::ES256 }))
             .collect();
-        let mut p = genesis_of(Principal::implicit(key_of(&keys[0])).expect("genesis"), &keys[0]);
+        let mut p = genesis_of(Principal::implicit(key_of(&keys[0])).expect("genesis"), &keys[0], &[]);
         let mut wire: Vec<String> = vec![];
         for (i, k) in keys.iter().enumerate().skip(1) {
             let now = T + i64::try_from(i).expect("small");
@@ -1841,8 +1858,9 @@ proptest! {
 fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
     let (g, k2) = (kp(), kp());
     let mut two = genesis_of(
-        Principal::explicit(vec![key_of(&g), key_of(&k2)]).expect("genesis"),
+        Principal::implicit(key_of(&g)).expect("genesis"),
         &g,
+        &[key_of(&k2)],
     );
     commit_one(
         &mut two,
@@ -1853,7 +1871,7 @@ fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
     )
     .expect("control: a revoke with a second key left is accepted");
 
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let r = commit_one(
         &mut p,
         &g,
@@ -1910,7 +1928,7 @@ fn s3_1_dead_principal_after_last_key_revoke_records_no_action() {
     record(&mut two, &a, T + 2).expect("control: the surviving key still records actions");
 
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     record(&mut p, &g, T).expect("control: the lone key records an action while alive");
     let r = commit_one(
         &mut p,
@@ -1950,7 +1968,7 @@ fn variants_of(mh: &cyphr::multihash::MultihashDigest) -> BTreeMap<coz::HashAlg,
 #[test]
 fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     commit_one(
         &mut p,
         &g,
@@ -1984,7 +2002,7 @@ fn dead_principal_roots_are_absent_and_pr_is_cr_without_data() {
 #[test]
 fn dead_principal_roots_state_root_is_the_data_root() {
     let g = kp();
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let (pay, sig, czd) = sign(
         &g,
         json!({"alg": g.alg, "msg": "hi", "now": T, "tmb": b64(&g.tmb),
@@ -2039,8 +2057,9 @@ fn dead_principal_roots_state_root_is_the_data_root() {
 fn dead_principal_roots_hash_under_the_pre_commit_algorithm_set() {
     let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
     let mut p = genesis_of(
-        Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis"),
+        Principal::implicit(key_of(&a)).expect("genesis"),
         &a,
+        &[key_of(&b)],
     );
     let both: BTreeSet<coz::HashAlg> = [coz::HashAlg::Sha256, coz::HashAlg::Sha384]
         .into_iter()
@@ -2090,7 +2109,7 @@ fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
     assert_eq!(two.active_key_count(), 1);
 
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     let r = commit_one(
         &mut p,
         &g,
@@ -2128,7 +2147,7 @@ fn dead_principal_roots_key_delete_of_the_last_key_leaves_dead() {
 #[test]
 fn dead_principal_roots_are_final_no_further_commit() {
     let (g, k2) = (kp(), kp());
-    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+    let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
     commit_one(
         &mut p,
         &g,
@@ -2188,7 +2207,7 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
     for (alg, label, n) in algs {
         for path in paths {
             let g = kp_alg(alg);
-            let mut ok = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+            let mut ok = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
             let control = commit_one(
                 &mut ok,
                 &g,
@@ -2206,7 +2225,7 @@ fn s10_2_nonce_bit_length_must_match_the_declared_algorithm() {
             widths.sort_unstable();
             widths.dedup();
             for w in widths {
-                let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g);
+                let mut p = genesis_of(Principal::implicit(key_of(&g)).expect("genesis"), &g, &[]);
                 let before = snapshot(&p);
                 let r = commit_one(
                     &mut p,

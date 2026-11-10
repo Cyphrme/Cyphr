@@ -117,10 +117,15 @@ fn build(
     let keys: Vec<cyphr::Key> = std::iter::once(key_of(&g))
         .chain(genesis.iter().map(|name| key_of(&kp(pool, name))))
         .collect();
-    let mut p = cyphr::Principal::explicit(keys.clone()).expect("genesis");
-    let id = p.pr_tagged().expect("genesis id");
-    p.commit_genesis(&signer_of(&g), NOW, "cyphr.me")
-        .expect("genesis commit");
+    let mut p = cyphr::Principal::implicit(keys[0].clone()).expect("genesis");
+    let blobs = test_fixtures::bundle::genesis_bundle(
+        &mut p,
+        pool.get("golden").expect("golden"),
+        &keys[1..],
+        NOW,
+    )
+    .expect("genesis commit");
+    let id = test_fixtures::bundle::genesis_id(&blobs).expect("genesis id");
     for (n, name) in later.iter().enumerate() {
         commit_key_create(&mut p, &g, &kp(pool, name), NOW + 1 + n as i64);
     }

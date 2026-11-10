@@ -44,13 +44,14 @@ fn principal_create(kp: &coz::KeyPair, id: &str) -> (Vec<u8>, Vec<u8>, coz::Czd)
 /// The genesis commit of `kps` (the first is the genesis key) as wire
 /// blobs, and the PG it establishes.
 fn genesis_bundle(kps: &[coz::KeyPair]) -> (String, Vec<Vec<u8>>) {
-    let mut p = cyphr::Principal::explicit(kps.iter().map(key_of).collect()).expect("explicit");
-    let pg = p.pr_tagged().expect("pr");
+    let mut p = cyphr::Principal::implicit(key_of(&kps[0])).expect("genesis");
+    let others: Vec<cyphr::Key> = kps[1..].iter().map(key_of).collect();
     let signer = signer_of(&kps[0]);
     let mut scope = p.begin_commit();
     let creates = scope
-        .create_genesis_keys(&signer, NOW, "cyphr.me")
+        .create_genesis_keys(&signer, &others, NOW, "cyphr.me")
         .expect("genesis key/creates");
+    let pg = scope.genesis_id().expect("PG");
     let (pay, sig, czd) = principal_create(&kps[0], &pg);
     scope
         .verify_and_apply(&pay, &sig, czd, None)
@@ -94,8 +95,8 @@ fn typ_suffix(blob: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-/// Claim (SPEC 5.3, 7.7 Example 1): a two-key explicit genesis built by
-/// `Principal::explicit` is key/create(genesis key), key/create(second
+/// Claim (SPEC 5.3, 7.7 Example 1): a two-key genesis the core builds from
+/// its genesis key is key/create(genesis key), key/create(second
 /// key), principal/create, commit/create; the server's push route accepts
 /// it under its PG with both keys active, and a rebuild of the index from
 /// blobs alone replays it to the same tip.
@@ -189,9 +190,10 @@ async fn genesis_omitting_a_key_create_is_refused() {
         coz::Alg::ES256.generate_keypair(),
     ];
 
-    // Core: no key/create at all, the old two-coz genesis.
-    let mut p = cyphr::Principal::explicit(kps.iter().map(key_of).collect()).unwrap();
-    let pg = p.pr_tagged().unwrap();
+    // Core: no key/create at all, the old two-coz genesis, naming the PG
+    // the full genesis reaches.
+    let (pg, _) = genesis_bundle(&kps);
+    let mut p = cyphr::Principal::implicit(key_of(&kps[0])).unwrap();
     let (pay, sig, czd) = principal_create(&kps[0], &pg);
     let mut scope = p.begin_commit();
     let refused = scope.verify_and_apply(&pay, &sig, czd, None);
@@ -313,8 +315,7 @@ async fn a_created_genesis_key_may_create_the_next() {
         coz::Alg::ES256.generate_keypair(),
     ];
     let keys: Vec<cyphr::Key> = kps.iter().map(key_of).collect();
-    let mut p = cyphr::Principal::explicit(keys.clone()).expect("explicit");
-    let pg = p.pr_tagged().expect("pr");
+    let mut p = cyphr::Principal::implicit(keys[0].clone()).expect("genesis");
     let mut blobs = Vec::new();
     let mut scope = p.begin_commit();
     for (signer, target) in [
@@ -328,6 +329,7 @@ async fn a_created_genesis_key_may_create_the_next() {
             .unwrap_or_else(|e| panic!("key/create of {}: {e:?}", target.tmb().to_b64()));
         blobs.push(blob);
     }
+    let pg = scope.genesis_id().expect("PG");
     let (pay, sig, czd) = principal_create(&kps[0], &pg);
     scope
         .verify_and_apply(&pay, &sig, czd, None)

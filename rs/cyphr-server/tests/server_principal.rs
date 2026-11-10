@@ -79,11 +79,12 @@ async fn single_key_explicit_genesis_establishes_pg() {
         cyphr::Key::new(alg.clone(), tmb.clone(), kp.pub_bytes.clone()).expect("key binds its tmb");
     let genesis = Genesis::Explicit(vec![genesis_key.clone()]);
 
-    // Client-side: build the explicit principal and derive its PG.
-    let mut client = cyphr::Principal::explicit(vec![genesis_key]).expect("explicit genesis");
+    // Client-side: build the principal and derive its PG, which for a
+    // single-key genesis is the genesis key's own PR (SPEC 5.2).
+    let mut client = cyphr::Principal::implicit(genesis_key).expect("genesis");
     let pg_tagged = client
         .pr_tagged()
-        .expect("pr_tagged for a fresh single-key explicit genesis");
+        .expect("pr_tagged for a fresh single-key genesis");
 
     let now = 1_700_000_000i64;
     let pc_pay = serde_json::json!({
@@ -104,6 +105,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
     let kc_blob = scope
         .create_genesis_keys(
             &cyphr::signer::SoftwareSigner::new(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb),
+            &[],
             now,
             "cyphr.me",
         )

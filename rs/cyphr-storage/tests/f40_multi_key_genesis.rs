@@ -99,10 +99,32 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let genesis_domain_keys = vec![pool_key_to_domain(key_a), pool_key_to_domain(key_b)];
     let genesis = Genesis::Explicit(genesis_domain_keys.clone());
 
-    let mut client = cyphr::Principal::explicit(genesis_domain_keys).expect("client genesis");
-    let id_tagged = client
-        .pr_tagged()
-        .expect("pr_tagged should succeed for a fresh genesis");
+    let mut client =
+        cyphr::Principal::implicit(genesis_domain_keys[0].clone()).expect("client genesis");
+    let mut scope1 = client.begin_commit();
+    let genesis_creates: Vec<Vec<u8>> = scope1
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(
+                &key_a.alg,
+                &coz::base64ct::Base64UrlUnpadded::decode_vec(
+                    key_a.prv.as_ref().expect("golden has prv"),
+                )
+                .expect("golden prv base64"),
+                &coz::base64ct::Base64UrlUnpadded::decode_vec(&key_a.pub_key)
+                    .expect("golden pub base64"),
+                &tmb_a,
+            ),
+            &genesis_domain_keys[1..],
+            now,
+            "cyphr.me",
+        )
+        .expect("genesis key/creates (SPEC 7.7 Example 1)")
+        .iter()
+        .map(|c| serde_json::to_vec(c).expect("key/create blob"))
+        .collect();
+    // The future SR after every genesis key/create: the PG-to-be that
+    // `principal/create`'s `id` carries (SPEC 5.1 step 3).
+    let id_tagged = scope1.genesis_id().expect("genesis id");
 
     let pc_pay = serde_json::json!({
         "alg": key_a.alg,
@@ -118,26 +140,6 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         coz::czd_for_alg(&cad, &pc_sig, &key_a.alg).expect("czd")
     };
 
-    let mut scope1 = client.begin_commit();
-    let genesis_creates: Vec<Vec<u8>> = scope1
-        .create_genesis_keys(
-            &cyphr::signer::SoftwareSigner::new(
-                &key_a.alg,
-                &coz::base64ct::Base64UrlUnpadded::decode_vec(
-                    key_a.prv.as_ref().expect("golden has prv"),
-                )
-                .expect("golden prv base64"),
-                &coz::base64ct::Base64UrlUnpadded::decode_vec(&key_a.pub_key)
-                    .expect("golden pub base64"),
-                &tmb_a,
-            ),
-            now,
-            "cyphr.me",
-        )
-        .expect("genesis key/creates (SPEC 7.7 Example 1)")
-        .iter()
-        .map(|c| serde_json::to_vec(c).expect("key/create blob"))
-        .collect();
     scope1
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis (client side)");

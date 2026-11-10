@@ -1,25 +1,13 @@
 {
   "name": "uncreated_genesis_key_signs_fails",
   "principal": [
-    "golden",
-    "key_a",
-    "alice"
+    "golden"
   ],
   "genesis_keys": [
     {
       "alg": "ES256",
       "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-    },
-    {
-      "alg": "ES256",
-      "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-    },
-    {
-      "alg": "ES256",
-      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
-      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
     }
   ],
   "commits": [
@@ -70,12 +58,12 @@
     "n-lvWixwXMwgAjDDjqK5MwEwci1w2vD4FL2eZHrEKg8"
   ],
   "expected": {
-    "key_count": 3,
-    "level": 3,
-    "kr": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
-    "ar": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
-    "pr": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
-    "sr": "SHA-256:WltwQIM-Cy2kugX4nnaB7p0LopPoxsLErA_q_KmyI-s",
+    "key_count": 1,
+    "level": 1,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
     "error": "UnknownKey",
     "deleted": false,

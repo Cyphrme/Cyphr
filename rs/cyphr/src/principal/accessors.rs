@@ -89,11 +89,12 @@ impl<S: eml::Storage> Principal<S> {
         }
     }
 
-    /// Get the genesis keys of this principal.
-    pub fn genesis_keys(&self) -> &[String] {
+    /// The base64 thumbprint of this principal's genesis key, the key it
+    /// was constructed from (SPEC 5.1 step 1).
+    pub fn genesis_key(&self) -> &str {
         match self.kind() {
-            PrincipalKind::Nascent(core) => &core.genesis_keys,
-            PrincipalKind::Established { core, .. } => &core.genesis_keys,
+            PrincipalKind::Nascent(core) => &core.genesis_key,
+            PrincipalKind::Established { core, .. } => &core.genesis_key,
         }
     }
 

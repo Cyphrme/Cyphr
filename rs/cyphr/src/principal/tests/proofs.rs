@@ -25,8 +25,8 @@ fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<K
     use crate::parsed_coz::{CozKind, ParsedCoz};
 
     let mut keys = vec![make_test_key(0x01), make_test_key_ed25519(0x02)];
-    let mut principal = Principal::explicit(keys.clone()).unwrap();
-    principal.genesis_test().unwrap();
+    let mut principal = Principal::implicit(keys[0].clone()).unwrap();
+    principal.genesis_test(keys[1..].to_vec()).unwrap();
     let signer = keys[0].tmb().clone();
 
     for i in 0..n_commits {

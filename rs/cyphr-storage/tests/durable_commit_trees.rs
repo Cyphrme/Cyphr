@@ -172,7 +172,7 @@ fn finalize_commit_rejects_mismatched_orphan_leaf() {
         let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
 
         let mut principal =
-            cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
+            cyphr::Principal::implicit_with_storage(keys[0].clone(), eml_storage).unwrap();
 
         // Apply the first two commits live and normally — real leaves at
         // durable positions 0 and 1.
@@ -251,7 +251,7 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
             .expect("blob put");
 
         let mut principal =
-            cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
+            cyphr::Principal::implicit_with_storage(keys[0].clone(), eml_storage).unwrap();
 
         for commit in commits {
             apply_golden_commit(&mut principal, commit).expect("finalize failed");

@@ -97,10 +97,7 @@ pub enum Error {
     AlreadyExists(String),
 
     /// The genesis of an identity cannot be determined from what is held.
-    #[error(
-        "cannot resolve genesis for identity {0}: no stored commits, keystore key or recorded \
-         genesis"
-    )]
+    #[error("cannot resolve genesis for identity {0}: no stored commits or keystore key")]
     UnresolvableGenesis(String),
 
     /// An explicit genesis did not establish a Principal Genesis.
@@ -274,15 +271,18 @@ pub enum Commands {
         #[arg(long)]
         key: Option<String>,
 
-        /// Create explicit genesis with multiple keys (comma-separated thumbprints)
+        /// Create a multi-key genesis (comma-separated thumbprints; the first
+        /// is the genesis key, which creates the rest)
         #[arg(long, value_delimiter = ',')]
         keys: Option<Vec<String>>,
 
         /// Publish the genesis commit: the genesis key (the first) signs a
         /// key/create for itself and each further key, a principal/create
         /// (id = the principal's state) and the commit finalizing it (SPEC
-        /// 5.1-5.3). Without it, init leaves a commitless principal that
-        /// `push` has nothing to send for.
+        /// 5.1-5.3). Without it, a single-key init leaves a commitless
+        /// principal that `push` has nothing to send for; `--keys` with more
+        /// than one key always commits it, as a multi-key principal exists
+        /// only through its genesis commit.
         #[arg(long)]
         genesis_commit: bool,
     },

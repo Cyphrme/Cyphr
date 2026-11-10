@@ -25,11 +25,26 @@ pub enum Genesis {
     /// - `PR = AR = KR = tmb` (PG is None at L1/L2)
     Implicit(Key),
 
-    /// Explicit genesis: multiple keys established at creation.
+    /// Explicit genesis: the genesis key first, then the keys its genesis
+    /// commit creates.
     ///
-    /// Per SPEC §5.1: "Multi-key accounts require explicit genesis"
-    /// - PR is established by principal/create
+    /// Per SPEC §5.1: the genesis key adds itself and every further key by
+    /// `key/create`, and `principal/create` establishes PG. The principal
+    /// is constructed from the genesis key alone; replaying the genesis
+    /// commit adds the rest.
     Explicit(Vec<Key>),
+}
+
+impl Genesis {
+    /// The genesis key, the one a principal is constructed from; `None`
+    /// for an explicit genesis listing no key.
+    #[must_use]
+    pub fn key(&self) -> Option<&Key> {
+        match self {
+            Genesis::Implicit(key) => Some(key),
+            Genesis::Explicit(keys) => keys.first(),
+        }
+    }
 }
 
 /// Errors that can occur during import.
@@ -104,15 +119,8 @@ pub fn load_principal_from_commits(
     genesis: Genesis,
     commits: &[CommitEntry],
 ) -> Result<Principal, LoadError> {
-    let mut principal = match genesis {
-        Genesis::Implicit(key) => Principal::implicit(key)?,
-        Genesis::Explicit(keys) => {
-            if keys.is_empty() {
-                return Err(LoadError::NoGenesisKeys);
-            }
-            Principal::explicit(keys)?
-        },
-    };
+    let key = genesis.key().ok_or(LoadError::NoGenesisKeys)?;
+    let mut principal = Principal::implicit(key.clone())?;
 
     // Replay commits
     replay_commits(&mut principal, commits)?;
