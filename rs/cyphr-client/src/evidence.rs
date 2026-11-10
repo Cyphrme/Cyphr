@@ -37,7 +37,7 @@ use cyphr::{Commit, Key, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
 
-use crate::patch::PatchEntry;
+use crate::patch::{ActionBundle, PatchEntry, Step, replay_order};
 use crate::report::{TipReport, VIEW_STATEMENT_TYP, ViewStatement};
 
 /// The `typ` a signed tip report carries (`cyphr-server/receipt/tip`).
@@ -251,18 +251,49 @@ pub struct EquivocationProof {
 /// [`EvidenceFailure::BadCommit`] or [`EvidenceFailure::Replay`] naming
 /// the first commit that fails.
 pub async fn replay_chain(
-    mut base: Principal<MemoryStorage>,
+    base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
 ) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
-    for (index, entry) in entries.iter().enumerate() {
-        let bundle = entry
-            .bundle
-            .as_ref()
-            .map_err(|_| EvidenceFailure::BadCommit {
-                commit: index,
-                what: "entry is undecodable",
-            })?;
-        replay_commit(&mut base, index, bundle).await?;
+    replay_chain_with_actions(base, entries, &[]).await
+}
+
+/// [`replay_chain`] with the action-only bundles a patch serves beside its
+/// commits, replayed in the order they were accepted: a data commit needs
+/// the actions before it.
+///
+/// # Errors
+///
+/// As [`replay_chain`]; an undecodable action bundle is a
+/// [`EvidenceFailure::BadCommit`] at the commit it precedes.
+pub async fn replay_chain_with_actions(
+    mut base: Principal<MemoryStorage>,
+    entries: &[PatchEntry],
+    actions: &[ActionBundle],
+) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
+    for step in replay_order(0, entries, actions) {
+        match step {
+            Step::Commit(index, entry) => {
+                let bundle = entry
+                    .bundle
+                    .as_ref()
+                    .map_err(|_| EvidenceFailure::BadCommit {
+                        commit: index,
+                        what: "entry is undecodable",
+                    })?;
+                replay_commit(&mut base, index, bundle).await?;
+            },
+            Step::Actions(bundle) => {
+                let blobs = bundle
+                    .blobs
+                    .as_ref()
+                    .map_err(|_| EvidenceFailure::BadCommit {
+                        commit: usize::try_from(bundle.after).unwrap_or(usize::MAX),
+                        what: "action bundle is undecodable",
+                    })?;
+                let at = usize::try_from(bundle.after).unwrap_or(usize::MAX);
+                replay_commit(&mut base, at, &WireBundle::actions(blobs.clone())).await?;
+            },
+        }
     }
     Ok(base)
 }
@@ -290,6 +321,23 @@ pub async fn verify_principal_fork(
     pg: &str,
     base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
+) -> Result<ForkProof, EvidenceFailure> {
+    verify_principal_fork_with_actions(item, pg, base, entries, &[]).await
+}
+
+/// [`verify_principal_fork`] for a principal whose history carries data
+/// actions: `actions` are the patch's action-only bundles, replayed with
+/// the commits (those accepted up to the fork's position precede it).
+///
+/// # Errors
+///
+/// As [`verify_principal_fork`].
+pub async fn verify_principal_fork_with_actions(
+    item: &Value,
+    pg: &str,
+    base: Principal<MemoryStorage>,
+    entries: &[PatchEntry],
+    actions: &[ActionBundle],
 ) -> Result<ForkProof, EvidenceFailure> {
     let EvidenceItem::PrincipalFork {
         pg: item_pg,
@@ -341,7 +389,13 @@ pub async fn verify_principal_fork(
             return Err(EvidenceFailure::GenesisMismatch);
         }
     }
-    let state = replay_chain(base, prefix).await?;
+    // Actions accepted after the fork's position belong to what follows it.
+    let before_fork: Vec<ActionBundle> = actions
+        .iter()
+        .filter(|a| a.after <= height)
+        .cloned()
+        .collect();
+    let state = replay_chain_with_actions(base, prefix, &before_fork).await?;
     if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
         return Err(EvidenceFailure::GenesisMismatch);
     }

@@ -297,10 +297,7 @@ impl PeerChain {
     /// # Errors
     ///
     /// [`PeerFailure::Revoke`] when the envelope does not verify.
-    pub fn observe_naked_revoke(
-        &mut self,
-        envelope: &Value,
-    ) -> Result<NakedRevoke, PeerFailure> {
+    pub fn observe_naked_revoke(&mut self, envelope: &Value) -> Result<NakedRevoke, PeerFailure> {
         let revoke = verify_naked_revoke(envelope)?;
         self.dead
             .entry(revoke.tmb.to_b64())

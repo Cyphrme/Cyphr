@@ -11,10 +11,10 @@
 
 mod common;
 
-use common::*;
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use std::sync::atomic::AtomicI64;
 
+use common::*;
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{PeerChain, PeerFailure, PeerLimits};
 
 /// Claim: a client that pinned a peer holds only what it has followed, so a
@@ -693,10 +693,7 @@ async fn hardening_patch_over_the_cap_is_refused() {
     let before = held.held_tip().expect("tip");
     assert!(matches!(
         held.follow(&pipe).await,
-        Err(PeerFailure::PatchTooLarge {
-            offered: 3,
-            cap: 2
-        })
+        Err(PeerFailure::PatchTooLarge { offered: 3, cap: 2 })
     ));
     assert_eq!(held.held_tip().expect("tip"), before);
 }

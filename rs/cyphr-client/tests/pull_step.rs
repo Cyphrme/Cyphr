@@ -487,7 +487,10 @@ async fn naked_revoked_peer_key_is_refused() {
         .await
         .expect("served revokes");
     assert_eq!(served.len(), 2);
-    let outcomes: Vec<_> = served.iter().map(|e| held.observe_naked_revoke(e)).collect();
+    let outcomes: Vec<_> = served
+        .iter()
+        .map(|e| held.observe_naked_revoke(e))
+        .collect();
     assert!(outcomes[0].is_err(), "a revoke signed by another key");
     assert!(outcomes[1].is_ok());
 

@@ -374,4 +374,3 @@ pub fn view_coz(signer: &Kp) -> coz::CozJson {
     });
     serde_json::from_value(sign_as(signer, pay)).expect("coz json")
 }
-

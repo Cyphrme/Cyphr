@@ -18,8 +18,8 @@ mod sync;
 
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
-    Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerOutcome, PeerStanding, PullPeer, PullReport, Record,
-    RecordTip, RevokedKey, fetch_revoked, pull,
+    Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerOutcome, PeerStanding, PullPeer, PullReport,
+    Record, RecordTip, RevokedKey, fetch_revoked, pull,
 };
 
 #[cfg(feature = "http")]
