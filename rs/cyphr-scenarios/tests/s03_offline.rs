@@ -18,8 +18,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(cli-rebase): cyphr rebase cannot replay ds/create, then N18b resolve_fork; the \
-            gossip it needs is G2, landed"]
+#[ignore = "RED(cli-rebase): G3 (cyphr rebase of a ds/create, resolve_fork); gossip is G2, landed"]
 async fn s03_offline() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await

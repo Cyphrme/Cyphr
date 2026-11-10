@@ -95,7 +95,7 @@ fn known_keys_still_load() {
     assert!(matches!(cfg.admission, AdmissionConfig::Open));
 
     let cfg = load_toml(
-        "mode = \"witness\"\nauthority_url = \"http://a\"\n[admission]\npolicy = \
+        "mode = \"witness\"\nauthority_url = \"https://a\"\n[admission]\npolicy = \
          \"invite\"\ntokens_path = \"/t\"\n[limits]\npush = { per_second = 3, burst = 4 \
          }\n[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\n",
     )

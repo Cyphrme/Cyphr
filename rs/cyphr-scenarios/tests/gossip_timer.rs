@@ -108,6 +108,9 @@ async fn gossip_timer_converges_peers_and_keeps_both_branches_of_a_fork() {
         || async { Ok(evidence(&h, "p1", &pr).await >= 1 && evidence(&h, "p2", &pr).await >= 1) },
     )
     .await;
+    for peer in both {
+        assert_eq!(heads(&h, peer, &pr).await, 2, "{peer}: both branch heads");
+    }
     // Neither peer merged: each still serves the chain it was pushed.
     let settled = |peer: &'static str| h.settled_view(peer, &pr);
     assert_eq!(settled("p1").await.map(|v| v.tip), Some(at));
@@ -129,4 +132,20 @@ async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
         .await
         .expect("evidence json");
     body["payload"]["items"].as_array().map_or(0, Vec::len)
+}
+
+/// How many branch heads `peer` serves for `p`.
+async fn heads(h: &Harness, peer: &str, p: &Principal) -> usize {
+    let addr = h.peer(peer).addr;
+    let body: serde_json::Value = h
+        .http
+        .get(format!("http://{addr}/branches"))
+        .query(&[("pr", p.0.as_str())])
+        .send()
+        .await
+        .expect("branches request")
+        .json()
+        .await
+        .expect("branches json");
+    body["payload"]["branches"].as_array().map_or(0, Vec::len)
 }

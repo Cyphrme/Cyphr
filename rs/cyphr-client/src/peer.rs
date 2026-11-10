@@ -43,7 +43,7 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector};
 use crate::patch::{
-    AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, fetch_patch,
+    Step, replay_order, AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, fetch_patch,
     verify_authenticated_envelope,
 };
 use crate::report::{TipReport, ViewFailure, ViewStatement, verify_view};
@@ -385,8 +385,6 @@ impl PeerChain {
     /// the held chain; [`PeerFailure::Behind`] when it is shorter.
     pub async fn follow<C: Connector>(&mut self, connector: &C) -> Result<(), PeerFailure> {
         self.chain()?;
-        // Counted before the fetch: a fetch that fails still cost the peer.
-        self.last_fetch = Some((self.clock)());
         let patch = fetch_patch(
             connector,
             &PatchRequest {
@@ -411,12 +409,28 @@ impl PeerChain {
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
         candidate.set_clock(self.clock);
         let mut offered = Vec::with_capacity(patch.entries.len());
-        for (index, entry) in patch.entries.iter().enumerate() {
-            let bundle = entry.bundle.as_ref().map_err(|defect| PeerFailure::Entry {
-                index,
-                defect: *defect,
-            })?;
-            offered.push(replay_entry(&mut candidate, bundle).await.map_err(
+        // A server serves data actions as action-only bundles beside the
+        // commits, each before the commit at its `after`; replay in that
+        // order or a data commit has no actions to include.
+        for step in replay_order(0, &patch.entries, &patch.actions) {
+            let (index, bundle) = match step {
+                Step::Commit(index, entry) => (
+                    index,
+                    entry.bundle.clone().map_err(|defect| PeerFailure::Entry {
+                        index,
+                        defect,
+                    })?,
+                ),
+                Step::Actions(a) => {
+                    let index = usize::try_from(a.after).unwrap_or(usize::MAX);
+                    let blobs = a.blobs.clone().map_err(|defect| PeerFailure::Entry {
+                        index,
+                        defect,
+                    })?;
+                    (index, WireBundle::actions(blobs))
+                },
+            };
+            offered.push(replay_entry(&mut candidate, &bundle).await.map_err(
                 |refusal| match refusal {
                     EntryRefusal::Malformed(what) => PeerFailure::Malformed {
                         commit: index,
@@ -559,6 +573,10 @@ impl PeerChain {
                 });
             }
         }
+        // Counted before the fetch: a fetch that fails still cost the peer.
+        // Only statement-triggered fetches spend the budget; a caller's own
+        // `follow` is its policy, not an unverified peer's demand.
+        self.last_fetch = Some((self.clock)());
         self.follow(connector).await?;
         self.verify_tip(body, principal_id)
     }

@@ -17,7 +17,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(pinning): N23 (watch), and N22 (rotate_key); the gossip it needs is G2, landed"]
+#[ignore = "RED(pinning): G3 (watch), with N22 rotate_key; the gossip it needs is G2, landed"]
 async fn s02_partition() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await
