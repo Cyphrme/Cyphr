@@ -164,3 +164,35 @@ tx = [
 deleted   = false
 frozen    = false
 key_count = 0
+
+# Test: a principal that dies holding data keeps its Data Root (SPEC.md 3.7).
+# An action is included by ds/create, then the last key is revoked. KR and AR
+# are absent; SR is the DR alone, as SR promotes the one root left.
+[[test]]
+name      = "dead_with_data_keeps_dr"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Data recorded before death"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, rvk = 1700000003, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+deleted   = false
+frozen    = false
+key_count = 0
