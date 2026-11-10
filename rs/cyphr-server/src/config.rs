@@ -40,14 +40,38 @@ pub enum Command {
         data_dir: Option<PathBuf>,
     },
 
-    /// Export a principal's data.
-    Export {
-        /// Principal genesis identifier.
-        pr: String,
+    /// Copy the stopped server's `record/` tree to a new directory. The
+    /// signing key is never copied.
+    Backup {
+        /// Directory to create (must not exist).
+        dest: PathBuf,
+        #[command(flatten)]
+        ops: OpsArgs,
+    },
 
-        /// Data directory containing blob storage.
-        #[arg(long, env = "CYPHR_DATA_DIR")]
-        data_dir: Option<PathBuf>,
+    /// Replace the stopped server's `record/` with a backup and report the
+    /// window of commits the restored store lost. The principals re-push
+    /// to fill it.
+    Restore {
+        /// A directory `backup` wrote.
+        from: PathBuf,
+        #[command(flatten)]
+        ops: OpsArgs,
+    },
+
+    /// Write every stored principal chain as bundles, one file each.
+    Export {
+        /// Directory to write into.
+        out: PathBuf,
+        #[command(flatten)]
+        ops: OpsArgs,
+    },
+
+    /// Replay every stored chain from the blob store; exits non-zero and
+    /// names each chain that fails.
+    VerifyAll {
+        #[command(flatten)]
+        ops: OpsArgs,
     },
 
     /// Rotate the server's signing key (offline: the server must be
@@ -59,6 +83,20 @@ pub enum Command {
         #[command(subcommand)]
         action: InviteAction,
     },
+}
+
+/// Arguments shared by the offline operator commands (`backup`, `restore`,
+/// `export`, `verify-all`).
+#[derive(Debug, clap::Args)]
+pub struct OpsArgs {
+    /// Data directory of the stopped server.
+    #[arg(long, env = "CYPHR_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// The server's signing key file; only consulted so `backup` and
+    /// `restore` can refuse a key inside the tree they copy.
+    #[arg(long, env = "CYPHR_SIGNING_KEY_PATH")]
+    pub signing_key_path: Option<PathBuf>,
 }
 
 /// Arguments for the `rotate-key` subcommand.
@@ -501,6 +539,18 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
             config.data_dir = data_dir.clone();
         }
         if let Some(ref signing_key_path) = args.signing_key_path {
+            config.signing_key_path = Some(signing_key_path.clone());
+        }
+    }
+    if let Command::Backup { ref ops, .. }
+    | Command::Restore { ref ops, .. }
+    | Command::Export { ref ops, .. }
+    | Command::VerifyAll { ref ops } = cli.command
+    {
+        if let Some(ref data_dir) = ops.data_dir {
+            config.data_dir = data_dir.clone();
+        }
+        if let Some(ref signing_key_path) = ops.signing_key_path {
             config.signing_key_path = Some(signing_key_path.clone());
         }
     }
