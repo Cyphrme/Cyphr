@@ -278,10 +278,10 @@ pub struct Attribution {
 /// A relying party's own configuration, read from it rather than assumed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpConfig {
-    /// How old the relying party's view of the principal may grow before it
-    /// ends the session. `None` when the relying party states no bound.
-    pub view_age_bound: Option<Duration>,
-    /// How often the relying party refreshes its view.
+    /// How old its newest successful pull of the principal's chain may
+    /// grow before it ends the session.
+    pub pull_age_bound: Duration,
+    /// How often the relying party pulls.
     pub refresh_interval: Duration,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,13 +295,20 @@ pub enum Channel {
     Other,
 }
 
-/// A relying party kept separate from every peer.
+/// A relying party kept separate from every peer: it replays the
+/// principal from its own pin and pulls from peers over its own route.
 pub struct RelyingParty<'h> {
-    #[expect(
-        dead_code,
-        reason = "read once the relying-party actions are implemented"
-    )]
     h: &'h Harness,
+    config: cyphr_client::RpConfig,
+    /// Set at the first sign-in, which enrols the principal the way a
+    /// sign-up does: the relying party is handed the genesis key out of
+    /// band and the peers to pull from.
+    enrolled: tokio::sync::Mutex<Option<Enrolled>>,
+}
+
+struct Enrolled {
+    party: cyphr_client::RelyingParty,
+    peers: Vec<String>,
 }
 
 /// One person's device: a `cyphr` CLI store plus keystore, and a node name
@@ -477,8 +484,18 @@ impl Harness {
             .map_err(|e| ActionError::Failed(e.to_string()))
     }
 
+    /// A relying party for the audience `rp.scenarios`, which pulls no
+    /// sooner than a scenario asks it to.
     pub async fn start_relying_party(&self) -> ActionResult<RelyingParty<'_>> {
-        unsupported("start_relying_party", Capability::RelyingParty)
+        Ok(RelyingParty {
+            h: self,
+            config: cyphr_client::RpConfig {
+                audience: RP_AUDIENCE.to_owned(),
+                pull_age_bound: Duration::from_secs(30),
+                refresh_interval: Duration::from_secs(5),
+            },
+            enrolled: tokio::sync::Mutex::new(None),
+        })
     }
 }
 
@@ -1069,8 +1086,52 @@ impl Client<'_> {
 
     // ---- sign-on ----
 
-    pub async fn sign_in(&self, _rp: &RelyingParty<'_>) -> ActionResult<Session> {
-        unsupported("sign_in", Capability::RelyingParty)
+    /// Sign in to `rp` as the principal this device signs for, with the
+    /// key it signs with: the relying party issues a challenge, this
+    /// device signs it, and the relying party decides from the chain it
+    /// replayed from its pin.
+    pub async fn sign_in(&self, rp: &RelyingParty<'_>) -> ActionResult<Session> {
+        let (handle, key) = {
+            let st = self.state();
+            let mut signers = st.signer.iter();
+            match (signers.next(), signers.next()) {
+                (Some((p, k)), None) => (p.clone(), k.clone()),
+                _ => {
+                    return Err(ActionError::Failed(format!(
+                        "`{}` must sign for exactly one principal to sign in",
+                        self.name
+                    )));
+                },
+            }
+        };
+        let p = Principal(handle);
+        let entry = cli::key_entry(&self.dev.keystore, &key)?;
+        let mut guard = rp.enrolled.lock().await;
+        if guard.is_none() {
+            let genesis = key_of_entry(&self.h.genesis_of(&p)?)?;
+            *guard = Some(Enrolled {
+                party: cyphr_client::RelyingParty::new(
+                    p.bare(),
+                    cyphr_client::Anchor::GenesisKey(genesis),
+                    rp.config.clone(),
+                    cyphr::principal::system_clock,
+                ),
+                peers: self.known(&p),
+            });
+        }
+        let enrolled = guard.as_mut().expect("enrolled above");
+        rp.pull(enrolled).await?;
+        let challenge = enrolled.party.challenge();
+        let login = sign_login(&entry, &key, p.bare(), &rp.config.audience, &challenge)?;
+        let session = enrolled
+            .party
+            .sign_in(&login)
+            .map_err(|r| ActionError::Refused(refusal_of(&r)))?;
+        Ok(Session {
+            token: Token(session.token),
+            key: KeyRef(session.key.to_b64()),
+            principal: Principal(session.principal),
+        })
     }
 }
 
@@ -1150,9 +1211,103 @@ fn parse_verdict(
     })
 }
 
+/// The audience the harness relying party serves.
+const RP_AUDIENCE: &str = "rp.scenarios";
+
+/// The harness name the relying party's own route to each peer goes under.
+const RP_NODE: &str = "rp";
+
+/// A public key from a keystore entry (`{alg, pub_key, ..}`).
+fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    let bad = |what: &str| ActionError::Failed(format!("keystore entry has no {what}: {entry}"));
+    let alg = entry["alg"].as_str().ok_or_else(|| bad("alg"))?;
+    let public = Base64UrlUnpadded::decode_vec(
+        entry["pub_key"].as_str().ok_or_else(|| bad("pub_key"))?,
+    )
+    .map_err(|e| ActionError::Failed(format!("pub_key is not base64url: {e}")))?;
+    let tmb = coz::compute_thumbprint_for_alg(alg, &public).ok_or_else(|| bad("a usable key"))?;
+    cyphr::Key::new(alg.to_owned(), tmb, public)
+        .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))
+}
+
+/// The login Coz (SPEC 17.2 Option A) `entry`'s key signs for `challenge`.
+fn sign_login(
+    entry: &serde_json::Value,
+    tmb: &str,
+    pr: &str,
+    audience: &str,
+    challenge: &str,
+) -> ActionResult<coz::CozJson> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    let bytes = |name: &str| {
+        entry[name]
+            .as_str()
+            .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
+            .ok_or_else(|| ActionError::Failed(format!("keystore entry has no {name}")))
+    };
+    let alg = entry["alg"]
+        .as_str()
+        .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
+    let pay = serde_json::json!({
+        "alg": alg,
+        "now": cyphr::principal::system_clock(),
+        "tmb": tmb,
+        "typ": format!("{audience}{}", cyphr_client::LOGIN_TYP_SUFFIX),
+        "pr": pr,
+        "challenge": challenge,
+    });
+    let pay_bytes = serde_json::to_vec(&pay).map_err(|e| ActionError::Failed(e.to_string()))?;
+    let (sig, _) = coz::sign_json(&pay_bytes, alg, &bytes("prv_key")?, &bytes("pub_key")?)
+        .ok_or_else(|| ActionError::Failed("signing the login failed".into()))?;
+    serde_json::from_value(serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .map_err(|e| ActionError::Failed(e.to_string()))
+}
+
+fn refusal_of(r: &cyphr_client::Refusal) -> Refusal {
+    use cyphr_client::Refusal as R;
+    let kind = match r {
+        R::KeyNotActive => RefusalKind::KeyNotActive,
+        R::Malformed(_) => RefusalKind::Malformed,
+        R::Stale(_) | R::Forked => RefusalKind::Stale,
+        _ => RefusalKind::Unauthorized,
+    };
+    Refusal {
+        kind,
+        detail: r.to_string(),
+    }
+}
+
 impl RelyingParty<'_> {
-    pub async fn session_active(&self, _t: &Token) -> ActionResult<bool> {
-        unsupported("session_active", Capability::RelyingParty)
+    /// Pull the principal's chain from the peers the relying party was
+    /// enrolled with, over its own route to each.
+    async fn pull(&self, enrolled: &mut Enrolled) -> ActionResult<()> {
+        let mut connectors = Vec::new();
+        for peer in &enrolled.peers {
+            let url = format!("http://{}", self.h.route(RP_NODE, peer).await);
+            let c = cyphr_client::HttpConnector::connect(
+                &url,
+                &cyphr_client::HttpOptions::new(Duration::from_secs(5)),
+            )
+            .map_err(|e| ActionError::Failed(format!("relying party to `{peer}`: {e}")))?;
+            connectors.push((peer.clone(), c));
+        }
+        let peers: Vec<_> = connectors
+            .iter()
+            .map(|(name, connector)| cyphr_client::PullPeer { name, connector })
+            .collect();
+        enrolled.party.refresh(&peers).await;
+        Ok(())
+    }
+
+    pub async fn session_active(&self, t: &Token) -> ActionResult<bool> {
+        let mut guard = self.enrolled.lock().await;
+        Ok(guard
+            .as_mut()
+            .is_some_and(|e| e.party.check_session(&t.0).is_ok()))
     }
 
     /// Present a token on a channel and learn whether it was accepted.
@@ -1160,12 +1315,20 @@ impl RelyingParty<'_> {
         unsupported("present", Capability::SessionBinding)
     }
 
-    /// Let the relying party's view catch up with the principal.
+    /// The relying party's own settings, read from it.
     pub async fn config(&self) -> ActionResult<RpConfig> {
-        unsupported("config", Capability::RelyingParty)
+        Ok(RpConfig {
+            pull_age_bound: self.config.pull_age_bound,
+            refresh_interval: self.config.refresh_interval,
+        })
     }
 
+    /// Let the relying party's view catch up with the principal: one pull.
     pub async fn refresh_view(&self) -> ActionResult<()> {
-        unsupported("refresh_view", Capability::RelyingParty)
+        let mut guard = self.enrolled.lock().await;
+        let enrolled = guard
+            .as_mut()
+            .ok_or_else(|| ActionError::Failed("no principal is signed in to pull for".into()))?;
+        self.pull(enrolled).await
     }
 }

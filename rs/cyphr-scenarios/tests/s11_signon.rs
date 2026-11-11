@@ -2,20 +2,20 @@
 // Attacker: replays a session token on another channel.
 // Alice signs in to a separated relying party over the principal-authenticated
 // transport; she removes the key; the token is presented on another channel.
-// Must hold: the session ends within the window once the RP's view has the removal;
+// Must hold: the session ends within the window once the RP's pull has the removal;
 // the token on another channel is refused.
 //
 // Required capabilities: transport,relying-party,session-binding.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(relying-party): SO2"]
+#[ignore = "RED(session-binding): SO3"]
 async fn s11_signon() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[
@@ -26,13 +26,11 @@ async fn s11_signon() {
     .await;
 
     let alice = h.client("alice");
-    // Open (pending nrd): SPEC and the plan fix no sign-in window. The bound
-    // below is only a default for a relying party that states none.
-    const DEFAULT_VIEW_AGE_BOUND: Duration = Duration::from_secs(30);
-
     let rp = h.ok(h.start_relying_party().await);
     let cfg = h.ok(rp.config().await);
-    let window = cfg.view_age_bound.unwrap_or(DEFAULT_VIEW_AGE_BOUND) + cfg.refresh_interval;
+    // The sign-on window: the pull age bound plus one refresh interval, both
+    // read from the relying party.
+    let window = cfg.pull_age_bound + cfg.refresh_interval;
 
     let pr = h.ok(alice.create_principal().await);
     // The principal keeps a second key, so removing the sign-in key leaves
