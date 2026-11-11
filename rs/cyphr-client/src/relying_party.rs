@@ -280,9 +280,7 @@ impl RelyingParty {
         login: &coz::CozJson,
         carrier: &C,
     ) -> Result<Session, Refusal> {
-        let channel = carrier
-            .channel_binding()
-            .ok_or(Refusal::ChannelMismatch)?;
+        let channel = carrier.channel_binding().ok_or(Refusal::ChannelMismatch)?;
         self.sign_in_bound(login, SessionBinding::Channel(channel.clone()))
     }
 

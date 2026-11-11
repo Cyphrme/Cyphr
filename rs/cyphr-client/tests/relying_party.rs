@@ -493,5 +493,8 @@ async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
         .expect("edge");
     assert_eq!(browser.binding, SessionBinding::Key);
     assert!(rp.check_session(&browser.token).is_ok());
-    assert!(rp.check_session_on(&browser.token, Some(&elsewhere)).is_ok());
+    assert!(
+        rp.check_session_on(&browser.token, Some(&elsewhere))
+            .is_ok()
+    );
 }

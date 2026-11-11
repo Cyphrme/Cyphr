@@ -26,7 +26,8 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    build_genesis_push_body, build_second_commit_push_body, get_json, golden_principal_id, load_pool, post_json, write_signing_key,
+    build_genesis_push_body, build_second_commit_push_body, get_json, golden_principal_id,
+    load_pool, post_json, write_signing_key,
 };
 
 const AUDIENCE: &str = "cyphr.me";
@@ -193,8 +194,10 @@ fn login_body_with(pr: &str, h: Option<&[u8]>, extra: &[(&str, &str)]) -> String
         );
     }
     for (name, value) in extra {
-        pay.extra
-            .insert((*name).to_string(), serde_json::Value::String((*value).into()));
+        pay.extra.insert(
+            (*name).to_string(),
+            serde_json::Value::String((*value).into()),
+        );
     }
     let bytes = serde_json::to_vec(&pay).expect("pay");
     let (sig, _) = coz::sign_json(&bytes, &key.alg, &prv, &public).expect("sign");
@@ -340,9 +343,17 @@ async fn login_commits_to_its_channel() {
     let (state, addr, pr, _dir) = server().await;
     let app = build_router(state.clone());
     let victim = session(&state, addr, &pr).await;
-    let h = victim.channel_binding().expect("binding").as_bytes().to_vec();
+    let h = victim
+        .channel_binding()
+        .expect("binding")
+        .as_bytes()
+        .to_vec();
     let body = login_body(&pr, Some(&h));
-    let (status, _) = over_noise(&victim, Request::post("/auth/login", body.clone().into_bytes())).await;
+    let (status, _) = over_noise(
+        &victim,
+        Request::post("/auth/login", body.clone().into_bytes()),
+    )
+    .await;
     assert_eq!(status, 200, "the login on its own channel");
 
     let (status, _) = post_json(app.clone(), "/auth/login", body.clone()).await;
@@ -411,5 +422,8 @@ async fn rules_binding_is_server_signed_and_lifetime_configured() {
         "exp {exp} is not the configured 120s from now {issued}"
     );
     let (_, again) = post_json(app, "/auth/session", token).await;
-    assert_eq!(again["payload"]["exp"], first["payload"]["exp"], "no sliding refresh");
+    assert_eq!(
+        again["payload"]["exp"], first["payload"]["exp"],
+        "no sliding refresh"
+    );
 }
