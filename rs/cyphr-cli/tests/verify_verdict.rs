@@ -33,7 +33,9 @@ fn verdict_names_peers_ages_and_never_regresses_to_a_lagging_peer() {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let v = a.setup(&args);
     assert_eq!(v["verdict"], "Active", "{v}");
-    let peers = v["peers"].as_array().unwrap_or_else(|| panic!("no peers: {v}"));
+    let peers = v["peers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no peers: {v}"));
     let by = |url: &str| {
         peers
             .iter()
@@ -41,9 +43,15 @@ fn verdict_names_peers_ages_and_never_regresses_to_a_lagging_peer() {
             .unwrap_or_else(|| panic!("peer {url} not listed: {v}"))
     };
     assert_eq!(by(&lagging.url)["standing"], "behind", "{v}");
-    assert!(by(&lagging.url)["answered_at"].is_i64(), "when it answered: {v}");
+    assert!(
+        by(&lagging.url)["answered_at"].is_i64(),
+        "when it answered: {v}"
+    );
     assert_eq!(by(&dead)["standing"], "failed", "{v}");
-    assert!(by(&dead)["answered_at"].is_null(), "a dead peer never answered: {v}");
+    assert!(
+        by(&dead)["answered_at"].is_null(),
+        "a dead peer never answered: {v}"
+    );
     assert!(v["principal_now"].is_i64(), "the principal's last now: {v}");
     assert!(
         v["freshness"]["pull_age_secs"].is_u64()
@@ -61,7 +69,10 @@ fn verdict_names_peers_ages_and_never_regresses_to_a_lagging_peer() {
         &format!("--identity={id}"),
         &format!("--peer={}", lagging.url),
     ]);
-    assert_eq!(again["tip"], v["tip"], "the record never regresses: {again}");
+    assert_eq!(
+        again["tip"], v["tip"],
+        "the record never regresses: {again}"
+    );
 }
 
 /// Claim: `watch` is `verify` on a timer: each round prints the verdict
@@ -115,7 +126,11 @@ fn anchor_that_is_only_the_pg_is_refused() {
             .to_owned()
     };
     let (key, second) = (tmb("ES256"), tmb("Ed25519"));
-    let init = a.setup(&["init", &format!("--keys={key},{second}"), "--genesis-commit"]);
+    let init = a.setup(&[
+        "init",
+        &format!("--keys={key},{second}"),
+        "--genesis-commit",
+    ]);
     let pg = init["pr"].as_str().expect("pr").to_owned();
     accepted(&a.push(&pg, &s.url), "push");
     let ident = format!("--identity={pg}");
@@ -130,4 +145,62 @@ fn anchor_that_is_only_the_pg_is_refused() {
     );
     let ok = a.setup(&["verify", &ident, &peer, &format!("--anchor={key}")]);
     assert_eq!(ok["anchor"]["source"], "pinned", "{ok}");
+}
+
+/// Claim (SPEC 15.8; arch-principal-resolves): once the principal signs a
+/// commit on one branch, a verifier's verdict follows that branch, names the
+/// key that signed the resolution, and keeps the abandoned branch as proof of
+/// error; the fork persists across runs until then. Defect that turns it
+/// red: a verdict that stays Error after the resolution, picks a branch
+/// before it, names no key, or forgets the abandoned branch. End-to-end: yes
+/// (two servers, two devices, three verify runs).
+// @docket: arch-principal-resolves :: scripts/docket-run arch-principal-resolves
+#[test]
+fn verdict_follows_the_branch_the_principal_resolves_to() {
+    let (s1, s2) = (Server::start(), Server::start());
+    let a = User::new();
+    let id = a.new_identity();
+    let b = a.clone_identity(&id);
+    a.add_key(&id);
+    b.add_key(&id);
+    let at = a.push(&id, &s1.url);
+    accepted(&at, "A's branch to peer 1");
+    accepted(&b.push(&id, &s2.url), "B's competing branch to peer 2");
+    let (p1, p2) = (format!("--peer={}", s1.url), format!("--peer={}", s2.url));
+    let ident = format!("--identity={id}");
+
+    let forked = a.setup(&["verify", &ident, &p1, &p2]);
+    assert_eq!(
+        forked["verdict"], "Error",
+        "two branches, none resolved: {forked}"
+    );
+    assert!(
+        forked["resolved_by"].is_null(),
+        "no branch is picked for the principal"
+    );
+    // The fork is held from the run that found it, not recomputed from peers.
+    let alone = a.setup(&["verify", &ident, &p1]);
+    assert_eq!(alone["verdict"], "Error", "the fork persists: {alone}");
+
+    // B resolves: a new commit on its branch (SPEC 15.8, act 1).
+    b.add_key(&id);
+    let resolved = b.push(&id, &s2.url);
+    accepted(&resolved, "B's resolution to peer 2");
+    let after = a.setup(&["verify", &ident, &p2]);
+    assert_eq!(after["verdict"], "Active", "{after}");
+    assert_eq!(
+        after["tip"],
+        resolved.json()["tip"],
+        "follows the chosen branch: {after}"
+    );
+    assert_eq!(
+        after["resolved_by"],
+        id.as_str(),
+        "names the resolving key: {after}"
+    );
+    let kept = after["branches"].as_array().expect("branches");
+    assert!(
+        kept.iter().any(|b| *b == at.json()["tip"]),
+        "the abandoned branch is kept: {after}"
+    );
 }

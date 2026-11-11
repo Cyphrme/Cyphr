@@ -3,8 +3,8 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use cyphr_cli::{Cli, Commands, GossipCommands, OutputFormat, commands};
 use commands::verifier::{self, Inputs};
+use cyphr_cli::{Cli, Commands, GossipCommands, OutputFormat, commands};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();

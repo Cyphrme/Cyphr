@@ -14,7 +14,9 @@ use serde_json::Value;
 /// branch heads. Defect that turns it red: a bundle that does not
 /// round-trip (a missing action, a dropped branch), or an import that
 /// stores less than it reports. End-to-end: yes (real servers, two CLI
-/// stores, one file).
+/// stores, one file). Backs arch-detection-is-comparison: the fork is found only
+/// by holding two views together.
+// @docket: arch-detection-is-comparison :: scripts/docket-run arch-detection-is-comparison
 #[test]
 fn bundle_carries_commits_actions_and_both_fork_branches_between_clients() {
     let (s1, s2) = (Server::start(), Server::start());
@@ -25,7 +27,10 @@ fn bundle_carries_commits_actions_and_both_fork_branches_between_clients() {
     a.setup(&["data", "action", &ident, &signer, "--msg=carried"]);
     a.setup(&["data", "commit", &ident, &signer]);
     b.add_key(&id);
-    accepted(&a.push(&id, &s1.url), "A's branch (with its action) to peer 1");
+    accepted(
+        &a.push(&id, &s1.url),
+        "A's branch (with its action) to peer 1",
+    );
     accepted(&b.push(&id, &s2.url), "B's competing branch to peer 2");
     // A learns of the fork by pulling from both, as a verifier does.
     let (p1, p2) = (format!("--peer={}", s1.url), format!("--peer={}", s2.url));
@@ -33,11 +38,21 @@ fn bundle_carries_commits_actions_and_both_fork_branches_between_clients() {
     assert_eq!(verdict["verdict"], "Error", "the fork is held: {verdict}");
 
     let file = a.dir.path().join("alice.bundle.json");
-    a.setup(&["gossip", "export", &ident, &format!("--file={}", file.display())]);
+    a.setup(&[
+        "gossip",
+        "export",
+        &ident,
+        &format!("--file={}", file.display()),
+    ]);
 
     // Carol: no keystore entry, no peer, no network.
     let carol = User::new();
-    let got = carol.setup(&["gossip", "import", &ident, &format!("--file={}", file.display())]);
+    let got = carol.setup(&[
+        "gossip",
+        "import",
+        &ident,
+        &format!("--file={}", file.display()),
+    ]);
     let tip = a.setup(&["inspect", &ident])["commit_count"].clone();
     assert_eq!(
         carol.setup(&["inspect", &ident])["commit_count"],
@@ -58,7 +73,11 @@ fn bundle_carries_commits_actions_and_both_fork_branches_between_clients() {
         h.sort();
         h
     };
-    assert_eq!(heads(&got), heads(&verdict), "both branch heads cross the file");
+    assert_eq!(
+        heads(&got),
+        heads(&verdict),
+        "both branch heads cross the file"
+    );
     assert_eq!(got["anchor"]["source"], "hint", "Carol only has a hint");
 }
 
@@ -74,9 +93,15 @@ fn import_of_an_altered_bundle_is_refused_and_stores_nothing() {
     accepted(&a.push(&id, &s.url), "push");
     let ident = format!("--identity={id}");
     let file = a.dir.path().join("alice.bundle.json");
-    a.setup(&["gossip", "export", &ident, &format!("--file={}", file.display())]);
+    a.setup(&[
+        "gossip",
+        "export",
+        &ident,
+        &format!("--file={}", file.display()),
+    ]);
 
-    let mut doc: Value = serde_json::from_slice(&std::fs::read(&file).expect("read")).expect("json");
+    let mut doc: Value =
+        serde_json::from_slice(&std::fs::read(&file).expect("read")).expect("json");
     // Flip a character inside the last commit's signed bytes.
     let coz = doc["chains"][0]["commits"][1]["txs"][0][0]
         .as_str()
@@ -89,7 +114,12 @@ fn import_of_an_altered_bundle_is_refused_and_stores_nothing() {
     std::fs::write(&file, serde_json::to_vec(&doc).expect("ser")).expect("write");
 
     let carol = User::new();
-    let r = carol.run(&["gossip", "import", &ident, &format!("--file={}", file.display())]);
+    let r = carol.run(&[
+        "gossip",
+        "import",
+        &ident,
+        &format!("--file={}", file.display()),
+    ]);
     assert!(!r.ok, "an altered bundle must be refused: {}", r.stdout);
     let held = carol.run(&["inspect", &ident]);
     assert!(

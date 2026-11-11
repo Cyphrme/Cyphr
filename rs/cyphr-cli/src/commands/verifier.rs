@@ -14,11 +14,13 @@
 
 use std::time::Duration;
 
+use cyphr::Key;
+use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
-use cyphr::{Key, principal::system_clock};
 use cyphr_client::{
-    Anchor, Bundle, BundleError, Connector, HttpConnector, HttpOptions, PatchFailure, PeerFailure,
-    PeerStanding, PullPeer, PullReport, Record, RecordTip, opener_of, pull,
+    Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
+    PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record, RecordTip,
+    fetch_patch, opener_of, pull,
 };
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::bare_digest;
@@ -116,7 +118,11 @@ fn choose_anchor(
         if bare_digest(value) == wire || !value.contains(':') {
             return Err(anchor_rule(value));
         }
-        return Ok((Anchor::GenesisCommit(value.to_owned()), value.to_owned(), "pinned"));
+        return Ok((
+            Anchor::GenesisCommit(value.to_owned()),
+            value.to_owned(),
+            "pinned",
+        ));
     }
     if let Some(key) = keystore_key(keystore, identity) {
         let tmb = key.tmb().to_b64();
@@ -195,14 +201,20 @@ impl<'a> Round<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        Record::from_entries(&self.wire, self.anchor.clone(), system_clock, &entries, &actions)
-            .await
-            .map_err(|e| {
-                Error::InvalidArgument(format!(
-                    "the local history of {} does not replay from the anchor: {e}",
-                    self.identity
-                ))
-            })
+        Record::from_entries(
+            &self.wire,
+            self.anchor.clone(),
+            system_clock,
+            &entries,
+            &actions,
+        )
+        .await
+        .map_err(|e| {
+            Error::InvalidArgument(format!(
+                "the local history of {} does not replay from the anchor: {e}",
+                self.identity
+            ))
+        })
     }
 
     /// Write what the pull added to the store, which replays each bundle
@@ -408,8 +420,16 @@ async fn run_round<C: Connector>(
     }
 
     let added = tip.commits.saturating_sub(held_before);
-    let unresolved: Vec<&HeldFork> = entry.forks.iter().filter(|f| f.resolution.is_none()).collect();
-    let resolved: Vec<&HeldFork> = entry.forks.iter().filter(|f| f.resolution.is_some()).collect();
+    let unresolved: Vec<&HeldFork> = entry
+        .forks
+        .iter()
+        .filter(|f| f.resolution.is_none())
+        .collect();
+    let resolved: Vec<&HeldFork> = entry
+        .forks
+        .iter()
+        .filter(|f| f.resolution.is_some())
+        .collect();
     let mut evidence: Vec<Value> = unresolved
         .iter()
         .map(|f| {
@@ -417,9 +437,12 @@ async fn run_round<C: Connector>(
                 "commits": f.commits, "first_seen": f.first_seen})
         })
         .collect();
-    evidence.extend(entry.revoked.iter().map(|r| {
-        json!({"kind": "naked_revoke", "tmb": r.tmb, "rvk": r.rvk, "peer": r.peer})
-    }));
+    evidence.extend(
+        entry
+            .revoked
+            .iter()
+            .map(|r| json!({"kind": "naked_revoke", "tmb": r.tmb, "rvk": r.rvk, "peer": r.peer})),
+    );
     let branches: Vec<&str> = if unresolved.is_empty() {
         let mut b = vec![shown.commit_id.as_str()];
         for f in &resolved {
@@ -447,7 +470,9 @@ async fn run_round<C: Connector>(
     let peers_json: Vec<Value> = entry
         .peers
         .iter()
-        .filter(|(name, _)| report.peers.iter().any(|o| &o.peer == *name) || failures.iter().any(|f| &f.0 == *name))
+        .filter(|(name, _)| {
+            report.peers.iter().any(|o| &o.peer == *name) || failures.iter().any(|f| &f.0 == *name)
+        })
         .map(|(name, seen)| {
             json!({"peer": name, "standing": seen.standing, "answered_at": seen.answered_at,
                 "asked_at": seen.asked_at, "detail": seen.detail})
@@ -459,7 +484,6 @@ async fn run_round<C: Connector>(
         "commits": shown.commits,
         "added": added,
         "view_age_secs": pull_age,
-        "newer_tip_reported": report.peers.iter().any(|o| matches!(o.standing, PeerStanding::Extended { .. })),
         "peers_queried": answered.len(),
         "peers_failed": failures.iter().map(|(p, why, kind)| json!({"peer": p, "reason": why, "kind": kind})).collect::<Vec<_>>(),
         "peers": peers_json,
@@ -573,7 +597,11 @@ fn settings(inputs: &Inputs<'_>) -> crate::Result<(Vec<String>, Option<String>, 
         .freshness
         .or(choices.freshness_secs)
         .unwrap_or(DEFAULT_FRESHNESS_SECS);
-    Ok((peers, inputs.anchor.map(str::to_owned).or(choices.anchor), freshness))
+    Ok((
+        peers,
+        inputs.anchor.map(str::to_owned).or(choices.anchor),
+        freshness,
+    ))
 }
 
 /// One verify round over HTTP peers: the value `verify`, `watch` and
@@ -583,7 +611,6 @@ fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
     if urls.is_empty() {
         return Err(Error::NoPeers);
     }
-    let round = Round::open(cli, inputs.identity, anchor.as_deref(), freshness, None)?;
     let mut options = HttpOptions::new(Duration::from_secs(cli.peer_timeout_secs));
     options.allow_cleartext = cli.allow_cleartext;
     let mut connectors = Vec::new();
@@ -594,11 +621,41 @@ fn verify_once(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<Value> {
             Err(e) => prefailed.push((url.clone(), e.to_string())),
         }
     }
+    let round = match Round::open(cli, inputs.identity, anchor.as_deref(), freshness, None) {
+        // First contact with no anchor and no history: the genesis commit a
+        // peer serves is a hint, reported as one, never as trust.
+        Err(Error::AnchorRule(_)) if anchor.is_none() => {
+            let wire = bare_digest(&get_principal_id(&parse_principal_genesis(
+                inputs.identity,
+            )?)?)
+            .to_owned();
+            let first = block_on(genesis_hint(&wire, &connectors))?;
+            Round::open(cli, inputs.identity, None, freshness, first.as_ref())?
+        },
+        other => other?,
+    };
     let peers: Vec<PullPeer<'_, HttpConnector>> = connectors
         .iter()
         .map(|(name, connector)| PullPeer { name, connector })
         .collect();
     block_on(run_round(&round, &peers, &prefailed))?
+}
+
+/// The first commit any of `peers` serves for `wire`: the one place a
+/// verifier with no anchor and no history can read an opener from.
+async fn genesis_hint(wire: &str, peers: &[(&str, HttpConnector)]) -> Option<WireBundle> {
+    for (_, connector) in peers {
+        let request = PatchRequest {
+            principal_id: wire,
+            anchor: None,
+        };
+        if let Ok(patch) = fetch_patch(connector, &request, BindingPolicy::NotRequired, None).await
+            && let Some(Ok(first)) = patch.entries.into_iter().next().map(|e| e.bundle)
+        {
+            return Some(first);
+        }
+    }
+    None
 }
 
 /// `cyphr verify`.
@@ -643,7 +700,10 @@ pub fn watch(
 pub fn audit(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<()> {
     let mut out = verify_once(cli, inputs)?;
     let state = VerifierState::load(&path_for(store_path(cli)?))?;
-    let wire = bare_digest(&get_principal_id(&parse_principal_genesis(inputs.identity)?)?).to_owned();
+    let wire = bare_digest(&get_principal_id(&parse_principal_genesis(
+        inputs.identity,
+    )?)?)
+    .to_owned();
     if let Some(held) = state.principals.get(&wire) {
         out["held"] = json!({
             "forks": held.forks.iter().map(|f| json!({"height": f.height, "pre": f.pre,
@@ -687,7 +747,11 @@ pub fn export(cli: &Cli, identity: &str, file: &std::path::Path) -> crate::Resul
     let out = json!({"identity": identity, "file": file.display().to_string(),
         "chains": bundle.chains.len(), "revoked": bundle.revoked.len()});
     emit(cli, &out, || {
-        println!("Exported {} chain(s) to {}", bundle.chains.len(), file.display());
+        println!(
+            "Exported {} chain(s) to {}",
+            bundle.chains.len(),
+            file.display()
+        );
     })
 }
 
@@ -714,7 +778,9 @@ pub fn import(
         )));
     }
     let connectors = bundle.connectors();
-    let names: Vec<String> = (0..connectors.len()).map(|i| format!("bundle:{}", i + 1)).collect();
+    let names: Vec<String> = (0..connectors.len())
+        .map(|i| format!("bundle:{}", i + 1))
+        .collect();
     let peers: Vec<PullPeer<'_, _>> = names
         .iter()
         .zip(&connectors)

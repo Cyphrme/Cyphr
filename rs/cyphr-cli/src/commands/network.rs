@@ -1,7 +1,8 @@
 //! Network commands: `push`, `fetch` and `rebase`.
 //!
 //! Peers are untrusted: every commit a peer serves is re-verified by the
-//! local engine before it is stored, and `verify` reports what the local, never that the view is current.
+//! local engine before it is stored, and `verify` reports what the local, never that the view is
+//! current.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
@@ -244,8 +245,19 @@ impl Drop for Scratch {
 
 /// A local commit's transaction, to be re-signed onto a new tip.
 enum Intent {
-    AddKey { id: String, signer: String },
-    RevokeKey { signer: String },
+    AddKey {
+        id: String,
+        signer: String,
+    },
+    RevokeKey {
+        signer: String,
+    },
+    /// A `ds/create`. Its `id` names the Data Root of a tree the rebased
+    /// history does not have, so replay signs a fresh one over the rebased
+    /// tree instead of repeating this.
+    DsCreate {
+        signer: String,
+    },
 }
 
 /// Read the replayable intents out of a local commit's cozies. Terminal
@@ -269,6 +281,11 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
         } else if let Some(a) = t.strip_suffix(typ::KEY_REVOKE) {
             authority = a.trim_end_matches('/').to_owned();
             out.push(Intent::RevokeKey {
+                signer: tmb.to_owned(),
+            });
+        } else if let Some(a) = t.strip_suffix(typ::DS_CREATE) {
+            authority = a.trim_end_matches('/').to_owned();
+            out.push(Intent::DsCreate {
                 signer: tmb.to_owned(),
             });
         } else if !t.ends_with("commit/create") {
@@ -318,6 +335,19 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         }
         replay.extend(found);
     }
+    // Every local action is re-recorded before any intent replays, so the
+    // rebased tree is whole and one `ds/create` over it includes what each
+    // earlier one included: the last stands for all.
+    if let Some(last) = replay
+        .iter()
+        .rposition(|i| matches!(i, Intent::DsCreate { .. }))
+    {
+        let mut at = 0;
+        replay.retain(|i| {
+            at += 1;
+            !matches!(i, Intent::DsCreate { .. }) || at == last + 1
+        });
+    }
     if local.len() == common || theirs.len() == common {
         // Nothing local to move, or the peer holds nothing the local
         // history lacks: the history already extends the peer's.
@@ -342,6 +372,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     // Declared before the engine below so the engine closes its files first.
     let mut scratch = Scratch(Some(tmp.clone()));
     let mut resigned: Vec<Value> = Vec::new();
+    let mut included: Vec<Value> = Vec::new();
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -425,6 +456,15 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                         &authority,
                     )?;
                 },
+                Intent::DsCreate { signer } => {
+                    let dr = super::data::apply_ds_create(
+                        &mut principal,
+                        &keystore,
+                        signer,
+                        &authority,
+                    )?;
+                    included.push(json!({"signer": signer, "dr": dr}));
+                },
                 Intent::RevokeKey { signer } => {
                     super::key::apply_key_revoke(
                         &mut principal,
@@ -460,13 +500,19 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 
     let out = json!({"identity": identity, "peer": peer_url,
         "rebased": local.len() - common, "backup": backup.display().to_string(),
-        "resigned_actions": resigned});
+        "resigned_actions": resigned, "ds_create": included});
     emit(cli, &out, || {
         println!(
             "Rebased {} commit(s); old store kept at {}",
             local.len() - common,
             backup.display()
         );
+        for inc in &included {
+            println!(
+                "Signed a fresh ds/create including the rebased DR {}",
+                inc["dr"]
+            );
+        }
         if !resigned.is_empty() {
             println!(
                 "Re-signed {} action(s) at rebase; original times and czds: {}",

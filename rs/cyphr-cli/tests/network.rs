@@ -11,10 +11,10 @@
 //! - `cyphr fetch --identity <pr> --peer <url>`: pulls and verifies the peer's commits into the
 //!   local store.
 //! - `cyphr verify --identity <pr> [--peer <url>]... [--anchor <pr>] [--choices <file>]`: prints
-//!   (JSON) `tip`, `view_age_secs`, `newer_tip_reported`, `peers_queried` (never 0),
-//!   `freshness_secs`, `anchor.{value,source}` with source one of `pinned`, `trusted-genesis`,
-//!   `hint`, and a `verdict` that is a standing: `"Active"`, or `"Error"` with a non-empty
-//!   top-level `evidence` for an unresolved fork. Never `current`, `verified`, `ok` or `valid`.
+//!   (JSON) `tip`, `view_age_secs`, `added`, `peers_queried` (never 0), `freshness_secs`,
+//!   `anchor.{value,source}` with source one of `pinned`, `trusted-genesis`, `hint`, and a
+//!   `verdict` that is a standing: `"Active"`, or `"Error"` with a non-empty top-level `evidence`
+//!   for an unresolved fork. Never `current`, `verified`, `ok` or `valid`.
 //! - A choices file is TOML: `anchor = "<pr>"`, `peers = ["<url>", ...]`, `freshness_secs = <n>`;
 //!   an unknown key is refused with error kind `malformed`.
 //! - Error kinds are the scenario harness's `RefusalKind` names, lowercased.
@@ -31,7 +31,6 @@ use common::{Server, User, accepted};
 use cyphr_cli::{Cli, Error, commands, keystore};
 use serde_json::Value;
 use tempfile::TempDir;
-
 
 // ------------------------------------------------------------------- push
 
@@ -446,6 +445,60 @@ fn data_rebase_keeps_local_actions() {
     assert_eq!(v["tip"], made["commit_id"]);
 }
 
+/// Claim (architect ruling, SPEC 4.8.2, 15.9): an offline device that
+/// committed a `ds/create` rejoins: rebase re-signs its data actions at the
+/// current time, signs a FRESH `ds/create` whose id is the Data Root of the
+/// rebased tree (never the old one, which the peer's history lacks), and
+/// reports both. Defect that turns it red: rebase refusing `ds/create`
+/// (`RebaseUnsupported`), repeating the old DR, or a rebased history the
+/// peer refuses. End-to-end: yes (real peer, two devices).
+#[test]
+fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
+    let server = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &server.url), "base push");
+    let b = a.clone_identity(&id);
+    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+
+    b.setup(&["data", "action", &ident, &signer, "--msg=offline"]);
+    let old = b.setup(&["data", "commit", &ident, &signer]);
+    // The peer's side also holds data, so the rebased tree is the union.
+    a.setup(&["data", "action", &ident, &signer, "--msg=online"]);
+    a.setup(&["data", "commit", &ident, &signer]);
+    accepted(&a.push(&id, &server.url), "A moves the peer on");
+    assert!(!b.push(&id, &server.url).ok, "B is stale");
+
+    // A later `now` makes the re-signed action (and so the DR) differ.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
+    assert_eq!(
+        rebased["resigned_actions"].as_array().map(Vec::len),
+        Some(1),
+        "the action is re-signed and reported: {rebased}"
+    );
+    let included = rebased["ds_create"].as_array().expect("ds_create reported");
+    assert_eq!(included.len(), 1, "one fresh ds/create: {rebased}");
+    assert_ne!(
+        included[0]["dr"], old["dr"],
+        "the DR is of the rebased tree (the action was re-signed), not the old one: {rebased}"
+    );
+    let pushed = b.push(&id, &server.url);
+    accepted(
+        &pushed,
+        "push of the rebased history with its fresh ds/create",
+    );
+    let reader = User::new();
+    let peer = format!("--peer={}", server.url);
+    assert!(
+        reader.run(&["fetch", &ident, &peer]).ok,
+        "a reader replays the rebased chain"
+    );
+    let v = reader.setup(&["verify", &ident, &peer]);
+    assert_eq!(v["verdict"], "Active");
+    assert_eq!(v["tip"], pushed.json()["tip"]);
+}
+
 // ----------------------------------------------------------------- verify
 
 fn verify_args<'a>(id: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
@@ -465,8 +518,8 @@ fn assert_answer_shape(v: &Value) {
         "answer must state the view age: {v}"
     );
     assert!(
-        v["newer_tip_reported"].is_boolean(),
-        "answer must say whether a peer reported a newer tip: {v}"
+        v["added"].is_u64(),
+        "answer must say how many commits the pull added: {v}"
     );
     assert!(
         v["anchor"]["value"].as_str().is_some_and(|s| !s.is_empty())
@@ -514,15 +567,17 @@ fn verify_answer_states_age_anchor_and_basis() {
     let v = r.json();
     assert_answer_shape(&v);
     assert_eq!(v["verdict"], "Active", "honest principal is Active: {v}");
-    assert_eq!(v["newer_tip_reported"], false, "peer is at our tip: {v}");
+    assert_eq!(v["added"], 0, "peer is at our tip: {v}");
 }
 
 /// Claim: when a queried peer holds a newer tip than the local view, verify
-/// reports that fact rather than vouching for the stale tip. End-to-end: yes
-/// (two peers, one lagging). Turns red on: a verify that ignores peer tips
-/// (`newer_tip_reported` false) or that answers "current" from the local view.
+/// pulls and replays it, adopts it, and says how many commits that added
+/// rather than vouching for the stale tip. End-to-end: yes (two peers, one
+/// lagging). Turns red on: a verify that ignores a peer's longer chain
+/// (`added` 0, the stale tip reported) or that answers "current" from the
+/// local view.
 #[test]
-fn verify_reports_newer_tip_from_a_peer() {
+fn verify_adopts_the_newer_tip_a_peer_holds() {
     let lagging = Server::start();
     let ahead = Server::start();
     let a = User::new();
@@ -530,7 +585,8 @@ fn verify_reports_newer_tip_from_a_peer() {
     accepted(&a.push(&id, &lagging.url), "push to lagging");
     accepted(&a.push(&id, &ahead.url), "push to ahead");
     a.add_key(&id);
-    accepted(&a.push(&id, &ahead.url), "push newer commit to ahead only");
+    let newest = a.push(&id, &ahead.url);
+    accepted(&newest, "push newer commit to ahead only");
 
     // A reader whose view came from the lagging peer queries both.
     let reader = User::new();
@@ -547,8 +603,13 @@ fn verify_reports_newer_tip_from_a_peer() {
     let v = r.json();
     assert_answer_shape(&v);
     assert_eq!(
-        v["newer_tip_reported"], true,
-        "the ahead peer's newer tip must be reported: {v}"
+        v["added"], 1,
+        "the ahead peer's newer commit is adopted: {v}"
+    );
+    assert_eq!(
+        v["tip"],
+        newest.json()["tip"],
+        "the newest verified tip: {v}"
     );
 }
 
