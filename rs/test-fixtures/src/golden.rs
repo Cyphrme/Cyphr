@@ -230,6 +230,7 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::AlreadyDeleted => "AlreadyDeleted",
         Error::AlreadyFrozen => "AlreadyFrozen",
         Error::NotFrozen => "NotFrozen",
+        Error::EmbeddedErrored => "EmbeddedErrored",
         Error::DuplicateNonce => "DuplicateNonce",
         Error::UnknownNonce => "UnknownNonce",
         Error::GenesisIncomplete => "GenesisIncomplete",

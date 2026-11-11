@@ -22,6 +22,8 @@ pub mod action;
 pub mod commit;
 /// Commit Root logic.
 pub mod commit_root;
+/// Embedded principals at default weight (SPEC §10.3, §10.5, §10.7).
+pub mod embedded;
 pub mod error;
 /// Portable inclusion-proof verification (F9) — free functions taking proof
 /// material and a trusted root as plain parameters, with no `Principal`
@@ -70,6 +72,7 @@ pub use eml;
 // EML/polydigest proof types.
 // Re-exported so consumers can verify proofs without depending on `eml`/`polydigest` directly.
 pub use eml::{ConsistencyProof, InclusionProof, LeafProof};
+pub use embedded::{EmbedReport, EmbedStatus, Tip, TipSource, Tracking};
 pub use error::Error;
 pub use inclusion::{
     TransactionHop1, TransactionHop2, verify_key_inclusion, verify_transaction_inclusion,
