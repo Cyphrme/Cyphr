@@ -104,9 +104,11 @@ fn open_durable(dir: &std::path::Path) -> Durable {
     let blobs = FjallBlobStore::from_database(db.clone()).expect("blob store");
     let index =
         FjallIndexer::open(&dir.join("index")).expect("an index of ANY older version opens");
-    StorageEngine::with_storage_factory(blobs, index, move |_: &str| {
-        cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
-    })
+    StorageEngine::with_log_factory(
+        blobs,
+        index,
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    )
 }
 
 /// Rewrite the index's meta record to `version` (`None` removes it, as a

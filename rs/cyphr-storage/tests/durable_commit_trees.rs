@@ -41,8 +41,8 @@
 //! `Principal`'s own API.
 //!
 //! The storage instance itself is still produced via
-//! [`cyphr_storage::engine::StorageEngine`]'s `with_storage_factory` /
-//! `cyphr_blob_fjall::open_eml_storage`, sharing one physical `Database`
+//! [`cyphr_storage::engine::StorageEngine`]'s `with_log_factory` /
+//! `cyphr_blob_fjall::EmlLogs`, sharing one physical `Database`
 //! with the blob store — this test exercises that exact production wiring,
 //! just not `submit_commit`'s replay-based reload path.
 
@@ -367,12 +367,10 @@ fn principal_replay_survives_disk_drop_and_reload() {
             let db = fjall::Database::builder(&db_path).open().expect("open db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
             let indexer = FjallIndexer::open(&index_path).expect("open indexer");
-            let engine = StorageEngine::with_storage_factory(
+            let engine = StorageEngine::with_log_factory(
                 blob_store,
                 indexer,
-                move |_principal_id: &str| {
-                    cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
-                },
+                cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
             );
 
             for commit in commits {
@@ -414,12 +412,10 @@ fn principal_replay_survives_disk_drop_and_reload() {
                 .expect("reopen db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
             let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
-            let engine = StorageEngine::with_storage_factory(
+            let engine = StorageEngine::with_log_factory(
                 blob_store,
                 indexer,
-                move |_principal_id: &str| {
-                    cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
-                },
+                cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
             );
 
             let principal = engine

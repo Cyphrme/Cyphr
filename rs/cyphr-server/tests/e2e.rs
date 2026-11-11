@@ -374,12 +374,50 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
 async fn submit_commit_concurrent_different_principals_do_not_block() {
     use std::sync::{Arc, Condvar, Mutex};
 
+    use cyphr_storage::engine::LogFactory;
+
     /// Parks the storage factory for one principal until released.
     #[derive(Default)]
     struct Gate {
         // (armed, entered, released)
         state: Mutex<(bool, bool, bool)>,
         cv: Condvar,
+    }
+
+    /// The durable logs, parking the open of `parked_id`'s log on `gate` while
+    /// it is armed.
+    struct GatedLogs {
+        inner: cyphr_blob_fjall::EmlLogs,
+        gate: Arc<Gate>,
+        parked_id: String,
+    }
+
+    impl LogFactory<cyphr_blob_fjall::storage_fjall::FjallStorage> for GatedLogs {
+        fn generation(&self, principal_id: &str) -> Result<u64, String> {
+            self.inner.generation(principal_id)
+        }
+
+        fn open(
+            &self,
+            principal_id: &str,
+            generation: u64,
+        ) -> Result<cyphr_blob_fjall::storage_fjall::FjallStorage, String> {
+            if principal_id.ends_with(self.parked_id.as_str()) {
+                let mut s = self.gate.state.lock().unwrap();
+                if s.0 {
+                    s.1 = true;
+                    self.gate.cv.notify_all();
+                    while !s.2 {
+                        s = self.gate.cv.wait(s).unwrap();
+                    }
+                }
+            }
+            self.inner.open(principal_id, generation)
+        }
+
+        fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+            self.inner.retire_below(principal_id, generation)
+        }
     }
 
     let pool = load_pool();
@@ -414,29 +452,15 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         .open()
         .expect("open fjall db");
     let gate = Arc::new(Gate::default());
-    let engine = {
-        let gate = gate.clone();
-        let factory_db = db.clone();
-        let parked_id = parked_id.clone();
-        Arc::new(cyphr_storage::engine::StorageEngine::with_storage_factory(
-            cyphr_blob_fjall::FjallBlobStore::from_database(db).expect("blob store"),
-            cyphr_index_fjall::FjallIndexer::open(&dir.path().join("index")).expect("indexer"),
-            move |principal_id: &str| {
-                if principal_id.ends_with(parked_id.as_str()) {
-                    let mut s = gate.state.lock().unwrap();
-                    if s.0 {
-                        s.1 = true;
-                        gate.cv.notify_all();
-                        while !s.2 {
-                            s = gate.cv.wait(s).unwrap();
-                        }
-                    }
-                }
-                cyphr_blob_fjall::open_eml_storage_scoped(factory_db.clone(), principal_id)
-                    .map_err(|e| e.to_string())
-            },
-        ))
-    };
+    let engine = Arc::new(cyphr_storage::engine::StorageEngine::with_log_factory(
+        cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store"),
+        cyphr_index_fjall::FjallIndexer::open(&dir.path().join("index")).expect("indexer"),
+        GatedLogs {
+            inner: cyphr_blob_fjall::EmlLogs::new(db).expect("logs"),
+            gate: gate.clone(),
+            parked_id: parked_id.clone(),
+        },
+    ));
 
     // Bootstrap every principal (gate unarmed), then sign each one's next
     // commit against its current state.

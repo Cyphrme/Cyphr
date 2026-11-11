@@ -447,8 +447,7 @@ pub trait LogFactory<S>: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Why the log cannot be opened, or that this factory keeps a single
-    /// generation.
+    /// Why the log cannot be opened.
     fn open(&self, principal_id: &str, generation: u64) -> Result<S, String>;
 
     /// Make `generation` the current generation of `principal_id`'s log,
@@ -456,29 +455,30 @@ pub trait LogFactory<S>: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Why the record cannot be written, or that this factory keeps a
-    /// single generation.
+    /// Why the record cannot be written.
     fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String>;
 }
 
-/// A [`LogFactory`] over a closure that opens one log per principal: it
-/// keeps a single generation, so a stale log is reported, not regenerated.
-struct SingleGeneration<F>(F);
+/// The [`LogFactory`] of in-memory logs: every open is a fresh, empty
+/// [`cyphr::eml::MemoryStorage`], so a log never outlives its principal and
+/// is never stale.
+pub struct MemoryLogs;
 
-impl<S, F: Fn(&str) -> Result<S, String> + Send + Sync> LogFactory<S> for SingleGeneration<F> {
+impl LogFactory<cyphr::eml::MemoryStorage> for MemoryLogs {
     fn generation(&self, _principal_id: &str) -> Result<u64, String> {
         Ok(0)
     }
 
-    fn open(&self, principal_id: &str, generation: u64) -> Result<S, String> {
-        match generation {
-            0 => (self.0)(principal_id),
-            _ => Err("this log factory keeps a single generation".into()),
-        }
+    fn open(
+        &self,
+        _principal_id: &str,
+        _generation: u64,
+    ) -> Result<cyphr::eml::MemoryStorage, String> {
+        Ok(cyphr::eml::MemoryStorage::new())
     }
 
     fn retire_below(&self, _principal_id: &str, _generation: u64) -> Result<(), String> {
-        Err("this log factory keeps a single generation".into())
+        Ok(())
     }
 }
 
@@ -557,7 +557,7 @@ pub(crate) struct StagedBuild<'p, T: cyphr::eml::Storage> {
 /// [`cyphr::eml::MemoryStorage`] so every existing call site that spells the
 /// bare `StorageEngine<B, I>` (via [`Self::new`]) continues to mean exactly
 /// what it meant before this parameter existed. A durable backend is wired
-/// up via [`Self::with_storage_factory`] instead.
+/// up via [`Self::with_log_factory`] instead.
 pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorage> {
     blob_store: B,
     indexer: I,
@@ -621,45 +621,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
     /// is dropped — full history is always replayed from the blob/index
     /// layers on the next [`Self::load_principal`]).
     ///
-    /// For a durable commit-tree backend, use [`Self::with_storage_factory`].
+    /// For a durable commit-tree backend, use [`Self::with_log_factory`].
     pub fn new(blob_store: B, indexer: I) -> Self {
-        Self {
-            blob_store,
-            indexer,
-            logs: Box::new(SingleGeneration(|_principal_id: &str| {
-                Ok(cyphr::eml::MemoryStorage::new())
-            })),
-            principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            healed: tokio::sync::OnceCell::new(),
-            branches: std::sync::Mutex::new(HashMap::new()),
-            actions: std::sync::Mutex::new(HashMap::new()),
-            frames: std::sync::Mutex::new(HashMap::new()),
-            retention_replays: std::sync::atomic::AtomicU64::new(0),
-            retention_trials: std::sync::atomic::AtomicU64::new(0),
-        }
+        Self::with_log_factory(blob_store, indexer, MemoryLogs)
     }
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
-    /// Create a new engine wrapping the given backends, with `storage_factory`
-    /// producing each [`cyphr::Principal`]'s Commit Tree storage backend from
-    /// its `principal_id`.
-    ///
-    /// See [`Self`]'s `logs` field docs for why this is a factory rather
-    /// than a single shared `S` instance. The factory keeps one generation
-    /// per principal, so a log a resolved fork left stale is reported, not
-    /// regenerated; a durable deployment uses [`Self::with_log_factory`].
-    pub fn with_storage_factory(
-        blob_store: B,
-        indexer: I,
-        storage_factory: impl Fn(&str) -> Result<S, String> + Send + Sync + 'static,
-    ) -> Self {
-        Self::with_log_factory(blob_store, indexer, SingleGeneration(storage_factory))
-    }
-
     /// Create a new engine wrapping the given backends, with `logs` opening
     /// each [`cyphr::Principal`]'s Commit Tree storage by principal and
-    /// generation ([`LogFactory`]).
+    /// generation ([`LogFactory`]). See [`Self`]'s `logs` field docs for why
+    /// this is a factory rather than a single shared `S` instance.
     pub fn with_log_factory(blob_store: B, indexer: I, logs: impl LogFactory<S> + 'static) -> Self {
         Self {
             blob_store,
@@ -2063,20 +2035,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return self.replay_generation(principal_id, genesis, current).await;
         }
         let next = generation + 1;
-        let regenerated = match self.logs.open(principal_id, next) {
-            Ok(storage) => {
-                self.replay_onto(principal_id, genesis, storage, None)
-                    .await?
-            },
-            Err(why) => {
-                tracing::warn!(
-                    principal = %principal_id,
-                    why,
-                    "commit log does not match the canonical chain and cannot be regenerated"
-                );
-                return replayed;
-            },
-        };
+        let storage = self
+            .logs
+            .open(principal_id, next)
+            .map_err(EngineError::Storage)?;
+        let regenerated = self
+            .replay_onto(principal_id, genesis, storage, None)
+            .await?;
         self.logs
             .retire_below(principal_id, next)
             .map_err(EngineError::Storage)?;
