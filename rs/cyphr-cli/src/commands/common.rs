@@ -211,11 +211,8 @@ pub fn open_store(path: &std::path::Path, total_check: bool) -> crate::Result<Cl
     let db = fjall::Database::builder(path.join("blobs")).open()?;
     let blob_store = FjallBlobStore::from_database(db.clone())?;
     let indexer = FjallIndexer::open(&path.join("index"))?;
-    let engine =
-        StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
-            cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
-                .map_err(|e| e.to_string())
-        });
+    let logs = cyphr_blob_fjall::EmlLogs::new(db)?;
+    let engine = StorageEngine::with_log_factory(blob_store, indexer, logs);
 
     if total_check {
         block_on(engine.rebuild_index_from_scratch())??;

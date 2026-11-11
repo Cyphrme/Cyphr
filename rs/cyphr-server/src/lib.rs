@@ -48,12 +48,11 @@ use cyphr_storage::engine::StorageEngine;
 ///
 /// The blob store, each principal's Commit Tree, and the index are all
 /// durable. The blob store and Commit Trees share one physical `Database`
-/// (`FjallBlobStore::from_database` plus
-/// `cyphr_blob_fjall::open_eml_storage_scoped`, per
+/// (`FjallBlobStore::from_database` plus `cyphr_blob_fjall::EmlLogs`, per
 /// `docs/specs/blob-store-fjall.md`'s `[fjall-single-keyspace]` mandate --
 /// which is scoped to blobs+EML, not the index), with each principal's
-/// Commit Tree keyed to its own scoped keyspace by `principal_id` so
-/// multiple principals safely share the one database. The index opens
+/// Commit Tree keyed to its own scoped keyspace by `principal_id` and log
+/// generation so multiple principals safely share the one database. The index opens
 /// its own, separate `Database`: the index is a derived, rebuildable
 /// projection of the blob store (root `AGENTS.md` I1), and keeping its
 /// storage independent preserves that a blob-store-only failure (lost or
@@ -136,11 +135,8 @@ impl AppState {
         let db = fjall::Database::builder(config.blobs_dir()).open()?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
         let indexer = FjallIndexer::open(&config.index_dir())?;
-        let engine =
-            StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
-                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
-                    .map_err(|e| e.to_string())
-            });
+        let logs = cyphr_blob_fjall::EmlLogs::new(db)?;
+        let engine = StorageEngine::with_log_factory(blob_store, indexer, logs);
 
         let identity = match &config.signing_key_path {
             Some(path) => Some(Arc::new(auth::ServerIdentity::load_from_path(path)?)),

@@ -1260,17 +1260,16 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
     );
 }
 
-/// Claim: two manifests at one chain position (a partial restore or a crash
-/// left a rival) never fail the rebuild: the canonical-order first is
-/// indexed, the rival is quarantined as fork evidence, and the principal's
-/// later commits are left out so the indexed chain stays a gapless prefix.
-/// Turns red if the rival's `Consistency` error aborts the rebuild (it would
-/// wedge `ensure_healed` on every start) or the chain is not a prefix. A
-/// unit test: a rival manifest cannot be built from signed cozes, and
-/// `store_blobs_and_manifest` is the only way to write both past ingest.
+/// Claim: two manifests at one chain position never fail the rebuild: the
+/// one the later commit's `pre` extends is canonical, the rival is kept as
+/// a retained branch (it forks the canonical parent), and the chain stays
+/// whole. Turns red if the rival's `Consistency` error aborts the rebuild
+/// (it would wedge `ensure_healed` on every start), the rival displaces the
+/// extended commit, or the rival is dropped. A unit test: a rival manifest
+/// cannot be built from signed cozes, and `store_blobs_and_manifest` is the
+/// only way to write both past ingest.
 #[tokio::test]
-async fn rebuild_quarantines_a_rival_manifest_at_one_position() {
-    use super::QuarantineReason;
+async fn rebuild_keeps_a_rival_manifest_at_one_position_as_a_branch() {
     let engine = test_engine();
     for (seq, now) in [(0u64, 1), (1, 2), (2, 3)] {
         let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
@@ -1281,6 +1280,7 @@ async fn rebuild_quarantines_a_rival_manifest_at_one_position() {
     }
     let mut rival = make_meta("alice", 1, 9);
     rival.commit_ids = vec!["SHA-256:commit-alice-rival".to_string()];
+    rival.prs = vec!["SHA-256:pr-alice-rival".to_string()];
     engine
         .store_blobs_and_manifest(&singles(&[b"{\"pay\":{\"now\":9}}"]), rival)
         .await
@@ -1290,28 +1290,24 @@ async fn rebuild_quarantines_a_rival_manifest_at_one_position() {
         .rebuild_index_with_report()
         .await
         .expect("a rival manifest must not fail the rebuild");
+    assert_eq!(report.quarantined, [], "{report:?}");
     let chain = engine
         .indexer()
         .get_commit_chain("alice", None, None)
         .await
         .unwrap();
-    let seqs: Vec<u64> = chain.iter().map(|c| c.sequence).collect();
-    assert_eq!(seqs, vec![0, 1], "a gapless prefix, got {seqs:?}");
-    assert_eq!(report.quarantined.len(), 2, "{report:?}");
-    assert!(
-        report
-            .quarantined
-            .iter()
-            .any(|q| matches!(q.reason, QuarantineReason::Fork(_))),
-        "the rival must be quarantined as fork evidence: {report:?}"
+    let ids: Vec<&str> = chain.iter().map(|c| c.commit_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "SHA-256:commit-alice-0",
+            "SHA-256:commit-alice-1",
+            "SHA-256:commit-alice-2"
+        ]
     );
-    assert!(
-        report
-            .quarantined
-            .iter()
-            .any(|q| matches!(q.reason, QuarantineReason::Orphaned(_))),
-        "the later commit must be orphaned: {report:?}"
-    );
+    let held = engine.branches.lock().unwrap().get("alice").cloned();
+    let rivals: Vec<String> = held.into_iter().flatten().map(|r| r.tip.tip).collect();
+    assert_eq!(rivals, ["SHA-256:commit-alice-rival"]);
 }
 
 fn pool_for_keys() -> test_fixtures::Pool {
