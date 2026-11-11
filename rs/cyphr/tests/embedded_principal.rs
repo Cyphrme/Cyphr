@@ -282,3 +282,52 @@ async fn b_in_error_makes_authorization_through_b_error() {
     ));
     assert_eq!(a.pr(), &before);
 }
+
+/// Backs SPEC 10.3 (an embedded principal appears as the digest of its own
+/// PR): a source answering for B with the tip of another principal C is
+/// not believed. B stays `Unavailable`, and a key of C cannot sign for A
+/// through B's digest. Turns red if a tip is accepted for a digest it is
+/// no state of. End to end: yes.
+#[tokio::test]
+async fn a_tip_of_another_principal_is_not_taken_for_b() {
+    let World { mut a, .. } = world().await;
+    let golden = pool_key("golden");
+    let mut c = Principal::implicit(key_of(&golden)).await.expect("C");
+    c.commit_genesis(&software(&golden), &[], T, "cyphr.me")
+        .await
+        .expect("C genesis");
+
+    let mut src = Fake::default();
+    src.tips.push_back(Tip::new(&c, T + 5));
+    let report = a.follow_embedded(&mut src).await;
+    assert_eq!(report[0].status, EmbedStatus::Unavailable);
+    assert!(matches!(
+        b_adds(&mut a, &golden, &pool_key("key_a"), T + 10).await,
+        Err(Error::UnknownKey)
+    ));
+}
+
+/// Backs SPEC 10.7 (a followed PR is judged by the tip retrieved) failing
+/// closed: when a refresh finds no tip, the one held before is dropped, B
+/// is `Unavailable`, and B's keys no longer authorize for A. Turns red if
+/// a failed refresh keeps the old tip as if it were still the newest. End
+/// to end: yes.
+#[tokio::test]
+async fn a_failed_refresh_drops_the_old_tip() {
+    let World {
+        mut a, b, carol, ..
+    } = world().await;
+    let mut src = Fake::default();
+    src.tips.push_back(Tip::new(&b, T + 5));
+    a.follow_embedded(&mut src).await;
+    b_adds(&mut a, &carol, &pool_key("key_a"), T + 10)
+        .await
+        .expect("carol signs while the tip is held");
+
+    let report = a.follow_embedded(&mut src).await;
+    assert_eq!(report[0].status, EmbedStatus::Unavailable);
+    assert!(matches!(
+        b_adds(&mut a, &carol, &pool_key("golden"), T + 11).await,
+        Err(Error::UnknownKey)
+    ));
+}
