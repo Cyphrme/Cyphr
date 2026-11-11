@@ -290,8 +290,7 @@ pub enum ViewStatementParseError {
 }
 
 impl ViewStatement {
-    /// Parse a view statement's `pay`. Never panics on any input (fuzzed:
-    /// `fuzz_view_statement`).
+    /// Parse a view statement's `pay`. Never panics on any input.
     pub fn parse(coz: &coz::CozJson) -> Result<Self, ViewStatementParseError> {
         let pay = &coz.pay;
         let pr = parse_genesis_id(&pay["pr"]).map_err(ViewStatementParseError::Pr)?;
