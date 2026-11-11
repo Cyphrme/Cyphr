@@ -85,8 +85,6 @@ async fn fjall_indexer_passes_the_shared_conformance_suite() {
         &FjallIndexer::temp().expect("open temp indexer").0,
     )
     .await;
-    conformance::errored_mark_is_per_principal(&FjallIndexer::temp().expect("open temp indexer").0)
-        .await;
     conformance::index_commit_idempotency_is_keyed_by_chain_position(
         &FjallIndexer::temp().expect("open temp indexer").0,
     )
@@ -128,7 +126,6 @@ async fn alias_table_is_one_registered_kv_table() {
         "index_commits",
         "index_digests",
         "index_public_keys",
-        "index_errored",
     ];
     for name in before {
         assert!(

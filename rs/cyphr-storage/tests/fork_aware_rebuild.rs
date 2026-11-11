@@ -20,7 +20,7 @@ use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::{IngestResult, StorageEngine};
-use cyphr_storage::index::{Indexer, MemoryIndexer};
+use cyphr_storage::index::MemoryIndexer;
 
 const NOW: i64 = 1_700_200_000;
 
@@ -242,7 +242,7 @@ async fn two_extended_heads_mark_the_principal_error() {
 
     let fresh = Engine::new(e.blob_store().clone(), MemoryIndexer::new());
     let served = fresh.get_tip(&s.id).await.expect("tip").expect("stored");
-    assert!(fresh.indexer().is_errored(&s.id).await.expect("errored"));
+    assert!(fresh.is_errored(&s.id).await.expect("errored"));
 
     // The hash-order head: the commit manifests of A2 and C, compared.
     let c_manifest = manifest_of(&fresh, &c).await;

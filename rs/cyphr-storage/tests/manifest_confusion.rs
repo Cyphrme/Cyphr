@@ -687,13 +687,6 @@ impl Indexer for TipFailsAfterStore {
     ) -> impl Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send {
         self.inner.get_key(thumbprint)
     }
-
-    fn is_errored(
-        &self,
-        principal_id: &str,
-    ) -> impl Future<Output = Result<bool, IndexerError>> + Send {
-        self.inner.is_errored(principal_id)
-    }
 }
 
 impl IndexerWrite for TipFailsAfterStore {
@@ -722,15 +715,6 @@ impl IndexerWrite for TipFailsAfterStore {
     ) -> impl Future<Output = Result<(), IndexerError>> + Send {
         self.inner
             .replace_chain_from(principal_id, sequence, commits, token)
-    }
-
-    fn set_errored(
-        &self,
-        principal_id: &str,
-        errored: bool,
-        token: &DeriveToken,
-    ) -> impl Future<Output = Result<(), IndexerError>> + Send {
-        self.inner.set_errored(principal_id, errored, token)
     }
 
     fn clear(&self, token: &DeriveToken) -> impl Future<Output = Result<(), IndexerError>> + Send {
