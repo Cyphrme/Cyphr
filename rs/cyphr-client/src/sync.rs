@@ -222,6 +222,34 @@ impl Record {
                 .is_some_and(|h| h.principal.is_key_active(tmb))
     }
 
+    /// The record's key `tmb` as the replayed chain holds it, active or
+    /// not: how a relying party reads the public half it verifies against.
+    #[must_use]
+    pub fn key(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.held.as_ref()?.principal.get_key(tmb)
+    }
+
+    /// Whether the replayed chain's lifecycle state is `Active` (not
+    /// frozen, deleted or errored by a fork). `false` before the first pull.
+    #[must_use]
+    pub fn is_principal_active(&self) -> bool {
+        self.held.as_ref().is_some_and(|h| {
+            h.principal.lifecycle_state() == cyphr::lifecycle::LifecycleState::Active
+        })
+    }
+
+    /// The newest `now` any signed message of the replayed chain carries:
+    /// the principal's own latest word on time.
+    #[must_use]
+    pub fn latest_now(&self) -> Option<i64> {
+        self.bundles_since(0)
+            .iter()
+            .flat_map(|b| b.cozies().chain(b.actions.iter().map(Vec::as_slice)))
+            .filter_map(|blob| serde_json::from_slice::<Value>(blob).ok())
+            .filter_map(|coz| coz["pay"]["now"].as_i64())
+            .max()
+    }
+
     /// The keys with a verified naked revoke, and each `rvk`.
     pub fn dead_keys(&self) -> impl Iterator<Item = (&str, i64)> {
         self.dead.iter().map(|(tmb, rvk)| (tmb.as_str(), *rvk))

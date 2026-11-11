@@ -13,10 +13,14 @@ pub mod evidence;
 mod exchange;
 mod patch;
 mod peer;
+mod relying_party;
 mod report;
 mod revoke;
 mod sync;
 
+pub use relying_party::{
+    LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, Trust, UnmetCurrency,
+};
 pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
