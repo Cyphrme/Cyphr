@@ -54,10 +54,22 @@ pub struct Server {
 
 impl Server {
     pub fn start() -> Self {
+        Self::start_gossiping(&[])
+    }
+
+    /// A server that pulls from `peers` every second (the server's own
+    /// gossip timer), so a branch a peer holds reaches it without a push.
+    pub fn start_gossiping(peers: &[&str]) -> Self {
         let dir = TempDir::new().expect("server tempdir");
+        let config = dir.path().join("absent.toml");
+        if !peers.is_empty() {
+            let list = peers.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join(", ");
+            std::fs::write(&config, format!("[gossip]\npeers = [{list}]\ninterval_secs = 1\n"))
+                .expect("gossip config");
+        }
         let mut child = Command::new(server_bin())
             .arg("--config")
-            .arg(dir.path().join("absent.toml"))
+            .arg(&config)
             .args(["serve", "--listen", "127.0.0.1:0", "--data-dir"])
             .arg(dir.path().join("data"))
             .stdin(Stdio::null())

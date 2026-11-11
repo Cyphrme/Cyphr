@@ -18,9 +18,8 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(fork-evidence): a peer's evidence for a fork of data commits does not verify at \
-            pre (the rival b carries two leading actions the canonical chain places at two \
-            heights); rebase of a ds/create and resolve_fork (G3) are landed"]
+#[ignore = "RED(G3): peers do not switch canonical branch on a resolution commit (SPEC 15.8: a \
+commit on a retained branch makes it canonical); the peer holding the other branch stays on it"]
 async fn s03_offline() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await

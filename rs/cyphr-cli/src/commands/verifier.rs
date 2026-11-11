@@ -467,6 +467,20 @@ async fn run_round<C: Connector>(
     let principal_now = latest_now(&record);
     let age = |t: i64| u64::try_from(now - t).unwrap_or(0);
     let pull_age = age(now);
+    // What a peer served that did not verify is part of what it said.
+    let rejected: std::collections::BTreeMap<&str, Vec<String>> = report
+        .peers
+        .iter()
+        .map(|o| {
+            let why = o
+                .rejected_evidence
+                .iter()
+                .map(|e| format!("evidence: {e}"))
+                .chain(o.rejected_revokes.iter().map(|r| format!("revoke: {r}")))
+                .collect();
+            (o.peer.as_str(), why)
+        })
+        .collect();
     let peers_json: Vec<Value> = entry
         .peers
         .iter()
@@ -475,7 +489,8 @@ async fn run_round<C: Connector>(
         })
         .map(|(name, seen)| {
             json!({"peer": name, "standing": seen.standing, "answered_at": seen.answered_at,
-                "asked_at": seen.asked_at, "detail": seen.detail})
+                "asked_at": seen.asked_at, "detail": seen.detail,
+                "rejected": rejected.get(name.as_str()).cloned().unwrap_or_default()})
         })
         .collect();
     let out = json!({

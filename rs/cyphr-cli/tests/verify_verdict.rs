@@ -204,3 +204,55 @@ fn verdict_follows_the_branch_the_principal_resolves_to() {
         "the abandoned branch is kept: {after}"
     );
 }
+
+/// Claim (SPEC 4.8.2, 15.8, 15.9): a fork of data commits made after a
+/// rebase (whose re-signed actions put the rebased history's actions at
+/// several heights) is still evidence a verifier can replay: the peer that
+/// retains the rival serves an item that verifies, so a verifier asking only
+/// that peer reports Error. Defect that turns it red: evidence for the
+/// rival that does not verify at its `pre` (the verifier then sees no fork
+/// and says Active). End-to-end: yes (two servers, two devices, a rebase).
+#[test]
+fn data_fork_after_a_rebase_is_evidence_the_verifier_replays() {
+    let s2 = Server::start();
+    // Peer 1 pulls from peer 2, so it comes to hold B's branch as a rival.
+    let s1 = Server::start_gossiping(&[&s2.url]);
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &s1.url), "base to peer 1");
+    accepted(&a.push(&id, &s2.url), "base to peer 2");
+    let b = a.clone_identity(&id);
+    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let data = |u: &User, msg: &str| {
+        u.setup(&["data", "action", &ident, &signer, &format!("--msg={msg}")]);
+        u.setup(&["data", "commit", &ident, &signer]);
+    };
+
+    // B commits data offline; A moves peer 1 on; B rebases onto it.
+    data(&b, "offline");
+    data(&a, "online");
+    accepted(&a.push(&id, &s1.url), "A's data commit to peer 1");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    b.setup(&["rebase", &ident, &format!("--peer={}", s1.url)]);
+    accepted(&b.push(&id, &s1.url), "B's rebased history to peer 1");
+    accepted(&b.push(&id, &s2.url), "B's rebased history to peer 2");
+    accepted(&a.run(&["fetch", &ident, &format!("--peer={}", s1.url)]), "A catches up");
+
+    // Both sides commit data over one tip, to different peers (peer 1
+    // learns B's branch by gossip).
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    data(&a, "a branch");
+    data(&b, "b branch");
+    accepted(&a.push(&id, &s1.url), "A's branch to peer 1");
+    accepted(&b.push(&id, &s2.url), "B's branch to peer 2");
+    let peer = format!("--peer={}", s1.url);
+    let mut v = a.setup(&["verify", &ident, &peer]);
+    for _ in 0..30 {
+        if v["verdict"] == "Error" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        v = a.setup(&["verify", &ident, &peer]);
+    }
+    assert_eq!(v["verdict"], "Error", "the retained rival's evidence verifies: {v}");
+}
