@@ -389,6 +389,113 @@ mod eml {
         );
     }
 
+    /// A durable store under `dir` holding G and A, its log at generation 0.
+    async fn stored_g_a(s: &Scenario, dir: &std::path::Path) {
+        let (e, _) = open(dir);
+        for bundle in [&s.g, &s.a] {
+            e.submit_commit(&s.id, Some(s.genesis.clone()), bundle)
+                .await
+                .expect("push");
+        }
+    }
+
+    /// Append leaf `from` of `generation`'s log of `id` to the log of
+    /// `id` at `into`: a leaf no commit of that position wrote.
+    async fn plant(dir: &std::path::Path, id: &str, from: u64, into: u64) {
+        let db = fjall::Database::builder(dir.join("blobs"))
+            .open()
+            .expect("db");
+        let logs = EmlLogs::new(db).expect("logs");
+        let source = cyphr::commit_root::CommitTrees::open(logs.open(id, 0).expect("open"))
+            .await
+            .expect("log");
+        let leaf = source.get_leaf(from).await.expect("leaf");
+        drop(source);
+        let mut target = cyphr::commit_root::CommitTrees::open(logs.open(id, into).expect("open"))
+            .await
+            .expect("log");
+        let sha256 = cyphr::commit_root::hash_alg_to_u64(cyphr::HashAlg::Sha256);
+        if !target.has_algorithm(sha256) {
+            let hasher = cyphr::commit_root::MaltHasher::new(cyphr::HashAlg::Sha256);
+            target
+                .add_algorithm(sha256, Box::new(hasher))
+                .await
+                .expect("algorithm");
+        }
+        target.append(&leaf).await.expect("append");
+    }
+
+    /// Claim: a durable log holding a leaf past the stored chain's last
+    /// commit (a crash between the log append and the commit's record) is
+    /// stale: the next load regenerates it, and the log ends with exactly
+    /// one leaf per commit. Turns red if a log longer than the chain is
+    /// reused (its extra leaf would refuse the next commit at that
+    /// position). End-to-end scenario: a durable store restarted (I1).
+    #[tokio::test]
+    async fn eml_holding_a_leaf_past_the_chain_is_regenerated() {
+        let s = Scenario::new().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        stored_g_a(&s, dir.path()).await;
+        plant(dir.path(), &s.id, 0, 0).await;
+
+        let (e, opened) = open(dir.path());
+        let p = e
+            .load_principal(&s.id, s.genesis.clone())
+            .await
+            .expect("load");
+        assert_eq!(p.commit_trees().global_size(), p.commits().count() as u64);
+        assert_eq!(
+            *opened.lock().expect("lock"),
+            [0, 1],
+            "the long log is regenerated"
+        );
+    }
+
+    /// Claim: a regeneration interrupted after writing into the next
+    /// generation leaves leaves there that need not match the canonical
+    /// chain; the next regeneration starts that generation empty, so the
+    /// load succeeds with a log matching the chain. Turns red if the
+    /// leftover is replayed over (`DurableLeafMismatch`). End-to-end
+    /// scenario: a durable store restarted after an interrupted
+    /// regeneration (I1).
+    #[tokio::test]
+    async fn eml_regeneration_discards_an_interrupted_generation() {
+        let s = Scenario::new().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        stored_g_a(&s, dir.path()).await;
+        // Generation 1 holds A's leaf at position 0, where G belongs.
+        plant(dir.path(), &s.id, 1, 1).await;
+        // Generation 0 is stale: a leaf past the chain.
+        plant(dir.path(), &s.id, 0, 0).await;
+
+        let (e, opened) = open(dir.path());
+        let p = e
+            .load_principal(&s.id, s.genesis.clone())
+            .await
+            .expect("load");
+        assert_eq!(p.commit_trees().global_size(), p.commits().count() as u64);
+        assert_eq!(*opened.lock().expect("lock"), [0, 1]);
+        let roots = e.rederive_roots(&s.id).await.expect("roots");
+        assert_eq!(
+            roots,
+            Engine::new(
+                {
+                    let store = MemoryBlobStore::new();
+                    for hash in e.blob_store().iter().await.expect("iter") {
+                        let data = e.blob_store().get(&hash.expect("hash")).await.expect("get");
+                        store.put(&data.expect("held")).await.expect("put");
+                    }
+                    store
+                },
+                MemoryIndexer::new()
+            )
+            .rederive_roots(&s.id)
+            .await
+            .expect("replay of the canonical chain"),
+            "the regenerated log is the canonical chain's"
+        );
+    }
+
     fn db_of(e: &Durable) -> fjall::Database {
         e.blob_store().database().clone()
     }
