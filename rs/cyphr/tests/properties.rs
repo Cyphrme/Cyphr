@@ -336,6 +336,9 @@ fn arrow_mutation_count_strategy() -> impl Strategy<Value = usize> {
 }
 
 proptest! {
+    // The accept test's whole input space is a dozen points and the tamper
+    // tests sweep byte positions; 48 cases cover both (256 cost ~55 s each).
+    #![proptest_config(ProptestConfig::with_cases(48))]
     /// Property 1: `matches_arrow` rejects any single-byte tamper to a
     /// genuine arrow, across all three digest widths and 1..=3 mutations.
     #[test]

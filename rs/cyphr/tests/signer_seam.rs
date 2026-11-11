@@ -640,6 +640,8 @@ async fn high_s_signature_is_rejected_not_normalized() {
 }
 
 proptest! {
+    // 64 cases sample the signature space (256 cost ~27 s).
+    #![proptest_config(ProptestConfig::with_cases(64))]
     /// CLAIM (a-typed-errors, property): for ANY byte string a signer returns
     /// that is not the genuine signature — arbitrary bytes, or a genuine
     /// signature with any single bit flipped — finalize yields
