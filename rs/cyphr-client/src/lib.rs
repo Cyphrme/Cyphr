@@ -10,6 +10,7 @@
 
 mod connector;
 pub mod evidence;
+mod exchange;
 mod patch;
 mod peer;
 mod report;
@@ -19,8 +20,10 @@ mod sync;
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
     Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerOutcome, PeerStanding, PullPeer, PullReport,
-    Record, RecordTip, RevokedKey, fetch_revoked, pull,
+    Record, RecordTip, RevokedKey, fetch_revoked, opener_of, pull,
 };
+
+pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 
 #[cfg(feature = "http")]
 mod http;
