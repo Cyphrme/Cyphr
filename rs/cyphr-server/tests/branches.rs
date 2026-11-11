@@ -567,8 +567,8 @@ async fn resolution() {
 /// after C resolves to B, D (extending A) is a new fork at the resolution
 /// point: both kept, the canonical tip still C, and the principal in Error
 /// (`/evidence` lists the fork at the resolution position). An ordinary
-/// commit extending C then clears the Error. Turns red if D is accepted as
-/// the tip, dropped, or C is displaced. End to end: yes.
+/// commit extending C then clears the Error, live and after a rebuild. Turns red if D is accepted
+/// as the tip, dropped, or C is displaced. End to end: yes.
 #[tokio::test]
 async fn second_resolution() {
     let r = forked_server().await;
@@ -603,5 +603,24 @@ async fn second_resolution() {
     assert!(
         !r.state.engine.is_errored(id).await.expect("verdict"),
         "extending one branch selects it: Active"
+    );
+
+    // A restart rebuilds the same verdict from the blobs alone (I1).
+    drop((r.app, r.state));
+    let state = std::sync::Arc::new(
+        cyphr_server::AppState::new(cyphr_server::config::ServerConfig {
+            data_dir: r.dir.path().to_path_buf(),
+            ..Default::default()
+        })
+        .expect("reopen"),
+    );
+    state
+        .engine
+        .rebuild_index_from_scratch()
+        .await
+        .expect("rebuild");
+    assert!(
+        !state.engine.is_errored(id).await.expect("verdict"),
+        "a rebuild agrees: E selected C's branch"
     );
 }

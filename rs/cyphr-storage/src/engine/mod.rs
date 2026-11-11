@@ -2721,9 +2721,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             };
             if at + 1 < canonical_len {
                 self.keep_branch(bundle, next_commit).await?;
-                self.indexer
-                    .set_errored(principal_id, true, &DeriveToken::new())
-                    .await?;
+                // Error only while the two branches are open at the top,
+                // as the rebuild's walk judges it.
+                if at + 2 == canonical_len {
+                    self.indexer
+                        .set_errored(principal_id, true, &DeriveToken::new())
+                        .await?;
+                }
                 return Ok(None);
             }
             return self
@@ -3280,10 +3284,10 @@ struct Walk {
 /// among equals. A position the successor names nothing at falls back to
 /// its first commit manifest, as an unresolved chain always did.
 ///
-/// A principal is in Error when two different commits at one position
-/// are both extended: no branch is unambiguously selected, and the walk
-/// does not pick one (that question is open with the spec author); the
-/// hash-order head stays served.
+/// A principal is in Error when the highest position holds commits over
+/// different `pre`: two branches are both extended and none is
+/// unambiguously selected, and the walk does not pick one (that question
+/// is open with the spec author); the hash-order head stays served.
 ///
 /// Principals in `unbound` are not walked: their commit manifests pass
 /// through unchanged, to be quarantined by the caller.
@@ -3339,18 +3343,20 @@ fn walk_chains(
                     successor = Some(&held[at].2);
                 }
             }
-            let errored = positions.iter().any(|(sequence, held)| {
-                let Some(next) = positions.get(&(sequence + 1)) else {
-                    return false;
-                };
-                let mut extended: Vec<&str> = held
+            // Two branches are both still open when the highest position
+            // holds commits over different `pre`: neither has been
+            // extended past the other, so none is selected. A later commit
+            // on one branch is the selection (SPEC 15.8), whatever lower
+            // position once held two extended commits; the live path
+            // clears Error the same way.
+            let errored = positions.iter().next_back().is_some_and(|(_, top)| {
+                let mut pres: Vec<&String> = top
                     .iter()
-                    .filter(|(_, _, m)| next.iter().any(|(_, _, s)| extends(s, m)))
-                    .filter_map(|(_, _, m)| m.commit.commit_ids.first().map(String::as_str))
+                    .filter_map(|(_, _, m)| m.commit.pre.as_ref())
                     .collect();
-                extended.sort_unstable();
-                extended.dedup();
-                extended.len() > 1
+                pres.sort_unstable();
+                pres.dedup();
+                pres.len() > 1
             });
             walk.errored.push((principal_id, errored));
         }
