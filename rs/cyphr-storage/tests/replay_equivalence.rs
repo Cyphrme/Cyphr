@@ -74,8 +74,13 @@ fn corpus() -> Vec<Chain> {
             ) else {
                 continue;
             };
+            // QUARANTINE(#200): an embedded-member vector needs the
+            // embedded principal's tip, which no stored chain carries, and
+            // the engine refuses such a commit as `EmbeddedUnsupported`
+            // until replay can resolve embedded principals (GitHub #200).
+            let embedded = golden["peer"]["embedded"].as_bool() == Some(true);
             if golden.get("setup").is_some()
-                || golden["peer"]["embedded"].as_bool() == Some(true)
+                || embedded
                 || golden["expected"].get("error").is_some()
                 || commits.is_empty()
             {

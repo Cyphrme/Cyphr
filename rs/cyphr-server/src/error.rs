@@ -173,6 +173,8 @@ impl AppError {
     ///   surface through the protocol layer, not a genuine protocol violation)
     /// - `Protocol` (any other wrapped [`cyphr::Error`]) → 422 Unprocessable Entity (valid JSON,
     ///   invalid protocol)
+    /// - `EmbeddedUnsupported` → 501 Not Implemented (the server resolves no embedded principal, so
+    ///   it cannot judge a coz an embedded member may have signed)
     /// - `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
@@ -191,6 +193,7 @@ impl AppError {
                 Self::internal("internal storage error")
             },
             EngineError::BranchLimit { .. } => Self::conflict(err.to_string()),
+            EngineError::EmbeddedUnsupported { .. } => Self::not_implemented(err.to_string()),
             EngineError::Protocol(_) => Self {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
