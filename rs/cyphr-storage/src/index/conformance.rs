@@ -894,17 +894,3 @@ pub async fn replace_chain_from_repoints_the_chain<I: Indexer + IndexerWrite>(in
         "the repeated root falls back to the kept commit"
     );
 }
-
-/// Backs "the Error mark is per principal and settable both ways" (SPEC
-/// 15.8: a fork no branch resolves leaves the principal in Error), for
-/// every backend. Turns red on a backend that does not keep the mark, or
-/// leaks it to another principal.
-pub async fn errored_mark_is_per_principal<I: Indexer + IndexerWrite>(indexer: &I) {
-    let token = DeriveToken::for_conformance_tests();
-    assert!(!indexer.is_errored("alice").await.unwrap());
-    indexer.set_errored("alice", true, &token).await.unwrap();
-    assert!(indexer.is_errored("alice").await.unwrap());
-    assert!(!indexer.is_errored("bob").await.unwrap());
-    indexer.set_errored("alice", false, &token).await.unwrap();
-    assert!(!indexer.is_errored("alice").await.unwrap());
-}

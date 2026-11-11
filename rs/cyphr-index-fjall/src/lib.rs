@@ -39,7 +39,6 @@
 //!   addressable by its PG in every hash variant (SPEC §3.7.1/§12.1), never by a historical PR; an
 //!   alias another principal holds is never re-pointed (the commit is refused), and a stored
 //!   principal id always outranks an alias on read.
-//! - `errored` — `principal_id` bytes → empty: the principals marked Error (point lookup).
 //!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 
@@ -63,8 +62,9 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 /// is discarded on open and
 /// rebuilt from blobs; a newer one is refused (downgrade guard). Version 6
 /// records what each commit wrote beside its chain entry ([`CommitRow`])
-/// and adds the `index_errored` partition.
-const SCHEMA_VERSION: u32 = 6;
+/// and version 7 drops the `index_errored` partition (Error is computed
+/// from the held commits).
+const SCHEMA_VERSION: u32 = 7;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
@@ -87,7 +87,6 @@ const PARTITION_NAMES: &[&str] = &[
     "index_digests",
     "index_public_keys",
     "index_aliases",
-    "index_errored",
 ];
 
 /// The `meta` partition's single tracking record — the "meta-table
@@ -258,7 +257,6 @@ pub struct FjallIndexer {
     digests: Keyspace,
     public_keys: Keyspace,
     aliases: Keyspace,
-    errored: Keyspace,
     write_lock: tokio::sync::Mutex<()>,
 }
 
@@ -298,7 +296,6 @@ impl FjallIndexer {
         let digests = open("index_digests")?;
         let public_keys = open("index_public_keys")?;
         let aliases = open("index_aliases")?;
-        let errored = open("index_errored")?;
 
         let stored = match meta.get(META_KEY).map_err(to_backend_err)? {
             Some(bytes) => Some(de::<IndexMeta>(&bytes)?.version),
@@ -322,7 +319,6 @@ impl FjallIndexer {
                     &digests,
                     &public_keys,
                     &aliases,
-                    &errored,
                 ] {
                     // A fresh store has nothing to discard; skipping the
                     // clear keeps every first open off the slow path.
@@ -354,7 +350,6 @@ impl FjallIndexer {
             digests,
             public_keys,
             aliases,
-            errored,
             write_lock: tokio::sync::Mutex::new(()),
         })
     }
@@ -521,19 +516,6 @@ impl Indexer for FjallIndexer {
             .map_err(join_err)?
         }
     }
-
-    fn is_errored(
-        &self,
-        principal_id: &str,
-    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
-        let key = principal_id.as_bytes().to_vec();
-        let errored = self.errored.clone();
-        async move {
-            tokio::task::spawn_blocking(move || errored.contains_key(&key).map_err(to_backend_err))
-                .await
-                .map_err(join_err)?
-        }
-    }
 }
 
 /// The fjall keyspace handles a write needs, bundled so a write function
@@ -548,7 +530,6 @@ struct Keyspaces {
     digests: Keyspace,
     public_keys: Keyspace,
     aliases: Keyspace,
-    errored: Keyspace,
 }
 
 impl FjallIndexer {
@@ -561,7 +542,6 @@ impl FjallIndexer {
             digests: self.digests.clone(),
             public_keys: self.public_keys.clone(),
             aliases: self.aliases.clone(),
-            errored: self.errored.clone(),
         }
     }
 }
@@ -618,28 +598,6 @@ impl IndexerWrite for FjallIndexer {
         }
     }
 
-    fn set_errored(
-        &self,
-        principal_id: &str,
-        errored: bool,
-        _token: &DeriveToken,
-    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
-        let key = principal_id.as_bytes().to_vec();
-        let keyspace = self.errored.clone();
-        async move {
-            let _guard = self.write_lock.lock().await;
-            tokio::task::spawn_blocking(move || {
-                if errored {
-                    keyspace.insert(key, []).map_err(to_backend_err)
-                } else {
-                    keyspace.remove(key).map_err(to_backend_err)
-                }
-            })
-            .await
-            .map_err(join_err)?
-        }
-    }
-
     fn clear(
         &self,
         _token: &DeriveToken,
@@ -654,7 +612,6 @@ impl IndexerWrite for FjallIndexer {
                 ks.digests.clear().map_err(to_backend_err)?;
                 ks.public_keys.clear().map_err(to_backend_err)?;
                 ks.aliases.clear().map_err(to_backend_err)?;
-                ks.errored.clear().map_err(to_backend_err)?;
                 // The registry claim is derivation output too: clearing
                 // the derived rows without also retracting what the
                 // deriver claims to have produced would leave a stale

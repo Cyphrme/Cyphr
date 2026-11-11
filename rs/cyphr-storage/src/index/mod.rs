@@ -342,15 +342,6 @@ pub trait Indexer: Send + Sync {
         &self,
         thumbprint: &str,
     ) -> impl std::future::Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send;
-
-    /// Whether the principal stored under exactly `principal_id` is marked
-    /// Error (SPEC 15.8): its store holds two branches that both extend
-    /// past one position, so no branch is unambiguously selected. Derived
-    /// state, rebuilt with the index (I1); `false` for an unknown principal.
-    fn is_errored(
-        &self,
-        principal_id: &str,
-    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send;
 }
 
 /// The index's write surface. Every method requires a [`DeriveToken`],
@@ -404,15 +395,6 @@ pub trait IndexerWrite: Send + Sync {
         principal_id: &str,
         sequence: u64,
         commits: &[IndexableCommit],
-        token: &DeriveToken,
-    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
-
-    /// Mark (or clear) the principal stored under `principal_id` as Error;
-    /// see [`Indexer::is_errored`].
-    fn set_errored(
-        &self,
-        principal_id: &str,
-        errored: bool,
         token: &DeriveToken,
     ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
 

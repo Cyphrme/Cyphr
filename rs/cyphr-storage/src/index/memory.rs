@@ -35,8 +35,6 @@ struct MemoryState {
     /// What each indexed commit wrote, by `(principal_id, sequence)`, so
     /// [`IndexerWrite::replace_chain_from`] can withdraw it.
     written: HashMap<(String, u64), Written>,
-    /// Principals marked Error (see [`Indexer::is_errored`]).
-    errored: std::collections::HashSet<String>,
 }
 
 /// The digest holders and PG aliases one indexed commit contributed.
@@ -205,14 +203,6 @@ impl Indexer for MemoryIndexer {
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
             Ok(state.public_keys.get(&thumbprint).cloned())
         }
-    }
-
-    async fn is_errored(&self, principal_id: &str) -> Result<bool, IndexerError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-        Ok(state.errored.contains(principal_id))
     }
 }
 
@@ -480,24 +470,6 @@ impl IndexerWrite for MemoryIndexer {
         Ok(())
     }
 
-    async fn set_errored(
-        &self,
-        principal_id: &str,
-        errored: bool,
-        _token: &DeriveToken,
-    ) -> Result<(), IndexerError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-        if errored {
-            state.errored.insert(principal_id.to_string());
-        } else {
-            state.errored.remove(principal_id);
-        }
-        Ok(())
-    }
-
     async fn clear(&self, _token: &DeriveToken) -> Result<(), IndexerError> {
         let mut state = self
             .state
@@ -511,7 +483,6 @@ impl IndexerWrite for MemoryIndexer {
         state.aliases.clear();
         state.established.clear();
         state.written.clear();
-        state.errored.clear();
         Ok(())
     }
 
