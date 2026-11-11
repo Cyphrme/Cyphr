@@ -391,8 +391,10 @@ pub enum QuarantineReason {
     Unbound(String),
     /// Indexing it would re-point an exclusive claim (a PG alias).
     Conflict(String),
-    /// A different commit already holds this manifest's chain position
-    /// `(principal, sequence)`: fork evidence (I2), kept out of the index.
+    /// A different commit holds this manifest's chain position
+    /// `(principal, sequence)`: a commit that extends a held commit but
+    /// lost the canonical walk and is not kept as a branch. Fork evidence
+    /// (I2), kept out of the index.
     Fork(String),
     /// An earlier commit of the same principal was quarantined, so indexing
     /// this one would leave a gap in the chain.
@@ -1406,6 +1408,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             rest: branch_manifests,
             errored,
         } = walk_chains(manifests, branch_manifests, &unbound);
+        let held: HeldRoots = manifests
+            .iter()
+            .chain(&branch_manifests)
+            .flat_map(|(_, m)| {
+                m.commit
+                    .prs
+                    .iter()
+                    .map(|pr| (m.commit.principal_id.clone(), m.commit.sequence, pr.clone()))
+            })
+            .collect();
 
         let mut indexed = 0;
         let mut replays: HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>> =
@@ -1550,7 +1562,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
 
         let branches = self
-            .classify_branches(branch_manifests, &mut quarantined)
+            .classify_branches(branch_manifests, &held, &mut quarantined)
             .await?;
         *self.branches.lock().unwrap_or_else(|p| p.into_inner()) = branches;
 
@@ -1676,6 +1688,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     async fn classify_branches(
         &self,
         mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
+        held: &HeldRoots,
         quarantined: &mut Vec<QuarantinedManifest>,
     ) -> Result<HashMap<String, Vec<Retained>>, EngineError> {
         branch_manifests.sort_by_key(|(hash, m)| (m.commit.sequence, *hash.as_bytes()));
@@ -1684,8 +1697,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut kept_prs: std::collections::HashSet<(String, u64, String)> =
             std::collections::HashSet::new();
         for (hash, manifest) in branch_manifests {
-            let CommitManifest { commit, shape, .. } = manifest;
+            let CommitManifest {
+                commit,
+                shape,
+                kind,
+            } = manifest;
             let tip = commit.commit_ids.first().cloned().unwrap_or_default();
+            // A commit manifest that lost the canonical walk but extends a
+            // held commit is fork evidence: whatever keeps it out of the
+            // branch table, it is reported as a fork, never as damage.
+            let fork = kind == COMMIT_MANIFEST_KIND
+                && match &commit.pre {
+                    None => commit.sequence == 0,
+                    Some(pre) => commit.sequence.checked_sub(1).is_some_and(|below| {
+                        held.contains(&(commit.principal_id.clone(), below, pre.clone()))
+                    }),
+                };
+            let unless_fork = |why: String, otherwise: fn(String) -> QuarantineReason| {
+                if fork {
+                    QuarantineReason::Fork(why)
+                } else {
+                    otherwise(why)
+                }
+            };
             let mut reject = |reason: QuarantineReason| {
                 quarantined.push(QuarantinedManifest {
                     manifest: hash,
@@ -1699,8 +1733,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .get_commit_chain(&commit.principal_id, Some(from), Some(commit.sequence))
                 .await?;
             let Some(canonical) = chain.iter().find(|c| c.sequence == commit.sequence) else {
-                reject(QuarantineReason::Orphaned(
+                reject(unless_fork(
                     "no canonical commit at the branch's position".into(),
+                    QuarantineReason::Orphaned,
                 ));
                 continue;
             };
@@ -1722,8 +1757,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             if commit.pre.as_ref() != parent.map(|c| &c.pr)
                 && !commit.pre.as_ref().is_some_and(on_branch)
             {
-                reject(QuarantineReason::Orphaned(
+                reject(unless_fork(
                     "branch's pre is not the canonical parent's PR".into(),
+                    QuarantineReason::Orphaned,
                 ));
                 continue;
             }
@@ -1736,10 +1772,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             let signer = commit_signer(&commit);
             if !has_slot(of_principal, &signer) {
-                reject(QuarantineReason::Conflict(format!(
-                    "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per key, \
-                     {BRANCH_LIMIT} per principal"
-                )));
+                reject(unless_fork(
+                    format!(
+                        "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per \
+                         key, {BRANCH_LIMIT} per principal"
+                    ),
+                    QuarantineReason::Conflict,
+                ));
                 continue;
             }
             for pr in &commit.prs {
@@ -3013,6 +3052,10 @@ fn log_is_stale<S: cyphr::eml::Storage>(
         Err(_) => false,
     }
 }
+
+/// Every PR a stored manifest records, by principal and position: the
+/// commits a rebuild holds, canonical or not.
+type HeldRoots = std::collections::HashSet<(String, u64, String)>;
 
 /// The stored manifests split by [`walk_chains`].
 struct Walk {
