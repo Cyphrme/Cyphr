@@ -72,3 +72,49 @@ async fn embedded_signed_commit_is_refused_as_unsupported() {
         "nothing of the refused commit is stored"
     );
 }
+
+/// Backs the narrowness of that refusal: on a principal whose KT holds a
+/// digest, a `key/delete` of a key it does not hold, signed by its own
+/// active key, is the plain protocol refusal (422 `unknown key`), not the
+/// embedded limitation, because the signer resolves. Turns red if every
+/// core `UnknownKey` on such a principal is reported as an unresolved
+/// embedded signer. End to end: yes (HTTP push of a signed coz).
+#[tokio::test]
+async fn unknown_key_delete_by_a_known_signer_stays_unknown_key() {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let fixture = load_golden("embedding", "embedded_member_signs_for_principal");
+    let id = fixture_principal_id(&fixture);
+    let commits = fixture["commits"].as_array().expect("commits");
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    for commit in &commits[..2] {
+        let (status, body) =
+            post_json(app.clone(), "/push", push_body(&id, &build_bundle(commit))).await;
+        assert_eq!(status, StatusCode::CREATED, "{body:?}");
+    }
+
+    let pool = load_pool();
+    let alice = pool.get("alice").expect("alice");
+    let d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
+    let (prv, pubb) = (d(alice.prv.as_ref().expect("prv")), d(&alice.pub_key));
+    let absent = pool
+        .get("key_a")
+        .expect("key_a")
+        .compute_tmb()
+        .expect("tmb");
+    let pay = serde_json::json!({
+        "alg": alice.alg, "id": absent.to_b64(), "now": 1_700_000_003,
+        "tmb": alice.compute_tmb().expect("tmb").to_b64(),
+        "typ": "cyphr.me/cyphr/key/delete",
+    });
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) = coz::sign_json(&bytes, &alice.alg, &prv, &pubb).expect("sign");
+    let coz = serde_json::json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) });
+    let blob = serde_json::to_vec(&coz).expect("coz");
+
+    let (status, body) = post_json(app, "/push", common::push_blobs(&id, &[blob])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body:?}");
+    let message = envelope_payload(&body)["error"].as_str().expect("error");
+    assert!(message.contains("unknown key"), "{message}");
+}
