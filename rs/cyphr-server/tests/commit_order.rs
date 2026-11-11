@@ -25,7 +25,7 @@ use cyphr_blob_fjall::storage_fjall::FjallStorage;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_server::config::ServerConfig;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
-use cyphr_storage::engine::{COMMIT_MANIFEST_PREFIX, StorageEngine};
+use cyphr_storage::engine::{COMMIT_MANIFEST_PREFIX, LogFactory, StorageEngine};
 
 const GENESIS_NOW: i64 = 1_700_000_000;
 
@@ -122,6 +122,29 @@ impl Storage for Eml {
     }
 }
 
+/// The durable logs, each opened behind the EML write-fault switch.
+struct Logs {
+    inner: cyphr_blob_fjall::EmlLogs,
+    fail_writes: Arc<AtomicBool>,
+}
+
+impl LogFactory<Eml> for Logs {
+    fn generation(&self, principal_id: &str) -> Result<u64, String> {
+        self.inner.generation(principal_id)
+    }
+
+    fn open(&self, principal_id: &str, generation: u64) -> Result<Eml, String> {
+        Ok(Eml {
+            inner: self.inner.open(principal_id, generation)?,
+            fail_writes: self.fail_writes.clone(),
+        })
+    }
+
+    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        self.inner.retire_below(principal_id, generation)
+    }
+}
+
 /// The server's storage stack over `config`'s data directory, with both
 /// fault switches.
 struct Stack {
@@ -142,15 +165,11 @@ fn stack(config: &ServerConfig) -> Stack {
         fail_manifests: fail_manifests.clone(),
     };
     let indexer = FjallIndexer::open(&config.index_dir()).expect("index");
-    let (factory_db, flag) = (db.clone(), fail_eml.clone());
-    let engine = StorageEngine::with_storage_factory(blobs, indexer, move |principal_id: &str| {
-        let inner = cyphr_blob_fjall::open_eml_storage_scoped(factory_db.clone(), principal_id)
-            .map_err(|e| e.to_string())?;
-        Ok(Eml {
-            inner,
-            fail_writes: flag.clone(),
-        })
-    });
+    let logs = Logs {
+        inner: cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+        fail_writes: fail_eml.clone(),
+    };
+    let engine = StorageEngine::with_log_factory(blobs, indexer, logs);
     Stack {
         engine,
         db,

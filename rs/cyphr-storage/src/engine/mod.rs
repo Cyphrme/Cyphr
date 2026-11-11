@@ -391,8 +391,10 @@ pub enum QuarantineReason {
     Unbound(String),
     /// Indexing it would re-point an exclusive claim (a PG alias).
     Conflict(String),
-    /// A different commit already holds this manifest's chain position
-    /// `(principal, sequence)`: fork evidence (I2), kept out of the index.
+    /// A different commit holds this manifest's chain position
+    /// `(principal, sequence)`: a commit that extends a held commit but
+    /// lost the canonical walk and is not kept as a branch. Fork evidence
+    /// (I2), kept out of the index.
     Fork(String),
     /// An earlier commit of the same principal was quarantined, so indexing
     /// this one would leave a gap in the chain.
@@ -423,10 +425,62 @@ pub struct RebuildReport {
     pub quarantined: Vec<QuarantinedManifest>,
 }
 
-/// Produces a fresh, independent `S` instance for a `Principal`'s Commit
-/// Tree, given that principal's `principal_id` as a scoping identifier — see
-/// [`StorageEngine`]'s `storage_factory` field docs.
-type StorageFactory<S> = Box<dyn Fn(&str) -> Result<S, String> + Send + Sync>;
+/// Opens each principal's commit log (its EML, a cache of its canonical
+/// chain, I1) by generation. A fork resolved by re-pointing the chain
+/// leaves the old log holding the abandoned branch's leaves, so the engine
+/// regenerates the log into the next generation and retires the old one;
+/// the factory records which generation is current, beside the logs, so a
+/// restart opens it. The record names a cache, never chain state: losing
+/// it costs one more regeneration.
+pub trait LogFactory<S>: Send + Sync {
+    /// The current generation of `principal_id`'s log: the last one
+    /// [`Self::retire_below`] made current, else 0.
+    ///
+    /// # Errors
+    ///
+    /// Why the record cannot be read.
+    fn generation(&self, principal_id: &str) -> Result<u64, String>;
+
+    /// Open generation `generation` of `principal_id`'s log, independent
+    /// of every other principal's and generation's. A generation above the
+    /// current one opens empty.
+    ///
+    /// # Errors
+    ///
+    /// Why the log cannot be opened.
+    fn open(&self, principal_id: &str, generation: u64) -> Result<S, String>;
+
+    /// Make `generation` the current generation of `principal_id`'s log,
+    /// retiring the older ones.
+    ///
+    /// # Errors
+    ///
+    /// Why the record cannot be written.
+    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String>;
+}
+
+/// The [`LogFactory`] of in-memory logs: every open is a fresh, empty
+/// [`cyphr::eml::MemoryStorage`], so a log never outlives its principal and
+/// is never stale.
+pub struct MemoryLogs;
+
+impl LogFactory<cyphr::eml::MemoryStorage> for MemoryLogs {
+    fn generation(&self, _principal_id: &str) -> Result<u64, String> {
+        Ok(0)
+    }
+
+    fn open(
+        &self,
+        _principal_id: &str,
+        _generation: u64,
+    ) -> Result<cyphr::eml::MemoryStorage, String> {
+        Ok(cyphr::eml::MemoryStorage::new())
+    }
+
+    fn retire_below(&self, _principal_id: &str, _generation: u64) -> Result<(), String> {
+        Ok(())
+    }
+}
 
 /// A small insertion-ordered cache that never holds more than `capacity`
 /// entries: when full, the oldest insertion is evicted.
@@ -503,7 +557,7 @@ pub(crate) struct StagedBuild<'p, T: cyphr::eml::Storage> {
 /// [`cyphr::eml::MemoryStorage`] so every existing call site that spells the
 /// bare `StorageEngine<B, I>` (via [`Self::new`]) continues to mean exactly
 /// what it meant before this parameter existed. A durable backend is wired
-/// up via [`Self::with_storage_factory`] instead.
+/// up via [`Self::with_log_factory`] instead.
 pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorage> {
     blob_store: B,
     indexer: I,
@@ -511,14 +565,14 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// engine constructs or reconstructs. Never a single `S` instance
     /// shared/aliased across multiple live principals: `eml::Storage`'s
     /// methods take `&mut self` on an owned instance, so two principals can
-    /// never validly share one. Fallible (`Result<S, String>`, not a bare
-    /// `S`) because opening a real disk-backed backend can fail.
+    /// never validly share one. Fallible because opening a real
+    /// disk-backed backend can fail.
     ///
-    /// Takes the principal's `principal_id` as a per-principal scoping
-    /// identifier, so a factory backed by a durable, physically-shared
-    /// database can give each principal an isolated keyspace instead of
-    /// colliding on positional Commit Tree keys.
-    storage_factory: StorageFactory<S>,
+    /// Keyed by the principal's `principal_id` and the log's generation, so
+    /// a factory backed by a durable, physically-shared database can give
+    /// each principal (and each regeneration of its log) an isolated
+    /// keyspace instead of colliding on positional Commit Tree keys.
+    logs: Box<dyn LogFactory<S>>,
     /// Per-principal serialization points for [`Self::submit_commit`].
     ///
     /// Keyed-mutex map: each `principal_id` gets its own
@@ -567,39 +621,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
     /// is dropped — full history is always replayed from the blob/index
     /// layers on the next [`Self::load_principal`]).
     ///
-    /// For a durable commit-tree backend, use [`Self::with_storage_factory`].
+    /// For a durable commit-tree backend, use [`Self::with_log_factory`].
     pub fn new(blob_store: B, indexer: I) -> Self {
-        Self {
-            blob_store,
-            indexer,
-            storage_factory: Box::new(|_principal_id: &str| Ok(cyphr::eml::MemoryStorage::new())),
-            principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            healed: tokio::sync::OnceCell::new(),
-            branches: std::sync::Mutex::new(HashMap::new()),
-            actions: std::sync::Mutex::new(HashMap::new()),
-            frames: std::sync::Mutex::new(HashMap::new()),
-            retention_replays: std::sync::atomic::AtomicU64::new(0),
-            retention_trials: std::sync::atomic::AtomicU64::new(0),
-        }
+        Self::with_log_factory(blob_store, indexer, MemoryLogs)
     }
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
-    /// Create a new engine wrapping the given backends, with `storage_factory`
-    /// producing each [`cyphr::Principal`]'s Commit Tree storage backend from
-    /// its `principal_id`.
-    ///
-    /// See [`Self`]'s `storage_factory` field docs for why this is a
-    /// factory rather than a single shared `S` instance.
-    pub fn with_storage_factory(
-        blob_store: B,
-        indexer: I,
-        storage_factory: impl Fn(&str) -> Result<S, String> + Send + Sync + 'static,
-    ) -> Self {
+    /// Create a new engine wrapping the given backends, with `logs` opening
+    /// each [`cyphr::Principal`]'s Commit Tree storage by principal and
+    /// generation ([`LogFactory`]). See [`Self`]'s `logs` field docs for why
+    /// this is a factory rather than a single shared `S` instance.
+    pub fn with_log_factory(blob_store: B, indexer: I, logs: impl LogFactory<S> + 'static) -> Self {
         Self {
             blob_store,
             indexer,
-            storage_factory: Box::new(storage_factory),
+            logs: Box::new(logs),
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
@@ -1338,6 +1375,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
 
+        let Walk {
+            canonical: manifests,
+            rest: branch_manifests,
+            errored,
+        } = walk_chains(manifests, branch_manifests, &unbound);
+        let held: HeldRoots = manifests
+            .iter()
+            .chain(&branch_manifests)
+            .flat_map(|(_, m)| {
+                m.commit
+                    .prs
+                    .iter()
+                    .map(|pr| (m.commit.principal_id.clone(), m.commit.sequence, pr.clone()))
+            })
+            .collect();
+
         let mut indexed = 0;
         let mut replays: HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>> =
             HashMap::new();
@@ -1398,7 +1451,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .or_insert(commit.sequence);
                 continue;
             }
-            match self.indexer.index_commit(commit, &DeriveToken::new()).await {
+            let mut written = self.indexer.index_commit(commit, &DeriveToken::new()).await;
+            if let Err(crate::index::IndexerError::Consistency(_)) = written {
+                // The index holds another commit here: it was built before
+                // the fork was resolved, and the chain is re-pointed.
+                written = self
+                    .indexer
+                    .replace_chain_from(
+                        &commit.principal_id,
+                        commit.sequence,
+                        std::slice::from_ref(commit),
+                        &DeriveToken::new(),
+                    )
+                    .await;
+            }
+            match written {
                 Ok(()) => {
                     self.record_frame(commit, &manifest.shape);
                     indexed += 1;
@@ -1458,8 +1525,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let actions = self.place_actions(histories, &mut quarantined).await?;
         *self.actions.lock().unwrap_or_else(|p| p.into_inner()) = actions;
 
+        for (principal_id, errored) in errored {
+            if self.indexer.is_errored(&principal_id).await? != errored {
+                self.indexer
+                    .set_errored(&principal_id, errored, &DeriveToken::new())
+                    .await?;
+            }
+        }
+
         let branches = self
-            .classify_branches(branch_manifests, &mut quarantined)
+            .classify_branches(branch_manifests, &held, &mut quarantined)
             .await?;
         *self.branches.lock().unwrap_or_else(|p| p.into_inner()) = branches;
 
@@ -1569,26 +1644,54 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(placed)
     }
 
-    /// Decide which stored branch manifests are branches of the index just
-    /// rebuilt. A branch is kept only if it forks the canonical chain: the
-    /// canonical commit at its position exists and is a different commit,
-    /// and its `pre` is the canonical parent's PR. The rest are quarantined.
+    /// Decide which stored manifests the canonical walk left out
+    /// ([`walk_chains`]) are branches of the index just rebuilt. A branch is
+    /// kept only if it forks the canonical chain: the canonical commit at
+    /// its position exists and is a different commit, and its `pre` is the
+    /// canonical parent's PR or the PR of a branch kept one position below
+    /// (a branch extending a branch, as an unresolved fork's two extended
+    /// heads leave). The rest are quarantined.
     ///
     /// The index is already final when this runs and is never read to
     /// decide the canonical chain here, so the result is a function of the
-    /// blob set: manifests are taken in hash order, which only decides
-    /// which rivals survive [`BRANCH_LIMIT`] if a store holds more than the
-    /// engine ever wrote.
+    /// blob set: manifests are taken by position, then in hash order, which
+    /// only decides which rivals survive [`BRANCH_LIMIT`] if a store holds
+    /// more than the engine ever wrote.
     async fn classify_branches(
         &self,
         mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
+        held: &HeldRoots,
         quarantined: &mut Vec<QuarantinedManifest>,
     ) -> Result<HashMap<String, Vec<Retained>>, EngineError> {
-        branch_manifests.sort_by_key(|(hash, _)| *hash.as_bytes());
+        branch_manifests.sort_by_key(|(hash, m)| (m.commit.sequence, *hash.as_bytes()));
         let mut kept: HashMap<String, Vec<Retained>> = HashMap::new();
+        // The PRs of the branches kept so far, by principal and position.
+        let mut kept_prs: std::collections::HashSet<(String, u64, String)> =
+            std::collections::HashSet::new();
         for (hash, manifest) in branch_manifests {
-            let CommitManifest { commit, shape, .. } = manifest;
+            let CommitManifest {
+                commit,
+                shape,
+                kind,
+            } = manifest;
             let tip = commit.commit_ids.first().cloned().unwrap_or_default();
+            // A commit manifest that lost the canonical walk but extends a
+            // held commit is fork evidence: whatever keeps it out of the
+            // branch table, it is reported as a fork, never as damage.
+            let fork = kind == COMMIT_MANIFEST_KIND
+                && match &commit.pre {
+                    None => commit.sequence == 0,
+                    Some(pre) => commit.sequence.checked_sub(1).is_some_and(|below| {
+                        held.contains(&(commit.principal_id.clone(), below, pre.clone()))
+                    }),
+                };
+            let unless_fork = |why: String, otherwise: fn(String) -> QuarantineReason| {
+                if fork {
+                    QuarantineReason::Fork(why)
+                } else {
+                    otherwise(why)
+                }
+            };
             let mut reject = |reason: QuarantineReason| {
                 quarantined.push(QuarantinedManifest {
                     manifest: hash,
@@ -1602,8 +1705,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .get_commit_chain(&commit.principal_id, Some(from), Some(commit.sequence))
                 .await?;
             let Some(canonical) = chain.iter().find(|c| c.sequence == commit.sequence) else {
-                reject(QuarantineReason::Orphaned(
+                reject(unless_fork(
                     "no canonical commit at the branch's position".into(),
+                    QuarantineReason::Orphaned,
                 ));
                 continue;
             };
@@ -1614,9 +1718,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             let parent = chain.iter().find(|c| c.sequence + 1 == commit.sequence);
-            if commit.pre.as_ref() != parent.map(|c| &c.pr) {
-                reject(QuarantineReason::Orphaned(
+            let on_branch = |pre: &String| {
+                commit.sequence > 0
+                    && kept_prs.contains(&(
+                        commit.principal_id.clone(),
+                        commit.sequence - 1,
+                        pre.clone(),
+                    ))
+            };
+            if commit.pre.as_ref() != parent.map(|c| &c.pr)
+                && !commit.pre.as_ref().is_some_and(on_branch)
+            {
+                reject(unless_fork(
                     "branch's pre is not the canonical parent's PR".into(),
+                    QuarantineReason::Orphaned,
                 ));
                 continue;
             }
@@ -1629,11 +1744,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             let signer = commit_signer(&commit);
             if !has_slot(of_principal, &signer) {
-                reject(QuarantineReason::Conflict(format!(
-                    "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per key, \
-                     {BRANCH_LIMIT} per principal"
-                )));
+                reject(unless_fork(
+                    format!(
+                        "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per \
+                         key, {BRANCH_LIMIT} per principal"
+                    ),
+                    QuarantineReason::Conflict,
+                ));
                 continue;
+            }
+            for pr in &commit.prs {
+                kept_prs.insert((commit.principal_id.clone(), commit.sequence, pr.clone()));
             }
             of_principal.push(Retained {
                 tip: BranchTip {
@@ -1888,22 +2009,58 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: crate::Genesis,
     ) -> Result<cyphr::Principal<S>, EngineError> {
-        let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
-        let replayed = self.replay_onto(principal_id, genesis, storage, None).await;
-        if let Err(EngineError::Load(crate::import::LoadError::Protocol(
-            cyphr::Error::DurableLeafMismatch(leaf),
-        ))) = &replayed
-        {
-            // Only a log written before the two-phase commit can hold a
-            // leaf ahead of its commit: the log is a cache of the blob
-            // store (I1), so rebuilding it from the blobs repairs it.
-            tracing::warn!(
-                principal = %principal_id,
-                leaf,
-                "legacy commit log: leaf written ahead of its commit; rebuild the log"
-            );
+        let generation = self
+            .logs
+            .generation(principal_id)
+            .map_err(EngineError::Storage)?;
+        let replayed = self
+            .replay_generation(principal_id, genesis.clone(), generation)
+            .await;
+        if !log_is_stale(&replayed) {
+            return replayed;
         }
-        replayed
+        // The log is not a cache of the canonical chain: a resolved fork
+        // re-pointed the chain under it, or it was written before the
+        // two-phase commit. It is a cache of the blob store (I1), so it is
+        // regenerated into a fresh generation from the blobs, one
+        // regeneration at a time (the write lock may already be held by
+        // this caller, so this one is separate).
+        let lock = self.principal_lock(&format!("eml-generation\0{principal_id}"));
+        let _regenerating = lock.lock().await;
+        let current = self
+            .logs
+            .generation(principal_id)
+            .map_err(EngineError::Storage)?;
+        if current != generation {
+            return self.replay_generation(principal_id, genesis, current).await;
+        }
+        let next = generation + 1;
+        let storage = self
+            .logs
+            .open(principal_id, next)
+            .map_err(EngineError::Storage)?;
+        let regenerated = self
+            .replay_onto(principal_id, genesis, storage, None)
+            .await?;
+        self.logs
+            .retire_below(principal_id, next)
+            .map_err(EngineError::Storage)?;
+        Ok(regenerated)
+    }
+
+    /// Replay `principal_id`'s canonical chain onto generation
+    /// `generation` of its log.
+    async fn replay_generation(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+        generation: u64,
+    ) -> Result<cyphr::Principal<S>, EngineError> {
+        let storage = self
+            .logs
+            .open(principal_id, generation)
+            .map_err(EngineError::Storage)?;
+        self.replay_onto(principal_id, genesis, storage, None).await
     }
 
     /// Replay the first `through` stored commits (all of them for `None`)
@@ -2842,6 +2999,150 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let _already_healed = self.healed.set(());
         Ok(report)
     }
+}
+
+/// Whether a replay over a principal's log shows the log is not a cache of
+/// its canonical chain: a leaf differs, or the log holds leaves past the
+/// chain's last commit.
+fn log_is_stale<S: cyphr::eml::Storage>(
+    replayed: &Result<cyphr::Principal<S>, EngineError>,
+) -> bool {
+    match replayed {
+        Ok(principal) => {
+            principal.commit_trees().global_size() > principal.commits().count() as u64
+        },
+        Err(EngineError::Load(crate::import::LoadError::Protocol(
+            cyphr::Error::DurableLeafMismatch(_),
+        ))) => true,
+        Err(_) => false,
+    }
+}
+
+/// Every PR a stored manifest records, by principal and position: the
+/// commits a rebuild holds, canonical or not.
+type HeldRoots = std::collections::HashSet<(String, u64, String)>;
+
+/// The stored manifests split by [`walk_chains`].
+struct Walk {
+    /// Each principal's canonical commits, in canonical order (sequence,
+    /// then principal id, then manifest hash).
+    canonical: Vec<(Blake3Hash, CommitManifest)>,
+    /// Every other manifest: candidates for a retained branch.
+    rest: Vec<(Blake3Hash, CommitManifest)>,
+    /// Whether each walked principal is in Error (SPEC 15.8).
+    errored: Vec<(String, bool)>,
+}
+
+/// Choose each principal's canonical chain from its stored commit and
+/// branch manifests, the blobs alone deciding (I1).
+///
+/// A fork is resolved by a commit whose `pre` is the tip of the chosen
+/// branch (SPEC 15.8), recorded as an ordinary commit manifest while the
+/// chosen rival keeps its branch manifest; no other record exists. So the
+/// walk starts at the principal's highest commit manifest (the first in
+/// hash order when several share it) and goes down: the canonical commit
+/// at each position is the one whose PR the canonical successor's `pre`
+/// names, a commit manifest before a branch manifest and then hash order
+/// among equals. A position the successor names nothing at falls back to
+/// its first commit manifest, as an unresolved chain always did.
+///
+/// A principal is in Error when two different commits at one position
+/// are both extended: no branch is unambiguously selected, and the walk
+/// does not pick one (that question is open with the spec author); the
+/// hash-order head stays served.
+///
+/// Principals in `unbound` are not walked: their commit manifests pass
+/// through unchanged, to be quarantined by the caller.
+fn walk_chains(
+    commits: Vec<(Blake3Hash, CommitManifest)>,
+    branches: Vec<(Blake3Hash, CommitManifest)>,
+    unbound: &HashMap<String, String>,
+) -> Walk {
+    use std::collections::BTreeMap;
+
+    type Position = Vec<(bool, Blake3Hash, CommitManifest)>;
+    let mut by_principal: BTreeMap<String, BTreeMap<u64, Position>> = BTreeMap::new();
+    let tagged = commits
+        .into_iter()
+        .map(|(h, m)| (false, h, m))
+        .chain(branches.into_iter().map(|(h, m)| (true, h, m)));
+    for (branch, hash, manifest) in tagged {
+        by_principal
+            .entry(manifest.commit.principal_id.clone())
+            .or_default()
+            .entry(manifest.commit.sequence)
+            .or_default()
+            .push((branch, hash, manifest));
+    }
+
+    let mut walk = Walk {
+        canonical: Vec::new(),
+        rest: Vec::new(),
+        errored: Vec::new(),
+    };
+    let extends = |successor: &CommitManifest, held: &CommitManifest| {
+        successor
+            .commit
+            .pre
+            .as_ref()
+            .is_some_and(|pre| held.commit.prs.contains(pre))
+    };
+    for (principal_id, mut positions) in by_principal {
+        for held in positions.values_mut() {
+            held.sort_by_key(|(branch, hash, _)| (*branch, *hash.as_bytes()));
+        }
+        let walked = !unbound.contains_key(&principal_id);
+        let mut chosen: HashMap<u64, usize> = HashMap::new();
+        if walked {
+            let mut successor: Option<&CommitManifest> = None;
+            for (&sequence, held) in positions.iter().rev() {
+                let named = successor.filter(|s| s.commit.sequence == sequence + 1);
+                let pick = named
+                    .and_then(|s| held.iter().position(|(_, _, m)| extends(s, m)))
+                    .or_else(|| held.iter().position(|(branch, ..)| !branch));
+                if let Some(at) = pick {
+                    chosen.insert(sequence, at);
+                    successor = Some(&held[at].2);
+                }
+            }
+            let errored = positions.iter().any(|(sequence, held)| {
+                let Some(next) = positions.get(&(sequence + 1)) else {
+                    return false;
+                };
+                let mut extended: Vec<&str> = held
+                    .iter()
+                    .filter(|(_, _, m)| next.iter().any(|(_, _, s)| extends(s, m)))
+                    .filter_map(|(_, _, m)| m.commit.commit_ids.first().map(String::as_str))
+                    .collect();
+                extended.sort_unstable();
+                extended.dedup();
+                extended.len() > 1
+            });
+            walk.errored.push((principal_id, errored));
+        }
+        for (sequence, held) in positions {
+            for (at, (branch, hash, manifest)) in held.into_iter().enumerate() {
+                let canonical = if walked {
+                    chosen.get(&sequence) == Some(&at)
+                } else {
+                    !branch
+                };
+                if canonical {
+                    walk.canonical.push((hash, manifest));
+                } else {
+                    walk.rest.push((hash, manifest));
+                }
+            }
+        }
+    }
+    walk.canonical.sort_by(|(ha, a), (hb, b)| {
+        (a.commit.sequence, &a.commit.principal_id, ha.as_bytes()).cmp(&(
+            b.commit.sequence,
+            &b.commit.principal_id,
+            hb.as_bytes(),
+        ))
+    });
+    walk
 }
 
 /// The thumbprints that sign the transactions of `bundle`, if every coz

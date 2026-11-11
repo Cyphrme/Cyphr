@@ -198,13 +198,11 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
         let db = fjall::Database::builder(&db_path).open().expect("open db");
         let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
         let indexer = FjallIndexer::open(&index_path).expect("open indexer");
-        let engine = StorageEngine::with_storage_factory(blob_store, indexer, {
-            let db = db.clone();
-            move |pid: &str| {
-                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid)
-                    .map_err(|e| e.to_string())
-            }
-        });
+        let engine = StorageEngine::with_log_factory(
+            blob_store,
+            indexer,
+            cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+        );
 
         submit_all_commits(&engine, principal_id_a, &genesis_key_a, &commits_a).await;
         submit_all_commits(&engine, principal_id_b, &genesis_key_b, &commits_b).await;
@@ -267,12 +265,11 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
 
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("reopen blob store");
     let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
-    let recovery_engine = StorageEngine::with_storage_factory(blob_store, indexer, {
-        let db = db.clone();
-        move |pid: &str| {
-            cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-        }
-    });
+    let recovery_engine = StorageEngine::with_log_factory(
+        blob_store,
+        indexer,
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    );
 
     let after_a = snapshot(
         &recovery_engine,

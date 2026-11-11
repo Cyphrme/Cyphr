@@ -6,7 +6,10 @@ use std::sync::RwLock;
 use cyphr::state::TaggedDigest;
 
 use super::types::*;
-use super::{DeriveToken, Indexer, IndexerError, IndexerWrite, digest_entries, merge_holder};
+use super::{
+    DeriveToken, Indexer, IndexerError, IndexerWrite, check_replacement, digest_entries,
+    merge_holder,
+};
 use crate::blob::Blake3Hash;
 
 /// Internal state for the memory indexer.
@@ -29,6 +32,18 @@ struct MemoryState {
     established: std::collections::HashSet<String>,
     /// See [`IndexerWrite::set_quarantined`]; survives [`IndexerWrite::clear`].
     quarantined: Vec<(crate::blob::Blake3Hash, String)>,
+    /// What each indexed commit wrote, by `(principal_id, sequence)`, so
+    /// [`IndexerWrite::replace_chain_from`] can withdraw it.
+    written: HashMap<(String, u64), Written>,
+    /// Principals marked Error (see [`Indexer::is_errored`]).
+    errored: std::collections::HashSet<String>,
+}
+
+/// The digest holders and PG aliases one indexed commit contributed.
+#[derive(Debug)]
+struct Written {
+    entries: Vec<(String, EntityRef)>,
+    pg: Vec<String>,
 }
 
 impl MemoryState {
@@ -191,6 +206,14 @@ impl Indexer for MemoryIndexer {
             Ok(state.public_keys.get(&thumbprint).cloned())
         }
     }
+
+    async fn is_errored(&self, principal_id: &str) -> Result<bool, IndexerError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+        Ok(state.errored.contains(principal_id))
+    }
 }
 
 /// Whether this commit is already indexed at its chain position
@@ -233,6 +256,118 @@ fn claims_conflict(state: &MemoryState, commit: &IndexableCommit) -> Result<(), 
     Ok(())
 }
 
+/// Index `commit`, which no indexed commit holds the position of.
+fn index_one(state: &mut MemoryState, commit: &IndexableCommit) -> Result<(), IndexerError> {
+    claims_conflict(state, commit)?;
+    let entries = digest_entries(commit)?;
+
+    let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
+    let primary_pr = commit.prs.first().cloned().unwrap_or_default();
+    let primary_sr = commit.srs.first().cloned();
+    let primary_ar = commit.ars.first().cloned();
+    let primary_cr = commit.crs.first().cloned().unwrap_or_default();
+
+    // Build CommitRef.
+    let commit_ref = CommitRef {
+        commit_id: primary_cid.clone(),
+        sequence: commit.sequence,
+        pre: commit.pre.clone(),
+        pr: primary_pr.clone(),
+        sr: primary_sr.clone(),
+        ar: primary_ar.clone(),
+        cr: primary_cr.clone(),
+        blob_hashes: commit.blob_hashes.clone(),
+    };
+
+    // Append to commit chain.
+    state
+        .commits
+        .entry(commit.principal_id.clone())
+        .or_default()
+        .push(commit_ref);
+
+    // Update or create principal summary.
+    let commit_count = state
+        .commits
+        .get(&commit.principal_id)
+        .map_or(0, |c| c.len() as u64);
+
+    state
+        .principals
+        .entry(commit.principal_id.clone())
+        .and_modify(|ps| {
+            ps.pr = primary_pr.clone();
+            ps.commit_count = commit_count;
+            ps.last_updated = commit.timestamp;
+        })
+        .or_insert_with(|| PrincipalSummary {
+            principal_id: commit.principal_id.clone(),
+            pr: primary_pr.clone(),
+            commit_count,
+            created: commit.timestamp,
+            last_updated: commit.timestamp,
+        });
+
+    // Alias each PG variant to the principal. The conflict check
+    // above guarantees none names anyone else.
+    for pr in &commit.pg {
+        if *pr != commit.principal_id {
+            state
+                .aliases
+                .insert(pr.clone(), commit.principal_id.clone());
+        }
+    }
+
+    if !commit.pg.is_empty() {
+        state.established.insert(commit.principal_id.clone());
+    }
+
+    // Update tip.
+    state.tips.insert(
+        commit.principal_id.clone(),
+        TipState {
+            principal_id: commit.principal_id.clone(),
+            pr: primary_pr,
+            sr: primary_sr,
+            ar: primary_ar,
+            cr: primary_cr,
+            commit_id: primary_cid,
+            commit_count,
+            last_updated: commit.timestamp,
+        },
+    );
+
+    // Every digest names its set of holders; arrival order is
+    // invisible in the result (see `merge_holder`).
+    for (digest, holder) in &entries {
+        merge_holder(
+            state.digest_index.entry(digest.clone()).or_default(),
+            holder.clone(),
+        );
+    }
+
+    // Index public keys.
+    for key in &commit.keys {
+        state
+            .public_keys
+            .insert(key.thumbprint.clone(), key.clone());
+    }
+
+    state.written.insert(
+        (commit.principal_id.clone(), commit.sequence),
+        Written {
+            entries,
+            pg: commit
+                .pg
+                .iter()
+                .filter(|pr| **pr != commit.principal_id)
+                .cloned()
+                .collect(),
+        },
+    );
+    Ok(())
+}
+
 impl IndexerWrite for MemoryIndexer {
     fn check_commit(
         &self,
@@ -269,100 +404,98 @@ impl IndexerWrite for MemoryIndexer {
                 return Ok(());
             }
 
-            claims_conflict(&state, &commit)?;
-            let entries = digest_entries(&commit)?;
+            index_one(&mut state, &commit)
+        }
+    }
 
-            let primary_cid = commit.commit_ids.first().cloned().unwrap_or_default();
-            let primary_pr = commit.prs.first().cloned().unwrap_or_default();
-            let primary_sr = commit.srs.first().cloned();
-            let primary_ar = commit.ars.first().cloned();
-            let primary_cr = commit.crs.first().cloned().unwrap_or_default();
+    async fn replace_chain_from(
+        &self,
+        principal_id: &str,
+        sequence: u64,
+        commits: &[IndexableCommit],
+        _token: &DeriveToken,
+    ) -> Result<(), IndexerError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+        let held = state
+            .commits
+            .get(principal_id)
+            .map_or(0, |c| c.len() as u64);
+        check_replacement(principal_id, sequence, held, commits)?;
+        for commit in commits {
+            claims_conflict(&state, commit)?;
+        }
 
-            // Build CommitRef.
-            let commit_ref = CommitRef {
-                commit_id: primary_cid.clone(),
-                sequence: commit.sequence,
-                pre: commit.pre.clone(),
-                pr: primary_pr.clone(),
-                sr: primary_sr.clone(),
-                ar: primary_ar.clone(),
-                cr: primary_cr.clone(),
-                blob_hashes: commit.blob_hashes.clone(),
+        let state = &mut *state;
+        let mut touched = std::collections::HashSet::new();
+        for at in sequence..held {
+            let Some(written) = state.written.remove(&(principal_id.to_string(), at)) else {
+                continue;
             };
-
-            // Append to commit chain.
-            state
-                .commits
-                .entry(commit.principal_id.clone())
-                .or_default()
-                .push(commit_ref);
-
-            // Update or create principal summary.
-            let commit_count = state
-                .commits
-                .get(&commit.principal_id)
-                .map_or(0, |c| c.len() as u64);
-
-            state
-                .principals
-                .entry(commit.principal_id.clone())
-                .and_modify(|ps| {
-                    ps.pr = primary_pr.clone();
-                    ps.commit_count = commit_count;
-                    ps.last_updated = commit.timestamp;
-                })
-                .or_insert_with(|| PrincipalSummary {
-                    principal_id: commit.principal_id.clone(),
-                    pr: primary_pr.clone(),
-                    commit_count,
-                    created: commit.timestamp,
-                    last_updated: commit.timestamp,
-                });
-
-            // Alias each PG variant to the principal. The conflict check
-            // above guarantees none names anyone else.
-            for pr in &commit.pg {
-                if *pr != commit.principal_id {
-                    state
-                        .aliases
-                        .insert(pr.clone(), commit.principal_id.clone());
+            for (digest, holder) in written.entries {
+                if let Some(holders) = state.digest_index.get_mut(&digest) {
+                    holders.retain(|h| {
+                        h.principal_id != holder.principal_id
+                            || h.entity_type != holder.entity_type
+                            || h.sequence < Some(sequence)
+                    });
+                }
+                touched.insert((digest, holder.entity_type as u8));
+            }
+            for pr in &written.pg {
+                state.aliases.remove(pr);
+            }
+            if !written.pg.is_empty() {
+                state.established.remove(principal_id);
+            }
+        }
+        // A kept commit may hold a withdrawn digest too (a repeated root):
+        // the holder falls back to it.
+        for at in 0..sequence {
+            for (digest, holder) in state
+                .written
+                .get(&(principal_id.to_string(), at))
+                .map_or(&[][..], |w| w.entries.as_slice())
+            {
+                if touched.contains(&(digest.clone(), holder.entity_type as u8)) {
+                    merge_holder(
+                        state.digest_index.entry(digest.clone()).or_default(),
+                        holder.clone(),
+                    );
                 }
             }
-
-            if !commit.pg.is_empty() {
-                state.established.insert(commit.principal_id.clone());
-            }
-
-            // Update tip.
-            state.tips.insert(
-                commit.principal_id.clone(),
-                TipState {
-                    principal_id: commit.principal_id.clone(),
-                    pr: primary_pr,
-                    sr: primary_sr,
-                    ar: primary_ar,
-                    cr: primary_cr,
-                    commit_id: primary_cid,
-                    commit_count,
-                    last_updated: commit.timestamp,
-                },
-            );
-
-            // Every digest names its set of holders; arrival order is
-            // invisible in the result (see `merge_holder`).
-            for (digest, holder) in entries {
-                merge_holder(state.digest_index.entry(digest).or_default(), holder);
-            }
-
-            // Index public keys.
-            for key in &commit.keys {
-                state
-                    .public_keys
-                    .insert(key.thumbprint.clone(), key.clone());
-            }
-
-            Ok(())
         }
+        state.digest_index.retain(|_, holders| !holders.is_empty());
+        if let Some(chain) = state.commits.get_mut(principal_id) {
+            chain.truncate(sequence as usize);
+        }
+        if sequence == 0 {
+            state.principals.remove(principal_id);
+        }
+        for commit in commits {
+            index_one(state, commit)?;
+        }
+        Ok(())
+    }
+
+    async fn set_errored(
+        &self,
+        principal_id: &str,
+        errored: bool,
+        _token: &DeriveToken,
+    ) -> Result<(), IndexerError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+        if errored {
+            state.errored.insert(principal_id.to_string());
+        } else {
+            state.errored.remove(principal_id);
+        }
+        Ok(())
     }
 
     async fn clear(&self, _token: &DeriveToken) -> Result<(), IndexerError> {
@@ -377,6 +510,8 @@ impl IndexerWrite for MemoryIndexer {
         state.public_keys.clear();
         state.aliases.clear();
         state.established.clear();
+        state.written.clear();
+        state.errored.clear();
         Ok(())
     }
 

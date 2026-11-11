@@ -806,3 +806,105 @@ pub async fn digest_holders_are_a_duplicate_free_set<I: Indexer + IndexerWrite>(
         );
     }
 }
+
+/// Backs "[`IndexerWrite::replace_chain_from`] is the one operation that
+/// re-points a canonical chain" (SPEC 15.8), for every backend. An ordinary
+/// `index_commit` of a rival is still refused; a replacement swaps the
+/// positions from `sequence` on, moves the tip, withdraws every digest the
+/// replaced commits held (a repeated root falls back to the kept commit
+/// that also holds it), and refuses a replacement that would leave a gap.
+/// Turns red on a backend that lacks the operation, leaves a replaced
+/// commit resolvable, or accepts a rival through `index_commit`.
+pub async fn replace_chain_from_repoints_the_chain<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let sr = valid_digest('D');
+    let gone = valid_digest('E');
+    let mut held = [
+        state_root_commit("alice", 0, &sr),
+        state_root_commit("alice", 1, &sr),
+        make_commit("alice", 2, 1002),
+    ];
+    held[2].prs = vec![gone.clone()];
+    for c in &held {
+        indexer.index_commit(c, &token).await.unwrap();
+    }
+    let rival = |seq: u64| {
+        let mut c = make_commit("alice-rival", seq, 2000 + seq as i64);
+        c.principal_id = "alice".to_string();
+        c
+    };
+    let refused = indexer.index_commit(&rival(1), &token).await;
+    assert!(
+        matches!(refused, Err(IndexerError::Consistency(_))),
+        "index_commit must still refuse a rival: {refused:?}"
+    );
+
+    for bad in [
+        indexer
+            .replace_chain_from("alice", 4, &[rival(4)], &token)
+            .await,
+        indexer.replace_chain_from("alice", 1, &[], &token).await,
+        indexer
+            .replace_chain_from("alice", 1, &[rival(2)], &token)
+            .await,
+    ] {
+        assert!(matches!(bad, Err(IndexerError::Consistency(_))), "{bad:?}");
+    }
+    let unchanged = indexer.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(unchanged.commit_count, 3, "a refused replacement wrote");
+
+    indexer
+        .replace_chain_from("alice", 1, &[rival(1), rival(2)], &token)
+        .await
+        .expect("replace");
+    let ids: Vec<String> = indexer
+        .get_commit_chain("alice", None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.commit_id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "SHA-256:commit-alice-0",
+            "SHA-256:commit-alice-rival-1",
+            "SHA-256:commit-alice-rival-2"
+        ]
+    );
+    let tip = indexer.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(
+        (tip.commit_id.as_str(), tip.commit_count, tip.last_updated),
+        ("SHA-256:commit-alice-rival-2", 3, 2002)
+    );
+    let gone: TaggedDigest = gone.parse().unwrap();
+    assert!(
+        indexer
+            .resolve_digest_holders(&gone)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a replaced commit's root must not resolve"
+    );
+    let sr: TaggedDigest = sr.parse().unwrap();
+    let holders = indexer.resolve_digest_holders(&sr).await.unwrap();
+    assert_eq!(
+        holders.iter().map(|h| h.sequence).collect::<Vec<_>>(),
+        [Some(0)],
+        "the repeated root falls back to the kept commit"
+    );
+}
+
+/// Backs "the Error mark is per principal and settable both ways" (SPEC
+/// 15.8: a fork no branch resolves leaves the principal in Error), for
+/// every backend. Turns red on a backend that does not keep the mark, or
+/// leaks it to another principal.
+pub async fn errored_mark_is_per_principal<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    assert!(!indexer.is_errored("alice").await.unwrap());
+    indexer.set_errored("alice", true, &token).await.unwrap();
+    assert!(indexer.is_errored("alice").await.unwrap());
+    assert!(!indexer.is_errored("bob").await.unwrap());
+    indexer.set_errored("alice", false, &token).await.unwrap();
+    assert!(!indexer.is_errored("alice").await.unwrap());
+}

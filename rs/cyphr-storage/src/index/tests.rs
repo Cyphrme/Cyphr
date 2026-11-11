@@ -30,6 +30,8 @@ async fn memory_indexer_passes_the_shared_conformance_suite() {
     conformance::alias_conflict_naming_another_principal_is_refused(&MemoryIndexer::new()).await;
     conformance::digest_conflict_same_principal_repeat_is_allowed(&MemoryIndexer::new()).await;
     conformance::digest_holders_shared_digest_names_every_holder(&MemoryIndexer::new()).await;
+    conformance::replace_chain_from_repoints_the_chain(&MemoryIndexer::new()).await;
+    conformance::errored_mark_is_per_principal(&MemoryIndexer::new()).await;
     conformance::index_commit_idempotency_is_keyed_by_chain_position(&MemoryIndexer::new()).await;
     conformance::digest_holders_do_not_depend_on_arrival_order(
         &MemoryIndexer::new(),

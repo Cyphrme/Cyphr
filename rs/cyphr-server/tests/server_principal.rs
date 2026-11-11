@@ -158,9 +158,11 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .expect("db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
     let indexer = FjallIndexer::open(&dir.path().join("index")).expect("indexer");
-    let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
-        cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-    });
+    let engine = StorageEngine::with_log_factory(
+        blob_store,
+        indexer,
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    );
 
     engine
         .submit_commit(

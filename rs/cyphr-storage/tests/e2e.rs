@@ -681,13 +681,10 @@ async fn dead_principal_survives_reload_and_takes_no_commit() {
     let db = fjall::Database::builder(dir.path().join("db"))
         .open()
         .expect("open db");
-    let engine = StorageEngine::with_storage_factory(
+    let engine = StorageEngine::with_log_factory(
         FjallBlobStore::from_database(db.clone()).expect("blob store"),
         FjallIndexer::open(&dir.path().join("index")).expect("indexer"),
-        {
-            let db = db.clone();
-            move |_: &str| cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
-        },
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
     );
 
     // The genesis commit, then the dying commit.

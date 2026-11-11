@@ -104,6 +104,125 @@ pub fn open_eml_storage_scoped(
     storage_fjall::FjallStorage::with_database_scoped(db, &sanitized)
 }
 
+/// The per-principal EML logs of one database, by generation: a
+/// [`LogFactory`](cyphr_storage::engine::LogFactory) for
+/// [`StorageEngine::with_log_factory`](cyphr_storage::engine::StorageEngine::with_log_factory).
+///
+/// Generation 0 of a principal's log is the keyspace
+/// [`open_eml_storage_scoped`] opens, so a log written before generations
+/// existed stays current. Generation `g > 0` is scoped by the sanitized
+/// principal id followed by `$g` and `g` in decimal: a sanitized id never
+/// holds `$` other than as a two-hex-digit escape, so no id and generation
+/// pair names another's keyspace. The current generation is recorded in
+/// the `eml_generations` keyspace beside the logs; it names a cache, not
+/// chain state (I1).
+pub struct EmlLogs {
+    db: Database,
+    generations: Keyspace,
+}
+
+impl EmlLogs {
+    /// The logs of `db`.
+    ///
+    /// # Errors
+    ///
+    /// The generation record's keyspace does not open.
+    pub fn new(db: Database) -> Result<Self, fjall::Error> {
+        let generations = db.keyspace("eml_generations", KeyspaceCreateOptions::default)?;
+        Ok(Self { db, generations })
+    }
+
+    /// The scoping prefix of generation `generation` of `principal_id`'s
+    /// log.
+    fn prefix(principal_id: &str, generation: u64) -> String {
+        let sanitized = sanitize_fjall_prefix(principal_id);
+        match generation {
+            0 => sanitized,
+            g => format!("{sanitized}$g{g}"),
+        }
+    }
+
+    /// Delete generation `generation` of `principal_id`'s log, if held.
+    fn retire(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        for keyspace in self.keyspaces(&Self::prefix(principal_id, generation))? {
+            self.db
+                .delete_keyspace(keyspace)
+                .map_err(|e| format!("retiring log generation {generation}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// The keyspaces `storage_fjall` opens for `prefix` that exist.
+    fn keyspaces(&self, prefix: &str) -> Result<Vec<Keyspace>, String> {
+        ["leaves", "nodes", "metadata"]
+            .iter()
+            .map(|part| format!("{prefix}_eml_{part}"))
+            .filter(|name| self.db.keyspace_exists(name))
+            .map(|name| {
+                self.db
+                    .keyspace(&name, KeyspaceCreateOptions::default)
+                    .map_err(|e| format!("fjall keyspace '{name}' open: {e}"))
+            })
+            .collect()
+    }
+}
+
+impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs {
+    fn generation(&self, principal_id: &str) -> Result<u64, String> {
+        let held = self
+            .generations
+            .get(principal_id.as_bytes())
+            .map_err(|e| format!("reading the log generation of {principal_id}: {e}"))?;
+        match held {
+            None => Ok(0),
+            Some(bytes) => <[u8; 8]>::try_from(bytes.as_ref())
+                .map(u64::from_be_bytes)
+                .map_err(|_| format!("the log generation of {principal_id} is not a u64")),
+        }
+    }
+
+    fn open(
+        &self,
+        principal_id: &str,
+        generation: u64,
+    ) -> Result<storage_fjall::FjallStorage, String> {
+        let prefix = Self::prefix(principal_id, generation);
+        let current = self.generation(principal_id)?;
+        // A generation above the current one is being regenerated: what an
+        // interrupted regeneration left there is discarded.
+        if generation > current {
+            for keyspace in self.keyspaces(&prefix)? {
+                keyspace
+                    .clear()
+                    .map_err(|e| format!("clearing log {prefix}: {e}"))?;
+            }
+        }
+        // A crash between recording a generation and retiring the one it
+        // superseded leaves that one behind; the current log's open
+        // retires every older generation still held.
+        if generation == current {
+            for older in 0..current {
+                self.retire(principal_id, older)?;
+            }
+        }
+        storage_fjall::FjallStorage::with_database_scoped(self.db.clone(), &prefix)
+            .map_err(|e| e.to_string())
+    }
+
+    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        let retired = self.generation(principal_id)?;
+        self.generations
+            .insert(principal_id.as_bytes(), generation.to_be_bytes())
+            .map_err(|e| format!("recording the log generation of {principal_id}: {e}"))?;
+        // Older generations were retired when their successors became
+        // current, or are swept by the next open if a crash intervened.
+        if retired < generation {
+            self.retire(principal_id, retired)?;
+        }
+        Ok(())
+    }
+}
+
 /// Escape marker [`sanitize_fjall_prefix`] uses for its reversible
 /// encoding — reserved out of the passthrough set (see that function) so
 /// it can never appear un-escaped in the output.

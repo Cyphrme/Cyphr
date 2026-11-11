@@ -183,9 +183,11 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let db = fjall::Database::builder(&db_path).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
     let indexer = FjallIndexer::open(&index_path).expect("open indexer");
-    let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
-        cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-    });
+    let engine = StorageEngine::with_log_factory(
+        blob_store,
+        indexer,
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    );
 
     engine
         .submit_commit(

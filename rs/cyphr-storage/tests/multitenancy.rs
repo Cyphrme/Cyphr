@@ -1,6 +1,6 @@
 //! Proves two principals can safely share one physical fjall database
 //! through the real production wiring shape — `StorageEngine`'s
-//! `with_storage_factory` plus `cyphr-blob-fjall`'s scoped EML open.
+//! `with_log_factory` plus `cyphr-blob-fjall`'s `EmlLogs`.
 //!
 //! Mirrors `durable_commit_trees.rs`'s golden-fixture-driven pattern.
 
@@ -66,7 +66,7 @@ async fn submit_all_commits(
 
 /// c2 — Two principals, each with a genuinely distinct genesis identity,
 /// submit real commits through one `StorageEngine` sharing ONE physical
-/// fjall `Database` (via `with_storage_factory` + `open_eml_storage_scoped`
+/// fjall `Database` (via `with_log_factory` + `EmlLogs`
 /// — the actual production wiring shape, not eml's own unit-level scoped
 /// test). After a full drop-and-reload of that database, each principal's
 /// PR/CR/commit count must reflect only its own history.
@@ -108,9 +108,11 @@ fn two_principals_share_one_database_without_collision() {
         let db = fjall::Database::builder(&db_path).open().expect("open db");
         let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
         let indexer = FjallIndexer::open(&index_path).expect("open indexer");
-        let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
-            cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-        });
+        let engine = StorageEngine::with_log_factory(
+            blob_store,
+            indexer,
+            cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+        );
 
         submit_all_commits(&engine, principal_id_a, &genesis_key_a, &commits_a).await;
         submit_all_commits(&engine, principal_id_b, &genesis_key_b, &commits_b).await;
@@ -124,9 +126,11 @@ fn two_principals_share_one_database_without_collision() {
             .expect("reopen db");
         let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
         let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
-        let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
-            cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-        });
+        let engine = StorageEngine::with_log_factory(
+            blob_store,
+            indexer,
+            cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+        );
 
         let genesis_a = Genesis::Implicit(genesis_key_a.clone());
         let genesis_b = Genesis::Implicit(genesis_key_b.clone());
