@@ -542,15 +542,16 @@ async fn resolution() {
         "the fork is still evidence"
     );
 
-    drop((r.app, r.state));
-    let state = std::sync::Arc::new(
-        cyphr_server::AppState::new(cyphr_server::config::ServerConfig {
-            data_dir: r.dir.path().to_path_buf(),
-            ..Default::default()
-        })
-        .expect("reopen"),
+    assert!(
+        !r.state.engine.is_errored(id).await.expect("verdict"),
+        "only B's branch is extended: Active"
     );
-    let app = build_router(state);
+
+    let Resolved {
+        dir, app, state, ..
+    } = r;
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
     assert_eq!(
         tip_payload(app.clone(), id).await,
         tip,
@@ -561,16 +562,23 @@ async fn resolution() {
         list,
         "the branches survive a restart"
     );
+    assert!(
+        !state.engine.is_errored(id).await.expect("verdict"),
+        "Active survives a restart"
+    );
 }
 
-/// Backs the engine never picking between resolutions (SPEC 15.8, Q8 open):
-/// after C resolves to B, D (extending A) is a new fork at the resolution
-/// point: both kept, the canonical tip still C, and the principal in Error
-/// (`/evidence` lists the fork at the resolution position). An ordinary
-/// commit extending C then clears the Error, live and after a rebuild. Turns red if D is accepted
-/// as the tip, dropped, or C is displaced. End to end: yes.
+/// Backs SPEC 15.8 (be0663f) with its open question: a principal is in
+/// Error iff some position holds two commits that are each extended, and
+/// nothing exits Error by itself. After C resolves to B, D (extending A)
+/// is a new fork at the resolution point: both kept, C still the tip. An
+/// extension E of C afterwards does not clear Error, and the verdict, tip
+/// and branch list are the same live and after a restart that rebuilds
+/// from the blobs. Turns red if D is accepted as the tip or dropped, E
+/// clears Error, or a rebuild disagrees with the live engine. End to end:
+/// yes.
 #[tokio::test]
-async fn second_resolution() {
+async fn second_resolution_then_extension() {
     let Resolved {
         f,
         n,
@@ -603,31 +611,101 @@ async fn second_resolution() {
         "two extended branches: Error"
     );
 
-    // A restart rebuilds the verdict from the blobs alone (I1): both
-    // branches are still open, so Error.
+    // A restart rebuilds the verdict from the blobs alone (I1).
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
+    assert_eq!(tip_payload(app.clone(), id).await, tip);
+    assert_eq!(heads(&app, id).await, list);
     assert!(
         state.engine.is_errored(id).await.expect("verdict"),
-        "a rebuild agrees: C and D are both open"
+        "a rebuild agrees: Error"
     );
 
+    let (tip, list) = extend_c(&app, &c, n, id).await;
+    assert!(
+        state.engine.is_errored(id).await.expect("verdict"),
+        "extending C does not clear Error"
+    );
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert_eq!(tip_payload(app.clone(), id).await, tip);
+    assert_eq!(heads(&app, id).await, list);
+    assert!(
+        state.engine.is_errored(id).await.expect("verdict"),
+        "Error survives a restart"
+    );
+}
+
+/// The same verdict when E (extending C) arrives before D: D is then a
+/// rival below the head, and the verdict, tip and branch list are the
+/// same live and after a restart. Turns red if D's late arrival is
+/// dropped, the verdict depends on arrival order, or a rebuild disagrees.
+/// End to end: yes.
+#[tokio::test]
+async fn extension_then_second_resolution() {
+    let Resolved {
+        f,
+        n,
+        c,
+        d: _,
+        app,
+        state,
+        dir,
+    } = forked_server().await;
+    let id = &f.id;
+    let (status, body) = post_json(app.clone(), "/push", wire(&c, n + 1, id)).await;
+    assert_eq!(status, StatusCode::CREATED, "C: {body:?}");
+    let _ = extend_c(&app, &c, n, id).await;
+    assert!(
+        !state.engine.is_errored(id).await.expect("verdict"),
+        "only B's branch is extended: Active"
+    );
+
+    // D is signed after E: a commit older than the tip's is refused
+    // outright (SPEC 15.9), so only a later D can arrive late.
+    let pool = load_pool();
+    let mut d = f.canonical.fork().await.expect("fork");
+    create_key(&mut d, &kp(&pool, "golden"), &kp(&pool, "bob"), NOW + 9).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&d, n + 1, id)).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "D is kept, not a tip: {body:?}"
+    );
+    let tip = tip_payload(app.clone(), id).await;
+    let list = heads(&app, id).await;
+    assert!(
+        list.iter().any(|h| !h.1 && h.0 == n as u64 + 1),
+        "D is kept as a branch: {list:?}"
+    );
+    assert!(
+        state.engine.is_errored(id).await.expect("verdict"),
+        "D extends A and C extends B: Error"
+    );
+
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert_eq!(tip_payload(app.clone(), id).await, tip);
+    assert_eq!(heads(&app, id).await, list);
+    assert!(
+        state.engine.is_errored(id).await.expect("verdict"),
+        "Error survives a restart"
+    );
+}
+
+/// Push E, a commit extending C, and return the tip and branch list after.
+async fn extend_c(
+    app: &axum::Router,
+    c: &cyphr::Principal,
+    n: usize,
+    id: &str,
+) -> (serde_json::Value, Vec<(u64, bool, String)>) {
     let pool = load_pool();
     let mut e = c.fork().await.expect("fork");
     create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&e, n + 2, id)).await;
     assert_eq!(status, StatusCode::CREATED, "E extends C: {body:?}");
-    assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "extending one branch selects it: Active"
-    );
-
-    drop((app, state));
-    let (_, state) = reopen(dir.path()).await;
-    assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "a rebuild agrees: E selected C's branch"
-    );
+    (tip_payload(app.clone(), id).await, heads(app, id).await)
 }
 
 /// A restarted server over `dir`, its index rebuilt from the blobs.

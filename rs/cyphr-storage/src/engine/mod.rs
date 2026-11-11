@@ -325,6 +325,9 @@ type ActionHistory = std::collections::BTreeMap<u64, Vec<ActionBundle>>;
 #[derive(Debug, Clone)]
 struct Retained {
     tip: BranchTip,
+    /// The commit's Principal Root: what a commit extending it names as
+    /// its `pre`.
+    pr: String,
     signer: String,
     blobs: Vec<Blake3Hash>,
     shape: Shape,
@@ -1371,7 +1374,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let Walk {
             canonical: manifests,
             rest: branch_manifests,
-            errored,
         } = walk_chains(manifests, branch_manifests, &unbound);
         let held: HeldRoots = manifests
             .iter()
@@ -1517,14 +1519,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         let actions = self.place_actions(histories, &mut quarantined).await?;
         *self.actions.lock().unwrap_or_else(|p| p.into_inner()) = actions;
-
-        for (principal_id, errored) in errored {
-            if self.indexer.is_errored(&principal_id).await? != errored {
-                self.indexer
-                    .set_errored(&principal_id, errored, &DeriveToken::new())
-                    .await?;
-            }
-        }
 
         let branches = self
             .classify_branches(branch_manifests, &held, &mut quarantined)
@@ -1750,6 +1744,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 kept_prs.insert((commit.principal_id.clone(), commit.sequence, pr.clone()));
             }
             of_principal.push(Retained {
+                pr: commit.prs.first().cloned().unwrap_or_default(),
                 tip: BranchTip {
                     tip,
                     pre: commit.pre,
@@ -2363,15 +2358,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 return Err(refused);
             },
         };
-        let ingested = self.ingest_commit(bundle, build).await?;
-        // A commit on the canonical tip extends one branch only, which is
-        // how the rebuild's walk judges Error (SPEC 15.8, `walk_chains`).
-        if self.indexer.is_errored(principal_id).await? {
-            self.indexer
-                .set_errored(principal_id, false, &DeriveToken::new())
-                .await?;
-        }
-        Ok(ingested)
+        self.ingest_commit(bundle, build).await
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],
@@ -2721,13 +2708,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             };
             if at + 1 < canonical_len {
                 self.keep_branch(bundle, next_commit).await?;
-                // Error only while the two branches are open at the top,
-                // as the rebuild's walk judges it.
-                if at + 2 == canonical_len {
-                    self.indexer
-                        .set_errored(principal_id, true, &DeriveToken::new())
-                        .await?;
-                }
                 return Ok(None);
             }
             return self
@@ -2802,6 +2782,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let of_principal = kept.entry(principal_id.to_string()).or_default();
             of_principal.retain(|b| !(b.tip.tip == rival.tip.tip && b.tip.sequence == at));
             of_principal.push(Retained {
+                pr: displaced.pr.clone(),
                 tip: BranchTip {
                     tip: displaced.commit_id.clone(),
                     pre: displaced.pre.clone(),
@@ -2813,13 +2794,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 shape,
                 keys,
             });
-        }
-        // Only the displaced head was extended on neither side: one branch
-        // is selected.
-        if self.indexer.is_errored(principal_id).await? {
-            self.indexer
-                .set_errored(principal_id, false, &token)
-                .await?;
         }
         Ok(IngestResult {
             principal_id: principal_id.to_string(),
@@ -2929,6 +2903,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             canonical: false,
         };
         let principal_id = commit.principal_id.clone();
+        let pr = commit.prs.first().cloned().unwrap_or_default();
         let (stored, _) = self
             .store_manifest(bundle, commit, BRANCH_MANIFEST_PREFIX, BRANCH_MANIFEST_KIND)
             .await?;
@@ -2939,6 +2914,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .or_default()
             .push(Retained {
                 tip: branch,
+                pr,
                 signer,
                 keys: key_entries(&stored.keys),
                 blobs: stored.blob_hashes,
@@ -3009,13 +2985,40 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(branches)
     }
 
-    /// Whether the principal is in Error (SPEC 15.8): two of its branches
-    /// are both extended, so none is unambiguously selected. `false` for a
+    /// Whether the principal is in Error ([`in_error`]), computed from the
+    /// commits the engine holds, canonical and retained, so a live engine
+    /// and one rebuilt from the blobs answer alike. `false` for a
     /// principal that is not stored.
     pub async fn is_errored(&self, principal_id: &str) -> Result<bool, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
-        Ok(self.indexer.is_errored(&principal_id).await?)
+        let chain = self
+            .indexer
+            .get_commit_chain(&principal_id, None, None)
+            .await?;
+        let kept = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&principal_id)
+            .cloned()
+            .unwrap_or_default();
+        let held: Vec<Held<'_>> = chain
+            .iter()
+            .map(|c| Held {
+                sequence: c.sequence,
+                id: &c.commit_id,
+                pre: c.pre.as_deref(),
+                pr: &c.pr,
+            })
+            .chain(kept.iter().map(|r| Held {
+                sequence: r.tip.sequence,
+                id: &r.tip.tip,
+                pre: r.tip.pre.as_deref(),
+                pr: &r.pr,
+            }))
+            .collect();
+        Ok(in_error(&held))
     }
 
     /// Every fork of a principal the store can prove: for each retained
@@ -3267,8 +3270,43 @@ struct Walk {
     canonical: Vec<(Blake3Hash, CommitManifest)>,
     /// Every other manifest: candidates for a retained branch.
     rest: Vec<(Blake3Hash, CommitManifest)>,
-    /// Whether each walked principal is in Error (SPEC 15.8).
-    errored: Vec<(String, bool)>,
+}
+
+/// A commit the engine holds, as [`in_error`] reads it.
+struct Held<'a> {
+    sequence: u64,
+    id: &'a str,
+    pre: Option<&'a str>,
+    pr: &'a str,
+}
+
+/// Whether a principal is in Error: some position holds two distinct
+/// commits that are each extended by a held commit, so both branches have
+/// been continued and neither is unambiguously selected. A fork where only
+/// one branch is ever extended is not Error, and that branch is canonical.
+///
+/// SPEC 15.8 (be0663f) says a resolution is a new commit whose `pre` names
+/// the chosen branch's tip and that witnesses then leave Error. Open with
+/// the spec author: when both branches have been extended, which recorded
+/// entry exits Error. Until it is answered nothing exits it, so this is a
+/// function of the held commits alone and each viewing principal decides
+/// which branch to trust; `/branches` and `/evidence` serve both.
+fn in_error(held: &[Held<'_>]) -> bool {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut extended: BTreeMap<u64, BTreeSet<&str>> = BTreeMap::new();
+    for successor in held {
+        let Some(pre) = successor.pre else { continue };
+        let Some(below) = successor.sequence.checked_sub(1) else {
+            continue;
+        };
+        for parent in held {
+            if parent.sequence == below && parent.pr == pre {
+                extended.entry(below).or_default().insert(parent.id);
+            }
+        }
+    }
+    extended.values().any(|ids| ids.len() > 1)
 }
 
 /// Choose each principal's canonical chain from its stored commit and
@@ -3284,10 +3322,8 @@ struct Walk {
 /// among equals. A position the successor names nothing at falls back to
 /// its first commit manifest, as an unresolved chain always did.
 ///
-/// A principal is in Error when the highest position holds commits over
-/// different `pre`: two branches are both extended and none is
-/// unambiguously selected, and the walk does not pick one (that question
-/// is open with the spec author); the hash-order head stays served.
+/// Which of two branches that both continue is canonical is not decided
+/// here (see [`in_error`]); the hash-order head stays served.
 ///
 /// Principals in `unbound` are not walked: their commit manifests pass
 /// through unchanged, to be quarantined by the caller.
@@ -3316,7 +3352,6 @@ fn walk_chains(
     let mut walk = Walk {
         canonical: Vec::new(),
         rest: Vec::new(),
-        errored: Vec::new(),
     };
     let extends = |successor: &CommitManifest, held: &CommitManifest| {
         successor
@@ -3343,22 +3378,6 @@ fn walk_chains(
                     successor = Some(&held[at].2);
                 }
             }
-            // Two branches are both still open when the highest position
-            // holds commits over different `pre`: neither has been
-            // extended past the other, so none is selected. A later commit
-            // on one branch is the selection (SPEC 15.8), whatever lower
-            // position once held two extended commits; the live path
-            // clears Error the same way.
-            let errored = positions.iter().next_back().is_some_and(|(_, top)| {
-                let mut pres: Vec<&String> = top
-                    .iter()
-                    .filter_map(|(_, _, m)| m.commit.pre.as_ref())
-                    .collect();
-                pres.sort_unstable();
-                pres.dedup();
-                pres.len() > 1
-            });
-            walk.errored.push((principal_id, errored));
         }
         for (sequence, held) in positions {
             for (at, (branch, hash, manifest)) in held.into_iter().enumerate() {
