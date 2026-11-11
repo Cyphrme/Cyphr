@@ -64,9 +64,10 @@ impl Tip {
 
     /// Keys the source saw revoked by a verified naked revoke (SPEC 6.4):
     /// inactive in B from then on, though B's chain does not show it yet.
+    /// Thumbprints are base64url, as the revokes carry them.
     #[must_use]
-    pub fn with_revoked<'a>(mut self, tmbs: impl IntoIterator<Item = &'a Thumbprint>) -> Self {
-        self.revoked.extend(tmbs.into_iter().map(Thumbprint::to_b64));
+    pub fn with_revoked<'a>(mut self, tmbs: impl IntoIterator<Item = &'a str>) -> Self {
+        self.revoked.extend(tmbs.into_iter().map(str::to_owned));
         self
     }
 

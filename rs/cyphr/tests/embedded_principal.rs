@@ -238,7 +238,7 @@ async fn a_removed_key_of_b_cannot_newly_authorize_and_old_verdicts_stand() {
         .await
         .expect("B deletes carol");
     src.tips
-        .push_back(Tip::new(&b, T + 30).with_revoked([&bob.tmb]));
+        .push_back(Tip::new(&b, T + 30).with_revoked([bob.tmb.to_b64().as_str()]));
     let report = a.follow_embedded(&mut src).await;
     assert_eq!(
         report[0].status,
