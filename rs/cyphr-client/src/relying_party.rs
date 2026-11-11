@@ -29,7 +29,7 @@ use cyphr::principal::Clock;
 use rand::RngCore;
 use serde_json::Value;
 
-use crate::connector::Connector;
+use crate::connector::{ChannelBinding, Connector};
 use crate::evidence::names_pg;
 use crate::sync::{Anchor, PeerStanding, PullPeer, PullReport, Record, RecordTip, pull};
 
@@ -115,6 +115,24 @@ pub enum Refusal {
     /// No session holds this token (never issued, or it already ended).
     #[error("no live session holds this token")]
     NoSession,
+    /// The session is bound to the channel it was opened on, and the token
+    /// arrived on another or on none. The session is not ended: the
+    /// legitimate holder's channel still works.
+    #[error("the token was presented off the channel its session is bound to")]
+    ChannelMismatch,
+}
+
+/// What a session is tied to, so a token alone is not enough to use it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionBinding {
+    /// A native client signed in over an authenticated channel; the token
+    /// works only on that channel (its [`ChannelBinding`], the Noise
+    /// handshake hash for the principal-authenticated transport).
+    Channel(ChannelBinding),
+    /// A browser edge has no channel to bind to: the session is tied to the
+    /// key that signed the login and ends when that key leaves the replayed
+    /// chain.
+    Key,
 }
 
 /// What a relying party trusted, and on what currency.
@@ -145,6 +163,8 @@ pub struct Session {
     pub principal: String,
     /// The key that signed in.
     pub key: Thumbprint,
+    /// What the session is tied to.
+    pub binding: SessionBinding,
     /// What was trusted when the session opened.
     pub trust: Trust,
 }
@@ -160,7 +180,7 @@ pub struct RelyingParty {
     forked: bool,
     /// Issued challenges, by value, with their issue time.
     challenges: BTreeMap<String, i64>,
-    sessions: BTreeMap<String, (Thumbprint, String)>,
+    sessions: BTreeMap<String, (Thumbprint, SessionBinding)>,
 }
 
 impl RelyingParty {
@@ -184,6 +204,13 @@ impl RelyingParty {
     #[must_use]
     pub fn config(&self) -> &RpConfig {
         &self.config
+    }
+
+    /// The anchor the relying party was enrolled with: what it replays the
+    /// principal from, and the only root a verdict rests on.
+    #[must_use]
+    pub fn anchor(&self) -> &Anchor {
+        self.record.anchor()
     }
 
     /// The record the relying party decides from.
@@ -234,6 +261,29 @@ impl RelyingParty {
     /// misdirected login does not burn a live challenge, and a login that
     /// reaches the signature check spends it whether or not it passes.
     pub fn sign_in(&mut self, login: &coz::CozJson) -> Result<Session, Refusal> {
+        self.sign_in_bound(login, SessionBinding::Key)
+    }
+
+    /// [`sign_in`](Self::sign_in) for a native client, binding the session
+    /// to the channel the login arrived on: a stolen token is useless off
+    /// that channel.
+    ///
+    /// # Errors
+    ///
+    /// As [`sign_in`](Self::sign_in).
+    pub fn sign_in_on(
+        &mut self,
+        login: &coz::CozJson,
+        channel: &ChannelBinding,
+    ) -> Result<Session, Refusal> {
+        self.sign_in_bound(login, SessionBinding::Channel(channel.clone()))
+    }
+
+    fn sign_in_bound(
+        &mut self,
+        login: &coz::CozJson,
+        binding: SessionBinding,
+    ) -> Result<Session, Refusal> {
         let now = (self.clock)();
         let pay_bytes =
             serde_json::to_vec(&login.pay).map_err(|_| Refusal::Malformed("pay is not JSON"))?;
@@ -277,13 +327,14 @@ impl RelyingParty {
         let mut raw = [0u8; CHALLENGE_BYTES];
         rand::thread_rng().fill_bytes(&mut raw);
         let token = Base64UrlUnpadded::encode_string(&raw);
-        let principal = self.bare_principal().to_owned();
+        let principal = trust.principal.clone();
         self.sessions
-            .insert(token.clone(), (tmb.clone(), principal.clone()));
+            .insert(token.clone(), (tmb.clone(), binding.clone()));
         Ok(Session {
             token,
             principal,
             key: tmb,
+            binding,
             trust,
         })
     }
@@ -297,7 +348,28 @@ impl RelyingParty {
     /// The [`Refusal`] that ended it. A session ended by a removed key or a
     /// stale view stays ended: it is dropped, never revived by a later pull.
     pub fn check_session(&mut self, token: &str) -> Result<Trust, Refusal> {
-        let (key, _) = self.sessions.get(token).ok_or(Refusal::NoSession)?.clone();
+        self.check_session_on(token, None)
+    }
+
+    /// [`check_session`](Self::check_session) for a token arriving on
+    /// `channel` (`None`: no authenticated channel, as at a browser edge).
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::ChannelMismatch`] for a channel-bound session presented
+    /// off its channel (the session stays live); otherwise as
+    /// [`check_session`](Self::check_session).
+    pub fn check_session_on(
+        &mut self,
+        token: &str,
+        channel: Option<&ChannelBinding>,
+    ) -> Result<Trust, Refusal> {
+        let (key, binding) = self.sessions.get(token).ok_or(Refusal::NoSession)?.clone();
+        if let SessionBinding::Channel(bound) = &binding
+            && channel != Some(bound)
+        {
+            return Err(Refusal::ChannelMismatch);
+        }
         match self.trust(&key, (self.clock)()) {
             Ok(trust) => Ok(trust),
             Err(refusal) => {
@@ -340,7 +412,10 @@ impl RelyingParty {
             .tip()
             .ok_or(Refusal::Stale(UnmetCurrency::NoPull))?;
         Ok(Trust {
-            principal: self.bare_principal().to_owned(),
+            principal: self
+                .record
+                .subject()
+                .ok_or(Refusal::Stale(UnmetCurrency::NoPull))?,
             key: key.clone(),
             tip,
             pull_age,

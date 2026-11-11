@@ -22,7 +22,8 @@ mod sync;
 pub use embedded::{FollowReport, GossipTips, PeerPull};
 pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use relying_party::{
-    LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, Trust, UnmetCurrency,
+    LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust,
+    UnmetCurrency,
 };
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{

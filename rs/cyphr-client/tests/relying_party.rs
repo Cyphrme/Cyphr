@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use common::*;
 use cyphr_client::{
-    Anchor, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty, Request,
-    RpConfig, UnmetCurrency,
+    Anchor, BindingKind, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty, Request,
+    RpConfig, SessionBinding, UnmetCurrency,
 };
 use serde_json::{Value, json};
 
@@ -315,4 +315,109 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::KeyNotActive)
     );
+}
+
+fn noise_binding(h: u8) -> ChannelBinding {
+    ChannelBinding::new(BindingKind::NoiseHandshakeHash, vec![h; 32])
+}
+
+static ANCHOR_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn anchor_clock() -> i64 {
+    ANCHOR_CLOCK.load(Ordering::SeqCst)
+}
+
+/// Claim: the relying party reports the anchor it was enrolled with, and
+/// the subject of a session is the principal its replayed record names,
+/// never the anchor. The genesis commit opens over two keys, so the PG is
+/// not the opener's thumbprint: a check that took the anchor's key
+/// thumbprint for the subject (or the PG string for the anchor) fails here,
+/// where on a single-key genesis the two strings are equal and every such
+/// check passes.
+///
+/// Turns red if: the reported anchor is not the genesis key, the subject
+/// equals the anchor's thumbprint, or the subject is not the replayed PG.
+/// End-to-end scenario: yes (real chain over a carrier that plays a peer).
+#[tokio::test]
+async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
+    let (a, b) = (kp(), kp());
+    let (line, pg) = genesis_over(&a, &[&b]).await;
+    assert_ne!(pg, a.tmb.to_b64(), "the fixture's PG must differ from the anchor");
+    let mirror = Mirror { line };
+    ANCHOR_CLOCK.store(T0 + 100, Ordering::SeqCst);
+
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(a.domain_key(T0)),
+        config(),
+        anchor_clock,
+    );
+    match rp.anchor() {
+        Anchor::GenesisKey(key) => assert_eq!(key.tmb(), &a.tmb, "the enrolled genesis key"),
+        other => panic!("enrolled at the genesis key, reports {other:?}"),
+    }
+    rp.refresh(&[peer("p1", &mirror)]).await;
+    let c = rp.challenge();
+    let session = rp
+        .sign_in(&login(&b, &pg, AUDIENCE, &c))
+        .expect("signed in");
+    assert_eq!(session.principal, pg, "the subject is the replayed PG");
+    assert_ne!(session.principal, a.tmb.to_b64(), "not the anchor's thumbprint");
+    assert_eq!(session.trust.principal, pg);
+}
+
+static BIND_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn bind_clock() -> i64 {
+    BIND_CLOCK.load(Ordering::SeqCst)
+}
+
+/// Claim (SPEC 17.5 session binding): a native client's session works only
+/// on the channel it signed in over, so a stolen token is useless off that
+/// channel; a browser edge, which has no channel, binds to its key. A token
+/// on a second channel, or on none, is refused without ending the session;
+/// the key-bound session accepts the token wherever it arrives.
+///
+/// Turns red if: a channel-bound token is accepted on another channel or on
+/// none, the refusal ends the session, or a key-bound session is bound to a
+/// channel.
+/// End-to-end scenario: yes (real chain, two sign-ins, two channels).
+#[tokio::test]
+async fn token_is_refused_off_the_channel_its_session_is_bound_to() {
+    let g = kp();
+    let pg = g.tmb.to_b64();
+    let chain = Chain::new(&g).await;
+    let mirror = Mirror {
+        line: Line::of(&chain),
+    };
+    BIND_CLOCK.store(T0 + 100, Ordering::SeqCst);
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        bind_clock,
+    );
+    rp.refresh(&[peer("p1", &mirror)]).await;
+
+    let (here, elsewhere) = (noise_binding(1), noise_binding(2));
+    let c = rp.challenge();
+    let native = rp
+        .sign_in_on(&login(&g, &pg, AUDIENCE, &c), &here)
+        .expect("native sign-in");
+    assert_eq!(native.binding, SessionBinding::Channel(here.clone()));
+    assert!(rp.check_session_on(&native.token, Some(&here)).is_ok());
+    for off in [Some(&elsewhere), None] {
+        assert_eq!(
+            rp.check_session_on(&native.token, off),
+            Err(Refusal::ChannelMismatch)
+        );
+    }
+    assert!(
+        rp.check_session_on(&native.token, Some(&here)).is_ok(),
+        "a refused presentation must not end the session"
+    );
+
+    let c = rp.challenge();
+    let browser = rp.sign_in(&login(&g, &pg, AUDIENCE, &c)).expect("edge");
+    assert_eq!(browser.binding, SessionBinding::Key);
+    assert!(rp.check_session(&browser.token).is_ok());
+    assert!(rp.check_session_on(&browser.token, Some(&elsewhere)).is_ok());
 }

@@ -172,6 +172,38 @@ impl Record {
         })
     }
 
+    /// The anchor the record replays from.
+    #[must_use]
+    pub fn anchor(&self) -> &Anchor {
+        &self.anchor
+    }
+
+    /// The subject the replayed chain names: the bare digest of its PG (or,
+    /// for a principal with no genesis commit, its PR) in the algorithm the
+    /// record was pinned under. Read from the replay, not from the id the
+    /// record was opened with; replay refuses a chain that does not name
+    /// that id, so the two agree. `None` before the first verified pull.
+    #[must_use]
+    pub fn subject(&self) -> Option<String> {
+        let principal = &self.held.as_ref()?.principal;
+        let want = self.bare_id();
+        let named = |tagged: String| {
+            let (_, bare) = tagged.split_once(':')?;
+            names_pg(want, bare).then(|| bare.to_owned())
+        };
+        if let Some(pg) = principal.pg() {
+            let digest = pg.as_multihash();
+            if let Some(bare) = digest
+                .algorithms()
+                .filter_map(|alg| digest.tagged(alg).ok())
+                .find_map(|t| named(t.to_string()))
+            {
+                return Some(bare);
+            }
+        }
+        principal.pr_tagged().ok().and_then(named)
+    }
+
     /// The principal this record is of, as given to [`Record::new`].
     #[must_use]
     pub fn principal_id(&self) -> &str {
