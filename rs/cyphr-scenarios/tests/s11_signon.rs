@@ -39,8 +39,17 @@ async fn s11_signon() {
     h.ok(alice.push(&pr, &["p1"]).await).accepted("setup push");
 
     let session = h.ok(alice.sign_in(&rp).await);
-    assert_eq!(
-        session.principal, pr,
+    // The one-subject check reads the anchor the relying party was enrolled
+    // with, not the PG string the scenario holds: the subject must be the
+    // principal that genesis key opens.
+    let enrolled = h.ok(h.genesis_tmb(&pr));
+    assert!(
+        session.principal.same_as(&enrolled),
+        "the token's subject {:?} does not resolve under the enrolled genesis key {enrolled}",
+        session.principal
+    );
+    assert!(
+        session.principal.same_as(pr.bare()),
         "the token's subject is the canonical principal"
     );
     assert!(

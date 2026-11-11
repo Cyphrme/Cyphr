@@ -29,6 +29,10 @@ async fn relying_party_signs_in_from_its_own_pull() {
 
     let session = h.ok(alice.sign_in(&rp).await);
     assert!(
+        session.principal.same_as(&h.ok(h.genesis_tmb(&pr))),
+        "the subject resolves under the enrolled genesis key"
+    );
+    assert!(
         session.principal.same_as(pr.bare()),
         "the token's subject is the canonical principal, not a spelling: {:?} vs {:?}",
         session.principal,
