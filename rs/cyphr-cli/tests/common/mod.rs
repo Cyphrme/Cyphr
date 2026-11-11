@@ -63,9 +63,16 @@ impl Server {
         let dir = TempDir::new().expect("server tempdir");
         let config = dir.path().join("absent.toml");
         if !peers.is_empty() {
-            let list = peers.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join(", ");
-            std::fs::write(&config, format!("[gossip]\npeers = [{list}]\ninterval_secs = 1\n"))
-                .expect("gossip config");
+            let list = peers
+                .iter()
+                .map(|p| format!("\"{p}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            std::fs::write(
+                &config,
+                format!("[gossip]\npeers = [{list}]\ninterval_secs = 1\n"),
+            )
+            .expect("gossip config");
         }
         let mut child = Command::new(server_bin())
             .arg("--config")

@@ -236,7 +236,10 @@ fn data_fork_after_a_rebase_is_evidence_the_verifier_replays() {
     b.setup(&["rebase", &ident, &format!("--peer={}", s1.url)]);
     accepted(&b.push(&id, &s1.url), "B's rebased history to peer 1");
     accepted(&b.push(&id, &s2.url), "B's rebased history to peer 2");
-    accepted(&a.run(&["fetch", &ident, &format!("--peer={}", s1.url)]), "A catches up");
+    accepted(
+        &a.run(&["fetch", &ident, &format!("--peer={}", s1.url)]),
+        "A catches up",
+    );
 
     // Both sides commit data over one tip, to different peers (peer 1
     // learns B's branch by gossip).
@@ -254,5 +257,8 @@ fn data_fork_after_a_rebase_is_evidence_the_verifier_replays() {
         std::thread::sleep(std::time::Duration::from_millis(500));
         v = a.setup(&["verify", &ident, &peer]);
     }
-    assert_eq!(v["verdict"], "Error", "the retained rival's evidence verifies: {v}");
+    assert_eq!(
+        v["verdict"], "Error",
+        "the retained rival's evidence verifies: {v}"
+    );
 }
