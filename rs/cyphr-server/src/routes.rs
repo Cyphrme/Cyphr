@@ -751,13 +751,14 @@ pub async fn push(
     }
 
     crate::auth::middleware::check_push_admission(
-        &headers,
+        // A header wins over the body's token (the Noise transport has no
+        // headers).
+        crate::auth::middleware::bearer_token(&headers).or(request.token.as_deref()),
         state.identity.as_deref(),
         &state.engine,
         &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
-        request.token.as_deref(),
         peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
     )
     .await?;

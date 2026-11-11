@@ -846,6 +846,7 @@ mod tests {
                 mode: None,
                 signing_key_path: None,
                 audience: None,
+                session_ttl_secs: None,
                 authority_url: None,
                 gossip_peers: Vec::new(),
                 gossip_interval_secs: None,

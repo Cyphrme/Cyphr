@@ -168,19 +168,18 @@ pub async fn check_session_key(
 /// the no-token case) rather than rejecting on a config detail unrelated
 /// to the pushed payload's own validity.
 pub async fn check_push_admission(
-    headers: &HeaderMap,
+    token: Option<&str>,
     identity: Option<&ServerIdentity>,
     engine: &Engine,
     observations: &ObservationStore,
     target_principal: &str,
     now: i64,
-    body_token: Option<&str>,
     channel: Option<&[u8]>,
 ) -> Result<(), AppError> {
     let Some(identity) = identity else {
         return Ok(());
     };
-    let Some(token) = bearer_token(headers).or(body_token) else {
+    let Some(token) = token else {
         return Ok(());
     };
     let claims = match identity.verify_token(token, now) {
@@ -275,13 +274,12 @@ mod tests {
         let headers = headers_with_bearer("garbage");
         assert!(
             check_push_admission(
-                &headers,
+                bearer_token(&headers),
                 Some(&identity),
                 &state.engine,
                 &state.observations,
                 PR,
                 1_100,
-                None,
                 None
             )
             .await
