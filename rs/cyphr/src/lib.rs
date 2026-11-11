@@ -22,6 +22,8 @@ pub mod action;
 pub mod commit;
 /// Commit Root logic.
 pub mod commit_root;
+/// Embedded principals at default weight (SPEC §10.3, §10.5, §10.7).
+pub mod embedded;
 pub mod error;
 /// Portable inclusion-proof verification (F9) — free functions taking proof
 /// material and a trusted root as plain parameters, with no `Principal`
@@ -62,6 +64,7 @@ pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit, PreparedCoz
 pub use commit_root::{
     CommitRoot, CommitTrees, ForkStorage, MaltHasher, verify_consistency, verify_inclusion,
 };
+pub use embedded::{EmbedReport, EmbedStatus, Tip, TipSource, Tracking};
 // The full `eml` crate, re-exported so a durable-storage caller (e.g.
 // `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and
 // `eml::MemoryStorage` — the bound and default for `Principal`'s storage

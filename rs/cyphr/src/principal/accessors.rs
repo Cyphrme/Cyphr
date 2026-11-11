@@ -186,6 +186,16 @@ impl PrincipalState {
         self.frozen
     }
 
+    /// Whether the Key Tree holds a digest that is not a key: a nonce, or
+    /// an embedded principal (SPEC §10.1, §10.3), which no one can tell
+    /// apart until the verifier reveals it.
+    pub fn has_kt_digests(&self) -> bool {
+        !self
+            .nonces
+            .at_level(crate::nonce::NonceLevel::Kt)
+            .is_empty()
+    }
+
     /// Whether a fork or invalid chain has been detected (SPEC.md §11.1
     /// `Errored`). Orthogonal to [`Principal::lifecycle_state`]: any base
     /// state may be errored (SPEC.md §11.1).

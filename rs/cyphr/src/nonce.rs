@@ -131,6 +131,16 @@ impl NonceSets {
         set.iter().map(|(n, &alg)| (n.as_slice(), alg)).collect()
     }
 
+    /// Whether `level` holds the digest `bytes`.
+    pub(crate) fn holds(&self, level: NonceLevel, bytes: &[u8]) -> bool {
+        match level {
+            NonceLevel::Pr => &self.pr,
+            NonceLevel::At => &self.at,
+            NonceLevel::Kt => &self.kt,
+        }
+        .contains_key(bytes)
+    }
+
     /// Insert `nonce` at `level`.
     ///
     /// # Errors

@@ -48,11 +48,11 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   59 |
+| `covered`      |   63 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
 | `not-testable` |   11 |
-| `out-of-scope` |    6 |
+| `out-of-scope` |    2 |
 | `total`        |   76 |
 
 ## Rows
@@ -842,14 +842,16 @@ evaluator: none
 
 ### [sc-l1704]
 
-SPEC 10.3, line 1704. Disposition: `out-of-scope`.
+SPEC 10.3, line 1704. Disposition: `covered`.
 
 - spec-line: 1704
 - source: rule
-- disposition: out-of-scope
+- disposition: covered
 - spec-text: retrieval is performed. However, any node of these types must be revealed
-- tests: none
-- reason: Embedded principals (Level 5+); no embedding type in `rs/cyphr`.
+- tests:
+  - `rs/cyphr-client/tests/embedded_tip.rs::pinned_and_opaque_digests_are_never_retrieved`
+  - `rs/cyphr-client/tests/embedded_tip.rs::gossip_follow_reports_pull_ages_and_authorizes_b`
+- fails when: an opaque (never revealed) or pinned KT digest triggers a tip retrieval, or a revealed PR is not followed to the tip its source pulled.
 
 ```claim
 kind: requirement
@@ -858,14 +860,16 @@ evaluator: none
 
 ### [sc-l1799]
 
-SPEC 10.5, line 1799. Disposition: `out-of-scope`.
+SPEC 10.5, line 1799. Disposition: `covered`.
 
 - spec-line: 1799
 - source: rule
-- disposition: out-of-scope
+- disposition: covered
 - spec-text: To sign/act as a primary principal, an embedded principal must produce a valid
-- tests: none
-- reason: Conjunctive authorization of embedded principals (Level 5+); no embedding type in `rs/cyphr`.
+- tests:
+  - `rs/cyphr/tests/embedded_principal.rs::b_signs_for_a_only_as_a_member_and_under_its_own_rules`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_embedding[embedding/embedded_member_signs_for_principal]`
+- fails when: a key of an embedded principal signs for the outer principal without being an active key at the embedded principal's tip.
 
 ```claim
 kind: requirement
@@ -874,14 +878,17 @@ evaluator: none
 
 ### [sc-l1803]
 
-SPEC 10.5, line 1803. Disposition: `out-of-scope`.
+SPEC 10.5, line 1803. Disposition: `covered`.
 
 - spec-line: 1803
 - source: rule
-- disposition: out-of-scope
+- disposition: covered
 - spec-text: - The action must be valid according to the embedded principal’s own rules (its
-- tests: none
-- reason: Embedded principals (Level 5+).
+- tests:
+  - `rs/cyphr/tests/embedded_principal.rs::a_removed_key_of_b_cannot_newly_authorize_and_old_verdicts_stand`
+  - `rs/cyphr/tests/embedded_principal.rs::b_in_error_makes_authorization_through_b_error`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_embedding[embedding/embedded_member_followed_past_its_pr]`
+- fails when: a key the embedded principal deleted or revoked (even with a backdated `now`) or a key of an embedded principal in `Error` authorizes on the outer principal.
 
 ```claim
 kind: requirement
@@ -890,14 +897,15 @@ evaluator: none
 
 ### [sc-l1805]
 
-SPEC 10.5, line 1805. Disposition: `out-of-scope`.
+SPEC 10.5, line 1805. Disposition: `covered`.
 
 - spec-line: 1805
 - source: rule
-- disposition: out-of-scope
+- disposition: covered
 - spec-text: - The embedded principal's action must be authorized by the primary principal’s
-- tests: none
-- reason: Embedded principals (Level 5+).
+- tests:
+  - `rs/cyphr/tests/embedded_principal.rs::b_signs_for_a_only_as_a_member_and_under_its_own_rules`
+- fails when: a key of an embedded principal signs for the outer principal while its digest is not in the outer principal's KT, or replaces itself into it.
 
 ```claim
 kind: requirement

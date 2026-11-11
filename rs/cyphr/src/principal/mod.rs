@@ -12,6 +12,7 @@
 mod accessors;
 mod apply;
 mod data;
+mod embedded;
 mod genesis;
 mod proofs;
 #[cfg(test)]
@@ -233,6 +234,10 @@ pub struct PrincipalCore {
     /// (fork/chain-invalid detection is out of scope for this node); always
     /// `false` at this node's tip.
     pub(crate) errored: bool,
+    /// The KT digests the verifier revealed as embedded principals, with
+    /// the tip each is judged against (SPEC §10.3). Verifier knowledge:
+    /// never hashed into a root.
+    pub(crate) embedded: crate::embedded::Members,
 }
 
 /// Internal variant: tracks whether PG has been established.
@@ -468,6 +473,7 @@ impl PrincipalCore {
             genesis_pending: false,
             frozen: false,
             errored: false,
+            embedded: crate::embedded::Members::default(),
         }
     }
 
@@ -475,22 +481,25 @@ impl PrincipalCore {
     ///
     /// The single signer lookup every verification path uses, so a key is
     /// classified the same way wherever it signs: an active key resolves,
-    /// a revoked key (SPEC §6.4, never trusted again) is `KeyRevoked`, and
-    /// anything else is `UnknownKey`.
+    /// a revoked key (SPEC §6.4, never trusted again) is `KeyRevoked`, a
+    /// key of an embedded principal in KT is judged by that principal's tip
+    /// ([`crate::embedded`]), and anything else is `UnknownKey`.
     ///
     /// # Errors
     ///
-    /// `KeyRevoked` or `UnknownKey` as above.
+    /// `KeyRevoked` or `UnknownKey` as above; `EmbeddedErrored` for a key
+    /// of an embedded principal in `Error`.
     pub(crate) fn active_signer(&self, tmb: &Thumbprint) -> Result<&Key> {
         let tmb_b64 = tmb.to_b64();
         if let Some(key) = self.auth.keys.get(&tmb_b64) {
             return Ok(key);
         }
         if self.auth.revoked.contains_key(&tmb_b64) {
-            Err(Error::KeyRevoked)
-        } else {
-            Err(Error::UnknownKey)
+            return Err(Error::KeyRevoked);
         }
+        self.embedded
+            .signer(tmb, |d| self.nonces.holds(NonceLevel::Kt, d))
+            .unwrap_or(Err(Error::UnknownKey))
     }
 
     /// The algorithm set the principal's roots hash under: that of its

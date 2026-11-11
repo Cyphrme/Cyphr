@@ -250,6 +250,13 @@ impl Record {
             .max()
     }
 
+    /// The principal the record has replayed; `None` before the first
+    /// verified pull.
+    #[must_use]
+    pub fn principal(&self) -> Option<&Principal<MemoryStorage>> {
+        self.held.as_ref().map(|h| &h.principal)
+    }
+
     /// The keys with a verified naked revoke, and each `rvk`.
     pub fn dead_keys(&self) -> impl Iterator<Item = (&str, i64)> {
         self.dead.iter().map(|(tmb, rvk)| (tmb.as_str(), *rvk))

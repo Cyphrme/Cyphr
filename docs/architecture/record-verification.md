@@ -781,6 +781,7 @@ paths have no row; its source gives the reason for each.
 | `AlreadyFrozen`        | `rv-lifecycle-transitions` |
 | `NotFrozen`            | `rv-lifecycle-transitions` |
 | `Frozen`               | `rv-lifecycle-gate`        |
+| `EmbeddedErrored`      | `rv-key-active-gate`       |
 | `MixedTransactionTyp`  | `rv-intra-commit-shape`    |
 | `UnsupportedAlgorithm` | `rv-alg-support`           |
 | `Storage`              | `rv-storage-backend`       |

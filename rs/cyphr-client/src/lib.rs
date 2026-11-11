@@ -9,6 +9,7 @@
 //! `Connector`.
 
 mod connector;
+mod embedded;
 pub mod evidence;
 mod exchange;
 mod patch;
@@ -18,6 +19,7 @@ mod report;
 mod revoke;
 mod sync;
 
+pub use embedded::{FollowReport, GossipTips, PeerPull};
 pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use relying_party::{
     LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, Trust, UnmetCurrency,
