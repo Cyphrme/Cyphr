@@ -107,6 +107,11 @@ pub enum Error {
     #[error("principal frozen: rejected until thawed")]
     Frozen,
 
+    /// The signer is a key of an embedded principal that is in `Error`
+    /// (SPEC §10.5, §11.1): authorization through it is `Error` too.
+    #[error("embedded principal in error: authorization through it refused")]
+    EmbeddedErrored,
+
     /// A transaction's cozies do not all carry one identical `typ`
     /// (SPEC §4.1).
     #[error("transaction cozies do not share one typ")]

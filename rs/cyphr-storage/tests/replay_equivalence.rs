@@ -48,7 +48,8 @@ fn domain_key(gk: &serde_json::Value) -> cyphr::Key {
 }
 
 /// Every corpus chain a fresh principal can replay: vectors that expect an
-/// error or need a setup step no stored chain carries are left out.
+/// error, or need a setup step or an embedded principal's tip no stored
+/// chain carries, are left out.
 fn corpus() -> Vec<Chain> {
     let mut chains = Vec::new();
     let mut categories: Vec<_> = std::fs::read_dir(golden_dir())
@@ -73,7 +74,13 @@ fn corpus() -> Vec<Chain> {
             ) else {
                 continue;
             };
+            // QUARANTINE(#200): an embedded-member vector needs the
+            // embedded principal's tip, which no stored chain carries, and
+            // the engine refuses such a commit as `EmbeddedUnsupported`
+            // until replay can resolve embedded principals (GitHub #200).
+            let embedded = golden["peer"]["embedded"].as_bool() == Some(true);
             if golden.get("setup").is_some()
+                || embedded
                 || golden["expected"].get("error").is_some()
                 || commits.is_empty()
             {

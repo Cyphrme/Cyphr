@@ -9,6 +9,7 @@
 //! `Connector`.
 
 mod connector;
+mod embedded;
 pub mod evidence;
 mod exchange;
 mod patch;
@@ -17,6 +18,7 @@ mod report;
 mod revoke;
 mod sync;
 
+pub use embedded::{FollowReport, GossipTips, PeerPull};
 pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{

@@ -491,6 +491,12 @@ impl PrincipalState {
                 self.remove_key(id)?;
             },
             CozKind::KeyReplace { id } => {
+                // A replace swaps the signer's own key in this KT. A key of
+                // an embedded principal is in that principal's KT, not
+                // this one (SPEC 10.5), so it has nothing here to swap.
+                if !self.auth.keys.contains_key(&cz.signer.to_b64()) {
+                    return Err(Error::UnknownKey);
+                }
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb().to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);

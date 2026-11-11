@@ -2276,10 +2276,31 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .cloned()
         };
         let had_pg = principal.pg().is_some();
+        let may_embed = principal.has_kt_digests();
+        // The core says `UnknownKey` for more than an unknown signer (a
+        // `key/delete` of a key not held, a genesis-signer or replace
+        // refusal), so only a signer that is neither a key of the principal
+        // nor one the bundle introduces can be an embedded member's key.
+        let unresolved = |tmb: &coz::Thumbprint| {
+            !principal.is_key_active(tmb) && !decoded.introduced_keys().any(|k| k.tmb() == tmb)
+        };
+        let unresolved: Vec<bool> = cozies.iter().map(|c| unresolved(&c.header().tmb)).collect();
 
         let staged = cyphr::replay::stage_bundle(principal, &decoded)
             .await
-            .map_err(|e| EngineError::Protocol(e.source))?;
+            .map_err(|e| {
+                match (
+                    &e.source,
+                    e.coz.and_then(|i| cozies.get(i).zip(unresolved.get(i))),
+                ) {
+                    (cyphr::Error::UnknownKey, Some((coz, true))) if may_embed => {
+                        EngineError::EmbeddedUnsupported {
+                            signer: coz.header().tmb.to_b64(),
+                        }
+                    },
+                    _ => EngineError::Protocol(e.source),
+                }
+            })?;
         let principal = match &staged {
             cyphr::replay::StagedBundle::Actions(_) => None,
             cyphr::replay::StagedBundle::Commit { staged, .. } => Some(staged.state()),

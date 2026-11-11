@@ -70,6 +70,10 @@ pub struct GoldenPeer {
     pub principal: Vec<String>,
     /// Commit bundles in application order.
     pub commits: Vec<CommitEntry>,
+    /// The peer is an embedded principal of the test principal (SPEC
+    /// 10.3): replay it first and pin every PR it held to its tip.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embedded: bool,
 }
 
 /// Setup modifiers for golden test.
@@ -230,6 +234,7 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::AlreadyDeleted => "AlreadyDeleted",
         Error::AlreadyFrozen => "AlreadyFrozen",
         Error::NotFrozen => "NotFrozen",
+        Error::EmbeddedErrored => "EmbeddedErrored",
         Error::DuplicateNonce => "DuplicateNonce",
         Error::UnknownNonce => "UnknownNonce",
         Error::GenesisIncomplete => "GenesisIncomplete",
@@ -435,6 +440,9 @@ impl<'a> Generator<'a> {
             .await?;
         self.commit_generated_genesis(&peer_test, &mut other)
             .await?;
+        if peer.embedded {
+            return self.generate_embedded(test, peer, principal, other).await;
+        }
 
         self.refs.borrow_mut().other = pr_history(&other);
         for commit in &test.commit {
@@ -474,6 +482,59 @@ impl<'a> Generator<'a> {
             peer: Some(GoldenPeer {
                 principal: peer.principal.clone(),
                 commits: peer_commits,
+                embedded: false,
+            }),
+            expected,
+        })
+    }
+
+    /// Generate a test whose peer is embedded in the test principal (SPEC
+    /// 10.3): the peer's commits are signed first, every PR it held is
+    /// pinned on the test principal to the peer's tip, then the test
+    /// principal's commits are signed, a `peer:<n>` id naming the peer.
+    async fn generate_embedded(
+        &self,
+        test: &TestIntent,
+        peer: &PeerIntent,
+        mut principal: cyphr::Principal,
+        mut other: cyphr::Principal,
+    ) -> Result<Golden, Error> {
+        let peer_name = format!("{} (peer)", test.name);
+        for commit in &peer.commit {
+            let pre = Self::format_pr_tagged(&other)?;
+            self.sign_and_apply_commit(&peer_name, commit, &mut other, &pre)
+                .await?;
+        }
+        let held = pr_history(&other);
+        for pr in &held {
+            let tip = cyphr::Tip::new(&other, 0);
+            principal
+                .reveal_embedded(pr, cyphr::Tracking::Pin(Box::new(tip)))
+                .map_err(|e| Error::Generation {
+                    name: test.name.clone(),
+                    reason: format!("pin peer PR {pr}: {e}"),
+                })?;
+        }
+        self.refs.borrow_mut().other = held;
+        for commit in &test.commit {
+            let pre = Self::format_pr_tagged(&principal)?;
+            self.sign_and_apply_commit(&test.name, commit, &mut principal, &pre)
+                .await?;
+        }
+        let expected = self.build_expected_from_principal(&principal, test.expected.as_ref());
+        let (commits, digests) = Self::export_principal_commits(&principal)?;
+        let (peer_commits, _) = Self::export_principal_commits(&other)?;
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            setup: None,
+            genesis_keys: self.build_genesis_keys(&test.principal).ok(),
+            commits: Some(commits),
+            digests: Some(digests),
+            peer: Some(GoldenPeer {
+                principal: peer.principal.clone(),
+                commits: peer_commits,
+                embedded: true,
             }),
             expected,
         })
@@ -1686,7 +1747,11 @@ impl<'a> Generator<'a> {
             // A stated `id`, for values no pool key's thumbprint can
             // express (e.g. a nonce of an off-by-one width, or a
             // `ds/create` naming a DR that is not MR(DT)).
-            fields.insert("id".to_string(), Value::String(id.clone()));
+            let id = match id.strip_prefix("peer:") {
+                Some(_) => self.resolve_ref(id)?,
+                None => id.clone(),
+            };
+            fields.insert("id".to_string(), Value::String(id));
         } else if targets_own_pr {
             let pr_val = current_pr.ok_or_else(|| Error::Generation {
                 name: "build_pay_value".to_string(),
