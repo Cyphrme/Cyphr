@@ -23,7 +23,7 @@ const _: () = {
         fn assert() {}
     }
     impl<T: ?Sized> AmbiguousIfClone<()> for T {}
-    impl<T: ?Sized + Clone> AmbiguousIfClone<u8> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
     let _ = <Principal<eml::MemoryStorage> as AmbiguousIfClone<_>>::assert;
 };
 
