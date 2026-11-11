@@ -1144,14 +1144,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // principals contend for one alias without sharing a principal
         // lock, so the check and the write it admits are held under a lock
         // per alias (in sorted order, so contenders cannot deadlock).
-        let mut aliases: Vec<String> = commit
-            .pg
-            .iter()
-            .map(|pg| format!("pg-alias\0{pg}"))
-            .collect();
-        aliases.sort_unstable();
-        aliases.dedup();
-        let alias_locks: Vec<_> = aliases.iter().map(|a| self.principal_lock(a)).collect();
+        let alias_locks = self.alias_locks(&[&commit]);
         let mut _alias_guards = Vec::with_capacity(alias_locks.len());
         for lock in &alias_locks {
             _alias_guards.push(lock.lock().await);
@@ -2336,6 +2329,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
+                    // A bundle that extends a retained rival resolves the
+                    // fork (SPEC 15.8) or, below the head, forks anew.
+                    let canonical_len = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
+                    match self
+                        .resolve_fork(principal_id, &genesis, bundle, canonical_len)
+                        .await
+                    {
+                        Ok(Some(resolved)) => return Ok(resolved),
+                        Ok(None) => {},
+                        Err(full @ EngineError::BranchLimit { .. }) => return Err(full),
+                        Err(err) => tracing::warn!(
+                            principal = %principal_id,
+                            error = %err,
+                            "could not test a refused bundle as a resolution; retaining it"
+                        ),
+                    }
                     match self.retain_rival(principal_id, genesis, bundle).await {
                         Ok(()) => {},
                         // The one retention outcome that is a refusal in
@@ -2354,7 +2363,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 return Err(refused);
             },
         };
-        self.ingest_commit(bundle, build).await
+        let ingested = self.ingest_commit(bundle, build).await?;
+        // A commit on the canonical tip extends one branch only, which is
+        // how the rebuild's walk judges Error (SPEC 15.8, `walk_chains`).
+        if self.indexer.is_errored(principal_id).await? {
+            self.indexer
+                .set_errored(principal_id, false, &DeriveToken::new())
+                .await?;
+        }
+        Ok(ingested)
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],
@@ -2613,6 +2630,214 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
+    /// Test a refused `bundle` as the extension of a retained rival, the
+    /// one record a fork resolution leaves (SPEC 15.8: a new commit whose
+    /// `pre` is the chosen branch's tip; the engine keeps no other).
+    ///
+    /// The extension is verified by replaying the canonical prefix below
+    /// the rival, then the rival, then `bundle` through the admission
+    /// path's own [`Self::build_commit`], on a private in-memory Commit
+    /// Tree. Then:
+    ///
+    /// * the rival is at the head position: `bundle` becomes the tip, the rival's branch becomes
+    ///   the canonical chain ([`IndexerWrite::replace_chain_from`]) and the displaced head is
+    ///   retained in its place. The durable commit log is a cache of the displaced chain and is
+    ///   regenerated on the next load ([`Self::replay_stored`]).
+    /// * the rival is below the head: `bundle` is one more fork, retained beside the commit it
+    ///   competes with, and the principal is in Error. The engine never picks between two
+    ///   resolutions.
+    ///
+    /// `Ok(None)` is a bundle extending no retained rival. Authenticated
+    /// first, like [`Self::retain_rival`], so an unauthenticated bundle
+    /// costs blob reads only. Caller holds the principal's write lock.
+    async fn resolve_fork(
+        &self,
+        principal_id: &str,
+        genesis: &crate::Genesis,
+        bundle: &WireBundle,
+        canonical_len: u64,
+    ) -> Result<Option<IngestResult>, EngineError> {
+        use crate::import::replay_commit;
+
+        let rivals = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .cloned()
+            .unwrap_or_default();
+        if rivals.is_empty() || self.is_already_stored(principal_id, bundle).await? {
+            return Ok(None);
+        }
+        let entries = self.stored_entries(principal_id, None).await?;
+        if authenticated_signers(bundle, genesis, &entries).is_none() {
+            return Ok(None);
+        }
+        let actions = self.action_history(principal_id).await?;
+        for rival in rivals {
+            let at = rival.tip.sequence;
+            let Some(prefix) = entries.get(..usize::try_from(at).unwrap_or(usize::MAX)) else {
+                continue;
+            };
+            let rival_bundle = rival
+                .shape
+                .group(self.read_blobs(&rival.blobs).await?, rival.keys.clone())
+                .ok_or_else(|| {
+                    EngineError::MalformedBlob(
+                        "a retained branch's shape groups a different number of blobs".into(),
+                    )
+                })?;
+            let mut principal =
+                Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
+                    .await?;
+            for (position, entry) in prefix.iter().enumerate() {
+                replay_actions_at(&mut principal, &actions, position as u64).await?;
+                replay_commit(&mut principal, entry, position).await?;
+            }
+            // The rival is tried over the actions accepted before the
+            // commit it competes with, then without them ([`Self::retain_rival`]).
+            let fork_point = principal.fork().await?;
+            replay_actions_at(&mut principal, &actions, at).await?;
+            let mut bases = [principal, fork_point];
+            let mut found = None;
+            for base in &mut bases {
+                let Ok(Some(staged)) =
+                    Self::build_commit(base, &rival_bundle, principal_id, at).await
+                else {
+                    continue;
+                };
+                let rival_commit = staged.commit.clone();
+                if staged.staged.commit().await.is_err() {
+                    continue;
+                }
+                if let Ok(Some(next)) = Self::build_commit(base, bundle, principal_id, at + 1).await
+                {
+                    found = Some((rival_commit, next.commit));
+                    break;
+                }
+            }
+            let Some((mut rival_commit, next_commit)) = found else {
+                continue;
+            };
+            if at + 1 < canonical_len {
+                self.keep_branch(bundle, next_commit).await?;
+                self.indexer
+                    .set_errored(principal_id, true, &DeriveToken::new())
+                    .await?;
+                return Ok(None);
+            }
+            return self
+                .promote_branch(principal_id, &rival, &mut rival_commit, bundle, next_commit)
+                .await
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Make `rival`'s branch the canonical chain, extended by `next`
+    /// (`bundle`): the tail of [`Self::resolve_fork`]. The head it
+    /// displaces is retained as a branch.
+    async fn promote_branch(
+        &self,
+        principal_id: &str,
+        rival: &Retained,
+        rival_commit: &mut IndexableCommit,
+        bundle: &WireBundle,
+        next: IndexableCommit,
+    ) -> Result<IngestResult, EngineError> {
+        let at = rival.tip.sequence;
+        // The rival's blobs are already stored behind its branch manifest;
+        // only the chain index needs them named.
+        rival_commit.blob_hashes = rival.blobs.clone();
+        for (coz, hash) in rival_commit.cozies.iter_mut().zip(&rival.blobs) {
+            coz.blob_hash = *hash;
+        }
+        let displaced = self
+            .indexer
+            .get_commit_chain(principal_id, Some(at), Some(at))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EngineError::NotFound(format!("no commit at {at} of {principal_id}")))?;
+        let displaced_bundle = self.commit_bundle(principal_id, &displaced).await?;
+        let (shape, keys) = self.frame(principal_id, &displaced).ok_or_else(|| {
+            EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
+                "index commit {} of {principal_id} has no commit manifest",
+                displaced.commit_id
+            )))
+        })?;
+
+        // Claims first, so a refusal leaves no manifest behind; the alias
+        // locks make the check and the writes below one step. The rival is
+        // not checked: it was verified when retained and sits where the
+        // displaced head is, which `check_commit` refuses as a rival.
+        let alias_locks = self.alias_locks(&[&*rival_commit, &next]);
+        let mut _alias_guards = Vec::with_capacity(alias_locks.len());
+        for lock in &alias_locks {
+            _alias_guards.push(lock.lock().await);
+        }
+        let token = DeriveToken::new();
+        self.indexer.check_commit(&next, &token).await?;
+
+        // I1 order: the resolving commit is the one new record. A walk of
+        // the blobs then picks the same chain this replaces.
+        let (next, manifest_hash) = self.store_blobs_and_manifest(bundle, next).await?;
+        self.indexer
+            .replace_chain_from(
+                principal_id,
+                at,
+                &[rival_commit.clone(), next.clone()],
+                &token,
+            )
+            .await?;
+        self.record_frame(rival_commit, &rival.shape);
+        self.record_frame(&next, &Shape::of(bundle));
+
+        {
+            let mut kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+            let of_principal = kept.entry(principal_id.to_string()).or_default();
+            of_principal.retain(|b| !(b.tip.tip == rival.tip.tip && b.tip.sequence == at));
+            of_principal.push(Retained {
+                tip: BranchTip {
+                    tip: displaced.commit_id.clone(),
+                    pre: displaced.pre.clone(),
+                    sequence: at,
+                    canonical: false,
+                },
+                signer: bundle_signer(&displaced_bundle)?,
+                blobs: displaced.blob_hashes.clone(),
+                shape,
+                keys,
+            });
+        }
+        // Only the displaced head was extended on neither side: one branch
+        // is selected.
+        if self.indexer.is_errored(principal_id).await? {
+            self.indexer
+                .set_errored(principal_id, false, &token)
+                .await?;
+        }
+        Ok(IngestResult {
+            principal_id: principal_id.to_string(),
+            blob_hashes: next.blob_hashes.clone(),
+            manifest_hash: Some(manifest_hash),
+            tip: Some(CommittedTip::of(&next)),
+        })
+    }
+
+    /// The per-alias locks guarding the PG claims of `commits`, in sorted
+    /// order so contenders cannot deadlock. The caller locks each.
+    fn alias_locks(&self, commits: &[&IndexableCommit]) -> Vec<Arc<tokio::sync::Mutex<()>>> {
+        let mut aliases: Vec<String> = commits
+            .iter()
+            .flat_map(|c| &c.pg)
+            .map(|pg| format!("pg-alias\0{pg}"))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        aliases.iter().map(|a| self.principal_lock(a)).collect()
+    }
+
     /// Whether `bundle` is, byte for byte and in its grouping, a commit this engine already
     /// holds: on the canonical chain or retained as a rival. Such a bundle
     /// is nobody's rival at any other position, since its arrow binds
@@ -2778,6 +3003,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             (a.sequence, !a.canonical, &a.tip).cmp(&(b.sequence, !b.canonical, &b.tip))
         });
         Ok(branches)
+    }
+
+    /// Whether the principal is in Error (SPEC 15.8): two of its branches
+    /// are both extended, so none is unambiguously selected. `false` for a
+    /// principal that is not stored.
+    pub async fn is_errored(&self, principal_id: &str) -> Result<bool, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self.indexer.is_errored(&principal_id).await?)
     }
 
     /// Every fork of a principal the store can prove: for each retained
@@ -3250,6 +3484,20 @@ fn no_disclosed_genesis() -> EngineError {
          its keys (SPEC 5.1)"
             .into(),
     )
+}
+
+/// The key that signed a stored commit's bundle: [`commit_signer`] of the
+/// commit the bundle forms.
+fn bundle_signer(bundle: &WireBundle) -> Result<String, EngineError> {
+    let decoded = decode_bundle(bundle)?;
+    let cozies: Vec<_> = decoded.cozies().collect();
+    Ok(cozies
+        .iter()
+        .rev()
+        .find(|c| is_commit_create_typ(&c.header().typ))
+        .or(cozies.last())
+        .map(|c| c.header().tmb.to_b64())
+        .unwrap_or_default())
 }
 
 /// Whether `typ` is the protocol's `commit/create` (authority-qualified
