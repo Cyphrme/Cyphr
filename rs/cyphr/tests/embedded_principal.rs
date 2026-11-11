@@ -23,8 +23,8 @@ struct Kp {
 }
 
 fn pool_key(name: &str) -> Kp {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/keys/pool.toml");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
     let pool = test_fixtures::Pool::load(&path).expect("pool");
     let pk = pool.get(name).expect("key in pool");
     let d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
@@ -273,8 +273,7 @@ async fn b_in_error_makes_authorization_through_b_error() {
         mut a, b, carol, ..
     } = world().await;
     let mut src = Fake::default();
-    src.tips
-        .push_back(Tip::new(&b, T + 5).in_error());
+    src.tips.push_back(Tip::new(&b, T + 5).in_error());
     a.follow_embedded(&mut src).await;
     let before = a.pr().clone();
     assert!(matches!(

@@ -35,10 +35,6 @@ impl<S: eml::Storage> Principal<S> {
                     .map(|t| (bytes.to_vec(), t))
             })
             .collect();
-        self.state
-            .core_mut()
-            .embedded
-            .follow(&kt, source)
-            .await
+        self.state.core_mut().embedded.follow(&kt, source).await
     }
 }

@@ -70,7 +70,10 @@ impl Connector for Peer {
             .line
             .as_ref()
             .ok_or_else(|| ConnectError::Unreachable("down".into()))?;
-        let (path, query) = request.target.split_once('?').unwrap_or((&request.target, ""));
+        let (path, query) = request
+            .target
+            .split_once('?')
+            .unwrap_or((&request.target, ""));
         let from = query
             .split('&')
             .find_map(|kv| kv.strip_prefix("from="))
@@ -140,12 +143,7 @@ async fn signed_commit(
 }
 
 /// `carol` (a key of B) adds `new` to A.
-async fn carol_adds(
-    a: &mut Principal,
-    carol: &Kp,
-    new: &Kp,
-    now: i64,
-) -> cyphr::error::Result<()> {
+async fn carol_adds(a: &mut Principal, carol: &Kp, new: &Kp, now: i64) -> cyphr::error::Result<()> {
     let id = new.tmb.to_b64();
     signed_commit(a, carol, "key/create", &id, Some(new.domain_key(now)), now).await
 }

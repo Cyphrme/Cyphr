@@ -64,6 +64,7 @@ pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit, PreparedCoz
 pub use commit_root::{
     CommitRoot, CommitTrees, ForkStorage, MaltHasher, verify_consistency, verify_inclusion,
 };
+pub use embedded::{EmbedReport, EmbedStatus, Tip, TipSource, Tracking};
 // The full `eml` crate, re-exported so a durable-storage caller (e.g.
 // `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and
 // `eml::MemoryStorage` — the bound and default for `Principal`'s storage
@@ -72,7 +73,6 @@ pub use eml;
 // EML/polydigest proof types.
 // Re-exported so consumers can verify proofs without depending on `eml`/`polydigest` directly.
 pub use eml::{ConsistencyProof, InclusionProof, LeafProof};
-pub use embedded::{EmbedReport, EmbedStatus, Tip, TipSource, Tracking};
 pub use error::Error;
 pub use inclusion::{
     TransactionHop1, TransactionHop2, verify_key_inclusion, verify_transaction_inclusion,
