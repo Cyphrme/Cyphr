@@ -240,21 +240,6 @@ pub struct PrincipalCore {
     pub(crate) embedded: crate::embedded::Members,
 }
 
-/// Internal variant: tracks whether PG has been established.
-///
-/// - **Nascent**: L1/L2 — no PG exists. Cannot fabricate one.
-/// - **Established**: L3+ — PG is frozen from the initial PR. Cannot remove it.
-#[derive(Debug, Clone)]
-enum PrincipalKind {
-    /// Pre-genesis-finalization: no PG field at all.
-    Nascent(PrincipalCore),
-    /// Post-principal/create: PG is structurally required.
-    Established {
-        core: PrincipalCore,
-        pg: PrincipalGenesis,
-    },
-}
-
 /// The state of a principal: everything but its commit log.
 ///
 /// A [`CommitScope`](crate::commit::CommitScope) applies a commit's cozies
@@ -262,44 +247,27 @@ enum PrincipalKind {
 /// whole, so a refused commit leaves the principal as it was. Copying it
 /// never copies or aliases the log, which only [`Principal`] holds.
 ///
-/// PG is represented via an internal enum:
-/// - **Nascent** (L1/L2): PG does not exist — cannot be forged.
-/// - **Established** (L3+): PG is frozen — cannot be removed.
-///
 /// All shared fields are reached via `Deref<Target = PrincipalCore>`.
 ///
-/// # `Option`-wrapped inner kind
+/// # Nascent and Established
 ///
-/// The inner kind is wrapped in `Option` so [`Self::establish_pg`] can move
-/// the core by value from Nascent into Established with no placeholder
-/// value to swap in. The `Option` is `None` only for the instant inside
-/// `establish_pg` between the `.take()` and the following assignment;
-/// every other method observes it as always `Some`.
+/// A principal is Nascent (Levels 1 and 2) until its `principal/create`
+/// applies, then Established (Level 3+): `pg` is `None`, then frozen at
+/// `Some`. `establish_pg` is the only writer and refuses a second call, so
+/// a PG can be neither fabricated for a Nascent principal nor removed from
+/// an Established one. This is a struct with an `Option`, not a two-variant
+/// enum, because both states carry the same core and the transition runs
+/// through `&mut self`: an enum would have to move the core out by value,
+/// which needs a placeholder core or a `None` state to swap in.
 #[derive(Debug, Clone)]
-pub struct PrincipalState(Option<PrincipalKind>);
+pub struct PrincipalState {
+    core: PrincipalCore,
+    pg: Option<PrincipalGenesis>,
+}
 
 impl PrincipalState {
-    /// Borrow the inner kind.
-    ///
-    /// Panics only if called while a `establish_pg` call is itself
-    /// mid-flight on the same value, which cannot happen — `establish_pg`
-    /// takes `&mut self` and never calls back out to any other method
-    /// before restoring `self.0` to `Some`.
-    fn kind(&self) -> &PrincipalKind {
-        self.0
-            .as_ref()
-            .expect("Principal's inner kind is only None transiently inside establish_pg")
-    }
-
     fn core_mut(&mut self) -> &mut PrincipalCore {
-        match self
-            .0
-            .as_mut()
-            .expect("Principal's inner kind is only None transiently inside establish_pg")
-        {
-            PrincipalKind::Nascent(core) => core,
-            PrincipalKind::Established { core, .. } => core,
-        }
+        &mut self.core
     }
 }
 
@@ -307,10 +275,7 @@ impl std::ops::Deref for PrincipalState {
     type Target = PrincipalCore;
 
     fn deref(&self) -> &PrincipalCore {
-        match self.kind() {
-            PrincipalKind::Nascent(core) => core,
-            PrincipalKind::Established { core, .. } => core,
-        }
+        &self.core
     }
 }
 

@@ -37,10 +37,13 @@ fn wire_id(identity: &str) -> crate::Result<String> {
 /// actions recorded before it (a `ds/create` includes exactly those, SPEC
 /// 4.8.2), then the actions recorded after the last commit.
 ///
-/// A peer cannot say which trailing actions it already holds, so those are
-/// sent again on every push, one request per action; a replayed action is a
-/// no-op (SPEC 7.6) and the peer stores it once (content-addressed
-/// manifests). They could be batched later.
+/// A peer cannot say which trailing actions it already holds: `GET /tip`
+/// carries no data root, and a recorded action moves DR, and so PR, only
+/// when a `ds/create` includes it (SPEC 4.8.2), so no tip field changes
+/// with one. They are sent again on every push, one request per action; a
+/// replayed action is a no-op (SPEC 7.6) and the peer stores it once
+/// (content-addressed manifests). Batching them waits on the peer reporting
+/// what it holds, which would remove the resend and with it the question.
 pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;

@@ -69,9 +69,7 @@ The model rests on these SPEC statements:
 
 A server signs a tip report only if it is an attestor; the
 [server receipts specification](../specs/receipts.md) defines the
-attestor condition and the claim schema. A tip report is a statement
-about the server that signed it. It is not a statement about the
-principal's state that binds anyone else.
+attestor condition and the claim schema.
 
 ## What the code does today
 
@@ -119,19 +117,6 @@ Each requirement below is a docket claim: a `[kebab-id]` heading
 followed by a `claim` block whose `evaluator: test` says a test must
 back it. `docs/AGENTS.md`, section "Docket — the documentation claim
 gate", describes how a claim is bound to its test.
-
-### [arch-views-are-self-claims]
-
-A server's signed tip report claims only what that server holds for the
-principal. Nothing in it, and nothing a verifier does with it, makes it
-the principal's state for any other party. A verifier that accepts one
-server's view does so by its own choice, and its verdict says whose
-view it accepted.
-
-```claim
-kind: requirement
-evaluator: test
-```
 
 ### [arch-verifier-chooses-peers]
 

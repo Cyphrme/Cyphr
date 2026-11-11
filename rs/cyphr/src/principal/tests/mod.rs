@@ -12,6 +12,21 @@ use crate::commit_root::MaltHasher;
 use crate::key::Key;
 use crate::state::StateDigest;
 
+/// Claim (I2, single writer per principal; the "No `Clone`" note on
+/// [`Principal`]): a principal is not `Clone`, so two writers of one log
+/// cannot be made by copying a handle. Red if `Principal<MemoryStorage>`
+/// ever implements `Clone`, by derive or by hand: the assertion stops
+/// compiling because the call below is then ambiguous. Compile-time
+/// assertion; no scenario reaches a trait bound.
+const _: () = {
+    trait AmbiguousIfClone<A> {
+        fn assert() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    impl<T: Clone> AmbiguousIfClone<u8> for T {}
+    let _ = <Principal<eml::MemoryStorage> as AmbiguousIfClone<_>>::assert;
+};
+
 fn make_test_key(id: u8) -> Key {
     Key::from_pub_key("ES256", vec![id; 64])
         .expect("dummy key")
