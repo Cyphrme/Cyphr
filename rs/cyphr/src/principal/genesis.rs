@@ -1,9 +1,7 @@
 //! Genesis constructors, and the genesis finalization
 //! (`principal/create`) that freezes PG.
 
-use super::{
-    Principal, PrincipalCore, PrincipalState, StartingRoots, open_commit_trees,
-};
+use super::{Principal, PrincipalCore, PrincipalState, StartingRoots, open_commit_trees};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::semantic_tree::{derive_state_roots, key_leaf};
