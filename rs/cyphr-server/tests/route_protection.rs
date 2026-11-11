@@ -323,6 +323,7 @@ async fn push_with_mismatched_token_pr_rejected() {
             vec!["write".to_string()],
             real_now(),
             300,
+            None,
         )
         .expect("issue token");
 
@@ -356,6 +357,7 @@ async fn push_with_matching_token_pr_succeeds() {
             vec!["read".to_string(), "write".to_string()],
             real_now(),
             300,
+            None,
         )
         .expect("issue token");
 
@@ -755,7 +757,7 @@ async fn token_key_absent_or_missing_is_refused_at_push() {
     let perms = || vec!["write".to_string()];
 
     let absent = identity
-        .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300)
+        .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300, None)
         .expect("issue token");
     // What no login mints: a genuine server-signed bearer token naming no
     // login key (built by hand; issuance has no such path).

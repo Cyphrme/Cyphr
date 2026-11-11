@@ -16,7 +16,7 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_storage::engine::{EngineError, bare_digest};
 
 use super::ServerIdentity;
-use super::token::{Claims, TokenError};
+use super::token::Claims;
 use crate::error::AppError;
 use crate::observation::{ObservationError, ObservationStore};
 
@@ -60,6 +60,11 @@ pub enum SessionError {
     #[error("the key that opened this session was revoked")]
     Revoked,
 
+    /// The token was issued over one Noise session and arrived on another
+    /// channel, or on none: a stolen token is useless off its channel.
+    #[error("bearer token is bound to the channel that issued it, not this one")]
+    ChannelMismatch,
+
     /// The principal is not in an Active lifecycle state.
     #[error("the session's principal is not in an active lifecycle state")]
     PrincipalNotActive,
@@ -85,24 +90,15 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .and_then(|s| s.strip_prefix("Bearer "))
 }
 
-/// Verify a request's bearer token against `identity`, if one is present.
-///
-/// Returns `Ok(None)` when no `Authorization` header carries a bearer
-/// token -- the caller decides whether that is acceptable (an optional
-/// admission knob) or a rejection (mandatory auth). Returns
-/// `Ok(Some(claims))` for a genuine, unexpired token issued by
-/// `identity`. Returns `Err` for a token that IS present but fails
-/// verification -- a present-and-invalid token is never treated the same
-/// as an absent one. This checks the token only; the chain re-check is
-/// [`check_session_key`].
-pub fn verify_bearer_if_present(
-    headers: &HeaderMap,
-    identity: &ServerIdentity,
-    now: i64,
-) -> Result<Option<Claims>, TokenError> {
-    bearer_token(headers)
-        .map(|token| identity.verify_token(token, now))
-        .transpose()
+/// Refuse a channel-bound token presented anywhere but the channel that
+/// issued it. `channel` is the handshake hash of the Noise session the
+/// request arrived on, `None` over plain HTTP. A token with no channel
+/// claim is key-bound and passes here.
+pub fn check_channel(claims: &Claims, channel: Option<&[u8]>) -> Result<(), SessionError> {
+    match claims.channel.as_deref() {
+        Some(bound) if channel != Some(bound) => Err(SessionError::ChannelMismatch),
+        _ => Ok(()),
+    }
 }
 
 /// Re-check, against `engine`'s current view of the token's principal and
@@ -172,19 +168,22 @@ pub async fn check_session_key(
 /// the no-token case) rather than rejecting on a config detail unrelated
 /// to the pushed payload's own validity.
 pub async fn check_push_admission(
-    headers: &HeaderMap,
+    token: Option<&str>,
     identity: Option<&ServerIdentity>,
     engine: &Engine,
     observations: &ObservationStore,
     target_principal: &str,
     now: i64,
+    channel: Option<&[u8]>,
 ) -> Result<(), AppError> {
     let Some(identity) = identity else {
         return Ok(());
     };
-    let claims = match verify_bearer_if_present(headers, identity, now) {
-        Ok(None) => return Ok(()),
-        Ok(Some(claims)) => claims,
+    let Some(token) = token else {
+        return Ok(());
+    };
+    let claims = match identity.verify_token(token, now) {
+        Ok(claims) => claims,
         Err(e) => {
             return Err(AppError::unauthorized(format!(
                 "bearer token rejected: {e}"
@@ -202,6 +201,7 @@ pub async fn check_push_admission(
             "bearer token does not authorize this principal",
         ));
     }
+    check_channel(&claims, channel)?;
     match check_session_key(engine, observations, &claims).await {
         // A push naming a principal with no stored chain is its genesis:
         // no session can exist yet, and the optional knob (R7) leaves the
@@ -249,8 +249,6 @@ mod tests {
 
     // --- bearer_token ---
 
-    // --- verify_bearer_if_present ---
-
     // --- check_push_admission (paths decided before any
     // chain lookup; the chain re-check and the subject match are covered
     // end to end in tests/route_protection.rs, which has real principals) ---
@@ -276,12 +274,13 @@ mod tests {
         let headers = headers_with_bearer("garbage");
         assert!(
             check_push_admission(
-                &headers,
+                bearer_token(&headers),
                 Some(&identity),
                 &state.engine,
                 &state.observations,
                 PR,
-                1_100
+                1_100,
+                None
             )
             .await
             .is_err()

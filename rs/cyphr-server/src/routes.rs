@@ -74,6 +74,11 @@ pub struct PatchQuery {
 pub struct PushRequest {
     /// Principal genesis identifier.
     pub principal_id: String,
+    /// The session's bearer token, for a request that cannot carry an
+    /// `Authorization` header (the Noise transport has none). A header, if
+    /// both are present, wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// The bundle.
     #[serde(flatten)]
     pub bundle: cyphr::replay::WireBundle,
@@ -727,7 +732,7 @@ pub async fn patch(
 /// OPTIONAL admission/anti-abuse knob -- if one IS presented, it must
 /// name this same principal.
 #[tracing::instrument(
-    skip(state, headers, request),
+    skip(state, headers, peer, request),
     fields(
         principal_id = %request.principal_id,
         blob_count = request.bundle.cozies().count()
@@ -736,6 +741,7 @@ pub async fn patch(
 pub async fn push(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     AppJson(request): AppJson<PushRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -745,12 +751,15 @@ pub async fn push(
     }
 
     crate::auth::middleware::check_push_admission(
-        &headers,
+        // A header wins over the body's token (the Noise transport has no
+        // headers).
+        crate::auth::middleware::bearer_token(&headers).or(request.token.as_deref()),
         state.identity.as_deref(),
         &state.engine,
         &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
+        peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
     )
     .await?;
 

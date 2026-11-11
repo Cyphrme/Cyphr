@@ -419,6 +419,7 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
             vec!["read".to_string()],
             now,
             900,
+            None,
         )
         .expect("issue token");
 

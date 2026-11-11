@@ -77,6 +77,17 @@ pub async fn handshake(peer: &Peer, http: &reqwest::Client) -> Result<(), String
     handshake_at(addr, peer.addr, http).await
 }
 
+/// A fresh authenticated session with `peer`: the channel a native client's
+/// login is sent on. Every call is a new handshake, so two calls are two
+/// channels, and the binding is read from the session itself.
+pub async fn open_session(peer: &Peer, http: &reqwest::Client) -> Result<NoiseConnector, String> {
+    let addr = peer
+        .transport_addr()
+        .await
+        .ok_or("the peer announced no transport address")?;
+    connect_fresh(addr, peer.addr, http).await
+}
+
 /// [`handshake`] against an explicit transport address, with the pin
 /// material read from the peer's HTTP face at `http_addr`.
 pub async fn handshake_at(
@@ -84,6 +95,20 @@ pub async fn handshake_at(
     http_addr: SocketAddr,
     http: &reqwest::Client,
 ) -> Result<(), String> {
+    connect_fresh(addr, http_addr, http)
+        .await?
+        .exchange(&Request::get("/server"))
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
+/// An authenticated session as a fresh Level 1 principal.
+async fn connect_fresh(
+    addr: SocketAddr,
+    http_addr: SocketAddr,
+    http: &reqwest::Client,
+) -> Result<NoiseConnector, String> {
     let discovery: serde_json::Value = http
         .get(format!("http://{http_addr}/server"))
         .send()
@@ -110,12 +135,8 @@ pub async fn handshake_at(
     let mut held = PeerChain::pin(d["pg"].as_str().ok_or("/server has no pg")?, genesis).await;
 
     let me = Identity::generate()?;
-    let conn = NoiseConnector::connect(addr, &mut held, &me.signer(), &me.pg())
+    NoiseConnector::connect(addr, &mut held, &me.signer(), &me.pg())
         .await
-        .map_err(|e| e.to_string())?;
-    conn.exchange(&Request::get("/server"))
-        .await
-        .map(drop)
         .map_err(|e| e.to_string())
 }
 

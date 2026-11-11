@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use cyphr_client::transport::NoiseConnector;
+
 use crate::capability::Capability;
 use crate::cli::{self, Device, field};
 use crate::harness::Harness;
@@ -251,6 +253,9 @@ pub struct Token(pub String);
 #[derive(Clone, Debug)]
 pub struct Session {
     pub token: Token,
+    /// The login the client signed, kept so a scenario can carry it to
+    /// another channel.
+    pub login: coz::CozJson,
     pub key: KeyRef,
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
@@ -292,7 +297,10 @@ pub struct Backup(pub String);
 pub enum Channel {
     /// The authenticated channel the sign-in used.
     Original,
+    /// A second authenticated session.
     Other,
+    /// No authenticated channel: plain HTTP, as a browser edge arrives.
+    Http,
 }
 
 /// A relying party kept separate from every peer: it replays the
@@ -300,6 +308,11 @@ pub enum Channel {
 pub struct RelyingParty<'h> {
     h: &'h Harness,
     config: cyphr_client::RpConfig,
+    /// The signed-in client's own Noise session, which its login was sent
+    /// on: a real session with one of the peers, standing in for the
+    /// session a relying party host would terminate. The relying party
+    /// reads the binding from this carrier, never from a caller.
+    original: Mutex<Option<NoiseConnector>>,
     /// Set at the first sign-in, which enrols the principal the way a
     /// sign-up does: the relying party is handed the genesis key out of
     /// band and the peers to pull from.
@@ -494,6 +507,7 @@ impl Harness {
                 pull_age_bound: Duration::from_secs(30),
                 refresh_interval: Duration::from_secs(5),
             },
+            original: Mutex::new(None),
             enrolled: tokio::sync::Mutex::new(None),
         })
     }
@@ -571,6 +585,26 @@ impl Client<'_> {
         let genesis = cli::public_half(cli::key_entry(&self.dev.keystore, &key)?);
         self.h.record_genesis(&p, genesis);
         self.state().signer.insert(p.0.clone(), key);
+        Ok(p)
+    }
+
+    /// `cyphr init --keys`: a new principal whose genesis commit creates two
+    /// keys this device holds, so its PG is derived from the pair and is not
+    /// the genesis key's thumbprint. The first key opens it and signs.
+    pub async fn create_multikey_principal(&self) -> ActionResult<Principal> {
+        let mut tmbs = Vec::new();
+        for _ in 0..2 {
+            let v = self
+                .cyphr(&["key", "generate", "--algo", "Ed25519"])
+                .await?;
+            tmbs.push(field(&v, "tmb")?);
+        }
+        let keys = tmbs.join(",");
+        let v = self.cyphr(&["init", "--keys", &keys]).await?;
+        let p = Principal(field(&v, "pr")?);
+        let genesis = cli::public_half(cli::key_entry(&self.dev.keystore, &tmbs[0])?);
+        self.h.record_genesis(&p, genesis);
+        self.state().signer.insert(p.0.clone(), tmbs[0].clone());
         Ok(p)
     }
 
@@ -1121,13 +1155,29 @@ impl Client<'_> {
         }
         let enrolled = guard.as_mut().expect("enrolled above");
         rp.pull(enrolled).await?;
+        // A native client signs in over its own authenticated transport and
+        // signs that session's handshake hash into the login.
+        let conn = rp.open_channel(enrolled).await?;
+        let h = cyphr_client::Connector::channel_binding(&conn)
+            .ok_or_else(|| ActionError::Failed("the session exposed no binding".into()))?
+            .as_bytes()
+            .to_vec();
         let challenge = enrolled.party.challenge();
-        let login = sign_login(&entry, &key, p.bare(), &rp.config.audience, &challenge)?;
+        let login = sign_login(
+            &entry,
+            &key,
+            p.bare(),
+            &rp.config.audience,
+            &challenge,
+            Some(&h),
+        )?;
         let session = enrolled
             .party
-            .sign_in(&login)
+            .sign_in_on(&login, &conn)
             .map_err(|r| ActionError::Refused(refusal_of(&r)))?;
+        *rp.original.lock().expect("original channel") = Some(conn);
         Ok(Session {
+            login,
             token: Token(session.token),
             key: KeyRef(session.key.to_b64()),
             principal: Principal(session.principal),
@@ -1237,6 +1287,7 @@ fn sign_login(
     pr: &str,
     audience: &str,
     challenge: &str,
+    h: Option<&[u8]>,
 ) -> ActionResult<coz::CozJson> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let bytes = |name: &str| {
@@ -1248,7 +1299,7 @@ fn sign_login(
     let alg = entry["alg"]
         .as_str()
         .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
-    let pay = serde_json::json!({
+    let mut pay = serde_json::json!({
         "alg": alg,
         "now": cyphr::principal::system_clock(),
         "tmb": tmb,
@@ -1256,6 +1307,9 @@ fn sign_login(
         "pr": pr,
         "challenge": challenge,
     });
+    if let Some(h) = h {
+        pay["h"] = Base64UrlUnpadded::encode_string(h).into();
+    }
     let pay_bytes = serde_json::to_vec(&pay).map_err(|e| ActionError::Failed(e.to_string()))?;
     let (sig, _) = coz::sign_json(&pay_bytes, alg, &bytes("prv_key")?, &bytes("pub_key")?)
         .ok_or_else(|| ActionError::Failed("signing the login failed".into()))?;
@@ -1302,16 +1356,105 @@ impl RelyingParty<'_> {
         Ok(())
     }
 
-    pub async fn session_active(&self, t: &Token) -> ActionResult<bool> {
-        let mut guard = self.enrolled.lock().await;
-        Ok(guard
-            .as_mut()
-            .is_some_and(|e| e.party.check_session(&t.0).is_ok()))
+    /// A fresh authenticated Noise session with the first peer the relying
+    /// party pulls from: one more channel, with a handshake hash of its own.
+    async fn open_channel(&self, enrolled: &Enrolled) -> ActionResult<NoiseConnector> {
+        let name = enrolled.peers.first().ok_or_else(|| {
+            ActionError::Failed("the relying party has no peer to open a channel to".into())
+        })?;
+        crate::transport::open_session(self.h.peer(name), &self.h.http)
+            .await
+            .map_err(|e| ActionError::Failed(format!("channel to `{name}`: {e}")))
     }
 
-    /// Present a token on a channel and learn whether it was accepted.
-    pub async fn present(&self, _t: &Token, _on: Channel) -> ActionResult<Presented> {
-        unsupported("present", Capability::SessionBinding)
+    /// Run `f` with the binding of the channel `on` names (`None` for
+    /// plain HTTP), read from the session that carries it.
+    async fn on_channel<T>(
+        &self,
+        on: Channel,
+        f: impl FnOnce(&mut cyphr_client::RelyingParty, &NoiseConnector) -> T,
+        f_http: impl FnOnce(&mut cyphr_client::RelyingParty) -> T,
+    ) -> ActionResult<T> {
+        let mut guard = self.enrolled.lock().await;
+        let enrolled = guard
+            .as_mut()
+            .ok_or_else(|| ActionError::Failed("no principal is signed in".into()))?;
+        match on {
+            Channel::Http => Ok(f_http(&mut enrolled.party)),
+            Channel::Other => {
+                let conn = self.open_channel(enrolled).await?;
+                Ok(f(&mut enrolled.party, &conn))
+            },
+            Channel::Original => {
+                let held = self.original.lock().expect("original channel");
+                let conn = held
+                    .as_ref()
+                    .ok_or_else(|| ActionError::Failed("no sign-in opened a channel yet".into()))?;
+                Ok(f(&mut enrolled.party, conn))
+            },
+        }
+    }
+
+    /// Whether the session still stands, asked on the channel it opened on.
+    pub async fn session_active(&self, t: &Token) -> ActionResult<bool> {
+        self.on_channel(
+            Channel::Original,
+            |rp, conn| {
+                rp.check_session_on(&t.0, cyphr_client::Connector::channel_binding(conn))
+                    .is_ok()
+            },
+            |_| false,
+        )
+        .await
+    }
+
+    /// Present a token on a channel and learn whether it was accepted:
+    /// `Original` is the channel the sign-in used, `Other` a second
+    /// authenticated session opened now, `Http` no channel at all.
+    pub async fn present(&self, t: &Token, on: Channel) -> ActionResult<Presented> {
+        let verdict = |r: Result<cyphr_client::Trust, cyphr_client::Refusal>| match r {
+            Ok(_) => Presented::Accepted,
+            Err(r) => Presented::Refused(refusal_of(&r)),
+        };
+        self.on_channel(
+            on,
+            |rp, conn| {
+                verdict(rp.check_session_on(&t.0, cyphr_client::Connector::channel_binding(conn)))
+            },
+            |rp| verdict(rp.check_session_on(&t.0, None)),
+        )
+        .await
+    }
+
+    /// Carry the login `s` was opened with to another channel, as a
+    /// thief who captured it would: a login signed for one channel must not
+    /// open a session on any other, or over HTTP.
+    pub async fn replay_login(&self, s: &Session, on: Channel) -> ActionResult<Presented> {
+        let verdict = |r: Result<cyphr_client::Session, cyphr_client::Refusal>| match r {
+            Ok(_) => Presented::Accepted,
+            Err(r) => Presented::Refused(refusal_of(&r)),
+        };
+        self.on_channel(
+            on,
+            |rp, conn| verdict(rp.sign_in_on(&s.login, conn)),
+            |rp| verdict(rp.sign_in(&s.login)),
+        )
+        .await
+    }
+
+    /// The anchor the relying party reports it was enrolled with: the
+    /// thumbprint of the genesis key it replays the principal from.
+    pub async fn enrolled_anchor(&self) -> ActionResult<String> {
+        let guard = self.enrolled.lock().await;
+        let enrolled = guard
+            .as_ref()
+            .ok_or_else(|| ActionError::Failed("no principal is signed in".into()))?;
+        match enrolled.party.anchor() {
+            cyphr_client::Anchor::GenesisKey(key) => Ok(key.tmb().to_b64()),
+            other => Err(ActionError::Failed(format!(
+                "the relying party is enrolled at {other:?}, not a genesis key"
+            ))),
+        }
     }
 
     /// The relying party's own settings, read from it.
@@ -1329,5 +1472,40 @@ impl RelyingParty<'_> {
             .as_mut()
             .ok_or_else(|| ActionError::Failed("no principal is signed in to pull for".into()))?;
         self.pull(enrolled).await
+    }
+}
+
+/// Observe session binding on a running peer: a fresh client signs in to a
+/// relying party over a real authenticated Noise session, its token is
+/// accepted on that channel and refused as `Unauthorized` on a second one.
+/// `Ok(false)` when the capability is observably absent (the token works on
+/// another channel, or an action it needs is unsupported).
+pub async fn observe_session_binding(h: &Harness) -> ActionResult<bool> {
+    let peer = h
+        .peers
+        .first()
+        .ok_or_else(|| ActionError::Failed("no peer running".into()))?
+        .name
+        .clone();
+    let alice = h.client("session-binding-probe");
+    let rp = h.start_relying_party().await?;
+    let observed = async {
+        let pr = alice.create_principal().await?;
+        match alice.push(&pr, &[&peer]).await? {
+            PushOutcome::Accepted(_) => {},
+            PushOutcome::Refused(r) => {
+                return Err(ActionError::Failed(format!("probe push refused: {r:?}")));
+            },
+        }
+        let session = alice.sign_in(&rp).await?;
+        let original = rp.present(&session.token, Channel::Original).await?;
+        let other = rp.present(&session.token, Channel::Other).await?;
+        Ok(original == Presented::Accepted
+            && matches!(other, Presented::Refused(r) if r.kind == RefusalKind::Unauthorized))
+    }
+    .await;
+    match observed {
+        Err(ActionError::Unsupported { .. }) => Ok(false),
+        other => other,
     }
 }
