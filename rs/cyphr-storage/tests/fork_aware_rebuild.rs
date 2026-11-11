@@ -88,9 +88,14 @@ impl Scenario {
         let mut base = cyphr::Principal::implicit(golden.key().expect("golden"))
             .await
             .expect("implicit");
-        let g = test_fixtures::bundle::genesis_bundle(&mut base, golden, &[key_a.clone()], NOW)
-            .await
-            .expect("genesis");
+        let g = test_fixtures::bundle::genesis_bundle(
+            &mut base,
+            golden,
+            std::slice::from_ref(&key_a),
+            NOW,
+        )
+        .await
+        .expect("genesis");
         let id = test_fixtures::bundle::genesis_id(&g).expect("genesis id");
 
         let mut a = base.fork().await.expect("fork");
