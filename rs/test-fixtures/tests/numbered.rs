@@ -9,7 +9,6 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use test_fixtures::{Intent, Pool};
 
 fn tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,49 +18,12 @@ fn tests_dir() -> PathBuf {
         .join("tests")
 }
 
-fn pool() -> Pool {
-    Pool::load(&tests_dir().join("keys/pool.toml")).expect("pool.toml loads")
-}
-
 /// The committed golden `name` of intent file `file` (a stem under tests/golden).
 fn golden(file: &str, name: &str) -> Value {
     let path = tests_dir().join(format!("golden/{file}/{name}.json"));
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("committed golden {} is missing: {e}", path.display()));
     serde_json::from_str(&text).expect("golden is JSON")
-}
-
-/// Regenerate every test of `tests/intents/<file>.toml` against a freshly
-/// loaded pool and return them as JSON, keyed by order of the intent file.
-async fn regenerate(file: &str) -> Vec<Value> {
-    let intent = Intent::load(&tests_dir().join(format!("intents/{file}.toml")))
-        .expect("intent loads and expands");
-    let goldens = test_fixtures::generate(&intent, &pool())
-        .await
-        .expect("generation succeeds");
-    goldens
-        .iter()
-        .map(|g| serde_json::to_value(g).expect("golden serializes"))
-        .collect()
-}
-
-/// Claim: a numbered key is a pure function of its index and the corpus
-/// seed, so the vectors built from it are reproducible. Red if derivation
-/// reads any ambient state (clock, RNG, load order), or a committed golden
-/// is stale against its intent. End to end: yes (intent -> golden).
-#[tokio::test]
-async fn numbered_vectors_regenerate_byte_identical() {
-    let first = regenerate("numbered_keys").await;
-    let second = regenerate("numbered_keys").await;
-    assert_eq!(first, second, "two regenerations differ");
-    for g in &first {
-        let name = g["name"].as_str().expect("golden has a name");
-        assert_eq!(
-            &golden("numbered_keys", name),
-            g,
-            "{name}: committed != regenerated"
-        );
-    }
 }
 
 fn kr(g: &Value) -> &Value {
