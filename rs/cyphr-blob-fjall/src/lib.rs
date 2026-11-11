@@ -142,6 +142,16 @@ impl EmlLogs {
         }
     }
 
+    /// Delete generation `generation` of `principal_id`'s log, if held.
+    fn retire(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        for keyspace in self.keyspaces(&Self::prefix(principal_id, generation))? {
+            self.db
+                .delete_keyspace(keyspace)
+                .map_err(|e| format!("retiring log generation {generation}: {e}"))?;
+        }
+        Ok(())
+    }
+
     /// The keyspaces `storage_fjall` opens for `prefix` that exist.
     fn keyspaces(&self, prefix: &str) -> Result<Vec<Keyspace>, String> {
         ["leaves", "nodes", "metadata"]
@@ -177,13 +187,22 @@ impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs 
         generation: u64,
     ) -> Result<storage_fjall::FjallStorage, String> {
         let prefix = Self::prefix(principal_id, generation);
+        let current = self.generation(principal_id)?;
         // A generation above the current one is being regenerated: what an
         // interrupted regeneration left there is discarded.
-        if generation > self.generation(principal_id)? {
+        if generation > current {
             for keyspace in self.keyspaces(&prefix)? {
                 keyspace
                     .clear()
                     .map_err(|e| format!("clearing log {prefix}: {e}"))?;
+            }
+        }
+        // A crash between recording a generation and retiring the one it
+        // superseded leaves that one behind; the current log's open
+        // retires every older generation still held.
+        if generation == current {
+            for older in 0..current {
+                self.retire(principal_id, older)?;
             }
         }
         storage_fjall::FjallStorage::with_database_scoped(self.db.clone(), &prefix)
@@ -195,14 +214,10 @@ impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs 
         self.generations
             .insert(principal_id.as_bytes(), generation.to_be_bytes())
             .map_err(|e| format!("recording the log generation of {principal_id}: {e}"))?;
-        // Every older generation was retired when its successor became
-        // current, so only the one just superseded holds data.
+        // Older generations were retired when their successors became
+        // current, or are swept by the next open if a crash intervened.
         if retired < generation {
-            for keyspace in self.keyspaces(&Self::prefix(principal_id, retired))? {
-                self.db
-                    .delete_keyspace(keyspace)
-                    .map_err(|e| format!("retiring log generation {retired}: {e}"))?;
-            }
+            self.retire(principal_id, retired)?;
         }
         Ok(())
     }

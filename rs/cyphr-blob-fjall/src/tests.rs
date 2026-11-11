@@ -326,3 +326,30 @@ fn sanitize_fjall_prefix_output_always_in_charset() {
         );
     }
 }
+
+/// Backs "a retired log generation never outlives the next open": a crash
+/// between recording generation 1 and deleting generation 0 leaves
+/// generation 0's keyspaces behind, and the next open of the current
+/// generation removes them. Turns red if only the generation just
+/// superseded is ever deleted (the leftover then stays forever). Unit:
+/// keyspace names are private to this crate, and no engine route
+/// observes a leaked keyspace.
+#[test]
+fn opening_the_current_generation_sweeps_older_ones() {
+    use cyphr_storage::engine::LogFactory;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Database::builder(dir.path()).open().expect("db");
+    let logs = EmlLogs::new(db.clone()).expect("logs");
+    let id = "SHA-256:principal";
+    drop(logs.open(id, 0).expect("generation 0"));
+    // The crash: generation 1 recorded, generation 0 never deleted.
+    logs.generations
+        .insert(id.as_bytes(), 1u64.to_be_bytes())
+        .expect("record");
+    let retired = |g| format!("{}_eml_leaves", EmlLogs::prefix(id, g));
+    assert!(db.keyspace_exists(&retired(0)));
+
+    drop(logs.open(id, 1).expect("generation 1"));
+    assert!(!db.keyspace_exists(&retired(0)), "generation 0 leaked");
+}
