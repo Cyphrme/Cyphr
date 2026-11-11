@@ -189,6 +189,41 @@ pub fn digest_entries(commit: &IndexableCommit) -> Result<Vec<(String, EntityRef
     Ok(entries)
 }
 
+/// Refuse a [`IndexerWrite::replace_chain_from`] call that would not leave
+/// a gapless chain of `principal_id`, whose indexed chain holds `held`
+/// commits. Shared so every backend refuses the same calls.
+///
+/// # Errors
+///
+/// [`IndexerError::Consistency`] naming the defect.
+pub fn check_replacement(
+    principal_id: &str,
+    sequence: u64,
+    held: u64,
+    commits: &[IndexableCommit],
+) -> Result<(), IndexerError> {
+    let refuse = |why: String| {
+        Err(IndexerError::Consistency(format!(
+            "replacing the chain of {principal_id} from {sequence}: {why}"
+        )))
+    };
+    if commits.is_empty() {
+        return refuse("no commits".into());
+    }
+    if sequence > held {
+        return refuse(format!("the indexed chain holds only {held} commits"));
+    }
+    for (offset, commit) in (0u64..).zip(commits) {
+        if commit.principal_id != principal_id {
+            return refuse(format!("a commit of {}", commit.principal_id));
+        }
+        if commit.sequence != sequence + offset {
+            return refuse(format!("a commit at {} out of order", commit.sequence));
+        }
+    }
+    Ok(())
+}
+
 /// Add `new` to a digest's holders so the result does not depend on the
 /// order commits arrive in. A holder is a `(principal, entity type)`: one
 /// principal repeating a root (a commit that leaves SR unchanged) keeps the
@@ -307,6 +342,15 @@ pub trait Indexer: Send + Sync {
         &self,
         thumbprint: &str,
     ) -> impl std::future::Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send;
+
+    /// Whether the principal stored under exactly `principal_id` is marked
+    /// Error (SPEC 15.8): its store holds two branches that both extend
+    /// past one position, so no branch is unambiguously selected. Derived
+    /// state, rebuilt with the index (I1); `false` for an unknown principal.
+    fn is_errored(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send;
 }
 
 /// The index's write surface. Every method requires a [`DeriveToken`],
@@ -336,6 +380,39 @@ pub trait IndexerWrite: Send + Sync {
     fn index_commit(
         &self,
         commit: &IndexableCommit,
+        token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
+
+    /// Replace `principal_id`'s indexed chain from `sequence` on with
+    /// `commits`, which hold positions `sequence`, `sequence + 1`, ... in
+    /// order: the one operation that re-points a canonical chain (a fork
+    /// resolved, SPEC 15.8). Everything the replaced commits contributed
+    /// (their chain entries, digest holders, PG aliases) is withdrawn; the
+    /// tip becomes the last of `commits`.
+    ///
+    /// [`Self::index_commit`] never re-points a position: a different
+    /// commit there is still refused as fork evidence.
+    ///
+    /// # Errors
+    ///
+    /// [`IndexerError::Consistency`] when `commits` is empty, names another
+    /// principal, is not contiguous from `sequence`, or `sequence` is past
+    /// the indexed chain; [`IndexerError::Conflict`] as for
+    /// [`Self::index_commit`]. Nothing is written on error.
+    fn replace_chain_from(
+        &self,
+        principal_id: &str,
+        sequence: u64,
+        commits: &[IndexableCommit],
+        token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
+
+    /// Mark (or clear) the principal stored under `principal_id` as Error;
+    /// see [`Indexer::is_errored`].
+    fn set_errored(
+        &self,
+        principal_id: &str,
+        errored: bool,
         token: &DeriveToken,
     ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
 
