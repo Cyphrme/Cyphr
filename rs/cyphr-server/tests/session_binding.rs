@@ -26,8 +26,7 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    build_genesis_push_body, get_json, golden_principal_id, load_pool, post_json,
-    write_signing_key,
+    build_genesis_push_body, get_json, golden_principal_id, load_pool, post_json, write_signing_key,
 };
 
 const AUDIENCE: &str = "cyphr.me";
@@ -195,8 +194,11 @@ fn token_of(login: &serde_json::Value) -> String {
 async fn token_is_refused_on_a_second_channel() {
     let (state, addr, pr, _dir) = server().await;
     let first = session(&state, addr, &pr).await;
-    let (status, login) =
-        over_noise(&first, Request::post("/auth/login", login_body(&pr).into_bytes())).await;
+    let (status, login) = over_noise(
+        &first,
+        Request::post("/auth/login", login_body(&pr).into_bytes()),
+    )
+    .await;
     assert_eq!(status, 200, "{login}");
     let token = token_of(&login);
     let present = || Request::post("/auth/session", token.clone().into_bytes());
@@ -214,12 +216,8 @@ async fn token_is_refused_on_a_second_channel() {
     let (status, _) = over_noise(&second, present()).await;
     assert_eq!(status, 401, "a second Noise session must be refused");
 
-    let (status, body) = post_json(
-        build_router(state.clone()),
-        "/auth/session",
-        token.clone(),
-    )
-    .await;
+    let (status, body) =
+        post_json(build_router(state.clone()), "/auth/session", token.clone()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
     let (status, answer) = over_noise(&first, present()).await;
@@ -252,6 +250,7 @@ async fn browser_session_is_bound_to_its_key() {
     );
 
     let noise = session(&state, addr, &pr).await;
-    let (status, answer) = over_noise(&noise, Request::post("/auth/session", token.into_bytes())).await;
+    let (status, answer) =
+        over_noise(&noise, Request::post("/auth/session", token.into_bytes())).await;
     assert_eq!(status, 200, "a key-bound token has no channel: {answer}");
 }

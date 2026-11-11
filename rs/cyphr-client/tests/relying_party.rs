@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use common::*;
 use cyphr_client::{
-    Anchor, BindingKind, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty, Request,
-    RpConfig, SessionBinding, UnmetCurrency,
+    Anchor, BindingKind, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty,
+    Request, RpConfig, SessionBinding, UnmetCurrency,
 };
 use serde_json::{Value, json};
 
@@ -341,7 +341,11 @@ fn anchor_clock() -> i64 {
 async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
     let (a, b) = (kp(), kp());
     let (line, pg) = genesis_over(&a, &[&b]).await;
-    assert_ne!(pg, a.tmb.to_b64(), "the fixture's PG must differ from the anchor");
+    assert_ne!(
+        pg,
+        a.tmb.to_b64(),
+        "the fixture's PG must differ from the anchor"
+    );
     let mirror = Mirror { line };
     ANCHOR_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
@@ -361,7 +365,11 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
         .sign_in(&login(&b, &pg, AUDIENCE, &c))
         .expect("signed in");
     assert_eq!(session.principal, pg, "the subject is the replayed PG");
-    assert_ne!(session.principal, a.tmb.to_b64(), "not the anchor's thumbprint");
+    assert_ne!(
+        session.principal,
+        a.tmb.to_b64(),
+        "not the anchor's thumbprint"
+    );
     assert_eq!(session.trust.principal, pg);
 }
 
@@ -419,5 +427,8 @@ async fn token_is_refused_off_the_channel_its_session_is_bound_to() {
     let browser = rp.sign_in(&login(&g, &pg, AUDIENCE, &c)).expect("edge");
     assert_eq!(browser.binding, SessionBinding::Key);
     assert!(rp.check_session(&browser.token).is_ok());
-    assert!(rp.check_session_on(&browser.token, Some(&elsewhere)).is_ok());
+    assert!(
+        rp.check_session_on(&browser.token, Some(&elsewhere))
+            .is_ok()
+    );
 }

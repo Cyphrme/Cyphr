@@ -1333,7 +1333,10 @@ impl RelyingParty<'_> {
 
     /// A fresh authenticated Noise session with the first peer the relying
     /// party pulls from: one more channel, with a handshake hash of its own.
-    async fn open_channel(&self, enrolled: &Enrolled) -> ActionResult<cyphr_client::ChannelBinding> {
+    async fn open_channel(
+        &self,
+        enrolled: &Enrolled,
+    ) -> ActionResult<cyphr_client::ChannelBinding> {
         let name = enrolled.peers.first().ok_or_else(|| {
             ActionError::Failed("the relying party has no peer to open a channel to".into())
         })?;
@@ -1371,10 +1374,12 @@ impl RelyingParty<'_> {
             Channel::Original => self.original_channel()?,
             Channel::Other => self.open_channel(enrolled).await?,
         };
-        Ok(match enrolled.party.check_session_on(&t.0, Some(&channel)) {
-            Ok(_) => Presented::Accepted,
-            Err(r) => Presented::Refused(refusal_of(&r)),
-        })
+        Ok(
+            match enrolled.party.check_session_on(&t.0, Some(&channel)) {
+                Ok(_) => Presented::Accepted,
+                Err(r) => Presented::Refused(refusal_of(&r)),
+            },
+        )
     }
 
     /// The anchor the relying party reports it was enrolled with: the
