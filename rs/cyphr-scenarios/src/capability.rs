@@ -76,6 +76,10 @@ pub enum Probe {
     /// A fresh peer refuses a commit that re-includes an applied
     /// transaction coz with `COZ_REUSE`, and keeps its tip (SPEC 7.6).
     CozReuse,
+    /// A client signs in to a relying party over a real authenticated
+    /// Noise session; the session's token is accepted on that channel and
+    /// refused (`Unauthorized`) on a second session.
+    SessionBinding,
     /// A path under the workspace root exists.
     WorkspacePath(&'static [&'static str]),
     /// No observable surface exists yet; reports absent. The named node
@@ -167,8 +171,7 @@ impl Capability {
             Self::RelyingParty => {
                 Probe::WorkspacePath(&["cyphr-client", "examples", "relying_party.rs"])
             },
-            // Needs a signed-in session and a second connection.
-            Self::SessionBinding => Probe::Pending("SO3"),
+            Self::SessionBinding => Probe::SessionBinding,
             Self::DataCommit => Probe::Cli(&["data", "commit", "--help"], None),
         }
     }
@@ -258,6 +261,9 @@ impl Probe {
                     .fold(root.to_path_buf(), |p, c| p.join(c))
                     .exists())
             },
+            Probe::SessionBinding => crate::actions::observe_session_binding(h)
+                .await
+                .map_err(|e| run(e.to_string())),
             Probe::Pending(_) => Ok(false),
         }
     }

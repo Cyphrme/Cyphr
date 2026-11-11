@@ -177,13 +177,15 @@ async fn harness_partition_cuts_an_open_connection() {
 // therefore neither pass nor fail as a behaviour failure by running an
 // empty step.
 #[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "RED(session-binding) after-setup peers=1 ids=")]
+#[should_panic(expected = "RED(key-pairing) after-setup peers=1 ids=")]
 async fn harness_unsupported_action_ends_red() {
-    use cyphr_scenarios::actions::{Channel, Token};
+    use cyphr_scenarios::actions::{KeyRef, Principal};
 
     let h = Harness::start(&["p1"]).await.expect("start peer");
-    let rp = h.ok(h.start_relying_party().await);
-    h.ok(rp.present(&Token("t".into()), Channel::Original).await);
+    let alice = h.client("alice");
+    h.ok(alice
+        .remove_key(&Principal("p".into()), &KeyRef("k".into()))
+        .await);
 }
 
 // Claim: the observer reads what a peer itself holds. Positive control: a

@@ -6,8 +6,8 @@
 // the token on another channel is refused.
 //
 // Required capabilities: transport,relying-party,session-binding.
-// Red until they exist: the scenario starts its fresh-keyed peers, then the
-// harness reports the first absent capability.
+// Session binding is observed on a signed-in session; the scenario then
+// stops at remove_key, which needs key pairing (N22).
 
 use std::time::Instant;
 
@@ -15,7 +15,7 @@ use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(session-binding): SO3"]
+#[ignore = "RED(key-pairing): N22 remove_key; session binding is SO3, landed"]
 async fn s11_signon() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[
@@ -32,25 +32,36 @@ async fn s11_signon() {
     // read from the relying party.
     let window = cfg.pull_age_bound + cfg.refresh_interval;
 
-    let pr = h.ok(alice.create_principal().await);
-    // The principal keeps a second key, so removing the sign-in key leaves
-    // it with an authority.
-    h.ok(alice.add_backup_key(&pr).await);
+    // Two keys created at genesis, so the PG is derived from the pair and
+    // differs from the genesis key's thumbprint (a single-key principal's
+    // PG equals it, which would make the subject check below vacuous), and
+    // removing the sign-in key leaves the principal an authority.
+    let pr = h.ok(alice.create_multikey_principal().await);
     h.ok(alice.push(&pr, &["p1"]).await).accepted("setup push");
 
     let session = h.ok(alice.sign_in(&rp).await);
-    // The one-subject check reads the anchor the relying party was enrolled
-    // with, not the PG string the scenario holds: the subject must be the
-    // principal that genesis key opens.
-    let enrolled = h.ok(h.genesis_tmb(&pr));
+    // The one-subject check reads the anchor the relying party reports it
+    // was enrolled with, never the PG string: the anchor is the genesis
+    // key the person handed over, and the subject is the principal its
+    // replayed record names, which differs from the anchor here.
+    let enrolled = h.ok(rp.enrolled_anchor().await);
+    assert_eq!(
+        enrolled,
+        h.ok(h.genesis_tmb(&pr)),
+        "the relying party must report the genesis key it was handed"
+    );
     assert!(
-        session.principal.same_as(&enrolled),
-        "the token's subject {:?} does not resolve under the enrolled genesis key {enrolled}",
-        session.principal
+        !pr.same_as(&enrolled),
+        "the fixture must separate the PG from the anchor"
     );
     assert!(
         session.principal.same_as(pr.bare()),
-        "the token's subject is the canonical principal"
+        "the token's subject {:?} is not the principal's PG",
+        session.principal
+    );
+    assert!(
+        !session.principal.same_as(&enrolled),
+        "the subject is the principal, not the anchor key"
     );
     assert!(
         h.ok(rp.session_active(&session.token).await),
