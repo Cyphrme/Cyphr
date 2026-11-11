@@ -34,6 +34,10 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
                 "as": format_as(&principal),
                 "active_keys": active_keys,
                 "commit_count": principal.commits().count(),
+                "tip": cyphr_storage::export_commits(&principal)?
+                    .into_iter()
+                    .rfind(|l| !l.commit_id.is_empty())
+                    .map(|l| l.commit_id),
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },

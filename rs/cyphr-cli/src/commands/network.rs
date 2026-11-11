@@ -1,10 +1,8 @@
-//! Network commands: `push`, `fetch`, `rebase` and `verify`.
+//! Network commands: `push`, `fetch` and `rebase`.
 //!
 //! Peers are untrusted: every commit a peer serves is re-verified by the
-//! local engine before it is stored, and `verify` reports what the local
-//! view and the peers' histories show, never that the view is current.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! local engine before it is stored, and `verify` reports what the local, never that the view is
+//! current.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
@@ -17,14 +15,9 @@ use super::common::{
     local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
     submit_history,
 };
-use crate::choices::Choices;
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
-
-/// Seconds a view may age before `verify` reports it as stale, absent a
-/// choice.
-const DEFAULT_FRESHNESS_SECS: u64 = 300;
 
 fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
     match cli.output {
@@ -252,8 +245,19 @@ impl Drop for Scratch {
 
 /// A local commit's transaction, to be re-signed onto a new tip.
 enum Intent {
-    AddKey { id: String, signer: String },
-    RevokeKey { signer: String },
+    AddKey {
+        id: String,
+        signer: String,
+    },
+    RevokeKey {
+        signer: String,
+    },
+    /// A `ds/create`. Its `id` names the Data Root of a tree the rebased
+    /// history does not have, so replay signs a fresh one over the rebased
+    /// tree instead of repeating this.
+    DsCreate {
+        signer: String,
+    },
 }
 
 /// Read the replayable intents out of a local commit's cozies. Terminal
@@ -277,6 +281,11 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
         } else if let Some(a) = t.strip_suffix(typ::KEY_REVOKE) {
             authority = a.trim_end_matches('/').to_owned();
             out.push(Intent::RevokeKey {
+                signer: tmb.to_owned(),
+            });
+        } else if let Some(a) = t.strip_suffix(typ::DS_CREATE) {
+            authority = a.trim_end_matches('/').to_owned();
+            out.push(Intent::DsCreate {
                 signer: tmb.to_owned(),
             });
         } else if !t.ends_with("commit/create") {
@@ -326,6 +335,19 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         }
         replay.extend(found);
     }
+    // Every local action is re-recorded before any intent replays, so the
+    // rebased tree is whole and one `ds/create` over it includes what each
+    // earlier one included: the last stands for all.
+    if let Some(last) = replay
+        .iter()
+        .rposition(|i| matches!(i, Intent::DsCreate { .. }))
+    {
+        let mut at = 0;
+        replay.retain(|i| {
+            at += 1;
+            !matches!(i, Intent::DsCreate { .. }) || at == last + 1
+        });
+    }
     if local.len() == common || theirs.len() == common {
         // Nothing local to move, or the peer holds nothing the local
         // history lacks: the history already extends the peer's.
@@ -350,6 +372,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     // Declared before the engine below so the engine closes its files first.
     let mut scratch = Scratch(Some(tmp.clone()));
     let mut resigned: Vec<Value> = Vec::new();
+    let mut included: Vec<Value> = Vec::new();
     {
         let new = open_store(&tmp, false)?;
         block_on(async {
@@ -433,6 +456,15 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                         &authority,
                     )?;
                 },
+                Intent::DsCreate { signer } => {
+                    let dr = super::data::apply_ds_create(
+                        &mut principal,
+                        &keystore,
+                        signer,
+                        &authority,
+                    )?;
+                    included.push(json!({"signer": signer, "dr": dr}));
+                },
                 Intent::RevokeKey { signer } => {
                     super::key::apply_key_revoke(
                         &mut principal,
@@ -468,13 +500,19 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 
     let out = json!({"identity": identity, "peer": peer_url,
         "rebased": local.len() - common, "backup": backup.display().to_string(),
-        "resigned_actions": resigned});
+        "resigned_actions": resigned, "ds_create": included});
     emit(cli, &out, || {
         println!(
             "Rebased {} commit(s); old store kept at {}",
             local.len() - common,
             backup.display()
         );
+        for inc in &included {
+            println!(
+                "Signed a fresh ds/create including the rebased DR {}",
+                inc["dr"]
+            );
+        }
         if !resigned.is_empty() {
             println!(
                 "Re-signed {} action(s) at rebase; original times and czds: {}",
@@ -483,37 +521,6 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             );
         }
     })
-}
-
-/// How two histories relate, compared commit by commit.
-#[derive(Debug, PartialEq, Eq)]
-enum Relation {
-    Same,
-    /// The first is a strict prefix of the second.
-    Behind,
-    /// The second is a strict prefix of the first.
-    Ahead,
-    /// Different commits at this height.
-    Fork(usize),
-}
-
-fn relate(a: &[WireBundle], b: &[WireBundle]) -> Relation {
-    if let Some(i) = a.iter().zip(b).position(|(x, y)| !same_commit(x, y)) {
-        return Relation::Fork(i);
-    }
-    match a.len().cmp(&b.len()) {
-        std::cmp::Ordering::Equal => Relation::Same,
-        std::cmp::Ordering::Less => Relation::Behind,
-        std::cmp::Ordering::Greater => Relation::Ahead,
-    }
-}
-
-/// A fork branch as reported: its source and its commit's bundle in the
-/// push wire form.
-fn branch(source: &str, bundle: &WireBundle) -> Value {
-    let mut v = serde_json::to_value(bundle).unwrap_or_default();
-    v["source"] = source.into();
-    v
 }
 
 /// Replay a peer's history from `genesis`; a history that does not replay
@@ -535,164 +542,4 @@ fn replays(
         .map_err(|e| e.to_string())?
         .map(|_| ())
         .map_err(|e| e.to_string())
-}
-
-/// `cyphr verify`: a principal's standing from the local view and peers.
-pub fn verify(
-    cli: &Cli,
-    identity: &str,
-    peer_flags: &[String],
-    anchor_flag: Option<&str>,
-    choices_path: Option<&std::path::Path>,
-    freshness_flag: Option<u64>,
-) -> crate::Result<()> {
-    let choices = choices_path
-        .map(Choices::load)
-        .transpose()?
-        .unwrap_or_default();
-    let peers: Vec<String> = if peer_flags.is_empty() {
-        choices.peers
-    } else {
-        peer_flags.to_vec()
-    };
-    if peers.is_empty() {
-        return Err(Error::NoPeers);
-    }
-    let freshness = freshness_flag
-        .or(choices.freshness_secs)
-        .unwrap_or(DEFAULT_FRESHNESS_SECS);
-
-    let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
-    let wire = wire_id(identity)?;
-    // Replays the whole local history, so a bad signature is an error here.
-    load_principal_from_engine(&store, &keystore, identity)?;
-    let genesis = local_genesis(&keystore, identity)?;
-
-    let (anchor_value, anchor_source) = match anchor_flag.map(str::to_owned).or(choices.anchor) {
-        Some(a) => (a, "pinned"),
-        None if genesis.is_some() => (identity.to_owned(), "trusted-genesis"),
-        None => (identity.to_owned(), "hint"),
-    };
-
-    let (local, tip_state) = block_on(async {
-        let local = raw_chain(&store, &principal_id).await?;
-        let tip = store.get_tip(&principal_id).await?;
-        Ok::<_, Error>((local, tip))
-    })??;
-    let tip_state = tip_state.ok_or_else(|| Error::EmptyHistory(identity.to_owned()))?;
-    let local_blobs: Vec<WireBundle> = local.iter().map(|c| c.bundle.clone()).collect();
-
-    let answers = block_on(async {
-        let mut answers = Vec::new();
-        for url in &peers {
-            let answer = match Peer::new(url, cli.peer_timeout_secs, cli.allow_cleartext) {
-                Ok(peer) => peer.chain(&wire).await,
-                Err(e) => Err(e),
-            };
-            answers.push((url.clone(), answer));
-        }
-        answers
-    })?;
-
-    let replay_genesis = match genesis {
-        Some(g) => g,
-        None => block_on(store.resolve_genesis(&principal_id, &[]))??,
-    };
-    let mut chains: Vec<(String, Vec<WireBundle>)> = vec![("local".into(), local_blobs.clone())];
-    let mut failed = Vec::new();
-    let mut newer = false;
-    for (url, answer) in answers {
-        match answer {
-            Err(e) => failed.push(json!({"peer": url, "reason": e.to_string(), "kind": e.kind()})),
-            Ok(PeerHistory {
-                commits: chain,
-                actions,
-            }) => match replays(&replay_genesis, &chain, &actions) {
-                Err(reason) => {
-                    failed.push(json!({"peer": url, "reason": reason, "kind": "malformed"}))
-                },
-                Ok(()) => {
-                    if relate(&local_blobs, &chain) == Relation::Behind {
-                        newer = true;
-                    }
-                    chains.push((url, chain));
-                },
-            },
-        }
-    }
-    let queried = chains.len() - 1;
-    if queried == 0 {
-        let reason = failed
-            .iter()
-            .map(|f| format!("{}: {}", f["peer"], f["reason"]))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(PeerError::Unreachable {
-            peer: peers.join(","),
-            reason: format!("no peer gave an answer ({reason})"),
-        }
-        .into());
-    }
-
-    let mut evidence = Vec::new();
-    for (i, (na, a)) in chains.iter().enumerate() {
-        for (nb, b) in &chains[i + 1..] {
-            if let Relation::Fork(h) = relate(a, b) {
-                evidence.push(json!({"kind": "principal_fork", "height": h,
-                    "branches": [
-                        branch(na, &a[h]),
-                        branch(nb, &b[h])]}));
-            }
-        }
-    }
-    let bare_anchor = bare_digest(&anchor_value);
-    let on_chain = bare_anchor == identity
-        || local.iter().any(|c| c.commit_id == anchor_value)
-        || block_on(async {
-            use cyphr_storage::index::Indexer;
-            store
-                .indexer()
-                .get_commit_chain(&principal_id, None, None)
-                .await
-                .map(|c| c.iter().any(|r| bare_digest(&r.pr) == bare_anchor))
-        })??;
-    if !on_chain {
-        evidence.push(json!({"kind": "anchor_not_in_history", "anchor": anchor_value}));
-    }
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let view_age = now.saturating_sub(u64::try_from(tip_state.last_updated).unwrap_or(0));
-    let mut out = json!({
-        "identity": identity,
-        "tip": tip_state.commit_id,
-        "view_age_secs": view_age,
-        "newer_tip_reported": newer,
-        "peers_queried": queried,
-        "peers_failed": failed,
-        "freshness_secs": freshness,
-        "stale_view": view_age > freshness,
-        // When the anchor is the identity itself, the "anchor is in the
-        // history" check cannot fail, so it vouches for nothing.
-        "anchor": {"value": anchor_value, "source": anchor_source,
-            "is_identity": bare_digest(&anchor_value) == identity},
-        "verdict": if evidence.is_empty() { "Active" } else { "Error" },
-    });
-    if !evidence.is_empty() {
-        out["evidence"] = Value::Array(evidence);
-    }
-    emit(cli, &out, || {
-        println!("Standing: {}", out["verdict"].as_str().unwrap_or(""));
-        println!("  tip: {}", out["tip"].as_str().unwrap_or(""));
-        println!("  view age: {view_age}s (freshness {freshness}s)");
-        println!("  newer tip reported by a peer: {newer}");
-        println!("  peers queried: {queried}");
-        println!("  anchor: {anchor_value} ({anchor_source})");
-        if let Some(e) = out.get("evidence") {
-            println!("  evidence: {e}");
-        }
-    })
 }

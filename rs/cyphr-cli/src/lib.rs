@@ -14,6 +14,7 @@ pub mod choices;
 pub mod commands;
 pub mod keystore;
 pub mod net;
+pub mod state;
 
 /// CLI error type. Replaces `Box<dyn Error>` throughout the CLI crate.
 #[derive(Debug, thiserror::Error)]
@@ -130,6 +131,19 @@ pub enum Error {
     #[error(transparent)]
     Choices(Box<choices::ChoicesError>),
 
+    /// The anchor is not a genesis key or a genesis commit id.
+    #[error("{0}")]
+    AnchorRule(String),
+
+    /// A bundle file states a version this build does not read.
+    #[error("bundle version {found} is not the supported {supported}")]
+    BundleVersion {
+        /// The stated version.
+        found: u64,
+        /// The one version this build reads.
+        supported: u64,
+    },
+
     /// `verify` was given no peer to ask: neither a flag nor the choices file
     /// names one.
     #[error("verify needs at least one peer (--peer or `peers` in the choices file)")]
@@ -192,6 +206,8 @@ impl Error {
         match self {
             Self::Peer(e) => e.kind(),
             Self::Choices(e) => e.kind(),
+            Self::BundleVersion { .. } => "unknownversion",
+            Self::AnchorRule(_) => "malformed",
             Self::Bundle {
                 source: BundleError::UnsupportedVersion { .. },
                 ..
@@ -389,7 +405,8 @@ pub enum Commands {
         #[arg(long)]
         peer: Vec<String>,
 
-        /// Trust anchor: a principal or commit root the history must contain
+        /// Trust anchor: the genesis key or the genesis commit id (never the
+        /// PG alone)
         #[arg(long)]
         anchor: Option<String>,
 
@@ -400,6 +417,101 @@ pub enum Commands {
         /// View age beyond which the answer reports the view as stale
         #[arg(long)]
         freshness_secs: Option<u64>,
+    },
+
+    /// Run `verify` on a timer, printing each round's verdict
+    Watch {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL to ask (repeatable)
+        #[arg(long)]
+        peer: Vec<String>,
+
+        /// Trust anchor: the genesis key or genesis commit id
+        #[arg(long)]
+        anchor: Option<String>,
+
+        /// TOML file with `anchor`, `peers` and `freshness_secs`; flags win
+        #[arg(long)]
+        choices: Option<PathBuf>,
+
+        /// View age beyond which the answer reports the view as stale
+        #[arg(long)]
+        freshness_secs: Option<u64>,
+
+        /// Seconds between rounds
+        #[arg(long, default_value_t = 30)]
+        interval_secs: u64,
+
+        /// Stop after this many rounds (default: run until killed)
+        #[arg(long)]
+        rounds: Option<u64>,
+    },
+
+    /// Run `verify` and print the evidence held (both branches of a fork,
+    /// the resolving key, the naked revokes) in full
+    Audit {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Peer base URL to ask (repeatable)
+        #[arg(long)]
+        peer: Vec<String>,
+
+        /// Trust anchor: the genesis key or genesis commit id
+        #[arg(long)]
+        anchor: Option<String>,
+
+        /// TOML file with `anchor`, `peers` and `freshness_secs`; flags win
+        #[arg(long)]
+        choices: Option<PathBuf>,
+
+        /// View age beyond which the answer reports the view as stale
+        #[arg(long)]
+        freshness_secs: Option<u64>,
+    },
+
+    /// Carry what this client verified to another, with no peer
+    Gossip {
+        /// Gossip subcommand to execute
+        #[command(subcommand)]
+        command: GossipCommands,
+    },
+}
+
+/// Client-to-client exchange subcommands.
+#[derive(Subcommand)]
+pub enum GossipCommands {
+    /// Write the verified record, the other branch of each fork held and
+    /// the naked revokes held to a bundle file
+    Export {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Bundle file to write
+        #[arg(long)]
+        file: PathBuf,
+    },
+
+    /// Replay a bundle file into the local store, as if each chain in it
+    /// were a peer: nothing in it is believed except by replay
+    Import {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Bundle file to read
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Trust anchor: the genesis key or genesis commit id (without it
+        /// the bundle's own genesis commit is a hint)
+        #[arg(long)]
+        anchor: Option<String>,
     },
 }
 

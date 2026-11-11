@@ -8,8 +8,8 @@
 // Carol replay to the same tip; each verdict names its anchor, peers and
 // freshness.
 //
-// Required capabilities: transport,cli-network,evidence; client-gossip for
-// Carol, whose step ends the scenario as RED until it lands.
+// Required capabilities: transport,cli-network,evidence. Carol learns by a
+// bundle file (client-gossip).
 
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,6 @@ use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(client-gossip): G3"]
 async fn s01_first_contact() {
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
     h.require(&[

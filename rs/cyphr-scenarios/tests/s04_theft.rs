@@ -20,7 +20,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(audit): N22 naked_revoke, with G3 (audit, resolve_fork); gossip is G2, landed"]
+#[ignore = "RED(key-pairing): N22 naked_revoke; audit and resolve_fork are G3, landed"]
 async fn s04_theft() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
         .await

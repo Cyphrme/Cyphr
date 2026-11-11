@@ -9,7 +9,7 @@ use cyphr::eml::MemoryStorage;
 use cyphr::state::{HashAlg, TaggedDigest};
 use cyphr::{Key, Principal};
 use cyphr_client::PatchEntry;
-use cyphr_client::evidence::{replay_chain, verify_principal_fork};
+use cyphr_client::evidence::{replay_chain, verify_principal_fork_with_actions};
 use serde_json::Value;
 
 /// Keys known to the verifier, by thumbprint: `tmb -> (alg, public key)`
@@ -77,8 +77,12 @@ pub struct ChainView {
     pub genesis: Option<Principal<MemoryStorage>>,
     /// The genesis key the replay started from.
     pub genesis_key: Option<Key>,
-    /// The fetched commits.
+    /// The fetched commits, each with the actions that precede it folded in.
     pub entries: Vec<PatchEntry>,
+    /// The fetched commits as served, and the action-only bundles apart from
+    /// them: what a fork's own commit, which carries no actions, needs to
+    /// verify at its `pre` (SPEC 4.8.2).
+    pub served: (Vec<PatchEntry>, Vec<cyphr_client::ActionBundle>),
     /// The Principal Root after each commit, tagged.
     pub prs: Vec<String>,
     /// The commit id of each commit, tagged.
@@ -133,7 +137,7 @@ impl ChainView {
         let genesis = Principal::implicit(key)
             .await
             .map_err(|e| format!("genesis: {e}"))?;
-        Self::replay(body, pg, genesis, fold_actions(patch)).await
+        Self::replay(body, pg, genesis, patch).await
     }
 
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare)
@@ -146,15 +150,17 @@ impl ChainView {
         let genesis = Principal::implicit(key)
             .await
             .map_err(|e| format!("genesis: {e}"))?;
-        Self::replay(body, pg, genesis, fold_actions(patch)).await
+        Self::replay(body, pg, genesis, patch).await
     }
 
     async fn replay(
         body: &[u8],
         pg: &str,
         genesis: Principal,
-        entries: Vec<PatchEntry>,
+        patch: cyphr_client::VerifiedPatch,
     ) -> Result<Self, String> {
+        let served = (patch.entries.clone(), patch.actions.clone());
+        let entries = fold_actions(patch);
         let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
         // The genesis key: the one whose `key/create` opens the genesis
         // commit (SPEC 5.1).
@@ -235,6 +241,7 @@ impl ChainView {
             genesis: Some(genesis),
             genesis_key: Some(key),
             entries,
+            served,
             prs,
             commit_ids,
             last_signer,
@@ -313,7 +320,7 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
 /// asked about (bare) and `chain` the verifier's own read of its chain.
 ///
 /// A `principal-fork` item (`{pg, height, pre, a, b}`, `a` and `b` each
-/// a commit bundle) is checked by [`verify_principal_fork`] against the replayed
+/// a commit bundle) is checked by [`verify_principal_fork_with_actions`] against the replayed
 /// `chain`: both commits must replay from the chain's state at `pre`, so
 /// only keys the principal held there vouch (a serving peer's key never
 /// does) and two copies of one commit are not a fork.
@@ -353,9 +360,15 @@ pub async fn verify_evidence(
                 .fork()
                 .await
                 .map_err(|e| e.to_string())?;
-            let proof = verify_principal_fork(item, requested, genesis, &chain.entries)
-                .await
-                .map_err(|e| e.to_string())?;
+            let proof = verify_principal_fork_with_actions(
+                item,
+                requested,
+                genesis,
+                &chain.served.0,
+                &chain.served.1,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             Ok(Proven::PrincipalFork { pg: proof.pg })
         },
         Some("peer-equivocation") => {

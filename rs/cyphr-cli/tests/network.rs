@@ -11,10 +11,10 @@
 //! - `cyphr fetch --identity <pr> --peer <url>`: pulls and verifies the peer's commits into the
 //!   local store.
 //! - `cyphr verify --identity <pr> [--peer <url>]... [--anchor <pr>] [--choices <file>]`: prints
-//!   (JSON) `tip`, `view_age_secs`, `newer_tip_reported`, `peers_queried` (never 0),
-//!   `freshness_secs`, `anchor.{value,source}` with source one of `pinned`, `trusted-genesis`,
-//!   `hint`, and a `verdict` that is a standing: `"Active"`, or `"Error"` with a non-empty
-//!   top-level `evidence` for an unresolved fork. Never `current`, `verified`, `ok` or `valid`.
+//!   (JSON) `tip`, `view_age_secs`, `added`, `peers_queried` (never 0), `freshness_secs`,
+//!   `anchor.{value,source}` with source one of `pinned`, `trusted-genesis`, `hint`, and a
+//!   `verdict` that is a standing: `"Active"`, or `"Error"` with a non-empty top-level `evidence`
+//!   for an unresolved fork. Never `current`, `verified`, `ok` or `valid`.
 //! - A choices file is TOML: `anchor = "<pr>"`, `peers = ["<url>", ...]`, `freshness_secs = <n>`;
 //!   an unknown key is refused with error kind `malformed`.
 //! - Error kinds are the scenario harness's `RefusalKind` names, lowercased.
@@ -22,220 +22,15 @@
 //! Server-based tests need the `cyphr-server` binary: `CYPHR_SERVER_BIN`, else
 //! one `cargo build -p cyphr-server` (as the scenario harness does).
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+mod common;
+
+use std::path::Path;
 
 use clap::Parser;
+use common::{Server, User, accepted};
 use cyphr_cli::{Cli, Error, commands, keystore};
 use serde_json::Value;
 use tempfile::TempDir;
-
-// ---------------------------------------------------------------- harness
-
-fn server_bin() -> &'static Path {
-    static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Some(p) = std::env::var_os("CYPHR_SERVER_BIN") {
-            return PathBuf::from(p);
-        }
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let out = Command::new(cargo)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args([
-                "build",
-                "--locked",
-                "--quiet",
-                "--message-format=json-render-diagnostics",
-                "-p",
-                "cyphr-server",
-            ])
-            .output()
-            .expect("spawning cargo to build cyphr-server");
-        assert!(
-            out.status.success(),
-            "building cyphr-server failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|v| v["reason"] == "compiler-artifact" && v["target"]["name"] == "cyphr-server")
-            .find_map(|v| v["executable"].as_str().map(PathBuf::from))
-            .expect("cargo reported no cyphr-server executable")
-    })
-}
-
-/// A running `cyphr-server`, killed on drop.
-struct Server {
-    child: Child,
-    url: String,
-    _dir: TempDir,
-}
-
-impl Server {
-    fn start() -> Self {
-        let dir = TempDir::new().expect("server tempdir");
-        let mut child = Command::new(server_bin())
-            .arg("--config")
-            .arg(dir.path().join("absent.toml"))
-            .args(["serve", "--listen", "127.0.0.1:0", "--data-dir"])
-            .arg(dir.path().join("data"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawning cyphr-server");
-        let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
-        let addr = loop {
-            let line = lines
-                .next()
-                .expect("cyphr-server exited before announcing its address")
-                .expect("reading server stdout");
-            if let Some(a) = line.strip_prefix("listening on ") {
-                break a.trim().to_owned();
-            }
-        };
-        // Drain stdout so the server never blocks on a full pipe.
-        std::thread::spawn(move || lines.for_each(drop));
-        Self {
-            child,
-            url: format!("http://{addr}"),
-            _dir: dir,
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// One user's CLI environment: its own keystore and store.
-struct User {
-    dir: TempDir,
-}
-
-struct Ran {
-    ok: bool,
-    stdout: String,
-    stderr: String,
-}
-
-impl Ran {
-    fn json(&self) -> Value {
-        serde_json::from_str(&self.stdout)
-            .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {:?}", self.stdout))
-    }
-}
-
-impl User {
-    fn new() -> Self {
-        Self {
-            dir: TempDir::new().expect("user tempdir"),
-        }
-    }
-
-    fn keystore(&self) -> PathBuf {
-        self.dir.path().join("keys.json")
-    }
-
-    fn store_uri(&self) -> String {
-        format!("file:{}", self.dir.path().join("data").display())
-    }
-
-    fn run(&self, args: &[&str]) -> Ran {
-        let out = Command::new(env!("CARGO_BIN_EXE_cyphr"))
-            .arg("--keystore")
-            .arg(self.keystore())
-            .arg("--store")
-            .arg(self.store_uri())
-            .args(["--output", "json"])
-            .args(args)
-            .output()
-            .expect("running cyphr");
-        Ran {
-            ok: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }
-    }
-
-    /// Run a command that exists today; failure is a setup bug.
-    fn setup(&self, args: &[&str]) -> Value {
-        let r = self.run(args);
-        assert!(r.ok, "setup `{args:?}` failed: {}", r.stderr);
-        r.json()
-    }
-
-    /// Create an identity: returns its genesis thumbprint (the identity arg).
-    fn new_identity(&self) -> String {
-        self.new_identity_alg("ES256")
-    }
-
-    /// A fresh identity with two commits: the genesis commit the CLI makes
-    /// before its first key add, then that key add.
-    fn new_identity_alg(&self, algo: &str) -> String {
-        let g = self.setup(&["key", "generate", "--algo", algo]);
-        let tmb = g["tmb"].as_str().expect("tmb").to_owned();
-        self.add_key(&tmb);
-        tmb
-    }
-
-    /// Commit one key addition, signed by the identity's genesis key.
-    fn add_key(&self, identity: &str) {
-        let id = format!("--identity={identity}");
-        let signer = format!("--signer={identity}");
-        self.setup(&["key", "add", &id, &signer]);
-    }
-
-    /// Seed a second device directly: copy this user's keystore and store
-    /// directory (all its processes have exited, so the files are quiescent).
-    /// Deliberately not export/import, whose roundtrip is quarantined (#111).
-    fn clone_identity(&self, _identity: &str) -> Self {
-        let other = Self::new();
-        std::fs::copy(self.keystore(), other.keystore()).expect("copy keystore");
-        copy_dir(
-            &self.dir.path().join("data"),
-            &other.dir.path().join("data"),
-        );
-        other
-    }
-
-    fn push(&self, id: &str, peer: &str) -> Ran {
-        self.run(&[
-            "push",
-            &format!("--identity={id}"),
-            &format!("--peer={peer}"),
-        ])
-    }
-
-    fn commit_count(&self, id: &str) -> u64 {
-        self.setup(&["inspect", &format!("--identity={id}")])["commit_count"]
-            .as_u64()
-            .expect("commit_count")
-    }
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("create dir");
-    for entry in std::fs::read_dir(from).expect("read dir") {
-        let entry = entry.expect("dir entry");
-        let dest = to.join(entry.file_name());
-        if entry.file_type().expect("file type").is_dir() {
-            copy_dir(&entry.path(), &dest);
-        } else {
-            std::fs::copy(entry.path(), dest).expect("copy file");
-        }
-    }
-}
-
-fn accepted(r: &Ran, what: &str) {
-    assert!(r.ok, "{what} must be accepted, got: {}", r.stderr);
-}
 
 // ------------------------------------------------------------------- push
 
@@ -650,6 +445,60 @@ fn data_rebase_keeps_local_actions() {
     assert_eq!(v["tip"], made["commit_id"]);
 }
 
+/// Claim (architect ruling, SPEC 4.8.2, 15.9): an offline device that
+/// committed a `ds/create` rejoins: rebase re-signs its data actions at the
+/// current time, signs a FRESH `ds/create` whose id is the Data Root of the
+/// rebased tree (never the old one, which the peer's history lacks), and
+/// reports both. Defect that turns it red: rebase refusing `ds/create`
+/// (`RebaseUnsupported`), repeating the old DR, or a rebased history the
+/// peer refuses. End-to-end: yes (real peer, two devices).
+#[test]
+fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
+    let server = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &server.url), "base push");
+    let b = a.clone_identity(&id);
+    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+
+    b.setup(&["data", "action", &ident, &signer, "--msg=offline"]);
+    let old = b.setup(&["data", "commit", &ident, &signer]);
+    // The peer's side also holds data, so the rebased tree is the union.
+    a.setup(&["data", "action", &ident, &signer, "--msg=online"]);
+    a.setup(&["data", "commit", &ident, &signer]);
+    accepted(&a.push(&id, &server.url), "A moves the peer on");
+    assert!(!b.push(&id, &server.url).ok, "B is stale");
+
+    // A later `now` makes the re-signed action (and so the DR) differ.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
+    assert_eq!(
+        rebased["resigned_actions"].as_array().map(Vec::len),
+        Some(1),
+        "the action is re-signed and reported: {rebased}"
+    );
+    let included = rebased["ds_create"].as_array().expect("ds_create reported");
+    assert_eq!(included.len(), 1, "one fresh ds/create: {rebased}");
+    assert_ne!(
+        included[0]["dr"], old["dr"],
+        "the DR is of the rebased tree (the action was re-signed), not the old one: {rebased}"
+    );
+    let pushed = b.push(&id, &server.url);
+    accepted(
+        &pushed,
+        "push of the rebased history with its fresh ds/create",
+    );
+    let reader = User::new();
+    let peer = format!("--peer={}", server.url);
+    assert!(
+        reader.run(&["fetch", &ident, &peer]).ok,
+        "a reader replays the rebased chain"
+    );
+    let v = reader.setup(&["verify", &ident, &peer]);
+    assert_eq!(v["verdict"], "Active");
+    assert_eq!(v["tip"], pushed.json()["tip"]);
+}
+
 // ----------------------------------------------------------------- verify
 
 fn verify_args<'a>(id: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
@@ -669,8 +518,8 @@ fn assert_answer_shape(v: &Value) {
         "answer must state the view age: {v}"
     );
     assert!(
-        v["newer_tip_reported"].is_boolean(),
-        "answer must say whether a peer reported a newer tip: {v}"
+        v["added"].is_u64(),
+        "answer must say how many commits the pull added: {v}"
     );
     assert!(
         v["anchor"]["value"].as_str().is_some_and(|s| !s.is_empty())
@@ -718,15 +567,17 @@ fn verify_answer_states_age_anchor_and_basis() {
     let v = r.json();
     assert_answer_shape(&v);
     assert_eq!(v["verdict"], "Active", "honest principal is Active: {v}");
-    assert_eq!(v["newer_tip_reported"], false, "peer is at our tip: {v}");
+    assert_eq!(v["added"], 0, "peer is at our tip: {v}");
 }
 
 /// Claim: when a queried peer holds a newer tip than the local view, verify
-/// reports that fact rather than vouching for the stale tip. End-to-end: yes
-/// (two peers, one lagging). Turns red on: a verify that ignores peer tips
-/// (`newer_tip_reported` false) or that answers "current" from the local view.
+/// pulls and replays it, adopts it, and says how many commits that added
+/// rather than vouching for the stale tip. End-to-end: yes (two peers, one
+/// lagging). Turns red on: a verify that ignores a peer's longer chain
+/// (`added` 0, the stale tip reported) or that answers "current" from the
+/// local view.
 #[test]
-fn verify_reports_newer_tip_from_a_peer() {
+fn verify_adopts_the_newer_tip_a_peer_holds() {
     let lagging = Server::start();
     let ahead = Server::start();
     let a = User::new();
@@ -734,7 +585,8 @@ fn verify_reports_newer_tip_from_a_peer() {
     accepted(&a.push(&id, &lagging.url), "push to lagging");
     accepted(&a.push(&id, &ahead.url), "push to ahead");
     a.add_key(&id);
-    accepted(&a.push(&id, &ahead.url), "push newer commit to ahead only");
+    let newest = a.push(&id, &ahead.url);
+    accepted(&newest, "push newer commit to ahead only");
 
     // A reader whose view came from the lagging peer queries both.
     let reader = User::new();
@@ -751,8 +603,13 @@ fn verify_reports_newer_tip_from_a_peer() {
     let v = r.json();
     assert_answer_shape(&v);
     assert_eq!(
-        v["newer_tip_reported"], true,
-        "the ahead peer's newer tip must be reported: {v}"
+        v["added"], 1,
+        "the ahead peer's newer commit is adopted: {v}"
+    );
+    assert_eq!(
+        v["tip"],
+        newest.json()["tip"],
+        "the newest verified tip: {v}"
     );
 }
 

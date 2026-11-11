@@ -172,6 +172,18 @@ impl Record {
         })
     }
 
+    /// The principal this record is of, as given to [`Record::new`].
+    #[must_use]
+    pub fn principal_id(&self) -> &str {
+        &self.id
+    }
+
+    /// The tagged id of the commit at `index`, if the record holds one.
+    #[must_use]
+    pub fn commit_id_at(&self, index: usize) -> Option<String> {
+        self.held.as_ref()?.ids.get(index).and_then(commit_id)
+    }
+
     /// The verified entries, in chain order.
     #[must_use]
     pub fn entries(&self) -> &[PatchEntry] {
@@ -354,19 +366,31 @@ fn opener_key(entries: &[PatchEntry]) -> Result<Key, PeerFailure> {
     let bundle = entries
         .first()
         .and_then(|e| e.bundle.as_ref().ok())
-        .ok_or_else(|| malformed("no genesis commit"))?
+        .ok_or_else(|| malformed("no genesis commit"))?;
+    opener_of(bundle).map_err(malformed)
+}
+
+/// The key a genesis commit opens with, as the commit itself discloses it.
+/// Reading it authenticates nothing: it is a hint a verifier may adopt as
+/// its anchor, never proof the commit is the principal's.
+///
+/// # Errors
+///
+/// What is wrong with the commit as a genesis commit.
+pub fn opener_of(genesis: &WireBundle) -> Result<Key, &'static str> {
+    let bundle = genesis
         .decode()
-        .map_err(|_| malformed("the genesis commit does not decode"))?;
+        .map_err(|_| "the genesis commit does not decode")?;
     let opener = bundle
         .cozies()
         .next()
         .and_then(|c| c.pay().get("tmb").and_then(Value::as_str))
-        .ok_or_else(|| malformed("the genesis commit has no opener"))?;
+        .ok_or("the genesis commit has no opener")?;
     bundle
         .introduced_keys()
         .find(|k| k.tmb().to_b64() == opener)
         .cloned()
-        .ok_or_else(|| malformed("the genesis commit does not carry its opener's key"))
+        .ok_or("the genesis commit does not carry its opener's key")
 }
 
 fn commit_id(id: &BundleId) -> Option<String> {

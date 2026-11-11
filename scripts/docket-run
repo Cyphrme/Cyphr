@@ -33,6 +33,7 @@ declare -A CLAIMS_INDEX=(
   # reports them absent until their owner writes the test and adds the
   # entry. A claim with several tests lists them all; every one must pass.
   [arch-detection-is-comparison]="_claim_arch_detection_is_comparison"
+  [arch-principal-resolves]="_claim_arch_principal_resolves"
   [arch-tip-reports-are-material]="_claim_arch_tip_reports_are_material"
   [arch-behind-is-not-fork]="_claim_arch_behind_is_not_fork"
   [arch-signing-stays-stateless]="_claim_arch_signing_stays_stateless"
@@ -120,6 +121,10 @@ _claim_list_valued_one_failing=(
 
 _claim_arch_detection_is_comparison=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation fewer_than_two_reports_settles_nothing -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-cli --test gossip_exchange bundle_carries_commits_actions_and_both_fork_branches_between_clients -- --exact"
+)
+_claim_arch_principal_resolves=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-cli --test verify_verdict verdict_follows_the_branch_the_principal_resolves_to -- --exact"
 )
 _claim_arch_tip_reports_are_material=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation wrong_typ_pair_is_not_equivocation -- --exact"
