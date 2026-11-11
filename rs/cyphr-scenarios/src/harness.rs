@@ -114,6 +114,29 @@ impl Harness {
             })
     }
 
+    /// The thumbprint of `p`'s genesis key, the anchor a relying party is
+    /// enrolled with. A principal opened by one key has that thumbprint as
+    /// its PG, so a session subject that resolves under this key names the
+    /// enrolled principal and not merely a handle spelled like it.
+    pub fn genesis_tmb(
+        &self,
+        p: &crate::actions::Principal,
+    ) -> crate::actions::ActionResult<String> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let fail = |what: String| crate::actions::ActionError::Failed(what);
+        let entry = self.genesis_of(p)?;
+        let alg = entry["alg"]
+            .as_str()
+            .ok_or_else(|| fail("genesis entry has no alg".into()))?;
+        let public = entry["pub_key"]
+            .as_str()
+            .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
+            .ok_or_else(|| fail("genesis entry has no pub_key".into()))?;
+        coz::compute_thumbprint_for_alg(alg, &public)
+            .map(|t| t.to_b64())
+            .ok_or_else(|| fail(format!("no thumbprint for a {alg} genesis key")))
+    }
+
     pub fn peer(&self, name: &str) -> &Peer {
         self.peers
             .iter()
