@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::{Clock, Level, MAX_NOW, Principal, PrincipalKind, PrincipalState};
+use super::{Clock, Level, MAX_NOW, Principal, PrincipalState};
 use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
@@ -18,10 +18,7 @@ impl PrincipalState {
     /// PG is only set when principal/create is processed (Level 3+, SPEC §5.1).
     /// For Established principals, this always returns `Some`.
     pub fn pg(&self) -> Option<&PrincipalGenesis> {
-        match self.kind() {
-            PrincipalKind::Established { pg, .. } => Some(pg),
-            PrincipalKind::Nascent(_) => None,
-        }
+        self.pg.as_ref()
     }
 
     /// Get the current Principal Root.
@@ -83,19 +80,13 @@ impl PrincipalState {
 
     /// Get the active hash algorithms derived from current active keys (SPEC §14).
     pub fn active_algs(&self) -> Vec<HashAlg> {
-        match self.kind() {
-            PrincipalKind::Nascent(core) => core.active_algs(),
-            PrincipalKind::Established { core, .. } => core.active_algs(),
-        }
+        self.core.active_algs()
     }
 
     /// The base64 thumbprint of this principal's genesis key, the key it
     /// was constructed from (SPEC 5.1 step 1).
     pub fn genesis_key(&self) -> &str {
-        match self.kind() {
-            PrincipalKind::Nascent(core) => &core.genesis_key,
-            PrincipalKind::Established { core, .. } => &core.genesis_key,
-        }
+        &self.core.genesis_key
     }
 
     /// Get a key by thumbprint.

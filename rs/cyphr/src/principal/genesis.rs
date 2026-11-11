@@ -2,7 +2,7 @@
 //! (`principal/create`) that freezes PG.
 
 use super::{
-    Principal, PrincipalCore, PrincipalKind, PrincipalState, StartingRoots, open_commit_trees,
+    Principal, PrincipalCore, PrincipalState, StartingRoots, open_commit_trees,
 };
 use crate::error::{Error, Result};
 use crate::key::Key;
@@ -58,43 +58,22 @@ impl PrincipalState {
         // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
         let (kr, ar, sr) = derive_state_roots(&[key_leaf(&key)], None, &active_algs)?;
         let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
-        Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore::new(
-            key, roots,
-        )))))
+        Ok(Self {
+            core: PrincipalCore::new(key, roots),
+            pg: None,
+        })
     }
 
     /// Transition from Nascent to Established by freezing PG.
     ///
     /// This is the only code path that can create an Established principal.
     /// Called exclusively from the PrincipalCreate coz handler.
-    ///
-    /// # Why `Option::take`, not `std::mem::take`
-    ///
-    /// The obvious implementation — `std::mem::take(&mut self.0)` swapping in
-    /// `PrincipalKind::default()` — requires `PrincipalKind<S>: Default`,
-    /// which (transitively, via a `PrincipalCore<S>: Default` impl) requires
-    /// `S: Default`. `eml::MemoryStorage` derives `Default` trivially, but
-    /// `storage_fjall::FjallStorage` cannot reasonably implement it —
-    /// construction always requires either a filesystem path or an
-    /// already-open `fjall::Database` handle, so there is no meaningful
-    /// "empty" instance to hand back on the swap-out. Wrapping `Principal`'s
-    /// inner kind in `Option` sidesteps this entirely: `Option::take` swaps
-    /// in `None`, which needs no bound on `S` at all.
     pub(super) fn establish_pg(&mut self, pg: PrincipalGenesis) -> Result<()> {
-        let old = self
-            .0
-            .take()
-            .expect("Principal's inner kind is only None transiently inside establish_pg");
-        match old {
-            PrincipalKind::Nascent(core) => {
-                self.0 = Some(PrincipalKind::Established { core, pg });
-                Ok(())
-            },
-            est @ PrincipalKind::Established { .. } => {
-                self.0 = Some(est); // restore
-                Err(Error::StateMismatch) // already established
-            },
+        if self.pg.is_some() {
+            return Err(Error::StateMismatch); // already established
         }
+        self.pg = Some(pg);
+        Ok(())
     }
 }
 
