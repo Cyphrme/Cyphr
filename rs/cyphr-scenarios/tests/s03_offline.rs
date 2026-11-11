@@ -18,9 +18,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(G3): peers do not switch canonical branch on a resolution commit (SPEC 15.8: a \
-            commit on a retained branch makes it canonical); the peer holding the other branch \
-            stays on it"]
+#[ignore = "RED(RES-1): peers switch canonical branch on a resolution commit (SPEC 15.8)"]
 async fn s03_offline() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await
