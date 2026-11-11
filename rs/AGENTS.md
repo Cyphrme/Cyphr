@@ -31,15 +31,26 @@ Hardware-held keys sign through a signer trait that the Coz Rust library
 (`Cyphrme/coz-rust`) must expose; today `coz::sign_json` takes raw
 private-key bytes, so the seam is an upstream change.
 
-## Testing standard
+## Testing policy
 
-Root R13 governs. In this workspace: a scenario that exercises real
-`cyphr-server` instances and clients is the default test; `proptest` is
-for invariants, `../tests/golden` for byte-exact formats, `fuzz/` for
-parsers of untrusted input. A unit test needs a stated reason in a
-comment (the scenario cannot reach the case cheaply). Show each new
-test failing for the right reason before implementing, and delete any
-test that backs no stated claim.
+Root R13 governs. nrd: "We want meaningful property, metamorphic and
+integration and e2e scenarios, and unit tests sparingly if at all for
+perhaps tricky edges, but we should prefer to rule those out at the type
+level if and where possible."
+
+- The suite is property tests (`proptest`), metamorphic relations,
+  integration tests, and e2e scenarios against real `cyphr-server`
+  instances and clients. `../tests/golden` pins byte-exact formats;
+  `fuzz/` covers parsers of untrusted input.
+- A unit test is allowed only for a tricky edge none of those reach, and
+  carries a comment naming the edge. Prefer making the edge
+  unrepresentable in the types over testing it.
+- Every test names the spec rule or user-visible behaviour it checks.
+- Delete a test that cannot fail for a real defect: green by
+  construction, re-asserting a mock, or duplicating a stronger test.
+- Show each new test failing for the right reason before implementing.
+- While iterating run targeted tests (`cargo test -p <crate>`); run the
+  full suite once, before reporting.
 
 ## Gates
 
