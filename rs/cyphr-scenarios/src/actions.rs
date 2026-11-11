@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use cyphr_client::transport::NoiseConnector;
+
 use crate::capability::Capability;
 use crate::cli::{self, Device, field};
 use crate::harness::Harness;
@@ -310,7 +312,7 @@ pub struct RelyingParty<'h> {
     /// on: a real session with one of the peers, standing in for the
     /// session a relying party host would terminate. The relying party
     /// reads the binding from this carrier, never from a caller.
-    original: Mutex<Option<cyphr_client::transport::NoiseConnector>>,
+    original: Mutex<Option<NoiseConnector>>,
     /// Set at the first sign-in, which enrols the principal the way a
     /// sign-up does: the relying party is handed the genesis key out of
     /// band and the peers to pull from.
@@ -1356,10 +1358,7 @@ impl RelyingParty<'_> {
 
     /// A fresh authenticated Noise session with the first peer the relying
     /// party pulls from: one more channel, with a handshake hash of its own.
-    async fn open_channel(
-        &self,
-        enrolled: &Enrolled,
-    ) -> ActionResult<cyphr_client::transport::NoiseConnector> {
+    async fn open_channel(&self, enrolled: &Enrolled) -> ActionResult<NoiseConnector> {
         let name = enrolled.peers.first().ok_or_else(|| {
             ActionError::Failed("the relying party has no peer to open a channel to".into())
         })?;
@@ -1373,7 +1372,7 @@ impl RelyingParty<'_> {
     async fn on_channel<T>(
         &self,
         on: Channel,
-        f: impl FnOnce(&mut cyphr_client::RelyingParty, &cyphr_client::transport::NoiseConnector) -> T,
+        f: impl FnOnce(&mut cyphr_client::RelyingParty, &NoiseConnector) -> T,
         f_http: impl FnOnce(&mut cyphr_client::RelyingParty) -> T,
     ) -> ActionResult<T> {
         let mut guard = self.enrolled.lock().await;
