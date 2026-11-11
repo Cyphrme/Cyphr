@@ -118,11 +118,16 @@ impl Harness {
     /// enrolled with. A principal opened by one key has that thumbprint as
     /// its PG, so a session subject that resolves under this key names the
     /// enrolled principal and not merely a handle spelled like it.
-    pub fn genesis_tmb(&self, p: &crate::actions::Principal) -> crate::actions::ActionResult<String> {
+    pub fn genesis_tmb(
+        &self,
+        p: &crate::actions::Principal,
+    ) -> crate::actions::ActionResult<String> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         let fail = |what: String| crate::actions::ActionError::Failed(what);
         let entry = self.genesis_of(p)?;
-        let alg = entry["alg"].as_str().ok_or_else(|| fail("genesis entry has no alg".into()))?;
+        let alg = entry["alg"]
+            .as_str()
+            .ok_or_else(|| fail("genesis entry has no alg".into()))?;
         let public = entry["pub_key"]
             .as_str()
             .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
