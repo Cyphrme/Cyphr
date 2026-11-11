@@ -12,7 +12,16 @@
 //! [`LOGIN_KEY_FIELD`], and route protection refuses the token once the key
 //! is no longer active in the server's current view of the principal
 //! (`auth::middleware`). `exp` still caps a session on top of that.
+//!
+//! A login over the principal-authenticated Noise transport additionally
+//! signs the session's handshake hash into the token ([`CHANNEL_FIELD`]),
+//! so the token is good only on the channel that issued it (Noise section
+//! 11.2: the handshake hash is the channel binding). A login over plain
+//! HTTP, a browser edge, has no channel and carries none: that session is
+//! bound to its key alone. The binding is a signed claim rather than a
+//! server-side session table, so it survives a restart and adds no state.
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;
 
 use super::ServerIdentity;
@@ -43,6 +52,11 @@ pub const BEARER_TOKEN_TYP: &str = "cyphr-server/auth/token";
 /// token not minted by a login, which route protection refuses.
 pub const LOGIN_KEY_FIELD: &str = "ltmb";
 
+/// The signed claim holding the handshake hash (b64ut) of the Noise
+/// session that issued the token. Present only on a token minted over the
+/// transport; route protection refuses such a token on any other channel.
+pub const CHANNEL_FIELD: &str = "cb";
+
 /// Claims extracted from a verified bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
@@ -57,6 +71,9 @@ pub struct Claims {
     /// The thumbprint (b64ut) of the principal key that logged in
     /// ([`LOGIN_KEY_FIELD`]); `None` for a token not minted by a login.
     pub login_tmb: Option<String>,
+    /// The handshake hash of the Noise session that issued the token
+    /// ([`CHANNEL_FIELD`]); `None` for a key-bound (browser edge) token.
+    pub channel: Option<Vec<u8>>,
 }
 
 /// Errors verifying a bearer token.
@@ -96,6 +113,10 @@ impl ServerIdentity {
     /// cannot mint a token under any other `typ`, which is the issuance
     /// half of the F22 binding (verification checks the same constant).
     ///
+    /// `channel` is the handshake hash of the Noise session the login
+    /// arrived on, or `None` for a login with no channel (a browser edge),
+    /// whose token is bound to the key alone.
+    ///
     /// Returns `None` if coz rejects the payload or this identity's key
     /// (mirrors [`ServerIdentity::sign`]).
     pub fn issue_login_token(
@@ -105,8 +126,9 @@ impl ServerIdentity {
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
+        channel: Option<&[u8]>,
     ) -> Option<String> {
-        self.issue(pr.into(), Some(login_tmb), perms, now, ttl_secs)
+        self.issue(pr.into(), Some(login_tmb), perms, now, ttl_secs, channel)
     }
 
     /// A login-shaped token under a fixed login key, for unit tests that
@@ -120,7 +142,7 @@ impl ServerIdentity {
         ttl_secs: i64,
     ) -> Option<String> {
         let tmb = coz::Alg::Ed25519.compute_thumbprint(&[7u8; 32])?;
-        self.issue_login_token(pr, &tmb, perms, now, ttl_secs)
+        self.issue_login_token(pr, &tmb, perms, now, ttl_secs, None)
     }
 
     /// A validly signed token that names no login key -- what no login
@@ -133,7 +155,7 @@ impl ServerIdentity {
         now: i64,
         ttl_secs: i64,
     ) -> Option<String> {
-        self.issue(pr.into(), None, perms, now, ttl_secs)
+        self.issue(pr.into(), None, perms, now, ttl_secs, None)
     }
 
     fn issue(
@@ -143,6 +165,7 @@ impl ServerIdentity {
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
+        channel: Option<&[u8]>,
     ) -> Option<String> {
         let tmb = self.alg().compute_thumbprint(self.pub_key())?;
 
@@ -159,6 +182,13 @@ impl ServerIdentity {
             pay.extra.insert(
                 LOGIN_KEY_FIELD.to_string(),
                 Value::String(login_tmb.to_b64()),
+            );
+        }
+
+        if let Some(channel) = channel {
+            pay.extra.insert(
+                CHANNEL_FIELD.to_string(),
+                Value::String(Base64UrlUnpadded::encode_string(channel)),
             );
         }
 
@@ -249,12 +279,23 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
         })
         .transpose()?;
 
+    let channel = pay
+        .extra
+        .get(CHANNEL_FIELD)
+        .map(|v| {
+            v.as_str()
+                .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
+                .ok_or(TokenError::MissingClaim(CHANNEL_FIELD))
+        })
+        .transpose()?;
+
     Ok(Claims {
         pr,
         perms,
         exp,
         tmb,
         login_tmb,
+        channel,
     })
 }
 
@@ -457,7 +498,7 @@ mod tests {
             .expect("thumbprint");
 
         let token = identity
-            .issue_login_token(PR, &login_tmb, vec!["read".to_string()], 1_000, 300)
+            .issue_login_token(PR, &login_tmb, vec!["read".to_string()], 1_000, 300, None)
             .expect("issue login token");
         let claims = identity.verify_token(&token, 1_100).expect("verifies");
         assert_eq!(claims.login_tmb, Some(login_tmb.to_b64()));

@@ -313,6 +313,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
             axum::routing::post(auth::login::challenge),
         )
         .route("/auth/login", axum::routing::post(auth::login::login))
+        .route("/auth/session", axum::routing::post(auth::login::session))
         .fallback(async || error::AppError::not_found("route not found"));
 
     if state.config.mode == config::ServerMode::Witness {

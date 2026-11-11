@@ -60,6 +60,11 @@ pub enum SessionError {
     #[error("the key that opened this session was revoked")]
     Revoked,
 
+    /// The token was issued over one Noise session and arrived on another
+    /// channel, or on none: a stolen token is useless off its channel.
+    #[error("bearer token is bound to the channel that issued it, not this one")]
+    ChannelMismatch,
+
     /// The principal is not in an Active lifecycle state.
     #[error("the session's principal is not in an active lifecycle state")]
     PrincipalNotActive,
@@ -103,6 +108,17 @@ pub fn verify_bearer_if_present(
     bearer_token(headers)
         .map(|token| identity.verify_token(token, now))
         .transpose()
+}
+
+/// Refuse a channel-bound token presented anywhere but the channel that
+/// issued it. `channel` is the handshake hash of the Noise session the
+/// request arrived on, `None` over plain HTTP. A token with no channel
+/// claim is key-bound and passes here.
+pub fn check_channel(claims: &Claims, channel: Option<&[u8]>) -> Result<(), SessionError> {
+    match claims.channel.as_deref() {
+        Some(bound) if channel != Some(bound) => Err(SessionError::ChannelMismatch),
+        _ => Ok(()),
+    }
 }
 
 /// Re-check, against `engine`'s current view of the token's principal and
@@ -178,6 +194,7 @@ pub async fn check_push_admission(
     observations: &ObservationStore,
     target_principal: &str,
     now: i64,
+    channel: Option<&[u8]>,
 ) -> Result<(), AppError> {
     let Some(identity) = identity else {
         return Ok(());
@@ -202,6 +219,7 @@ pub async fn check_push_admission(
             "bearer token does not authorize this principal",
         ));
     }
+    check_channel(&claims, channel)?;
     match check_session_key(engine, observations, &claims).await {
         // A push naming a principal with no stored chain is its genesis:
         // no session can exist yet, and the optional knob (R7) leaves the
@@ -281,7 +299,8 @@ mod tests {
                 &state.engine,
                 &state.observations,
                 PR,
-                1_100
+                1_100,
+                None
             )
             .await
             .is_err()

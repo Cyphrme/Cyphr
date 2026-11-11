@@ -434,6 +434,7 @@ pub async fn challenge(
 /// by whether the payload carries a challenge.
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     body: String,
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
     let (identity, audience) = login_capability(&state)?;
@@ -499,10 +500,64 @@ pub async fn login(
             default_login_perms(),
             now,
             super::token::DEFAULT_TTL_SECS,
+            // A login over the Noise transport binds the session to that
+            // channel; over HTTP (a browser edge) there is none, and the
+            // session is bound to the key alone.
+            peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
         )
         .ok_or_else(|| AppError::internal("failed to issue bearer token"))?;
 
     Ok(Json(Envelope::unsigned(LoginResponse { token })))
+}
+
+/// Response for `POST /auth/session`: what a live session stands for.
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    /// The session's principal.
+    pub pr: String,
+    /// The key that opened the session, which it stands or falls with.
+    pub key: String,
+    /// `noise-handshake-hash` for a session bound to the Noise channel that
+    /// issued it, `key` for a browser edge session bound to its key alone.
+    pub binding: &'static str,
+}
+
+/// `POST /auth/session` — present a bearer token (the request body) and
+/// learn whether its session still stands.
+///
+/// The token must verify, the channel it arrives on must be the one it was
+/// issued on (a token minted over Noise is refused over any other
+/// session, and over HTTP), and the key that opened it must still be
+/// active in the principal's chain. This is the one route that presents a
+/// token as its whole input, since the transport carries no headers.
+pub async fn session(
+    State(state): State<Arc<AppState>>,
+    peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
+    body: String,
+) -> Result<Json<Envelope<SessionResponse>>, AppError> {
+    let (identity, _) = login_capability(&state)?;
+    let claims = identity
+        .verify_token(body.trim(), server_now())
+        .map_err(|e| AppError::unauthorized(format!("bearer token rejected: {e}")))?;
+    super::middleware::check_channel(
+        &claims,
+        peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
+    )?;
+    super::middleware::check_session_key(&state.engine, &state.observations, &claims).await?;
+    let key = claims
+        .login_tmb
+        .clone()
+        .ok_or_else(|| AppError::unauthorized("bearer token names no login key"))?;
+    let binding = if claims.channel.is_some() {
+        "noise-handshake-hash"
+    } else {
+        "key"
+    };
+    Ok(Json(Envelope::unsigned(SessionResponse {
+        pr: claims.pr,
+        key,
+        binding,
+    })))
 }
 
 #[cfg(test)]

@@ -727,7 +727,7 @@ pub async fn patch(
 /// OPTIONAL admission/anti-abuse knob -- if one IS presented, it must
 /// name this same principal.
 #[tracing::instrument(
-    skip(state, headers, request),
+    skip(state, headers, peer, request),
     fields(
         principal_id = %request.principal_id,
         blob_count = request.bundle.cozies().count()
@@ -736,6 +736,7 @@ pub async fn patch(
 pub async fn push(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     AppJson(request): AppJson<PushRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -751,6 +752,7 @@ pub async fn push(
         &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
+        peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
     )
     .await?;
 
