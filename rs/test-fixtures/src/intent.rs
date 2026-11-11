@@ -124,8 +124,9 @@ pub struct SetupIntent {
     pub revoke_at: Option<i64>,
 }
 
-/// The second principal of a two-principal test (SPEC 11.5.1 merge): its
-/// genesis keys and commits, generated after the test principal's.
+/// The second principal of a two-principal test: its genesis keys and
+/// commits, generated after the test principal's (SPEC 11.5.1 merge), or
+/// before them when `embedded` (SPEC 10.3).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PeerIntent {
     /// Genesis key set (key names from pool).
@@ -133,6 +134,12 @@ pub struct PeerIntent {
     /// Commit sequence.
     #[serde(default)]
     pub commit: Vec<CommitIntent>,
+    /// The peer is an embedded principal of the test principal: its chain
+    /// comes first, and the verifier pins every PR it held to its tip, so
+    /// a test-principal coz may name `id = "peer:<n>"` to embed it and be
+    /// signed by a key of the peer.
+    #[serde(default)]
+    pub embedded: bool,
 }
 
 /// Override fields for error tests.

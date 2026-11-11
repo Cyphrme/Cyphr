@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cyphr::key::Key;
 use cyphr::{Principal, StateDigest};
-use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
+use test_fixtures::{Golden, GoldenExpected, GoldenPeer, Pool, PoolKey};
 
 // ============================================================================
 // Test helpers
@@ -462,6 +462,19 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     // every consumer of a stored or fetched bundle takes: actions first,
     // then each transaction of `txs` as one transaction (SPEC 4.6.2).
     // ========================================================================
+    // An embedded peer (SPEC 10.3) is replayed first, and every PR it held
+    // is pinned on the test principal to the peer's tip.
+    if let Some(peer) = fixture.peer.as_ref().filter(|p| p.embedded) {
+        let other = replay_peer(pool, peer, &fixture.name).await;
+        for commit in other.commits() {
+            let pr = commit.pr().as_multihash().tagged_first().expect("PR");
+            let tip = cyphr::Tip::new(&other, 0);
+            principal
+                .reveal_embedded(&pr.to_string(), cyphr::Tracking::Pin(Box::new(tip)))
+                .expect("pin peer");
+        }
+    }
+
     if let Some(commits) = &fixture.commits {
         for (ci, commit) in commits.iter().enumerate() {
             let replayed = match commit.bundle().map(|b| b.decode()) {
@@ -505,26 +518,8 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
 
         // A two-principal vector: replay the peer the same way, then the
         // merge status of the test principal (source) into it (SPEC 11.5.1).
-        if let Some(peer) = &fixture.peer {
-            let first = pool
-                .get(&peer.principal[0])
-                .unwrap_or_else(|| panic!("{}: peer key not in pool", fixture.name));
-            let mut other =
-                Principal::implicit(try_pool_key_to_domain(first).expect("peer genesis key"))
-                    .await
-                    .expect("peer genesis");
-            for (ci, commit) in peer.commits.iter().enumerate() {
-                let bundle = commit
-                    .bundle()
-                    .expect("peer line")
-                    .decode()
-                    .expect("peer bundle");
-                cyphr::replay::replay_bundle(&mut other, &bundle)
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!("{}: peer line {} failed: {e}", fixture.name, ci + 1)
-                    });
-            }
+        if let Some(peer) = fixture.peer.as_ref().filter(|p| !p.embedded) {
+            let other = replay_peer(pool, peer, &fixture.name).await;
             let status = format!("{:?}", cyphr::merge_status(&principal, &other));
             assert_eq!(
                 Some(status.as_str()),
@@ -545,6 +540,28 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         "{}: fixture has no commits array - regenerate with fixture-gen",
         fixture.name
     );
+}
+
+/// The second principal of a two-principal vector, replayed through the
+/// same entry point as the first.
+async fn replay_peer(pool: &Pool, peer: &GoldenPeer, name: &str) -> Principal {
+    let first = pool
+        .get(&peer.principal[0])
+        .unwrap_or_else(|| panic!("{name}: peer key not in pool"));
+    let mut other = Principal::implicit(try_pool_key_to_domain(first).expect("peer genesis key"))
+        .await
+        .expect("peer genesis");
+    for (ci, commit) in peer.commits.iter().enumerate() {
+        let bundle = commit
+            .bundle()
+            .expect("peer line")
+            .decode()
+            .expect("peer bundle");
+        cyphr::replay::replay_bundle(&mut other, &bundle)
+            .await
+            .unwrap_or_else(|e| panic!("{name}: peer line {} failed: {e}", ci + 1));
+    }
+    other
 }
 
 async fn run_golden_dir(subdir: &str) {
@@ -641,4 +658,13 @@ async fn test_golden_transaction_grouping() {
 #[tokio::test]
 async fn test_golden_merge() {
     run_golden_dir("merge").await;
+}
+
+/// Embedding vectors (SPEC 10.3, 10.5): a principal embeds another's PR in
+/// its KT and a key the embedded principal authorizes at its tip signs
+/// for it, including a key added after the embedded PR. Red if the
+/// embedded member's key is refused or the resulting roots drift.
+#[tokio::test]
+async fn test_golden_embedding() {
+    run_golden_dir("embedding").await;
 }
