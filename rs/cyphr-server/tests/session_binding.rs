@@ -26,7 +26,7 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    build_genesis_push_body, get_json, golden_principal_id, load_pool, post_json, write_signing_key,
+    build_genesis_push_body, build_second_commit_push_body, get_json, golden_principal_id, load_pool, post_json, write_signing_key,
 };
 
 const AUDIENCE: &str = "cyphr.me";
@@ -75,12 +75,20 @@ fn golden_signer() -> SoftwareSigner {
 /// with the `golden` principal pushed. Returns the state, the Noise
 /// address, the principal id and the temp-dir guard.
 async fn server() -> (Arc<AppState>, SocketAddr, String, tempfile::TempDir) {
+    server_with(None).await
+}
+
+/// [`server`] with the configured session lifetime.
+async fn server_with(
+    session_ttl_secs: Option<i64>,
+) -> (Arc<AppState>, SocketAddr, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = write_signing_key(dir.path());
     let config = ServerConfig {
         data_dir: dir.path().join("data"),
         signing_key_path: Some(key_path.clone()),
         audience: Some(AUDIENCE.to_string()),
+        session_ttl_secs: session_ttl_secs.unwrap_or(ServerConfig::default().session_ttl_secs),
         ..Default::default()
     };
     let mut state = AppState::new(config).expect("open AppState");
@@ -111,6 +119,24 @@ async fn server() -> (Arc<AppState>, SocketAddr, String, tempfile::TempDir) {
 
 /// A fresh authenticated Noise session as the `golden` principal.
 async fn session(state: &Arc<AppState>, addr: SocketAddr, pr: &str) -> NoiseConnector {
+    session_as(state, addr, pr, &golden_signer()).await
+}
+
+/// A fresh Level 1 principal (a key that is its own principal) and its
+/// signer: whoever dials a server needs no account to authenticate.
+fn fresh_level_one() -> (String, SoftwareSigner) {
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
+    let signer = SoftwareSigner::new(kp.alg.name(), &kp.prv_bytes, &kp.pub_bytes, &tmb);
+    (tmb.to_b64(), signer)
+}
+
+async fn session_as(
+    state: &Arc<AppState>,
+    addr: SocketAddr,
+    pr: &str,
+    signer: &SoftwareSigner,
+) -> NoiseConnector {
     let app = build_router(state.clone());
     let (_, discovery) = get_json(app.clone(), "/server").await;
     let d = &discovery["payload"];
@@ -127,7 +153,7 @@ async fn session(state: &Arc<AppState>, addr: SocketAddr, pr: &str) -> NoiseConn
     held.follow(&RouterConnector(app))
         .await
         .expect("follow the server chain");
-    NoiseConnector::connect(addr, &mut held, &golden_signer(), pr)
+    NoiseConnector::connect(addr, &mut held, signer, pr)
         .await
         .expect("an authenticated session")
 }
@@ -139,8 +165,14 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// The timestamp-flow login the `golden` key signs for `pr`.
-fn login_body(pr: &str) -> String {
+/// The timestamp-flow login the `golden` key signs for `pr`, committing to
+/// the channel whose handshake hash is `h` when it is given (a native
+/// client's login over Noise).
+fn login_body(pr: &str, h: Option<&[u8]>) -> String {
+    login_body_with(pr, h, &[])
+}
+
+fn login_body_with(pr: &str, h: Option<&[u8]>, extra: &[(&str, &str)]) -> String {
     let pool = load_pool();
     let key = pool.get(GOLDEN_KEY).expect("golden in pool");
     let prv = Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).expect("prv");
@@ -154,6 +186,16 @@ fn login_body(pr: &str) -> String {
         "pr".to_string(),
         serde_json::Value::String(cyphr_storage::engine::bare_digest(pr).to_string()),
     );
+    if let Some(h) = h {
+        pay.extra.insert(
+            "h".to_string(),
+            serde_json::Value::String(Base64UrlUnpadded::encode_string(h)),
+        );
+    }
+    for (name, value) in extra {
+        pay.extra
+            .insert((*name).to_string(), serde_json::Value::String((*value).into()));
+    }
     let bytes = serde_json::to_vec(&pay).expect("pay");
     let (sig, _) = coz::sign_json(&bytes, &key.alg, &prv, &public).expect("sign");
     serde_json::to_string(&coz::CozJson {
@@ -172,6 +214,24 @@ async fn over_noise(conn: &NoiseConnector, request: Request) -> (u16, serde_json
         Err(ConnectError::NonSuccess(status)) => (status, serde_json::Value::Null),
         Err(other) => panic!("transport failed: {other}"),
     }
+}
+
+/// A native client's sign-in: a Noise session and the token its login,
+/// which commits to that session's handshake hash, earned.
+async fn native_login(
+    state: &Arc<AppState>,
+    addr: SocketAddr,
+    pr: &str,
+) -> (NoiseConnector, String) {
+    let conn = session(state, addr, pr).await;
+    let h = conn.channel_binding().expect("binding").as_bytes().to_vec();
+    let (status, login) = over_noise(
+        &conn,
+        Request::post("/auth/login", login_body(pr, Some(&h)).into_bytes()),
+    )
+    .await;
+    assert_eq!(status, 200, "{login}");
+    (conn, token_of(&login))
 }
 
 fn token_of(login: &serde_json::Value) -> String {
@@ -193,14 +253,7 @@ fn token_of(login: &serde_json::Value) -> String {
 #[tokio::test]
 async fn token_is_refused_on_a_second_channel() {
     let (state, addr, pr, _dir) = server().await;
-    let first = session(&state, addr, &pr).await;
-    let (status, login) = over_noise(
-        &first,
-        Request::post("/auth/login", login_body(&pr).into_bytes()),
-    )
-    .await;
-    assert_eq!(status, 200, "{login}");
-    let token = token_of(&login);
+    let (first, token) = native_login(&state, addr, &pr).await;
     let present = || Request::post("/auth/session", token.clone().into_bytes());
 
     let (status, answer) = over_noise(&first, present()).await;
@@ -208,11 +261,6 @@ async fn token_is_refused_on_a_second_channel() {
     assert_eq!(answer["payload"]["binding"], "noise-handshake-hash");
 
     let second = session(&state, addr, &pr).await;
-    assert_ne!(
-        first.channel_binding().expect("binding").as_bytes(),
-        second.channel_binding().expect("binding").as_bytes(),
-        "two sessions have two handshake hashes"
-    );
     let (status, _) = over_noise(&second, present()).await;
     assert_eq!(status, 401, "a second Noise session must be refused");
 
@@ -236,7 +284,7 @@ async fn token_is_refused_on_a_second_channel() {
 async fn browser_session_is_bound_to_its_key() {
     let (state, addr, pr, _dir) = server().await;
     let app = build_router(state.clone());
-    let (status, login) = post_json(app.clone(), "/auth/login", login_body(&pr)).await;
+    let (status, login) = post_json(app.clone(), "/auth/login", login_body(&pr, None)).await;
     assert_eq!(status, StatusCode::OK, "{login}");
     let token = token_of(&login);
 
@@ -253,4 +301,115 @@ async fn browser_session_is_bound_to_its_key() {
     let (status, answer) =
         over_noise(&noise, Request::post("/auth/session", token.into_bytes())).await;
     assert_eq!(status, 200, "a key-bound token has no channel: {answer}");
+}
+
+/// Claim: a login over Noise must come from the principal and key that
+/// authenticated the session, or anyone with a Noise session could carry a
+/// victim's signed login to the server on their own channel and walk away
+/// with the victim's token bound to the attacker's channel.
+///
+/// Turns red if: a fresh Level 1 principal on its own session posting the
+/// victim's signed login gets a token (200).
+/// End-to-end scenario: yes (real server, attacker and victim identities).
+#[tokio::test]
+async fn login_over_noise_must_come_from_the_session_peer() {
+    let (state, addr, pr, _dir) = server().await;
+    let (attacker_pr, attacker) = fresh_level_one();
+    let conn = session_as(&state, addr, &attacker_pr, &attacker).await;
+    let h = conn.channel_binding().expect("binding").as_bytes().to_vec();
+    let (status, _) = over_noise(
+        &conn,
+        Request::post("/auth/login", login_body(&pr, Some(&h)).into_bytes()),
+    )
+    .await;
+    assert_eq!(status, 401, "the victim's login on the attacker's session");
+}
+
+/// Claim: a login commits to its channel (SPEC 17.2 login over Noise): over
+/// Noise the client signs the handshake hash into the login and the server
+/// binds the token only when it equals the session's; a login carrying a
+/// hash is refused over HTTP and a login without one is refused over Noise,
+/// so neither can be downgraded to the other.
+///
+/// Turns red if: a victim's Noise login reposted over HTTP or on a second
+/// Noise session mints a token, a login without a hash is accepted over
+/// Noise, or one carrying a hash is accepted over HTTP.
+/// End-to-end scenario: yes (real server, three channels).
+#[tokio::test]
+async fn login_commits_to_its_channel() {
+    let (state, addr, pr, _dir) = server().await;
+    let app = build_router(state.clone());
+    let victim = session(&state, addr, &pr).await;
+    let h = victim.channel_binding().expect("binding").as_bytes().to_vec();
+    let body = login_body(&pr, Some(&h));
+    let (status, _) = over_noise(&victim, Request::post("/auth/login", body.clone().into_bytes())).await;
+    assert_eq!(status, 200, "the login on its own channel");
+
+    let (status, _) = post_json(app.clone(), "/auth/login", body.clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the same login over HTTP");
+    let second = session(&state, addr, &pr).await;
+    let (status, _) = over_noise(&second, Request::post("/auth/login", body.into_bytes())).await;
+    assert_eq!(status, 401, "the same login on a second session");
+
+    let (status, _) = over_noise(
+        &second,
+        Request::post("/auth/login", login_body(&pr, None).into_bytes()),
+    )
+    .await;
+    assert_eq!(status, 401, "no hash over Noise is a downgrade");
+}
+
+/// Claim: over Noise a push carries its session's token in the body (the
+/// transport has no headers), and a token is good only on its own session.
+///
+/// Turns red if: another session's token is accepted on a push, or the
+/// session's own token is not.
+/// End-to-end scenario: yes (real server, two sessions, a real second commit).
+#[tokio::test]
+async fn push_over_noise_takes_the_sessions_own_token() {
+    let (state, addr, pr, _dir) = server().await;
+    let (mine, my_token) = native_login(&state, addr, &pr).await;
+    let (_theirs, their_token) = native_login(&state, addr, &pr).await;
+    let pool = load_pool();
+    let base = build_second_commit_push_body(&pool, &pr, 1_700_000_000, 1_700_000_100).await;
+    let push = |token: &str| {
+        let mut body: serde_json::Value = serde_json::from_str(&base).expect("push body");
+        body["token"] = token.into();
+        Request::post("/push", body.to_string().into_bytes())
+    };
+    let (status, _) = over_noise(&mine, push(&their_token)).await;
+    assert_eq!(status, 401, "another session's token");
+    let (status, answer) = over_noise(&mine, push(&my_token)).await;
+    assert_eq!(status, 200, "the session's own token: {answer}");
+}
+
+/// Claim (binding rules): the binding cannot be supplied by the client and
+/// the session is short and configured. A `cb` smuggled into the signed
+/// login does not bind the token (admission reads it only from the
+/// server-signed token); the response names the binding that applied; the
+/// lifetime is the configured one; presenting a token never extends it.
+///
+/// Turns red if: a client-supplied `cb` changes the binding, the response
+/// omits the binding or the lifetime, the lifetime is not the configured
+/// one, or a presentation moves it.
+/// End-to-end scenario: yes (real server over HTTP).
+#[tokio::test]
+async fn rules_binding_is_server_signed_and_lifetime_configured() {
+    let (state, _addr, pr, _dir) = server_with(Some(120)).await;
+    let app = build_router(state.clone());
+    let smuggled = login_body_with(&pr, None, &[("cb", "AAAA")]);
+    let (status, login) = post_json(app.clone(), "/auth/login", smuggled).await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = token_of(&login);
+
+    let (_, first) = post_json(app.clone(), "/auth/session", token.clone()).await;
+    assert_eq!(first["payload"]["binding"], "key", "{first}");
+    let exp = first["payload"]["exp"].as_i64().expect("exp");
+    let issued = now();
+    assert!(
+        (issued + 118..=issued + 120).contains(&exp),
+        "exp {exp} is not the configured 120s from now {issued}"
+    );
+    let (_, again) = post_json(app, "/auth/session", token).await;
+    assert_eq!(again["payload"]["exp"], first["payload"]["exp"], "no sliding refresh");
 }

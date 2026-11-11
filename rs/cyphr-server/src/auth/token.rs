@@ -13,13 +13,31 @@
 //! is no longer active in the server's current view of the principal
 //! (`auth::middleware`). `exp` still caps a session on top of that.
 //!
-//! A login over the principal-authenticated Noise transport additionally
-//! signs the session's handshake hash into the token ([`CHANNEL_FIELD`]),
-//! so the token is good only on the channel that issued it (Noise section
-//! 11.2: the handshake hash is the channel binding). A login over plain
-//! HTTP, a browser edge, has no channel and carries none: that session is
-//! bound to its key alone. The binding is a signed claim rather than a
-//! server-side session table, so it survives a restart and adds no state.
+//! A login over the principal-authenticated Noise transport commits to its
+//! channel: the client signs the session's handshake hash `h` into the
+//! login, the server accepts it only from the session's own principal and
+//! key and only when `h` equals that session's hash, and then signs the
+//! hash into the token ([`CHANNEL_FIELD`]) so the token is good only on
+//! that channel (Noise section 11.2: the handshake hash is the channel
+//! binding). A login over plain HTTP, a browser edge, carries no `h` and
+//! gets a token with no channel claim: that session is bound to its key
+//! alone. Neither login can be presented as the other. Admission reads the
+//! channel only from this server-signed token, never from the request.
+//!
+//! # Bearer residual
+//!
+//! A token is still a bearer credential. A channel-bound token is useless
+//! off its channel, but whoever controls that channel (the client's own
+//! endpoint, or a process that reads its memory) can use it until `exp`; a
+//! key-bound (browser) token has no channel at all and works for anyone who
+//! holds it until `exp` or until its key leaves the chain. Binding narrows
+//! theft, it does not make a token proof of possession. The lifetime is
+//! therefore short and configured (`session_ttl_secs`, at most an hour),
+//! and a session is never extended: only a new login, which proves
+//! possession of the key again, mints a new token. A timestamp-flow login
+//! can be replayed inside its window; the challenge flow is single-use.
+//! The binding is a signed claim rather than a server-side session table,
+//! so it survives a restart and adds no state.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;

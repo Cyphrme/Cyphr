@@ -74,6 +74,11 @@ pub struct PatchQuery {
 pub struct PushRequest {
     /// Principal genesis identifier.
     pub principal_id: String,
+    /// The session's bearer token, for a request that cannot carry an
+    /// `Authorization` header (the Noise transport has none). A header, if
+    /// both are present, wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// The bundle.
     #[serde(flatten)]
     pub bundle: cyphr::replay::WireBundle,
@@ -752,6 +757,7 @@ pub async fn push(
         &state.observations,
         &request.principal_id,
         crate::auth::server_now(),
+        request.token.as_deref(),
         peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
     )
     .await?;

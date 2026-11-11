@@ -167,6 +167,12 @@ pub struct ServeArgs {
     #[arg(long, env = "CYPHR_AUDIENCE")]
     pub audience: Option<String>,
 
+    /// Lifetime of a login session's bearer token, in seconds (at most
+    /// [`MAX_SESSION_TTL_SECS`]). A session is never extended; a client
+    /// that wants a longer one signs in again.
+    #[arg(long, env = "CYPHR_SESSION_TTL_SECS")]
+    pub session_ttl_secs: Option<i64>,
+
     /// Target authority URL for witness mode sync.
     #[arg(long, env = "CYPHR_AUTHORITY_URL")]
     pub authority_url: Option<String>,
@@ -226,6 +232,12 @@ pub struct ServerConfig {
     /// `auth::login`). `None` means logins are not accepted.
     #[serde(default)]
     pub audience: Option<String>,
+
+    /// Lifetime of a login session's bearer token, in seconds, clamped to
+    /// `1..=`[`MAX_SESSION_TTL_SECS`]. Short because a bearer token is
+    /// good for whoever holds it until it expires (see `auth::token`).
+    #[serde(default = "default_session_ttl_secs")]
+    pub session_ttl_secs: i64,
 
     /// Target authority URL for witness mode sync.
     #[serde(default)]
@@ -517,6 +529,13 @@ impl ServerConfig {
 /// path from a bare `data_dir` rather than a [`ServerConfig`].
 pub const RECORD_DIR_NAME: &str = "record";
 
+/// The longest a login session may live: an hour.
+pub const MAX_SESSION_TTL_SECS: i64 = 60 * 60;
+
+fn default_session_ttl_secs() -> i64 {
+    crate::auth::token::DEFAULT_TTL_SECS
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -527,6 +546,7 @@ impl Default for ServerConfig {
             mode: ServerMode::Authority,
             signing_key_path: None,
             audience: None,
+            session_ttl_secs: default_session_ttl_secs(),
             authority_url: None,
             authority_identity: None,
             allow_cleartext_upstream: false,
@@ -639,6 +659,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         }
         if let Some(ref audience) = args.audience {
             config.audience = Some(audience.clone());
+        }
+        if let Some(ttl) = args.session_ttl_secs {
+            config.session_ttl_secs = ttl;
         }
         if let Some(ref authority_url) = args.authority_url {
             config.authority_url = Some(authority_url.clone());

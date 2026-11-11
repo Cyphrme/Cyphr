@@ -16,7 +16,7 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_storage::engine::{EngineError, bare_digest};
 
 use super::ServerIdentity;
-use super::token::{Claims, TokenError};
+use super::token::Claims;
 use crate::error::AppError;
 use crate::observation::{ObservationError, ObservationStore};
 
@@ -88,26 +88,6 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
-}
-
-/// Verify a request's bearer token against `identity`, if one is present.
-///
-/// Returns `Ok(None)` when no `Authorization` header carries a bearer
-/// token -- the caller decides whether that is acceptable (an optional
-/// admission knob) or a rejection (mandatory auth). Returns
-/// `Ok(Some(claims))` for a genuine, unexpired token issued by
-/// `identity`. Returns `Err` for a token that IS present but fails
-/// verification -- a present-and-invalid token is never treated the same
-/// as an absent one. This checks the token only; the chain re-check is
-/// [`check_session_key`].
-pub fn verify_bearer_if_present(
-    headers: &HeaderMap,
-    identity: &ServerIdentity,
-    now: i64,
-) -> Result<Option<Claims>, TokenError> {
-    bearer_token(headers)
-        .map(|token| identity.verify_token(token, now))
-        .transpose()
 }
 
 /// Refuse a channel-bound token presented anywhere but the channel that
@@ -194,14 +174,17 @@ pub async fn check_push_admission(
     observations: &ObservationStore,
     target_principal: &str,
     now: i64,
+    body_token: Option<&str>,
     channel: Option<&[u8]>,
 ) -> Result<(), AppError> {
     let Some(identity) = identity else {
         return Ok(());
     };
-    let claims = match verify_bearer_if_present(headers, identity, now) {
-        Ok(None) => return Ok(()),
-        Ok(Some(claims)) => claims,
+    let Some(token) = bearer_token(headers).or(body_token) else {
+        return Ok(());
+    };
+    let claims = match identity.verify_token(token, now) {
+        Ok(claims) => claims,
         Err(e) => {
             return Err(AppError::unauthorized(format!(
                 "bearer token rejected: {e}"
@@ -267,8 +250,6 @@ mod tests {
 
     // --- bearer_token ---
 
-    // --- verify_bearer_if_present ---
-
     // --- check_push_admission (paths decided before any
     // chain lookup; the chain re-check and the subject match are covered
     // end to end in tests/route_protection.rs, which has real principals) ---
@@ -300,6 +281,7 @@ mod tests {
                 &state.observations,
                 PR,
                 1_100,
+                None,
                 None
             )
             .await
