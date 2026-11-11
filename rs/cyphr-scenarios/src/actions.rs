@@ -1222,10 +1222,9 @@ fn key_of_entry(entry: &serde_json::Value) -> ActionResult<cyphr::Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let bad = |what: &str| ActionError::Failed(format!("keystore entry has no {what}: {entry}"));
     let alg = entry["alg"].as_str().ok_or_else(|| bad("alg"))?;
-    let public = Base64UrlUnpadded::decode_vec(
-        entry["pub_key"].as_str().ok_or_else(|| bad("pub_key"))?,
-    )
-    .map_err(|e| ActionError::Failed(format!("pub_key is not base64url: {e}")))?;
+    let public =
+        Base64UrlUnpadded::decode_vec(entry["pub_key"].as_str().ok_or_else(|| bad("pub_key"))?)
+            .map_err(|e| ActionError::Failed(format!("pub_key is not base64url: {e}")))?;
     let tmb = coz::compute_thumbprint_for_alg(alg, &public).ok_or_else(|| bad("a usable key"))?;
     cyphr::Key::new(alg.to_owned(), tmb, public)
         .map_err(|e| ActionError::Failed(format!("keystore key: {e:?}")))

@@ -28,10 +28,10 @@ cyphr = { path = "../cyphr", version = "0.1.0" }
 # TLS is rustls with the bundled webpki roots and the `ring` provider (already
 # in the tree through `snow`): no native-tls, openssl or second provider, so
 # a peer is verified the same on every platform.
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls-webpki-roots",
 ], optional = true }
-rand = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 snow = { version = "=0.10.0", optional = true }

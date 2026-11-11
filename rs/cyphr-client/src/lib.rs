@@ -18,10 +18,10 @@ mod report;
 mod revoke;
 mod sync;
 
+pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use relying_party::{
     LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, Trust, UnmetCurrency,
 };
-pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
     Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerOutcome, PeerStanding, PullPeer, PullReport,

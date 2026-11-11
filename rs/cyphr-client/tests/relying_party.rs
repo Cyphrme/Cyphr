@@ -120,10 +120,7 @@ impl Connector for Mirror {
 }
 
 fn peer<'a>(name: &'a str, m: &'a Mirror) -> PullPeer<'a, Mirror> {
-    PullPeer {
-        name,
-        connector: m,
-    }
+    PullPeer { name, connector: m }
 }
 
 /// A login signed by `by`, the Coz the principal's device hands the
@@ -188,15 +185,13 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
     let (by_a, pg) = genesis_over(&a, &[&b]).await;
     let (by_b, pg_b) = genesis_over(&b, &[&a]).await;
     assert_eq!(pg, pg_b, "one key set, one PG");
-    let (pinned, impostor) = (
-        Mirror { line: by_a },
-        Mirror { line: by_b },
-    );
+    let (pinned, impostor) = (Mirror { line: by_a }, Mirror { line: by_b });
     PIN_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
     // The PG is not a pin: handed over as a genesis commit id it matches no
     // commit, so even the honest chain gives no view.
-    let mut pg_only = RelyingParty::new(&pg, Anchor::GenesisCommit(pg.clone()), config(), pin_clock);
+    let mut pg_only =
+        RelyingParty::new(&pg, Anchor::GenesisCommit(pg.clone()), config(), pin_clock);
     pg_only.refresh(&[peer("pinned", &pinned)]).await;
     let c = pg_only.challenge();
     assert_eq!(
@@ -205,7 +200,12 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
         "a PG-only pin must not give a view"
     );
 
-    let mut rp = RelyingParty::new(&pg, Anchor::GenesisKey(a.domain_key(T0)), config(), pin_clock);
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(a.domain_key(T0)),
+        config(),
+        pin_clock,
+    );
     rp.refresh(&[peer("impostor", &impostor)]).await;
     let c = rp.challenge();
     assert_eq!(
@@ -217,7 +217,9 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
     rp.refresh(&[peer("impostor", &impostor), peer("pinned", &pinned)])
         .await;
     let c = rp.challenge();
-    let session = rp.sign_in(&login(&a, &pg, AUDIENCE, &c)).expect("signed in");
+    let session = rp
+        .sign_in(&login(&a, &pg, AUDIENCE, &c))
+        .expect("signed in");
     assert_eq!(session.principal, pg);
     assert_eq!(session.key, a.tmb);
     assert_eq!(session.trust.tip.commits, 1);
@@ -266,10 +268,17 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
     let mut mirror = Mirror { line: line.clone() };
     LIFE_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
-    let mut rp = RelyingParty::new(&pg, Anchor::GenesisKey(g.domain_key(T0)), config(), life_clock);
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        life_clock,
+    );
     rp.refresh(&[peer("p1", &mirror)]).await;
     let c = rp.challenge();
-    let session = rp.sign_in(&login(&device, &pg, AUDIENCE, &c)).expect("signed in");
+    let session = rp
+        .sign_in(&login(&device, &pg, AUDIENCE, &c))
+        .expect("signed in");
     let trust = rp.check_session(&session.token).expect("live");
     assert_eq!(trust.pull_age, Duration::ZERO);
     assert_eq!(
@@ -285,7 +294,10 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
         bound: BOUND,
     });
     let c = rp.challenge();
-    assert_eq!(rp.sign_in(&login(&device, &pg, AUDIENCE, &c)), Err(stale.clone()));
+    assert_eq!(
+        rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
+        Err(stale.clone())
+    );
     assert_eq!(rp.check_session(&session.token), Err(stale));
 
     // The principal removes the device; the peer holds the removal.

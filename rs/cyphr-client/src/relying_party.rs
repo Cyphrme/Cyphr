@@ -212,7 +212,8 @@ impl RelyingParty {
     /// Issue a login challenge: a fresh single-use 256-bit nonce.
     pub fn challenge(&mut self) -> String {
         let now = (self.clock)();
-        self.challenges.retain(|_, at| now - *at <= CHALLENGE_TTL_SECS);
+        self.challenges
+            .retain(|_, at| now - *at <= CHALLENGE_TTL_SECS);
         let mut nonce = [0u8; CHALLENGE_BYTES];
         rand::thread_rng().fill_bytes(&mut nonce);
         let challenge = Base64UrlUnpadded::encode_string(&nonce);
@@ -343,9 +344,10 @@ impl RelyingParty {
             key: key.clone(),
             tip,
             pull_age,
-            principal_now_age: self.record.latest_now().map(|t| {
-                Duration::from_secs(u64::try_from(now - t).unwrap_or(0))
-            }),
+            principal_now_age: self
+                .record
+                .latest_now()
+                .map(|t| Duration::from_secs(u64::try_from(now - t).unwrap_or(0))),
         })
     }
 }

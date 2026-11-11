@@ -17,9 +17,7 @@ use std::time::Duration;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::principal::system_clock;
-use cyphr_client::{
-    Anchor, HttpConnector, HttpOptions, PullPeer, RelyingParty, RpConfig,
-};
+use cyphr_client::{Anchor, HttpConnector, HttpOptions, PullPeer, RelyingParty, RpConfig};
 use serde_json::json;
 
 const USAGE: &str = "usage: relying_party --server <URL> [--audience <NAME>]\n\nSigns a fresh \
@@ -127,7 +125,9 @@ async fn run(server: &str, audience: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     let session = rp.sign_in(&login).map_err(|r| r.to_string())?;
-    let trust = rp.check_session(&session.token).map_err(|r| r.to_string())?;
+    let trust = rp
+        .check_session(&session.token)
+        .map_err(|r| r.to_string())?;
     println!(
         "{}",
         json!({
