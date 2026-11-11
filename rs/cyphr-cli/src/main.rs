@@ -3,7 +3,8 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use cyphr_cli::{Cli, Commands, OutputFormat, commands};
+use cyphr_cli::{Cli, Commands, GossipCommands, OutputFormat, commands};
+use commands::verifier::{self, Inputs};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -46,13 +47,59 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
             anchor,
             choices,
             freshness_secs,
-        } => commands::network::verify(
+        } => verifier::verify(
             &cli,
+            &Inputs {
+                identity,
+                peers: peer,
+                anchor: anchor.as_deref(),
+                choices: choices.as_deref(),
+                freshness: *freshness_secs,
+            },
+        ),
+        Commands::Watch {
             identity,
             peer,
-            anchor.as_deref(),
-            choices.as_deref(),
-            *freshness_secs,
+            anchor,
+            choices,
+            freshness_secs,
+            interval_secs,
+            rounds,
+        } => verifier::watch(
+            &cli,
+            &Inputs {
+                identity,
+                peers: peer,
+                anchor: anchor.as_deref(),
+                choices: choices.as_deref(),
+                freshness: *freshness_secs,
+            },
+            *interval_secs,
+            *rounds,
         ),
+        Commands::Audit {
+            identity,
+            peer,
+            anchor,
+            choices,
+            freshness_secs,
+        } => verifier::audit(
+            &cli,
+            &Inputs {
+                identity,
+                peers: peer,
+                anchor: anchor.as_deref(),
+                choices: choices.as_deref(),
+                freshness: *freshness_secs,
+            },
+        ),
+        Commands::Gossip { command } => match command {
+            GossipCommands::Export { identity, file } => verifier::export(&cli, identity, file),
+            GossipCommands::Import {
+                identity,
+                file,
+                anchor,
+            } => verifier::import(&cli, identity, file, anchor.as_deref()),
+        },
     }
 }
