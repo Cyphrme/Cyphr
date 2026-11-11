@@ -571,45 +571,70 @@ async fn resolution() {
 /// as the tip, dropped, or C is displaced. End to end: yes.
 #[tokio::test]
 async fn second_resolution() {
-    let r = forked_server().await;
-    let (app, id, n) = (&r.app, &r.f.id, r.n);
-    let (status, body) = post_json(app.clone(), "/push", wire(&r.c, n + 1, id)).await;
+    let Resolved {
+        f,
+        n,
+        c,
+        d,
+        app,
+        state,
+        dir,
+    } = forked_server().await;
+    let id = &f.id;
+    let (status, body) = post_json(app.clone(), "/push", wire(&c, n + 1, id)).await;
     assert_eq!(status, StatusCode::CREATED, "C: {body:?}");
     let tip = tip_payload(app.clone(), id).await;
 
-    let (status, body) = post_json(app.clone(), "/push", wire(&r.d, n + 1, id)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&d, n + 1, id)).await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
         "D is a fork, not a tip: {body:?}"
     );
     assert_eq!(tip_payload(app.clone(), id).await, tip, "C stays the tip");
-    let list = heads(app, id).await;
+    let list = heads(&app, id).await;
     assert_eq!(
         list.iter().filter(|h| h.0 == n as u64 + 1).count(),
         2,
         "C and D are both kept at the resolution point: {list:?}"
     );
     assert!(
-        r.state.engine.is_errored(id).await.expect("verdict"),
+        state.engine.is_errored(id).await.expect("verdict"),
         "two extended branches: Error"
     );
 
+    // A restart rebuilds the verdict from the blobs alone (I1): both
+    // branches are still open, so Error.
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(
+        state.engine.is_errored(id).await.expect("verdict"),
+        "a rebuild agrees: C and D are both open"
+    );
+
     let pool = load_pool();
-    let mut e = r.c.fork().await.expect("fork");
+    let mut e = c.fork().await.expect("fork");
     create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&e, n + 2, id)).await;
     assert_eq!(status, StatusCode::CREATED, "E extends C: {body:?}");
     assert!(
-        !r.state.engine.is_errored(id).await.expect("verdict"),
+        !state.engine.is_errored(id).await.expect("verdict"),
         "extending one branch selects it: Active"
     );
 
-    // A restart rebuilds the same verdict from the blobs alone (I1).
-    drop((r.app, r.state));
+    drop((app, state));
+    let (_, state) = reopen(dir.path()).await;
+    assert!(
+        !state.engine.is_errored(id).await.expect("verdict"),
+        "a rebuild agrees: E selected C's branch"
+    );
+}
+
+/// A restarted server over `dir`, its index rebuilt from the blobs.
+async fn reopen(dir: &std::path::Path) -> (axum::Router, std::sync::Arc<cyphr_server::AppState>) {
     let state = std::sync::Arc::new(
         cyphr_server::AppState::new(cyphr_server::config::ServerConfig {
-            data_dir: r.dir.path().to_path_buf(),
+            data_dir: dir.to_path_buf(),
             ..Default::default()
         })
         .expect("reopen"),
@@ -619,8 +644,5 @@ async fn second_resolution() {
         .rebuild_index_from_scratch()
         .await
         .expect("rebuild");
-    assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "a rebuild agrees: E selected C's branch"
-    );
+    (build_router(state.clone()), state)
 }
