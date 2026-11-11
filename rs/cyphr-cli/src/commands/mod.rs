@@ -12,7 +12,9 @@ pub mod inspect;
 pub mod io;
 /// Key management commands.
 pub mod key;
-/// Network commands: push, fetch, rebase, verify.
+/// Network commands: push, fetch, rebase.
 pub mod network;
 /// ParsedCoz commands.
 pub mod tx;
+/// The verifier: verify, watch, audit and gossip export/import.
+pub mod verifier;

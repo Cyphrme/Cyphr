@@ -389,11 +389,21 @@ pub async fn verify_principal_fork_with_actions(
             return Err(EvidenceFailure::GenesisMismatch);
         }
     }
-    // Actions accepted after the fork's position belong to what follows it.
+    // The state at `pre` holds the actions accepted before the fork's
+    // position only. Those accepted AT it (`after == height`) lead the
+    // commit of whichever branch the patch's holder kept: they are no
+    // part of the other branch's `pre`, which brings its own actions
+    // inline (SPEC 4.8.2), so each branch is tried with and without them.
     let before_fork: Vec<ActionBundle> = actions
         .iter()
-        .filter(|a| a.after <= height)
+        .filter(|a| a.after < height)
         .cloned()
+        .collect();
+    let leading: Vec<WireBundle> = actions
+        .iter()
+        .filter(|a| a.after == height)
+        .filter_map(|a| a.blobs.as_ref().ok())
+        .map(|blobs| WireBundle::actions(blobs.clone()))
         .collect();
     let state = replay_chain_with_actions(base, prefix, &before_fork).await?;
     if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
@@ -411,18 +421,41 @@ pub async fn verify_principal_fork_with_actions(
     let branch = async |which,
                         blobs: &WireBundle|
            -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
-        let mut copy = state
-            .fork()
-            .await
-            .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
-        replay_commit(&mut copy, at, blobs)
-            .await
-            .map_err(|e| match e {
-                EvidenceFailure::Replay { source, .. } => {
-                    EvidenceFailure::CommitRefused { which, source }
+        let mut tried = None;
+        // A branch that carries its own actions is replayed from `pre`
+        // alone; one that carries none may lean on the leading actions.
+        let with_leading = blobs.actions.is_empty() && !leading.is_empty();
+        for lead in [with_leading, false] {
+            let mut copy = state
+                .fork()
+                .await
+                .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
+            if lead {
+                for held in &leading {
+                    replay_commit(&mut copy, at, held).await?;
+                }
+            }
+            match replay_commit(&mut copy, at, blobs).await {
+                Ok(()) => {
+                    tried = Some(Ok(copy));
+                    break;
                 },
-                other => other,
-            })?;
+                Err(e) => tried = Some(Err(e)),
+            }
+        }
+        let copy = match tried {
+            Some(Ok(copy)) => copy,
+            Some(Err(EvidenceFailure::Replay { source, .. })) => {
+                return Err(EvidenceFailure::CommitRefused { which, source });
+            },
+            Some(Err(other)) => return Err(other),
+            None => {
+                return Err(EvidenceFailure::BadCommit {
+                    commit: at,
+                    what: "no commit formed",
+                });
+            },
+        };
         let commit = copy
             .commits()
             .last()

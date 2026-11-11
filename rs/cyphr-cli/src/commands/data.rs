@@ -10,7 +10,7 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::{Value, json};
 
 use super::common::{
-    block_on, current_timestamp, get_principal_id, get_principal_id_from_principal,
+    CliPrincipal, block_on, current_timestamp, get_principal_id, get_principal_id_from_principal,
     load_principal_from_engine, local_genesis, parse_principal_genesis, parse_store,
     save_principal_to_engine,
 };
@@ -125,14 +125,18 @@ fn action(
     })
 }
 
-/// `cyphr data commit`: include DR = MR(DT) in PR by a signed `ds/create`,
-/// finalized as one commit.
-fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+/// Commit one `ds/create` of `signer_tmb` onto `principal`, its id the
+/// Data Root of the Data Tree as the principal holds it now (SPEC 4.8.2).
+/// Shared by `data commit` and rebase replay, which must name the rebased
+/// tree's root and never an earlier one's.
+pub(crate) fn apply_ds_create(
+    principal: &mut CliPrincipal,
+    keystore: &JsonKeyStore,
+    signer_tmb: &str,
+    authority: &str,
+) -> crate::Result<String> {
     let key = keystore.get(signer_tmb)?;
-    let store = parse_store(cli)?;
-    let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
-    super::init::commit_genesis(&mut principal, &keystore, &[], &cli.authority)?;
+    super::init::commit_genesis(principal, keystore, &[], authority)?;
 
     let now = current_timestamp();
     let mut scope = principal.begin_commit();
@@ -143,12 +147,22 @@ fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
         key,
         signer_tmb,
         json!({"id": dr, "now": now,
-            "typ": format!("{}/{}", cli.authority, cyphr::parsed_coz::typ::DS_CREATE)}),
+            "typ": format!("{authority}/{}", cyphr::parsed_coz::typ::DS_CREATE)}),
     )?;
     scope.verify_and_apply(&signed.pay_bytes, &signed.sig, signed.czd.clone(), None)?;
     let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(signer_tmb)?);
     let signer = cyphr::signer::SoftwareSigner::new(&key.alg, &key.prv_key, &key.pub_key, &tmb);
-    block_on(scope.finalize_with_software(&signer, now, &cli.authority))??;
+    block_on(scope.finalize_with_software(&signer, now, authority))??;
+    Ok(dr)
+}
+
+/// `cyphr data commit`: include DR = MR(DT) in PR by a signed `ds/create`,
+/// finalized as one commit.
+fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let store = parse_store(cli)?;
+    let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
+    let dr = apply_ds_create(&mut principal, &keystore, signer_tmb, &cli.authority)?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
     let commit_id = cyphr_storage::export_commits(&principal)?

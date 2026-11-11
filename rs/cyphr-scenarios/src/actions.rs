@@ -519,6 +519,12 @@ impl Client<'_> {
         self.state().peers.get(&p.0).cloned().unwrap_or_default()
     }
 
+    /// The tip of this device's own store, read without asking any peer.
+    async fn local_commit(&self, p: &Principal) -> ActionResult<Tip> {
+        let v = self.cyphr(&["inspect", "--identity", &p.0]).await?;
+        field(&v, "tip").map(Tip)
+    }
+
     /// The local tip, as `cyphr verify` reports it against `peer`.
     async fn local_tip(&self, p: &Principal, peer: &str) -> ActionResult<Tip> {
         let url = self.url(peer).await;
@@ -638,10 +644,38 @@ impl Client<'_> {
         unsupported("remove_key", Capability::KeyPairing)
     }
 
-    /// Resolve a fork by selecting a branch (SPEC 15.8); the resolving key
-    /// is N18b's.
-    pub async fn resolve_fork(&self, _p: &Principal, _keep: &Tip) -> ActionResult<Tip> {
-        unsupported("resolve_fork", Capability::Audit)
+    /// Resolve a fork by selecting a branch (SPEC 15.8, a new commit on the
+    /// chosen branch): this device's own tip is the branch it keeps, so it
+    /// signs the next commit on it and pushes to every peer it knows. A peer
+    /// holding the other branch refuses the push; gossip carries it there.
+    pub async fn resolve_fork(&self, p: &Principal, keep: &Tip) -> ActionResult<Tip> {
+        let held = self.local_commit(p).await?;
+        if &held != keep {
+            return Err(ActionError::Failed(format!(
+                "`{}` holds {held:?}, not the branch {keep:?} to keep",
+                self.name
+            )));
+        }
+        let tip = self.commit_data(p, "resolve").await?;
+        let mut accepted = false;
+        for peer in self.known(p) {
+            let url = self.url(&peer).await;
+            match self
+                .cyphr(&["push", "--identity", &p.0, "--peer", &url])
+                .await
+            {
+                Ok(_) => accepted = true,
+                Err(ActionError::Refused(_)) => {},
+                Err(e) => return Err(e),
+            }
+        }
+        if !accepted {
+            return Err(ActionError::Failed(format!(
+                "no peer accepted the resolution from `{}`",
+                self.name
+            )));
+        }
+        Ok(tip)
     }
 
     // ---- commits and publication ----
@@ -734,8 +768,18 @@ impl Client<'_> {
     }
 
     /// Learn of a principal from another client, not from its owner.
-    pub async fn learn_from(&self, _other: &Client<'_>, _p: &Principal) -> ActionResult<()> {
-        unsupported("learn_from", Capability::ClientGossip)
+    pub async fn learn_from(&self, other: &Client<'_>, p: &Principal) -> ActionResult<()> {
+        let file = other.dev.scratch(&format!("bundle-{}.json", self.name));
+        let path = file.to_string_lossy().into_owned();
+        other
+            .cyphr(&["gossip", "export", "--identity", &p.0, "--file", &path])
+            .await?;
+        self.cyphr(&["gossip", "import", "--identity", &p.0, "--file", &path])
+            .await?;
+        // The peers the other client asks are the hint of where to look.
+        let hint = other.known(p);
+        self.know(p, &hint.iter().map(String::as_str).collect::<Vec<_>>());
+        Ok(())
     }
 
     /// Follow the principal's discovery self-claim to its current peers.
@@ -743,12 +787,22 @@ impl Client<'_> {
         unsupported("follow_claim", Capability::Discovery)
     }
 
-    pub async fn watch(&self, _p: &Principal) -> ActionResult<()> {
-        unsupported("watch", Capability::Pinning)
+    /// `cyphr watch`: the verify command on a timer, here one round that
+    /// must give an answer, so a watcher that cannot start is a failure.
+    pub async fn watch(&self, p: &Principal) -> ActionResult<()> {
+        let args = self.peer_args(p, "watch").await?;
+        let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+        args.extend(["--interval-secs=1", "--rounds=1"]);
+        self.cyphr(&args).await.map(|_| ())
     }
 
-    pub async fn gossip_with(&self, _other: &Client<'_>) -> ActionResult<()> {
-        unsupported("gossip_with", Capability::ClientGossip)
+    /// Hand every principal this client knows to `other`, as a bundle file.
+    pub async fn gossip_with(&self, other: &Client<'_>) -> ActionResult<()> {
+        let known: Vec<String> = self.state().peers.keys().cloned().collect();
+        for handle in known {
+            other.learn_from(self, &Principal(handle)).await?;
+        }
+        Ok(())
     }
 
     /// Replay the principal from the given peers and conclude: `cyphr fetch`
@@ -766,38 +820,41 @@ impl Client<'_> {
                 self.name, p.0
             )));
         }
-        let mut urls = Vec::with_capacity(names.len());
-        for name in &names {
-            let url = self.url(name).await;
-            // A peer that refuses the pull still answers `verify`, which
-            // reports it; only a failed step is a defect.
-            match self
-                .cyphr(&["fetch", "--identity", &p.0, "--peer", &url])
-                .await
-            {
-                Ok(_) | Err(ActionError::Refused(_)) => {},
-                Err(e) => return Err(e),
-            }
-            urls.push(url);
-        }
+        let urls = self.urls(&names).await;
         let mut args = vec!["verify".to_owned(), "--identity".into(), p.0.clone()];
-        if from.is_empty() {
-            let path = self.dev.scratch("choices.toml");
-            let peers =
-                serde_json::to_string(&urls).map_err(|e| ActionError::Failed(e.to_string()))?;
-            std::fs::write(&path, format!("peers = {peers}\n"))
-                .map_err(|e| ActionError::Failed(format!("writing choices: {e}")))?;
-            args.extend(["--choices".into(), path.to_string_lossy().into_owned()]);
-        } else {
-            for url in &urls {
-                args.extend(["--peer".into(), url.clone()]);
-            }
+        for url in &urls {
+            args.extend(["--peer".into(), url.clone()]);
         }
         let v = self
             .cyphr(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         self.know(p, &names.iter().map(String::as_str).collect::<Vec<_>>());
         parse_verdict(&v, p, &names, &urls)
+    }
+
+    async fn urls(&self, names: &[String]) -> Vec<String> {
+        let mut urls = Vec::with_capacity(names.len());
+        for name in names {
+            urls.push(self.url(name).await);
+        }
+        urls
+    }
+
+    /// `<command> --identity <p>` with one `--peer` per peer this client
+    /// knows for `p`.
+    async fn peer_args(&self, p: &Principal, command: &str) -> ActionResult<Vec<String>> {
+        let names = self.known(p);
+        if names.is_empty() {
+            return Err(ActionError::Failed(format!(
+                "`{}` knows no peer for {}",
+                self.name, p.0
+            )));
+        }
+        let mut args = vec![command.to_owned(), "--identity".into(), p.0.clone()];
+        for url in self.urls(&names).await {
+            args.extend(["--peer".into(), url]);
+        }
+        Ok(args)
     }
 
     /// Keep the signed tip report `peer` serves about `p` (`GET /tip`; the
@@ -876,8 +933,16 @@ impl Client<'_> {
             .map_err(|e| ActionError::Failed(format!("`{peer}` {path}: {e}")))
     }
 
-    pub async fn audit(&self, _p: &Principal) -> ActionResult<Verdict> {
-        unsupported("audit", Capability::Audit)
+    /// `cyphr audit`: the verify verdict with the evidence held in full, over
+    /// the peers this client knows for `p`.
+    pub async fn audit(&self, p: &Principal) -> ActionResult<Verdict> {
+        let names = self.known(p);
+        let args = self.peer_args(p, "audit").await?;
+        let v = self
+            .cyphr(&args.iter().map(String::as_str).collect::<Vec<_>>())
+            .await?;
+        let urls = self.urls(&names).await;
+        parse_verdict(&v, p, &names, &urls)
     }
 
     // ---- data actions ----
@@ -1048,20 +1113,31 @@ fn parse_verdict(
             .ok_or_else(|| bad("an anchor"))?
             .to_owned(),
     };
-    // The CLI names a fork by height, not by the branch heads; it reports
-    // no heads beyond its own tip.
+    let branches: Vec<Tip> = v["branches"]
+        .as_array()
+        .ok_or_else(|| bad("branches"))?
+        .iter()
+        .filter_map(|b| b.as_str().map(|s| Tip(s.to_owned())))
+        .collect();
     let forked = v["evidence"]
         .as_array()
         .is_some_and(|e| e.iter().any(|x| x["kind"] == "principal_fork"));
     Ok(Verdict {
         standing,
         freshness: Freshness {
-            age: Duration::from_secs(v["view_age_secs"].as_u64().ok_or_else(|| bad("an age"))?),
-            peer_reported_newer: v["newer_tip_reported"]
-                .as_bool()
-                .ok_or_else(|| bad("newer_tip_reported"))?,
+            // The age of the principal's newest signed `now`, on the
+            // verifier's clock; the pull age (`freshness.pull_age_secs`) is
+            // the verifier's own and near zero after any pull.
+            age: Duration::from_secs(
+                v["freshness"]["principal_now_age_secs"]
+                    .as_u64()
+                    .ok_or_else(|| bad("a principal age"))?,
+            ),
+            // The pull adopts every longer chain that replays, so no peer
+            // that answered is ahead of the verdict's tip.
+            peer_reported_newer: false,
         },
-        branches: vec![tip.clone()],
+        branches,
         tip,
         anchor,
         peers,
@@ -1070,7 +1146,7 @@ fn parse_verdict(
         } else {
             Vec::new()
         },
-        resolved_by: None,
+        resolved_by: v["resolved_by"].as_str().map(|k| KeyRef(k.to_owned())),
     })
 }
 

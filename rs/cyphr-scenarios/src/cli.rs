@@ -44,7 +44,7 @@ impl Device {
             .arg("--keystore")
             .arg(&self.keystore)
             .args(["--output", "json", "--peer-timeout-secs", "5"])
-            .args(args)
+            .args(bind_values(args))
             .output()
             .await
             .map_err(|e| ActionError::Failed(format!("spawning cyphr: {e}")))?;
@@ -72,6 +72,27 @@ impl Device {
             None => Err(ActionError::Failed(format!("cyphr {args:?}: {detail}"))),
         }
     }
+}
+
+/// `--flag value` as `--flag=value` for the flags whose values are
+/// identifiers: a principal id is random base64url and one that starts with
+/// `-` would otherwise be read as a flag.
+fn bind_values(args: &[&str]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        match (args[i], args.get(i + 1)) {
+            (flag @ ("--identity" | "--signer" | "--key" | "--peer"), Some(value)) => {
+                out.push(format!("{flag}={value}"));
+                i += 2;
+            },
+            (arg, _) => {
+                out.push(arg.to_owned());
+                i += 1;
+            },
+        }
+    }
+    out
 }
 
 /// The CLI's `error.kind` names a [`RefusalKind`] lowercased.

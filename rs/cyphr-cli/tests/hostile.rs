@@ -426,8 +426,24 @@ fn world(unsigned_extras: bool) -> (User, String, Hostile, Server) {
     let id = a.new_identity();
     let pushed = a.peer_cmd("push", &id, &real.url);
     assert!(pushed.ok, "setup push: {}", pushed.stderr);
-    let body = patch_with(&real.chain(&id), unsigned_extras);
-    let peer = Hostile::start(move |_| Reply::Body(body.clone()));
+    let chain = real.chain(&id);
+    let body = patch_with(&chain, unsigned_extras);
+    // The pull step reads heads and revokes before the patch; a head names
+    // a tip the verifier does not hold, so it reads the patch itself.
+    let branches = serde_json::to_vec(&serde_json::json!({"v": 1, "payload": {"branches": [
+        {"tip": "unknown", "sequence": chain.len() - 1, "canonical": true}]}}))
+    .expect("branches");
+    let revoked = br#"{"v":1,"payload":{"revoked":[]}}"#.to_vec();
+    let nothing_after = empty_patch();
+    let peer = Hostile::start(move |target| {
+        Reply::Body(match target.split('?').next().unwrap_or_default() {
+            "/branches" => branches.clone(),
+            "/revoked" => revoked.clone(),
+            // From the verifier's tip the peer holds nothing more.
+            "/patch" if target.contains("&from=") => nothing_after.clone(),
+            _ => body.clone(),
+        })
+    });
     (a, id, peer, real)
 }
 
