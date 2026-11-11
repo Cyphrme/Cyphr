@@ -1499,9 +1499,12 @@ fn canonical_key_is_kept_only_on_a_key_introducing_coz() {
     );
 }
 
-/// No regression file: tests must not write to the tree.
+/// No regression file: tests must not write to the tree. 16 cases: the
+/// input space is a few unsigned-member shapes, and each case signs several
+/// bundles (256 cases cost ~160 s in a debug build).
 fn no_regression_file() -> proptest::prelude::ProptestConfig {
     proptest::prelude::ProptestConfig {
+        cases: 16,
         failure_persistence: None,
         ..proptest::prelude::ProptestConfig::default()
     }

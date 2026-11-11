@@ -368,6 +368,9 @@ async fn run_engine_recovery_test<B, I>(
 }
 
 proptest! {
+    // Each case replays a whole random history; 24 histories find the same
+    // divergences (256 cost ~55 s per test).
+    #![proptest_config(ProptestConfig::with_cases(24))]
     /// Backs I1 (the index is a rebuildable cache): for random histories, an
     /// index rebuilt from the in-memory blob store equals the one built at ingest.
     #[test]
