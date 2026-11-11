@@ -82,6 +82,22 @@ async fn s11_signon() {
         h.ok(rp.session_active(&session.token).await),
         "the refusal must not end the session"
     );
+    // The login the client signed names its own channel: carried to a second
+    // authenticated session, or to plain HTTP, it opens nothing, and the
+    // refusal is about the channel (not a spent challenge).
+    for on in [Channel::Other, Channel::Http] {
+        match h.ok(rp.replay_login(&session, on).await) {
+            Presented::Refused(r) => assert!(
+                r.detail.contains("channel"),
+                "the replayed login on {on:?} was refused for the wrong reason: {r:?}"
+            ),
+            Presented::Accepted => panic!("a login for one channel opened a session on {on:?}"),
+        }
+    }
+    match h.ok(rp.present(&session.token, Channel::Http).await) {
+        Presented::Refused(r) => assert_eq!(r.kind, RefusalKind::Unauthorized),
+        Presented::Accepted => panic!("the token worked with no channel"),
+    }
 
     let removed_at = Instant::now();
     h.ok(alice.remove_key(&pr, &session.key).await);

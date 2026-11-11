@@ -251,6 +251,9 @@ pub struct Token(pub String);
 #[derive(Clone, Debug)]
 pub struct Session {
     pub token: Token,
+    /// The login the client signed, kept so a scenario can carry it to
+    /// another channel.
+    pub login: coz::CozJson,
     pub key: KeyRef,
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
@@ -292,7 +295,10 @@ pub struct Backup(pub String);
 pub enum Channel {
     /// The authenticated channel the sign-in used.
     Original,
+    /// A second authenticated session.
     Other,
+    /// No authenticated channel: plain HTTP, as a browser edge arrives.
+    Http,
 }
 
 /// A relying party kept separate from every peer: it replays the
@@ -300,10 +306,11 @@ pub enum Channel {
 pub struct RelyingParty<'h> {
     h: &'h Harness,
     config: cyphr_client::RpConfig,
-    /// The channel the signed-in client's login arrived on: a real Noise
-    /// session with one of the peers, whose handshake hash its carrier
-    /// hands the relying party.
-    original: Mutex<Option<cyphr_client::ChannelBinding>>,
+    /// The signed-in client's own Noise session, which its login was sent
+    /// on: a real session with one of the peers, standing in for the
+    /// session a relying party host would terminate. The relying party
+    /// reads the binding from this carrier, never from a caller.
+    original: Mutex<Option<cyphr_client::transport::NoiseConnector>>,
     /// Set at the first sign-in, which enrols the principal the way a
     /// sign-up does: the relying party is handed the genesis key out of
     /// band and the peers to pull from.
@@ -1146,17 +1153,29 @@ impl Client<'_> {
         }
         let enrolled = guard.as_mut().expect("enrolled above");
         rp.pull(enrolled).await?;
+        // A native client signs in over its own authenticated transport and
+        // signs that session's handshake hash into the login.
+        let conn = rp.open_channel(enrolled).await?;
+        let h = cyphr_client::Connector::channel_binding(&conn)
+            .ok_or_else(|| ActionError::Failed("the session exposed no binding".into()))?
+            .as_bytes()
+            .to_vec();
         let challenge = enrolled.party.challenge();
-        let login = sign_login(&entry, &key, p.bare(), &rp.config.audience, &challenge)?;
-        // A native client signs in over its authenticated transport: the
-        // session binds to that channel's handshake hash.
-        let channel = rp.open_channel(enrolled).await?;
+        let login = sign_login(
+            &entry,
+            &key,
+            p.bare(),
+            &rp.config.audience,
+            &challenge,
+            Some(&h),
+        )?;
         let session = enrolled
             .party
-            .sign_in_on(&login, &channel)
+            .sign_in_on(&login, &conn)
             .map_err(|r| ActionError::Refused(refusal_of(&r)))?;
-        *rp.original.lock().expect("original channel") = Some(channel);
+        *rp.original.lock().expect("original channel") = Some(conn);
         Ok(Session {
+            login,
             token: Token(session.token),
             key: KeyRef(session.key.to_b64()),
             principal: Principal(session.principal),
@@ -1266,6 +1285,7 @@ fn sign_login(
     pr: &str,
     audience: &str,
     challenge: &str,
+    h: Option<&[u8]>,
 ) -> ActionResult<coz::CozJson> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let bytes = |name: &str| {
@@ -1277,7 +1297,7 @@ fn sign_login(
     let alg = entry["alg"]
         .as_str()
         .ok_or_else(|| ActionError::Failed("keystore entry has no alg".into()))?;
-    let pay = serde_json::json!({
+    let mut pay = serde_json::json!({
         "alg": alg,
         "now": cyphr::principal::system_clock(),
         "tmb": tmb,
@@ -1285,6 +1305,9 @@ fn sign_login(
         "pr": pr,
         "challenge": challenge,
     });
+    if let Some(h) = h {
+        pay["h"] = Base64UrlUnpadded::encode_string(h).into();
+    }
     let pay_bytes = serde_json::to_vec(&pay).map_err(|e| ActionError::Failed(e.to_string()))?;
     let (sig, _) = coz::sign_json(&pay_bytes, alg, &bytes("prv_key")?, &bytes("pub_key")?)
         .ok_or_else(|| ActionError::Failed("signing the login failed".into()))?;
@@ -1336,50 +1359,88 @@ impl RelyingParty<'_> {
     async fn open_channel(
         &self,
         enrolled: &Enrolled,
-    ) -> ActionResult<cyphr_client::ChannelBinding> {
+    ) -> ActionResult<cyphr_client::transport::NoiseConnector> {
         let name = enrolled.peers.first().ok_or_else(|| {
             ActionError::Failed("the relying party has no peer to open a channel to".into())
         })?;
-        crate::transport::fresh_binding(self.h.peer(name), &self.h.http)
+        crate::transport::open_session(self.h.peer(name), &self.h.http)
             .await
             .map_err(|e| ActionError::Failed(format!("channel to `{name}`: {e}")))
     }
 
-    fn original_channel(&self) -> ActionResult<cyphr_client::ChannelBinding> {
-        self.original
-            .lock()
-            .expect("original channel")
-            .clone()
-            .ok_or_else(|| ActionError::Failed("no sign-in opened a channel yet".into()))
-    }
-
-    /// Whether the session still stands, asked on the channel it opened on.
-    pub async fn session_active(&self, t: &Token) -> ActionResult<bool> {
-        let original = self.original_channel()?;
-        let mut guard = self.enrolled.lock().await;
-        Ok(guard
-            .as_mut()
-            .is_some_and(|e| e.party.check_session_on(&t.0, Some(&original)).is_ok()))
-    }
-
-    /// Present a token on a channel and learn whether it was accepted:
-    /// `Original` is the channel the sign-in used, `Other` a second
-    /// authenticated session opened now.
-    pub async fn present(&self, t: &Token, on: Channel) -> ActionResult<Presented> {
+    /// Run `f` with the binding of the channel `on` names (`None` for
+    /// plain HTTP), read from the session that carries it.
+    async fn on_channel<T>(
+        &self,
+        on: Channel,
+        f: impl FnOnce(&mut cyphr_client::RelyingParty, &cyphr_client::transport::NoiseConnector) -> T,
+        f_http: impl FnOnce(&mut cyphr_client::RelyingParty) -> T,
+    ) -> ActionResult<T> {
         let mut guard = self.enrolled.lock().await;
         let enrolled = guard
             .as_mut()
             .ok_or_else(|| ActionError::Failed("no principal is signed in".into()))?;
-        let channel = match on {
-            Channel::Original => self.original_channel()?,
-            Channel::Other => self.open_channel(enrolled).await?,
-        };
-        Ok(
-            match enrolled.party.check_session_on(&t.0, Some(&channel)) {
-                Ok(_) => Presented::Accepted,
-                Err(r) => Presented::Refused(refusal_of(&r)),
+        match on {
+            Channel::Http => Ok(f_http(&mut enrolled.party)),
+            Channel::Other => {
+                let conn = self.open_channel(enrolled).await?;
+                Ok(f(&mut enrolled.party, &conn))
             },
+            Channel::Original => {
+                let held = self.original.lock().expect("original channel");
+                let conn = held
+                    .as_ref()
+                    .ok_or_else(|| ActionError::Failed("no sign-in opened a channel yet".into()))?;
+                Ok(f(&mut enrolled.party, conn))
+            },
+        }
+    }
+
+    /// Whether the session still stands, asked on the channel it opened on.
+    pub async fn session_active(&self, t: &Token) -> ActionResult<bool> {
+        self.on_channel(
+            Channel::Original,
+            |rp, conn| {
+                rp.check_session_on(&t.0, cyphr_client::Connector::channel_binding(conn))
+                    .is_ok()
+            },
+            |_| false,
         )
+        .await
+    }
+
+    /// Present a token on a channel and learn whether it was accepted:
+    /// `Original` is the channel the sign-in used, `Other` a second
+    /// authenticated session opened now, `Http` no channel at all.
+    pub async fn present(&self, t: &Token, on: Channel) -> ActionResult<Presented> {
+        let verdict = |r: Result<cyphr_client::Trust, cyphr_client::Refusal>| match r {
+            Ok(_) => Presented::Accepted,
+            Err(r) => Presented::Refused(refusal_of(&r)),
+        };
+        self.on_channel(
+            on,
+            |rp, conn| {
+                verdict(rp.check_session_on(&t.0, cyphr_client::Connector::channel_binding(conn)))
+            },
+            |rp| verdict(rp.check_session_on(&t.0, None)),
+        )
+        .await
+    }
+
+    /// Carry the login `s` was opened with to another channel, as a
+    /// thief who captured it would: a login signed for one channel must not
+    /// open a session on any other, or over HTTP.
+    pub async fn replay_login(&self, s: &Session, on: Channel) -> ActionResult<Presented> {
+        let verdict = |r: Result<cyphr_client::Session, cyphr_client::Refusal>| match r {
+            Ok(_) => Presented::Accepted,
+            Err(r) => Presented::Refused(refusal_of(&r)),
+        };
+        self.on_channel(
+            on,
+            |rp, conn| verdict(rp.sign_in_on(&s.login, conn)),
+            |rp| verdict(rp.sign_in(&s.login)),
+        )
+        .await
     }
 
     /// The anchor the relying party reports it was enrolled with: the

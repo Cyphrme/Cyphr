@@ -77,21 +77,15 @@ pub async fn handshake(peer: &Peer, http: &reqwest::Client) -> Result<(), String
     handshake_at(addr, peer.addr, http).await
 }
 
-/// The channel binding of a fresh authenticated session with `peer`: what a
-/// native client's carrier hands a relying party as the channel its login
-/// arrived on. Every call is a new handshake, so two calls are two channels.
-pub async fn fresh_binding(
-    peer: &Peer,
-    http: &reqwest::Client,
-) -> Result<cyphr_client::ChannelBinding, String> {
+/// A fresh authenticated session with `peer`: the channel a native client's
+/// login is sent on. Every call is a new handshake, so two calls are two
+/// channels, and the binding is read from the session itself.
+pub async fn open_session(peer: &Peer, http: &reqwest::Client) -> Result<NoiseConnector, String> {
     let addr = peer
         .transport_addr()
         .await
         .ok_or("the peer announced no transport address")?;
-    let conn = connect_fresh(addr, peer.addr, http).await?;
-    conn.channel_binding()
-        .cloned()
-        .ok_or_else(|| "the session exposed no channel binding".to_owned())
+    connect_fresh(addr, peer.addr, http).await
 }
 
 /// [`handshake`] against an explicit transport address, with the pin
