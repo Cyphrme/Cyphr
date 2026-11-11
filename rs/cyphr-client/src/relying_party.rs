@@ -264,18 +264,25 @@ impl RelyingParty {
         self.sign_in_bound(login, SessionBinding::Key)
     }
 
-    /// [`sign_in`](Self::sign_in) for a native client, binding the session
-    /// to the channel the login arrived on: a stolen token is useless off
-    /// that channel.
+    /// [`sign_in`](Self::sign_in) for a native client on `carrier`, binding
+    /// the session to the channel the carrier reports. The login must have
+    /// signed that channel's handshake hash as its `h` claim, so a login
+    /// cannot be carried to another channel: a stolen token is useless off
+    /// the channel it was issued on.
     ///
     /// # Errors
     ///
-    /// As [`sign_in`](Self::sign_in).
-    pub fn sign_in_on(
+    /// [`Refusal::ChannelMismatch`] when the carrier has no channel binding
+    /// or the login's `h` is absent or names another channel; otherwise as
+    /// [`sign_in`](Self::sign_in).
+    pub fn sign_in_on<C: Connector>(
         &mut self,
         login: &coz::CozJson,
-        channel: &ChannelBinding,
+        carrier: &C,
     ) -> Result<Session, Refusal> {
+        let channel = carrier
+            .channel_binding()
+            .ok_or(Refusal::ChannelMismatch)?;
         self.sign_in_bound(login, SessionBinding::Channel(channel.clone()))
     }
 
@@ -303,6 +310,19 @@ impl RelyingParty {
         }
         if !names_pg(self.bare_principal(), field("pr")?) {
             return Err(Refusal::Malformed("pr does not name the pinned principal"));
+        }
+        // The login names the channel it is for: the claim a native client
+        // signs, absent from a browser edge's. Checked before the challenge
+        // is spent, so a login carried to the wrong channel burns nothing.
+        let signed_channel = login.pay.get("h").and_then(Value::as_str);
+        let expected = match &binding {
+            SessionBinding::Channel(channel) => {
+                Some(Base64UrlUnpadded::encode_string(channel.as_bytes()))
+            },
+            SessionBinding::Key => None,
+        };
+        if signed_channel != expected.as_deref() {
+            return Err(Refusal::ChannelMismatch);
         }
         let challenge = field("challenge")?;
         let alg = field("alg")?;

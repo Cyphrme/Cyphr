@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use common::*;
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_client::{
     Anchor, BindingKind, ChannelBinding, ConnectError, Connector, PullPeer, Refusal, RelyingParty,
     Request, RpConfig, SessionBinding, UnmetCurrency,
@@ -378,18 +379,55 @@ fn bind_clock() -> i64 {
     BIND_CLOCK.load(Ordering::SeqCst)
 }
 
-/// Claim (SPEC 17.5 session binding): a native client's session works only
-/// on the channel it signed in over, so a stolen token is useless off that
-/// channel; a browser edge, which has no channel, binds to its key. A token
-/// on a second channel, or on none, is refused without ending the session;
-/// the key-bound session accepts the token wherever it arrives.
+/// A carrier on one authenticated channel: all the relying party reads of
+/// a session is the binding its carrier reports.
+struct OnChannel(ChannelBinding);
+
+impl Connector for OnChannel {
+    fn channel_binding(&self) -> Option<&ChannelBinding> {
+        Some(&self.0)
+    }
+
+    async fn exchange(&self, _: &Request) -> Result<Vec<u8>, ConnectError> {
+        Err(ConnectError::Unreachable("no peer".into()))
+    }
+}
+
+/// `by`'s login for `challenge`, signing the channel `h` into it when given.
+fn login_committing(
+    by: &Kp,
+    pg: &str,
+    challenge: &str,
+    h: Option<&ChannelBinding>,
+) -> coz::CozJson {
+    let mut pay = json!({
+        "alg": by.kp.alg.name(),
+        "now": T0,
+        "tmb": by.tmb.to_b64(),
+        "typ": format!("{AUDIENCE}/cyphr/auth/login"),
+        "pr": pg,
+        "challenge": challenge,
+    });
+    if let Some(h) = h {
+        pay["h"] = Base64UrlUnpadded::encode_string(h.as_bytes()).into();
+    }
+    serde_json::from_value(sign_as(by, pay)).expect("coz json")
+}
+
+/// Claim (SPEC 17.5 session binding): a native client's login commits to
+/// the channel it is sent on, and the session works only there. The relying
+/// party takes the channel from the carrier it is actually on, never from a
+/// caller's say-so: a login signing another channel's hash, one signing
+/// none, and one signing a hash sent with no channel are all refused. A
+/// token on a second channel or none is refused without ending the session;
+/// a browser edge, which has no channel, binds to its key.
 ///
-/// Turns red if: a channel-bound token is accepted on another channel or on
-/// none, the refusal ends the session, or a key-bound session is bound to a
-/// channel.
-/// End-to-end scenario: yes (real chain, two sign-ins, two channels).
+/// Turns red if: a login is accepted on a channel it did not sign, a
+/// channel-bound token is accepted off its channel or the refusal ends the
+/// session, or a key-bound session is bound to a channel.
+/// End-to-end scenario: yes (real chain, three sign-ins, two channels).
 #[tokio::test]
-async fn token_is_refused_off_the_channel_its_session_is_bound_to() {
+async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
     let g = kp();
     let pg = g.tmb.to_b64();
     let chain = Chain::new(&g).await;
@@ -406,9 +444,27 @@ async fn token_is_refused_off_the_channel_its_session_is_bound_to() {
     rp.refresh(&[peer("p1", &mirror)]).await;
 
     let (here, elsewhere) = (noise_binding(1), noise_binding(2));
+    let (on_here, on_elsewhere) = (OnChannel(here.clone()), OnChannel(elsewhere.clone()));
+
+    // Refused: the login names another channel, none, or a channel with no
+    // carrier channel.
     let c = rp.challenge();
+    assert_eq!(
+        rp.sign_in_on(&login_committing(&g, &pg, &c, Some(&elsewhere)), &on_here),
+        Err(Refusal::ChannelMismatch)
+    );
+    assert_eq!(
+        rp.sign_in_on(&login_committing(&g, &pg, &c, None), &on_here),
+        Err(Refusal::ChannelMismatch)
+    );
+    assert_eq!(
+        rp.sign_in(&login_committing(&g, &pg, &c, Some(&here))),
+        Err(Refusal::ChannelMismatch)
+    );
+
+    // Accepted on the channel it signed (the refusals above spent nothing).
     let native = rp
-        .sign_in_on(&login(&g, &pg, AUDIENCE, &c), &here)
+        .sign_in_on(&login_committing(&g, &pg, &c, Some(&here)), &on_here)
         .expect("native sign-in");
     assert_eq!(native.binding, SessionBinding::Channel(here.clone()));
     assert!(rp.check_session_on(&native.token, Some(&here)).is_ok());
@@ -422,13 +478,20 @@ async fn token_is_refused_off_the_channel_its_session_is_bound_to() {
         rp.check_session_on(&native.token, Some(&here)).is_ok(),
         "a refused presentation must not end the session"
     );
+    // The same login on a second channel is refused, though its challenge
+    // is spent: the second sign-in needs a fresh login.
+    let c = rp.challenge();
+    let reposted = login_committing(&g, &pg, &c, Some(&here));
+    assert_eq!(
+        rp.sign_in_on(&reposted, &on_elsewhere),
+        Err(Refusal::ChannelMismatch)
+    );
 
     let c = rp.challenge();
-    let browser = rp.sign_in(&login(&g, &pg, AUDIENCE, &c)).expect("edge");
+    let browser = rp
+        .sign_in(&login_committing(&g, &pg, &c, None))
+        .expect("edge");
     assert_eq!(browser.binding, SessionBinding::Key);
     assert!(rp.check_session(&browser.token).is_ok());
-    assert!(
-        rp.check_session_on(&browser.token, Some(&elsewhere))
-            .is_ok()
-    );
+    assert!(rp.check_session_on(&browser.token, Some(&elsewhere)).is_ok());
 }
