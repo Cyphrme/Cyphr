@@ -62,3 +62,8 @@ proptest = { version = "1.6.0", default-features = false, features = [
   "std",
   "alloc",
 ] }
+
+# Test builds are compiled cold by every worker; panics still carry file and
+# line, and nothing here is stepped through a debugger.
+[profile.dev]
+debug = "line-tables-only"
