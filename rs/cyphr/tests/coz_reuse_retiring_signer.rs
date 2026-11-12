@@ -91,7 +91,12 @@ async fn reinclusion_of_a_signer_retiring_coz_is_coz_reuse() {
 
     let scope = p.begin_commit();
     let refused = scope
-        .verify(&replace.pay, &replace.sig, replace.czd.clone(), Some(sidecar))
+        .verify(
+            &replace.pay,
+            &replace.sig,
+            replace.czd.clone(),
+            Some(sidecar),
+        )
         .expect_err("re-inclusion must be refused");
     assert!(matches!(refused, Error::CozReuse), "got {refused:?}");
     drop(scope);
