@@ -252,6 +252,14 @@ enum Intent {
         id: String,
         signer: String,
     },
+    DeleteKey {
+        id: String,
+        signer: String,
+    },
+    ReplaceKey {
+        id: String,
+        signer: String,
+    },
     RevokeKey {
         signer: String,
     },
@@ -278,6 +286,20 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
             authority = a.trim_end_matches('/').to_owned();
             let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
             out.push(Intent::AddKey {
+                id: id.to_owned(),
+                signer: tmb.to_owned(),
+            });
+        } else if let Some(a) = t.strip_suffix(typ::KEY_DELETE) {
+            authority = a.trim_end_matches('/').to_owned();
+            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
+            out.push(Intent::DeleteKey {
+                id: id.to_owned(),
+                signer: tmb.to_owned(),
+            });
+        } else if let Some(a) = t.strip_suffix(typ::KEY_REPLACE) {
+            authority = a.trim_end_matches('/').to_owned();
+            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
+            out.push(Intent::ReplaceKey {
                 id: id.to_owned(),
                 signer: tmb.to_owned(),
             });
@@ -451,6 +473,26 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Intent::AddKey { id, signer } => {
                     let key = super::common::load_key_from_keystore(&keystore, id)?;
                     super::key::apply_key_create(
+                        &mut principal,
+                        &keystore,
+                        id,
+                        &key,
+                        signer,
+                        &authority,
+                    )?;
+                },
+                Intent::DeleteKey { id, signer } => {
+                    super::key::apply_key_delete(
+                        &mut principal,
+                        &keystore,
+                        id,
+                        signer,
+                        &authority,
+                    )?;
+                },
+                Intent::ReplaceKey { id, signer } => {
+                    let key = super::common::load_key_from_keystore(&keystore, id)?;
+                    super::key::apply_key_replace(
                         &mut principal,
                         &keystore,
                         id,

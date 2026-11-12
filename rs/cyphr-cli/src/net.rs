@@ -241,6 +241,16 @@ impl Peer {
         }
     }
 
+    /// Send a naked revoke envelope (`{pay, sig, key}`, SPEC 6.4) to the peer.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError`] when the peer is unreachable or refuses the revoke.
+    pub async fn post_revoke(&self, envelope: &Value) -> Result<(), PeerError> {
+        let bytes = serde_json::to_vec(envelope).map_err(|e| self.malformed(e.to_string()))?;
+        self.send(&Request::post("/revoke", bytes)).await.map(drop)
+    }
+
     fn malformed(&self, reason: String) -> PeerError {
         PeerError::Malformed {
             peer: self.url.clone(),
