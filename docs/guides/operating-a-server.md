@@ -779,6 +779,7 @@ right upstream with the wrong `pub` and reads simply fail to find anything:
   "v": 1,
   "payload": {
     "error": "principal AkQKBDXinn-_73V0UNuISr5n7pNVItqqrHI_6zcaYgA not found",
+    "kind": "not_found",
     "now": 1785872751
   },
   "statement": { "kind": "unsigned" }
@@ -989,6 +990,34 @@ reverse proxy or load balancer in front of it, which sees the status codes
 the server actually returned. If you want an alarm on rate-limit storms,
 oversized bodies, or quota exhaustion, that is where the counter has to
 live. There is nowhere inside the server to put it.
+
+### Refusals name their kind
+
+A refusal the caller can act on carries a stable `kind` beside the human
+`error` message, so a client branches on the kind and never on the text.
+An action-only push for a principal with no genesis commit, for example, is
+a `422`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "error": "protocol: genesis incomplete",
+    "kind": "genesis_incomplete",
+    "now": 1785872960
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+(`statement.kind` is the signature slot, not the refusal kind.) The kinds
+are `not_found`, `ambiguous`, `invalid_input`, `malformed_blob`,
+`malformed_body`, `too_large`, `branch_limit`, `errored`,
+`embedded_unsupported`, `state_mismatch`, `commit_mismatch`, `coz_reuse`,
+`genesis_incomplete` and `protocol` (any other protocol refusal). A server
+fault carries no `kind`, and neither do refusals built by the fences and
+auth layers. The set may grow, so treat an unknown kind as the generic
+refusal its status code says.
 
 ## Restarting and upgrading
 
