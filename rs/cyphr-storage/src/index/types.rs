@@ -171,6 +171,7 @@ pub struct EntityRef {
 
 /// Classification of indexed entities.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EntityType {
     /// A finalized commit bundle.
     Commit,

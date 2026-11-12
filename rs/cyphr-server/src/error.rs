@@ -204,11 +204,10 @@ impl AppError {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
             },
-            EngineError::BlobStore(_)
-            | EngineError::Indexer(_)
-            | EngineError::Load(_)
-            | EngineError::LegacyManifest { .. }
-            | EngineError::Storage(_) => {
+            // `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `Storage`, and any
+            // variant added later (the enum is non-exhaustive): an unclassified
+            // engine failure is the server's, never the caller's.
+            _ => {
                 tracing::error!(error = %err, "internal engine error");
                 Self::internal("internal storage error")
             },

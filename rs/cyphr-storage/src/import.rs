@@ -17,6 +17,7 @@ use crate::{CommitEntry, KeyEntry};
 /// Per SPEC §5, principals can be created implicitly (single key, no coz)
 /// or explicitly (multiple keys with genesis cozies).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Genesis {
     /// Implicit genesis: single key, no coz required.
     ///
