@@ -196,3 +196,16 @@ pub enum Error {
 
 /// Result type for Cyphr operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    /// Whether the refusal is that the signer was not active at the
+    /// signature's `now`: unknown to the key history then, revoked, or a
+    /// key of an embedded principal in Error.
+    #[must_use]
+    pub fn is_inactive_signer(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownKey | Self::KeyRevoked | Self::EmbeddedErrored
+        )
+    }
+}

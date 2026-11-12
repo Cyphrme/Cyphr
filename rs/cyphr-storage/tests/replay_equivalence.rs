@@ -1556,3 +1556,87 @@ async fn stored_actions_are_judged_at_their_own_now() {
     let held: Vec<String> = loaded.actions().map(|a| a.czd().to_b64()).collect();
     assert_eq!(held, vec![czd(&inside), czd(&before_revoke)]);
 }
+
+/// Backs SPEC 6.2 ("actions signed after it has been removed are ignored")
+/// for a verdict that flips: `key_a`, added at t=100, signs an action dated
+/// t=400 that the engine accepts; a commit dated t=300 then deletes
+/// `key_a`. On the full history the action's signer was not active at its
+/// `now`, so a load ignores it (it is not in DT) and a scratch rebuild
+/// files its manifest as `SignerInactive`, never as `Unreplayable`
+/// corruption, while the chain stays whole. Turns red if a load fails or
+/// keeps the action, or the rebuild calls it unreplayable. End to end:
+/// engine ingest, load, scratch rebuild.
+#[tokio::test]
+async fn an_action_whose_signer_a_later_commit_removed_is_ignored() {
+    let golden = signer("golden");
+    let key_a = signer("key_a");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        &[],
+        1_700_000_050,
+    )
+    .await
+    .expect("genesis commit");
+    let add = golden
+        .key_create(&mut writer, &key_a.key, 1_700_000_100)
+        .await;
+    let action = key_a.unrecorded_action(1_700_000_400, "accepted, then out of period");
+    let delete = {
+        let pay = serde_json::json!({
+            "alg": golden.alg, "id": key_a.key.tmb().to_b64(), "now": 1_700_000_300,
+            "tmb": golden.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/delete",
+        });
+        let (bytes, sig, czd) = golden.sign(&pay);
+        let mut scope = writer.begin_commit();
+        scope
+            .verify_and_apply(&bytes, &sig, czd, None)
+            .expect("key/delete applies");
+        let signer = cyphr::signer::SoftwareSigner::new(
+            &golden.alg,
+            &golden.prv,
+            &golden.pub_key,
+            golden.key.tmb(),
+        );
+        let commit = scope
+            .finalize_with_software(&signer, 1_700_000_300, "cyphr.me")
+            .await
+            .expect("finalizes");
+        WireBundle::of_commit(commit).expect("bundle")
+    };
+
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for bundle in [
+        genesis_commit,
+        add,
+        WireBundle::actions(vec![action]),
+        delete,
+    ] {
+        push(&engine, &id, &genesis, &bundle).await;
+    }
+
+    let loaded = engine
+        .load_principal(&id, genesis.clone())
+        .await
+        .expect("a load ignores the action, it does not fail");
+    assert_eq!(loaded.action_count(), 0, "the action is not in DT");
+    assert_eq!(loaded.commits().count(), 3, "the chain is whole");
+
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    let reasons: Vec<_> = report.quarantined.iter().map(|q| &q.reason).collect();
+    assert!(
+        matches!(reasons.as_slice(), [QuarantineReason::SignerInactive(_)]),
+        "{reasons:?}"
+    );
+    let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
+    assert_eq!(tip.commit_count, 3, "the rebuilt chain is whole");
+}

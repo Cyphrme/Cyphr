@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::MemoryStorage;
 use cyphr::principal::{Clock, system_clock};
-use cyphr::replay::{BundleId, WireBundle, WireError, replay_bundle};
+use cyphr::replay::{BundleId, WireBundle, WireError, replay_held};
 use cyphr::{Key, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -593,7 +593,8 @@ pub(crate) async fn replay_entry(
         WireError::EmptyTransaction => EntryRefusal::Malformed("a transaction holds no coz"),
         _ => EntryRefusal::Malformed("malformed coz"),
     })?;
-    replay_bundle(principal, &decoded)
+    replay_held(principal, &decoded)
         .await
+        .map(|r| r.id)
         .map_err(|e| EntryRefusal::Replay(e.source))
 }

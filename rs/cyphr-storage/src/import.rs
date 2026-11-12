@@ -178,8 +178,9 @@ pub(crate) async fn replay_commit<S: cyphr::eml::Storage>(
     commit_idx: usize,
 ) -> Result<(), LoadError> {
     let bundle = stored_bundle(commit, commit_idx)?;
-    cyphr::replay::replay_bundle(principal, &bundle)
+    cyphr::replay::replay_held(principal, &bundle)
         .await
+        .map(|_| ())
         .map_err(|e| {
             let Some(i) = e.coz else {
                 return LoadError::Protocol(e.source);

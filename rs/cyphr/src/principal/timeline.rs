@@ -103,6 +103,11 @@ impl KeyTimeline {
         Some(Err(refusal))
     }
 
+    /// Whether `tmb` was ever a key of this principal.
+    pub(crate) fn knows(&self, tmb: &Thumbprint) -> bool {
+        self.periods.iter().any(|p| p.key.tmb() == tmb)
+    }
+
     fn open(&self, tmb: &Thumbprint) -> Option<&Period> {
         self.periods
             .iter()

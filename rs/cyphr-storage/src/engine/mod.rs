@@ -587,6 +587,11 @@ pub enum QuarantineReason {
     /// Replaying the manifest's blobs onto its principal does not yield the
     /// commit the manifest records (only a rebuild from scratch replays).
     Unreplayable(String),
+    /// An action manifest none of whose actions the replayed key history
+    /// authorizes: each signer was not active at the action's own `now`
+    /// (a commit dated before the action removed its key), so the actions
+    /// are ignored (SPEC 6.2). Not corruption: the blobs stay stored.
+    SignerInactive(String),
 }
 
 /// A manifest a rebuild left out, and why.
@@ -1742,7 +1747,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 };
                 note_revokes(principal, &revoked);
                 for bundle in history {
-                    match cyphr::replay::replay_bundle(principal, &bundle.bundle).await {
+                    match cyphr::replay::replay_held(principal, &bundle.bundle).await {
+                        Ok(r) if r.ignored.len() == bundle.bundle.cozies().count() => orphaned(
+                            bundle,
+                            QuarantineReason::SignerInactive(
+                                "no action's signer was active at the action's now".into(),
+                            ),
+                        ),
                         Ok(_) => actions
                             .entry(principal_id.clone())
                             .or_default()
@@ -2255,8 +2266,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The stored action-only bundles are recorded once the commits are
     /// in, each action judged at its own `now` (SPEC 6.5) with the naked
     /// revokes the engine holds. One the history does not authorize, as a
-    /// commit dated before an action can remove its key, is not in DT;
-    /// its blobs stay stored (I1).
+    /// commit dated before an action can remove its key, is ignored (SPEC
+    /// 6.2); its blobs stay stored (I1).
     async fn replay_onto<T: cyphr::eml::Storage>(
         &self,
         principal_id: &str,
@@ -2274,13 +2285,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         note_revokes(&mut principal, &self.revoked());
         for held in self.action_history(principal_id).await? {
-            if let Err(refused) = cyphr::replay::replay_bundle(&mut principal, &held.bundle).await {
-                tracing::debug!(
+            match cyphr::replay::replay_held(&mut principal, &held.bundle).await {
+                Ok(r) if !r.ignored.is_empty() => tracing::debug!(
+                    principal = %principal_id,
+                    manifest = %held.manifest,
+                    ignored = r.ignored.len(),
+                    "stored actions whose signer was not active at their now are ignored"
+                ),
+                Ok(_) => {},
+                Err(refused) => tracing::warn!(
                     principal = %principal_id,
                     manifest = %held.manifest,
                     error = %refused,
-                    "a stored action bundle is not authorized by the replayed history"
-                );
+                    "a stored action bundle does not replay; left out of DT"
+                ),
             }
         }
 

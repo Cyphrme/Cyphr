@@ -516,9 +516,10 @@ pub fn sign_pay(
 }
 
 /// Submit a peer's or a store's history to `engine`: the commits from the
-/// one at `from` on, then every action-only bundle (actions hold no chain
-/// position, SPEC 4.8.1). A bundle the engine already holds is a no-op
-/// (SPEC 7.6). Returns the commits applied.
+/// one at `from` on, then every action (actions hold no chain position,
+/// SPEC 4.8.1), one at a time. One the engine already holds is a no-op
+/// (SPEC 7.6), and one whose signer was not active at its own `now` on
+/// this history is ignored (SPEC 6.2). Returns the commits applied.
 pub async fn submit_history(
     engine: &CliStorageEngine,
     principal_id: &str,
@@ -534,14 +535,16 @@ pub async fn submit_history(
             .await?;
         applied += 1;
     }
-    for blobs in actions {
-        engine
-            .submit_commit(
-                principal_id,
-                genesis.clone(),
-                &WireBundle::actions(blobs.clone()),
-            )
-            .await?;
+    for blob in actions.iter().flatten() {
+        let one = WireBundle::actions(vec![blob.clone()]);
+        match engine
+            .submit_commit(principal_id, genesis.clone(), &one)
+            .await
+        {
+            Ok(_) => {},
+            Err(cyphr_storage::engine::EngineError::Protocol(e)) if e.is_inactive_signer() => {},
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(applied)
 }

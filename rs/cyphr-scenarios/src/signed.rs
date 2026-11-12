@@ -181,7 +181,7 @@ impl ChainView {
             let bundle = cyphr::replay::WireBundle::actions(blobs)
                 .decode()
                 .map_err(|e| format!("a served action bundle is malformed: {e}"))?;
-            cyphr::replay::replay_bundle(&mut chain, &bundle)
+            cyphr::replay::replay_held(&mut chain, &bundle)
                 .await
                 .map_err(|e| format!("a served action does not verify: {e}"))?;
         }

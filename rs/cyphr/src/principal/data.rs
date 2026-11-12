@@ -166,6 +166,12 @@ impl PrincipalState {
 }
 
 impl<S: eml::Storage> Principal<S> {
+    /// Whether `tmb` was ever a key of this principal: in its key history,
+    /// or revoked.
+    pub(crate) fn held_key(&self, tmb: &coz::Thumbprint) -> bool {
+        self.key_timeline.knows(tmb) || self.auth.revoked.contains_key(&tmb.to_b64())
+    }
+
     /// Take in a naked revoke of `tmb` dated `now` that the caller has
     /// verified (SPEC 6.4): from `now` on, the key authorizes no data
     /// action. It changes no root: a naked revoke does not mutate PR.

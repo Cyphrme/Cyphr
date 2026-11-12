@@ -712,3 +712,38 @@ async fn hardening_follow_replays_with_the_injected_clock() {
     ));
     pin(late).await.follow(&pipe).await.expect("late clock");
 }
+
+/// Claim (SPEC 6.2: "actions signed after it has been removed are
+/// ignored"): a served action whose signer the full history no longer
+/// authorizes at its `now` is ignored, and the follow carries on. `k1`,
+/// added at t=100, signs an action dated t=400; a commit dated t=300 then
+/// revokes `k1`. The client replays the commits, then the served action,
+/// ignores it, and reaches the peer's PR.
+///
+/// Turns red if the client refuses the whole response for that one
+/// action. End-to-end scenario: yes (a `/patch` body with an `actions`
+/// member, served over a carrier).
+#[tokio::test]
+async fn a_served_action_its_history_no_longer_authorizes_is_ignored() {
+    let g = kp();
+    let k1 = kp();
+    let mut peer = Chain::new(&g).await;
+    let c1 = peer.commit(&k1, 1_700_000_100).await;
+    let action = peer.action_by(&k1, "cyphr.me/app/post/create", 1_700_000_400);
+    let revoke = peer.revoke(&k1, 1_700_000_300).await;
+
+    let mut body: serde_json::Value =
+        serde_json::from_slice(&peer.patch(&[c1, revoke])).expect("patch json");
+    body["payload"]["actions"] = serde_json::json!([{ "blobs": [action] }]);
+    let pipe = Pipe::new(serde_json::to_vec(&body).expect("json"));
+    let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000)).await;
+    held.follow(&pipe)
+        .await
+        .expect("the out-of-period action is ignored, not a defect");
+    let tip = held.held_tip().expect("tip");
+    assert_eq!(
+        (tip.commits, tip.pr),
+        (3, peer.principal.pr_tagged().expect("pr")),
+        "the client reaches the peer's PR"
+    );
+}
