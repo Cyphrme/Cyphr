@@ -103,6 +103,7 @@ fn refusal_kind(kind: &str, detail: &str) -> Option<RefusalKind> {
     Some(match kind {
         "protocol" => protocol_kind(detail),
         "stale" => Stale,
+        "unauthorized" if detail.to_ascii_lowercase().contains("revoked") => Revoked,
         "unauthorized" => Unauthorized,
         "revoked" => Revoked,
         "keynotactive" => KeyNotActive,

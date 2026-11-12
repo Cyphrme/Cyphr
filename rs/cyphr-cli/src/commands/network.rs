@@ -90,7 +90,21 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 bundle.actions.push(blob);
                 sent_actions += 1;
             }
-            peer.push_commit(&wire, &bundle).await?;
+            match peer.push_commit(&wire, &bundle).await {
+                Ok(()) => {},
+                // The peer took this commit from another peer (gossip) between
+                // the tip read and the send, so it already holds it: the
+                // push's goal is met, and the next commits still go.
+                Err(PeerError::Refused { message, .. })
+                    if message.contains("COZ_REUSE")
+                        && peer.tip_commit_id(&wire).await?.is_some_and(|tip| {
+                            local
+                                .iter()
+                                .position(|c| c.commit_id == tip)
+                                .is_some_and(|held| held >= i)
+                        }) => {},
+                Err(e) => return Err(e.into()),
+            }
         }
         for (_, blob) in actions {
             peer.push_commit(&wire, &WireBundle::actions(vec![blob]))

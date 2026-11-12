@@ -20,7 +20,6 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(server): the resolution does not reach P3, which holds the thief branch"]
 async fn s04_theft() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
         .await
@@ -110,16 +109,23 @@ async fn s04_theft() {
         after.resolved_by.is_some(),
         "the verdict shows the resolving key"
     );
-    assert!(after.branches.contains(&tt), "the thief's branch is kept");
+    // The abandoned branch is retained as proof of error (SPEC 15.8), not as
+    // a live head: the verdict's branches are the one head peers agree on.
+    assert!(after.abandoned.contains(&tt), "the thief's branch is kept");
     let audit = h.ok(alice.audit(&pr).await);
-    assert!(audit.branches.contains(&tt) && audit.branches.contains(&at));
+    assert!(audit.abandoned.contains(&tt));
 
     // The stolen key must stop working once revoked.
-    h.ok(thief.commit_data(&pr, "thief again").await);
-    let late = h.ok(thief.push(&pr, &["p3"]).await);
-    assert_eq!(
-        late.refused("push with the revoked key"),
-        RefusalKind::Revoked
+    // The CLI will not build a commit on the resolved chain with a key it
+    // no longer holds active, so the thief signs a data action and sends it.
+    let act = h.ok(thief.data_action(&pr, "thief again").await);
+    let late = h.ok(thief.submit(&act, "p3").await);
+    // Alice's resolution also deleted the key (SPEC 6.4), so a peer may name
+    // it not active or revoked; either way further use is rejected.
+    let kind = late.refused("use of the revoked key");
+    assert!(
+        matches!(kind, RefusalKind::Revoked | RefusalKind::KeyNotActive),
+        "the revoked key must be refused, got {kind:?}"
     );
     let settled = h.settled_view("p3", &pr).await.map(|v| v.tip);
     assert_eq!(
@@ -136,13 +142,22 @@ async fn s04_theft() {
         .accepted("variant base");
     h.ok(thief.steal_key(&laptop, &key2).await);
     h.ok(thief.rotate_key(&pr2).await);
+    h.ok(alice.rotate_key(&pr2).await);
+    // Each side reaches its own peers before gossip carries the other's
+    // rotation across: without the cut, whichever pushes second finds its
+    // peers already on the rival branch.
+    for from in ["p1", "p2"] {
+        h.proxy.partition(from, "p3");
+    }
     let tt2 = h
         .ok(thief.push(&pr2, &["p3"]).await)
         .accepted("thief rotation");
-    h.ok(alice.rotate_key(&pr2).await);
     let at2 = h
         .ok(alice.push(&pr2, &["p1", "p2"]).await)
         .accepted("alice rotation");
+    for from in ["p1", "p2"] {
+        h.proxy.heal(from, "p3");
+    }
     assert_ne!(at2, tt2);
 
     h.eventually("both branches to be reported", CONVERGE, || async {
