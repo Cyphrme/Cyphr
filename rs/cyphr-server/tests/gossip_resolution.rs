@@ -52,7 +52,9 @@ async fn commit(
     let g = pool.get("golden").expect("golden");
     let (pay, sig, czd) = golden_signs(serde_json::json!({"id": id, "now": now, "typ": typ}));
     let mut scope = p.begin_commit();
-    scope.verify_and_apply(&pay, &sig, czd, key).expect("applies");
+    scope
+        .verify_and_apply(&pay, &sig, czd, key)
+        .expect("applies");
     scope
         .finalize_with_software(&g.software_signer().expect("signer"), now, "cyphr.me")
         .await
@@ -71,7 +73,8 @@ async fn key_commit(p: &mut cyphr::Principal, name: &str, now: i64) -> WireBundl
 async fn data_commit(p: &mut cyphr::Principal, msg: &str, now: i64) -> (Vec<u8>, WireBundle) {
     let (pay, sig, czd) =
         golden_signs(serde_json::json!({"msg": msg, "now": now, "typ": "cyphr.me/comment/create"}));
-    p.verify_and_record_action(&pay, &sig, czd).expect("records");
+    p.verify_and_record_action(&pay, &sig, czd)
+        .expect("records");
     let action = serde_json::to_vec(&serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
         "sig": Base64UrlUnpadded::encode_string(&sig),
@@ -93,7 +96,8 @@ async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> StatusCode {
 }
 
 async fn tip_pr(app: &axum::Router, id: &str) -> String {
-    let (status, body) = get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+    let (status, body) =
+        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["pr"]
         .as_str()

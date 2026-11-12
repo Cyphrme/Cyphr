@@ -378,7 +378,15 @@ async fn forged_action_spliced_before_delete_commit_is_left_out() {
             .expect("coz applies");
     }
     scope.finalize().await.expect("the replay finalizes");
-    assert_eq!(p.pr_tagged().expect("pr"), honest_pr, "DR holds no forged action");
+    assert_eq!(
+        p.pr_tagged().expect("pr"),
+        honest_pr,
+        "DR holds no forged action"
+    );
     let left_out: Vec<bool> = p.actions().map(cyphr::Action::is_not_included).collect();
-    assert_eq!(left_out, [false, true], "only the forged action is left out");
+    assert_eq!(
+        left_out,
+        [false, true],
+        "only the forged action is left out"
+    );
 }

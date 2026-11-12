@@ -1635,7 +1635,10 @@ async fn not_included_bundle_is_kept_and_served() {
     b.actions = vec![phone_action];
     let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &b)).await;
     assert_eq!(status, StatusCode::CONFLICT, "B is retained: {body:?}");
-    assert!(not_included_of(&app, &f.id).await.is_empty(), "A includes it");
+    assert!(
+        not_included_of(&app, &f.id).await.is_empty(),
+        "A includes it"
+    );
 
     let mut c = phone.fork().await.expect("fork");
     create_key(&mut c, &g, &kp(&pool, "carol"), NOW + 30).await;
@@ -1652,10 +1655,16 @@ async fn not_included_bundle_is_kept_and_served() {
     assert_eq!(status, StatusCode::OK, "{patch:?}");
     let carried = envelope_payload(&patch)["actions"].to_string();
     let b64 = Base64UrlUnpadded::encode_string(&laptop_action);
-    assert!(!carried.contains(&b64), "/patch does not include it: {carried}");
+    assert!(
+        !carried.contains(&b64),
+        "/patch does not include it: {carried}"
+    );
     let (status, body) = get_json(app.clone(), &format!("/evidence?pr={}", enc(&f.id))).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    let items = envelope_payload(&body)["items"].as_array().expect("items").clone();
+    let items = envelope_payload(&body)["items"]
+        .as_array()
+        .expect("items")
+        .clone();
     assert_eq!(items.len(), 1, "{body:?}");
     let rival: cyphr::replay::WireBundle =
         serde_json::from_value(items[0]["b"].clone()).expect("rival bundle");
@@ -1663,6 +1672,14 @@ async fn not_included_bundle_is_kept_and_served() {
 
     drop((app, state));
     let (app, _state) = reopen(dir.path()).await;
-    assert_eq!(tip_payload(app.clone(), &f.id).await, tip, "the tip survives");
-    assert_eq!(not_included_of(&app, &f.id).await, left_out, "so does the mark");
+    assert_eq!(
+        tip_payload(app.clone(), &f.id).await,
+        tip,
+        "the tip survives"
+    );
+    assert_eq!(
+        not_included_of(&app, &f.id).await,
+        left_out,
+        "so does the mark"
+    );
 }

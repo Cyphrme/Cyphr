@@ -152,9 +152,14 @@ async fn rule1_no_ds_create_includes_nothing() {
     let x = action("x", NOW + 1);
     p.verify_and_record_action(&x.pay, &x.sig, x.czd.clone())
         .expect("x records");
-    push(&e, &id, &genesis, &WireBundle::actions(vec![x.wire.clone()]))
-        .await
-        .expect("x");
+    push(
+        &e,
+        &id,
+        &genesis,
+        &WireBundle::actions(vec![x.wire.clone()]),
+    )
+    .await
+    .expect("x");
     let key_a = pool().get("key_a").expect("key_a").key().expect("key");
     commit(
         &mut p,
@@ -165,7 +170,9 @@ async fn rule1_no_ds_create_includes_nothing() {
     )
     .await;
     assert!(p.data_root().is_none(), "no ds/create, no DR");
-    push(&e, &id, &genesis, &last(&p)).await.expect("key commit");
+    push(&e, &id, &genesis, &last(&p))
+        .await
+        .expect("key commit");
     let (pr, tip, _) = view(&e, &id).await;
     assert_eq!((&pr, &tip), (&p.pr_tagged().expect("pr"), &pr));
 
@@ -196,16 +203,26 @@ async fn rule2_a_rival_bundle_is_not_included() {
     push(&e, &id, &genesis, &g).await.expect("genesis");
 
     let laptop = action("laptop", NOW + 1);
-    push(&e, &id, &genesis, &WireBundle::actions(vec![laptop.wire.clone()]))
-        .await
-        .expect("the laptop's action");
+    push(
+        &e,
+        &id,
+        &genesis,
+        &WireBundle::actions(vec![laptop.wire.clone()]),
+    )
+    .await
+    .expect("the laptop's action");
     let mine = action("phone", NOW + 2);
     phone
         .verify_and_record_action(&mine.pay, &mine.sig, mine.czd.clone())
         .expect("records");
-    push(&e, &id, &genesis, &WireBundle::actions(vec![mine.wire.clone()]))
-        .await
-        .expect("the phone's action");
+    push(
+        &e,
+        &id,
+        &genesis,
+        &WireBundle::actions(vec![mine.wire.clone()]),
+    )
+    .await
+    .expect("the phone's action");
     ds_create(&mut phone, NOW + 3).await;
     push(&e, &id, &genesis, &last(&phone))
         .await
@@ -213,7 +230,11 @@ async fn rule2_a_rival_bundle_is_not_included() {
 
     let want_pr = phone.pr_tagged().expect("pr");
     let live = view(&e, &id).await;
-    assert_eq!((&live.0, &live.1), (&want_pr, &want_pr), "ingest and replay");
+    assert_eq!(
+        (&live.0, &live.1),
+        (&want_pr, &want_pr),
+        "ingest and replay"
+    );
     assert_eq!(
         live.2,
         vec![(1, vec![mine.wire.clone()])],
@@ -221,7 +242,9 @@ async fn rule2_a_rival_bundle_is_not_included() {
     );
     let kept = e.not_included(&id).await.expect("not included");
     assert_eq!(
-        kept.iter().map(|a| (a.after, a.blobs.clone())).collect::<Vec<_>>(),
+        kept.iter()
+            .map(|a| (a.after, a.blobs.clone()))
+            .collect::<Vec<_>>(),
         vec![(1, vec![laptop.wire.clone()])],
         "the laptop's bundle is kept, marked not included"
     );
@@ -274,7 +297,10 @@ async fn rule2_nine_bundles_are_refused() {
     let mut scope = p.begin_commit();
     let local = scope.verify_and_apply(&s.pay, &s.sig, s.czd, None);
     assert!(
-        matches!(local, Err(cyphr::Error::TooManyPendingBundles { pending: 9, .. })),
+        matches!(
+            local,
+            Err(cyphr::Error::TooManyPendingBundles { pending: 9, .. })
+        ),
         "{local:?}"
     );
     drop(scope);

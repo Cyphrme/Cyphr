@@ -18,7 +18,8 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(RES-1c): the CLI verdict never settles a resolved fork while peers still serve its evidence"]
+#[ignore = "RED(RES-1c): the CLI verdict never settles a resolved fork while peers still serve its \
+            evidence"]
 async fn s03_offline() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await

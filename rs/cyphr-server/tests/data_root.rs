@@ -154,8 +154,8 @@ fn body(principal_id: &str, bundle: &WireBundle) -> String {
 /// 1. a commit carrying a data action and a `key/create` is accepted, and the tip's SR is still the
 ///    AR: the action is in DT, but DR is not in PR;
 /// 2. a `ds/create` naming a DR no set of the pending bundles reaches (it covers an action the
-///    server never received) is refused with the typed `StateMismatch` (409, as for any `id`
-///    naming a state the principal is not in), and the tip does not move;
+///    server never received) is refused with the typed `StateMismatch` (409, as for any `id` naming
+///    a state the principal is not in), and the tip does not move;
 /// 3. a `ds/create` naming MR(DT) over both actions is accepted: the tip's PR is the one the client
 ///    computed, and its SR now differs from AR, so DR is in PR.
 ///

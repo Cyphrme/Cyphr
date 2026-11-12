@@ -166,7 +166,11 @@ async fn round_principal(
     // engine accepts them only if they verify (SPEC 15.8), and ignores them
     // otherwise.
     if let Some(height) = report.forks.iter().map(|f| f.height).min() {
-        for outcome in report.peers.iter().filter(|o| matches!(o.standing, PeerStanding::Forked)) {
+        for outcome in report
+            .peers
+            .iter()
+            .filter(|o| matches!(o.standing, PeerStanding::Forked))
+        {
             let Some((_, connector)) = peers.iter().find(|(name, _)| *name == outcome.peer) else {
                 continue;
             };
@@ -218,9 +222,15 @@ async fn follow_branch(
             .flatten()
             .collect();
         bundle.actions.splice(0..0, leading);
-        match state.engine.submit_commit(principal_id, None, &bundle).await {
+        match state
+            .engine
+            .submit_commit(principal_id, None, &bundle)
+            .await
+        {
             Ok(_) => info!(principal = %principal_id, index, "gossip: a peer's resolution adopted"),
-            Err(err) => debug!(principal = %principal_id, index, %err, "gossip: branch commit not stored"),
+            Err(err) => {
+                debug!(principal = %principal_id, index, %err, "gossip: branch commit not stored")
+            },
         }
     }
 }

@@ -1048,7 +1048,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         let genesis = self.genesis_of_stored(principal_id).await?;
         let principal = self
-            .replay_onto(principal_id, genesis, cyphr::eml::MemoryStorage::new(), None)
+            .replay_onto(
+                principal_id,
+                genesis,
+                cyphr::eml::MemoryStorage::new(),
+                None,
+            )
             .await?;
         let dropped: HashSet<Vec<u8>> = principal
             .actions()
