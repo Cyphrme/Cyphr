@@ -9,10 +9,7 @@ use cyphr::eml::MemoryStorage;
 use cyphr::state::{HashAlg, TaggedDigest};
 use cyphr::{Key, Principal};
 use cyphr_client::PatchEntry;
-use cyphr_client::evidence::{
-    EvidenceFailure, EvidenceItem, replay_chain, verify_branch_extension,
-    verify_principal_fork_with_actions,
-};
+use cyphr_client::evidence::{replay_chain, verify_fork_items, verify_principal_fork_with_actions};
 use serde_json::Value;
 
 /// Keys known to the verifier, by thumbprint: `tmb -> (alg, public key)`
@@ -328,12 +325,12 @@ pub struct VerifiedSet {
     pub rival_tips: std::collections::BTreeSet<String>,
 }
 
-/// Verify all of a peer's evidence `items` ([`verify_evidence`] each),
-/// where a `principal-fork` item whose `pre` is off `chain` is checked as
-/// a commit extending a rival branch an item already proved
-/// ([`verify_branch_extension`]: the chain below the fork, the rival, the
-/// extensions so far). Extensions are tried once every rival is known, so
-/// item order does not matter; one that extends no proved branch fails.
+/// Verify all of a peer's evidence `items` as one set. A `principal-fork`
+/// item is checked by the client's own [`verify_fork_items`] against the
+/// peer's `chain`: a fork at a position of the chain, or a commit extending
+/// a rival branch proved by another item, in any order. Every other item
+/// is checked by [`verify_evidence`]. One item that verifies nowhere fails
+/// the whole set: a peer that serves a forgery vouches for nothing.
 pub async fn verify_evidence_set(
     items: &[Value],
     requested: &str,
@@ -341,110 +338,53 @@ pub async fn verify_evidence_set(
     peers: &BTreeMap<String, String>,
     chain: &ChainView,
 ) -> Result<VerifiedSet, String> {
-    let genesis = async || -> Result<Principal<MemoryStorage>, String> {
-        chain
-            .genesis
-            .as_ref()
-            .ok_or("no chain to replay from")?
-            .fork()
-            .await
-            .map_err(|e| e.to_string())
-    };
     let mut proven = std::collections::BTreeSet::new();
-    // Each proved branch: its fork position, entries from genesis, tip id.
-    let mut lines: Vec<(usize, Vec<PatchEntry>, String)> = Vec::new();
-    let mut pending = Vec::new();
+    let mut forks = Vec::new();
     for item in items {
-        if item["kind"].as_str() != Some("principal-fork") {
-            proven.insert(verify_evidence(item, requested, keys, peers, chain).await?);
-            continue;
-        }
-        let proof = match verify_principal_fork_with_actions(
-            item,
-            requested,
-            genesis().await?,
-            &chain.served.0,
-            &chain.served.1,
-        )
-        .await
-        {
-            Ok(proof) => proof,
-            Err(EvidenceFailure::PreMismatch) => {
-                pending.push(item);
-                continue;
-            },
-            Err(e) => return Err(e.to_string()),
-        };
-        proven.insert(Proven::PrincipalFork { pg: proof.pg });
-        let EvidenceItem::PrincipalFork { a, b, .. } =
-            EvidenceItem::parse(item).map_err(|e| e.to_string())?;
-        let height = usize::try_from(proof.height).map_err(|e| e.to_string())?;
-        let [ida, idb] = proof.commits;
-        let (rival, id) = if chain.commit_ids.get(height) == Some(&ida) {
-            (b, idb)
+        if item["kind"].as_str() == Some("principal-fork") {
+            forks.push(item);
         } else {
-            (a, ida)
-        };
-        let mut line = chain
-            .served
-            .0
-            .get(..height)
-            .ok_or("fork above the chain")?
-            .to_vec();
-        line.push(PatchEntry {
-            sequence: height as u64,
-            bundle: Ok(rival),
+            proven.insert(verify_evidence(item, requested, keys, peers, chain).await?);
+        }
+    }
+    if forks.is_empty() {
+        return Ok(VerifiedSet {
+            proven,
+            rival_tips: std::collections::BTreeSet::new(),
         });
-        lines.push((height, line, id));
     }
-    let mut extended = std::collections::BTreeSet::new();
-    while !pending.is_empty() {
-        let mut still = Vec::new();
-        let mut progressed = false;
-        for item in std::mem::take(&mut pending) {
-            let mut found = None;
-            for (fork_at, line, parent) in &lines {
-                let actions: Vec<_> = chain
-                    .served
-                    .1
-                    .iter()
-                    .filter(|a| a.after < *fork_at as u64)
-                    .cloned()
-                    .collect();
-                if let Ok((bundle, id)) =
-                    verify_branch_extension(item, requested, genesis().await?, line, &actions).await
-                {
-                    let mut next = line.clone();
-                    next.push(PatchEntry {
-                        sequence: line.len() as u64,
-                        bundle: Ok(bundle),
-                    });
-                    found = Some((*fork_at, next, id, parent.clone()));
-                    break;
-                }
-            }
-            match found {
-                Some((fork_at, next, id, parent)) => {
-                    extended.insert(parent);
-                    lines.push((fork_at, next, id));
-                    progressed = true;
-                },
-                None => still.push(item),
-            }
-        }
-        if !progressed {
-            return Err(EvidenceFailure::PreMismatch.to_string());
-        }
-        pending = still;
+    let genesis = chain.genesis.as_ref().ok_or("no chain to replay from")?;
+    let chain_ids: Vec<Option<String>> = chain.commit_ids.iter().cloned().map(Some).collect();
+    let set = verify_fork_items(
+        &forks,
+        requested,
+        genesis,
+        &chain.served.0,
+        &chain.served.1,
+        &chain_ids,
+    )
+    .await;
+    if let Some(why) = set.rejected.first() {
+        return Err(why.to_string());
     }
-    Ok(VerifiedSet {
-        proven,
-        rival_tips: lines
-            .into_iter()
-            .map(|(_, _, id)| id)
-            .filter(|id| !extended.contains(id))
-            .collect(),
-    })
+    for (proof, _) in &set.forks {
+        proven.insert(Proven::PrincipalFork {
+            pg: proof.pg.clone(),
+        });
+    }
+    let extended: std::collections::BTreeSet<&String> =
+        set.extensions.iter().map(|e| &e.parent).collect();
+    let rival_tips = set
+        .forks
+        .iter()
+        .filter_map(|(proof, _)| {
+            let mine = chain.commit_ids.get(usize::try_from(proof.height).ok()?);
+            proof.commits.iter().find(|c| Some(*c) != mine).cloned()
+        })
+        .chain(set.extensions.iter().map(|e| e.id.clone()))
+        .filter(|id| !extended.contains(id))
+        .collect();
+    Ok(VerifiedSet { proven, rival_tips })
 }
 
 /// Verify one served evidence item offline. `requested` is the principal
