@@ -260,12 +260,15 @@ fn failure_kind(f: &PeerFailure) -> &'static str {
     }
 }
 
-/// The latest `now` any signed message of the record carries.
+/// The latest `now` the record's chain carries. A data action's `now`
+/// becomes the principal's latest only once a `ds/create` includes it
+/// (SPEC 4.8.2), and that commit's `now` is no earlier, so actions are not
+/// read: a pending one would date the view later than its tip.
 fn latest_now(record: &Record) -> Option<i64> {
     record
         .bundles_since(0)
         .iter()
-        .flat_map(|b| b.cozies().chain(b.actions.iter().map(Vec::as_slice)))
+        .flat_map(|b| b.txs.iter().flatten().map(Vec::as_slice))
         .filter_map(|blob| serde_json::from_slice::<Value>(blob).ok())
         .filter_map(|coz| coz["pay"]["now"].as_i64())
         .max()
