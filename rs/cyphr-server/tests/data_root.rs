@@ -1,6 +1,8 @@
 //! SPEC 4.8.2 "Data Tree Inclusion" through the server push path: a data
 //! action is recorded in DT, but DR enters the Principal Tree only by a
-//! signed `cyphr/ds/create` whose `id` is the computed DR = MR(DT).
+//! signed `cyphr/ds/create`, as its `id`. DT is a point-in-time snapshot
+//! (SPEC 2.3.3): the `id` is the signer's commitment, never checked against
+//! the actions a holder has.
 //!
 //! Every bundle carries its data actions ahead of its transactions, the
 //! order the replay rule records them in (`cyphr::replay`): an action-only
@@ -103,13 +105,35 @@ fn data_tree_id(p: &Principal) -> String {
     format!("SHA-256:{}", Base64UrlUnpadded::encode_string(bytes))
 }
 
+/// The digest bytes of a tagged `SHA-256:<b64>` root.
+fn sha256_bytes(tagged: &str) -> Vec<u8> {
+    let b64 = tagged.strip_prefix("SHA-256:").expect("a SHA-256 root");
+    Base64UrlUnpadded::decode_vec(b64).expect("b64")
+}
+
+/// SR over `ar` and DR = `id` (SPEC 3.7, 4.8.2), derived here from the two
+/// roots rather than from any principal's actions.
+fn sr_over(ar: &str, id: &str) -> Vec<u8> {
+    let root = |t: &str| {
+        cyphr::multihash::MultihashDigest::from_single(HashAlg::Sha256, sha256_bytes(t))
+            .expect("digest")
+    };
+    let sr = cyphr::semantic_tree::StateTree::build(
+        &cyphr::state::AuthRoot(root(ar)),
+        Some(&cyphr::state::DataRoot(root(id))),
+        &[HashAlg::Sha256],
+    )
+    .expect("SR");
+    sr.0.get(HashAlg::Sha256).expect("SHA-256 variant").to_vec()
+}
+
 /// Record `actions` on `p`, apply `txs` as one commit signed by `golden`,
 /// and return the bundle: the actions, then the commit's cozies.
 async fn bundle(
     p: &mut Principal,
     pool: &test_fixtures::Pool,
     actions: &[Signed],
-    txs: impl Fn(&Principal) -> Vec<Signed>,
+    txs: impl FnOnce(&Principal) -> Vec<Signed>,
     now: i64,
 ) -> WireBundle {
     for a in actions {
@@ -153,12 +177,15 @@ fn body(principal_id: &str, bundle: &WireBundle) -> String {
 /// Scenario, end to end over HTTP, one implicit principal (`golden`):
 /// 1. a commit carrying a data action and a `key/create` is accepted, and the tip's SR is still the
 ///    AR: the action is in DT, but DR is not in PR;
-/// 2. a `ds/create` naming MR(DT) over both actions is accepted: the tip's PR is the one the client
-///    computed, and its SR now differs from AR, so DR is in PR.
+/// 2. a `ds/create` whose `id` is a DR over an action neither the server nor the client ever
+///    received is accepted, and the tip's SR is the SR over its AR and that `id`: DR is the signed
+///    `id`, not a root over the actions held;
+/// 3. a `ds/create` naming MR(DT) over the held actions is accepted: the tip's PR is the one the
+///    client computed, and its SR is the SR over AR and that `id`.
 ///
 /// Turns red if a data action moves PR on its own (step 1), if `ds/create`
-/// is unknown, or if the server and the core disagree on DR (step 2). End
-/// to end: yes.
+/// is unknown or refused, or if DR is recomputed from held actions instead
+/// of taken from the signed `id` (steps 2, 3). End to end: yes.
 #[tokio::test]
 async fn data_root_enters_pr_only_by_a_signed_ds_create() {
     let pool = load_pool();
@@ -196,13 +223,47 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
         "a data action without ds/create must leave DR out of PR (SR is AR): {tip:?}"
     );
 
-    // 2. A ds/create naming MR(DT) puts DR into PR.
+    // 2. A ds/create over an action nobody here received sets DR to its id.
+    let mut elsewhere = p.fork().await.expect("fork");
+    let unseen = action(&pool, T + 3, "never pushed");
+    elsewhere
+        .verify_and_record_action(&unseen.pay, &unseen.sig, unseen.czd.clone())
+        .expect("records");
+    let foreign = data_tree_id(&elsewhere);
+    let signed = bundle(
+        &mut p,
+        &pool,
+        &[],
+        |_| vec![ds_create(&pool, &foreign, T + 3)],
+        T + 3,
+    )
+    .await;
+    let (s, b) = post_json(app.clone(), "/push", body(&id, &signed)).await;
+    assert_eq!(s, StatusCode::CREATED, "a ds/create over any DR: {b:?}");
+    let (_, tip) = get_json(app.clone(), &tip_uri).await;
+    let tip = envelope_payload(&tip).clone();
+    assert_eq!(
+        sha256_bytes(tip["sr"].as_str().expect("sr")),
+        sr_over(tip["ar"].as_str().expect("ar"), &foreign),
+        "DR is the signed id: {tip:?}"
+    );
+    assert_eq!(
+        tip["pr"].as_str(),
+        Some(p.pr_tagged().expect("PR").as_str()),
+        "server and client agree on the PR"
+    );
+
+    // 3. A ds/create naming MR(DT) over the held actions sets DR to it.
+    let mut own = String::new();
     let included = bundle(
         &mut p,
         &pool,
-        &[action(&pool, T + 3, "two")],
-        |p| vec![ds_create(&pool, &data_tree_id(p), T + 4)],
-        T + 4,
+        &[action(&pool, T + 4, "two")],
+        |p| {
+            own = data_tree_id(p);
+            vec![ds_create(&pool, &own, T + 5)]
+        },
+        T + 5,
     )
     .await;
     let (s, b) = post_json(app.clone(), "/push", body(&id, &included)).await;
@@ -214,8 +275,9 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
         Some(p.pr_tagged().expect("PR").as_str()),
         "server and client agree on the PR that includes DR"
     );
-    assert_ne!(
-        tip["sr"], tip["ar"],
-        "after ds/create, DR is in PR, so SR is no longer AR alone: {tip:?}"
+    assert_eq!(
+        sha256_bytes(tip["sr"].as_str().expect("sr")),
+        sr_over(tip["ar"].as_str().expect("ar"), &own),
+        "DR is the signed id: {tip:?}"
     );
 }

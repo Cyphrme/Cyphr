@@ -54,6 +54,25 @@ tx = [
 [test.expected]
 level = 4
 
+# A ds/create sets DR to its signed id (SPEC 4.8.2), never checked against
+# the actions held (2.3.3: DT is a point-in-time snapshot). The id is the DR
+# over golden's "First action" of single_action_promotes_ds (a lone action's
+# czd, promoted), an action this principal never receives; DR, SR and PR
+# derive from it.
+[[test]]
+name      = "ds_create_sets_dr_to_signed_id"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", id = "SHA-256:MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4", typ = "cyphr.me/cyphr/ds/create" },
+  ],
+]
+
+[test.expected]
+level = 4
+
 # Test 3: An action alone leaves PR unchanged
 # DT/DR is first empty; without a ds/create the action is in DT but DR is
 # not in PR (SPEC 4.8.2), so PR stays the PR of the genesis commit
