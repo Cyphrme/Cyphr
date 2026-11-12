@@ -4,7 +4,7 @@
 //! A client that pins a bare signing key cannot follow a rotation; a client
 //! that pins the peer's *chain* can. [`PeerChain`] holds the peer's own
 //! principal, replayed locally by the core from the pinned genesis, and
-//! judges every statement (a signed tip, a view) against the keys ACTIVE in
+//! judges every signed tip against the keys ACTIVE in
 //! that chain: a statement is never accepted by key bytes alone, and a key
 //! the held chain has retired is refused. The pattern is the pinned-origin,
 //! verified-log shape of C2SP `tlog-checkpoint`: trust is rooted in what
@@ -13,7 +13,7 @@
 //! # Snapshot trust
 //!
 //! Keys are judged against the held chain SNAPSHOT, as with
-//! [`verify_view`](crate::verify_view): a key the peer retires after the
+//! [`verify_tip`](PeerChain::verify_tip): a key the peer retires after the
 //! last [`follow`](PeerChain::follow) stays accepted until the caller
 //! follows again. The caller owns the re-follow policy (how often, and
 //! after which signal); [`PeerChain::verify_tip_following`] re-follows
@@ -26,8 +26,7 @@
 //! as it was (I2: a fork is detected, never merged).
 //!
 //! No I/O lives here except the one `/patch` fetch in [`PeerChain::follow`]
-//! through a [`Connector`]; [`PeerChain::verify_tip`] and
-//! [`PeerChain::verify_view`] are pure, so a carrier that already holds a
+//! through a [`Connector`]; [`PeerChain::verify_tip`] is pure, so a carrier that already holds a
 //! statement (a Noise responder, gossip) can verify it against the chain
 //! without HTTP.
 
@@ -46,7 +45,7 @@ use crate::patch::{
     AuthorityKey, EntryDefect, PatchFailure, PatchRequest, Statement, Step, fetch_patch,
     replay_order, verify_authenticated_envelope,
 };
-use crate::report::{TipReport, ViewFailure, ViewStatement, verify_view};
+use crate::report::TipReport;
 use crate::revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 
 /// The wire version of the response envelope a tip arrives in.
@@ -156,9 +155,6 @@ pub enum PeerFailure {
     /// The tip's envelope or signature was refused.
     #[error("tip: {0}")]
     Tip(PatchFailure),
-    /// The view statement was refused.
-    #[error("view: {0}")]
-    View(ViewFailure),
 }
 
 /// How much a peer may make the client fetch and replay.
@@ -508,31 +504,6 @@ impl PeerChain {
             pub_key: key.pub_key().to_vec(),
         };
         verify_authenticated_envelope(body, &authority, principal_id).map_err(PeerFailure::Tip)
-    }
-
-    /// Verify a peer view statement against the keys active in the held
-    /// chain; `pr` is the principal the view is about. Freshness and
-    /// pinning remain the caller's, as in [`verify_view`](crate::verify_view).
-    ///
-    /// # Errors
-    ///
-    /// [`PeerFailure::KeyNotActive`] when the signing key is not active in
-    /// the held chain; [`PeerFailure::View`] for any other refusal;
-    /// [`PeerFailure::PinMismatch`] for a refused pin.
-    pub fn verify_view(
-        &self,
-        coz: &coz::CozJson,
-        pr: &coz::Thumbprint,
-    ) -> Result<ViewStatement, PeerFailure> {
-        if let Some(tmb) = claimed_tmb(coz) {
-            self.refuse_dead(&tmb, coz.pay["now"].as_i64())?;
-        }
-        verify_view(coz, self.chain()?, pr).map_err(|failure| match failure {
-            ViewFailure::KeyNotActive => PeerFailure::KeyNotActive {
-                tmb: claimed_tmb(coz).map_or_else(String::new, |t| t.to_b64()),
-            },
-            other => PeerFailure::View(other),
-        })
     }
 
     /// [`verify_tip`](Self::verify_tip), following the peer first when the

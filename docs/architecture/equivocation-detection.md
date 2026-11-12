@@ -170,29 +170,6 @@ kind: requirement
 evaluator: test
 ```
 
-### [arch-one-key-equivocation]
-
-Evidence of peer equivocation is two views of one principal, signed
-under one server's identity, that are not prefix-consistent under
-[arch-behind-is-not-fork](#arch-behind-is-not-fork). Both signing keys
-must be shown to belong to the same server's chain, which may span a key
-rotation. Two views signed by different servers are never evidence
-against either server, whatever they disagree about.
-
-A view is judged against the key the server's chain held at the view's
-own signed time, so a later revocation or rotation does not erase it.
-The cost of that design: the time is the signer's own claim, so whoever
-holds a key the server has since retired can sign two conflicting
-reports dated inside that key's lifetime, and they verify as evidence.
-Such evidence convicts the retired key's holder, not necessarily the
-server's present operator; a verifier that needs to tell the two apart
-needs a time the signer does not choose.
-
-```claim
-kind: requirement
-evaluator: test
-```
-
 ### [arch-principal-fork-evidence]
 
 Evidence of a principal fork is two commits signed under the principal's
@@ -226,23 +203,10 @@ evaluator: test
 ### [arch-evidence-is-portable]
 
 Evidence verifies offline. A party that trusts neither the server nor
-whoever collected the evidence checks it from the evidence alone, plus,
-for peer equivocation, the segment of the server's own chain that binds
-both signing keys. A server's published key is a hint toward that chain,
+whoever collected the evidence checks it from the evidence alone, plus the
+chain it names. A server's published key is a hint toward that chain,
 not a substitute for replaying it. No verdict depends on a server's
 cooperation or on anyone's word.
-
-```claim
-kind: requirement
-evaluator: test
-```
-
-### [arch-finding-never-clears]
-
-Evidence is only ever added. Two conflicting signed claims stay a
-conflict whatever is signed later, and no number of agreeing views
-retracts one. A resolution is a new entry beside the evidence, not a
-deletion of it.
 
 ```claim
 kind: requirement

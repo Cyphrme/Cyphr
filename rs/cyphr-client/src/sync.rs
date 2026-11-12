@@ -886,11 +886,7 @@ async fn evidence<C: Connector>(
                 &held.actions,
             )
             .await?;
-            let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)? else {
-                return Err(EvidenceFailure::WrongKind {
-                    expected: "principal-fork",
-                });
-            };
+            let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
             let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
             let mine = held.ids.get(height).and_then(commit_id);
             let rival = if mine.as_ref() == Some(&proof.commits[1]) {

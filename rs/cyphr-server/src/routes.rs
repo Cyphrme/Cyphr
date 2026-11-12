@@ -455,66 +455,6 @@ pub async fn revoked(
     Ok(Json(Envelope::unsigned(RevokedResponse { revoked })))
 }
 
-/// `GET /view?pr=<PG>` -- this peer's signed claim "I hold `pr` at this
-/// tree size and index" (GOSSIP.md section 3), the self-claim a client
-/// verifies against the peer's chain
-/// ([`cyphr_client::verify_view_statement`]).
-///
-/// Shares `/tip`'s attestation path: same re-derived roots, same
-/// desynchronization guard, same degrade-to-unsigned on a signer failure.
-/// The payload is the tip, so an unsigned answer is still a usable read.
-#[tracing::instrument(skip(state))]
-pub async fn view(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<TipQuery>,
-) -> Result<impl IntoResponse, AppError> {
-    witness_sync(&state, &query.pr).await;
-
-    let t = state
-        .engine
-        .get_tip(&query.pr)
-        .await
-        .map_err(AppError::engine)?
-        .ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
-
-    let payload = TipResponse {
-        principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
-        pr: t.pr.clone(),
-        sr: t.sr.clone(),
-        ar: t.ar.clone(),
-        cr: t.cr.clone(),
-        commit_id: t.commit_id.clone(),
-        commit_count: t.commit_count,
-        last_updated: t.last_updated,
-        now: crate::auth::server_now(),
-    };
-
-    let Some(signer) = state.attestor_signer() else {
-        return Ok(Json(Envelope::unsigned(payload)));
-    };
-    let roots = attested_roots(&state, &t).await?;
-    match receipt::view_statement(
-        signer.as_ref(),
-        crate::auth::server_now(),
-        cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
-        t.commit_count,
-        t.commit_id.clone(),
-        &roots,
-    )
-    .await
-    {
-        Ok(coz) => Ok(Json(Envelope::signed(payload, coz))),
-        Err(reason) => {
-            tracing::warn!(
-                principal = %t.principal_id,
-                %reason,
-                "view statement could not be signed; answering unsigned"
-            );
-            Ok(Json(Envelope::unsigned(payload)))
-        },
-    }
-}
-
 /// The accepted commit's 0-indexed sequence position: `commit_count`'s
 /// checked predecessor (#98/#156). `commit_count == 0` can only mean a
 /// desynchronized or corrupted tip -- `MemoryIndexer::index_commit`

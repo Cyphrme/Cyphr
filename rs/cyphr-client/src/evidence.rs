@@ -1,26 +1,21 @@
 //! Offline verification of evidence: proof, checkable by anyone from
-//! signatures and the chain alone, that a principal forked or that a peer
-//! equivocated.
+//! signatures and the chain alone, that a principal forked.
 //!
 //! Nothing here asks to be believed. A served item names claims; this
 //! module replays or re-verifies every one of them from keys the caller's
 //! own replayed chain holds, so a serving peer can neither fabricate
-//! evidence nor erase it (`arch-evidence-is-portable`). Evidence is only
-//! ever added: a verdict never depends on later statements
-//! (`arch-finding-never-clears`).
+//! evidence nor erase it (`arch-evidence-is-portable`).
 //!
 //! # Items
 //!
-//! Each item is self-describing, with a `kind` and the principal's `pg`:
-//!
-//! - `principal-fork`: `{pg, height, pre, a, b}` where `a` and `b` are commit bundles (SPEC 4.6.2),
-//!   two distinct commits that both verify against the principal's state at `pre`, the Principal
-//!   Root after commit `height - 1` (`null` at height 0). Checked by [`verify_principal_fork`],
-//!   which replays the commits from that state; no server signature takes part, so it convicts no
-//!   server (`arch-principal-fork-evidence`).
-//! - `peer-equivocation`: `{pg, peer, a, b}` where `a` and `b` are signed statements (`{pay, sig}`:
-//!   view statements or tip reports) about `pg`. Checked by [`verify_peer_equivocation`] against
-//!   the peer's own chain.
+//! Each item is self-describing, with a `kind` and the principal's `pg`.
+//! The one kind is `principal-fork`: `{pg, height, pre, a, b}` where `a`
+//! and `b` are commit bundles (SPEC 4.6.2), two distinct commits that both
+//! verify against the principal's state at `pre`, the Principal Root after
+//! commit `height - 1` (`null` at height 0). Checked by
+//! [`verify_principal_fork`], which replays the commits from that state; no
+//! server signature takes part, so it convicts no server
+//! (`arch-principal-fork-evidence`).
 //!
 //! # Replay copy
 //!
@@ -29,19 +24,13 @@
 //! this is a third copy of that rule. HA1 replaces all three with one core
 //! function.
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::eml::{MemoryStorage, Storage};
+use cyphr::eml::MemoryStorage;
 use cyphr::replay::WireBundle;
-use cyphr::state::TaggedDigest;
-use cyphr::{Commit, Key, Principal};
+use cyphr::{Commit, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
 
 use crate::patch::{ActionBundle, PatchEntry, Step, replay_order};
-use crate::report::{TipReport, VIEW_STATEMENT_TYP, ViewStatement};
-
-/// The `typ` a signed tip report carries (`cyphr-server/receipt/tip`).
-const TIP_REPORT_TYP: &str = "cyphr-server/receipt/tip";
 
 /// The most coz blobs one served commit may carry; a bound on what an
 /// untrusted item can make the verifier decode.
@@ -54,13 +43,7 @@ pub enum EvidenceFailure {
     /// The item is not the shape evidence has.
     #[error("malformed evidence item: {0}")]
     Malformed(&'static str),
-    /// The item is of a kind this check does not handle.
-    #[error("not a {expected} item")]
-    WrongKind {
-        /// The kind the check handles.
-        expected: &'static str,
-    },
-    /// The item (or a statement in it) is about another principal.
+    /// The item is about another principal.
     #[error("the item is about another principal")]
     OtherPrincipal,
     /// The chain the caller holds is shorter than the item's height.
@@ -103,22 +86,9 @@ pub enum EvidenceFailure {
         /// The core's refusal.
         source: cyphr::Error,
     },
-    /// The two statements or commits do not conflict.
+    /// The two commits do not conflict.
     #[error("the two do not conflict: {0}")]
     NotConflicting(&'static str),
-    /// A statement is not signed by a key the peer's chain held and had
-    /// not revoked at the statement's own time.
-    #[error("statement {which}: {why}")]
-    Statement {
-        /// `a` or `b`.
-        which: &'static str,
-        /// Why it was refused.
-        why: &'static str,
-    },
-    /// The statements sit at different positions and no chain was held
-    /// that backs the higher one, so the lower cannot be compared.
-    #[error("a chain backing the higher statement is needed to compare different positions")]
-    NeedsChain,
 }
 
 /// A parsed evidence item, not yet verified.
@@ -136,17 +106,6 @@ pub enum EvidenceItem {
         a: WireBundle,
         /// The second commit's bundle.
         b: WireBundle,
-    },
-    /// Two statements of one peer about one principal.
-    PeerEquivocation {
-        /// The principal's bare genesis identifier.
-        pg: String,
-        /// The accused peer, as the item names it.
-        peer: String,
-        /// The first statement.
-        a: coz::CozJson,
-        /// The second statement.
-        b: coz::CozJson,
     },
 }
 
@@ -189,19 +148,6 @@ impl EvidenceItem {
                     b: commit_blobs(item.get("b"))?,
                 })
             },
-            Some("peer-equivocation") => {
-                let statement = |field: &str| {
-                    item.get(field)
-                        .and_then(|v| coz::CozJson::deserialize(v).ok())
-                        .ok_or(EvidenceFailure::Malformed("statement is not a signed coz"))
-                };
-                Ok(Self::PeerEquivocation {
-                    pg,
-                    peer: text("peer", "no peer")?,
-                    a: statement("a")?,
-                    b: statement("b")?,
-                })
-            },
             _ => Err(EvidenceFailure::Malformed("unknown kind")),
         }
     }
@@ -231,15 +177,6 @@ pub struct ForkProof {
     pub pre: Option<String>,
     /// The ids of the two commits, in the order the item named them.
     pub commits: [String; 2],
-}
-
-/// What a verified peer equivocation proves.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EquivocationProof {
-    /// The principal both statements are about.
-    pub pg: coz::Thumbprint,
-    /// The keys that signed the two statements (equal for a single key).
-    pub signers: [coz::Thumbprint; 2],
 }
 
 /// Replay `entries` onto `base` (a principal at its genesis state) and
@@ -345,12 +282,7 @@ pub async fn verify_principal_fork_with_actions(
         pre,
         a,
         b,
-    } = EvidenceItem::parse(item)?
-    else {
-        return Err(EvidenceFailure::WrongKind {
-            expected: "principal-fork",
-        });
-    };
+    } = EvidenceItem::parse(item)?;
     if item_pg != pg {
         return Err(EvidenceFailure::OtherPrincipal);
     }
@@ -488,244 +420,6 @@ pub async fn verify_principal_fork_with_actions(
         height,
         pre,
         commits: [id(&ca)?, id(&cb)?],
-    })
-}
-
-/// A statement's claim about a principal, common to the two statement
-/// kinds a peer signs.
-struct Claim {
-    pr: coz::Thumbprint,
-    /// Commits the statement says the peer holds.
-    size: u64,
-    commit_id: TaggedDigest,
-    root_pr: TaggedDigest,
-    /// Statement time, signed.
-    now: i64,
-}
-
-fn claim(coz: &coz::CozJson, which: &'static str) -> Result<Claim, EvidenceFailure> {
-    let bad = |why| EvidenceFailure::Statement { which, why };
-    match coz.pay["typ"].as_str() {
-        Some(VIEW_STATEMENT_TYP) => {
-            let v = ViewStatement::parse(coz).map_err(|_| bad("view statement is malformed"))?;
-            Ok(Claim {
-                pr: v.pr,
-                size: v.tree_size,
-                commit_id: v.commit_id,
-                root_pr: v.roots.pr,
-                now: v.now,
-            })
-        },
-        Some(TIP_REPORT_TYP) => {
-            let t = TipReport::parse(coz).map_err(|_| bad("tip report is malformed"))?;
-            let now = coz.pay["now"]
-                .as_i64()
-                .ok_or(bad("tip report has no now"))?;
-            Ok(Claim {
-                pr: t.pr,
-                size: t.sequence.checked_add(1).ok_or(bad("sequence overflows"))?,
-                commit_id: t.commit_id,
-                root_pr: t.roots.pr,
-                now,
-            })
-        },
-        _ => Err(bad("not a view statement or tip report")),
-    }
-}
-
-/// The keys a peer principal has held and when, rebuilt from its chain.
-///
-/// The chain's live key set only knows keys still present; a rotation
-/// removes the old key outright. Evidence outlives rotation, so this
-/// keeps every key the chain ever introduced, each with the signed times
-/// that bound its life: it starts at the `now` of the coz that introduced
-/// it (genesis keys, at the beginning) and ends, exclusive, at the
-/// earliest of its self-revocation `rvk`, the `now` of the coz that
-/// deleted it, or the `now` of the replace in which it was the signer
-/// (SPEC 6.4: `now >= rvk` is not active).
-#[derive(Debug, Clone)]
-pub struct KeyHistory {
-    keys: Vec<HeldKey>,
-}
-
-#[derive(Debug, Clone)]
-struct HeldKey {
-    key: Key,
-    from: i64,
-    until: Option<i64>,
-}
-
-impl KeyHistory {
-    /// The history of `chain`, a peer principal replayed from `genesis`.
-    #[must_use]
-    pub fn of<S: Storage>(genesis: &[Key], chain: &Principal<S>) -> Self {
-        let mut keys: Vec<HeldKey> = genesis
-            .iter()
-            .map(|key| HeldKey {
-                key: key.clone(),
-                from: i64::MIN,
-                until: None,
-            })
-            .collect();
-        // One pass in chain order: an end closes only the interval of that
-        // key open at that point, so a key deleted and added again keeps
-        // its later interval.
-        let end = |keys: &mut Vec<HeldKey>, tmb: &coz::Thumbprint, at: i64| {
-            if let Some(held) = keys
-                .iter_mut()
-                .rev()
-                .find(|h| h.key.tmb() == tmb && h.until.is_none())
-            {
-                held.until = Some(at);
-            }
-        };
-        for vc in chain.iter_all_cozies() {
-            let cz = vc.coz();
-            match cz.kind() {
-                cyphr::CozKind::KeyDelete { id } => end(&mut keys, id, cz.now()),
-                cyphr::CozKind::KeyReplace { .. } => end(&mut keys, cz.signer(), cz.now()),
-                cyphr::CozKind::SelfRevoke { rvk } => end(&mut keys, cz.signer(), *rvk),
-                _ => {},
-            }
-            // A genesis key's own `key/create` (SPEC 5.2 TX0) discloses a
-            // key already held from the beginning: its interval is open.
-            if let Some(key) = vc.new_key().filter(|k| {
-                !keys
-                    .iter()
-                    .any(|h| h.key.tmb() == k.tmb() && h.until.is_none())
-            }) {
-                keys.push(HeldKey {
-                    key: key.clone(),
-                    from: cz.now(),
-                    until: None,
-                });
-            }
-        }
-        Self { keys }
-    }
-
-    /// The key `tmb` as it stood at `now`, if the chain held it then.
-    fn at(&self, tmb: &coz::Thumbprint, now: i64) -> Option<&Key> {
-        self.keys
-            .iter()
-            .find(|h| h.key.tmb() == tmb && h.from <= now && h.until.is_none_or(|u| now < u))
-            .map(|h| &h.key)
-    }
-
-    /// Whether the chain ever held `tmb`.
-    fn ever(&self, tmb: &coz::Thumbprint) -> bool {
-        self.keys.iter().any(|h| h.key.tmb() == tmb)
-    }
-}
-
-/// The key that signed `coz`, if the peer held it at the statement's own
-/// signed time and the signature verifies.
-///
-/// This is the HISTORICAL form: a key the chain has since revoked or
-/// rotated out still vouches for statements signed before that, so a later
-/// revocation cannot erase evidence. [`crate::verify_view`] is the
-/// current-view form and refuses such a key; it is unchanged.
-fn signer_then(
-    coz: &coz::CozJson,
-    peer: &KeyHistory,
-    now: i64,
-    which: &'static str,
-) -> Result<coz::Thumbprint, EvidenceFailure> {
-    let bad = |why| EvidenceFailure::Statement { which, why };
-    let tmb = coz.pay["tmb"]
-        .as_str()
-        .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
-        .map(coz::Thumbprint::from_bytes)
-        .ok_or(bad("names no signing key"))?;
-    if !peer.ever(&tmb) {
-        return Err(bad("signed by a key the peer chain never held"));
-    }
-    let key = peer
-        .at(&tmb, now)
-        .ok_or(bad("signed when the peer did not hold the key"))?;
-    let pay_json = serde_json::to_vec(&coz.pay).map_err(|_| bad("pay does not serialize"))?;
-    if coz.pay["alg"].as_str() != Some(key.alg())
-        || coz::verify_json(&pay_json, &coz.sig, key.alg(), key.pub_key()) != Some(true)
-    {
-        return Err(bad("signature does not verify"));
-    }
-    Ok(tmb)
-}
-
-/// Whether `commit` is the commit `id` names.
-fn commit_is(commit: &Commit, id: &TaggedDigest) -> bool {
-    commit.tr().0.get(id.alg()) == Some(id.as_bytes())
-}
-
-/// Verify a `peer-equivocation` item: two statements of one peer about
-/// principal `pr` that are not prefix-consistent.
-///
-/// - Both statements verify under keys of the peer's own chain ([`KeyHistory`]), each judged at its
-///   own signed time; the item's word about who signed is never consulted.
-/// - Both are about `pr`.
-/// - At one position they conflict when they differ in commit id or roots. At different positions
-///   `m < n` the lower is compared with the higher's own chain: `higher_chain` must be a replay of
-///   a chain whose commit `n - 1` is the higher statement's `commit_id`; if its commit `m - 1` is
-///   the lower's `commit_id` the lower is merely behind (a prefix, never evidence), otherwise the
-///   two forked at or before `m` (`arch-behind-is-not-fork`).
-///
-/// # Errors
-///
-/// An [`EvidenceFailure`]; [`EvidenceFailure::NotConflicting`] means the
-/// statements are consistent, which settles nothing against the peer.
-pub fn verify_peer_equivocation<H: Storage>(
-    item: &Value,
-    pr: &coz::Thumbprint,
-    peer: &KeyHistory,
-    higher_chain: Option<&Principal<H>>,
-) -> Result<EquivocationProof, EvidenceFailure> {
-    let EvidenceItem::PeerEquivocation { pg, a, b, .. } = EvidenceItem::parse(item)? else {
-        return Err(EvidenceFailure::WrongKind {
-            expected: "peer-equivocation",
-        });
-    };
-    if pg != Base64UrlUnpadded::encode_string(pr.as_bytes()) {
-        return Err(EvidenceFailure::OtherPrincipal);
-    }
-    let (ca, cb) = (claim(&a, "a")?, claim(&b, "b")?);
-    if ca.pr.as_bytes() != pr.as_bytes() || cb.pr.as_bytes() != pr.as_bytes() {
-        return Err(EvidenceFailure::OtherPrincipal);
-    }
-    let signers = [
-        signer_then(&a, peer, ca.now, "a")?,
-        signer_then(&b, peer, cb.now, "b")?,
-    ];
-
-    let (lo, hi) = if ca.size <= cb.size {
-        (&ca, &cb)
-    } else {
-        (&cb, &ca)
-    };
-    if lo.size == hi.size {
-        if lo.commit_id == hi.commit_id && lo.root_pr == hi.root_pr {
-            return Err(EvidenceFailure::NotConflicting("the statements agree"));
-        }
-    } else {
-        let chain = higher_chain.ok_or(EvidenceFailure::NeedsChain)?;
-        let commits: Vec<&Commit> = chain.commits().collect();
-        let at = |size: u64| usize::try_from(size - 1).ok().and_then(|i| commits.get(i));
-        let backs_higher = at(hi.size).is_some_and(|c| commit_is(c, &hi.commit_id));
-        if !backs_higher {
-            return Err(EvidenceFailure::NeedsChain);
-        }
-        let lower_is_prefix = at(lo.size).is_some_and(|c| {
-            commit_is(c, &lo.commit_id)
-                && c.pr().0.get(lo.root_pr.alg()) == Some(lo.root_pr.as_bytes())
-        });
-        if lower_is_prefix {
-            return Err(EvidenceFailure::NotConflicting(
-                "the lower statement is a prefix of the higher",
-            ));
-        }
-    }
-    Ok(EquivocationProof {
-        pg: pr.clone(),
-        signers,
     })
 }
 
