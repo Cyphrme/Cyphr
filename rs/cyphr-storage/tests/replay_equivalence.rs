@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::StateDigest;
-use cyphr::replay::{StoredCoz, WireBundle, replay_bundle};
+use cyphr::replay::{StoredCoz, WireBundle, replay_held};
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::{
@@ -124,7 +124,9 @@ async fn core_replay(
     p: &mut cyphr::Principal,
     bundle: &WireBundle,
 ) -> Result<cyphr::replay::BundleId, cyphr::replay::ReplayError> {
-    replay_bundle(p, &bundle.decode().expect("wire bundle")).await
+    replay_held(p, &bundle.decode().expect("wire bundle"))
+        .await
+        .map(|r| r.id)
 }
 
 async fn principal(genesis: &Genesis) -> cyphr::Principal {
@@ -154,9 +156,19 @@ async fn principal_id(chain: &Chain) -> String {
     }
 }
 
+/// Push `chain` as it was taken: its lines by their earliest `now`, so a
+/// data action goes in before a later commit (a freeze, a delete) that
+/// would refuse it as a new submission. Commits keep their order: their
+/// `now`s never decrease.
 async fn ingest(engine: &Engine, chain: &Chain) -> String {
     let id = principal_id(chain).await;
-    for (i, bundle) in chain.bundles.iter().enumerate() {
+    let mut bundles: Vec<&WireBundle> = chain.bundles.iter().collect();
+    bundles.sort_by_key(|b| {
+        b.decode()
+            .ok()
+            .and_then(|d| d.cozies().map(|c| c.header().now).min())
+    });
+    for (i, bundle) in bundles.into_iter().enumerate() {
         engine
             .submit_commit(&id, Some(chain.genesis.clone()), bundle)
             .await

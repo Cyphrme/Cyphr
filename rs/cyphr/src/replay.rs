@@ -746,9 +746,11 @@ pub struct Replayed {
 /// are each judged at their own `now`, and one whose signer was not active
 /// then is ignored (SPEC 6.2: "actions signed after it has been removed are
 /// ignored"): a commit dated before an action can remove its key after the
-/// action was accepted. An action by a key this principal never held is no
-/// such verdict and stays a refusal. A bundle that forms a commit replays as
-/// [`replay_bundle`] does.
+/// action was accepted. An action dated in a frozen span or after the
+/// principal's delete is ignored the same way (SPEC 14.9, 11.4): every
+/// gate is judged at the action's own `now`. An action by a key this
+/// principal never held is no such verdict and stays a refusal. A bundle that forms a commit
+/// replays as [`replay_bundle`] does.
 ///
 /// # Errors
 ///
@@ -777,16 +779,16 @@ pub async fn replay_held<S: eml::Storage>(
     });
     let mut ignored = Vec::new();
     for (i, c) in order {
-        let recorded = principal
-            .verify_and_record_action(&c.pay_json, &c.sig, c.czd.clone())
-            .map(|_| ());
-        match recorded {
+        match principal.record_held_action(&c.pay_json, &c.sig, c.czd.clone()) {
             Ok(()) => {},
             // Only a key this principal held: a stranger's action is no
             // verdict that flipped, and stays a defect.
             Err(e) if e.is_inactive_signer() && principal.held_key(&c.header.tmb) => {
                 ignored.push(i);
             },
+            // Dated in a frozen span or after the delete: a later freeze or
+            // delete, backdated, took the action out (SPEC 14.9, 11.4).
+            Err(Error::Frozen | Error::AlreadyDeleted) => ignored.push(i),
             Err(source) => {
                 return Err(ReplayError {
                     coz: Some(i),

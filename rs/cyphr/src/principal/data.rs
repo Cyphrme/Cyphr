@@ -5,6 +5,16 @@ use crate::action::Action;
 use crate::error::{Error, Result};
 use crate::state::PrincipalRoot;
 
+/// When the lifecycle gates judge a data action.
+#[derive(Clone, Copy)]
+enum Judged {
+    /// A new submission: refused while the principal is deleted or frozen
+    /// at its tip.
+    AtTip,
+    /// Held history: against the commit timeline at the action's `now`.
+    AtNow,
+}
+
 impl PrincipalState {
     /// The key that authorizes a data action signed by `tmb` and dated
     /// `now`: the key active at `now` in the principal's key history
@@ -85,6 +95,17 @@ impl PrincipalState {
         sig: &[u8],
         czd: coz::Czd,
     ) -> Result<&PrincipalRoot> {
+        self.verify_and_record(pay_json, sig, czd, Judged::AtTip)
+    }
+
+    /// [`Self::verify_and_record_action`] judged as `when` says.
+    fn verify_and_record(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        when: Judged,
+    ) -> Result<&PrincipalRoot> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         use crate::action::Action;
@@ -106,18 +127,20 @@ impl PrincipalState {
             .to_string();
         let now = pay_value["now"].as_i64().ok_or(Error::MalformedPayload)?;
 
-        // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
-        // actions are possible on a closed account". Data actions have no
-        // same-commit-finalizer exemption analogous to CommitCreate's, so
-        // this is an unconditional gate.
-        if self.deleted {
-            return Err(Error::AlreadyDeleted);
-        }
-
-        // SPEC §2.3.2, §11: a frozen principal changes only by being
-        // unfrozen, and a data action changes DT.
-        if self.frozen {
-            return Err(Error::Frozen);
+        match when {
+            // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
+            // actions are possible on a closed account". Data actions have no
+            // same-commit-finalizer exemption analogous to CommitCreate's, so
+            // this is an unconditional gate. SPEC §2.3.2, §11: a frozen
+            // principal changes only by being unfrozen, and a data action
+            // changes DT.
+            Judged::AtTip if self.deleted => return Err(Error::AlreadyDeleted),
+            Judged::AtTip if self.frozen => return Err(Error::Frozen),
+            Judged::AtTip => {},
+            // Held history: the same gates at the action's own `now`, as for
+            // its signer (SPEC 6.5), so a later freeze or delete does not
+            // void an action taken before it.
+            Judged::AtNow => self.key_timeline.open_at(now)?,
         }
 
         let signer_key = self.action_signer(&signer_tmb, now)?;
@@ -166,9 +189,23 @@ impl PrincipalState {
 }
 
 impl<S: eml::Storage> Principal<S> {
+    /// Record an action of held history (an admitted store, a peer, an
+    /// export): every gate, the lifecycle ones included, judged at the
+    /// action's own `now`.
+    pub(crate) fn record_held_action(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+    ) -> Result<()> {
+        self.state
+            .verify_and_record(pay_json, sig, czd, Judged::AtNow)
+            .map(|_| ())
+    }
+
     /// Whether `tmb` was ever a key of this principal: in its key history,
     /// or revoked.
-    pub(crate) fn held_key(&self, tmb: &coz::Thumbprint) -> bool {
+    pub fn held_key(&self, tmb: &coz::Thumbprint) -> bool {
         self.key_timeline.knows(tmb) || self.auth.revoked.contains_key(&tmb.to_b64())
     }
 

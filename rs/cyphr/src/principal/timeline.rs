@@ -1,6 +1,7 @@
 //! The key timeline table (SPEC 6.5): which key was authorized at which
 //! timestamp, derived from the commit chain and the naked revokes a
-//! verifier holds.
+//! verifier holds, with the spans the principal was frozen and the time it
+//! was deleted, so a data action is judged at its own `now`.
 
 use std::collections::HashMap;
 
@@ -19,6 +20,10 @@ pub(crate) struct KeyTimeline {
     periods: Vec<Period>,
     /// Naked revokes by key: each takes effect from its own `now`.
     revoked_from: HashMap<String, i64>,
+    /// The spans the principal was frozen (SPEC 14.9), by commit `now`.
+    frozen: Vec<(i64, Option<i64>)>,
+    /// The `now` of the commit that deleted the principal (SPEC 11.4).
+    deleted_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,8 +43,17 @@ impl KeyTimeline {
         &mut self,
         active: &IndexMap<String, Key>,
         revoked: &IndexMap<String, Key>,
+        (frozen, deleted): (bool, bool),
         now: i64,
     ) {
+        match (frozen, self.frozen.last_mut()) {
+            (true, Some((_, None))) | (false, None | Some((_, Some(_)))) => {},
+            (true, _) => self.frozen.push((now, None)),
+            (false, Some((_, until @ None))) => *until = Some(now),
+        }
+        if deleted && self.deleted_at.is_none() {
+            self.deleted_at = Some(now);
+        }
         for p in self.periods.iter_mut().filter(|p| p.until.is_none()) {
             let tmb = p.key.tmb().to_b64();
             if !active.contains_key(&tmb) {
@@ -106,6 +120,27 @@ impl KeyTimeline {
     /// Whether `tmb` was ever a key of this principal.
     pub(crate) fn knows(&self, tmb: &Thumbprint) -> bool {
         self.periods.iter().any(|p| p.key.tmb() == tmb)
+    }
+
+    /// Whether the principal took data actions at `now`: not yet deleted,
+    /// and not frozen then.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyDeleted` at or after the deleting commit; `Frozen` inside a
+    /// frozen span.
+    pub(crate) fn open_at(&self, now: i64) -> Result<()> {
+        if self.deleted_at.is_some_and(|d| d <= now) {
+            return Err(Error::AlreadyDeleted);
+        }
+        if self
+            .frozen
+            .iter()
+            .any(|(from, until)| *from <= now && until.is_none_or(|u| now < u))
+        {
+            return Err(Error::Frozen);
+        }
+        Ok(())
     }
 
     fn open(&self, tmb: &Thumbprint) -> Option<&Period> {

@@ -747,3 +747,65 @@ async fn a_served_action_its_history_no_longer_authorizes_is_ignored() {
         "the client reaches the peer's PR"
     );
 }
+
+/// A commit on `peer` of one lifecycle coz `typ` (`freeze/create`,
+/// `principal/delete`) naming the current PR, signed and finalized by the
+/// genesis key at `now`. Returns the commit's wire blobs.
+async fn lifecycle_commit(peer: &mut Chain<'_>, typ: &str, now: i64) -> Vec<String> {
+    let g = peer.genesis;
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": g.kp.alg.name(),
+        "id": peer.principal.pr_tagged().expect("pr"),
+        "now": now,
+        "tmb": g.tmb.to_b64(),
+        "typ": format!("cyphr.me/cyphr/{typ}"),
+    }))
+    .expect("pay json");
+    let (sig, cad) =
+        coz::sign_json(&pay, g.kp.alg.name(), &g.kp.prv_bytes, &g.kp.pub_bytes).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, g.kp.alg.name()).expect("czd");
+    let mut scope = peer.principal.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("lifecycle coz applies");
+    scope
+        .finalize_with_software(&g.signer(), now, "cyphr.me")
+        .await
+        .expect("commit finalizes");
+    common::wire_commit(peer.principal.commits().last().expect("a commit"))
+}
+
+/// Claim (SPEC 14.9 freeze, 11.4 delete): a data action taken while the
+/// principal was open stays authorized after a later freeze or delete: a
+/// replay judges it at its own `now`, not at the frozen or deleted tip.
+/// The peer records an action at t=100, then freezes (or deletes) at
+/// t=200; the client follows the commits, then the served action, and
+/// reaches the peer's PR.
+///
+/// Turns red if the client judges the served action against the tip's
+/// lifecycle state (`Frozen` or `AlreadyDeleted` refuses the response).
+/// End-to-end scenario: yes (served over a carrier).
+#[tokio::test]
+async fn an_action_before_a_freeze_or_delete_follows() {
+    for typ in ["freeze/create", "principal/delete"] {
+        let g = kp();
+        let mut peer = Chain::new(&g).await;
+        let action = peer.action("cyphr.me/app/post/create", 1_700_000_100);
+        let closing = lifecycle_commit(&mut peer, typ, 1_700_000_200).await;
+
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&peer.patch(&[closing])).expect("patch json");
+        body["payload"]["actions"] = serde_json::json!([{ "blobs": [action] }]);
+        let pipe = Pipe::new(serde_json::to_vec(&body).expect("json"));
+        let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000)).await;
+        held.follow(&pipe)
+            .await
+            .unwrap_or_else(|e| panic!("{typ}: an action taken before it follows: {e:?}"));
+        let tip = held.held_tip().expect("tip");
+        assert_eq!(
+            (tip.commits, tip.pr),
+            (2, peer.principal.pr_tagged().expect("pr")),
+            "{typ}: the client reaches the peer's PR"
+        );
+    }
+}
