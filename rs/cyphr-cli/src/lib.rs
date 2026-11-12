@@ -668,7 +668,7 @@ pub enum DataCommands {
         sign_only: bool,
     },
 
-    /// Include DR = MR(DT) in the Principal Tree by a signed `ds/create`
+    /// Sign a `ds/create` over the local DT; its `id` becomes DR in PR
     Commit {
         /// Principal Root (base64url)
         #[arg(long)]

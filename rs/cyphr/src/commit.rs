@@ -891,8 +891,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
     }
 
-    /// The `id` a `ds/create` applied now must name (SPEC 4.8.2): the
-    /// computed DR = MR(DT) over every action recorded so far, tagged
+    /// The `id` a signer gives a `ds/create` applied now (SPEC 4.8.2): MR
+    /// over every action this principal holds, tagged
     /// `alg:digest` like [`genesis_id`](Self::genesis_id). `None` while DT
     /// is empty.
     ///
