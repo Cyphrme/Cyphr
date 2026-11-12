@@ -19,8 +19,9 @@ use serde_json::{Value, json};
 use crate::connector::{ChannelBinding, ConnectError, Connector, Request};
 use crate::sync::{ForkFinding, Record};
 
-/// Bundle file version this build writes and reads.
-pub const BUNDLE_VERSION: u64 = 1;
+/// Bundle file version this build writes and reads. Version 2 drops the
+/// chain position (`after`) from action bundles (SPEC 4.8.1).
+pub const BUNDLE_VERSION: u64 = 2;
 
 /// Why a bundle file was refused.
 #[derive(Debug, thiserror::Error)]
