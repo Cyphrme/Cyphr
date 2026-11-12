@@ -1611,9 +1611,8 @@ async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
     create_key(&mut b2, &eve, &kp(&pool, "bob"), NOW + 4).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&b2, t.n, &t.id)).await;
     assert!(status.is_client_error(), "B2 is a rival: {body:?}");
-    let retained = |b: &Vec<cyphr_storage::engine::BranchTip>| {
-        b.iter().filter(|b| !b.canonical).count()
-    };
+    let retained =
+        |b: &Vec<cyphr_storage::engine::BranchTip>| b.iter().filter(|b| !b.canonical).count();
     let before = state.engine.list_branches(&t.id).await.expect("branches");
     assert_eq!(retained(&before), 3, "A, D and B2 are retained");
     let mut del = t.d.fork().await.expect("fork");
@@ -1626,12 +1625,23 @@ async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
     )
     .await;
     let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
-    assert_eq!(status, StatusCode::CREATED, "the owner's resolution: {body:?}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the owner's resolution: {body:?}"
+    );
     assert!(!errored(&state, &t.id).await, "eve's rivals left the fork");
     let tip = tip_payload(app, &t.id).await;
-    assert_eq!(tip["commit_id"], body["payload"]["commit_id"], "the delete is /tip");
+    assert_eq!(
+        tip["commit_id"], body["payload"]["commit_id"],
+        "the delete is /tip"
+    );
     let after = state.engine.list_branches(&t.id).await.expect("branches");
-    assert_eq!(retained(&after), 3, "B, C and B2 retained in A and D's place");
+    assert_eq!(
+        retained(&after),
+        3,
+        "B, C and B2 retained in A and D's place"
+    );
 }
 
 /// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit

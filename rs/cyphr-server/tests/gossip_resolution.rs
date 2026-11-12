@@ -337,7 +337,10 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
         assert_eq!(push(app, &id, &x).await, StatusCode::CREATED, "X");
     }
     assert!(push(&app1, &id, &r).await.is_client_error(), "R is a rival");
-    assert!(p1.engine.is_errored(&id).await.expect("verdict"), "a plain fork");
+    assert!(
+        p1.engine.is_errored(&id).await.expect("verdict"),
+        "a plain fork"
+    );
     let (status, body) = post_json(app2.clone(), "/revoke", eve_revoke(T + 1).to_string()).await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 

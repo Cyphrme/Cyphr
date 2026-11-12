@@ -4124,7 +4124,10 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         let pay = &coz["pay"];
         let dead_at = |tmb: Option<&str>| {
             let rvk = revoked.get(tmb?)?;
-            pay["now"].as_i64().is_none_or(|now| now >= *rvk).then_some(())
+            pay["now"]
+                .as_i64()
+                .is_none_or(|now| now >= *rvk)
+                .then_some(())
         };
         let typ = pay["typ"].as_str().unwrap_or_default();
         if cyphr::parsed_coz::typ::is_key_introducing(typ) && dead_at(pay["id"].as_str()).is_some()
