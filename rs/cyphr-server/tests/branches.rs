@@ -1503,6 +1503,95 @@ async fn key_delete_promotes_at_the_losing_peer() {
     assert_eq!(tip_payload(app, &t.id).await, tip);
 }
 
+/// Backs the participation gate on promotion (SPEC 15.8 with rule 5): the
+/// owner deletes K (`eve`) at the head position d; K's holder then pushes
+/// R_{d-1} over the commit below the owner's d-1, R_d over it, and R_{d+1}
+/// over R_d. The line [R_{d-1}, R_d] is signed by a key deleted above its
+/// positions, so it is evidence only, and R_{d+1} extending it promotes
+/// nothing whether or not the principal is in Error: the deletion stays
+/// the head and K stays removed. Turns red if R_{d+1} is admitted or moves
+/// the tip.
+#[tokio::test]
+async fn a_deleted_keys_line_is_never_promoted() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let mut chain = shared.fork().await.expect("fork");
+    create_key(&mut chain, &g, &kp(&pool, "key_a"), NOW + 3).await;
+    sign_commit(
+        &mut chain,
+        &g,
+        serde_json::json!({"id": e.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 4,
+    )
+    .await;
+    let mut r = shared.fork().await.expect("fork");
+    create_key(&mut r, &e, &kp(&pool, "key_b"), NOW + 3).await;
+    create_key(&mut r, &e, &kp(&pool, "carol"), NOW + 3).await;
+    create_key(&mut r, &e, &kp(&pool, "bob"), NOW + 3).await;
+
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..n + 2 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&chain, i, &id)).await;
+        assert_eq!(status, StatusCode::CREATED, "chain {i}: {body:?}");
+    }
+    let tip = tip_payload(app.clone(), &id).await;
+    for i in [n, n + 1] {
+        let (status, body) = post_json(app.clone(), "/push", wire(&r, i, &id)).await;
+        assert!(status.is_client_error(), "R at {i}: {body:?}");
+    }
+    let (status, body) = post_json(app.clone(), "/push", wire(&r, n + 2, &id)).await;
+    assert!(
+        status.is_client_error(),
+        "R_(d+1) promoted a deleted key's line: {body:?}"
+    );
+    assert_eq!(tip_payload(app, &id).await, tip, "the deletion is the head");
+    assert!(!errored(&state, &id).await, "K's line is evidence only");
+}
+
+/// Backs the participation gate on promotion while Active: the owner's A
+/// and D are canonical, `eve`'s B and C retained; the owner deletes `eve`
+/// above them, so the principal is Active. `eve` then pushes E over C (at
+/// the deletion's position) and F over E. The line [B, C, E] is signed by
+/// a key the chain deleted above it, so it is evidence only: F promotes
+/// nothing, the deletion stays `/tip` and the principal stays Active.
+/// Turns red if F is admitted or moves the tip.
+#[tokio::test]
+async fn a_deleted_keys_line_is_not_promoted_while_active() {
+    let pool = load_pool();
+    let t = theft(false).await;
+    let (app, state, _dir) = both_extended(&t, false).await;
+    let eve = kp(&pool, "eve_ed25519");
+    let mut del = t.d.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({"id": eve.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete: {body:?}");
+    assert!(!errored(&state, &t.id).await, "Active after the delete");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    let mut e = t.c.fork().await.expect("fork");
+    create_key(&mut e, &eve, &kp(&pool, "bob"), NOW + 8).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&e, t.n + 2, &t.id)).await;
+    assert!(status.is_client_error(), "E: {body:?}");
+    let mut f = e.fork().await.expect("fork");
+    create_key(&mut f, &eve, &kp(&pool, "alice"), NOW + 9).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&f, t.n + 3, &t.id)).await;
+    assert!(status.is_client_error(), "F promoted eve's line: {body:?}");
+    assert_eq!(tip_payload(app, &t.id).await, tip, "the deletion is /tip");
+    assert!(!errored(&state, &t.id).await, "still Active");
+}
+
 /// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
 /// finalized by `new`, the key it leaves active.
 async fn replace_key(p: &mut cyphr::Principal, old: &Kp, new: &Kp, now: i64) {

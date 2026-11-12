@@ -395,6 +395,71 @@ async fn after_revocation(r: &Revoked) -> WireBundle {
     bundle
 }
 
+/// Backs the participation gate on promotion (SPEC 6.4, 15.8) at the
+/// engine seam every holder ingests through, a verifier's store included:
+/// the canonical commit at 1 revokes `golden`, a `golden`-signed rival R
+/// is retained at 1, and B over R (also `golden`'s) would promote R's
+/// line. R is signed by a key the chain revoked, so it is evidence only:
+/// B is refused, the revocation stays the tip and the principal Active.
+/// Turns red if B is admitted or moves the tip.
+#[tokio::test]
+async fn revoked_keys_rival_is_never_promoted() {
+    let r = revoked().await;
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    r.f.submit(&e, &r.f.first).await.expect("commit 0");
+    r.f.submit(&e, &blobs(&r.canonical, 1))
+        .await
+        .expect("the revocation");
+    let pool = load_pool();
+    let mut rival = r.f.base.fork().await.expect("fork");
+    create_key(&mut rival, &r.f.golden, &kp(&pool, "key_b"), NOW + 11).await;
+    create_key(&mut rival, &r.f.golden, &kp(&pool, "bob"), NOW + 12).await;
+    assert!(
+        r.f.submit(&e, &blobs(&rival, 1)).await.is_err(),
+        "R is a rival"
+    );
+    let tip = e.get_tip(&r.f.id).await.expect("tip").expect("held");
+    assert!(
+        r.f.submit(&e, &blobs(&rival, 2)).await.is_err(),
+        "B promoted a revoked key's rival"
+    );
+    let after = e.get_tip(&r.f.id).await.expect("tip").expect("held");
+    assert_eq!(after.commit_id, tip.commit_id, "the revocation is the tip");
+    assert!(!e.is_errored(&r.f.id).await.expect("verdict"));
+}
+
+/// Backs the retention bound on promotion: `golden` already has its
+/// [`BRANCH_PER_KEY`](cyphr_storage::engine::BRANCH_PER_KEY) rivals
+/// retained at position 1 beside its canonical commit there, and
+/// `key_a`'s rival R at 1 is extended by B. Promoting R would retain the
+/// displaced canonical commit, a third `golden` rival, past the bound, so
+/// B is refused and nothing moves. Turns red if the promotion is made and
+/// the retained set outgrows the bound.
+#[tokio::test]
+async fn promotion_respects_the_retention_bound() {
+    let f = Fork::new(3).await;
+    let (e, outcomes) = f.engine_with(&[0, 1, 2]).await;
+    assert!(outcomes[0].is_ok(), "rival 0 is the canonical commit");
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let mut r = f.base.fork().await.expect("fork");
+    create_key(&mut r, &key_a, &kp(&pool, "bob"), NOW + 20).await;
+    create_key(&mut r, &key_a, &kp(&pool, "carol"), NOW + 21).await;
+    assert!(f.submit(&e, &blobs(&r, 1)).await.is_err(), "R is a rival");
+    let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
+    let held = e.list_branches(&f.id).await.expect("branches").len();
+    assert!(
+        f.submit(&e, &blobs(&r, 2)).await.is_err(),
+        "B promoted R past the retention bound"
+    );
+    assert_eq!(
+        e.get_tip(&f.id).await.expect("tip").expect("held").commit_id,
+        tip.commit_id,
+        "nothing moved"
+    );
+    assert_eq!(e.list_branches(&f.id).await.expect("branches").len(), held);
+}
+
 /// Backs a-verify: a bundle at a position after a key was revoked, signed
 /// by that revoked key, is refused and stores nothing. The control builds
 /// the same position-2 commit with the active `key_a` and it is accepted,

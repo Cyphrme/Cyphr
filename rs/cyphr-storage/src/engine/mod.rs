@@ -2857,7 +2857,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     // fork (SPEC 15.8) or, below the head, forks anew.
                     let canonical_len = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
                     match self
-                        .resolve_fork(principal_id, &genesis, bundle, canonical_len, errored)
+                        .resolve_fork(
+                            principal_id,
+                            &genesis,
+                            bundle,
+                            canonical_len,
+                            (held.as_slice(), &revoked),
+                        )
                         .await
                     {
                         Ok(Some(resolved)) => return Ok(resolved),
@@ -3199,7 +3205,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: &crate::Genesis,
         bundle: &WireBundle,
         canonical_len: u64,
-        errored: Option<(&[Held], &Revoked)>,
+        (held, revoked): (&[Held], &Revoked),
     ) -> Result<Option<IngestResult>, EngineError> {
         use crate::import::replay_commit;
 
@@ -3218,11 +3224,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(None);
         }
         let actions = self.action_history(principal_id).await?;
+        let by_pr: HashMap<(u64, &str), &Retained> = rivals
+            .iter()
+            .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
+            .collect();
         for rival in &rivals {
             let at = rival.tip.sequence;
             // The retained line the rival ends: it and its retained
             // ancestors, down to the one whose parent is canonical.
-            let line = retained_line(&rivals, rival);
+            let line = retained_line(&by_pr, rival);
             let base = line.first().map_or(at, |r| r.tip.sequence);
             let Some(prefix) = entries.get(..usize::try_from(base).unwrap_or(usize::MAX)) else {
                 continue;
@@ -3282,19 +3292,31 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 self.keep_branch(bundle, next_commit).await?;
                 return Ok(None);
             }
+            // Only a line that takes part in the fork can be promoted,
+            // Error or not: every commit of it, and `bundle`, judged by
+            // [`participants`] over what is held now, with the canonical
+            // removals as they stand before the promotion. A line signed
+            // by a key the chain revoked, or deleted above it, is evidence
+            // only, and so is what extends it.
+            if !line_takes_part(held, revoked, &line, &next_commit) {
+                self.keep_evidence(bundle, next_commit).await;
+                return Ok(None);
+            }
             // In Error, a promotion that leaves it standing is kept, not
             // made (SPEC 15.5). It is judged in the state after it: the
             // line and `bundle` canonical, the displaced chain retained, so
             // a removal `bundle` carries counts as it would on the peer
             // that held this line all along.
-            if let Some((held, revoked)) = errored {
-                let after = promoted(held, base, &line_commits, &next_commit);
-                if in_error(&after, revoked) {
-                    self.keep_evidence(bundle, next_commit).await;
-                    return Err(EngineError::Errored {
-                        principal_id: principal_id.to_string(),
-                    });
-                }
+            if in_error(held, revoked)
+                && in_error(
+                    &promoted(held, base, &line_commits, &next_commit),
+                    revoked,
+                )
+            {
+                self.keep_evidence(bundle, next_commit).await;
+                return Err(EngineError::Errored {
+                    principal_id: principal_id.to_string(),
+                });
             }
             return self
                 .promote_branch(principal_id, &line, &mut line_commits, bundle, next_commit)
@@ -3367,6 +3389,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 keys,
                 signed,
             });
+        }
+
+        // The displaced commits are retained in the line's place, within the
+        // same bounds as any rival ([`has_slot`]); a promotion they would
+        // overflow is refused before anything is written.
+        {
+            let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+            let mut after: Vec<Retained> = kept
+                .get(principal_id)
+                .into_iter()
+                .flatten()
+                .filter(|b| {
+                    !line
+                        .iter()
+                        .any(|r| r.tip.tip == b.tip.tip && r.tip.sequence == b.tip.sequence)
+                })
+                .cloned()
+                .collect();
+            for d in &displaced {
+                if !has_slot(&after, &d.signer) {
+                    return Err(EngineError::BranchLimit {
+                        key: d.signer.clone(),
+                    });
+                }
+                after.push(d.clone());
+            }
         }
 
         // Claims first, so a refusal leaves no manifest behind; the alias
@@ -4318,18 +4366,40 @@ fn promoted(
 }
 
 /// The retained line `rival` ends, lowest first: `rival` and, while one is
-/// retained, the commit its `pre` names one position down.
-fn retained_line(retained: &[Retained], rival: &Retained) -> Vec<Retained> {
+/// retained, the commit its `pre` names one position down. `by_pr` indexes
+/// the retained commits by (position, PR), so the walk is linear.
+fn retained_line(by_pr: &HashMap<(u64, &str), &Retained>, rival: &Retained) -> Vec<Retained> {
     let mut line = vec![rival.clone()];
-    while let Some(parent) = line.last().and_then(|r| {
-        retained.iter().find(|p| {
-            p.tip.sequence + 1 == r.tip.sequence && r.tip.pre.as_deref() == Some(p.pr.as_str())
-        })
-    }) {
-        line.push(parent.clone());
+    let mut at = rival;
+    while let Some(parent) = at
+        .tip
+        .pre
+        .as_deref()
+        .zip(at.tip.sequence.checked_sub(1))
+        .and_then(|(pre, below)| by_pr.get(&(below, pre)))
+    {
+        line.push((*parent).clone());
+        at = parent;
     }
     line.reverse();
     line
+}
+
+/// Whether every commit of the retained `line` and `next`, which extends
+/// it, takes part ([`participants`]) in the principal `(held, revoked)`
+/// describes, `next` counted as a retained commit.
+fn line_takes_part(
+    held: &[Held],
+    revoked: &Revoked,
+    line: &[Retained],
+    next: &IndexableCommit,
+) -> bool {
+    let mut with_next = held.to_vec();
+    let next = Held::of(next, false);
+    let next_id = next.id.clone();
+    with_next.push(next);
+    let taking = participants(&with_next, revoked);
+    taking.contains(&next_id) && line.iter().all(|r| taking.contains(&r.tip.tip))
 }
 
 /// Choose each principal's canonical chain from its stored commit and
