@@ -759,8 +759,19 @@ enum Relation {
     Diverges(usize),
 }
 
+/// Whether two replayed bundles are the same step of a chain. A commit is
+/// named by its TR and the PR it leads to: the actions a bundle carries
+/// inline are recorded data, and a peer that holds them as bundles of their
+/// own holds the same commit, though the bundle's coz digests differ.
+fn same_step(m: &BundleId, t: &BundleId) -> bool {
+    match (&m.tr, &t.tr) {
+        (Some(a), Some(b)) => a == b && m.pr == t.pr,
+        _ => m == t,
+    }
+}
+
 fn relate(mine: &[BundleId], theirs: &[BundleId]) -> Relation {
-    if let Some(at) = mine.iter().zip(theirs).position(|(m, t)| m != t) {
+    if let Some(at) = mine.iter().zip(theirs).position(|(m, t)| !same_step(m, t)) {
         return Relation::Diverges(at);
     }
     match mine.len().cmp(&theirs.len()) {
