@@ -24,8 +24,10 @@ pub enum PeerError {
         #[source]
         source: io::Error,
     },
-    #[error("peer `{name}` exited before announcing a listen address (see {log})")]
-    EarlyExit { name: String, log: PathBuf },
+    /// The log is quoted, not pointed to: it lives in the peer's temp dir,
+    /// which is gone by the time anyone reads the error.
+    #[error("peer `{name}` exited before announcing a listen address; its log:\n{log}")]
+    EarlyExit { name: String, log: String },
     #[error("peer `{name}` GET /server: {reason}")]
     Identity { name: String, reason: String },
     #[error("peer `{name}`: {what} failed: {reason}")]
@@ -131,9 +133,11 @@ impl Launch {
         let addr = loop {
             match lines.next_line().await.map_err(io_err("reading stdout"))? {
                 None => {
+                    let _ = child.wait().await;
                     return Err(PeerError::EarlyExit {
                         name: name.to_owned(),
-                        log: self.log.clone(),
+                        log: std::fs::read_to_string(&self.log)
+                            .unwrap_or_else(|e| format!("({}: {e})", self.log.display())),
                     });
                 },
                 Some(l) => {
