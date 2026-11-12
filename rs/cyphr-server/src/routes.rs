@@ -535,9 +535,10 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedR
         let derived = derived_roots(state, &t).await?;
 
         if derived.pr == t.pr && derived.sr == t.sr && derived.ar == t.ar && derived.cr == t.cr {
-            state
-                .derived_roots
-                .insert((t.principal_id.clone(), t.commit_id.clone()), derived.clone());
+            state.derived_roots.insert(
+                (t.principal_id.clone(), t.commit_id.clone()),
+                derived.clone(),
+            );
             let roots = receipt::Roots {
                 pr: derived.pr,
                 sr: derived.sr,
@@ -1312,7 +1313,10 @@ mod commit_count_underflow_tests {
             .await
             .expect("get_tip")
             .expect("tip");
-        assert_ne!(t1.commit_id, t2.commit_id, "the second commit moved the tip");
+        assert_ne!(
+            t1.commit_id, t2.commit_id,
+            "the second commit moved the tip"
+        );
 
         let attested = sign_tip_attestation(&state, &t1)
             .await
