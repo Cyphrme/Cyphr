@@ -11,22 +11,29 @@ impl PrincipalState {
     /// (SPEC 6.2, 6.5), not the key set at the tip. A principal with no
     /// genesis commit has no history to authorize from.
     ///
+    /// A key of an embedded principal is judged the same way, by that
+    /// principal's key history at `now` (SPEC 10.3).
+    ///
     /// # Errors
     ///
-    /// `GenesisIncomplete` before the genesis commit; `UnknownKey` for a
-    /// key of KT, or a deleted one, not active at `now`; otherwise as
-    /// [`Self::active_signer`] (a revoked key, an embedded principal's).
+    /// `GenesisIncomplete` before the genesis commit; `KeyRevoked` for a
+    /// key revoked at or before `now`; `EmbeddedErrored` for a key of an
+    /// embedded principal in Error; `UnknownKey` otherwise.
     fn action_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
         if self.pg().is_none() {
             return Err(Error::GenesisIncomplete);
         }
-        if let Some(key) = self.key_timeline.active_at(tmb, now) {
-            return Ok(key);
+        if let Some(verdict) = self.key_timeline.authorize(tmb, now) {
+            return verdict;
         }
-        if self.auth.keys.contains_key(&tmb.to_b64()) {
-            return Err(Error::UnknownKey);
+        if self.auth.revoked.contains_key(&tmb.to_b64()) {
+            return Err(Error::KeyRevoked);
         }
-        self.active_signer(tmb)
+        self.embedded
+            .signer_at(tmb, now, |d| {
+                self.nonces.holds(crate::nonce::NonceLevel::Kt, d)
+            })
+            .unwrap_or(Err(Error::UnknownKey))
     }
 
     /// Record an action in the Data Tree (Level 4+).
@@ -160,6 +167,13 @@ impl PrincipalState {
 }
 
 impl<S: eml::Storage> Principal<S> {
+    /// Take in a naked revoke of `tmb` dated `now` that the caller has
+    /// verified (SPEC 6.4): from `now` on, the key authorizes no data
+    /// action. It changes no root: a naked revoke does not mutate PR.
+    pub fn note_naked_revoke(&mut self, tmb: &coz::Thumbprint, now: i64) {
+        self.state.core_mut().key_timeline.revoke(tmb, now);
+    }
+
     /// Verify signature and record an action in one step.
     ///
     /// This is the primary method for processing incoming actions. An

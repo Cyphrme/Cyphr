@@ -383,3 +383,76 @@ async fn forged_action_spliced_before_delete_commit_leaves_pr() {
         "DR holds no forged action"
     );
 }
+
+/// Principal {golden, key_a} after its genesis commit at t=1.
+async fn principal_with_key_a(golden: &Signer, key_a: &Signer) -> Principal {
+    genesis_of(
+        Principal::implicit(domain_key(golden))
+            .await
+            .expect("principal"),
+        golden,
+        &[domain_key(key_a)],
+    )
+    .await
+}
+
+// Practice: SPEC.md section 6.4 (`key/revoke`): a key "should never be trusted again", and a
+// naked revoke, signed outside a commit, "does not mutate PR, but further use of the revoked key
+// must be rejected". A revoke takes effect from its own `now`. Claim C3d. Mutation that turns
+// this red: ignoring a verified naked revoke on the data-action path, or applying it to actions
+// dated before it.
+#[tokio::test]
+async fn naked_revoke_takes_effect_from_its_own_now() {
+    let (golden, key_a) = (signer("golden"), signer("key_a"));
+    let mut p = principal_with_key_a(&golden, &key_a).await;
+    p.note_naked_revoke(&key_a.tmb, 1_700_000_100);
+    let before = record(&mut p, action(&key_a, 1_700_000_050, "before the revoke"));
+    assert!(before.is_ok(), "expected Ok, got {before:?}");
+    for now in [1_700_000_100, 1_700_000_200] {
+        let r = record(&mut p, action(&key_a, now, "at or after the revoke"));
+        assert!(
+            matches!(r, Err(Error::KeyRevoked)),
+            "expected Err(KeyRevoked) at {now}, got {r:?}"
+        );
+    }
+    assert_eq!(p.action_count(), 1, "only the earlier action is recorded");
+}
+
+// Practice: SPEC.md section 6.2: "Past signatures from previous active periods remain valid even
+// after the key is no longer active", with 6.4: a revoke ends the key's authority from then on.
+// A key revoked in a commit at t=100 still authorizes an action dated t=50, and not one dated
+// t=150. Claim C3e. Mutation that turns this red: judging a data action's signer at the tip.
+#[tokio::test]
+async fn revoked_key_signature_dated_before_its_revoke_verifies() {
+    let (golden, key_a) = (signer("golden"), signer("key_a"));
+    let mut p = principal_with_key_a(&golden, &key_a).await;
+    let (pay, sig, czd) = sign(
+        &key_a,
+        serde_json::json!({"alg": key_a.alg, "tmb": key_a.tmb.to_b64(), "rvk": 1_700_000_100,
+            "typ": "cyphr.me/cyphr/key/revoke", "now": 1_700_000_100}),
+    );
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("revoke applies");
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &golden.alg,
+                &golden.prv,
+                &golden.pub_key,
+                &golden.tmb,
+            ),
+            1_700_000_100,
+            "cyphr.me",
+        )
+        .await
+        .expect("revoke commit finalizes");
+    let past = record(&mut p, action(&key_a, 1_700_000_050, "before the revoke"));
+    assert!(past.is_ok(), "expected Ok, got {past:?}");
+    let after = record(&mut p, action(&key_a, 1_700_000_150, "after the revoke"));
+    assert!(
+        matches!(after, Err(Error::KeyRevoked)),
+        "expected Err(KeyRevoked), got {after:?}"
+    );
+}

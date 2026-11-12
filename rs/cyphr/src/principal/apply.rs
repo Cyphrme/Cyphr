@@ -812,7 +812,8 @@ impl PrincipalState {
 
         core.auth.commits.push(commit);
         let now = core.latest_timestamp;
-        core.key_timeline.record_commit(&core.auth.keys, now);
+        core.key_timeline
+            .record_commit(&core.auth.keys, &core.auth.revoked, now);
 
         // This commit is finalized on this state: any principal/delete it
         // carried is no longer "this commit's own pending delete" for a

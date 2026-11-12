@@ -263,6 +263,52 @@ async fn a_removed_key_of_b_cannot_newly_authorize_and_old_verdicts_stand() {
     assert!(a.is_key_active(&key_a.tmb), "the earlier verdict stands");
 }
 
+/// A data action `k` signs for A, dated `now`.
+fn action_by(k: &Kp, now: i64) -> Signed {
+    let mut pay = json!({"alg": k.alg, "now": now, "msg": "for A",
+        "tmb": Base64UrlUnpadded::encode_string(k.tmb.as_bytes()),
+        "typ": "cyphr.me/action"});
+    pay.as_object_mut().expect("object").sort_keys();
+    let v = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&v, &k.alg, &k.prv, &k.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &k.alg).expect("czd");
+    (v, sig, czd)
+}
+
+/// Backs SPEC 10.3 with 6.5: a data action signed for A by a key of B is
+/// judged by B's key history at the action's own `now`, not at B's tip.
+/// B deletes `carol` at T + 20; with B's tip after the deletion, an action
+/// carol dated T + 15 is accepted and one dated T + 25 is not. Turns red
+/// if an embedded member's key is judged at the member's tip. End to end:
+/// yes (signed actions through `verify_and_record_action`).
+#[tokio::test]
+async fn a_data_action_by_bs_key_is_judged_at_its_own_now() {
+    let World {
+        mut a,
+        mut b,
+        bob,
+        carol,
+        ..
+    } = world().await;
+    let delete = sign(&bob, "key/delete", &tmb_id(&carol), T + 20);
+    commit(&mut b, &bob, delete, None, T + 20)
+        .await
+        .expect("B deletes carol");
+    let mut src = Fake::default();
+    src.tips.push_back(Tip::new(&b, T + 30));
+    a.follow_embedded(&mut src).await;
+
+    let (pay, sig, czd) = action_by(&carol, T + 15);
+    let before = a.verify_and_record_action(&pay, &sig, czd).map(|_| ());
+    assert!(before.is_ok(), "expected Ok, got {before:?}");
+    let (pay, sig, czd) = action_by(&carol, T + 25);
+    let after = a.verify_and_record_action(&pay, &sig, czd).map(|_| ());
+    assert!(
+        matches!(after, Err(Error::UnknownKey)),
+        "expected Err(UnknownKey), got {after:?}"
+    );
+}
+
 /// Backs SPEC 10.5 with 11.1 (`Error`): when the source finds B in `Error`
 /// (a fork), authorization through B is `Error` too, for a key B still
 /// holds. Turns red if a key of a principal in `Error` authorizes. End to
