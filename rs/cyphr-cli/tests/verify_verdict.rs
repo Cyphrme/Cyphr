@@ -198,10 +198,17 @@ fn verdict_follows_the_branch_the_principal_resolves_to() {
         id.as_str(),
         "names the resolving key: {after}"
     );
-    let kept = after["branches"].as_array().expect("branches");
+    // The abandoned branch is retained as proof of error (SPEC 15.8) in the
+    // resolved forks, and is no live head.
+    let kept = after["resolved_forks"].as_array().expect("resolved_forks");
     assert!(
-        kept.iter().any(|b| *b == at.json()["tip"]),
+        kept.iter().any(|f| f["abandoned"] == at.json()["tip"]),
         "the abandoned branch is kept: {after}"
+    );
+    assert_eq!(
+        after["branches"].as_array().map(Vec::len),
+        Some(1),
+        "one live head: {after}"
     );
 }
 
