@@ -5,6 +5,18 @@
 name      = "register_create"
 principal = ["golden"]
 
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 id     = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 now    = 1700000001
@@ -17,6 +29,18 @@ level = 4
 [[test]]
 name      = "register_delete"
 principal = ["golden"]
+
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 id     = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"

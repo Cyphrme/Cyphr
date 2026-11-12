@@ -17,6 +17,7 @@ mod genesis;
 mod proofs;
 #[cfg(test)]
 mod tests;
+mod timeline;
 
 use std::collections::HashSet;
 
@@ -169,6 +170,9 @@ pub struct PrincipalCore {
     pub(crate) dr: Option<DataRoot>,
     /// Auth ledger.
     pub(crate) auth: AuthLedger,
+    /// Which key was active when (SPEC 6.5), the authority for a data
+    /// action. Rebuilt by replaying history.
+    pub(crate) key_timeline: timeline::KeyTimeline,
     /// Data ledger (Level 4+).
     pub(crate) data: DataLedger,
     /// Full czd bytes of every transaction coz and data action this
@@ -410,6 +414,7 @@ impl PrincipalCore {
                 keys: key_map,
                 ..Default::default()
             },
+            key_timeline: timeline::KeyTimeline::default(),
             data: DataLedger::default(),
             included_czds: HashSet::new(),
             nonces: NonceSets::default(),

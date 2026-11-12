@@ -218,12 +218,13 @@ in `spec_conformance.rs` and `rs/cyphr-server/tests/now_range.rs`.
 
 #### [rv-timestamp-monotone]
 
-A coz whose `now` is earlier than the latest timestamp the principal has
-recorded is rejected with `TimestampPast`, on both the transaction path and
-the data-action path. A coz whose `now` equals the latest is accepted by this
-rule. The latest timestamp is the chain's: its commits' cozies. A data action
-bounds nothing: DT is not chained (SPEC 2.3.3), and its actions are ordered by
-`now`, then lexically (SPEC 4.8.1), whatever order they arrive in.
+A transaction coz whose `now` is earlier than the latest timestamp the
+principal has recorded is rejected with `TimestampPast`. A coz whose `now`
+equals the latest is accepted by this rule. The latest timestamp is the
+chain's: its commits' cozies. A data action is not bound by it and bounds
+nothing: DT is not chained (SPEC 2.3.3), its actions are ordered by `now`,
+then lexically (SPEC 4.8.1), whatever order they arrive in, and each is judged
+by the key active at its own `now` ([rv-key-active-gate](#rv-key-active-gate)).
 
 ```claim
 kind: requirement
@@ -231,11 +232,9 @@ evaluator: test
 ```
 
 The code is `apply_transaction_internal` in
-`rs/cyphr/src/principal/apply.rs` and `record_action` in
-`rs/cyphr/src/principal/data.rs`; both compare `now` with a strict `<`, the
-both against `latest_timestamp`. The golden vector `timestamp_past_fails` in
-`tests/golden/errors/` pins the rejection on the transaction path; no vector
-pins it on the data-action path. The marker sits at
+`rs/cyphr/src/principal/apply.rs`, which compares `now` with a strict `<`
+against `latest_timestamp`. The golden vector `timestamp_past_fails` in
+`tests/golden/errors/` pins the rejection. The marker sits at
 `test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs`, and the runner
 entry runs that whole test. It runs every vector in `tests/golden/errors/`, not
 only the timestamp one, so the binding fails if any error vector fails; the
@@ -323,9 +322,12 @@ accepts a key active in either the pre-commit key set or the projected one
 (an earlier mutation in the same commit may have replaced it), and
 `finish_commit` pushes the finalizer with `push_tx`, so it does not pass
 through `apply_transaction_internal` at all. A deleted
-key's action is rejected whether dated after the delete or backdated into the
-key's old active period, and a key that is not active cannot authorize its own
-admission. A `key/create` or `key/replace` of a revoked key is refused with
+key's action is rejected when dated after the delete. A data action is
+authorized by the key active at its own `now` (SPEC 6.2, 6.5): the key set the
+commits dated at or before it left, so an action dated inside a deleted key's
+old active period is accepted, one dated at the delete is judged after it, and
+one dated before genesis, or for a principal with no genesis commit, is
+refused. A key that is not active cannot authorize its own admission. A `key/create` or `key/replace` of a revoked key is refused with
 `KeyRevoked`; only a deleted key may be re-added.
 
 ```claim
@@ -334,18 +336,13 @@ evaluator: test
 ```
 
 Backed by `deleted_key_action_dated_after_delete_is_rejected` and
-`deleted_key_action_backdated_into_old_active_period_is_rejected` in
+`deleted_key_action_dated_inside_old_active_period_is_accepted` in
 `rs/cyphr/tests/negative_vectors.rs`, and
 `s2_3_2_inactive_key_cannot_authorize_its_own_admission` in
 `spec_conformance.rs`. The last carries an explicit control (an active key may admit
 the same key). The two negative-vector tests have no explicit control, but the
 fixture records an accepted action from the same key before the delete, which
-serves as one. The backdated case pins
-the implementation's fail-closed reading, which tests the signer against
-current key membership and ignores the payload `now`. SPEC §6.2 says past
-signatures from earlier active periods remain valid but does not say whether a
-signer-dated action claiming such a period is accepted on replay, so that test
-pins behaviour, not a ruling. Not bound here: the two exceptions themselves, that a replaced
+serves as one. Not bound here: the two exceptions themselves, that a replaced
 signer of the finalizer is accepted, that a key added earlier in the commit may
 sign later cozies, and the `KeyRevoked` path. Tests for the last exist outside
 the bound set: the golden vectors `revoked_key_fails` and

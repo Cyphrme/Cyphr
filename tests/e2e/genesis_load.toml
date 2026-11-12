@@ -58,6 +58,16 @@ level     = 3
 name      = "load_with_actions"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Test action for load verification"
 now    = 1700000000

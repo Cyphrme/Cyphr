@@ -355,8 +355,8 @@ impl PrincipalState {
             return Err(Error::CozReuse);
         }
 
-        // Validate timestamp is not in the past (SPEC §14.1). Pending
-        // actions do not bound a commit: only included ones are the chain's.
+        // Validate timestamp is not in the past (SPEC §14.1). Data actions
+        // are no part of the chain and bound nothing.
         if cz.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
         }
@@ -811,6 +811,8 @@ impl PrincipalState {
         let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;
 
         core.auth.commits.push(commit);
+        let now = core.latest_timestamp;
+        core.key_timeline.record_commit(&core.auth.keys, now);
 
         // This commit is finalized on this state: any principal/delete it
         // carried is no longer "this commit's own pending delete" for a

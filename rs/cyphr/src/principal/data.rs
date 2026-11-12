@@ -6,6 +6,29 @@ use crate::error::{Error, Result};
 use crate::state::PrincipalRoot;
 
 impl PrincipalState {
+    /// The key that authorizes a data action signed by `tmb` and dated
+    /// `now`: the key active at `now` in the principal's key history
+    /// (SPEC 6.2, 6.5), not the key set at the tip. A principal with no
+    /// genesis commit has no history to authorize from.
+    ///
+    /// # Errors
+    ///
+    /// `GenesisIncomplete` before the genesis commit; `UnknownKey` for a
+    /// key of KT, or a deleted one, not active at `now`; otherwise as
+    /// [`Self::active_signer`] (a revoked key, an embedded principal's).
+    fn action_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
+        if self.pg().is_none() {
+            return Err(Error::GenesisIncomplete);
+        }
+        if let Some(key) = self.key_timeline.active_at(tmb, now) {
+            return Ok(key);
+        }
+        if self.auth.keys.contains_key(&tmb.to_b64()) {
+            return Err(Error::UnknownKey);
+        }
+        self.active_signer(tmb)
+    }
+
     /// Record an action in the Data Tree (Level 4+).
     ///
     /// The action enters DT only: DR, and so SR and PR, change only by a
@@ -16,19 +39,11 @@ impl PrincipalState {
     ///
     /// # Errors
     ///
-    /// - `TimestampPast`: Action timestamp is older than latest seen
     /// - `TimestampFuture`: Action timestamp is too far in the future
-    /// - `UnknownKey`: Signer's key not in current KS
+    /// - as [`Self::action_signer`]
     pub(crate) fn record_action(&mut self, mut action: Action) -> Result<&PrincipalRoot> {
-        // Validate timestamp is not in the past (SPEC §14.1)
-        if action.now < self.latest_timestamp {
-            return Err(Error::TimestampPast);
-        }
-
         self.check_now(action.now)?;
-
-        // Verify signer is an active key
-        self.active_signer(&action.signer)?;
+        self.action_signer(&action.signer, action.now)?;
 
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
@@ -55,9 +70,8 @@ impl PrincipalState {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `UnknownKey`: Signer not in active key set
-    /// - `KeyRevoked`: Signer key has been revoked
-    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`: the signer did not authorize the action
+    ///   at its `now` (SPEC 6.5)
     /// - `TimestampFuture`: Action timestamp is too far in the future
     pub(crate) fn verify_and_record_action(
         &mut self,
@@ -100,8 +114,7 @@ impl PrincipalState {
             return Err(Error::Frozen);
         }
 
-        // Signer must be an ACTIVE key
-        let signer_key = self.active_signer(&signer_tmb)?;
+        let signer_key = self.action_signer(&signer_tmb, now)?;
 
         // The signed pay must name the key that actually verifies it.
         // An absent `alg` is malformed (SPEC 2.3.1), as `verify_coz` rules.
@@ -155,9 +168,8 @@ impl<S: eml::Storage> Principal<S> {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `UnknownKey`: Signer not in active key set
-    /// - `KeyRevoked`: Signer key has been revoked
-    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`: the signer did not authorize the action
+    ///   at its `now` (SPEC 6.5)
     /// - `TimestampFuture`: Action timestamp is too far in the future
     pub fn verify_and_record_action(
         &mut self,

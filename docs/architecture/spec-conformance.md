@@ -521,8 +521,8 @@ SPEC 6.2, line 1002. Disposition: `covered`.
 - disposition: covered
 - spec-text: Only actions signed while a ley is active in KT are interpreted. Past signatures
 - tests:
-  - `rs/cyphr/tests/negative_vectors.rs::deleted_key_action_backdated_into_old_active_period_is_rejected`
-- fails when: the genuine pre-delete action is dropped after the delete, or a forged action backdated into the old active period is accepted. Rejection stands: a verdict is fixed by chain position, so a later commit cannot change an old one (the spec author on forge issue #200).
+  - `rs/cyphr/tests/negative_vectors.rs::deleted_key_action_dated_inside_old_active_period_is_accepted`
+- fails when: the genuine pre-delete action is dropped after the delete, or an action dated inside the key's old active period is refused. A data action is judged by the key set at its own `now` (SPEC 6.5 key timeline), so a later commit cannot change an old verdict.
 
 ```claim
 kind: requirement
@@ -1178,7 +1178,7 @@ SPEC 15.9, line 2837. Disposition: `covered`.
 - spec-text: recent valid message, rejecting any now earlier than latest known timestamp to
 - tests:
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/timestamp_past_fails]`
-- fails when: a commit or action with `now` earlier than the principal's latest known timestamp is accepted.
+- fails when: a commit with `now` earlier than the principal's latest known timestamp is accepted. A data action is judged by the key active at its own `now` (SPEC 6.5), not by this bound.
 
 ```claim
 kind: requirement

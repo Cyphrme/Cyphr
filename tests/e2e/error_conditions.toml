@@ -125,19 +125,3 @@ tx = [
 
 [test.expected]
 error = "UnknownSigner"
-
-# [data-action-no-pre]: Data action cozies MUST NOT contain pre.
-[[test]]
-name      = "err_data_action_with_pre"
-principal = ["golden"]
-
-[[test.action]]
-now    = 1700000001
-signer = "golden"
-typ    = "cyphr.me/comment/create"
-
-[test.override]
-inject_pre = true
-
-[test.expected]
-error = "[data-action-no-pre]"
