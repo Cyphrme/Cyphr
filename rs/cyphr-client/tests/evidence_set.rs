@@ -27,7 +27,7 @@ struct Line {
     ids: Vec<String>,
 }
 
-async fn line(g: &Kp, keys: &[Kp], t: i64) -> Line {
+async fn line(g: &Kp, keys: &[&Kp], t: i64) -> Line {
     let mut chain = Chain::new(g).await;
     let id = |c: &Chain<'_>| {
         c.principal
@@ -61,6 +61,9 @@ struct Fixture {
     rival: Line,
     /// A branch of the same principal no served item forks from.
     unrelated: Line,
+    /// The rival's first commit, then a commit of its own at 2: a second
+    /// extension of the rival's first commit.
+    sibling: Line,
 }
 
 fn item(pg: &str, height: usize, pre: &str, a: &Line, b: &Line) -> Value {
@@ -139,16 +142,20 @@ fn fixture() -> &'static Fixture {
     F.get_or_init(|| {
         runtime().block_on(async {
             let g = kp();
-            let keys: Vec<Kp> = (0..3 * DEPTH).map(|_| kp()).collect();
-            let canonical = line(&g, &keys[..DEPTH], 1_700_000_100).await;
-            let rival = line(&g, &keys[DEPTH..2 * DEPTH], 1_700_000_100).await;
-            let unrelated = line(&g, &keys[2 * DEPTH..], 1_700_000_100).await;
+            let keys: Vec<Kp> = (0..=3 * DEPTH).map(|_| kp()).collect();
+            let refs: Vec<&Kp> = keys.iter().collect();
+            let t = 1_700_000_100;
+            let canonical = line(&g, &refs[..DEPTH], t).await;
+            let rival = line(&g, &refs[DEPTH..2 * DEPTH], t).await;
+            let unrelated = line(&g, &refs[2 * DEPTH..3 * DEPTH], t).await;
+            let sibling = line(&g, &[refs[DEPTH], refs[3 * DEPTH]], t).await;
             Fixture {
                 pg: g.tmb.to_b64(),
                 g,
                 canonical,
                 rival,
                 unrelated,
+                sibling,
             }
         })
     })
@@ -200,6 +207,24 @@ fn expected(kept: &BTreeSet<usize>) -> (BTreeSet<String>, BTreeSet<String>) {
         .map(|h| f.rival.ids[h].clone())
         .collect();
     (forks, exts)
+}
+
+/// Both commits of one item may extend the rival tip below it: the
+/// serving peer retained two extensions of one rival commit. Each is a
+/// commit of the rival's branch, so both are proved, not only the one
+/// tried first. A plain test, not a property: the case is one shape, and
+/// no generated order reaches it.
+#[test]
+fn both_commits_of_an_item_can_extend_the_rival() {
+    let f = fixture();
+    let both = item(&f.pg, 2, &f.rival.prs[1], &f.sibling, &f.rival);
+    let (_, exts, rejected) = verdict(&[f.valid(1), both]);
+    assert_eq!(rejected, 0);
+    assert_eq!(
+        exts,
+        BTreeSet::from([f.rival.ids[2].clone(), f.sibling.ids[2].clone()]),
+        "both extensions of the rival's first commit are proved"
+    );
 }
 
 proptest! {

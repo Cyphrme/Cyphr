@@ -401,18 +401,21 @@ pub async fn verify_fork_items(
             set.rejected.push(EvidenceFailure::PreMismatch);
             continue;
         };
+        let parent = parent.clone();
         match extend(item, state, height).await {
-            Ok((bundle, id, next)) => {
-                if !set.extensions.iter().any(|e| e.id == id) {
-                    set.extensions.push(Extension {
-                        height: height as u64,
-                        bundle,
-                        id: id.clone(),
-                        parent: parent.clone(),
-                    });
-                }
-                if let Ok(pr) = next.pr_tagged() {
-                    tips.insert((height, pr), (next, id));
+            Ok(applied) => {
+                for (bundle, id, next) in applied {
+                    if !set.extensions.iter().any(|e| e.id == id) {
+                        set.extensions.push(Extension {
+                            height: height as u64,
+                            bundle,
+                            id: id.clone(),
+                            parent: parent.clone(),
+                        });
+                    }
+                    if let Ok(pr) = next.pr_tagged() {
+                        tips.insert((height, pr), (next, id));
+                    }
                 }
             },
             Err(failure) => set.rejected.push(failure),
@@ -432,14 +435,16 @@ fn rival_id(proof: &ForkProof, chain_ids: &[Option<String>]) -> Option<String> {
         .cloned()
 }
 
-/// The item's commit that applies on `state` (the branch tip below it), its
-/// id, and the state after it.
+/// Each of the item's commits that applies on `state` (the branch tip
+/// below it), with its id and the state after it: both, when the serving
+/// peer retained two extensions of one rival commit.
 async fn extend(
     item: &Value,
     state: &Principal<MemoryStorage>,
     height: usize,
-) -> Result<(WireBundle, String, Principal<MemoryStorage>), EvidenceFailure> {
+) -> Result<Vec<(WireBundle, String, Principal<MemoryStorage>)>, EvidenceFailure> {
     let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
+    let mut applied = Vec::new();
     for blobs in [b, a] {
         let mut copy = state
             .fork()
@@ -464,12 +469,15 @@ async fn extend(
                 commit: height,
                 what: "no commit formed",
             })?;
-        return Ok((blobs, id, copy));
+        applied.push((blobs, id, copy));
     }
-    Err(EvidenceFailure::BadCommit {
-        commit: height,
-        what: "neither commit extends the rival branch",
-    })
+    if applied.is_empty() {
+        return Err(EvidenceFailure::BadCommit {
+            commit: height,
+            what: "neither commit extends the rival branch",
+        });
+    }
+    Ok(applied)
 }
 
 /// [`verify_principal_fork`] for a principal whose history carries data
