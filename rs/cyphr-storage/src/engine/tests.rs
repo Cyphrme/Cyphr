@@ -571,7 +571,7 @@ async fn crash_between_manifest_and_index_write_is_recoverable() {
     let meta = make_meta("alice", 0, 1000);
 
     let (commit, manifest_hash) = engine
-        .store_blobs_and_manifest(&singles(&[blob.as_slice()]), meta)
+        .store_blobs_and_manifest(&singles(&[blob.as_slice()]), meta, None)
         .await
         .expect("store_blobs_and_manifest failed");
 
@@ -1172,7 +1172,7 @@ async fn rebuild_quarantines_a_contested_pg_alias() {
             let mut meta = make_meta(who, 0, 10);
             meta.pg = pg.clone();
             engine
-                .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), meta)
+                .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), meta, None)
                 .await
                 .unwrap();
         }
@@ -1213,7 +1213,11 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
     for (seq, now) in [(0u64, 1), (2, 3)] {
         let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
         engine
-            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), make_meta("alice", seq, now))
+            .store_blobs_and_manifest(
+                &singles(&[blob.as_bytes()]),
+                make_meta("alice", seq, now),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -1231,6 +1235,7 @@ async fn rebuild_indexes_a_gapless_prefix_when_a_manifest_is_unsupported() {
                 actions: 0,
                 txs: vec![1],
             },
+            seen: None,
         },
     )
     .unwrap();
@@ -1274,7 +1279,11 @@ async fn rebuild_keeps_a_rival_manifest_at_one_position_as_a_branch() {
     for (seq, now) in [(0u64, 1), (1, 2), (2, 3)] {
         let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
         engine
-            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), make_meta("alice", seq, now))
+            .store_blobs_and_manifest(
+                &singles(&[blob.as_bytes()]),
+                make_meta("alice", seq, now),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -1282,7 +1291,7 @@ async fn rebuild_keeps_a_rival_manifest_at_one_position_as_a_branch() {
     rival.commit_ids = vec!["SHA-256:commit-alice-rival".to_string()];
     rival.prs = vec!["SHA-256:pr-alice-rival".to_string()];
     engine
-        .store_blobs_and_manifest(&singles(&[b"{\"pay\":{\"now\":9}}"]), rival)
+        .store_blobs_and_manifest(&singles(&[b"{\"pay\":{\"now\":9}}"]), rival, None)
         .await
         .unwrap();
 
@@ -1317,14 +1326,18 @@ async fn rebuild_with_rivals(rivals: Vec<IndexableCommit>) -> (super::RebuildRep
     for (seq, now) in [(0u64, 1), (1, 2), (2, 3)] {
         let blob = format!("{{\"pay\":{{\"now\":{now}}}}}");
         engine
-            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), make_meta("alice", seq, now))
+            .store_blobs_and_manifest(
+                &singles(&[blob.as_bytes()]),
+                make_meta("alice", seq, now),
+                None,
+            )
             .await
             .unwrap();
     }
     for rival in rivals {
         let blob = format!("{{\"pay\":{{\"now\":{}}}}}", rival.timestamp);
         engine
-            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), rival)
+            .store_blobs_and_manifest(&singles(&[blob.as_bytes()]), rival, None)
             .await
             .unwrap();
     }
