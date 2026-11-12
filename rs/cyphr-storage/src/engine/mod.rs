@@ -565,6 +565,42 @@ pub trait Recovery: Send + Sync {
     fn review(&self, principal_id: &str, protocol: Consensus, forks: &[ForkView]) -> Review;
 }
 
+/// A principal's forks as the protocol reads them (SPEC 15.5-15.8), from
+/// the commits and revocations a holder keeps: the one rule the engine's
+/// admission ([`StorageEngine::is_errored`]) and a verifier's verdict
+/// ([`StorageEngine::assess`]) both apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assessment {
+    /// Error while any fork stands.
+    pub consensus: Consensus,
+    /// The live heads, sorted: each participating commit no participating
+    /// commit extends, off every settled fork's abandoned side. One while
+    /// Active; under a standing fork, each of its branches' heads.
+    pub heads: Vec<String>,
+    /// Every position where two or more held commits share a `pre`, in
+    /// position order.
+    pub forks: Vec<Contest>,
+}
+
+/// Two or more held commits over one `pre`, and how the protocol reads
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contest {
+    /// The commit position they take.
+    pub sequence: u64,
+    /// The Principal Root they share; `None` at sequence 0.
+    pub pre: Option<String>,
+    /// Their commit ids, sorted.
+    pub commits: Vec<String>,
+    /// The commit the fork settled on; `None` while it stands.
+    pub kept: Option<String>,
+    /// The key that settled it: the signer of the commit extending the
+    /// kept one, or of the canonical commit that removed a rival's signer.
+    /// `None` while the fork stands, or when no commit settled it (a naked
+    /// revoke).
+    pub by: Option<String>,
+}
+
 /// Why a stored manifest was left out of a rebuilt index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -3600,10 +3636,54 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// No [`Recovery`] is consulted: what the engine admits is the protocol
     /// alone.
     pub async fn is_errored(&self, principal_id: &str) -> Result<bool, EngineError> {
+        Ok(self.assess(principal_id, &[]).await?.consensus == Consensus::Error)
+    }
+
+    /// The principal's forks by the protocol ([`Assessment`]), from the
+    /// commits the engine holds, canonical and retained, and the
+    /// revocations it holds: the rule [`Self::is_errored`] reads, with the
+    /// live heads and settled forks a viewer reports. A principal that is
+    /// not stored has no heads and no forks.
+    ///
+    /// `claimed` are branch heads a peer lists that this engine does not
+    /// hold, unverified (a peer serves a rival's extension at `/branches`
+    /// but the evidence for it does not replay on this chain). Each counts
+    /// only as a commit extending a retained rival its `pre` names, signed
+    /// by no key: a claim can keep a verified fork standing, never open
+    /// one, and a rival the held commits take out of the fork takes its
+    /// claimed extensions with it.
+    pub async fn assess(
+        &self,
+        principal_id: &str,
+        claimed: &[BranchTip],
+    ) -> Result<Assessment, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
-        let held = self.held(&principal_id).await?;
-        Ok(in_error(&held, &self.revoked()))
+        let mut held = self.held(&principal_id).await?;
+        let extends_rival = |c: &BranchTip| {
+            held.iter().any(|h| {
+                !h.canonical
+                    && h.sequence + 1 == c.sequence
+                    && c.pre.as_deref() == Some(h.pr.as_str())
+            })
+        };
+        let claims: Vec<Held> = claimed
+            .iter()
+            .filter(|c| !held.iter().any(|h| h.id == c.tip) && extends_rival(c))
+            .map(|c| Held {
+                sequence: c.sequence,
+                id: c.tip.clone(),
+                pre: c.pre.clone(),
+                // Its own PR is unknown, and no PR has this form, so nothing
+                // held extends a claim.
+                pr: format!("claimed\0{}", c.tip),
+                signed: Vec::new(),
+                canonical: false,
+                removes: Vec::new(),
+            })
+            .collect();
+        held.extend(claims);
+        Ok(assessment(&held, &self.revoked()))
     }
 
     /// The revocations in force (a cache of the revoke records, I1).
@@ -4037,43 +4117,161 @@ fn participants(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<S
     taking
 }
 
-/// Whether a principal is in Error (SPEC 15.5, 15.6, 15.8): some position
-/// holds two or more participating commits ([`participants`]) over one
-/// `pre`, and the number of them a participating commit extends is not
-/// exactly one. A plain fork (none extended) is Error until a commit
-/// extends exactly one tip; a fork whose branches are both extended is
-/// Error until a revocation or a key removal takes one out of the fork
-/// (SPEC 15.7.1).
+/// The forks of a principal as the protocol reads them (SPEC 15.5, 15.6,
+/// 15.8): some position holds two or more participating commits
+/// ([`participants`]) over one `pre`, and the fork stands while the number
+/// of them a participating commit extends is not exactly one. A plain fork
+/// (none extended) stands until a commit extends exactly one tip; a fork
+/// whose branches are both extended stands until a revocation or a key
+/// removal takes one out of it (SPEC 15.7.1).
 ///
 /// A pure function of the held commits and the revocations, so a live
-/// engine and one rebuilt from the blobs answer alike (I1), and so whether
-/// a candidate commit would leave Error is this function over the held
-/// commits plus the candidate.
-fn in_error(held: &[Held], revoked: &Revoked) -> bool {
+/// engine and one rebuilt from the blobs answer alike (I1), whether a
+/// candidate commit would leave Error is this function over the held
+/// commits plus the candidate, and a verifier holding the same commits
+/// reaches the same verdict, heads and settlements as a peer.
+fn assessment(held: &[Held], revoked: &Revoked) -> Assessment {
     use std::collections::{BTreeMap, BTreeSet};
 
     let taking = participants(held, revoked);
-    let held: Vec<&Held> = held.iter().filter(|h| taking.contains(&h.id)).collect();
-    // The distinct participating commits (id, PR) over each (position, pre).
+    let takes = |h: &Held| taking.contains(&h.id);
+    // Each participating commit's parent, as (position, PR): a commit is
+    // extended when it is some participating commit's parent.
+    let parents: HashSet<(u64, &str)> = held
+        .iter()
+        .filter(|h| takes(h))
+        .filter_map(|h| Some((h.sequence.checked_sub(1)?, h.pre.as_deref()?)))
+        .collect();
+    let extended = |h: &Held| parents.contains(&(h.sequence, h.pr.as_str()));
+
+    // The distinct held commits over each (position, pre).
     type Over<'a> = (u64, Option<&'a str>);
-    let mut rivals: BTreeMap<Over<'_>, BTreeSet<(&str, &str)>> = BTreeMap::new();
-    for h in &held {
-        rivals
-            .entry((h.sequence, h.pre.as_deref()))
+    let mut over: BTreeMap<Over<'_>, BTreeMap<&str, &Held>> = BTreeMap::new();
+    for h in held {
+        over.entry((h.sequence, h.pre.as_deref()))
             .or_default()
-            .insert((h.id.as_str(), h.pr.as_str()));
+            .entry(h.id.as_str())
+            .or_insert(h);
     }
-    rivals.iter().any(|(&(sequence, _), commits)| {
-        commits.len() > 1
-            && commits
-                .iter()
-                .filter(|(_, pr)| {
-                    held.iter()
-                        .any(|c| c.sequence == sequence + 1 && c.pre.as_deref() == Some(*pr))
+    let mut standing = false;
+    let mut abandoned: BTreeSet<&str> = BTreeSet::new();
+    let mut forks = Vec::new();
+    for (&(sequence, pre), commits) in over.iter().filter(|(_, c)| c.len() > 1) {
+        let taking_here: Vec<&Held> = commits.values().copied().filter(|h| takes(h)).collect();
+        let continued: Vec<&Held> = taking_here
+            .iter()
+            .copied()
+            .filter(|h| extended(h))
+            .collect();
+        let stands = taking_here.len() > 1 && continued.len() != 1;
+        standing |= stands;
+        let kept = match (stands, taking_here.as_slice(), continued.as_slice()) {
+            (true, ..) => None,
+            (false, [only], _) | (false, _, [only]) => Some(*only),
+            _ => None,
+        };
+        let by = kept.and_then(|k| {
+            if taking_here.len() > 1 {
+                settled_by_extension(held, k, &takes)
+            } else {
+                settled_by_removal(
+                    held,
+                    sequence,
+                    commits.values().copied().filter(|h| h.id != k.id),
+                )
+            }
+        });
+        if let Some(k) = kept {
+            abandoned.extend(commits.keys().copied().filter(|id| *id != k.id));
+        }
+        forks.push(Contest {
+            sequence,
+            pre: pre.map(str::to_owned),
+            commits: commits.keys().map(|id| (*id).to_owned()).collect(),
+            kept: kept.map(|k| k.id.clone()),
+            by,
+        });
+    }
+
+    // A commit is off the live branches when it or an ancestor was
+    // abandoned by a settled fork.
+    let by_pr: HashMap<(u64, &str), &Held> = held
+        .iter()
+        .map(|h| ((h.sequence, h.pr.as_str()), h))
+        .collect();
+    let abandoned_line = |h: &Held| {
+        let mut at = Some(h);
+        while let Some(h) = at {
+            if abandoned.contains(h.id.as_str()) {
+                return true;
+            }
+            at = h
+                .pre
+                .as_deref()
+                .zip(h.sequence.checked_sub(1))
+                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+        }
+        false
+    };
+    let heads: BTreeSet<String> = held
+        .iter()
+        .filter(|h| takes(h) && !extended(h) && !abandoned_line(h))
+        .map(|h| h.id.clone())
+        .collect();
+    Assessment {
+        consensus: if standing {
+            Consensus::Error
+        } else {
+            Consensus::Active
+        },
+        heads: heads.into_iter().collect(),
+        forks,
+    }
+}
+
+/// Whether a principal is in Error: [`assessment`]'s consensus.
+fn in_error(held: &[Held], revoked: &Revoked) -> bool {
+    assessment(held, revoked).consensus == Consensus::Error
+}
+
+/// The key that settled a fork by extending `kept`: the first signer of
+/// the participating commit whose `pre` is `kept`'s PR.
+fn settled_by_extension(
+    held: &[Held],
+    kept: &Held,
+    takes: &impl Fn(&Held) -> bool,
+) -> Option<String> {
+    held.iter()
+        .find(|c| {
+            takes(c)
+                && c.sequence == kept.sequence + 1
+                && c.pre.as_deref() == Some(kept.pr.as_str())
+        })
+        .and_then(|c| c.signed.first().cloned())
+}
+
+/// The key that settled a fork at `sequence` by taking `rivals` out of it:
+/// the first signer of the lowest canonical commit that revokes one of
+/// their signers, or deletes one above `sequence` ([`participants`]).
+/// `None` when no commit did (a naked revoke, say).
+fn settled_by_removal<'a>(
+    held: &[Held],
+    sequence: u64,
+    rivals: impl Iterator<Item = &'a Held>,
+) -> Option<String> {
+    let signers: HashSet<&str> = rivals
+        .flat_map(|h| h.signed.iter().map(String::as_str))
+        .collect();
+    held.iter()
+        .filter(|h| {
+            h.canonical
+                && h.removes.iter().any(|(tmb, how)| {
+                    signers.contains(tmb.as_str())
+                        && (*how == Removal::Revoke || h.sequence > sequence)
                 })
-                .count()
-                != 1
-    })
+        })
+        .min_by_key(|h| h.sequence)
+        .and_then(|h| h.signed.first().cloned())
 }
 
 /// Whether the principal `(held, revoked)` describes, in Error, stays in
