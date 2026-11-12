@@ -1683,3 +1683,192 @@ async fn not_included_bundle_is_kept_and_served() {
         "so does the mark"
     );
 }
+
+
+/// Backs the S04 shape at the witness holding the thief's chain: the
+/// thief's B is canonical and the owner's A is retained; the stolen key
+/// (`eve`) is naked-revoked; the owner then pushes a commit extending A
+/// that deletes `eve`. It extends a retained tip, so it promotes A's
+/// branch (SPEC 15.8 item 1), and with `eve` revoked B is no rival: the
+/// principal is Active, `/tip` answers with the owner's commit, live and
+/// after a rebuild. Turns red if `/tip` stops answering, the commit is
+/// refused, or Error stands. End to end.
+#[tokio::test]
+async fn owner_delete_promotes_over_revoked_thief_chain() {
+    let pool = load_pool();
+    let t = theft(true).await;
+    // Keyed, as scenario peers are: `/tip` re-derives the roots it signs.
+    let (state, _identity, dir) = common::attestor_server().await;
+    let app = build_router(state.clone());
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CREATED, "B");
+    // A (NOW+3) is dated before B (NOW+4): refused, kept as the rival.
+    assert!(push(&app, &t.a, t.n, &t.id).await.is_client_error(), "A");
+    assert_eq!(heads(&app, &t.id).await.len(), 2, "A is retained");
+    revoke_eve(&app, NOW + 100).await;
+
+    let mut del = t.a.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({
+            "id": kp(&pool, "eve_ed25519").tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/delete"
+        }),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 1, &t.id)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the delete promotes A: {body:?}"
+    );
+    let (status, tip) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        get_json(app.clone(), &format!("/tip?pr={}", enc(&t.id))),
+    )
+    .await
+    .expect("/tip answers in time after the promotion");
+    assert_eq!(status, StatusCode::OK, "/tip answers: {tip:?}");
+    let mut tip = tip["payload"].clone();
+    tip.as_object_mut().expect("tip").remove("now");
+    assert_eq!(
+        tip["commit_id"], body["payload"]["commit_id"],
+        "the delete is /tip"
+    );
+    assert!(!errored(&state, &t.id).await, "B is no rival: Active");
+    drop((app, state));
+    let (app, state) = reopen(&dir.path().join("data")).await;
+    assert_eq!(tip_payload(app, &t.id).await, tip, "a rebuild agrees");
+    assert!(!errored(&state, &t.id).await, "a rebuild agrees: Active");
+}
+
+/// `signer` signs `fields` plus its own `alg` and `tmb`: (pay, sig, czd).
+fn signs(signer: &Kp, mut fields: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+    fields["alg"] = signer.alg.clone().into();
+    fields["tmb"] = signer.tmb.to_b64().into();
+    if let Some(obj) = fields.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&fields).expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &signer.alg, &signer.prv, &signer.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
+    (pay, sig, czd)
+}
+
+/// [`data_commit`] signed by `signer`: a data action at `now`, then the
+/// `ds/create` including it at `now + 1`.
+async fn data_commit_by(
+    p: &mut cyphr::Principal,
+    signer: &Kp,
+    msg: &str,
+    now: i64,
+) -> (Vec<u8>, cyphr::replay::WireBundle) {
+    let (pay, sig, czd) = signs(
+        signer,
+        serde_json::json!({"msg": msg, "now": now, "typ": "cyphr.me/comment/create"}),
+    );
+    p.verify_and_record_action(&pay, &sig, czd)
+        .expect("action records");
+    let wire_action = serde_json::to_vec(&serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("coz");
+    let actions: Vec<&cyphr::Action> = p.actions().collect();
+    let dr = cyphr::compute_dr(&actions, None, &[cyphr::state::HashAlg::Sha256])
+        .expect("DR")
+        .expect("DT holds an action");
+    let dr = format!(
+        "SHA-256:{}",
+        Base64UrlUnpadded::encode_string(dr.0.get(cyphr::state::HashAlg::Sha256).expect("SHA-256"))
+    );
+    let (pay, sig, czd) = signs(
+        signer,
+        serde_json::json!({"id": dr, "now": now + 1, "typ": "cyphr.me/cyphr/ds/create"}),
+    );
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, None)
+        .expect("ds/create applies");
+    scope
+        .finalize_with_software(&signer_of(signer), now + 1, "cyphr.me")
+        .await
+        .expect("commit finalizes");
+    let bundle = cyphr::replay::WireBundle::of_commit(p.commits().last().expect("a commit"))
+        .expect("bundle");
+    (wire_action, bundle)
+}
+
+/// The S04 shape with data commits, as the scenario's clients make them:
+/// at this keyed witness the thief's data commit is canonical (its action
+/// pushed alone first, so stored at the fork position), and the owner's
+/// data commit, carrying its own action inline, is retained. After the
+/// stolen key's naked revoke, the owner's `key/delete` of it extends her
+/// retained tip: it promotes her branch, `/tip` answers with it, and the
+/// principal is Active, live and after a rebuild. Turns red if `/tip`
+/// stops answering or Error stands. End to end.
+#[tokio::test]
+async fn owner_delete_promotes_over_thief_data_chain() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let (state, _identity, dir) = common::attestor_server().await;
+    let app = build_router(state.clone());
+    for i in 0..n {
+        assert_eq!(push(&app, &shared, i, &id).await, StatusCode::CREATED);
+    }
+    let mut thief = shared.fork().await.expect("fork");
+    let (action, commit) = data_commit_by(&mut thief, &e, "thief", NOW + 10).await;
+    let (status, body) = post_json(app.clone(), "/push", common::push_blobs(&id, &[action])).await;
+    assert!(status.is_success(), "thief action: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &commit)).await;
+    assert_eq!(status, StatusCode::CREATED, "thief commit: {body:?}");
+
+    let mut owner = shared.fork().await.expect("fork");
+    let (action, mut commit) = data_commit_by(&mut owner, &g, "owner", NOW + 3).await;
+    commit.actions = vec![action];
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &commit)).await;
+    assert!(status.is_client_error(), "owner's rival: {body:?}");
+    assert_eq!(
+        heads(&app, &id).await.len(),
+        2,
+        "the owner's commit is retained"
+    );
+    revoke_eve(&app, NOW + 100).await;
+
+    sign_commit(
+        &mut owner,
+        &g,
+        serde_json::json!({"id": e.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 12,
+    )
+    .await;
+    let del = cyphr::replay::WireBundle::of_commit(owner.commits().last().expect("a commit"))
+        .expect("bundle");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &del)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete promotes: {body:?}");
+    let (status, tip) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        get_json(app.clone(), &format!("/tip?pr={}", enc(&id))),
+    )
+    .await
+    .expect("/tip answers in time after the promotion");
+    assert_eq!(status, StatusCode::OK, "/tip answers: {tip:?}");
+    assert_eq!(tip["payload"]["commit_id"], body["payload"]["commit_id"]);
+    assert!(!errored(&state, &id).await, "the thief is no rival: Active");
+    let mut tip = tip["payload"].clone();
+    tip.as_object_mut().expect("tip").remove("now");
+    drop((app, state));
+    let (app, state) = reopen(&dir.path().join("data")).await;
+    assert_eq!(tip_payload(app, &id).await, tip, "a rebuild agrees");
+    assert!(!errored(&state, &id).await, "a rebuild agrees: Active");
+}

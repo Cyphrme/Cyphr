@@ -2176,17 +2176,35 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
             },
         };
+        // The stored actions here first, then without them: a commit a
+        // resolution promoted replays over the state its branch had, not
+        // the displaced branch's actions ([`Self::actions_off_chain`]).
+        let without = if actions.is_empty() {
+            None
+        } else {
+            Some(principal.fork().await?)
+        };
+        let mut not_replayed = Vec::new();
         for held in actions {
             if let Err(e) = cyphr::replay::replay_bundle(principal, &held.bundle).await {
-                refused.push((held.manifest, e.to_string()));
+                not_replayed.push((held.manifest, e.to_string()));
             }
         }
+        let mut built =
+            Self::build_commit(principal, &bundle, &commit.principal_id, commit.sequence).await;
+        if built.is_err()
+            && let Some(without) = without
+        {
+            *principal = without;
+            not_replayed.clear();
+            built =
+                Self::build_commit(principal, &bundle, &commit.principal_id, commit.sequence).await;
+        }
+        refused.extend(not_replayed);
         let StagedBuild {
             commit: mut replayed,
             staged,
-        } = match Self::build_commit(principal, &bundle, &commit.principal_id, commit.sequence)
-            .await
-        {
+        } = match built {
             Ok(Some(build)) => build,
             Ok(None) => return Ok(Err("its blobs form no commit".into())),
             Err(e) => return Ok(Err(format!("its blobs do not replay: {e}"))),
@@ -2377,13 +2395,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<cyphr::Principal<T>, EngineError> {
         use crate::import::replay_commit;
 
-        let mut principal = Self::principal_from_genesis(genesis, storage).await?;
+        let mut principal = Self::principal_from_genesis(genesis.clone(), storage).await?;
 
         let commit_entries = self.stored_entries(principal_id, through).await?;
         let actions = self.action_history(principal_id).await?;
+        let off_chain = self
+            .actions_off_chain(principal_id, &genesis, &commit_entries, &actions)
+            .await?;
 
         for (position, entry) in commit_entries.iter().enumerate() {
-            replay_actions_at(&mut principal, &actions, position as u64).await?;
+            if !off_chain.contains(&(position as u64)) {
+                replay_actions_at(&mut principal, &actions, position as u64).await?;
+            }
             replay_commit(&mut principal, entry, position).await?;
         }
         replay_actions_at(&mut principal, &actions, commit_entries.len() as u64).await?;
@@ -2393,6 +2416,55 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// The action-only bundles accepted for `principal_id`, read back from
     /// the blob store.
+    /// The chain positions whose stored action-only bundles are not part
+    /// of the canonical chain: the commit there replays only over the state
+    /// without them. They were accepted on a branch that a resolution later
+    /// displaced (SPEC 15.8), and the promoted commit brought its own
+    /// actions inline; retention verified it on the same two bases, with
+    /// the stored actions first, then without ([`Self::retain_rival`]).
+    ///
+    /// Only a forked principal can hold such a position, so an unforked
+    /// one costs nothing here. A forked one with stored actions is
+    /// replayed once more, on a private in-memory Commit Tree that can
+    /// fork.
+    async fn actions_off_chain(
+        &self,
+        principal_id: &str,
+        genesis: &crate::Genesis,
+        entries: &[crate::CommitEntry],
+        actions: &ActionHistory,
+    ) -> Result<std::collections::HashSet<u64>, EngineError> {
+        use crate::import::replay_commit;
+
+        let mut off_chain = std::collections::HashSet::new();
+        let forked = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .is_some_and(|kept| !kept.is_empty());
+        let len = entries.len() as u64;
+        if !forked || !actions.keys().any(|at| *at < len) {
+            return Ok(off_chain);
+        }
+        let mut principal =
+            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new()).await?;
+        for (position, entry) in entries.iter().enumerate() {
+            let at = position as u64;
+            if actions.get(&at).is_some_and(|held| !held.is_empty()) {
+                let without = principal.fork().await?;
+                replay_actions_at(&mut principal, actions, at).await?;
+                if replay_commit(&mut principal, entry, position).await.is_ok() {
+                    continue;
+                }
+                principal = without;
+                off_chain.insert(at);
+            }
+            replay_commit(&mut principal, entry, position).await?;
+        }
+        Ok(off_chain)
+    }
+
     async fn action_history(&self, principal_id: &str) -> Result<ActionHistory, EngineError> {
         let held = self
             .actions
