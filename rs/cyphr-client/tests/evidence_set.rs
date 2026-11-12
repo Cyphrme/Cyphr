@@ -101,11 +101,29 @@ impl Fixture {
                 v
             },
             // An extension naming the holder's chain as its `pre`.
-            1 => item(&self.pg, 3, &self.canonical.prs[2], &self.canonical, &self.rival),
+            1 => item(
+                &self.pg,
+                3,
+                &self.canonical.prs[2],
+                &self.canonical,
+                &self.rival,
+            ),
             // A commit off every served branch.
-            2 => item(&self.pg, 2, &self.unrelated.prs[1], &self.canonical, &self.unrelated),
+            2 => item(
+                &self.pg,
+                2,
+                &self.unrelated.prs[1],
+                &self.canonical,
+                &self.unrelated,
+            ),
             // A `pre` from later in the rival branch: a cycle in the chain.
-            _ => item(&self.pg, 2, &self.rival.prs[3], &self.canonical, &self.rival),
+            _ => item(
+                &self.pg,
+                2,
+                &self.rival.prs[3],
+                &self.canonical,
+                &self.rival,
+            ),
         }
     }
 }
@@ -144,21 +162,25 @@ fn verdict(items: &[Value]) -> (BTreeSet<String>, BTreeSet<String>, usize) {
         let base = cyphr::Principal::implicit(f.g.domain_key(1_700_000_000))
             .await
             .expect("genesis");
-        let entries: Vec<PatchEntry> = f
-            .canonical
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, blobs)| PatchEntry {
-                sequence: i as u64,
-                bundle: Ok(serde_json::from_value::<WireBundle>(entry_bundle(i, blobs))
-                    .expect("bundle")),
-            })
-            .collect();
+        let entries: Vec<PatchEntry> =
+            f.canonical
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(i, blobs)| PatchEntry {
+                    sequence: i as u64,
+                    bundle: Ok(serde_json::from_value::<WireBundle>(entry_bundle(i, blobs))
+                        .expect("bundle")),
+                })
+                .collect();
         let ids: Vec<Option<String>> = f.canonical.ids.iter().cloned().map(Some).collect();
         let refs: Vec<&Value> = items.iter().collect();
         let set = verify_fork_items(&refs, &f.pg, &base, &entries, &[], &ids).await;
-        let forks = set.forks.iter().map(|(p, _)| p.commits[1].clone()).collect();
+        let forks = set
+            .forks
+            .iter()
+            .map(|(p, _)| p.commits[1].clone())
+            .collect();
         let exts = set.extensions.iter().map(|e| e.id.clone()).collect();
         (forks, exts, set.rejected.len())
     })

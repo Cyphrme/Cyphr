@@ -261,14 +261,10 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
         let mut shared = cyphr::Principal::implicit(g.key().expect("golden"))
             .await
             .expect("implicit");
-        let genesis = test_fixtures::bundle::genesis_bundle(
-            &mut shared,
-            g,
-            &[eve.key().expect("eve")],
-            T,
-        )
-        .await
-        .expect("genesis");
+        let genesis =
+            test_fixtures::bundle::genesis_bundle(&mut shared, g, &[eve.key().expect("eve")], T)
+                .await
+                .expect("genesis");
         let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
         let mut owner = shared.fork().await.expect("fork");
         let x = key_commit_by(&mut owner, "golden", "key_a", T + 1).await;

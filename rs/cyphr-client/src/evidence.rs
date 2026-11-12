@@ -425,7 +425,11 @@ pub async fn verify_fork_items(
 fn rival_id(proof: &ForkProof, chain_ids: &[Option<String>]) -> Option<String> {
     let height = usize::try_from(proof.height).ok()?;
     let mine = chain_ids.get(height).cloned().flatten();
-    proof.commits.iter().find(|c| Some(*c) != mine.as_ref()).cloned()
+    proof
+        .commits
+        .iter()
+        .find(|c| Some(*c) != mine.as_ref())
+        .cloned()
 }
 
 /// The item's commit that applies on `state` (the branch tip below it), its

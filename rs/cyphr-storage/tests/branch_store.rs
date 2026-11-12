@@ -453,7 +453,11 @@ async fn promotion_respects_the_retention_bound() {
         "B promoted R past the retention bound"
     );
     assert_eq!(
-        e.get_tip(&f.id).await.expect("tip").expect("held").commit_id,
+        e.get_tip(&f.id)
+            .await
+            .expect("tip")
+            .expect("held")
+            .commit_id,
         tip.commit_id,
         "nothing moved"
     );

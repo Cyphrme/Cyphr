@@ -3308,10 +3308,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // a removal `bundle` carries counts as it would on the peer
             // that held this line all along.
             if in_error(held, revoked)
-                && in_error(
-                    &promoted(held, base, &line_commits, &next_commit),
-                    revoked,
-                )
+                && in_error(&promoted(held, base, &line_commits, &next_commit), revoked)
             {
                 self.keep_evidence(bundle, next_commit).await;
                 return Err(EngineError::Errored {

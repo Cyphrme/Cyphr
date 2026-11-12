@@ -809,7 +809,6 @@ pub async fn push(
     peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     AppJson(request): AppJson<PushRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-
     if request.bundle.is_empty() {
         return Err(AppError::bad_request("empty commit bundle"));
     }
