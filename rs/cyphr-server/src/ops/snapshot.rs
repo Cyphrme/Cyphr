@@ -115,7 +115,8 @@ pub async fn backup(config: &ServerConfig, dest: &Path) -> Result<BackupReport, 
 
 /// [`backup`], awaiting `between` after the counts are taken and the store
 /// is closed, before the copy: the window in which a server could start.
-/// Tests write into it.
+/// Tests write into it; it is not part of the supported surface.
+#[doc(hidden)]
 pub async fn backup_with(
     config: &ServerConfig,
     dest: &Path,
@@ -136,10 +137,10 @@ pub async fn backup_with(
     let mut partial = dest.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
-    let _ = std::fs::remove_dir_all(&partial);
+    discard_partial(&partial);
     let verified = verify_copy(config, &partial, &counts).await;
     if let Err(e) = verified {
-        let _ = std::fs::remove_dir_all(&partial);
+        discard_partial(&partial);
         return Err(e);
     }
     std::fs::rename(&partial, dest).map_err(OpsError::io("publishing the backup at", dest))?;
@@ -148,6 +149,18 @@ pub async fn backup_with(
         principals: counts.len(),
         commits: counts.values().sum(),
     })
+}
+
+/// Remove a partial backup. A failure is warned about, not returned: the
+/// caller is already refusing or about to retry, and a leftover `.partial`
+/// directory is what makes the next attempt's removal visible to the
+/// operator.
+fn discard_partial(partial: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(partial) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(path = %partial.display(), error = %e, "could not remove a partial backup");
+        }
+    }
 }
 
 /// Copy `record/` into `partial` and require the copy to open, replay and
