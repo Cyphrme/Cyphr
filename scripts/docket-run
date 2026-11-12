@@ -161,7 +161,7 @@ _claim_signon_disowned_key=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test naked_revoke revoked_key_refused_at_login_sibling_survives -- --exact"
 )
 _claim_signon_token_kind_binding=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test route_protection bearer_refuses_server_signed_non_token -- --exact"
 )
 _claim_signon_claimed_principal=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_binds_key_to_claimed_principal_not_thumbprint -- --exact"
@@ -339,7 +339,7 @@ _claim_selfcheck_piped_failure=(
   "( echo 'test result: ok. 1 passed;'; echo 'test result: FAILED. 0 passed; 1 failed;'; exit 101 ) | cat"
 )
 _claim_selfcheck_real_test=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test route_protection bearer_refuses_server_signed_non_token -- --exact"
 )
 
 # --self-check: the zero-test rule's own acceptance test. A command

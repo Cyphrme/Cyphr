@@ -76,15 +76,12 @@ fn commit_tx_raw_blob(commit: &cyphr::commit::Commit, n: usize) -> Vec<u8> {
     serde_json::to_vec(raw).expect("serialize raw coz json")
 }
 
-/// F40: mirrors `submit_commit_explicit_multi_key_genesis_second_commit_succeeds`
-/// in `cyphr-storage/src/engine/tests.rs` exactly, except the engine is
-/// backed by a *durable* fjall database (shared across both `submit_commit`
-/// calls in-process, exactly as `multitenancy.rs` wires it) instead of the
-/// in-memory default — the one combination that regression test could not
-/// cover, since `load_principal`'s replay of commit #1 during the second
-/// call hits fjall's `already_durable` branch in `stage_commit` (the
-/// leaf is already on disk from the first `submit_commit`), not a fresh
-/// append.
+/// F40: an established multi-key genesis accepts a second commit through
+/// `submit_commit` on a *durable* fjall database (shared across both calls
+/// in-process, as `multitenancy.rs` wires it). `load_principal`'s replay of
+/// commit #1 during the second call hits fjall's `already_durable` branch
+/// in `stage_commit` (the leaf is already on disk from the first
+/// `submit_commit`), not a fresh append.
 #[tokio::test]
 async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let pool = load_pool();
