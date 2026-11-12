@@ -2160,3 +2160,42 @@ async fn a_revoke_takes_effect_from_its_own_now() {
         commit_id_at(&before, t.n + 1)
     );
 }
+
+/// Backs what a revoke resolution lets land: with C (the thief's) and D
+/// tied, the Error gate refuses everything but an extension of a tied
+/// head (SPEC 15.5: "no new transactions or actions are processed until
+/// resolved"), so the owner's action-only bundle is refused (423). A
+/// naked revoke of `eve` dated NOW+5, after B and before C, leaves C
+/// uncounted: D is the one head, Active, and the same bundle lands. A
+/// commit cannot show this, since one extending a tied head is admitted in
+/// Error already and any other one still fails the fork rule after.
+/// Turns red if Error outlives the resolution or the bundle stays refused.
+/// End to end.
+#[tokio::test]
+async fn refused_commit_lands_after_resolution() {
+    let t = theft(false).await;
+    let (app, state, _dir) = both_extended(&t, false).await;
+    let pool = load_pool();
+    let (pay, sig, _) = golden_signs(
+        &pool,
+        serde_json::json!({"msg": "hi", "now": NOW + 8, "typ": "cyphr.me/comment/create"}),
+    );
+    let action = serde_json::to_vec(&serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("coz");
+    let body = common::push_blobs(&t.id, &[action]);
+    let (status, refused) = post_json(app.clone(), "/push", body.clone()).await;
+    assert_eq!(status, ERRORED, "refused in Error: {refused:?}");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    revoke_eve(&state, NOW + 5).await;
+    assert!(!errored(&state, &t.id).await, "C leaves the fork: Active");
+    let (status, landed) = post_json(app.clone(), "/push", body).await;
+    assert!(status.is_success(), "the bundle lands: {status} {landed:?}");
+    assert_eq!(
+        tip_payload(app, &t.id).await,
+        tip,
+        "an action-only bundle moves no tip"
+    );
+}
