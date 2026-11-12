@@ -372,9 +372,8 @@ mod tests {
             br#"{"alg":"Ed25519","pub_key":"AAAA","prv_key":424242424242}"#,
         )
         .unwrap();
-        let err = ServerIdentity::load_from_path(&path)
-            .err()
-            .expect("a numeric private key is refused");
+        let err =
+            ServerIdentity::load_from_path(&path).expect_err("a numeric private key is refused");
         assert!(matches!(err, AuthError::Malformed(_)));
         assert!(
             !err.to_string().contains("424242424242"),
