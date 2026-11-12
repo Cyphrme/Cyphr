@@ -39,14 +39,24 @@ async fn s08_forgery() {
     let act = h.ok(alice.data_action(&pr, "once").await);
     // An action-only bundle moves no tip, root or height, so what it changes
     // is the set of actions the peer holds.
-    let pre = h.peer_actions("p1", &pr).await.expect("P1 holds the principal");
+    let pre = h
+        .peer_actions("p1", &pr)
+        .await
+        .expect("P1 holds the principal");
     h.ok(alice.submit(&act, "p1").await);
     let applied = h
         .settled_view("p1", &pr)
         .await
         .expect("P1 holds the principal");
-    let held = h.peer_actions("p1", &pr).await.expect("P1 holds the principal");
-    assert_eq!(held, pre + 1, "the legitimate action must change P1's state");
+    let held = h
+        .peer_actions("p1", &pr)
+        .await
+        .expect("P1 holds the principal");
+    assert_eq!(
+        held,
+        pre + 1,
+        "the legitimate action must change P1's state"
+    );
     let p2_before = h
         .settled_view("p2", &pr)
         .await

@@ -35,9 +35,7 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             key,
             signer,
         } => replace(cli, identity, key.as_deref(), signer, &cli.authority),
-        KeyCommands::NakedRevoke { key, msg, peer } => {
-            naked_revoke(cli, key, msg.as_deref(), peer)
-        },
+        KeyCommands::NakedRevoke { key, msg, peer } => naked_revoke(cli, key, msg.as_deref(), peer),
         KeyCommands::List { identity } => list(cli, identity.as_deref()),
     }
 }
@@ -251,7 +249,12 @@ fn replace(
 /// Sign a naked revoke (SPEC 6.4) with the key itself, outside any commit,
 /// and send it to each `--peer`. It names no principal and mutates no chain:
 /// a peer records the key as dead, and further use of it is refused.
-fn naked_revoke(cli: &Cli, key_tmb: &str, msg: Option<&str>, peers: &[String]) -> crate::Result<()> {
+fn naked_revoke(
+    cli: &Cli,
+    key_tmb: &str,
+    msg: Option<&str>,
+    peers: &[String],
+) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let signer = keystore.signer(key_tmb)?;
     let public = keystore.public(key_tmb)?;
@@ -426,8 +429,8 @@ pub(crate) fn apply_key_revoke(
     // job (`key naked-revoke`), which the key's own holder signs.
     if key_tmb != signer_tmb {
         return Err(crate::Error::InvalidArgument(
-            "key revoke is signed by the key itself: --key must equal --signer \
-             (to remove another key use `key delete`)"
+            "key revoke is signed by the key itself: --key must equal --signer (to remove another \
+             key use `key delete`)"
                 .into(),
         ));
     }
