@@ -200,6 +200,9 @@ pub struct Verdict {
     pub evidence: Vec<Evidence>,
     /// The key that resolved a fork, when one did.
     pub resolved_by: Option<KeyRef>,
+    /// When the verdict was read, so an oracle can bound the time that
+    /// passed before it compared the verdict's age with a peer's.
+    pub observed_at: std::time::Instant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1218,6 +1221,7 @@ fn parse_verdict(
         .as_array()
         .is_some_and(|e| e.iter().any(|x| x["kind"] == "principal_fork"));
     Ok(Verdict {
+        observed_at: std::time::Instant::now(),
         standing,
         freshness: Freshness {
             // The age of the principal's newest signed `now`, on the

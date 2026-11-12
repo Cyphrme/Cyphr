@@ -268,6 +268,7 @@ fn oracle_verdict(
     use cyphr_scenarios::actions::*;
 
     Verdict {
+        observed_at: std::time::Instant::now(),
         standing,
         freshness: Freshness {
             age: Duration::ZERO,
