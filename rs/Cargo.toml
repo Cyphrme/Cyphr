@@ -28,8 +28,6 @@ coz = { package = "coz-rs", version = "0.4.1" }
 
 # Storage
 blake3            = "1"
-cyphr-blob-fjall  = { path = "cyphr-blob-fjall", version = "0.1.0" }
-cyphr-index-fjall = { path = "cyphr-index-fjall", version = "0.1.0" }
 eml               = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
 fjall             = "3"
 polydigest        = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
