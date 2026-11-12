@@ -86,11 +86,6 @@ impl PrincipalState {
             .to_string();
         let now = pay_value["now"].as_i64().ok_or(Error::MalformedPayload)?;
 
-        // [data-action-no-pre]: Data action cozies MUST NOT contain pre.
-        if pay_value.get("pre").is_some() {
-            return Err(Error::MalformedPayload);
-        }
-
         // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
         // actions are possible on a closed account". Data actions have no
         // same-commit-finalizer exemption analogous to CommitCreate's, so

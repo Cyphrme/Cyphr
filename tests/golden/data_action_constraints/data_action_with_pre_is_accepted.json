@@ -1,5 +1,5 @@
 {
-  "name": "err_data_action_with_pre",
+  "name": "data_action_with_pre_is_accepted",
   "principal": [
     "golden"
   ],
@@ -28,9 +28,9 @@
       "txs": [],
       "keys": [],
       "commit_id": "",
-      "ar": null,
-      "sr": null,
-      "pr": ""
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
     }
   ],
   "digests": [
@@ -38,13 +38,12 @@
   ],
   "expected": {
     "key_count": 1,
-    "level": 1,
+    "level": 4,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "[data-action-no-pre]",
     "deleted": false,
     "frozen": false
   }
