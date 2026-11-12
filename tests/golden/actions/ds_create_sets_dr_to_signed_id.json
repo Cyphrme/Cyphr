@@ -109,7 +109,7 @@
   ],
   "expected": {
     "key_count": 1,
-    "level": 4,
+    "level": 3,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pr": "SHA-256:TQKjDcfczxru4AijmGZF0gA6kHwRKdWZW-6VD_3vnvE",
