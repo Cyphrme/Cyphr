@@ -61,7 +61,7 @@ async fn harness_delay_and_drop_shape_traffic() {
         t.elapsed()
     );
     h.proxy.delay(&link, Duration::ZERO);
-    h.proxy.drop(&link, 1.0);
+    (*h.proxy).drop(&link, 1.0);
     assert!(get_server(&h, via).await.is_err(), "drop=1.0 must drop");
 }
 
@@ -611,7 +611,7 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     create_key(&mut first, &g, &k2, 1_700_100_001).await;
     create_key(&mut rival, &g, &k3, 1_700_100_002).await;
 
-    let addr = h.peer("p1").addr;
+    let addr = h.peer("p1").addr();
     let push = |p: &cyphr::Principal, i: usize| {
         let body = push_body(p, i, &id);
         let http = h.http.clone();
@@ -643,6 +643,31 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
 }
 
+// Claim: a peer whose port is taken while it is down still restarts: it comes
+// back on a fresh port, and a route opened before the restart follows it.
+// Red if a restart insists on the old port (EarlyExit) or leaves routes
+// pointing at it.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_restart_survives_a_lost_port() {
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let via = h.route("bob", "p1").await;
+    let old = h.peer("p1").addr();
+    h.peer("p1").stop().await.expect("stop");
+    // The thief: a listener that holds the old port for the whole test.
+    let thief = std::net::TcpListener::bind(old).expect("take the freed port");
+    h.peer("p1").restart(h.bins).await.expect("restart");
+    assert_ne!(
+        h.peer("p1").addr(),
+        old,
+        "the port was held; the peer moved"
+    );
+    assert!(
+        get_server(&h, via).await.is_ok(),
+        "a route opened before the restart must follow the peer"
+    );
+    drop(thief);
+}
+
 // Claim: a failing scenario keeps each peer's server log, copied out of the
 // peer's temp dir (deleted on drop) to a path under $TMPDIR named in the
 // failure output, so a one-in-fifty failure can be diagnosed after the fact.
@@ -657,7 +682,7 @@ fn harness_failing_scenario_keeps_peer_logs() {
                 let h = Harness::start(&["p1"]).await.expect("start peer");
                 tx.send(h.seed).expect("send seed");
                 // A request, so the server has logged something to keep.
-                assert!(get_server(&h, h.peer("p1").addr).await.is_ok());
+                assert!(get_server(&h, h.peer("p1").addr()).await.is_ok());
                 panic!("scenario failed on purpose");
             });
         })
@@ -665,9 +690,25 @@ fn harness_failing_scenario_keeps_peer_logs() {
         .join();
     assert!(run.is_err(), "the scenario must have failed");
     let seed = rx.recv().expect("the scenario reported its seed");
-    let dir = std::env::temp_dir()
-        .join("cyphr-scenario-logs")
-        .join(format!("keeps-logs-seed-{seed}"));
+    // The directory is private and randomly named; find it by its prefix.
+    let prefix = format!("cyphr-scenario-logs-keeps-logs-seed-{seed}-");
+    let dir = std::fs::read_dir(std::env::temp_dir())
+        .expect("read temp dir")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
+        })
+        .expect("a kept log directory");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "kept logs must be owner-only");
+    }
     let kept = dir.join("p1.server.log");
     let text = std::fs::read_to_string(&kept)
         .unwrap_or_else(|e| panic!("no kept log at {}: {e}", kept.display()));

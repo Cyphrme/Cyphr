@@ -74,7 +74,7 @@ pub async fn handshake(peer: &Peer, http: &reqwest::Client) -> Result<(), String
         .transport_addr()
         .await
         .ok_or("the peer announced no transport address")?;
-    handshake_at(addr, peer.addr, http).await
+    handshake_at(addr, peer.addr(), http).await
 }
 
 /// A fresh authenticated session with `peer`: the channel a native client's
@@ -85,7 +85,7 @@ pub async fn open_session(peer: &Peer, http: &reqwest::Client) -> Result<NoiseCo
         .transport_addr()
         .await
         .ok_or("the peer announced no transport address")?;
-    connect_fresh(addr, peer.addr, http).await
+    connect_fresh(addr, peer.addr(), http).await
 }
 
 /// [`handshake`] against an explicit transport address, with the pin
@@ -296,7 +296,7 @@ mod tests {
         );
         let p1 = h.peer("p1");
         assert!(
-            handshake_at(p1.addr, p1.addr, &h.http).await.is_err(),
+            handshake_at(p1.addr(), p1.addr(), &h.http).await.is_err(),
             "a listener that is not the transport must not read as authenticated"
         );
     }

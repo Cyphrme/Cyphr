@@ -14,7 +14,7 @@ use crate::proxy::Proxy;
 
 pub struct Harness {
     pub peers: Vec<Peer>,
-    pub proxy: Proxy,
+    pub proxy: Arc<Proxy>,
     pub bins: &'static Bins,
     pub http: reqwest::Client,
     pub seed: u64,
@@ -59,13 +59,24 @@ impl Harness {
         eprintln!("scenario seed = {seed}");
         let bins = Bins::get();
         let http = http_client();
+        let proxy = Arc::new(Proxy::new(Arc::new(TcpCarrier), seed));
         let mut peers = Vec::with_capacity(names.len());
         for name in names {
-            peers.push(Peer::start(bins, name, &http, Role::Attestor, limits).await?);
+            peers.push(
+                Peer::start(
+                    bins,
+                    name,
+                    &http,
+                    Role::Attestor,
+                    limits,
+                    Some(Arc::clone(&proxy)),
+                )
+                .await?,
+            );
         }
         Ok(Harness {
             peers,
-            proxy: Proxy::new(Arc::new(TcpCarrier), seed),
+            proxy,
             bins,
             http,
             seed,
@@ -164,7 +175,7 @@ impl Harness {
 
     fn upstream(&self, name: &str) -> SocketAddr {
         if let Some(p) = self.peers.iter().find(|p| p.name == name) {
-            return p.addr;
+            return p.addr();
         }
         self.extra
             .lock()
@@ -172,7 +183,7 @@ impl Harness {
             .iter()
             .find(|p| p.name == name)
             .unwrap_or_else(|| panic!("no server named `{name}`"))
-            .addr
+            .addr()
     }
 
     /// Start a witness named `name` that pulls from peer `of` over a proxy
@@ -186,9 +197,10 @@ impl Harness {
             &self.http,
             Role::Witness { authority },
             Limits::default(),
+            Some(Arc::clone(&self.proxy)),
         )
         .await?;
-        let addr = w.addr;
+        let addr = w.addr();
         self.extra.lock().expect("extra servers").push(w);
         Ok(addr)
     }
@@ -359,13 +371,21 @@ impl Drop for Harness {
             .name()
             .unwrap_or("scenario")
             .replace("::", "-");
-        let dir = std::env::temp_dir()
-            .join("cyphr-scenario-logs")
-            .join(format!("{test}-seed-{}", self.seed));
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("cannot keep peer logs in {}: {e}", dir.display());
-            return;
-        }
+        // A predictable path under a shared temp dir lets another local
+        // user pre-create it, or plant a symlink there, and read or
+        // redirect the logs. A random name made by a fresh `mkdir` (mode
+        // explicit 0700, never following a symlink) cannot be pre-empted.
+        let dir = match tempfile::Builder::new()
+            .prefix(&format!("cyphr-scenario-logs-{test}-seed-{}-", self.seed))
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .tempdir()
+        {
+            Ok(d) => d.keep(),
+            Err(e) => {
+                eprintln!("cannot keep peer logs: {e}");
+                return;
+            },
+        };
         let extra = self.extra.get_mut().unwrap_or_else(|e| e.into_inner());
         for p in self.peers.iter().chain(extra.iter()) {
             let to = dir.join(format!("{}.server.log", p.name));

@@ -175,6 +175,7 @@ pub async fn replay_on_fresh_peer(
         http,
         Role::Attestor,
         Limits::default(),
+        None,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -188,13 +189,13 @@ pub async fn replay_on_fresh_peer(
     let push = |bundle: &WireBundle| {
         let mut body = serde_json::to_value(bundle).unwrap_or_default();
         body["principal_id"] = id.as_str().into();
-        http.post(format!("http://{}/push", peer.addr))
+        http.post(format!("http://{}/push", peer.addr()))
             .json(&body)
             .send()
     };
     let count = || async {
         let r = http
-            .get(format!("http://{}/tip", peer.addr))
+            .get(format!("http://{}/tip", peer.addr()))
             .query(&[("pr", id.as_str())])
             .send()
             .await
