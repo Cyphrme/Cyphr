@@ -701,6 +701,10 @@ mod tests {
     }
 }
 
+/// Kept deliberately: a differential check against an independent
+/// reference over random inputs is the property-style coverage the testing
+/// policy wants, and the golden corpus pins only fixed vectors.
+///
 /// Differential oracle tests: cross-check the tree types here against the
 /// demoted flat-hash formulas in [`crate::state`] (c-oracle-kr,
 /// c-oracle-ar-sr). Each test asserts the *precise* predicted relationship

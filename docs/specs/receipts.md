@@ -49,8 +49,9 @@ release.
 
 Enforced in `rs/cyphr-server/src/routes.rs`'s `push()` and `tip()`
 handlers, and covered by `rs/cyphr-server/tests/receipts.rs`'s
-`keyless_push_and_tip_responses_stay_unsigned` and
-`keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned`.
+`keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned` and
+`rs/cyphr-server/tests/keyless_matrix.rs`'s
+`keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned`.
 
 ## Claim schema
 
