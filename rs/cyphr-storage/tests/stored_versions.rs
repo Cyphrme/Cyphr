@@ -162,7 +162,7 @@ async fn legacy_store_index_is_rebuilt_from_blobs() {
         .expect("tip after ingest");
     drop(engine);
 
-    for aged in [Some(1), Some(2), None] {
+    for aged in [Some(1), Some(2), Some(3), None] {
         age_index(&dir.path().join("index"), aged);
         {
             let index = FjallIndexer::open(&dir.path().join("index")).expect("opens");
