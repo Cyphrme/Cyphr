@@ -206,8 +206,11 @@ pub struct Verdict {
     /// The peers actually used; never empty, even when the caller passed
     /// no `from` and the client chose its own.
     pub peers: Vec<String>,
-    /// Every branch kept; more than one under a fork.
+    /// The live heads: one once peers agree, more than one under a fork.
     pub branches: Vec<Tip>,
+    /// The branches a resolution abandoned, kept as proof of error (SPEC
+    /// 15.8), not as live heads.
+    pub abandoned: Vec<Tip>,
     pub evidence: Vec<Evidence>,
     /// The key that resolved a fork, when one did.
     pub resolved_by: Option<KeyRef>,
@@ -1291,6 +1294,12 @@ fn parse_verdict(
             Vec::new()
         },
         resolved_by: v["resolved_by"].as_str().map(|k| KeyRef(k.to_owned())),
+        abandoned: v["resolved_forks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["abandoned"].as_str().map(|t| Tip(t.to_owned())))
+            .collect(),
     })
 }
 

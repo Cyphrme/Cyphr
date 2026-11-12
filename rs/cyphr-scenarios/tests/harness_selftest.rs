@@ -296,6 +296,7 @@ fn oracle_verdict(
         },
         peers: vec!["p1".into()],
         branches: vec![Tip(tip.into())],
+        abandoned: vec![],
         evidence: vec![],
         resolved_by: None,
     }
