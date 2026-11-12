@@ -36,6 +36,9 @@ async fn s02_partition() {
     let before = h
         .ok(alice.push(&pr, &["p1", "p2"]).await)
         .accepted("initial push");
+    // Bob's view is stamped when the watch pulls, somewhere inside it, so a
+    // view cannot be older than the time since the watch began.
+    let watch_began = Instant::now();
     h.ok(bob.trust_genesis(&pr, &["p2"]).await);
     h.ok(bob.watch(&pr).await);
     let last_update = Instant::now();
@@ -77,13 +80,14 @@ async fn s02_partition() {
     let during = h.ok(bob.verdict(&pr, &["p2"]).await);
     assert_eq!(during.tip, before, "Bob can only see P2's old tip");
     assert!(
-        during.freshness.age >= last_update.elapsed().saturating_sub(Duration::from_secs(1)),
+        during.freshness.age >= last_update.elapsed().saturating_sub(Duration::from_secs(2)),
         "the view's age must have grown with the partition, got {:?}",
         during.freshness.age
     );
     assert!(
-        during.freshness.age <= last_update.elapsed() + Duration::from_secs(1),
-        "a view cannot be older than the time since its last update, got {:?}",
+        during.freshness.age <= watch_began.elapsed() + Duration::from_secs(2),
+        "a view cannot be older than the time since the watch began (whole-second \
+         clocks at both ends add up to 2s), got {:?}",
         during.freshness.age
     );
 
