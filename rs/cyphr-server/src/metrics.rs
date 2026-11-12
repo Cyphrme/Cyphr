@@ -125,8 +125,8 @@ impl Metrics {
         }
         let _ = writeln!(
             out,
-            "# HELP cyphr_eml_append_failures_total Commits stored whose commit-log append \
-             failed (repaired by the next load).\n# TYPE cyphr_eml_append_failures_total \
+            "# HELP cyphr_eml_append_failures_total Commits stored whose commit-log append failed \
+             (repaired by the next load).\n# TYPE cyphr_eml_append_failures_total \
              counter\ncyphr_eml_append_failures_total {eml_append_failures}"
         );
         out

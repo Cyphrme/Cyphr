@@ -271,5 +271,8 @@ async fn action_only_push_of_recorded_actions_stores_nothing() {
         .as_array()
         .expect("actions")
         .len();
-    assert_eq!(held, 1, "the repeat stored a second action bundle: {patch:?}");
+    assert_eq!(
+        held, 1,
+        "the repeat stored a second action bundle: {patch:?}"
+    );
 }

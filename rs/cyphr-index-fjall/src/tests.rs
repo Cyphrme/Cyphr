@@ -399,7 +399,9 @@ fn older_store_discard_deletes_the_retired_errored_partition() {
         let errored = db
             .keyspace("index_errored", KeyspaceCreateOptions::default)
             .expect("errored keyspace");
-        errored.insert("principal", b"row").expect("seed a schema-6 row");
+        errored
+            .insert("principal", b"row")
+            .expect("seed a schema-6 row");
         db.persist(fjall::PersistMode::SyncAll).expect("persist");
     }
     drop(FjallIndexer::open(dir.path()).expect("discard and reopen"));

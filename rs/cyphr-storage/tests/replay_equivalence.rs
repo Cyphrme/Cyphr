@@ -477,8 +477,9 @@ impl Indexer for FailsAfterClear {
     fn get_tip(
         &self,
         id: &str,
-    ) -> impl std::future::Future<Output = Result<Option<cyphr_storage::index::TipState>, cyphr_storage::index::IndexerError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<Option<cyphr_storage::index::TipState>, cyphr_storage::index::IndexerError>,
+    > + Send {
         self.inner.get_tip(id)
     }
 
@@ -495,23 +496,32 @@ impl Indexer for FailsAfterClear {
         id: &str,
         from: Option<u64>,
         to: Option<u64>,
-    ) -> impl std::future::Future<Output = Result<Vec<cyphr_storage::index::CommitRef>, cyphr_storage::index::IndexerError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<Vec<cyphr_storage::index::CommitRef>, cyphr_storage::index::IndexerError>,
+    > + Send {
         self.inner.get_commit_chain(id, from, to)
     }
 
     fn resolve_digest(
         &self,
         digest: &cyphr::state::TaggedDigest,
-    ) -> impl std::future::Future<Output = Result<Option<cyphr_storage::index::EntityRef>, cyphr_storage::index::IndexerError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<
+            Option<cyphr_storage::index::EntityRef>,
+            cyphr_storage::index::IndexerError,
+        >,
+    > + Send {
         self.inner.resolve_digest(digest)
     }
 
     fn list_principals(
         &self,
-    ) -> impl std::future::Future<Output = Result<Vec<cyphr_storage::index::PrincipalSummary>, cyphr_storage::index::IndexerError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<
+            Vec<cyphr_storage::index::PrincipalSummary>,
+            cyphr_storage::index::IndexerError,
+        >,
+    > + Send {
         self.inner.list_principals()
     }
 
@@ -526,8 +536,12 @@ impl Indexer for FailsAfterClear {
     fn get_key(
         &self,
         thumbprint: &str,
-    ) -> impl std::future::Future<Output = Result<Option<cyphr_storage::index::PublicKeyInfo>, cyphr_storage::index::IndexerError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<
+            Option<cyphr_storage::index::PublicKeyInfo>,
+            cyphr_storage::index::IndexerError,
+        >,
+    > + Send {
         self.inner.get_key(thumbprint)
     }
 }
@@ -592,8 +606,12 @@ impl cyphr_storage::index::IndexerWrite for FailsAfterClear {
 
     fn quarantined(
         &self,
-    ) -> impl std::future::Future<Output = Result<Vec<(cyphr_storage::blob::Blake3Hash, String)>, cyphr_storage::index::IndexerError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<
+            Vec<(cyphr_storage::blob::Blake3Hash, String)>,
+            cyphr_storage::index::IndexerError,
+        >,
+    > + Send {
         self.inner.quarantined()
     }
 }

@@ -2732,7 +2732,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // One whose every action is already recorded is the same
                 // push repeated (a client cannot tell which trailing actions
                 // a peer holds): it stores nothing.
-                let blob_hashes = if self.all_actions_recorded(principal_id, &bundle.actions).await? {
+                let blob_hashes = if self
+                    .all_actions_recorded(principal_id, &bundle.actions)
+                    .await?
+                {
                     bundle
                         .actions
                         .iter()
@@ -2836,9 +2839,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .flat_map(|a| a.blobs.iter().copied())
             .collect();
         Ok(!blobs.is_empty()
-            && blobs.iter().all(|b| {
-                recorded.contains(&Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
-            }))
+            && blobs
+                .iter()
+                .all(|b| recorded.contains(&Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))))
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],

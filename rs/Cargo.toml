@@ -27,11 +27,11 @@ rust-version = "1.85"
 coz = { package = "coz-rs", version = "0.4.1" }
 
 # Storage
-blake3            = "1"
-eml               = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
-fjall             = "3"
-polydigest        = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
-storage-fjall     = { package = "polydigest-storage-fjall", git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
+blake3        = "1"
+eml           = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
+fjall         = "3"
+polydigest    = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
+storage-fjall = { package = "polydigest-storage-fjall", git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }

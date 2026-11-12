@@ -181,8 +181,9 @@ async fn pin_naming_another_pg_is_refused() {
     );
 }
 
-/// Claim: a key the followed chain REVOKED is refused for a tip, while a sibling key the chain still holds verifies, so lookup is
-/// among ACTIVE keys and never among every key the chain ever held.
+/// Claim: a key the followed chain REVOKED is refused for a tip, while a sibling key the chain
+/// still holds verifies, so lookup is among ACTIVE keys and never among every key the chain ever
+/// held.
 ///
 /// Turns red if: `verify_tip` looks a key up among all keys
 /// the chain has held (a revoked key still vouches), or trust the

@@ -1770,10 +1770,7 @@ async fn action_only_bundle_cannot_create_a_principal() {
         .await
         .expect_err("refused");
     assert!(
-        matches!(
-            err,
-            EngineError::Protocol(cyphr::Error::GenesisIncomplete)
-        ),
+        matches!(err, EngineError::Protocol(cyphr::Error::GenesisIncomplete)),
         "{err:?}"
     );
     assert!(e.get_tip(&aid).await.unwrap().is_none());

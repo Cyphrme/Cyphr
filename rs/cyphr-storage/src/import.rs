@@ -235,9 +235,8 @@ fn stored_bundle(
         .iter()
         .map(key_entry_to_key)
         .collect::<Result<_, _>>()?;
-    Bundle::new(actions, txs, keys).map_err(|e| {
-        wire_error(e.error, commit_idx * 1000 + e.coz.unwrap_or_default())
-    })
+    Bundle::new(actions, txs, keys)
+        .map_err(|e| wire_error(e.error, commit_idx * 1000 + e.coz.unwrap_or_default()))
 }
 
 /// A wire refusal as a load error, classified as `submit_commit` classifies

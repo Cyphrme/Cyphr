@@ -39,11 +39,8 @@ async fn protocol_refusals_name_their_kind() {
 
     let (state, _dir) = keyless_server();
     let app = build_router(state);
-    let kind_of = |reply: &serde_json::Value| {
-        envelope_payload(reply)["kind"]
-            .as_str()
-            .map(str::to_owned)
-    };
+    let kind_of =
+        |reply: &serde_json::Value| envelope_payload(reply)["kind"].as_str().map(str::to_owned);
 
     let (status, reply) = post_json(app.clone(), "/push", genesis.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "{reply:?}");
@@ -58,18 +55,17 @@ async fn protocol_refusals_name_their_kind() {
     let (status, malformed) = post_json(app, "/push", "garbage".into()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{malformed:?}");
 
-    let kinds = [
-        kind_of(&replayed),
-        kind_of(&stale),
-        kind_of(&malformed),
-    ];
+    let kinds = [kind_of(&replayed), kind_of(&stale), kind_of(&malformed)];
     assert!(
         kinds.iter().all(Option::is_some),
         "every refusal names its kind: {kinds:?}"
     );
     assert_eq!(kinds[0].as_deref(), Some("coz_reuse"), "{replayed:?}");
     assert!(
-        matches!(kinds[1].as_deref(), Some("state_mismatch" | "commit_mismatch")),
+        matches!(
+            kinds[1].as_deref(),
+            Some("state_mismatch" | "commit_mismatch")
+        ),
         "a stale pre is a state or commit mismatch: {stale:?}"
     );
     assert_ne!(kinds[0], kinds[1], "a reused coz is not a stale pre");
