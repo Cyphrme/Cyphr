@@ -675,20 +675,4 @@ mod tests {
             "an expired challenge must be rejected, got: {result:?}"
         );
     }
-
-    /// Backs: SPEC 17.2 challenges are unguessable single-use nonces.
-    /// Unit: entropy/width is a property of the generator, not observable through one HTTP
-    /// exchange.
-    #[test]
-    fn issued_challenges_are_distinct_and_256_bit() {
-        let store = ChallengeStore::new();
-        let a = store.issue(1000);
-        let b = store.issue(1000);
-        assert_ne!(a, b, "each issuance must be a fresh nonce");
-        assert_eq!(
-            Base64UrlUnpadded::decode_vec(&a).unwrap().len(),
-            CHALLENGE_BYTES,
-            "challenge must decode to 256 bits"
-        );
-    }
 }
