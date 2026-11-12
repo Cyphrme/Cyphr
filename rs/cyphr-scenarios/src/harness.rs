@@ -242,9 +242,10 @@ impl Harness {
     }
 
     /// How many data actions `peer` itself holds for `p`, read from its own
-    /// `GET /patch`. An action-only bundle moves no tip, root or height, so
-    /// `/tip` cannot show that one was accepted. `None` if the peer does not
-    /// know the principal.
+    /// `GET /patch`: those carried in a commit's bundle and those in
+    /// action-only bundles. An action-only bundle moves no tip, root or
+    /// height, so `/tip` cannot show that one was accepted. `None` if the
+    /// peer does not know the principal.
     pub async fn peer_actions(&self, peer: &str, p: &Principal) -> Option<usize> {
         let addr = self.upstream(peer);
         let resp = self
@@ -258,13 +259,14 @@ impl Harness {
             return None;
         }
         let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
-        let bundles = v["payload"]["actions"].as_array()?;
-        Some(
-            bundles
-                .iter()
-                .map(|b| b["blobs"].as_array().map_or(0, Vec::len))
-                .sum(),
-        )
+        let count = |bundles: &serde_json::Value, field: &str| {
+            bundles.as_array().map_or(0, |bs| {
+                bs.iter()
+                    .map(|b| b[field].as_array().map_or(0, Vec::len))
+                    .sum::<usize>()
+            })
+        };
+        Some(count(&v["payload"]["actions"], "blobs") + count(&v["payload"]["entries"], "actions"))
     }
 
     /// Read `peer`'s view of `p` until two reads 600ms apart agree, then
@@ -342,6 +344,36 @@ impl Harness {
             out.push((cap, cap.probe().eval(self, cap).await));
         }
         out
+    }
+}
+
+impl Drop for Harness {
+    /// A failing scenario unwinds through here; its peers' logs live in
+    /// temp dirs about to be deleted, so copy them out first and name
+    /// where they went. A passing run keeps nothing.
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let test = std::thread::current()
+            .name()
+            .unwrap_or("scenario")
+            .replace("::", "-");
+        let dir = std::env::temp_dir()
+            .join("cyphr-scenario-logs")
+            .join(format!("{test}-seed-{}", self.seed));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("cannot keep peer logs in {}: {e}", dir.display());
+            return;
+        }
+        let extra = self.extra.get_mut().unwrap_or_else(|e| e.into_inner());
+        for p in self.peers.iter().chain(extra.iter()) {
+            let to = dir.join(format!("{}.server.log", p.name));
+            match std::fs::copy(p.log_path(), &to) {
+                Ok(_) => eprintln!("peer `{}` log kept at {}", p.name, to.display()),
+                Err(e) => eprintln!("peer `{}` log not kept ({}): {e}", p.name, to.display()),
+            }
+        }
     }
 }
 

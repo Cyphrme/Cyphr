@@ -284,6 +284,7 @@ fn oracle_verdict(
         abandoned: vec![],
         evidence: vec![],
         resolved_by: None,
+        unreachable: vec![],
     }
 }
 
@@ -640,4 +641,36 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
     v.freshness.age = Duration::from_secs(age.max(0) as u64);
     v.evidence = vec![Evidence::PrincipalFork(pr.clone())];
     h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
+}
+
+// Claim: a failing scenario keeps each peer's server log, copied out of the
+// peer's temp dir (deleted on drop) to a path under $TMPDIR named in the
+// failure output, so a one-in-fifty failure can be diagnosed after the fact.
+#[test]
+fn harness_failing_scenario_keeps_peer_logs() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let run = std::thread::Builder::new()
+        .name("keeps-logs".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            rt.block_on(async {
+                let h = Harness::start(&["p1"]).await.expect("start peer");
+                tx.send(h.seed).expect("send seed");
+                // A request, so the server has logged something to keep.
+                assert!(get_server(&h, h.peer("p1").addr).await.is_ok());
+                panic!("scenario failed on purpose");
+            });
+        })
+        .expect("spawn")
+        .join();
+    assert!(run.is_err(), "the scenario must have failed");
+    let seed = rx.recv().expect("the scenario reported its seed");
+    let dir = std::env::temp_dir()
+        .join("cyphr-scenario-logs")
+        .join(format!("keeps-logs-seed-{seed}"));
+    let kept = dir.join("p1.server.log");
+    let text = std::fs::read_to_string(&kept)
+        .unwrap_or_else(|e| panic!("no kept log at {}: {e}", kept.display()));
+    assert!(!text.is_empty(), "the kept log is empty");
+    let _ = std::fs::remove_dir_all(&dir);
 }

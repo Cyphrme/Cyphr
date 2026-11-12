@@ -200,6 +200,9 @@ pub struct Verdict {
     pub evidence: Vec<Evidence>,
     /// The key that resolved a fork, when one did.
     pub resolved_by: Option<KeyRef>,
+    /// The asked peers that did not answer, each with the unix time it last
+    /// answered this client (`None`: never), so "unreachable since t".
+    pub unreachable: Vec<(String, Option<i64>)>,
     /// When the CLI that computed the verdict was started, so an oracle can
     /// bound the time between the CLI's reading of the peer and its own.
     pub observed_at: std::time::Instant,
@@ -283,6 +286,23 @@ pub struct RpConfig {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Backup(pub String);
+
+/// A data action a rebase re-signed at the current time, as the rebase
+/// reported it (SPEC 15.9: never silently).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resigned {
+    /// The action's czd before it was re-signed.
+    pub czd: String,
+    /// The `now` it carried before it was re-signed.
+    pub was_now: i64,
+}
+
+/// What a rebase left: the local tip and the actions it re-signed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rebased {
+    pub tip: Tip,
+    pub resigned: Vec<Resigned>,
+}
 
 /// How a token reaches a relying party.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -741,6 +761,22 @@ impl Client<'_> {
         field(&v, "commit_id").map(Tip)
     }
 
+    /// Record a signed data action locally without committing it
+    /// (`cyphr data action`, no `data commit`); returns its czd.
+    pub async fn record_data(&self, p: &Principal, msg: &str) -> ActionResult<String> {
+        let (id, signer) = (format!("--identity={}", p.0), self.signer(p)?);
+        let v = self
+            .cyphr(&[
+                "data",
+                "action",
+                &id,
+                &format!("--signer={signer}"),
+                &format!("--msg={msg}"),
+            ])
+            .await?;
+        field(&v, "czd")
+    }
+
     /// Pull the peers' latest state for `p` into this device's local view
     /// (`cyphr fetch` from each), and report the local tip. A peer that
     /// refuses or cannot be reached is skipped, as a device would.
@@ -788,14 +824,31 @@ impl Client<'_> {
 
     /// Re-apply local commits on the peers' newer tip after a stale refusal
     /// (`cyphr rebase` onto the first peer this device knows for `p`).
-    pub async fn rebase(&self, p: &Principal) -> ActionResult<Tip> {
+    pub async fn rebase(&self, p: &Principal) -> ActionResult<Rebased> {
         let peer = self.known(p).into_iter().next().ok_or_else(|| {
             ActionError::Failed(format!("`{}` knows no peer for {}", self.name, p.0))
         })?;
         let url = self.url(&peer).await;
-        self.cyphr(&["rebase", "--identity", &p.0, "--peer", &url])
+        let v = self
+            .cyphr(&["rebase", "--identity", &p.0, "--peer", &url])
             .await?;
-        self.local_tip(p, &peer).await
+        let resigned = v["resigned_actions"]
+            .as_array()
+            .ok_or_else(|| ActionError::Failed(format!("rebase named no resigned_actions: {v}")))?
+            .iter()
+            .map(|r| {
+                Ok(Resigned {
+                    czd: field(r, "czd")?,
+                    was_now: r["was_now"].as_i64().ok_or_else(|| {
+                        ActionError::Failed(format!("re-signed action without was_now: {r}"))
+                    })?,
+                })
+            })
+            .collect::<ActionResult<Vec<_>>>()?;
+        Ok(Rebased {
+            tip: self.local_tip(p, &peer).await?,
+            resigned,
+        })
     }
 
     // ---- knowing a principal ----
@@ -1202,6 +1255,20 @@ fn parse_verdict(
         .filter(|(_, url)| !failed.contains(&url.as_str()))
         .map(|(name, _)| name.clone())
         .collect();
+    let last_answered = |url: &str| {
+        v["peers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["peer"] == url)
+            .and_then(|e| e["answered_at"].as_i64())
+    };
+    let unreachable = names
+        .iter()
+        .zip(urls)
+        .filter(|(_, url)| failed.contains(&url.as_str()))
+        .map(|(name, url)| (name.clone(), last_answered(url)))
+        .collect();
     let anchor = Anchor {
         source: match v["anchor"]["source"].as_str() {
             Some("pinned") => AnchorSource::Pinned,
@@ -1249,6 +1316,7 @@ fn parse_verdict(
             Vec::new()
         },
         resolved_by: v["resolved_by"].as_str().map(|k| KeyRef(k.to_owned())),
+        unreachable,
         abandoned: v["resolved_forks"]
             .as_array()
             .into_iter()

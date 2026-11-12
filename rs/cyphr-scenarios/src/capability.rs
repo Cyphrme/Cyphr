@@ -219,17 +219,21 @@ impl Probe {
                 Ok(out.status.success() && String::from_utf8_lossy(&out.stdout).contains(needle))
             },
             Probe::Route(path) => {
-                let peer = h
-                    .peers
-                    .first()
-                    .ok_or_else(|| run("no peer running".into()))?;
-                let resp = h
-                    .http
-                    .get(format!("http://{}{path}", peer.addr))
-                    .send()
-                    .await
-                    .map_err(|e| run(e.to_string()))?;
-                Ok(resp.status() != reqwest::StatusCode::NOT_FOUND)
+                // The first peer that answers: a scenario may have stopped
+                // some, and a stopped peer says nothing about the route.
+                let mut last = "no peer running".to_owned();
+                for peer in &h.peers {
+                    match h
+                        .http
+                        .get(format!("http://{}{path}", peer.addr))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => return Ok(resp.status() != reqwest::StatusCode::NOT_FOUND),
+                        Err(e) => last = e.to_string(),
+                    }
+                }
+                Err(run(last))
             },
             Probe::Banner(prefix) => {
                 let peer = h

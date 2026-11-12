@@ -1,8 +1,10 @@
 // Scenario S02: partition.
 // Fault: network partition of P2.
 // P2 is partitioned while Alice rotates on P1; Bob reads only P2; then heal.
-// Must hold: during the partition Bob sees "stale, age t", not "current"; after
-// healing, anti-entropy converges; no evidence (prefix).
+// Must hold: during the partition Bob sees "stale, age t", not "current"; once
+// Bob is cut from P2 too and asks both peers, his verdict reads "P2 unreachable
+// since t", with the newest verified tip from P1; after healing, anti-entropy
+// converges; no evidence (prefix).
 //
 // Required capabilities: transport,cli-network,evidence,peer-gossip,pinning.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
@@ -77,6 +79,7 @@ async fn s02_partition() {
     );
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    let read_at = unix_now();
     let during = h.ok(bob.verdict(&pr, &["p2"]).await);
     assert_eq!(during.tip, before, "Bob can only see P2's old tip");
     assert!(
@@ -91,8 +94,26 @@ async fn s02_partition() {
         during.freshness.age
     );
 
+    // Bob loses P2 as well and asks both peers: P2 is reported unreachable
+    // since it last answered him (the read above), and the tip is P1's.
+    h.proxy.partition("bob", "p2");
+    let cut_at = unix_now();
+    let both = h.ok(bob.verdict(&pr, &["p1", "p2"]).await);
+    assert_eq!(both.tip, tip, "the newest verified tip, from P1");
+    assert_eq!(both.peers, ["p1"], "only P1 answered");
+    match both.unreachable.as_slice() {
+        [(peer, Some(since))] if peer == "p2" => assert!(
+            (read_at..=cut_at).contains(since),
+            "P2 unreachable since its last answer ({read_at}..={cut_at}), got {since}"
+        ),
+        other => panic!("P2 must read unreachable since its last answer, got {other:?}"),
+    }
+    h.check_verdict(&both, &pr, &Expect::new(&["p1"], &pr.0))
+        .await;
+
     h.proxy.heal("p1", "p2");
     h.proxy.heal("alice", "p2");
+    h.proxy.heal("bob", "p2");
     h.eventually(
         "anti-entropy to bring P2 to Alice's tip",
         CONVERGE,
@@ -109,4 +130,10 @@ async fn s02_partition() {
         .await;
     assert_eq!(after.standing, Standing::Active);
     assert!(after.evidence.is_empty(), "a strict prefix is not evidence");
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
