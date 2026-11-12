@@ -2510,22 +2510,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 } else {
                     refused
                 };
-                // SPEC 15.9: a commit dated before the latest `now` the
-                // principal holds rewrites history, fork or not; it is
-                // refused and kept as no branch.
-                // A replay of a commit already held is not a new message.
-                let latest = principal.latest_timestamp();
-                let backdated = !reuse
-                    && tip_before.is_some()
-                    && matches!(refused, EngineError::Protocol(_))
-                    && decode_bundle(bundle)?
-                        .cozies()
-                        .map(|c| c.header().now)
-                        .max()
-                        .is_some_and(|now| now < latest);
-                if backdated && !self.is_already_stored(principal_id, bundle).await? {
-                    return Err(EngineError::Protocol(cyphr::Error::TimestampPast));
-                }
                 // Only a verification failure can be a fork; a malformed
                 // or unreadable bundle is nothing to keep.
                 if matches!(refused, EngineError::Protocol(_)) {
