@@ -225,7 +225,7 @@ impl Probe {
                 for peer in &h.peers {
                     match h
                         .http
-                        .get(format!("http://{}{path}", peer.addr))
+                        .get(format!("http://{}{path}", peer.addr()))
                         .send()
                         .await
                     {

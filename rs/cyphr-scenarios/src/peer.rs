@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::bins::Bins;
+use crate::proxy::Proxy;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PeerError {
@@ -59,8 +60,11 @@ pub struct Limits {
 pub struct Peer {
     pub name: String,
     /// The server's real address; clients should dial a proxy route instead.
-    /// A restart binds the same address, so routes stay valid across it.
-    pub addr: SocketAddr,
+    /// A restart rebinds the same address when it can, else a fresh port,
+    /// and redirects the proxy's routes to it. Read it with [`Peer::addr`].
+    addr: Mutex<SocketAddr>,
+    /// Told when a restart moves the peer, so routes follow it.
+    proxy: Option<Arc<Proxy>>,
     /// The identity digest the peer reported from `GET /server`.
     pub id: String,
     pub data_dir: PathBuf,
@@ -170,6 +174,7 @@ impl Peer {
         http: &reqwest::Client,
         role: Role,
         limits: Limits,
+        proxy: Option<Arc<Proxy>>,
     ) -> Result<Peer, PeerError> {
         let io_err = |what| {
             let name = name.to_owned();
@@ -212,7 +217,8 @@ impl Peer {
         };
         Ok(Peer {
             name: name.to_owned(),
-            addr,
+            addr: Mutex::new(addr),
+            proxy,
             id,
             data_dir,
             launch,
@@ -236,26 +242,53 @@ impl Peer {
         Ok(())
     }
 
-    /// Start a stopped peer again on its old address, with the same data
-    /// directory and key file.
+    /// The server's current real address.
+    pub fn addr(&self) -> SocketAddr {
+        *self.addr.lock().expect("peer addr")
+    }
+
+    /// Start a stopped peer again, with the same data directory and key
+    /// file, on its old address. Another process may have taken that port
+    /// while the peer was down (a parallel run's `:0` bind), and the server
+    /// then exits at startup; the peer comes back on a fresh port instead,
+    /// and the proxy's routes are redirected to it, so no restart can be
+    /// lost to a port race.
     pub async fn restart(&self, bins: &Bins) -> Result<(), PeerError> {
         let mut slot = self.child.lock().await;
         if slot.is_some() {
             return Ok(());
         }
-        let listen = self.addr.to_string();
-        let (child, addr) = self
+        let old = self.addr();
+        let (child, addr) = match self
             .launch
-            .spawn(bins, &self.name, &listen, &self.data_dir, &self.stdout)
-            .await?;
-        if addr != self.addr {
-            // Clients' routes point at the old address; a peer that moved
-            // would silently drop out of the scenario.
-            return Err(PeerError::Command {
-                name: self.name.clone(),
-                what: "restart",
-                reason: format!("came back on {addr}, not {}", self.addr),
-            });
+            .spawn(
+                bins,
+                &self.name,
+                &old.to_string(),
+                &self.data_dir,
+                &self.stdout,
+            )
+            .await
+        {
+            Ok(started) => started,
+            Err(PeerError::EarlyExit { .. }) => {
+                self.launch
+                    .spawn(
+                        bins,
+                        &self.name,
+                        "127.0.0.1:0",
+                        &self.data_dir,
+                        &self.stdout,
+                    )
+                    .await?
+            },
+            Err(e) => return Err(e),
+        };
+        if addr != old {
+            *self.addr.lock().expect("peer addr") = addr;
+            if let Some(proxy) = &self.proxy {
+                proxy.redirect(&self.name, addr);
+            }
         }
         *slot = Some(child);
         Ok(())

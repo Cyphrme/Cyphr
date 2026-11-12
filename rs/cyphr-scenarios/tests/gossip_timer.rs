@@ -115,7 +115,7 @@ async fn gossip_timer_converges_peers_and_keeps_both_branches_of_a_fork() {
 /// How many principal-fork items `peer` serves for `p`, read from the peer
 /// itself and independent of any action under test.
 async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
-    let addr = h.peer(peer).addr;
+    let addr = h.peer(peer).addr();
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/evidence"))
@@ -131,7 +131,7 @@ async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
 
 /// How many branch heads `peer` serves for `p`.
 async fn heads(h: &Harness, peer: &str, p: &Principal) -> usize {
-    let addr = h.peer(peer).addr;
+    let addr = h.peer(peer).addr();
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/branches"))

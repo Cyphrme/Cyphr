@@ -346,7 +346,7 @@ fn sorted(tips: &[Tip]) -> Vec<Tip> {
 /// How many principal-fork items `peer` serves for `p`, read from the peer
 /// itself and independent of any action under test.
 async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
-    let addr = h.peer(peer).addr;
+    let addr = h.peer(peer).addr();
     let body: serde_json::Value = h
         .http
         .get(format!("http://{addr}/evidence"))

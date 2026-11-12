@@ -441,7 +441,7 @@ impl Harness {
     /// own limits) and never fail it: a connection that breaks or a 5xx is
     /// a defect, reported as a failed action.
     pub async fn flood_evidence(&self, peer: &str, count: usize) -> ActionResult<()> {
-        let base = format!("http://{}", self.peer(peer).addr);
+        let base = format!("http://{}", self.peer(peer).addr());
         let mut sent = 0;
         while sent < count {
             let batch = (count - sent).min(100);
