@@ -345,6 +345,36 @@ impl Harness {
     }
 }
 
+impl Drop for Harness {
+    /// A failing scenario unwinds through here; its peers' logs live in
+    /// temp dirs about to be deleted, so copy them out first and name
+    /// where they went. A passing run keeps nothing.
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let test = std::thread::current()
+            .name()
+            .unwrap_or("scenario")
+            .replace("::", "-");
+        let dir = std::env::temp_dir()
+            .join("cyphr-scenario-logs")
+            .join(format!("{test}-seed-{}", self.seed));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("cannot keep peer logs in {}: {e}", dir.display());
+            return;
+        }
+        let extra = self.extra.get_mut().unwrap_or_else(|e| e.into_inner());
+        for p in self.peers.iter().chain(extra.iter()) {
+            let to = dir.join(format!("{}.server.log", p.name));
+            match std::fs::copy(p.log_path(), &to) {
+                Ok(_) => eprintln!("peer `{}` log kept at {}", p.name, to.display()),
+                Err(e) => eprintln!("peer `{}` log not kept ({}): {e}", p.name, to.display()),
+            }
+        }
+    }
+}
+
 /// A golden-corpus principal with one genesis key and one commit, used to
 /// give self-tests a real principal on real peers.
 const SEED_FIXTURE: &str = "algorithm_diversity/ed25519_account_adds_es256_key";

@@ -390,6 +390,11 @@ impl Peer {
         None
     }
 
+    /// The file the server's stderr (its tracing log) is appended to.
+    pub fn log_path(&self) -> &Path {
+        &self.launch.log
+    }
+
     pub fn stdout_lines(&self) -> Vec<String> {
         self.stdout.lock().expect("peer stdout").clone()
     }
