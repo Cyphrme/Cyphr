@@ -255,8 +255,8 @@ struct SignedCoz {
     tmb: String,
     /// Its own `now`.
     now: i64,
-    /// Whether it is a `key/revoke` of its own signer (SPEC 6.4): a revoke
-    /// from `now` on, which never disqualifies its own commit.
+    /// Whether it is a `key/revoke` of its own signer (SPEC 6.4), which a
+    /// naked revoke of that key never disqualifies.
     revokes_signer: bool,
 }
 
@@ -3857,12 +3857,12 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
 
 /// The ids of the held commits the fork rule counts ([`assessment`]):
 /// each held commit, canonical or retained, whose parent is counted (a
-/// genesis commit has none), unless a coz of it is signed by a revoked key
-/// at or after the revoke's own `now` (SPEC 6.4, 14.12: a revoke takes
-/// effect from its `now`, and `rvk` decides nothing). A key's revoke is
-/// the earliest of its naked revoke and every revoke a held commit
-/// carries: a self-signed revoke proves itself wherever it is held, and key
-/// death is global by thumbprint.
+/// genesis commit has none), unless a coz of it is signed by a
+/// naked-revoked key at or after the revoke's own `now` (SPEC 6.4, 14.12:
+/// a revoke takes effect from its `now`, and `rvk` decides nothing). A
+/// revoke inside a commit is no naked revoke (SPEC 6.4: one is "signed
+/// outside of a commit"): it is state of its own branch, where it removes
+/// the key, and stops nothing on a rival branch (SPEC 15.8).
 ///
 /// A signature from a key's active period stands even after the key is
 /// deleted or replaced (SPEC 6.2), so a removal disqualifies nothing: a
@@ -3870,22 +3870,13 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
 /// held commit verified when it was admitted or retained, so this reads
 /// only who signed it when.
 fn counted(held: &[Held], revoked: &Revoked) -> HashSet<String> {
-    let mut death: HashMap<&str, i64> = revoked
-        .iter()
-        .map(|(tmb, d)| (tmb.as_str(), d.now))
-        .collect();
-    for c in held
-        .iter()
-        .flat_map(|h| &h.signed)
-        .filter(|c| c.revokes_signer)
-    {
-        let at = death.entry(c.tmb.as_str()).or_insert(c.now);
-        *at = (*at).min(c.now);
-    }
     let dead = |h: &Held| {
-        h.signed
-            .iter()
-            .any(|c| !c.revokes_signer && death.get(c.tmb.as_str()).is_some_and(|at| c.now >= *at))
+        h.signed.iter().any(|c| {
+            !c.revokes_signer
+                && revoked
+                    .get(c.tmb.as_str())
+                    .is_some_and(|death| c.now >= death.now)
+        })
     };
     let mut order: Vec<&Held> = held.iter().collect();
     order.sort_by_key(|h| h.sequence);

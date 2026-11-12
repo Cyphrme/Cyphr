@@ -395,15 +395,15 @@ async fn after_revocation(r: &Revoked) -> WireBundle {
     bundle
 }
 
-/// Backs the participation gate on promotion (SPEC 6.4, 15.8) at the
-/// engine seam every holder ingests through, a verifier's store included:
-/// the canonical commit at 1 revokes `golden`, a `golden`-signed rival R
-/// is retained at 1, and B over R (also `golden`'s) would promote R's
-/// line. R is signed by a key the chain revoked, so it is evidence only:
-/// B is refused, the revocation stays the tip and the principal Active.
-/// Turns red if B is admitted or moves the tip.
+/// Backs SPEC 6.4 and 15.8: a revoke inside a commit is state of its own
+/// branch only; it is no naked revoke ("signed outside of a commit"), so
+/// it does not stop the key on a rival branch. The canonical commit at 1
+/// revokes `golden`; a `golden`-signed rival R is retained at 1, and B
+/// over R makes R's line the taller: B is admitted as the tip and the
+/// principal is Active, at the engine seam every holder ingests through.
+/// Turns red if an in-chain revoke disqualifies a rival branch's commits.
 #[tokio::test]
-async fn revoked_keys_rival_is_never_promoted() {
+async fn an_in_chain_revoke_is_state_of_its_own_branch() {
     let r = revoked().await;
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     r.f.submit(&e, &r.f.first).await.expect("commit 0");
@@ -418,13 +418,9 @@ async fn revoked_keys_rival_is_never_promoted() {
         r.f.submit(&e, &blobs(&rival, 1)).await.is_err(),
         "R is a rival"
     );
-    let tip = e.get_tip(&r.f.id).await.expect("tip").expect("held");
-    assert!(
-        r.f.submit(&e, &blobs(&rival, 2)).await.is_err(),
-        "B promoted a revoked key's rival"
-    );
-    let after = e.get_tip(&r.f.id).await.expect("tip").expect("held");
-    assert_eq!(after.commit_id, tip.commit_id, "the revocation is the tip");
+    r.f.submit(&e, &blobs(&rival, 2))
+        .await
+        .expect("B out-extends the revocation's branch");
     assert!(!e.is_errored(&r.f.id).await.expect("verdict"));
 }
 
