@@ -337,6 +337,9 @@ fn commit_key_tx(
         Value::String(format!("{authority}/{typ}")),
     );
 
+    // The signed bytes are the pay as written, so its field order must be the
+    // one the verifier reconstructs: alphabetical, as every other pay is.
+    pay_map.sort_keys();
     let pay_vec = serde_json::to_vec(&serde_json::to_value(&pay_map)?)?;
     let (sig_bytes, czd) = super::common::sign_pay(&signer, &pay_vec)?;
     let mut scope = principal.begin_commit();
