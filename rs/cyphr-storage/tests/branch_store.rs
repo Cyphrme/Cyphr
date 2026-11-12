@@ -474,10 +474,10 @@ fn naked_revoke(k: &Kp, rvk: i64) -> serde_json::Value {
 /// ingests through (`/push`, gossip, witness sync, a verifier's store):
 /// once the engine holds `key_a`'s naked revoke as of NOW+5, a commit
 /// `key_a` signs dated at or after NOW+5 is refused at the tip. Pinned
-/// with the thief's revoke at a far-future `rvk` recorded first too: the
-/// owner's earlier revoke still stands. Turns red if a dead key's commit
-/// dated after its death is admitted, or a far-future revoke shadows the
-/// owner's.
+/// with a thief's far-future revoke offered first too: it is refused
+/// (SPEC 15.9), so it cannot shadow the owner's revoke, which stands.
+/// Turns red if a dead key's commit dated after its death is admitted, or
+/// a far-future revoke is recorded.
 #[tokio::test]
 async fn a_dead_keys_commit_after_its_death_is_refused() {
     let f = Fork::new(0).await;
@@ -487,9 +487,12 @@ async fn a_dead_keys_commit_after_its_death_is_refused() {
         let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
         f.submit(&e, &f.first).await.expect("commit 0");
         if thief_first {
-            e.record_revoke(&naked_revoke(&key_a, (1 << 53) - 1))
-                .await
-                .expect("the thief's revoke");
+            assert!(
+                e.record_revoke(&naked_revoke(&key_a, (1 << 53) - 1))
+                    .await
+                    .is_err(),
+                "the thief's far-future revoke is refused"
+            );
         }
         e.record_revoke(&naked_revoke(&key_a, NOW + 5))
             .await
