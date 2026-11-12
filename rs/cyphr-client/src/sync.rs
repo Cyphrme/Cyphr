@@ -360,7 +360,7 @@ impl Held {
                     self.log.push(bundle.clone());
                 },
                 Step::Actions(bundle) => {
-                    let index = usize::try_from(bundle.after).unwrap_or(usize::MAX);
+                    let index = self.ids.len();
                     let blobs = bundle.blobs.as_ref().map_err(|defect| PeerFailure::Entry {
                         index,
                         defect: *defect,
@@ -605,9 +605,7 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
 
 /// What a holder that keeps branches is handed after `report`, in order:
 /// each fork's rival, the verified commits extending a rival, then the
-/// chain of each peer that forked, past the
-/// lowest fork position, each commit with the data actions recorded before
-/// it (as a rival carries them). A peer on the other side of a fork may have
+/// chain of each peer that forked, past the lowest fork position. A peer on the other side of a fork may have
 /// extended its branch or resolved the fork; only its commits past the fork
 /// show which.
 ///
@@ -642,18 +640,10 @@ pub async fn branch_bundles<C: Connector>(
         else {
             continue;
         };
-        for (index, entry) in patch.entries.iter().enumerate().skip(height + 1) {
-            let Ok(mut bundle) = entry.bundle.clone() else {
+        for entry in patch.entries.iter().skip(height + 1) {
+            let Ok(bundle) = entry.bundle.clone() else {
                 break;
             };
-            let leading: Vec<Vec<u8>> = patch
-                .actions
-                .iter()
-                .filter(|a| a.after == index as u64)
-                .filter_map(|a| a.blobs.clone().ok())
-                .flatten()
-                .collect();
-            bundle.actions.splice(0..0, leading);
             bundles.push(bundle);
         }
     }
@@ -884,20 +874,10 @@ async fn compare_whole_chain<C: Connector>(
             if ours == rival {
                 return Err(PeerFailure::Fork { index: at });
             }
-            let mut bundle = theirs.entries[at]
+            let bundle = theirs.entries[at]
                 .bundle
                 .clone()
                 .map_err(|defect| PeerFailure::Entry { index: at, defect })?;
-            // The actions that precede the rival go with it, so a holder
-            // that keeps the branch can replay it.
-            let leading: Vec<Vec<u8>> = theirs
-                .actions
-                .iter()
-                .filter(|a| a.after == at as u64)
-                .filter_map(|a| a.blobs.clone().ok())
-                .flatten()
-                .collect();
-            bundle.actions.splice(0..0, leading);
             let finding = ForkFinding {
                 height: at,
                 pre: at.checked_sub(1).and_then(|i| pr_id(&mine.ids[i])),
@@ -946,7 +926,6 @@ async fn evidence<C: Connector>(
         record.bare_id(),
         &base,
         &held.entries,
-        &held.actions,
         &chain_ids,
     )
     .await;

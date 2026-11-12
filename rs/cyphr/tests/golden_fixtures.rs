@@ -346,7 +346,6 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
-        "[data-action-no-pre]" => "MalformedPayload",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
@@ -477,8 +476,18 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
 
     if let Some(commits) = &fixture.commits {
         for (ci, commit) in commits.iter().enumerate() {
+            // The lines are held history, judged as a replay is; an error
+            // vector's last line is the submission it pins, judged as
+            // admission is.
+            let submitted = expected_error.is_some() && ci + 1 == commits.len();
             let replayed = match commit.bundle().map(|b| b.decode()) {
-                Ok(Ok(bundle)) => cyphr::replay::replay_bundle(&mut principal, &bundle)
+                Ok(Ok(bundle)) if submitted => {
+                    cyphr::replay::replay_bundle(&mut principal, &bundle)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.source)
+                },
+                Ok(Ok(bundle)) => cyphr::replay::replay_held(&mut principal, &bundle)
                     .await
                     .map(|_| ())
                     .map_err(|e| e.source),

@@ -2,10 +2,23 @@
 #
 # These tests target specific constraints from docs/specs/transactions.md.
 
-# [data-action-no-pre]: Data action cozies MUST NOT contain pre.
+# A data action carrying `pre` is accepted: DT has no chain (SPEC 2.3.3),
+# so the field has no protocol meaning.
 [[test]]
-name      = "err_data_action_with_pre"
+name      = "data_action_with_pre_is_accepted"
 principal = ["golden"]
+
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000001
@@ -17,4 +30,4 @@ typ    = "cyphr.me/comment/create"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4

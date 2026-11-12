@@ -927,7 +927,7 @@ fn children_of_a_disqualified_rival_are_not_a_fork() {
     let revoked: Revoked = [(
         "revoked".to_string(),
         Death {
-            rvk: 0,
+            now: 0,
             record: [0; 32],
         },
     )]

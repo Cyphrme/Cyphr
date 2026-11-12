@@ -673,12 +673,9 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
         order.sort_by(|(_, a), (_, b)| {
             (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
         });
-        principal.open_action_bundle();
-        let recorded = order
+        order
             .into_iter()
-            .try_for_each(|(i, c)| record(principal, i, c));
-        principal.close_action_bundle();
-        recorded?;
+            .try_for_each(|(i, c)| record(principal, i, c))?;
         return Ok(StagedBundle::Actions(BundleId {
             czds,
             tr: None,
@@ -686,11 +683,7 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
         }));
     }
 
-    principal.open_action_bundle();
-    let recorded =
-        (bundle.actions.iter().enumerate()).try_for_each(|(i, c)| record(principal, i, c));
-    principal.close_action_bundle();
-    recorded?;
+    (bundle.actions.iter().enumerate()).try_for_each(|(i, c)| record(principal, i, c))?;
     let mut scope = principal.begin_commit();
     let mut i = bundle.actions.len();
     for tx in &bundle.txs {
@@ -736,4 +729,80 @@ pub async fn replay_bundle<S: eml::Storage>(
     bundle: &Bundle,
 ) -> Result<BundleId, ReplayError> {
     stage_bundle(principal, bundle).await?.commit().await
+}
+
+/// A bundle a replay of held history applied ([`replay_held`]).
+#[derive(Debug, Clone)]
+pub struct Replayed {
+    /// What the bundle formed.
+    pub id: BundleId,
+    /// The bundle-order indices ([`Bundle::cozies`]) of the actions the
+    /// replay ignored.
+    pub ignored: Vec<usize>,
+}
+
+/// [`replay_bundle`] for history already admitted somewhere (a store, a
+/// peer, an export), not a new submission. An action-only bundle's actions
+/// are each judged at their own `now`, and one whose signer was not active
+/// then is ignored (SPEC 6.2: "actions signed after it has been removed are
+/// ignored"): a commit dated before an action can remove its key after the
+/// action was accepted. An action dated in a frozen span or after the
+/// principal's delete is ignored the same way (SPEC 14.9, 11.4): every
+/// gate is judged at the action's own `now`. An action by a key this
+/// principal never held is no such verdict and stays a refusal. A bundle that forms a commit
+/// replays as [`replay_bundle`] does.
+///
+/// # Errors
+///
+/// As [`replay_bundle`], for every refusal but an inactive signer's.
+pub async fn replay_held<S: eml::Storage>(
+    principal: &mut Principal<S>,
+    bundle: &Bundle,
+) -> Result<Replayed, ReplayError> {
+    if !bundle.txs.is_empty() {
+        let id = replay_bundle(principal, bundle).await?;
+        return Ok(Replayed {
+            id,
+            ignored: Vec::new(),
+        });
+    }
+    let czds: Vec<Czd> = bundle.cozies().map(|c| c.czd.clone()).collect();
+    if czds.is_empty() {
+        return Err(ReplayError {
+            coz: None,
+            source: Error::EmptyCommit,
+        });
+    }
+    let mut order: Vec<(usize, &StoredCoz)> = bundle.actions.iter().enumerate().collect();
+    order.sort_by(|(_, a), (_, b)| {
+        (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
+    });
+    let mut ignored = Vec::new();
+    for (i, c) in order {
+        match principal.record_held_action(&c.pay_json, &c.sig, c.czd.clone()) {
+            Ok(()) => {},
+            // Only a key this principal held: a stranger's action is no
+            // verdict that flipped, and stays a defect.
+            Err(e) if e.is_inactive_signer() && principal.held_key(&c.header.tmb) => {
+                ignored.push(i);
+            },
+            // Dated in a frozen span or after the delete: a later freeze or
+            // delete, backdated, took the action out (SPEC 14.9, 11.4).
+            Err(Error::Frozen | Error::AlreadyDeleted) => ignored.push(i),
+            Err(source) => {
+                return Err(ReplayError {
+                    coz: Some(i),
+                    source,
+                });
+            },
+        }
+    }
+    Ok(Replayed {
+        id: BundleId {
+            czds,
+            tr: None,
+            pr: principal.pr().clone(),
+        },
+        ignored,
+    })
 }

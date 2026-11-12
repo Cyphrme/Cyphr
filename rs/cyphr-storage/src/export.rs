@@ -21,13 +21,9 @@ pub enum ExportError {
     EmptyDigest(#[from] cyphr::Error),
 }
 
-/// Export a Principal's history as bundle lines, in the order it was
-/// recorded: each finalized commit, preceded by one action-only line per
-/// data action recorded since the commit before, and the actions recorded
-/// after the last commit on lines at the end.
-///
-/// Actions travel with the history because a `ds/create` includes exactly
-/// the actions recorded before it (SPEC 4.8.2): replaying the lines with
+/// Export a Principal's history as bundle lines: each finalized commit in
+/// order, then one action-only line per data action it holds. Replaying the
+/// lines with
 /// [`load_principal_from_commits`](crate::load_principal_from_commits)
 /// reaches the same DT, DR and PR.
 ///
@@ -37,10 +33,7 @@ pub enum ExportError {
 ///
 /// An action-only line forms no commit: its `commit_id` is empty and its
 /// roots are those it leaves, which an action does not change: the roots
-/// of the commit before it, or, for a principal that has made no commit,
-/// its roots. A line recorded before the first commit of a principal that
-/// has since committed carries `null` roots and an empty `pr`: the roots it
-/// left are not kept once the principal commits.
+/// of the last commit.
 ///
 /// # Errors
 ///
@@ -59,20 +52,18 @@ pub fn export_commits<S: eml::Storage>(
     principal: &Principal<S>,
 ) -> Result<Vec<CommitEntry>, ExportError> {
     let mut lines = Vec::new();
-    let mut actions = principal.actions().peekable();
     let mut before: Option<CommitEntry> = match principal.commits().next() {
         Some(_) => None,
         None => Some(roots_line(principal)?),
     };
-    for (position, commit) in principal.commits().enumerate() {
-        while let Some(action) = actions.next_if(|a| a.recorded_after() <= position) {
-            lines.push(action_line(action, before.as_ref())?);
-        }
+    for commit in principal.commits() {
         let line = commit_line(commit)?;
         lines.push(line.clone());
         before = Some(line);
     }
-    for action in actions {
+    // Actions hold no chain position (SPEC 4.8.1): they follow every
+    // commit, and an import judges each at its own `now` (SPEC 6.5).
+    for action in principal.actions() {
         lines.push(action_line(action, before.as_ref())?);
     }
     Ok(lines)

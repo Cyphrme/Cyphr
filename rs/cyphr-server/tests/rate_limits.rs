@@ -315,6 +315,31 @@ async fn per_operation_push_bucket_limits_reads_independent() {
     );
 }
 
+/// Backs the push fence for data actions: an action-only bundle (SPEC
+/// 4.8.1) forms no commit, so the count quota never sees it, and the push
+/// bucket is what bounds a flood of them. With a small push bucket, a
+/// burst of action-only pushes 429s. Turns red if the rate fence exempts
+/// a push that carries no transaction. End to end over the served stack.
+#[tokio::test]
+async fn push_bucket_limits_action_only_pushes() {
+    let mut limits = Limits::generous();
+    limits.push = (TRIP_PER_SECOND, TRIP_BURST);
+    let server = TestServer::with_limits(&limits).await;
+
+    let action = br#"{"pay":{"alg":"ES256","now":1,"typ":"cyphr.me/action"},"sig":"AA"}"#;
+    let body = common::push_body(
+        "action-flood",
+        &cyphr::replay::WireBundle::actions(vec![action.to_vec()]),
+    );
+    let pushes = server
+        .burst("POST", "/push", Some(&body), "127.0.0.1", BURST)
+        .await;
+    assert!(
+        some_429(&pushes),
+        "an action-only push flood past the push bucket must yield at least one 429: {pushes:?}"
+    );
+}
+
 /// RED today: `/revoke` takes ORDINARY per-op limits -- NO exemption. A modest
 /// revoke burst passes; an abusive burst 429s. Today `/revoke` is never rate
 /// limited, so the abusive burst never 429s.

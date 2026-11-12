@@ -110,10 +110,6 @@ pub struct TipResponse {
 #[derive(Debug, Serialize)]
 pub struct BranchesResponse {
     pub branches: Vec<cyphr_storage::engine::BranchTip>,
-    /// The action-only bundles the canonical chain left out: a
-    /// `ds/create` was signed while each was pending and did not include
-    /// it (SPEC 4.8.2). Kept and served, never part of the chain's DR.
-    pub not_included: Vec<PatchActionsResponse>,
 }
 
 /// Response for `GET /evidence`.
@@ -139,17 +135,14 @@ pub struct PatchEntryResponse {
 pub struct PatchResponseBody {
     pub principal_id: String,
     pub entries: Vec<PatchEntryResponse>,
-    /// Action-only bundles (SPEC 4.8.1), each preceding the commit at
-    /// `after`: those the chain included and those still pending, never
-    /// one it left out (`/branches` serves those). A puller re-selects
-    /// among them by the same rule (SPEC 4.8.2), so it trusts no list.
+    /// Every action-only bundle held (SPEC 4.8.1): actions hold no chain
+    /// position, so they are served whatever range the commits cover.
     pub actions: Vec<PatchActionsResponse>,
 }
 
 /// One action-only bundle in a patch response.
 #[derive(Debug, Serialize)]
 pub struct PatchActionsResponse {
-    pub after: u64,
     /// Raw coz blobs as base64url strings.
     pub blobs: Vec<String>,
 }
@@ -158,7 +151,6 @@ impl PatchActionsResponse {
     fn of(a: cyphr_storage::engine::PatchActions) -> Self {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         Self {
-            after: a.after,
             blobs: a
                 .blobs
                 .iter()
@@ -354,18 +346,7 @@ pub async fn branches(
         .list_branches(&query.pr)
         .await
         .map_err(AppError::engine)?;
-    let not_included = state
-        .engine
-        .not_included(&query.pr)
-        .await
-        .map_err(AppError::engine)?
-        .into_iter()
-        .map(PatchActionsResponse::of)
-        .collect();
-    Ok(Json(Envelope::unsigned(BranchesResponse {
-        branches,
-        not_included,
-    })))
+    Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds

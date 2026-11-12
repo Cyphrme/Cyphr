@@ -99,12 +99,13 @@ async fn s03_offline() {
         rebased.tip, phone_tip,
         "a rebase adds the laptop's own commit"
     );
-    // SPEC 15.9: a rebase re-signs the actions the peer lacks at the current
-    // time and names each, with its old czd and time; never silently.
-    let named = rebased.resigned.iter().find(|r| r.czd == pending);
+    // SPEC 6.5: the laptop's key is active on the adopted chain at the
+    // action's own `now`, so the rebase keeps the action as signed (a
+    // re-signed copy would be a duplicate under a new digest) and re-signs
+    // nothing.
     assert!(
-        named.is_some_and(|r| r.was_now > 0),
-        "the rebase names the uncommitted action it re-signed: {:?}",
+        rebased.resigned.iter().all(|r| r.czd != pending),
+        "the rebase keeps the uncommitted action as signed: {:?}",
         rebased.resigned
     );
     let merged = h.ok(laptop.push(&pr, &both).await).accepted("rebased push");
@@ -120,11 +121,11 @@ async fn s03_offline() {
         );
     }
     // Both of the laptop's actions, the committed one and the uncommitted
-    // one, reach P1 re-signed: nothing recorded offline is lost.
+    // one, reach P1: nothing recorded offline is lost.
     assert_eq!(
         h.peer_actions("p1", &pr).await,
         Some(p1_actions + 2),
-        "P1 holds the laptop's two re-signed actions"
+        "P1 holds the laptop's two actions"
     );
     let v = h.ok(observer.verdict(&pr, &both).await);
     h.check_verdict(&v, &pr, &Expect::new(&both, &pr.0)).await;

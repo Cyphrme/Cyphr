@@ -5,43 +5,68 @@ use crate::action::Action;
 use crate::error::{Error, Result};
 use crate::state::PrincipalRoot;
 
+/// When the lifecycle gates judge a data action.
+#[derive(Clone, Copy)]
+enum Judged {
+    /// A new submission: refused while the principal is deleted or frozen
+    /// at its tip.
+    AtTip,
+    /// Held history: against the commit timeline at the action's `now`.
+    AtNow,
+}
+
 impl PrincipalState {
+    /// The key that authorizes a data action signed by `tmb` and dated
+    /// `now`: the key active at `now` in the principal's key history
+    /// (SPEC 6.2, 6.5), not the key set at the tip. A principal with no
+    /// genesis commit has no history to authorize from.
+    ///
+    /// A key of an embedded principal is judged the same way, by that
+    /// principal's key history at `now` (SPEC 10.3).
+    ///
+    /// # Errors
+    ///
+    /// `GenesisIncomplete` before the genesis commit; `KeyRevoked` for a
+    /// key revoked at or before `now`; `EmbeddedErrored` for a key of an
+    /// embedded principal in Error; `UnknownKey` otherwise.
+    fn action_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
+        if self.pg().is_none() {
+            return Err(Error::GenesisIncomplete);
+        }
+        if let Some(verdict) = self.key_timeline.authorize(tmb, now) {
+            return verdict;
+        }
+        if self.auth.revoked.contains_key(&tmb.to_b64()) {
+            return Err(Error::KeyRevoked);
+        }
+        self.embedded
+            .signer_at(tmb, now, |d| {
+                self.nonces.holds(crate::nonce::NonceLevel::Kt, d)
+            })
+            .unwrap_or(Err(Error::UnknownKey))
+    }
+
     /// Record an action in the Data Tree (Level 4+).
     ///
-    /// The action enters DT only: DR, and so SR and PR, change when a
-    /// `ds/create` includes it (SPEC 4.8.2), and only then does its `now`
-    /// become the principal's latest timestamp.
+    /// The action enters DT only: DR, and so SR and PR, change only by a
+    /// `ds/create` (SPEC 4.8.2), and the action is no part of the chain.
     ///
     /// This is internal-only. External code must use `verify_and_record_action`
     /// which enforces signature verification.
     ///
     /// # Errors
     ///
-    /// - `TimestampPast`: Action timestamp is older than latest seen
     /// - `TimestampFuture`: Action timestamp is too far in the future
-    /// - `UnknownKey`: Signer's key not in current KS
-    pub(crate) fn record_action(&mut self, mut action: Action) -> Result<&PrincipalRoot> {
-        // Validate timestamp is not in the past (SPEC §14.1)
-        if action.now < self.latest_now() {
-            return Err(Error::TimestampPast);
-        }
-
+    /// - as [`Self::action_signer`]
+    pub(crate) fn record_action(&mut self, action: Action) -> Result<&PrincipalRoot> {
         self.check_now(action.now)?;
-
-        // Verify signer is an active key
-        self.active_signer(&action.signer)?;
+        self.action_signer(&action.signer, action.now)?;
 
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
 
-        // A pending action raises only the pending bound: once a
-        // `ds/create` settles it, only an included one bounds the chain,
-        // so a bundle the chain leaves out never blocks it.
         let core = self.core_mut();
-        core.data.pending_latest = core.data.pending_latest.max(Some(action.now));
         core.included_czds.insert(action.czd.as_bytes().to_vec());
-        action.recorded_after = core.auth.commits.len();
-        action.bundle = core.data.bundle_for_next();
         core.data.actions.push(action);
 
         Ok(&self.pr)
@@ -61,15 +86,25 @@ impl PrincipalState {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `UnknownKey`: Signer not in active key set
-    /// - `KeyRevoked`: Signer key has been revoked
-    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`: the signer did not authorize the action
+    ///   at its `now` (SPEC 6.5)
     /// - `TimestampFuture`: Action timestamp is too far in the future
     pub(crate) fn verify_and_record_action(
         &mut self,
         pay_json: &[u8],
         sig: &[u8],
         czd: coz::Czd,
+    ) -> Result<&PrincipalRoot> {
+        self.verify_and_record(pay_json, sig, czd, Judged::AtTip)
+    }
+
+    /// [`Self::verify_and_record_action`] judged as `when` says.
+    fn verify_and_record(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        when: Judged,
     ) -> Result<&PrincipalRoot> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -92,27 +127,23 @@ impl PrincipalState {
             .to_string();
         let now = pay_value["now"].as_i64().ok_or(Error::MalformedPayload)?;
 
-        // [data-action-no-pre]: Data action cozies MUST NOT contain pre.
-        if pay_value.get("pre").is_some() {
-            return Err(Error::MalformedPayload);
+        match when {
+            // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
+            // actions are possible on a closed account". Data actions have no
+            // same-commit-finalizer exemption analogous to CommitCreate's, so
+            // this is an unconditional gate. SPEC §2.3.2, §11: a frozen
+            // principal changes only by being unfrozen, and a data action
+            // changes DT.
+            Judged::AtTip if self.deleted => return Err(Error::AlreadyDeleted),
+            Judged::AtTip if self.frozen => return Err(Error::Frozen),
+            Judged::AtTip => {},
+            // Held history: the same gates at the action's own `now`, as for
+            // its signer (SPEC 6.5), so a later freeze or delete does not
+            // void an action taken before it.
+            Judged::AtNow => self.key_timeline.open_at(now)?,
         }
 
-        // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
-        // actions are possible on a closed account". Data actions have no
-        // same-commit-finalizer exemption analogous to CommitCreate's, so
-        // this is an unconditional gate.
-        if self.deleted {
-            return Err(Error::AlreadyDeleted);
-        }
-
-        // SPEC §2.3.2, §11: a frozen principal changes only by being
-        // unfrozen, and a data action changes DT.
-        if self.frozen {
-            return Err(Error::Frozen);
-        }
-
-        // Signer must be an ACTIVE key
-        let signer_key = self.active_signer(&signer_tmb)?;
+        let signer_key = self.action_signer(&signer_tmb, now)?;
 
         // The signed pay must name the key that actually verifies it.
         // An absent `alg` is malformed (SPEC 2.3.1), as `verify_coz` rules.
@@ -158,30 +189,43 @@ impl PrincipalState {
 }
 
 impl<S: eml::Storage> Principal<S> {
-    /// Record the actions of one accepted bundle: those recorded until
-    /// [`Self::close_action_bundle`] are one bundle, which a `ds/create`
-    /// includes or leaves out whole (SPEC 4.8.2).
-    pub(crate) fn open_action_bundle(&mut self) {
-        self.state.core_mut().data.open_bundle();
+    /// Record an action of held history (an admitted store, a peer, an
+    /// export): every gate, the lifecycle ones included, judged at the
+    /// action's own `now`.
+    pub(crate) fn record_held_action(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+    ) -> Result<()> {
+        self.state
+            .verify_and_record(pay_json, sig, czd, Judged::AtNow)
+            .map(|_| ())
     }
 
-    /// End the bundle [`Self::open_action_bundle`] opened.
-    pub(crate) fn close_action_bundle(&mut self) {
-        self.state.core_mut().data.close_bundle();
+    /// Whether `tmb` was ever a key of this principal: in its key history,
+    /// or revoked.
+    pub fn held_key(&self, tmb: &coz::Thumbprint) -> bool {
+        self.key_timeline.knows(tmb) || self.auth.revoked.contains_key(&tmb.to_b64())
+    }
+
+    /// Take in a naked revoke of `tmb` dated `now` that the caller has
+    /// verified (SPEC 6.4): from `now` on, the key authorizes no data
+    /// action. It changes no root: a naked revoke does not mutate PR.
+    pub fn note_naked_revoke(&mut self, tmb: &coz::Thumbprint, now: i64) {
+        self.state.core_mut().key_timeline.revoke(tmb, now);
     }
 
     /// Verify signature and record an action in one step.
     ///
     /// This is the primary method for processing incoming actions. An
     /// action enters DT only, in memory: nothing reaches the commit log.
-    /// Each call records its own bundle (SPEC 4.8.2).
     ///
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `UnknownKey`: Signer not in active key set
-    /// - `KeyRevoked`: Signer key has been revoked
-    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`: the signer did not authorize the action
+    ///   at its `now` (SPEC 6.5)
     /// - `TimestampFuture`: Action timestamp is too far in the future
     pub fn verify_and_record_action(
         &mut self,

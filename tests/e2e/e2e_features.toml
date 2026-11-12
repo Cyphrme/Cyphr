@@ -1190,6 +1190,16 @@ key_count = 2
 name      = "t1_f15_case1"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
 now    = 1700000000
@@ -1202,6 +1212,16 @@ level = 4
 [[test]]
 name      = "t1_f15_case2"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
@@ -1216,6 +1236,16 @@ level = 4
 name      = "t1_f15_case3"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
 now    = 1700000000
@@ -1228,6 +1258,16 @@ level = 4
 [[test]]
 name      = "t1_f15_case4"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
@@ -1242,6 +1282,16 @@ level = 4
 name      = "t1_f15_case5"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
 now    = 1700000000
@@ -1255,6 +1305,16 @@ level = 4
 name      = "t1_f16_case1"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -1266,6 +1326,16 @@ level = 4
 [[test]]
 name      = "t1_f16_case2"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -1279,6 +1349,16 @@ level = 4
 name      = "t1_f16_case3"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -1291,6 +1371,16 @@ level = 4
 name      = "t1_f16_case4"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -1302,6 +1392,16 @@ level = 4
 [[test]]
 name      = "t1_f16_case5"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -2378,6 +2478,16 @@ error = "UnknownAlg"
 name      = "t2_f15_case1"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2387,12 +2497,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case2"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2402,12 +2522,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case3"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2417,12 +2547,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case4"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2432,12 +2572,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case5"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2447,11 +2597,21 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f16_case1"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -2465,6 +2625,16 @@ error = "UnknownSigner"
 name      = "t2_f16_case2"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "alice"
@@ -2476,6 +2646,16 @@ error = "UnknownSigner"
 [[test]]
 name      = "t2_f16_case3"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -2489,6 +2669,16 @@ error = "UnknownSigner"
 name      = "t2_f16_case4"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "alice"
@@ -2500,6 +2690,16 @@ error = "UnknownSigner"
 [[test]]
 name      = "t2_f16_case5"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000

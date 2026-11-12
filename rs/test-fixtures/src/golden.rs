@@ -688,7 +688,7 @@ impl<'a> Generator<'a> {
 
     /// The `id` a coz of kind `typ` names when the intent states none: a
     /// `principal/create` names the future SR (SPEC 5.1 step 3), a
-    /// `ds/create` the computed DR = MR(DT) (SPEC 4.8.2), and the lifecycle
+    /// `ds/create` MR over the actions recorded (SPEC 4.8.2), and the lifecycle
     /// transactions the PR `pre` before the commit.
     fn derived_id(
         scope: &cyphr::CommitScope<'_>,
@@ -1363,18 +1363,9 @@ impl<'a> Generator<'a> {
             commits.push(Self::cozies_to_commit_entry(&failing)?);
         }
 
-        // Sort chronologically by first cozy's timestamp
-        commits.sort_by_key(|entry| {
-            entry
-                .actions
-                .iter()
-                .chain(entry.txs.iter().flatten())
-                .next()
-                .and_then(|coz| coz.get("pay"))
-                .and_then(|pay| pay.get("now"))
-                .and_then(|now| now.as_i64())
-                .unwrap_or(0)
-        });
+        // The export's order: every commit, then the actions, which hold
+        // no chain position (SPEC 4.8.1); the refused event of an error
+        // test last.
 
         Ok(Golden {
             name: test.name.clone(),
@@ -1746,7 +1737,7 @@ impl<'a> Generator<'a> {
         if let Some(id) = &cz.id {
             // A stated `id`, for values no pool key's thumbprint can
             // express (e.g. a nonce of an off-by-one width, or a
-            // `ds/create` naming a DR that is not MR(DT)).
+            // `ds/create` naming a DR over actions this principal lacks).
             let id = match id.strip_prefix("peer:") {
                 Some(_) => self.resolve_ref(id)?,
                 None => id.clone(),

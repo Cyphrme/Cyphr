@@ -123,7 +123,6 @@ async fn round_principal(
         .actions
         .iter()
         .map(|a| ActionBundle {
-            after: a.after,
             blobs: Ok(a.blobs.clone()),
         })
         .collect();

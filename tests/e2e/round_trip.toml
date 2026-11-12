@@ -48,6 +48,16 @@ level     = 3
 name      = "e2e_single_action"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "E2E test action"
 now    = 1700000000

@@ -185,14 +185,11 @@ impl<S: eml::Storage> Principal<S> {
         let cz = last.ok_or(Error::EmptyCommit)?;
 
         // KT → AR-node → SR-node from post-mutation key set (local, does not
-        // mutate self). DR is refreshed to the current active_algs rather
-        // than trusting the cached value, which may predate a key of a new
-        // algorithm (see stage_commit's identical refresh).
+        // mutate self).
         let active_algs = self.active_algs();
         let leaves: Vec<_> = self.auth.keys.values().map(key_leaf).collect();
-        let dr = self.data.included_root(&active_algs)?;
         let (_kr, _ar, sr) =
-            derive_state_roots_with_nonces(&leaves, dr.as_ref(), &self.nonces, &active_algs)?;
+            derive_state_roots_with_nonces(&leaves, self.dr.as_ref(), &self.nonces, &active_algs)?;
 
         // Prefer the signer's own algorithm for the arrow, but a self-revoke
         // of the last key of that algorithm retires it from active_algs —
@@ -358,8 +355,8 @@ impl PrincipalState {
             return Err(Error::CozReuse);
         }
 
-        // Validate timestamp is not in the past (SPEC §14.1). Pending
-        // actions do not bound a commit: only included ones are the chain's.
+        // Validate timestamp is not in the past (SPEC §14.1). Data actions
+        // are no part of the chain and bound nothing.
         if cz.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
         }
@@ -614,29 +611,11 @@ impl PrincipalState {
                 self.core_mut().frozen = false;
             },
             CozKind::DataRootCreate { id } => {
-                // SPEC 4.8.2: `id` is the computed new DR = MR(DT). DT may
-                // hold bundles the signer never saw (another device's, at
-                // this position), so the `ds/create` includes the pending
-                // bundles whose root it names and leaves out the rest.
-                // Matching one variant suffices, as for every tagged `id`
-                // (all variants name the same content); DR itself is folded
-                // into SR at finalize. A stale or foreign DR is the same
-                // refusal as any other `id` that names a state the
-                // principal is not in.
-                let core = self.core_mut();
-                let algs = core.active_algs();
-                let settled = core
-                    .data
-                    .include_matching(&algs, |dr| id.0.matches(&dr.0))?;
-                // A left-out action was never applied on this chain, so
-                // its owner may record it again (SPEC 7.6 ignores only an
-                // applied one), and it constrains no later timestamp.
-                for czd in settled.left_out {
-                    core.included_czds.remove(czd.as_bytes());
-                }
-                if let Some(newest) = settled.newest {
-                    core.latest_timestamp = core.latest_timestamp.max(newest);
-                }
+                // SPEC 4.8.2: the DR transaction updates DR to its `id`.
+                // DT is a point-in-time snapshot (2.3.3): the `id` is the
+                // signer's commitment to DT as it saw it, never matched
+                // against the actions held here.
+                self.core_mut().dr = Some(id.clone());
             },
         }
 
@@ -727,17 +706,8 @@ impl PrincipalState {
         let tr = pending.compute_tr(&tr_algs).ok_or(Error::EmptyCommit)?;
         core.tr = Some(tr.clone());
 
-        // Refresh DR's algorithm coverage to the post-mutation active_algs
-        // before folding it into SR-node. DR was last computed under
-        // whatever active_algs were live at its `ds/create`; a key of a NEW
-        // algorithm added since then would otherwise leave DR missing that
-        // algorithm's variant, and StateTree::build's cell payload would hit
-        // MultihashDigest::get_or_err's `MissingVariant` error for the new
-        // algorithm. Only the actions a `ds/create` included count
-        // (SPEC 4.8.2): ones recorded since are in DT, not yet in DR.
-        core.dr = core.data.included_root(&active_algs)?;
-
-        // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
+        // KT → AR-node → SR-node (post-mutation key set; DR as its
+        // `ds/create` signed it, SPEC 4.8.2).
         // PR is computed below, after Arrow validation and CR assembly.
         let leaves: Vec<_> = core.auth.keys.values().map(key_leaf).collect();
         let (kr, ar, sr) =
@@ -841,6 +811,10 @@ impl PrincipalState {
         let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;
 
         core.auth.commits.push(commit);
+        let now = core.latest_timestamp;
+        let lifecycle = (core.frozen, core.deleted);
+        core.key_timeline
+            .record_commit(&core.auth.keys, &core.auth.revoked, lifecycle, now);
 
         // This commit is finalized on this state: any principal/delete it
         // carried is no longer "this commit's own pending delete" for a

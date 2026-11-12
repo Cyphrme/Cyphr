@@ -74,17 +74,6 @@ pub enum Error {
     #[error("state mismatch")]
     StateMismatch,
 
-    /// A `ds/create` met more pending action bundles than the inclusion
-    /// search tries ([`crate::principal::MAX_PENDING_BUNDLES`]): which of
-    /// them it signed for is not searched.
-    #[error("{pending} pending action bundles; a ds/create chooses among at most {cap}")]
-    TooManyPendingBundles {
-        /// The pending bundles the `ds/create` met.
-        pending: usize,
-        /// The most it chooses among.
-        cap: usize,
-    },
-
     /// MultihashDigest contains no variants (internal invariant violation).
     #[error("empty multihash digest")]
     EmptyMultihash,
@@ -207,3 +196,16 @@ pub enum Error {
 
 /// Result type for Cyphr operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    /// Whether the refusal is that the signer was not active at the
+    /// signature's `now`: unknown to the key history then, revoked, or a
+    /// key of an embedded principal in Error.
+    #[must_use]
+    pub fn is_inactive_signer(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownKey | Self::KeyRevoked | Self::EmbeddedErrored
+        )
+    }
+}

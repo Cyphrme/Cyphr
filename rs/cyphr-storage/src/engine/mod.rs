@@ -51,11 +51,9 @@ pub struct PatchResponse {
     pub principal_id: String,
     /// Ordered commit entries with their blob contents.
     pub entries: Vec<PatchEntry>,
-    /// The action-only bundles accepted in the served range that the
-    /// chain has not left out: those a `ds/create` included and those
-    /// still pending, in accepted order. A replay needs them in place
-    /// (SPEC 4.8.2) and selects among them by the same rule, so it never
-    /// trusts this list ([`StorageEngine::not_included`] serves the rest).
+    /// Every action-only bundle the principal holds, by its earliest
+    /// `now` (SPEC 4.8.1): actions hold no chain position, so a range
+    /// bounds the commits only.
     pub actions: Vec<PatchActions>,
 }
 
@@ -63,9 +61,6 @@ pub struct PatchResponse {
 /// in DT, not chained.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchActions {
-    /// The commits the principal's chain held when the bundle was accepted:
-    /// the bundle precedes the commit at this sequence.
-    pub after: u64,
     /// The action cozies' raw blobs.
     pub blobs: Vec<Vec<u8>>,
 }
@@ -355,7 +350,8 @@ pub const REVOKE_RECORD_PREFIX: &[u8] = b"\0cyphr-storage/revoke-record/v1\0";
 /// Verify a naked revoke's `{pay, sig, key}` envelope: `pay` is a
 /// `key/revoke` with a valid `rvk` naming `tmb`, the disclosed key hashes
 /// to `tmb`, and the signature verifies under it (self-signed only).
-/// Returns the revoked thumbprint (base64url) and `rvk`.
+/// Returns the revoked thumbprint (base64url) and the revoke's own `now`,
+/// from which it takes effect.
 fn verify_revoke(evidence: &serde_json::Value) -> Result<(String, i64), String> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -364,10 +360,11 @@ fn verify_revoke(evidence: &serde_json::Value) -> Result<(String, i64), String> 
     if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE) {
         return Err(format!("coz typ `{typ}` is not a key/revoke"));
     }
-    let rvk = pay["rvk"]
+    pay["rvk"]
         .as_i64()
         .filter(|rvk| coz::is_valid_rvk(*rvk))
         .ok_or("revoke has no valid rvk")?;
+    let now = pay["now"].as_i64().ok_or("revoke has no now")?;
     let tmb = pay["tmb"].as_str().ok_or("revoke names no tmb")?;
     let alg = evidence["key"]["alg"]
         .as_str()
@@ -388,7 +385,7 @@ fn verify_revoke(evidence: &serde_json::Value) -> Result<(String, i64), String> 
     if coz::verify_json(&pay_bytes, &sig, alg, &pub_key) != Some(true) {
         return Err("revoke signature does not verify".into());
     }
-    Ok((tmb.to_string(), rvk))
+    Ok((tmb.to_string(), now))
 }
 
 /// Discriminator of an [`ActionManifest`].
@@ -401,14 +398,12 @@ pub const ACTION_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/action-manifest/v1\0
 
 /// The durable record of one accepted action-only bundle: its data
 /// actions are recorded in DT, not chained (SPEC 4.8.1), so they form no
-/// commit, yet a later `ds/create` includes them (4.8.2) and every replay
-/// must record them where they were accepted. `after` is that place: the
-/// commits the principal's chain held when the bundle was accepted.
+/// commit and hold no chain position. Every replay records them once the
+/// commits are in, each judged at its own `now` (SPEC 6.5).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ActionManifest {
     kind: String,
     principal_id: String,
-    after: u64,
     blob_hashes: Vec<Blake3Hash>,
 }
 
@@ -416,7 +411,6 @@ struct ActionManifest {
 /// [`ActionManifest`] (I1).
 #[derive(Debug, Clone)]
 struct StoredActions {
-    after: u64,
     manifest: Blake3Hash,
     blobs: Vec<Blake3Hash>,
 }
@@ -428,13 +422,18 @@ struct ActionBundle {
     bundle: cyphr::replay::Bundle,
 }
 
-/// What a [`StorageEngine::left_out`] result was derived from: the
-/// canonical tip's commit id and every stored action manifest, in order.
-type LeftOutKey = (String, Vec<Blake3Hash>);
+impl ActionBundle {
+    /// The engine's record of this bundle.
+    fn stored(self) -> StoredActions {
+        StoredActions {
+            manifest: self.manifest,
+            blobs: self.blobs,
+        }
+    }
+}
 
-/// A principal's action-only bundles by the chain position they were
-/// accepted at, each position's in replay order ([`replay_order`]).
-type ActionHistory = std::collections::BTreeMap<u64, Vec<ActionBundle>>;
+/// A principal's action-only bundles, in replay order ([`replay_order`]).
+type ActionHistory = Vec<ActionBundle>;
 
 /// A retained rival as the engine tracks it: the listed [`BranchTip`],
 /// the key that signed its closing `commit/create`, and the stored blobs
@@ -624,6 +623,11 @@ pub enum QuarantineReason {
     /// Replaying the manifest's blobs onto its principal does not yield the
     /// commit the manifest records (only a rebuild from scratch replays).
     Unreplayable(String),
+    /// An action manifest none of whose actions the replayed key history
+    /// authorizes: each signer was not active at the action's own `now`
+    /// (a commit dated before the action removed its key), so the actions
+    /// are ignored (SPEC 6.2). Not corruption: the blobs stay stored.
+    SignerInactive(String),
 }
 
 /// A manifest a rebuild left out, and why.
@@ -824,11 +828,6 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// manifests in the blob store (I1), filled by the rebuild scan and by
     /// ingest.
     actions: std::sync::Mutex<HashMap<String, Vec<StoredActions>>>,
-    /// Per principal id, the action manifests its canonical chain left out
-    /// ([`Self::left_out`]), with the chain tip and manifest set they were
-    /// derived from: a cache of a replay of the blobs (I1), recomputed
-    /// whenever either moves.
-    left_out: std::sync::Mutex<HashMap<String, (LeftOutKey, HashSet<Blake3Hash>)>>,
     /// How each stored chain commit's blobs group into its bundle, and the
     /// keys it introduced, by principal id and commit id: a cache of the
     /// commit manifests in the blob store (I1), filled by the rebuild scan
@@ -876,7 +875,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
-            left_out: std::sync::Mutex::new(HashMap::new()),
             frames: std::sync::Mutex::new(HashMap::new()),
             revoked: std::sync::Mutex::new(Revoked::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
@@ -1034,139 +1032,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             });
         }
 
-        // Bundles accepted before the first served commit that the caller
-        // already holds are skipped; those after the last served commit
-        // ride along unless `to` bounds the range short of them.
-        // A bundle the chain left out is no part of its DT (SPEC 4.8.2).
-        let left_out = self.left_out(principal_id).await?;
-        let held: Vec<(u64, Vec<Blake3Hash>)> = {
-            let guard = self.actions.lock().unwrap_or_else(|p| p.into_inner());
-            guard
-                .get(principal_id)
-                .into_iter()
-                .flatten()
-                .filter(|a| a.after >= from_seq.unwrap_or(0) && to.is_none_or(|t| a.after <= t))
-                .filter(|a| !left_out.contains(&a.manifest))
-                .map(|a| (a.after, a.blobs.clone()))
-                .collect()
-        };
-        let mut actions = Vec::with_capacity(held.len());
-        for (after, hashes) in held {
-            let mut blobs = Vec::with_capacity(hashes.len());
-            for hash in &hashes {
-                let data =
-                    self.blob_store.get(hash).await?.ok_or_else(|| {
-                        EngineError::NotFound(format!("action blob {hash} missing"))
-                    })?;
-                blobs.push(data);
-            }
-            actions.push(PatchActions { after, blobs });
+        let mut actions = Vec::new();
+        for held in self.action_history(principal_id).await? {
+            actions.push(PatchActions {
+                blobs: self.read_blobs(&held.blobs).await?,
+            });
         }
-        actions.sort_by_key(|a| a.after);
 
         Ok(PatchResponse {
             principal_id: principal_id.to_string(),
             entries,
             actions,
         })
-    }
-
-    /// The action-only bundles stored for `principal_id` that its
-    /// canonical chain left out: a `ds/create` was signed while each was
-    /// pending and did not include it (SPEC 4.8.2). They stay stored (I1)
-    /// and are served here, in accepted order, so a holder can show what a
-    /// chain never took in; the owner re-records what it still wants.
-    ///
-    /// # Errors
-    ///
-    /// [`EngineError::NotFound`] for a principal that is not stored; a
-    /// replay or storage failure as [`Self::load_principal`].
-    pub async fn not_included(&self, principal_id: &str) -> Result<Vec<PatchActions>, EngineError> {
-        self.ensure_healed().await?;
-        let principal_id = self.canonical_principal_id(principal_id).await?;
-        let left_out = self.left_out(&principal_id).await?;
-        let mut held: Vec<StoredActions> = self
-            .actions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&principal_id)
-            .into_iter()
-            .flatten()
-            .filter(|a| left_out.contains(&a.manifest))
-            .cloned()
-            .collect();
-        held.sort_by_key(|a| a.after);
-        let mut out = Vec::with_capacity(held.len());
-        for a in held {
-            out.push(PatchActions {
-                after: a.after,
-                blobs: self.read_blobs(&a.blobs).await?,
-            });
-        }
-        Ok(out)
-    }
-
-    /// The action manifests of `principal_id` its canonical chain left
-    /// out, decided by replaying the chain from the blobs onto a private
-    /// log: the mark is a cache of the blobs (I1), never stored. A
-    /// manifest is left out when none of its actions is in the chain's DT.
-    async fn left_out(&self, principal_id: &str) -> Result<HashSet<Blake3Hash>, EngineError> {
-        let held: Vec<StoredActions> = self
-            .actions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .cloned()
-            .unwrap_or_default();
-        let Some(tip) = self.indexer.get_tip(principal_id).await? else {
-            return Ok(HashSet::new());
-        };
-        if held.is_empty() {
-            return Ok(HashSet::new());
-        }
-        let key: LeftOutKey = (tip.commit_id, held.iter().map(|a| a.manifest).collect());
-        if let Some((at, set)) = self
-            .left_out
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            && *at == key
-        {
-            return Ok(set.clone());
-        }
-        let genesis = self.genesis_of_stored(principal_id).await?;
-        let principal = self
-            .replay_onto(
-                principal_id,
-                genesis,
-                cyphr::eml::MemoryStorage::new(),
-                None,
-            )
-            .await?;
-        // What the chain's DT holds: actions a `ds/create` included or that
-        // are still pending. A manifest none of whose actions is among them
-        // is left out, whether a `ds/create` passed it over or the replay
-        // never recorded it (a bundle a promotion displaced, which the
-        // canonical commit there does not verify over).
-        let kept: HashSet<Vec<u8>> = principal
-            .actions()
-            .filter(|a| !a.is_not_included())
-            .map(|a| a.czd().as_bytes().to_vec())
-            .collect();
-        let mut out = HashSet::new();
-        for stored in held {
-            let bundle = action_bundle(self.read_blobs(&stored.blobs).await?).map_err(|why| {
-                EngineError::MalformedBlob(format!("action manifest {}: {why}", stored.manifest))
-            })?;
-            if !bundle.cozies().any(|c| kept.contains(c.czd().as_bytes())) {
-                out.insert(stored.manifest);
-            }
-        }
-        self.left_out
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(principal_id.to_string(), (key, out.clone()));
-        Ok(out)
     }
 
     /// Resolve a `/patch` resync anchor (a content digest) to the chain
@@ -1654,10 +1531,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .map_err(|e| e.to_string())
                     .and_then(|evidence| verify_revoke(&evidence));
                 match verified {
-                    // The least (rvk, record hash) stands, as when live.
-                    Ok((tmb, rvk)) => {
+                    // The least (now, record hash) stands, as when live.
+                    Ok((tmb, now)) => {
                         let death = Death {
-                            rvk,
+                            now,
                             record: *hash.as_bytes(),
                         };
                         let at = revoked.entry(tmb).or_insert(death);
@@ -1673,8 +1550,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             if let Some(json) = data.strip_prefix(ACTION_MANIFEST_PREFIX) {
                 // Actions are not chained: a bad action manifest costs only
-                // itself here, and a commit whose `ds/create` needed it
-                // fails its own replay.
+                // itself.
                 match serde_json::from_slice::<ActionManifest>(json) {
                     Ok(m) if m.kind == ACTION_MANIFEST_KIND => action_manifests.push((hash, m)),
                     Ok(m) => quarantined.push(QuarantinedManifest {
@@ -1807,14 +1683,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         } else {
             index.quarantined().await?.into_iter().collect()
         };
-        let mut histories = self
+        let histories = self
             .read_action_manifests(action_manifests, &skip, &mut quarantined)
             .await?;
-        // Action manifests whose bundle the replay refused, and why.
-        let mut refused_actions: Vec<(Blake3Hash, String)> = Vec::new();
-        // The positions whose actions were replayed before a commit there.
-        let mut replayed_at: std::collections::HashSet<(String, u64)> =
-            std::collections::HashSet::new();
         for (hash, manifest) in manifests {
             let commit = &manifest.commit;
             if unbound.contains_key(&commit.principal_id) {
@@ -1835,15 +1706,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             let refused = match skip.get(&hash) {
                 Some(why) => Err(format!("quarantined by the last scratch rebuild: {why}")),
-                None if replay => {
-                    replayed_at.insert((commit.principal_id.clone(), commit.sequence));
-                    let actions = histories
-                        .get(&commit.principal_id)
-                        .and_then(|h| h.get(&commit.sequence))
-                        .map_or(&[][..], Vec::as_slice);
-                    self.replay_manifest(&mut replays, &manifest, actions, &mut refused_actions)
-                        .await?
-                },
+                None if replay => self.replay_manifest(&mut replays, &manifest).await?,
                 None => Ok(()),
             };
             if let Err(why) = refused {
@@ -1899,37 +1762,60 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
 
-        // The actions accepted after each replayed chain's last commit,
-        // unless a commit there failed its replay after them.
-        for (principal_id, principal) in &mut replays {
-            let tip = principal.commits().count() as u64;
-            if replayed_at.contains(&(principal_id.clone(), tip)) {
-                continue;
-            }
-            let actions = histories.get(principal_id).and_then(|h| h.get(&tip));
-            for bundle in actions.into_iter().flatten() {
-                if let Err(e) = cyphr::replay::replay_bundle(principal, &bundle.bundle).await {
-                    refused_actions.push((bundle.manifest, e.to_string()));
+        // Actions hold no chain position: each principal's are recorded
+        // once its chain is in, judged at their own `now` (SPEC 6.5), with
+        // the naked revokes in force. A replaying pass keeps the ones its
+        // replay accepts; one that does not replay keeps those of a
+        // principal the index holds.
+        let mut actions: HashMap<String, Vec<StoredActions>> = HashMap::new();
+        for (principal_id, history) in histories {
+            let mut orphaned = |bundle: ActionBundle, reason| {
+                quarantined.push(QuarantinedManifest {
+                    manifest: bundle.manifest,
+                    principal_id: Some(principal_id.clone()),
+                    reason,
+                });
+            };
+            if replay {
+                let Some(principal) = replays.get_mut(&principal_id) else {
+                    for bundle in history {
+                        orphaned(
+                            bundle,
+                            QuarantineReason::Orphaned("its principal has no chain".into()),
+                        );
+                    }
+                    continue;
+                };
+                note_revokes(principal, &revoked);
+                for bundle in history {
+                    match cyphr::replay::replay_held(principal, &bundle.bundle).await {
+                        Ok(r) if r.ignored.len() == bundle.bundle.cozies().count() => orphaned(
+                            bundle,
+                            QuarantineReason::SignerInactive(
+                                "no action's signer was active at the action's now".into(),
+                            ),
+                        ),
+                        Ok(_) => actions
+                            .entry(principal_id.clone())
+                            .or_default()
+                            .push(bundle.stored()),
+                        Err(e) => orphaned(bundle, QuarantineReason::Unreplayable(e.to_string())),
+                    }
+                }
+            } else if index.get_tip(&principal_id).await?.is_some() {
+                actions
+                    .entry(principal_id.clone())
+                    .or_default()
+                    .extend(history.into_iter().map(|b| b.stored()));
+            } else {
+                for bundle in history {
+                    orphaned(
+                        bundle,
+                        QuarantineReason::Orphaned("its principal has no chain".into()),
+                    );
                 }
             }
         }
-        for (manifest, why) in refused_actions {
-            let principal_id = histories.iter_mut().find_map(|(id, h)| {
-                h.values_mut().find_map(|bundles| {
-                    let at = bundles.iter().position(|b| b.manifest == manifest)?;
-                    bundles.remove(at);
-                    Some(id.clone())
-                })
-            });
-            quarantined.push(QuarantinedManifest {
-                manifest,
-                principal_id,
-                reason: QuarantineReason::Unreplayable(why),
-            });
-        }
-        let actions = self
-            .place_actions(index, histories, &mut quarantined)
-            .await?;
         *self.actions.lock().unwrap_or_else(|p| p.into_inner()) = actions;
 
         let branches = self
@@ -1945,8 +1831,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         })
     }
 
-    /// Read back the scanned action manifests' bundles by principal and
-    /// position, quarantining any whose blobs are missing or are not an
+    /// Read back the scanned action manifests' bundles by principal,
+    /// quarantining any whose blobs are missing or are not an
     /// action-only bundle, and, in a pass that does not replay, any the
     /// last scratch rebuild quarantined (`skip`).
     async fn read_action_manifests(
@@ -1984,8 +1870,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 Ok(bundle) => histories
                     .entry(manifest.principal_id.clone())
                     .or_default()
-                    .entry(manifest.after)
-                    .or_default()
                     .push(ActionBundle {
                         manifest: hash,
                         blobs: manifest.blob_hashes,
@@ -1996,52 +1880,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 ))),
             }
         }
-        for bundles in histories.values_mut().flat_map(|h| h.values_mut()) {
+        for bundles in histories.values_mut() {
             replay_order(bundles);
         }
         Ok(histories)
-    }
-
-    /// The action-only bundles the rebuilt index has a place for: one
-    /// accepted after more commits than its principal's indexed chain holds
-    /// would be replayed before a commit it never preceded, so it is
-    /// quarantined as orphaned.
-    async fn place_actions<X: Indexer>(
-        &self,
-        index: &X,
-        histories: HashMap<String, ActionHistory>,
-        quarantined: &mut Vec<QuarantinedManifest>,
-    ) -> Result<HashMap<String, Vec<StoredActions>>, EngineError> {
-        let mut placed: HashMap<String, Vec<StoredActions>> = HashMap::new();
-        for (principal_id, history) in histories {
-            let chain = index
-                .get_tip(&principal_id)
-                .await?
-                .map_or(0, |tip| tip.commit_count);
-            for (after, bundles) in history {
-                for bundle in bundles {
-                    if after > chain {
-                        quarantined.push(QuarantinedManifest {
-                            manifest: bundle.manifest,
-                            principal_id: Some(principal_id.clone()),
-                            reason: QuarantineReason::Orphaned(format!(
-                                "actions accepted after commit {after}, the chain holds {chain}"
-                            )),
-                        });
-                        continue;
-                    }
-                    placed
-                        .entry(principal_id.clone())
-                        .or_default()
-                        .push(StoredActions {
-                            after,
-                            manifest: bundle.manifest,
-                            blobs: bundle.blobs,
-                        });
-                }
-            }
-        }
-        Ok(placed)
     }
 
     /// Decide which stored manifests the canonical walk left out
@@ -2253,16 +2095,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// A principal is replayed from the genesis its sequence-0 blobs
     /// disclose ([`disclosed_genesis`]): every chain begins with a genesis
     /// commit (SPEC 5.1), so one that discloses none is quarantined.
-    ///
-    /// `actions` are the action-only bundles accepted at the commit's
-    /// position; they are recorded first, and each one the core refuses is
-    /// added to `refused`.
     async fn replay_manifest(
         &self,
         replays: &mut HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>>,
         manifest: &CommitManifest,
-        actions: &[ActionBundle],
-        refused: &mut Vec<(Blake3Hash, String)>,
     ) -> Result<Result<(), String>, EngineError> {
         let commit = &manifest.commit;
         let bundle = self.manifest_bundle(manifest).await?;
@@ -2285,31 +2121,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
             },
         };
-        // The stored actions here first, then without them: a commit a
-        // resolution promoted replays over the state its branch had, not
-        // the displaced branch's actions ([`Self::actions_off_chain`]).
-        let without = if actions.is_empty() {
-            None
-        } else {
-            Some(principal.fork().await?)
-        };
-        let mut not_replayed = Vec::new();
-        for held in actions {
-            if let Err(e) = cyphr::replay::replay_bundle(principal, &held.bundle).await {
-                not_replayed.push((held.manifest, e.to_string()));
-            }
-        }
-        let mut built =
+        let built =
             Self::build_commit(principal, &bundle, &commit.principal_id, commit.sequence).await;
-        if built.is_err()
-            && let Some(without) = without
-        {
-            *principal = without;
-            not_replayed.clear();
-            built =
-                Self::build_commit(principal, &bundle, &commit.principal_id, commit.sequence).await;
-        }
-        refused.extend(not_replayed);
         let StagedBuild {
             commit: mut replayed,
             staged,
@@ -2491,10 +2304,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// position must never read, append to or mismatch the principal's
     /// durable log.
     ///
-    /// The action-only bundles accepted at each position are recorded
-    /// before the commit there, and those accepted after the last replayed
-    /// commit at the end, so DT is what it was when each commit was
-    /// admitted.
+    /// The stored action-only bundles are recorded once the commits are
+    /// in, each action judged at its own `now` (SPEC 6.5) with the naked
+    /// revokes the engine holds. One the history does not authorize, as a
+    /// commit dated before an action can remove its key, is ignored (SPEC
+    /// 6.2); its blobs stay stored (I1).
     async fn replay_onto<T: cyphr::eml::Storage>(
         &self,
         principal_id: &str,
@@ -2507,77 +2321,33 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut principal = Self::principal_from_genesis(genesis.clone(), storage).await?;
 
         let commit_entries = self.stored_entries(principal_id, through).await?;
-        let actions = self.action_history(principal_id).await?;
-        let off_chain = self
-            .actions_off_chain(principal_id, &genesis, &commit_entries, &actions)
-            .await?;
-
         for (position, entry) in commit_entries.iter().enumerate() {
-            if !off_chain.contains(&(position as u64)) {
-                replay_actions_at(&mut principal, &actions, position as u64).await?;
-            }
             replay_commit(&mut principal, entry, position).await?;
         }
-        replay_actions_at(&mut principal, &actions, commit_entries.len() as u64).await?;
+        note_revokes(&mut principal, &self.revoked());
+        for held in self.action_history(principal_id).await? {
+            match cyphr::replay::replay_held(&mut principal, &held.bundle).await {
+                Ok(r) if !r.ignored.is_empty() => tracing::debug!(
+                    principal = %principal_id,
+                    manifest = %held.manifest,
+                    ignored = r.ignored.len(),
+                    "stored actions whose signer was not active at their now are ignored"
+                ),
+                Ok(_) => {},
+                Err(refused) => tracing::warn!(
+                    principal = %principal_id,
+                    manifest = %held.manifest,
+                    error = %refused,
+                    "a stored action bundle does not replay; left out of DT"
+                ),
+            }
+        }
 
         Ok(principal)
     }
 
     /// The action-only bundles accepted for `principal_id`, read back from
-    /// the blob store.
-    /// The chain positions whose stored action-only bundles are not part
-    /// of the canonical chain: the commit there replays only over the state
-    /// without them. They were accepted on a branch that a resolution later
-    /// displaced (SPEC 15.8), and the promoted commit brought its own
-    /// actions inline; retention verified it on the same two bases, with
-    /// the stored actions first, then without ([`Self::retain_rival`]).
-    ///
-    /// Only a forked principal can hold such a position, so an unforked
-    /// one costs nothing here. A forked one with stored actions is
-    /// replayed once more, on a private in-memory Commit Tree that can
-    /// fork.
-    async fn actions_off_chain(
-        &self,
-        principal_id: &str,
-        genesis: &crate::Genesis,
-        entries: &[crate::CommitEntry],
-        actions: &ActionHistory,
-    ) -> Result<std::collections::HashSet<u64>, EngineError> {
-        use crate::import::replay_commit;
-
-        let mut off_chain = std::collections::HashSet::new();
-        let forked = self
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .is_some_and(|kept| !kept.is_empty());
-        let len = entries.len() as u64;
-        if !forked || !actions.keys().any(|at| *at < len) {
-            return Ok(off_chain);
-        }
-        let mut principal =
-            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new()).await?;
-        for (position, entry) in entries.iter().enumerate() {
-            let at = position as u64;
-            if actions.get(&at).is_some_and(|held| !held.is_empty()) {
-                let without = principal.fork().await?;
-                // An action the canonical base refuses (signed by a key the
-                // promoted branch removed, say) marks the position off-chain
-                // like a commit that does not verify over it.
-                if replay_actions_at(&mut principal, actions, at).await.is_ok()
-                    && replay_commit(&mut principal, entry, position).await.is_ok()
-                {
-                    continue;
-                }
-                principal = without;
-                off_chain.insert(at);
-            }
-            replay_commit(&mut principal, entry, position).await?;
-        }
-        Ok(off_chain)
-    }
-
+    /// the blob store, in replay order.
     async fn action_history(&self, principal_id: &str) -> Result<ActionHistory, EngineError> {
         let held = self
             .actions
@@ -2592,15 +2362,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let bundle = action_bundle(blobs).map_err(|why| {
                 EngineError::MalformedBlob(format!("action manifest {}: {why}", stored.manifest))
             })?;
-            history.entry(stored.after).or_default().push(ActionBundle {
+            history.push(ActionBundle {
                 manifest: stored.manifest,
                 blobs: stored.blobs,
                 bundle,
             });
         }
-        for bundles in history.values_mut() {
-            replay_order(bundles);
-        }
+        replay_order(&mut history);
         Ok(history)
     }
 
@@ -2790,6 +2558,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let revoked = self.revoked();
         let errored = in_error(&held, &revoked).then_some((held.as_slice(), &revoked));
 
+        // The data actions DT held before this bundle, by czd.
+        let held_czds: HashSet<Vec<u8>> = principal
+            .actions()
+            .map(|a| a.czd().as_bytes().to_vec())
+            .collect();
         let build = match Self::build_commit(&mut principal, bundle, principal_id, next_seq).await {
             Ok(Some(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit)) => {
                 // Refused, and kept as evidence: it verifies on the chain.
@@ -2814,13 +2587,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 }
                 // Action-only bundle: no commit is formed and nothing is
                 // indexed, but its actions are in DT from now on, so every
-                // later replay records them here (`after` = `next_seq`).
-                // One whose every action is already recorded is the same
-                // push repeated (a client cannot tell which trailing actions
-                // a peer holds): it stores nothing.
-                let blob_hashes = if self
-                    .all_actions_recorded(principal_id, &bundle.actions)
-                    .await?
+                // later replay records them. One whose every action DT
+                // already held is the same push repeated (a client cannot
+                // tell which actions a peer holds): it stores nothing
+                // (SPEC 7.6).
+                let blob_hashes = if bundle_czds(bundle)?
+                    .iter()
+                    .all(|czd| held_czds.contains(czd))
                 {
                     bundle
                         .actions
@@ -2828,8 +2601,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         .map(|blob| Blake3Hash::from_bytes(*blake3::hash(blob).as_bytes()))
                         .collect()
                 } else {
-                    self.store_actions(principal_id, next_seq, &bundle.actions)
-                        .await?
+                    self.store_actions(principal_id, &bundle.actions).await?
                 };
                 // Built from the tip read before any write: once the blobs are
                 // durable this response cannot fail (an error would report a
@@ -2912,36 +2684,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.ingest_commit(bundle, build).await
     }
 
-    /// Whether every blob of `blobs` is already in an action bundle recorded
-    /// for `principal_id` that the canonical chain has not left out: an
-    /// action a `ds/create` passed over was never applied, so its owner may
-    /// record it again ([`Self::left_out`]).
-    async fn all_actions_recorded(
-        &self,
-        principal_id: &str,
-        blobs: &[Vec<u8>],
-    ) -> Result<bool, EngineError> {
-        let left_out = self.left_out(principal_id).await?;
-        let held = self.actions.lock().unwrap_or_else(|p| p.into_inner());
-        let recorded: HashSet<Blake3Hash> = held
-            .get(principal_id)
-            .into_iter()
-            .flatten()
-            .filter(|a| !left_out.contains(&a.manifest))
-            .flat_map(|a| a.blobs.iter().copied())
-            .collect();
-        Ok(!blobs.is_empty()
-            && blobs
-                .iter()
-                .all(|b| recorded.contains(&Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))))
-    }
-
     /// Store an accepted action-only bundle and its [`ActionManifest`],
     /// and list it for replay. Returns the blob hashes.
     async fn store_actions(
         &self,
         principal_id: &str,
-        after: u64,
         blobs: &[Vec<u8>],
     ) -> Result<Vec<Blake3Hash>, EngineError> {
         let mut blob_hashes = Vec::with_capacity(blobs.len());
@@ -2951,7 +2698,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let manifest = ActionManifest {
             kind: ACTION_MANIFEST_KIND.to_string(),
             principal_id: principal_id.to_string(),
-            after,
             blob_hashes: blob_hashes.clone(),
         };
         let mut bytes = ACTION_MANIFEST_PREFIX.to_vec();
@@ -2962,7 +2708,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let of_principal = held.entry(principal_id.to_string()).or_default();
         if !of_principal.iter().any(|a| a.manifest == hash) {
             of_principal.push(StoredActions {
-                after,
                 manifest: hash,
                 blobs: blob_hashes.clone(),
             });
@@ -3150,36 +2895,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let Some(signers) = authenticated_signers(bundle, &genesis, &entries) else {
             return Ok(());
         };
-        let actions = self.action_history(principal_id).await?;
         let mut principal =
             Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
         for (position, entry) in entries.iter().enumerate() {
-            // A rival at this position competes with a commit admitted
-            // over the actions accepted before it. Two bases are tried: the
-            // state with those actions (a rival that relies on actions the
-            // principal already holds), then the state without them, which
-            // is the fork point as the rival saw it. A rival whose commits
-            // carry data brings its OWN actions inline, so replaying it over
-            // the stored branch's actions would mismatch its data root.
-            let active = signers.iter().all(|t| principal.is_key_active(t));
-            let fork_point = if active {
-                Some(principal.fork().await?)
-            } else {
-                None
-            };
-            replay_actions_at(&mut principal, &actions, position as u64).await?;
-            if let Some(fork_point) = fork_point {
+            if signers.iter().all(|t| principal.is_key_active(t)) {
                 self.retention_trials
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Verified on a fork and never committed: the staged build
                 // is dropped, and only its manifest is kept.
-                let mut candidates = [principal.fork().await?, fork_point];
-                for candidate in &mut candidates {
-                    if let Ok(Some(build)) =
-                        Self::build_commit(candidate, bundle, principal_id, position as u64).await
-                    {
-                        return self.keep_branch(bundle, build.commit).await;
-                    }
+                let mut candidate = principal.fork().await?;
+                if let Ok(Some(build)) =
+                    Self::build_commit(&mut candidate, bundle, principal_id, position as u64).await
+                {
+                    return self.keep_branch(bundle, build.commit).await;
                 }
             }
             // The last commit's own state is never a `pre` of a rival.
@@ -3236,7 +2964,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if authenticated_signers(bundle, genesis, &entries).is_none() {
             return Ok(None);
         }
-        let actions = self.action_history(principal_id).await?;
         let by_pr: HashMap<(u64, &str), &Retained> = rivals
             .iter()
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
@@ -3267,40 +2994,33 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new())
                     .await?;
             for (position, entry) in prefix.iter().enumerate() {
-                replay_actions_at(&mut principal, &actions, position as u64).await?;
                 replay_commit(&mut principal, entry, position).await?;
             }
-            // The line's first commit is tried over the actions accepted
-            // before the commit it competes with, then without them
-            // ([`Self::retain_rival`]); the rest of the line, and `bundle`,
-            // follow on whichever base takes it. Each brings its own actions.
-            let fork_point = principal.fork().await?;
-            replay_actions_at(&mut principal, &actions, base).await?;
-            let mut found = None;
-            'bases: for mut base_state in [principal, fork_point] {
-                let mut built = Vec::with_capacity(line.len());
-                for (r, b) in line.iter().zip(&bundles) {
-                    let Ok(Some(staged)) =
-                        Self::build_commit(&mut base_state, b, principal_id, r.tip.sequence).await
-                    else {
-                        continue 'bases;
-                    };
-                    let commit = staged.commit.clone();
-                    if staged.staged.commit().await.is_err() {
-                        continue 'bases;
-                    }
-                    built.push(commit);
-                }
-                if let Ok(Some(next)) =
-                    Self::build_commit(&mut base_state, bundle, principal_id, at + 1).await
-                {
-                    found = Some((built, next.commit));
+            let mut line_commits = Vec::with_capacity(line.len());
+            let mut built = true;
+            for (r, b) in line.iter().zip(&bundles) {
+                let Ok(Some(staged)) =
+                    Self::build_commit(&mut principal, b, principal_id, r.tip.sequence).await
+                else {
+                    built = false;
+                    break;
+                };
+                let commit = staged.commit.clone();
+                if staged.staged.commit().await.is_err() {
+                    built = false;
                     break;
                 }
+                line_commits.push(commit);
             }
-            let Some((mut line_commits, next_commit)) = found else {
+            if !built {
+                continue;
+            }
+            let Ok(Some(next)) =
+                Self::build_commit(&mut principal, bundle, principal_id, at + 1).await
+            else {
                 continue;
             };
+            let next_commit = next.commit;
             if at + 1 < canonical_len {
                 self.keep_branch(bundle, next_commit).await?;
                 return Ok(None);
@@ -3483,7 +3203,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// revoke stores one record, ending the key sooner.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
-        let (tmb, rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
+        let (tmb, now) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         // Held across the write, so two revokes of one key store one record.
         let lock = self.principal_lock(&format!("revoke\0{tmb}"));
         let _one_record = lock.lock().await;
@@ -3491,7 +3211,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         serde_json::to_writer(&mut bytes, evidence)
             .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
         let death = Death {
-            rvk,
+            now,
             record: *blake3::hash(&bytes).as_bytes(),
         };
         let held = self
@@ -3819,11 +3539,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .get(&principal_id)
             .cloned()
             .unwrap_or_default();
-        let left_out = if rivals.is_empty() {
-            Vec::new()
-        } else {
-            self.not_included(&principal_id).await?
-        };
         let mut out = Vec::with_capacity(rivals.len());
         for rival in rivals {
             let at = rival.tip.sequence;
@@ -3834,7 +3549,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Some(canonical) = chain.first() else {
                 continue;
             };
-            let mut rival_bundle = rival
+            let rival_bundle = rival
                 .shape
                 .group(self.read_blobs(&rival.blobs).await?, rival.keys.clone())
                 .ok_or_else(|| {
@@ -3842,16 +3557,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         "a retained branch's shape groups a different number of blobs".into(),
                     )
                 })?;
-            // The bundles the canonical chain left out at this position
-            // may be the ones the rival's `ds/create` included: they lead
-            // it, so the item replays on its own (SPEC 4.8.2; a verifier
-            // selects among them by the same rule).
-            let leading: Vec<Vec<u8>> = left_out
-                .iter()
-                .filter(|a| a.after == at)
-                .flat_map(|a| a.blobs.iter().cloned())
-                .collect();
-            rival_bundle.actions.splice(0..0, leading);
             out.push(ForkEvidence {
                 sequence: at,
                 pre: rival.tip.pre.clone(),
@@ -4113,7 +3818,7 @@ impl Held {
 /// its revoke record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Death {
-    rvk: i64,
+    now: i64,
     record: [u8; 32],
 }
 
@@ -4151,7 +3856,10 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
     if revoked.is_empty() {
         return None;
     }
-    for raw in bundle.cozies() {
+    // A data action is judged by the core at its own `now` against the key
+    // timeline, which holds the naked revokes ([`note_revokes`]); only the
+    // transactions are gated here.
+    for raw in bundle.txs.iter().flatten() {
         let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
             continue;
         };
@@ -4159,7 +3867,7 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         let dead_at = |tmb: &str| {
             revoked
                 .get(tmb)
-                .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.rvk))
+                .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.now))
         };
         let typ = pay["typ"].as_str().unwrap_or_default();
         if cyphr::parsed_coz::typ::is_key_introducing(typ)
@@ -4736,19 +4444,30 @@ fn is_commit_create_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::COMMIT_CREATE)
 }
 
-/// Record the action-only bundles `history` holds at `position` onto
-/// `principal`, through the core's replay entry point.
-async fn replay_actions_at<T: cyphr::eml::Storage>(
-    principal: &mut cyphr::Principal<T>,
-    history: &ActionHistory,
-    position: u64,
-) -> Result<(), EngineError> {
-    for held in history.get(&position).into_iter().flatten() {
-        cyphr::replay::replay_bundle(principal, &held.bundle)
-            .await
-            .map_err(|e| crate::import::LoadError::Protocol(e.source))?;
+/// Take the naked revokes the engine holds into `principal`'s key
+/// history: each takes effect from its own `now` (SPEC 6.4). A revoke of a
+/// key the principal never held changes nothing.
+fn note_revokes<T: cyphr::eml::Storage>(principal: &mut cyphr::Principal<T>, revoked: &Revoked) {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    // The thumbprints come from verified revokes ([`verify_revoke`]), so
+    // they decode.
+    for (tmb, death) in revoked {
+        if let Ok(bytes) = Base64UrlUnpadded::decode_vec(tmb) {
+            principal.note_naked_revoke(&coz::Thumbprint::from_bytes(bytes), death.now);
+        }
     }
-    Ok(())
+}
+
+/// The czds of an action-only bundle's actions.
+fn bundle_czds(bundle: &WireBundle) -> Result<Vec<Vec<u8>>, EngineError> {
+    let decoded = WireBundle::actions(bundle.actions.clone())
+        .decode()
+        .map_err(|e| EngineError::MalformedBlob(e.to_string()))?;
+    Ok(decoded
+        .cozies()
+        .map(|c| c.czd().as_bytes().to_vec())
+        .collect())
 }
 
 /// The action-only bundle of an action manifest's stored blobs, or why
@@ -4762,12 +4481,8 @@ fn action_bundle(blobs: Vec<Vec<u8>>) -> Result<cyphr::replay::Bundle, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Order the action-only bundles accepted at one position as they were
-/// accepted. Each was accepted only if no action of it was older than
-/// DT's latest (`TimestampPast`), so accepted bundles never overlap in `now`:
-/// ordering by earliest `now` restores the acceptance order, and the
-/// manifest hash orders bundles of one instant, where order cannot change
-/// DT (DR sorts by `now`, then digest, SPEC 3.7.7).
+/// Order action-only bundles by their earliest `now`, then manifest hash
+/// (SPEC 4.8.1: actions are ordered by `now`, then lexically).
 fn replay_order(bundles: &mut [ActionBundle]) {
     bundles.sort_by_cached_key(|b| {
         let first = b.bundle.cozies().map(|c| c.header().now).min();

@@ -32,7 +32,7 @@ use cyphr::{Commit, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
 
-use crate::patch::{ActionBundle, PatchEntry, Step, replay_order};
+use crate::patch::PatchEntry;
 
 /// The most coz blobs one served commit may carry; a bound on what an
 /// untrusted item can make the verifier decode.
@@ -190,49 +190,18 @@ pub struct ForkProof {
 /// [`EvidenceFailure::BadCommit`] or [`EvidenceFailure::Replay`] naming
 /// the first commit that fails.
 pub async fn replay_chain(
-    base: Principal<MemoryStorage>,
-    entries: &[PatchEntry],
-) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
-    replay_chain_with_actions(base, entries, &[]).await
-}
-
-/// [`replay_chain`] with the action-only bundles a patch serves beside its
-/// commits, replayed in the order they were accepted: a data commit needs
-/// the actions before it.
-///
-/// # Errors
-///
-/// As [`replay_chain`]; an undecodable action bundle is a
-/// [`EvidenceFailure::BadCommit`] at the commit it precedes.
-pub async fn replay_chain_with_actions(
     mut base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
-    actions: &[ActionBundle],
 ) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
-    for step in replay_order(0, entries, actions) {
-        match step {
-            Step::Commit(index, entry) => {
-                let bundle = entry
-                    .bundle
-                    .as_ref()
-                    .map_err(|_| EvidenceFailure::BadCommit {
-                        commit: index,
-                        what: "entry is undecodable",
-                    })?;
-                replay_commit(&mut base, index, bundle).await?;
-            },
-            Step::Actions(bundle) => {
-                let blobs = bundle
-                    .blobs
-                    .as_ref()
-                    .map_err(|_| EvidenceFailure::BadCommit {
-                        commit: usize::try_from(bundle.after).unwrap_or(usize::MAX),
-                        what: "action bundle is undecodable",
-                    })?;
-                let at = usize::try_from(bundle.after).unwrap_or(usize::MAX);
-                replay_commit(&mut base, at, &WireBundle::actions(blobs.clone())).await?;
-            },
-        }
+    for (index, entry) in entries.iter().enumerate() {
+        let bundle = entry
+            .bundle
+            .as_ref()
+            .map_err(|_| EvidenceFailure::BadCommit {
+                commit: index,
+                what: "entry is undecodable",
+            })?;
+        replay_commit(&mut base, index, bundle).await?;
     }
     Ok(base)
 }
@@ -261,7 +230,111 @@ pub async fn verify_principal_fork(
     base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
 ) -> Result<ForkProof, EvidenceFailure> {
-    verify_principal_fork_with_actions(item, pg, base, entries, &[]).await
+    let EvidenceItem::PrincipalFork {
+        pg: item_pg,
+        height,
+        pre,
+        a,
+        b,
+    } = EvidenceItem::parse(item)?;
+    if item_pg != pg {
+        return Err(EvidenceFailure::OtherPrincipal);
+    }
+    let prefix = usize::try_from(height)
+        .ok()
+        .and_then(|h| entries.get(..h))
+        .ok_or(EvidenceFailure::ChainTooShort {
+            need: height,
+            have: entries.len(),
+        })?;
+    // The replay is only evidence about `pg` if it starts from the genesis
+    // `pg` names. A principal is its genesis key (SPEC 5.1): one that names
+    // itself by that key's PR derives `pg` from `base` alone; one named by
+    // its PG derives it through its genesis commit, which must open with
+    // `base`'s genesis key (a foreign genesis is refused here, not as a
+    // replay failure) and establish that PG.
+    let named_by_key = base.pr_tagged().is_ok_and(|g| names_pg(pg, &g));
+    let genesis_commit = match prefix.first() {
+        Some(first) => Some(
+            first
+                .bundle
+                .as_ref()
+                .map_err(|_| EvidenceFailure::BadCommit {
+                    commit: 0,
+                    what: "undecodable blobs",
+                })?,
+        ),
+        None => None,
+    };
+    if !named_by_key {
+        let opened = match genesis_commit {
+            Some(blobs) => opens_with(blobs, base.genesis_key()),
+            None => opens_with(&a, base.genesis_key()) && opens_with(&b, base.genesis_key()),
+        };
+        if !opened {
+            return Err(EvidenceFailure::GenesisMismatch);
+        }
+    }
+    let state = replay_chain(base, prefix).await?;
+    if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
+        return Err(EvidenceFailure::GenesisMismatch);
+    }
+    if pre.is_some() && state.pr_tagged().ok() != pre {
+        return Err(EvidenceFailure::PreMismatch);
+    }
+    if a == b {
+        return Err(EvidenceFailure::NotConflicting(
+            "the two commits are identical",
+        ));
+    }
+    let at = prefix.len();
+    let branch = async |which,
+                        blobs: &WireBundle|
+           -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
+        let mut copy = state
+            .fork()
+            .await
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
+        match replay_commit(&mut copy, at, blobs).await {
+            Ok(()) => {},
+            Err(EvidenceFailure::Replay { source, .. }) => {
+                return Err(EvidenceFailure::CommitRefused { which, source });
+            },
+            Err(other) => return Err(other),
+        }
+        let commit = copy
+            .commits()
+            .last()
+            .cloned()
+            .ok_or(EvidenceFailure::BadCommit {
+                commit: at,
+                what: "no commit formed",
+            })?;
+        Ok((copy, commit))
+    };
+    let (ca, cb) = (branch("a", &a).await?, branch("b", &b).await?);
+    if prefix.is_empty() && !(pg_names(&ca.0, pg) && pg_names(&cb.0, pg)) {
+        return Err(EvidenceFailure::GenesisMismatch);
+    }
+    let (ca, cb) = (ca.1, cb.1);
+    if ca.tr() == cb.tr() {
+        return Err(EvidenceFailure::NotConflicting(
+            "the two commits have one id",
+        ));
+    }
+    let id = |c: &Commit| {
+        c.tr()
+            .0
+            .tagged_first()
+            .map(|d| d.to_string())
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })
+    };
+    Ok(ForkProof {
+        pg: item_pg,
+        height,
+        pre,
+        commits: [id(&ca)?, id(&cb)?],
+    })
 }
 
 /// A commit proved to extend a rival branch.
@@ -290,11 +363,11 @@ pub struct ItemSet {
 }
 
 /// Verify a peer's `principal-fork` items against a holder's chain
-/// (`entries` replayed from `base`, with its action bundles `actions`;
-/// `chain_ids` the chain's commit ids by position).
+/// (`entries` replayed from `base`; `chain_ids` the chain's commit ids by
+/// position).
 ///
 /// An item whose `pre` is on the chain is a fork
-/// ([`verify_principal_fork_with_actions`]). One whose `pre` is off it is
+/// ([`verify_principal_fork`]). One whose `pre` is off it is
 /// tried as a commit extending a rival branch: each proved rival's state is
 /// replayed once, items are taken in position order and matched by
 /// (position below, `pre`) to the one branch tip they can extend, and the
@@ -308,7 +381,6 @@ pub async fn verify_fork_items(
     pg: &str,
     base: &Principal<MemoryStorage>,
     entries: &[PatchEntry],
-    actions: &[ActionBundle],
     chain_ids: &[Option<String>],
 ) -> ItemSet {
     let mut set = ItemSet::default();
@@ -320,14 +392,8 @@ pub async fn verify_fork_items(
     let mut off_chain = Vec::new();
     for item in items {
         let verified = async {
-            let proof = verify_principal_fork_with_actions(
-                item,
-                pg,
-                fork_of(base, 0).await?,
-                entries,
-                actions,
-            )
-            .await?;
+            let proof =
+                verify_principal_fork(item, pg, fork_of(base, 0).await?, entries).await?;
             let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
             let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
             let mine = chain_ids.get(height).cloned().flatten();
@@ -362,15 +428,10 @@ pub async fn verify_fork_items(
             sequence: proof.height,
             bundle: Ok(rival.clone()),
         });
-        let below: Vec<ActionBundle> = actions
-            .iter()
-            .filter(|a| a.after < proof.height)
-            .cloned()
-            .collect();
         let Ok(base) = fork_of(base, 0).await else {
             continue;
         };
-        let Ok(state) = replay_chain_with_actions(base, &line, &below).await else {
+        let Ok(state) = replay_chain(base, &line).await else {
             continue;
         };
         let (Ok(pr), Some(id)) = (state.pr_tagged(), rival_id(proof, chain_ids)) else {
@@ -478,167 +539,6 @@ async fn extend(
         });
     }
     Ok(applied)
-}
-
-/// [`verify_principal_fork`] for a principal whose history carries data
-/// actions: `actions` are the patch's action-only bundles, replayed with
-/// the commits (those accepted up to the fork's position precede it).
-///
-/// # Errors
-///
-/// As [`verify_principal_fork`].
-pub async fn verify_principal_fork_with_actions(
-    item: &Value,
-    pg: &str,
-    base: Principal<MemoryStorage>,
-    entries: &[PatchEntry],
-    actions: &[ActionBundle],
-) -> Result<ForkProof, EvidenceFailure> {
-    let EvidenceItem::PrincipalFork {
-        pg: item_pg,
-        height,
-        pre,
-        a,
-        b,
-    } = EvidenceItem::parse(item)?;
-    if item_pg != pg {
-        return Err(EvidenceFailure::OtherPrincipal);
-    }
-    let prefix = usize::try_from(height)
-        .ok()
-        .and_then(|h| entries.get(..h))
-        .ok_or(EvidenceFailure::ChainTooShort {
-            need: height,
-            have: entries.len(),
-        })?;
-    // The replay is only evidence about `pg` if it starts from the genesis
-    // `pg` names. A principal is its genesis key (SPEC 5.1): one that names
-    // itself by that key's PR derives `pg` from `base` alone; one named by
-    // its PG derives it through its genesis commit, which must open with
-    // `base`'s genesis key (a foreign genesis is refused here, not as a
-    // replay failure) and establish that PG.
-    let named_by_key = base.pr_tagged().is_ok_and(|g| names_pg(pg, &g));
-    let genesis_commit = match prefix.first() {
-        Some(first) => Some(
-            first
-                .bundle
-                .as_ref()
-                .map_err(|_| EvidenceFailure::BadCommit {
-                    commit: 0,
-                    what: "undecodable blobs",
-                })?,
-        ),
-        None => None,
-    };
-    if !named_by_key {
-        let opened = match genesis_commit {
-            Some(blobs) => opens_with(blobs, base.genesis_key()),
-            None => opens_with(&a, base.genesis_key()) && opens_with(&b, base.genesis_key()),
-        };
-        if !opened {
-            return Err(EvidenceFailure::GenesisMismatch);
-        }
-    }
-    // The state at `pre` holds the actions accepted before the fork's
-    // position only. Those accepted AT it (`after == height`) lead the
-    // commit of whichever branch the patch's holder kept: they are no
-    // part of the other branch's `pre`, which brings its own actions
-    // inline (SPEC 4.8.2), so each branch is tried with and without them.
-    let before_fork: Vec<ActionBundle> = actions
-        .iter()
-        .filter(|a| a.after < height)
-        .cloned()
-        .collect();
-    let leading: Vec<WireBundle> = actions
-        .iter()
-        .filter(|a| a.after == height)
-        .filter_map(|a| a.blobs.as_ref().ok())
-        .map(|blobs| WireBundle::actions(blobs.clone()))
-        .collect();
-    let state = replay_chain_with_actions(base, prefix, &before_fork).await?;
-    if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
-        return Err(EvidenceFailure::GenesisMismatch);
-    }
-    if pre.is_some() && state.pr_tagged().ok() != pre {
-        return Err(EvidenceFailure::PreMismatch);
-    }
-    if a == b {
-        return Err(EvidenceFailure::NotConflicting(
-            "the two commits are identical",
-        ));
-    }
-    let at = prefix.len();
-    let branch = async |which,
-                        blobs: &WireBundle|
-           -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
-        let mut tried = None;
-        // A branch that carries its own actions is replayed from `pre`
-        // alone; one that carries none may lean on the leading actions.
-        let with_leading = blobs.actions.is_empty() && !leading.is_empty();
-        for lead in [with_leading, false] {
-            let mut copy = state
-                .fork()
-                .await
-                .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
-            if lead {
-                for held in &leading {
-                    replay_commit(&mut copy, at, held).await?;
-                }
-            }
-            match replay_commit(&mut copy, at, blobs).await {
-                Ok(()) => {
-                    tried = Some(Ok(copy));
-                    break;
-                },
-                Err(e) => tried = Some(Err(e)),
-            }
-        }
-        let copy = match tried {
-            Some(Ok(copy)) => copy,
-            Some(Err(EvidenceFailure::Replay { source, .. })) => {
-                return Err(EvidenceFailure::CommitRefused { which, source });
-            },
-            Some(Err(other)) => return Err(other),
-            None => {
-                return Err(EvidenceFailure::BadCommit {
-                    commit: at,
-                    what: "no commit formed",
-                });
-            },
-        };
-        let commit = copy
-            .commits()
-            .last()
-            .cloned()
-            .ok_or(EvidenceFailure::BadCommit {
-                commit: at,
-                what: "no commit formed",
-            })?;
-        Ok((copy, commit))
-    };
-    let (ca, cb) = (branch("a", &a).await?, branch("b", &b).await?);
-    if prefix.is_empty() && !(pg_names(&ca.0, pg) && pg_names(&cb.0, pg)) {
-        return Err(EvidenceFailure::GenesisMismatch);
-    }
-    let (ca, cb) = (ca.1, cb.1);
-    if ca.tr() == cb.tr() {
-        return Err(EvidenceFailure::NotConflicting(
-            "the two commits have one id",
-        ));
-    }
-    let id = |c: &Commit| {
-        c.tr()
-            .0
-            .tagged_first()
-            .map(|d| d.to_string())
-            .map_err(|source| EvidenceFailure::Replay { commit: at, source })
-    };
-    Ok(ForkProof {
-        pg: item_pg,
-        height,
-        pre,
-        commits: [id(&ca)?, id(&cb)?],
-    })
 }
 
 /// Whether `g`, a tagged or bare root, names `pg` (bare).

@@ -182,7 +182,7 @@ fn verdict(items: &[Value]) -> (BTreeSet<String>, BTreeSet<String>, usize) {
                 .collect();
         let ids: Vec<Option<String>> = f.canonical.ids.iter().cloned().map(Some).collect();
         let refs: Vec<&Value> = items.iter().collect();
-        let set = verify_fork_items(&refs, &f.pg, &base, &entries, &[], &ids).await;
+        let set = verify_fork_items(&refs, &f.pg, &base, &entries, &ids).await;
         let forks = set
             .forks
             .iter()

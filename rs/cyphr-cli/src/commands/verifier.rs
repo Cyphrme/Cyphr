@@ -203,10 +203,7 @@ impl<'a> Round<'a> {
             .map(|p| {
                 p.actions
                     .into_iter()
-                    .map(|a| ActionBundle {
-                        after: a.after,
-                        blobs: Ok(a.blobs),
-                    })
+                    .map(|a| ActionBundle { blobs: Ok(a.blobs) })
                     .collect()
             })
             .unwrap_or_default();

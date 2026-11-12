@@ -1,5 +1,5 @@
 {
-  "name": "err_data_action_with_pre",
+  "name": "action_without_genesis_fails",
   "principal": [
     "golden"
   ],
@@ -17,12 +17,12 @@
         {
           "pay": {
             "alg": "ES256",
+            "msg": "Action before any genesis",
             "now": 1700000001,
-            "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "typ": "cyphr.me/comment/create"
+            "typ": "cyphr.me/action"
           },
-          "sig": "VpfJlCjZK9R7Z0zsykEBrCZsB37yE503AC_8zzL6p1Ve1N4GJF-kVMoJu7H6CA7JpogeQ2guvHE-iPFLDe1TGQ"
+          "sig": "xQ9oqlgazbJtnxwmLxs5voHQStFcGUkKSPDDu6dagr4FGmA-E5lkB4spf6rduhglvWaYzmvx8-T74VAHhcavHg"
         }
       ],
       "txs": [],
@@ -34,7 +34,7 @@
     }
   ],
   "digests": [
-    "lEntjuTHUW7G8hTSAdsRtsel_dIgLf9PjkquJBQnjZQ"
+    "mQVqTYb9qLotGx03tzhzcc533NiMn4TcXzM4IMe406o"
   ],
   "expected": {
     "key_count": 1,
@@ -44,7 +44,7 @@
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "[data-action-no-pre]",
+    "error": "GenesisIncomplete",
     "deleted": false,
     "frozen": false
   }

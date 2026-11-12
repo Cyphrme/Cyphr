@@ -87,7 +87,7 @@ impl Tip {
     /// The newest `now` in B's chain at this tip.
     #[must_use]
     pub fn newest_now(&self) -> i64 {
-        self.state.latest_now()
+        self.state.latest_timestamp
     }
 
     /// Whether B is in `Error`.
@@ -106,6 +106,20 @@ impl Tip {
                 .held_prs
                 .iter()
                 .any(|pr| same(pr.get(member.alg())))
+    }
+
+    /// B's key `tmb` if B's key history authorizes it at `now` (SPEC 6.5):
+    /// `None` if `tmb` was never a key of B.
+    fn signer_at(&self, tmb: &Thumbprint, now: i64) -> Option<Result<&Key>> {
+        if self.revoked.contains(&tmb.to_b64()) {
+            return Some(Err(Error::KeyRevoked));
+        }
+        let verdict = self.state.key_timeline.authorize(tmb, now)?;
+        Some(if verdict.is_ok() && self.is_errored() {
+            Err(Error::EmbeddedErrored)
+        } else {
+            verdict
+        })
     }
 
     /// B's key `tmb` if B authorizes it at this tip: `None` if `tmb` is no
@@ -258,6 +272,32 @@ impl Members {
                 .as_ref()
                 .filter(|_| in_kt(bytes))
                 .and_then(|t| t.signer(tmb))
+            else {
+                continue;
+            };
+            match found {
+                Ok(key) => return Some(Ok(key)),
+                Err(e) => refusal = Some(Err(e)),
+            }
+        }
+        refusal
+    }
+
+    /// [`Self::signer`] judged by each member's key history at `now`
+    /// rather than at its tip: the authority for a data action.
+    pub(crate) fn signer_at(
+        &self,
+        tmb: &Thumbprint,
+        now: i64,
+        in_kt: impl Fn(&[u8]) -> bool,
+    ) -> Option<Result<&Key>> {
+        let mut refusal = None;
+        for (bytes, member) in &self.0 {
+            let Some(found) = member
+                .view
+                .as_ref()
+                .filter(|_| in_kt(bytes))
+                .and_then(|t| t.signer_at(tmb, now))
             else {
                 continue;
             };

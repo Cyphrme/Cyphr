@@ -190,6 +190,20 @@ async fn submit(
         .map(|_| ())
 }
 
+/// Push `fixture`'s genesis commit (`commits[0]`) alone, so its later
+/// lines meet an established principal (a data action needs one).
+async fn push_genesis(engine: &Engine, fixture: &serde_json::Value) -> (Genesis, String) {
+    let (g, id) = genesis_of(fixture);
+    let blobs: Vec<Vec<u8>> = raw_blobs(&fixture["commits"][0])
+        .iter()
+        .map(|b| serde_json::to_vec(b).unwrap())
+        .collect();
+    submit(engine, &id, &g, &blobs)
+        .await
+        .expect("genesis commit");
+    (g, id)
+}
+
 async fn submit_honest(engine: &Engine, fixture: &serde_json::Value) -> (Genesis, String) {
     let (g, id) = genesis_of(fixture);
     for c in fixture["commits"].as_array().unwrap() {
@@ -269,8 +283,8 @@ async fn crafted_action_blob_cannot_invent_a_principal() {
     let phantom = fake_digest(0x20);
 
     let fx = load_golden("actions", "action_alone_leaves_pr");
-    let (ag, aid) = genesis_of(&fx);
-    let blobs = craft(raw_blobs(&fx["commits"][0]), &forged(&phantom, 0, 0x21));
+    let (ag, aid) = push_genesis(&e, &fx).await;
+    let blobs = craft(raw_blobs(&fx["commits"][1]), &forged(&phantom, 0, 0x21));
     let _accepted_or_refused = submit(&e, &aid, &ag, &blobs).await;
 
     e.rebuild_index_from_manifests().await.unwrap();
@@ -411,14 +425,15 @@ async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
     let e = engine();
     let victim_fx = load_golden("edge_cases", "transaction_replay_order");
     let (_, victim) = submit_honest(&e, &victim_fx).await;
+    let fx = load_golden("actions", "action_alone_leaves_pr");
+    let (_, aid) = push_genesis(&e, &fx).await;
+    let own = e.get_tip(&aid).await.unwrap();
     let before = principals(&e).await;
 
-    let fx = load_golden("actions", "action_alone_leaves_pr");
-    let (_, aid) = genesis_of(&fx);
     let mut hostile = forged(&aid, 0, 0x40);
     hostile.pg = vec![victim.clone(), fake_digest(0x41)];
     let blobs = craft(
-        raw_blobs_disclosing_genesis(&fx, &fx["commits"][0]),
+        raw_blobs_disclosing_genesis(&fx, &fx["commits"][1]),
         &hostile,
     );
     let _accepted_or_refused = submit_as_witness(&e, &aid, &blobs).await;
@@ -431,7 +446,11 @@ async fn via_action_only_bundle_cannot_plant_aliases_or_digests() {
         victim,
         "the victim id must still name the victim"
     );
-    assert!(e.get_tip(&aid).await.unwrap().is_none());
+    assert_eq!(
+        e.get_tip(&aid).await.unwrap(),
+        own,
+        "an action moves no tip of its own principal"
+    );
     assert_eq!(principals(&e).await, before);
     for tag in [0x40u8, 0x41, 0x42, 0x43, 0x44, 0x45] {
         let d: cyphr::state::TaggedDigest = fake_digest(tag).parse().unwrap();
@@ -758,7 +777,7 @@ async fn action_only_no_error_after_store() {
             stored: stored.clone(),
         },
     );
-    // The vector's first line is its genesis commit; its second is one data
+    // The vector's first line is its genesis commit; its last is one data
     // action on its own, which only a principal with a genesis commit takes.
     let fx = load_golden("actions", "single_action_promotes_ds");
     let (g, id) = genesis_of(&fx);
@@ -771,7 +790,7 @@ async fn action_only_no_error_after_store() {
     e.submit_commit(&id, Some(g.clone()), &wire(&line(0)))
         .await
         .expect("genesis commit");
-    let blobs = line(1);
+    let blobs = line(2);
 
     armed.store(true, Ordering::SeqCst);
     let result = e.submit_commit(&id, Some(g), &wire(&blobs)).await;
@@ -1073,14 +1092,15 @@ proptest! {
                 }
             }
             let act = load_golden("actions", "action_alone_leaves_pr");
-            let (ag, aid) = genesis_of(&act);
-            let mut blobs: Vec<Vec<u8>> = raw_blobs(&act["commits"][0])
+            let (ag, aid) = push_genesis(&e, &act).await;
+            accepted += 1;
+            let mut blobs: Vec<Vec<u8>> = raw_blobs(&act["commits"][1])
                 .iter()
                 .map(|b| serde_json::to_vec(b).unwrap())
                 .collect();
             blobs.extend(junk.iter().cloned());
             let _ = submit(&e, &aid, &ag, &blobs).await;
-            let clean: Vec<Vec<u8>> = raw_blobs(&act["commits"][0])
+            let clean: Vec<Vec<u8>> = raw_blobs(&act["commits"][1])
                 .iter()
                 .map(|b| serde_json::to_vec(b).unwrap())
                 .collect();
@@ -1760,7 +1780,7 @@ async fn replay_key_member_does_not_split_a_czd_into_two_blobs() {
 #[tokio::test]
 async fn action_only_bundle_cannot_create_a_principal() {
     let e = engine();
-    let fx = load_golden("actions", "action_alone_leaves_pr");
+    let fx = load_golden("errors", "action_without_genesis_fails");
     let (_, aid) = genesis_of(&fx);
     let blobs: Vec<Vec<u8>> = raw_blobs_disclosing_genesis(&fx, &fx["commits"][0])
         .iter()

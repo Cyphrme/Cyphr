@@ -11,6 +11,17 @@ def generate_toml():
 
     base_time = 1700000000
 
+    # A data action needs a principal to record into (SPEC 5.1): an
+    # action-only case first commits golden's genesis.
+    genesis = [
+        "[[test.commit]]",
+        "tx = [",
+        f'  [{{ now = {base_time}, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" }}],',
+        f'  [{{ now = {base_time}, signer = "golden", typ = "cyphr.me/cyphr/principal/create" }}],',
+        "]",
+        "",
+    ]
+
     # -------------------------------------------------------------------------
     # TIER 1: FEATURE COVERAGE (80 cases: 16 features * 5 cases each)
     # -------------------------------------------------------------------------
@@ -436,6 +447,7 @@ def generate_toml():
             f'name      = "t1_f15_case{i+1}"',
             'principal = ["golden"]',
             "",
+            *genesis,
             "[[test.action]]",
             f'typ    = "{action_typ}"',
             f'now    = {base_time}',
@@ -455,6 +467,7 @@ def generate_toml():
             f'name      = "t1_f16_case{i+1}"',
             'principal = ["golden"]',
             "",
+            *genesis,
             "[[test.action]]",
             'typ    = "cyphr.me/action"',
             f'now    = {base_time}',
@@ -805,14 +818,16 @@ def generate_toml():
             ""
         ])
 
-    # F-15: Data Action Record (Errors)
-    # Case 1..5: Inject pre on data action -> [data-action-no-pre]
+    # F-15: Data Action Record
+    # Case 1..5: Inject pre on data action -> accepted (SPEC 2.3.3: DT has
+    # no chain, so `pre` has no protocol meaning)
     for i in range(5):
         toml_lines.extend([
             "[[test]]",
             f'name      = "t2_f15_case{i+1}"',
             'principal = ["golden"]',
             "",
+            *genesis,
             "[[test.action]]",
             'typ    = "cyphr.me/action"',
             f'now    = {base_time}',
@@ -822,7 +837,7 @@ def generate_toml():
             "inject_pre = true",
             "",
             "[test.expected]",
-            'error     = "[data-action-no-pre]"',
+            "level     = 4",
             ""
         ])
 
@@ -834,6 +849,7 @@ def generate_toml():
             f'name      = "t2_f16_case{i+1}"',
             'principal = ["golden"]',
             "",
+            *genesis,
             "[[test.action]]",
             'typ    = "cyphr.me/action"',
             f'now    = {base_time}',

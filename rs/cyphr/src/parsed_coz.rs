@@ -49,7 +49,7 @@ pub mod typ {
     pub const FREEZE_CREATE: &str = "cyphr/freeze/create";
     /// `<authority>/cyphr/freeze/delete` - Thaw (SPEC §14.9.3)
     pub const FREEZE_DELETE: &str = "cyphr/freeze/delete";
-    /// `<authority>/cyphr/ds/create` - Include DR = MR(DT) into the Principal Tree (SPEC 4.8.2)
+    /// `<authority>/cyphr/ds/create` - Set DR in the Principal Tree to its `id` (SPEC 4.8.2)
     pub const DS_CREATE: &str = "cyphr/ds/create";
     /// `<authority>/cyphr/nonce/create` - Insert a nonce at the Principal Root (SPEC §10.1)
     pub const NONCE_CREATE_PR: &str = "cyphr/nonce/create";
@@ -210,7 +210,7 @@ pub enum CozKind {
 
     /// Include the Data Tree's root into the Principal Tree - SPEC 4.8.2
     DataRootCreate {
-        /// The DR being included: the computed MR(DT).
+        /// The DR the signer commits to; DR becomes this value.
         id: DataRoot,
     },
 }
