@@ -1372,10 +1372,12 @@ async fn a3_live_and_rebuild_disagree() {
     );
 }
 
-/// A4: unbounded blobs. One durable revoke record per thumbprint, the
-/// first valid one: re-signed revokes of a dead key, with other messages
-/// (so other digests), lower `rvk` values or higher ones, add no blob.
-/// Turns red if any of them stores a record.
+/// A4: unbounded blobs. One revoke stands per thumbprint, the one with
+/// the least `(rvk, digest)`: a replayed revoke, or one re-signed with a
+/// later `rvk`, adds no blob; only a strictly earlier `rvk` adds one
+/// record, and ends the key sooner, so a key's holder cannot grow the
+/// store without shortening the key's life. Turns red if a revoke that is
+/// not earlier stores a record, or an earlier one stores more than one.
 #[tokio::test]
 async fn a4_resigned_revokes_grow_storage() {
     use cyphr_storage::blob::BlobStore;
@@ -1409,21 +1411,24 @@ async fn a4_resigned_revokes_grow_storage() {
     };
     let (status, body) = post_json(app.clone(), "/revoke", revoke("first", NOW + 5)).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    let before = blobs().await;
-    for (msg, rvk) in [
-        ("second", NOW + 5),
-        ("third", NOW + 1),
-        ("fourth", 1),
-        ("fifth", NOW + 50),
+    // (revoke, the blobs it may add): only a strictly earlier rvk adds one.
+    for (msg, rvk, grows) in [
+        ("first", NOW + 5, 0),
+        ("later", NOW + 50, 0),
+        ("earlier", NOW + 1, 1),
+        ("earlier", NOW + 1, 0),
+        ("earliest", 1, 1),
+        ("later again", NOW + 5, 0),
     ] {
+        let before = blobs().await;
         let (status, body) = post_json(app.clone(), "/revoke", revoke(msg, rvk)).await;
         assert!(status.is_success(), "{body:?}");
+        assert_eq!(
+            blobs().await,
+            before + grows,
+            "revoke `{msg}` at rvk {rvk} grew the store by other than {grows}"
+        );
     }
-    assert_eq!(
-        blobs().await,
-        before,
-        "a re-signed revoke of a dead key stored a new blob"
-    );
 }
 
 /// Backs rule 5 (provisional, pending the spec author; SPEC 3.3, 6.2):
