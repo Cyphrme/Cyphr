@@ -7,6 +7,7 @@ members = [
   "cyphr-client",
   "cyphr-server",
   "cyphr-cli",
+  "cyphr-keystore",
   "cyphr-scenarios",
   "test-fixtures",
   "fixture-gen",

@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 pub mod choices;
 pub mod commands;
-pub mod keystore;
+pub use cyphr_keystore as keystore;
 pub mod net;
 pub mod state;
 

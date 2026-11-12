@@ -23,7 +23,7 @@ pub type CliStorageEngine =
 pub type CliPrincipal = cyphr::Principal<cyphr_blob_fjall::storage_fjall::FjallStorage>;
 
 use crate::Error;
-use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
+use crate::keystore::{Error as KeystoreError, KeyBackend};
 
 /// Build a fresh single-threaded tokio runtime and drive `fut` to
 /// completion on it.
@@ -47,19 +47,19 @@ pub fn current_timestamp() -> i64 {
 }
 
 /// Load a cyphr Key from keystore by thumbprint.
-pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Result<Key> {
-    let stored = keystore.get(tmb)?;
+pub fn load_key_from_keystore(keystore: &impl KeyBackend, tmb: &str) -> crate::Result<Key> {
+    let stored = keystore.public(tmb)?;
     let now = current_timestamp();
 
     // The keystore is local trust, but a corrupted or swapped record must
     // not yield a key whose tmb is not its pub's thumbprint.
     Ok(Key::new(
-        stored.alg.clone(),
+        stored.alg,
         Thumbprint::from_bytes(decode_b64(tmb)?),
-        stored.pub_key.clone(),
+        stored.pub_key,
     )?
     .with_first_seen(now)
-    .with_tag(stored.tag.clone()))
+    .with_tag(stored.tag))
 }
 
 /// Extract genesis from stored commits.
@@ -77,7 +77,7 @@ pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Resu
 /// themselves.
 pub fn extract_genesis_from_commits(
     commits: &[CommitEntry],
-    keystore: Option<&JsonKeyStore>,
+    keystore: Option<&impl KeyBackend>,
 ) -> crate::Result<Genesis> {
     let first_commit = commits.first().ok_or(Error::MissingField("commits"))?;
     let named = |tmb: &str| first_commit.keys.iter().find(|k| k.tmb == tmb);
@@ -251,7 +251,7 @@ pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 /// this principal has since accumulated.
 pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
 ) -> crate::Result<String> {
     use cyphr::StateDigest;
 
@@ -271,7 +271,7 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
 /// Load a principal from the storage engine.
 pub fn load_principal_from_engine(
     engine: &CliStorageEngine,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     identity: &str,
 ) -> crate::Result<CliPrincipal> {
     let pg = parse_principal_genesis(identity)?;
@@ -284,7 +284,7 @@ pub fn load_principal_from_engine(
         // (single-key) genesis, independent of whether a tip has been
         // stored yet. A multi-key principal exists only through its
         // genesis commit (SPEC 5.1), so its genesis comes from storage.
-        let is_implicit_genesis = keystore.get(identity).is_ok();
+        let is_implicit_genesis = keystore.public(identity).is_ok();
 
         let genesis = if is_implicit_genesis {
             let genesis_key = load_key_from_keystore(keystore, identity)?;
@@ -312,7 +312,7 @@ pub fn load_principal_from_engine(
 /// [`extract_genesis_from_commits`]).
 fn resolve_local_genesis<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
 ) -> crate::Result<Genesis> {
     Ok(Genesis::Implicit(load_key_from_keystore(
         keystore,
@@ -331,7 +331,7 @@ fn resolve_local_genesis<S: cyphr::eml::Storage>(
 /// here, via `cyphr_storage::export_commits`.
 pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
     engine: &CliStorageEngine,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     principal: &cyphr::Principal<S>,
 ) -> crate::Result<()> {
     block_on(async {
@@ -434,8 +434,8 @@ pub async fn raw_chain(
 /// The genesis a locally held keystore can state for `identity`, if any:
 /// the key itself, when `identity` is a key's thumbprint. `None` means the
 /// genesis must come from stored blobs or the peer's.
-pub fn local_genesis(keystore: &JsonKeyStore, identity: &str) -> crate::Result<Option<Genesis>> {
-    if keystore.get(identity).is_ok() {
+pub fn local_genesis(keystore: &impl KeyBackend, identity: &str) -> crate::Result<Option<Genesis>> {
+    if keystore.public(identity).is_ok() {
         return Ok(Some(Genesis::Implicit(load_key_from_keystore(
             keystore, identity,
         )?)));
@@ -469,31 +469,43 @@ pub fn decode_b64(s: &str) -> crate::Result<Vec<u8>> {
     Ok(Base64UrlUnpadded::decode_vec(s)?)
 }
 
-/// Generate a new keypair using `Alg` dispatch.
+/// Generate a new keypair inside `keystore`.
 ///
-/// Returns the thumbprint string, a `StoredKey` for keystore, and a
-/// `cyphr::Key` for protocol operations.
-pub fn generate_key(algo: &str, tag: Option<&str>) -> crate::Result<(String, StoredKey, Key)> {
-    let alg_enum = coz::Alg::from_str(algo)
-        .ok_or_else(|| Error::InvalidArgument(format!("unknown algorithm: {algo}")))?;
+/// Returns the thumbprint string and a `cyphr::Key` for protocol
+/// operations; the private half never leaves the backend.
+pub fn generate_key(
+    keystore: &mut impl KeyBackend,
+    algo: &str,
+    tag: Option<&str>,
+) -> crate::Result<(String, Key)> {
+    let info = keystore.generate(algo, tag).map_err(|e| match e {
+        KeystoreError::UnknownAlgorithm(a) => {
+            Error::InvalidArgument(format!("unknown algorithm: {a}"))
+        },
+        other => other.into(),
+    })?;
 
-    let keypair = alg_enum.generate_keypair();
-    let tmb_b64 = Base64UrlUnpadded::encode_string(keypair.thumbprint.as_bytes());
+    let key = Key::from_pub_key(info.alg, info.pub_key)?
+        .with_first_seen(current_timestamp())
+        .with_tag(info.tag);
 
-    let now = current_timestamp();
+    Ok((info.tmb, key))
+}
 
-    let stored = StoredKey {
-        alg: algo.to_string(),
-        pub_key: keypair.pub_bytes.clone(),
-        prv_key: keypair.prv_bytes,
-        tag: tag.map(String::from),
-    };
-
-    let key = Key::from_pub_key(algo.to_string(), keypair.pub_bytes)?
-        .with_first_seen(now)
-        .with_tag(tag.map(String::from));
-
-    Ok((tmb_b64, stored, key))
+/// Sign the pay `pay_bytes` as it stands through `signer`, as
+/// `coz::sign_json` does with raw key bytes: the signature over the pay's
+/// canonical hash, and the czd of the signed coz.
+pub fn sign_pay(
+    signer: &impl cyphr::signer::Signer,
+    pay_bytes: &[u8],
+) -> crate::Result<(Vec<u8>, coz::Czd)> {
+    let alg = signer.alg();
+    let cad = coz::canonical_hash_for_alg(pay_bytes, alg, None)
+        .ok_or_else(|| Error::Signing(format!("cannot canonicalize pay for {alg}")))?;
+    let sig = block_on(signer.sign(&cad))?.map_err(|e| Error::Signing(e.to_string()))?;
+    let czd = coz::czd_for_alg(&cad, &sig, alg)
+        .ok_or_else(|| Error::Signing("czd_for_alg failed".into()))?;
+    Ok((sig, czd))
 }
 
 /// One step of a replayable history, in order.

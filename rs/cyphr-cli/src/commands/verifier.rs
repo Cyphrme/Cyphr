@@ -31,7 +31,7 @@ use super::common::{
     parse_store, raw_chain, store_path,
 };
 use crate::choices::Choices;
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::{JsonKeyStore, KeyBackend};
 use crate::net::PeerError;
 use crate::state::{
     HeldFork, HeldRevoke, PeerSeen, PrincipalState, Resolution, VerifierState, path_for,
@@ -81,9 +81,9 @@ struct Round<'a> {
 
 /// The key a keystore entry holds, with its thumbprint computed from the
 /// key and not from the entry's name.
-fn keystore_key(keystore: &JsonKeyStore, name: &str) -> Option<Key> {
-    let stored = keystore.get(name).ok()?;
-    Key::from_pub_key(stored.alg.clone(), stored.pub_key.clone()).ok()
+fn keystore_key(keystore: &impl KeyBackend, name: &str) -> Option<Key> {
+    let stored = keystore.public(name).ok()?;
+    Key::from_pub_key(stored.alg, stored.pub_key).ok()
 }
 
 /// The refusal for an anchor that cannot tell chains apart.
@@ -99,7 +99,7 @@ fn anchor_rule(value: &str) -> Error {
 /// else the genesis key the keystore holds (`trusted-genesis`), else the
 /// opener the first commit held or offered discloses (`hint`).
 fn choose_anchor(
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     identity: &str,
     wire: &str,
     given: Option<&str>,

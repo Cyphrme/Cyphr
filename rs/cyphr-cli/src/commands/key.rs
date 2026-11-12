@@ -1,4 +1,4 @@
-use coz::base64ct::Encoding;
+use cyphr::signer::Signer;
 use indexmap::IndexMap;
 use serde_json::Value;
 
@@ -6,7 +6,7 @@ use super::common::{
     CliPrincipal, block_on, current_timestamp, generate_key, load_key_from_keystore,
     load_principal_from_engine, parse_store, save_principal_to_engine,
 };
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::{JsonKeyStore, KeyBackend};
 use crate::{Cli, KeyCommands, OutputFormat};
 
 /// Run a key subcommand.
@@ -31,9 +31,7 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
 fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
 
-    let (tmb, stored_key, _key) = generate_key(algo, tag)?;
-    keystore.store(&tmb, stored_key)?;
-    keystore.save()?;
+    let (tmb, _key) = generate_key(&mut keystore, algo, tag)?;
 
     match cli.output {
         OutputFormat::Json => {
@@ -77,10 +75,8 @@ fn add(
         },
         None => {
             // Generate new key (use same algorithm as signer)
-            let signer_stored = keystore.get(signer_tmb)?;
-            let (tmb, stored, key) = generate_key(&signer_stored.alg, None)?;
-            keystore.store(&tmb, stored)?;
-            keystore.save()?;
+            let signer_alg = keystore.public(signer_tmb)?.alg;
+            let (tmb, key) = generate_key(&mut keystore, &signer_alg, None)?;
             (tmb, key)
         },
     };
@@ -158,21 +154,20 @@ fn revoke(
 /// by `signer_tmb`, onto `principal`. Shared by `key add` and rebase replay.
 pub(crate) fn apply_key_create(
     principal: &mut CliPrincipal,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     new_key_tmb: &str,
     new_key: &cyphr::Key,
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
     super::init::commit_genesis(principal, keystore, &[], authority)?;
-    // Get signer key for signing
-    let signer_stored = keystore.get(signer_tmb)?;
+    let signer = keystore.signer(signer_tmb)?;
 
     // Build pay Value for key/create (without commit — finalize_with_commit injects it)
     let now = current_timestamp();
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
-    pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
+    pay_map.insert("alg".to_string(), Value::String(signer.alg().to_string()));
     pay_map.insert("id".to_string(), Value::String(new_key_tmb.to_string()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
@@ -189,28 +184,10 @@ pub(crate) fn apply_key_create(
 
     // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
     let pay_vec = serde_json::to_vec(&pay_value)?;
-    let (sig_bytes, cad) = coz::sign_json(
-        &pay_vec,
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-    )
-    .ok_or_else(|| crate::Error::Signing("sign_json failed".into()))?;
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
-        .ok_or_else(|| crate::Error::Signing("czd_for_alg failed".into()))?;
+    let (sig_bytes, czd) = super::common::sign_pay(&signer, &pay_vec)?;
     let mut scope = principal.begin_commit();
     scope.verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key.clone()))?;
-    let tmb = coz::Thumbprint::from_bytes(
-        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
-            .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
-    );
-    let signer = cyphr::signer::SoftwareSigner::new(
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-        &tmb,
-    );
-    block_on(scope.finalize_with_software(&signer, now, authority))??;
+    block_on(scope.finalize_with_signer(&signer, now, authority))??;
     Ok(())
 }
 
@@ -218,14 +195,13 @@ pub(crate) fn apply_key_create(
 /// `key revoke` and rebase replay.
 pub(crate) fn apply_key_revoke(
     principal: &mut CliPrincipal,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     key_tmb: &str,
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
     super::init::commit_genesis(principal, keystore, &[], authority)?;
-    // Get signer key for signing
-    let signer_stored = keystore.get(signer_tmb)?;
+    let signer = keystore.signer(signer_tmb)?;
 
     // Self-revoke is the only revoke type the protocol supports (SPEC §3.2).
     // The key being revoked must be the signer itself.
@@ -240,7 +216,7 @@ pub(crate) fn apply_key_revoke(
     let now = current_timestamp();
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
-    pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
+    pay_map.insert("alg".to_string(), Value::String(signer.alg().to_string()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("rvk".to_string(), Value::Number(now.into()));
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
@@ -257,28 +233,10 @@ pub(crate) fn apply_key_revoke(
 
     // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
     let pay_vec = serde_json::to_vec(&pay_value)?;
-    let (sig_bytes, cad) = coz::sign_json(
-        &pay_vec,
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-    )
-    .ok_or_else(|| crate::Error::Signing("sign_json failed".into()))?;
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
-        .ok_or_else(|| crate::Error::Signing("czd_for_alg failed".into()))?;
+    let (sig_bytes, czd) = super::common::sign_pay(&signer, &pay_vec)?;
     let mut scope = principal.begin_commit();
     scope.verify_and_apply(&pay_vec, &sig_bytes, czd, None)?;
-    let tmb = coz::Thumbprint::from_bytes(
-        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
-            .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
-    );
-    let signer = cyphr::signer::SoftwareSigner::new(
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-        &tmb,
-    );
-    block_on(scope.finalize_with_software(&signer, now, authority))??;
+    block_on(scope.finalize_with_signer(&signer, now, authority))??;
     Ok(())
 }
 
@@ -293,9 +251,9 @@ fn list(cli: &Cli, identity: Option<&str>) -> crate::Result<()> {
 /// List all keys in the keystore.
 fn list_keystore(cli: &Cli) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let thumbprints = keystore.list();
+    let keys = keystore.list()?;
 
-    if thumbprints.is_empty() {
+    if keys.is_empty() {
         match cli.output {
             OutputFormat::Json => println!("[]"),
             OutputFormat::Table => println!("No keys in keystore"),
@@ -305,23 +263,23 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
 
     match cli.output {
         OutputFormat::Json => {
-            let mut keys = Vec::new();
-            for tmb in &thumbprints {
-                let key = keystore.get(tmb)?;
-                keys.push(serde_json::json!({
-                    "tmb": tmb,
-                    "alg": key.alg,
-                    "tag": key.tag,
-                }));
-            }
+            let keys: Vec<_> = keys
+                .iter()
+                .map(|key| {
+                    serde_json::json!({
+                        "tmb": key.tmb,
+                        "alg": key.alg,
+                        "tag": key.tag,
+                    })
+                })
+                .collect();
             println!("{}", serde_json::to_string_pretty(&keys)?);
         },
         OutputFormat::Table => {
             println!("Keys in keystore:");
-            for tmb in thumbprints {
-                let key = keystore.get(tmb)?;
+            for key in keys {
                 let tag_str = key.tag.as_deref().unwrap_or("-");
-                println!("  {} ({}) [{}]", tmb, key.alg, tag_str);
+                println!("  {} ({}) [{}]", key.tmb, key.alg, tag_str);
             }
         },
     }

@@ -3,10 +3,10 @@
 use cyphr::{Principal, StateDigest};
 
 use super::common::{
-    block_on, current_timestamp, decode_b64, generate_key, load_key_from_keystore, parse_store,
+    block_on, current_timestamp, generate_key, load_key_from_keystore, parse_store,
     save_principal_to_engine,
 };
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::{JsonKeyStore, KeyBackend};
 use crate::{Cli, Error, OutputFormat};
 
 /// Commit the principal's genesis (SPEC 5.1, 5.2, 5.3) if it has none:
@@ -16,7 +16,7 @@ use crate::{Cli, Error, OutputFormat};
 /// any command makes.
 pub(crate) fn commit_genesis<S: cyphr::eml::Storage>(
     principal: &mut Principal<S>,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     others: &[cyphr::Key],
     authority: &str,
 ) -> crate::Result<()> {
@@ -24,11 +24,8 @@ pub(crate) fn commit_genesis<S: cyphr::eml::Storage>(
         return Ok(());
     }
     let genesis = principal.genesis_key();
-    let signer = keystore.get(genesis)?;
-    let tmb = coz::Thumbprint::from_bytes(decode_b64(genesis)?);
-    let software =
-        cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv_key, &signer.pub_key, &tmb);
-    block_on(principal.commit_genesis(&software, others, current_timestamp(), authority))??;
+    let signer = keystore.signer(genesis)?;
+    block_on(principal.commit_genesis(&signer, others, current_timestamp(), authority))??;
     Ok(())
 }
 
@@ -62,9 +59,7 @@ pub fn run(
 
         // Generate a new genesis key
         (None, None) => {
-            let (tmb_str, stored, key) = generate_key(algo, None)?;
-            keystore.store(&tmb_str, stored)?;
-            keystore.save()?;
+            let (_, key) = generate_key(&mut keystore, algo, None)?;
             (key, Vec::new())
         },
 
