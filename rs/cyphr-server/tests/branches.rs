@@ -1150,62 +1150,16 @@ async fn first_seen_survives_rebuild() {
     assert_eq!(payload["branches"].as_array().expect("branches"), &listed);
 }
 
-/// A viewer that takes the protocol's word.
-struct Protocol;
-
-impl cyphr_storage::engine::Recovery for Protocol {
-    fn review(
-        &self,
-        _: &str,
-        protocol: cyphr_storage::engine::Consensus,
-        _: &[cyphr_storage::engine::BranchTip],
-    ) -> cyphr_storage::engine::Consensus {
-        protocol
-    }
-}
-
-/// A viewer that distrusts every resolved fork: one stolen key may have
-/// resolved it first, so it holds the principal in Error while any
-/// abandoned branch exists.
-struct DistrustResolutions;
-
-impl cyphr_storage::engine::Recovery for DistrustResolutions {
-    fn review(
-        &self,
-        _: &str,
-        protocol: cyphr_storage::engine::Consensus,
-        branches: &[cyphr_storage::engine::BranchTip],
-    ) -> cyphr_storage::engine::Consensus {
-        if branches.iter().any(|b| !b.canonical) {
-            cyphr_storage::engine::Consensus::Error
-        } else {
-            protocol
-        }
-    }
-}
-
-/// Backs the recovery seam: the verdict layer consults the strategy it is
-/// given, and the engine's admission does not. After the thief's C
-/// resolves the fork, the protocol (and a viewer taking its word) says
-/// Active, a viewer distrusting resolutions says Error, and a commit
-/// extending C is still admitted, since no strategy is wired into the
-/// engine. Turns red if the strategy is ignored, or a strategy changes
-/// what the engine admits. End to end over `/push` and the engine.
+/// After the thief's C resolves the fork, a commit extending C is still
+/// admitted: what the engine admits is the protocol alone, and no viewer
+/// strategy is wired into it. Turns red if admission consults anything but
+/// the protocol. End to end over `/push` and the engine.
 #[tokio::test]
-async fn recovery_is_a_seam_not_a_rule() {
-    use cyphr_storage::engine::Consensus;
-
+async fn a_commit_extending_the_resolution_is_admitted() {
     let t = theft(true).await;
-    let (app, state, _dir) = theft_server(&t).await;
+    let (app, _state, _dir) = theft_server(&t).await;
     assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
     assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CREATED);
-    let verdict = |r: &'static dyn cyphr_storage::engine::Recovery| {
-        let state = state.clone();
-        let id = t.id.clone();
-        async move { state.engine.verdict(&id, r).await.expect("verdict") }
-    };
-    assert_eq!(verdict(&Protocol).await, Consensus::Active);
-    assert_eq!(verdict(&DistrustResolutions).await, Consensus::Error);
 
     let pool = load_pool();
     let mut next = t.c.fork().await.expect("fork");

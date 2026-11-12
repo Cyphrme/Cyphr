@@ -101,6 +101,19 @@ impl HeldFork {
     }
 }
 
+/// A viewer's own choice of branch head for a principal in Error. It is
+/// local: never stored with commits, never sent to a peer, and it never
+/// changes the protocol's verdict (human recovery, SPEC 14).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryChoice {
+    /// The branch head trusted.
+    pub head: String,
+    /// Why, in the viewer's words.
+    pub reason: Option<String>,
+    /// When the choice was made (verifier clock, Unix seconds).
+    pub chosen_at: i64,
+}
+
 /// Everything kept for one principal.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct PrincipalState {
@@ -119,6 +132,9 @@ pub struct PrincipalState {
     /// The forks held, resolved or not.
     #[serde(default)]
     pub forks: Vec<HeldFork>,
+    /// The viewer's recovery choice, if any.
+    #[serde(default)]
+    pub recovery: Option<RecoveryChoice>,
 }
 
 impl VerifierState {

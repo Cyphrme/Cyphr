@@ -269,3 +269,182 @@ fn data_fork_after_a_rebase_is_evidence_the_verifier_replays() {
         "the retained rival's evidence verifies: {v}"
     );
 }
+
+/// Claim (SPEC 14; human recovery is a last resort): a viewer may choose,
+/// locally, which branch head to trust for a principal in Error. A new
+/// choice replaces the old, clearing returns to "no branch chosen", the
+/// verdict stays Error throughout, and the choice (reason included) is in no
+/// request a peer sees and in no stored commit. Defect that turns it red: a
+/// verdict of Active, a stale or lingering choice, an unknown head accepted,
+/// or the reason leaking into a request or the store. End-to-end: yes (two
+/// servers, a fork, a recording peer, the export bundle and the store files).
+#[test]
+fn human_recovery_is_a_local_revisable_choice_that_leaves_the_verdict_error() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let (s1, s2) = (Server::start(), Server::start());
+    let a = User::new();
+    let id = a.new_identity();
+    let b = a.clone_identity(&id);
+    a.add_key(&id);
+    b.add_key(&id);
+    accepted(&a.push(&id, &s1.url), "A's branch");
+    accepted(&b.push(&id, &s2.url), "B's branch");
+    let ident = format!("--identity={id}");
+    let (p1, p2) = (format!("--peer={}", s1.url), format!("--peer={}", s2.url));
+    let forked = a.setup(&["verify", &ident, &p1, &p2]);
+    assert_eq!(forked["verdict"], "Error", "{forked}");
+    assert_eq!(forked["recovery"]["note"], "no branch chosen", "{forked}");
+    let heads: Vec<String> = forked["branches"]
+        .as_array()
+        .expect("branches")
+        .iter()
+        .map(|h| h.as_str().expect("head").to_owned())
+        .collect();
+    assert_eq!(heads.len(), 2, "{forked}");
+
+    // A head that is not a held branch is refused.
+    assert!(!a.run(&["recover", &ident, "--head=nope"]).ok);
+
+    const WHY: &str = "zz-recovery-reason-probe";
+    let chose = a.setup(&[
+        "recover",
+        &ident,
+        &format!("--head={}", heads[0]),
+        &format!("--reason={WHY}"),
+    ]);
+    assert_eq!(chose["recovery"]["head"], heads[0].as_str(), "{chose}");
+    let v = a.setup(&["verify", &ident, &p1, &p2]);
+    assert_eq!(
+        v["verdict"], "Error",
+        "the choice never changes the verdict: {v}"
+    );
+    assert_eq!(
+        v["recovery"]["note"],
+        format!(
+            "human recovery: trusting {} by local choice ({WHY})",
+            heads[0]
+        ),
+        "{v}"
+    );
+    assert!(v["recovery"]["chosen_at"].is_i64(), "{v}");
+
+    // A new choice replaces the old; no reason, no parenthetical.
+    a.setup(&["recover", &ident, &format!("--head={}", heads[1])]);
+    let v = a.setup(&["verify", &ident, &p1, &p2]);
+    assert_eq!(v["verdict"], "Error", "{v}");
+    assert_eq!(
+        v["recovery"]["note"],
+        format!("human recovery: trusting {} by local choice", heads[1]),
+        "{v}"
+    );
+
+    // The reason appears in no request a peer sees: a recording peer that
+    // never answers still receives what the verifier sends.
+    a.setup(&[
+        "recover",
+        &ident,
+        &format!("--head={}", heads[0]),
+        &format!("--reason={WHY}"),
+    ]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind recorder");
+    let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let recorder = format!("http://{}", listener.local_addr().expect("addr"));
+    let sink = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buf = [0u8; 8192];
+            if let Ok(n) = stream.read(&mut buf) {
+                sink.lock().expect("sink").extend_from_slice(&buf[..n]);
+            }
+        }
+    });
+    let _ = a.run(&["verify", &ident, &format!("--peer={recorder}")]);
+    let seen = String::from_utf8_lossy(&seen.lock().expect("sink")).into_owned();
+    assert!(!seen.is_empty(), "the recorder saw no request");
+    assert!(
+        !seen.contains(WHY) && !seen.to_lowercase().contains("recover"),
+        "the choice reached a peer: {seen}"
+    );
+
+    // Nor is it in the stored commits: the export bundle or the store files.
+    let file = a.dir.path().join("bundle.json");
+    a.setup(&[
+        "gossip",
+        "export",
+        &ident,
+        &format!("--file={}", file.display()),
+    ]);
+    assert!(
+        !std::fs::read_to_string(&file)
+            .expect("bundle")
+            .contains(WHY)
+    );
+    fn walk(dir: &std::path::Path, hit: &mut bool) {
+        for e in std::fs::read_dir(dir).expect("dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, hit);
+            } else if std::fs::read(&p)
+                .is_ok_and(|b| b.windows(WHY.len()).any(|w| w == WHY.as_bytes()))
+            {
+                *hit = true;
+            }
+        }
+    }
+    let mut hit = false;
+    walk(&a.dir.path().join("data"), &mut hit);
+    assert!(!hit, "the choice reached the store");
+
+    // Clearing returns to no branch chosen.
+    let cleared = a.setup(&["recover", &ident, "--clear"]);
+    assert!(cleared["recovery"].is_null(), "{cleared}");
+    let v = a.setup(&["verify", &ident, &p1, &p2]);
+    assert_eq!(v["verdict"], "Error", "{v}");
+    assert_eq!(v["recovery"]["note"], "no branch chosen", "{v}");
+
+    // A fork the protocol resolved: the abandoned head can still be chosen
+    // (the resolution may have been fraudulent), the consensus is the
+    // protocol's Active, and the kept head is not an alternative.
+    let (s3, s4) = (Server::start(), Server::start());
+    let c = User::new();
+    let id2 = c.new_identity();
+    let d = c.clone_identity(&id2);
+    c.add_key(&id2);
+    d.add_key(&id2);
+    let abandoned = c.push(&id2, &s3.url);
+    accepted(&abandoned, "C's branch");
+    let kept_fork = d.push(&id2, &s4.url);
+    accepted(&kept_fork, "D's branch");
+    let ident2 = format!("--identity={id2}");
+    let (q3, q4) = (format!("--peer={}", s3.url), format!("--peer={}", s4.url));
+    assert_eq!(c.setup(&["verify", &ident2, &q3, &q4])["verdict"], "Error");
+    d.add_key(&id2);
+    accepted(&d.push(&id2, &s4.url), "D resolves");
+    let v = c.setup(&["verify", &ident2, &q4]);
+    assert_eq!(v["verdict"], "Active", "{v}");
+    assert!(v.get("recovery").is_none(), "no choice, no note: {v}");
+    let lost = abandoned.json()["tip"].as_str().expect("tip").to_owned();
+    // The fork's kept head is D's first tip, not the resolving commit above it.
+    let won = kept_fork.json()["tip"].as_str().expect("tip").to_owned();
+    assert!(
+        !c.run(&["recover", &ident2, &format!("--head={won}")]).ok,
+        "the kept head is the protocol's own answer, not a choice"
+    );
+    c.setup(&[
+        "recover",
+        &ident2,
+        &format!("--head={lost}"),
+        "--reason=stolen key",
+    ]);
+    let v = c.setup(&["verify", &ident2, &q4]);
+    assert_eq!(v["verdict"], "Active", "the protocol verdict stands: {v}");
+    assert_eq!(
+        v["recovery"]["note"],
+        format!("human recovery: trusting {lost} by local choice (stolen key)"),
+        "{v}"
+    );
+}
