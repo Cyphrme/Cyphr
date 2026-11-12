@@ -210,7 +210,12 @@ impl Harness {
         }
         let mut out = BTreeSet::new();
         for name in peers {
-            let Some(addr) = self.peers.iter().find(|x| x.name == *name).map(|x| x.addr) else {
+            let Some(addr) = self
+                .peers
+                .iter()
+                .find(|x| x.name == *name)
+                .map(|x| x.addr())
+            else {
                 continue;
             };
             // Every chosen peer must answer 2xx with the expected shape; a
@@ -245,7 +250,7 @@ impl Harness {
     /// A peer's identity, algorithm, public key and key thumbprint, from its
     /// own `GET /server`.
     async fn server_key(&self, peer: &str) -> Option<(String, String, String, String)> {
-        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
+        let addr = self.peers.iter().find(|x| x.name == peer)?.addr();
         let resp = self
             .http
             .get(format!("http://{addr}/server"))
@@ -266,7 +271,7 @@ impl Harness {
     /// [`signed::ChainView`]). The empty view when the route cannot
     /// answer; a patch that answers but does not replay fails the scenario.
     async fn chain_read(&self, peer: &str, p: &Principal) -> signed::ChainView {
-        let Some(addr) = self.peers.iter().find(|x| x.name == peer).map(|x| x.addr) else {
+        let Some(addr) = self.peers.iter().find(|x| x.name == peer).map(|x| x.addr()) else {
             return signed::ChainView::default();
         };
         let Ok(resp) = self
@@ -292,7 +297,7 @@ impl Harness {
     /// Seconds since the tip a peer reports was last updated, by the peer's
     /// own clock (`now - last_updated` in its `/tip`).
     pub async fn peer_age(&self, peer: &str, p: &Principal) -> Option<i64> {
-        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
+        let addr = self.peers.iter().find(|x| x.name == peer)?.addr();
         let resp = self
             .http
             .get(format!("http://{addr}/tip"))
@@ -307,7 +312,7 @@ impl Harness {
     /// The branch heads `peer` stores for `p` (commit ids), read from its
     /// `/branches` route. `None` when the route cannot answer.
     async fn peer_branches(&self, peer: &str, p: &Principal) -> Option<BTreeSet<Tip>> {
-        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
+        let addr = self.peers.iter().find(|x| x.name == peer)?.addr();
         let resp = self
             .http
             .get(format!("http://{addr}/branches"))

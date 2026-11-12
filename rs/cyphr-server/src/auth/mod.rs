@@ -28,7 +28,11 @@ pub enum AuthError {
     Io(#[from] std::io::Error),
 
     /// The key file was not valid JSON in the expected shape.
-    #[error("signing key file is malformed: {0}")]
+    ///
+    /// Reports only where and what kind of fault, never serde's text: for a
+    /// wrong-typed field that text quotes the value, which here is key
+    /// material.
+    #[error("signing key file is malformed ({:?} error at line {}, column {})", .0.classify(), .0.line(), .0.column())]
     Malformed(#[from] serde_json::Error),
 
     /// The `alg` field named an algorithm coz does not recognize.
@@ -353,6 +357,28 @@ mod tests {
 
         let result = ServerIdentity::load_from_path(&path);
         assert!(matches!(result, Err(AuthError::PublicKeyMismatch)));
+    }
+
+    /// Backs: a key file of the wrong shape is refused with an error that
+    /// never echoes the offending value -- serde's own type-mismatch text
+    /// quotes scalars (`invalid type: integer `N``), and this error reaches
+    /// the server log and, via `EarlyExit`, test output.
+    #[test]
+    fn malformed_key_file_error_does_not_echo_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("signing-key.json");
+        std::fs::write(
+            &path,
+            br#"{"alg":"Ed25519","pub_key":"AAAA","prv_key":424242424242}"#,
+        )
+        .unwrap();
+        let err =
+            ServerIdentity::load_from_path(&path).expect_err("a numeric private key is refused");
+        assert!(matches!(err, AuthError::Malformed(_)));
+        assert!(
+            !err.to_string().contains("424242424242"),
+            "the refusal quotes the key file's value: {err}"
+        );
     }
 
     /// Backs: a signing-key file that is not JSON, or names an unknown algorithm, is refused at

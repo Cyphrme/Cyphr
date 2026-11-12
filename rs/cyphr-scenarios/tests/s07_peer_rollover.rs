@@ -108,7 +108,7 @@ async fn s07_peer_rollover() {
 async fn server_identity(h: &Harness) -> serde_json::Value {
     let bytes = h
         .http
-        .get(format!("http://{}/server", h.peer("p1").addr))
+        .get(format!("http://{}/server", h.peer("p1").addr()))
         .send()
         .await
         .expect("GET /server")
