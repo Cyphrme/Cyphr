@@ -5,9 +5,11 @@
 // action the laptop recorded but never committed survives the rebase, re-signed
 // and named in the rebase output (SPEC 15.9), and reaches the peers;
 // case 2, the commits reach different partitioned peers (a real principal fork),
-// each branch extended twice: Error plus evidence, both extended heads live and
-// neither settled, until Alice deletes the rival's signer (SPEC 15.8); the
-// abandoned branch is kept.
+// each branch extended twice to equal height: Error plus evidence at every peer,
+// both extended heads live and neither settled, until Alice signs one further
+// ordinary commit on the chosen head (SPEC 15.8 item 1), which out-extends the
+// other branch: Active on it at every peer, the abandoned branch kept as
+// evidence, and a restart of the peers changes nothing.
 //
 // Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
@@ -193,14 +195,10 @@ async fn s03_offline() {
         "no branch is settled while both are extended"
     );
 
-    // Alice resolves (SPEC 15.8); the abandoned branch stays in the record.
-    // Both branches are extended, so one more commit on either settles
-    // nothing (15.7.1): the phone deletes the laptop's key, and the
-    // laptop's branch, signed by a key the chain removed, is evidence only.
-    // The peers are in Error (15.5: no new transactions or actions until
-    // resolved), so the resolution is a commit that carries everything it
-    // needs, not a data commit whose action a peer in Error would refuse.
-    let resolved = resolve_by_removal(&h, &phone, &pr).await;
+    // Alice resolves (SPEC 15.8 item 1): one ordinary commit on the
+    // phone's head, a tied head, out-extends the laptop's branch; the
+    // abandoned branch stays in the record.
+    let resolved = resolve_by_extension(&h, &phone, &pr, &pt).await;
     let healed = h.ok(observer.verdict(&pr, &both).await);
     h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
         .await;
@@ -217,15 +215,32 @@ async fn s03_offline() {
         "the abandoned branch is kept"
     );
     assert!(healed.resolved_by.is_some());
+
+    // A restart of every peer changes nothing.
+    for peer in both {
+        h.ok(h.stop_peer(peer).await);
+        h.peer(peer).restart(h.bins).await.expect("restart");
+    }
+    let restarted = h.ok(observer.verdict(&pr, &both).await);
+    assert_eq!(
+        (restarted.standing, restarted.branches, restarted.tip),
+        (healed.standing, healed.branches, healed.tip),
+        "a restart changes nothing"
+    );
+    for peer in both {
+        assert!(
+            evidence(&h, peer, &pr).await >= 1,
+            "{peer} still serves the fork"
+        );
+    }
 }
 
-/// SPEC 15.8 with a server's rule for a rival signed by a removed key: a
-/// verifier that first looks only once the peers hold both extended
-/// branches reports Error, then Active once the principal deletes the
-/// rival's signer, as the peers do. A verifier that settles a fork only on a
-/// branch continuing past it never leaves Error here.
+/// SPEC 15.8 item 1 for a late verifier: one that first looks only once
+/// the peers hold both extended branches reports Error, then Active once
+/// the principal's next ordinary commit out-extends the rival branch, as
+/// the peers do.
 #[tokio::test(flavor = "multi_thread")]
-async fn s03_removal_settles_extended_fork() {
+async fn s03_extension_settles_extended_fork() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await
         .expect("start peers");
@@ -246,7 +261,7 @@ async fn s03_removal_settles_extended_fork() {
     let base = h.ok(laptop.push(&pr, &both).await).accepted("base push");
     assert_eq!(h.ok(phone.sync(&pr, &both).await), base);
 
-    let (laptop_branch, _) = extend_both(&h, &laptop, &phone, &pr).await;
+    let (laptop_branch, phone_branch) = extend_both(&h, &laptop, &phone, &pr).await;
     h.proxy.heal("p1", "p2");
     // Each peer holds the other's whole branch, both of its commits.
     h.eventually("each peer to hold the rival branch", CONVERGE, || async {
@@ -258,14 +273,14 @@ async fn s03_removal_settles_extended_fork() {
         .await;
     assert_eq!(forked.standing, Standing::Error, "both branches extended");
 
-    let resolved = resolve_by_removal(&h, &phone, &pr).await;
+    let resolved = resolve_by_extension(&h, &phone, &pr, &phone_branch[1]).await;
     let healed = h.ok(observer.verdict(&pr, &both).await);
     h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
         .await;
     assert_eq!(
         (healed.standing, healed.branches),
         (Standing::Active, vec![resolved]),
-        "the rival's signer was deleted: Active, as the peers are"
+        "the phone's branch out-extends: Active, as the peers are"
     );
     assert!(
         healed.abandoned.contains(&laptop_branch[0]),
@@ -318,16 +333,12 @@ async fn extend_both(
     (pair(laptop_tips), pair(phone_tips))
 }
 
-/// The phone deletes the laptop's key (the genesis key) and pushes to P1;
-/// gossip carries it to P2, whose chain is the laptop's branch, and P2
-/// promotes the phone's branch under it. The resolution's tip, once both
-/// peers hold it.
-async fn resolve_by_removal(h: &Harness, phone: &Client<'_>, pr: &Principal) -> Tip {
-    let laptop_key = KeyRef(h.genesis_tmb(pr).expect("genesis tmb"));
-    h.ok(phone.remove_key(pr, &laptop_key).await);
-    let resolved = h
-        .ok(phone.push(pr, &["p1"]).await)
-        .accepted("the resolution");
+/// The phone signs one ordinary commit on its head `keep` (SPEC 15.8
+/// item 1) and pushes it to every peer it knows: P1 holds the phone's
+/// branch and P2 promotes it over the laptop's, which it out-extends. The
+/// resolution's tip, once both peers hold it.
+async fn resolve_by_extension(h: &Harness, phone: &Client<'_>, pr: &Principal, keep: &Tip) -> Tip {
+    let resolved = h.ok(phone.resolve_fork(pr, keep).await);
     h.eventually("the peers to hold the resolution", CONVERGE, || async {
         Ok(
             h.peer_view("p1", pr).await.map(|v| v.tip) == Some(resolved.clone())
