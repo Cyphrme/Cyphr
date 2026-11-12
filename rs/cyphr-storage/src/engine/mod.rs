@@ -3228,8 +3228,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Whether `bundle`, which a revoked key signs, is buried: some bundle
-    /// of `later` signed by live keys alone extends it, all of them applying
-    /// in order on the stored chain at `next_seq`. Verified on a private
+    /// of `later` extends it, all of them applying in order on the stored
+    /// chain at `next_seq`, and every signer of that bundle is a key the
+    /// stored chain held, active and not revoked, at `next_seq`, before
+    /// `bundle`. A key `bundle` or any commit between it and the burier
+    /// introduced never counts, so a dead key cannot mint its own burier. Verified on a private
     /// in-memory replay, before anything is written. The caller holds the
     /// principal's write lock; the burying bundle is submitted next, on top
     /// of `bundle`, under the same verification.
@@ -3244,12 +3247,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         use crate::import::replay_commit;
 
         let revoked = self.revoked();
-        let Some(live) = later
-            .iter()
-            .position(|b| !b.txs.is_empty() && dead_key_in(b, &revoked).is_none())
-        else {
-            return Ok(false);
-        };
         let entries = self.stored_entries(principal_id, None).await?;
         let actions = self.action_history(principal_id).await?;
         let mut principal =
@@ -3259,6 +3256,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             replay_commit(&mut principal, entry, position).await?;
         }
         replay_actions_at(&mut principal, &actions, next_seq).await?;
+        // The keys that may bury: the stored chain's, live, before `bundle`.
+        let live_before: HashSet<String> = principal
+            .active_keys()
+            .map(|k| k.tmb().to_b64())
+            .filter(|t| !revoked.contains_key(t))
+            .collect();
+        let signed_by_live = |b: &WireBundle| {
+            b.cozies().all(|raw| {
+                serde_json::from_slice::<serde_json::Value>(raw)
+                    .ok()
+                    .and_then(|coz| coz["pay"]["tmb"].as_str().map(str::to_owned))
+                    .is_some_and(|tmb| live_before.contains(&tmb))
+            })
+        };
+        let Some(live) = later.iter().position(|b| {
+            !b.txs.is_empty() && dead_key_in(b, &revoked).is_none() && signed_by_live(b)
+        }) else {
+            return Ok(false);
+        };
         let mut seq = next_seq;
         for b in std::iter::once(bundle).chain(&later[..=live]) {
             let Ok(b) = canonical_bundle(b) else {

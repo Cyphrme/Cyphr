@@ -349,3 +349,51 @@ async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
         "P1 caught up through eve's commits made before its death"
     );
 }
+
+/// Backs burial by live keys only (SPEC 6.4): P1 holds the genesis and
+/// knows `eve` is revoked. P2 serves X1, which dead `eve` signs and in
+/// which it introduces `alice`, then X2, signed by `alice` alone. `alice`
+/// was not a key of the chain before X1, so X2 buries nothing: one round
+/// of P1's gossip admits neither, and P1 keeps the genesis. Turns red if a
+/// key the dead commit introduced can bury it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_the_dead_commit_introduced_cannot_bury_it() {
+    let (genesis, id, ..) = dead_key_fixture().await;
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let eve = pool.get("eve_ed25519").expect("eve");
+    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let again = test_fixtures::bundle::genesis_bundle(&mut p, g, &[eve.key().expect("eve")], T)
+        .await
+        .expect("genesis");
+    assert_eq!(again, genesis, "one genesis");
+    let x1 = common::key_commit_by(&mut p, "eve_ed25519", "alice", T + 1).await;
+    let x2 = common::key_commit_by(&mut p, "alice", "carol", T + 2).await;
+
+    let (p1, _d1) = keyless_server();
+    let (p2, _d2) = keyless_server();
+    let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
+    for app in [&app1, &app2] {
+        assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app2, &id, &x1).await, StatusCode::CREATED, "X1 on P2");
+    assert_eq!(push(&app2, &id, &x2).await, StatusCode::CREATED, "X2 on P2");
+    let (status, body) = post_json(
+        app1.clone(),
+        "/revoke",
+        common::eve_revoke(T + 5).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+    let before = tip_pr(&app1, &id).await;
+
+    one_round(&p1, &p2).await;
+
+    assert_eq!(
+        tip_pr(&app1, &id).await,
+        before,
+        "X1 and X2 were admitted: a key X1 introduced buried it"
+    );
+}
