@@ -346,7 +346,6 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
-        "[data-action-no-pre]" => "MalformedPayload",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
