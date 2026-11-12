@@ -1,7 +1,9 @@
 // Scenario S03: offline.
 // Fault: an offline device, then a partition that lets a real fork form.
 // Alice's laptop is offline and commits while her phone commits via P1.
-// Must hold: case 1, the laptop push is refused as stale and rebases, no fork;
+// Must hold: case 1, the laptop push is refused as stale and rebases, no fork; an
+// action the laptop recorded but never committed survives the rebase, re-signed
+// and named in the rebase output (SPEC 15.9), and reaches the peers;
 // case 2, the commits reach different partitioned peers (a real principal fork):
 // Error plus evidence until Alice resolves (SPEC 15.8); the abandoned branch is kept.
 //
@@ -53,6 +55,8 @@ async fn s03_offline() {
         "the laptop must be offline"
     );
     h.ok(laptop.commit_data(&pr, "laptop, offline").await);
+    // A further action recorded and left uncommitted when the rebase comes.
+    let pending = h.ok(laptop.record_data(&pr, "laptop, uncommitted").await);
     let before_offline = h.peer_view("p1", &pr).await.expect("P1 holds the base");
     let offline_push = h.ok(laptop.push(&pr, &["p1"]).await);
     assert_eq!(
@@ -87,8 +91,17 @@ async fn s03_offline() {
         Some(phone_tip.clone()),
         "a refused push must not move the peer"
     );
+    let p1_actions = h.peer_actions("p1", &pr).await.expect("P1 holds actions");
     let rebased = h.ok(laptop.rebase(&pr).await);
-    assert_ne!(rebased, phone_tip, "a rebase adds the laptop's own commit");
+    assert_ne!(rebased.tip, phone_tip, "a rebase adds the laptop's own commit");
+    // SPEC 15.9: a rebase re-signs the actions the peer lacks at the current
+    // time and names each, with its old czd and time; never silently.
+    let named = rebased.resigned.iter().find(|r| r.czd == pending);
+    assert!(
+        named.is_some_and(|r| r.was_now > 0),
+        "the rebase names the uncommitted action it re-signed: {:?}",
+        rebased.resigned
+    );
     let merged = h.ok(laptop.push(&pr, &both).await).accepted("rebased push");
     for peer in both {
         let v = h
@@ -101,6 +114,13 @@ async fn s03_offline() {
             "{peer}: base + phone + laptop"
         );
     }
+    // Both of the laptop's actions, the committed one and the uncommitted
+    // one, reach P1 re-signed: nothing recorded offline is lost.
+    assert_eq!(
+        h.peer_actions("p1", &pr).await,
+        Some(p1_actions + 2),
+        "P1 holds the laptop's two re-signed actions"
+    );
     let v = h.ok(observer.verdict(&pr, &both).await);
     h.check_verdict(&v, &pr, &Expect::new(&both, &pr.0)).await;
     assert_eq!(
