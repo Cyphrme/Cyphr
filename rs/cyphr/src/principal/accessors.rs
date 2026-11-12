@@ -288,6 +288,13 @@ impl<S: eml::Storage> Principal<S> {
         &self.log
     }
 
+    /// The latest `now` this principal has applied (SPEC 15.9's "latest
+    /// known timestamp"): a later message dated before it is
+    /// `TimestampPast`. 0 before anything is applied.
+    pub fn latest_timestamp(&self) -> i64 {
+        self.latest_timestamp
+    }
+
     /// Configure the tolerance for a `now` ahead of the verifier clock.
     ///
     /// A `now` greater than `clock() + seconds` is refused with
