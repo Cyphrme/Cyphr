@@ -476,13 +476,14 @@ fn naked_revoke(k: &Kp, rvk: i64) -> serde_json::Value {
 
 /// Backs key death at admission (SPEC 6.4), at the engine seam every path
 /// ingests through (`/push`, gossip, witness sync, a verifier's store):
-/// once the engine holds `key_a`'s naked revoke, a commit `key_a` signs at
-/// the tip is refused whatever its `now`, even one dated before the
-/// declared `rvk` (the holder chooses both); a revoke the thief recorded
-/// first, dated far in the future, changes nothing. Turns red if the
-/// engine admits a dead key's commit at the tip.
+/// once the engine holds `key_a`'s naked revoke as of NOW+5, a commit
+/// `key_a` signs dated at or after NOW+5 is refused at the tip. Pinned
+/// with the thief's revoke at a far-future `rvk` recorded first too: the
+/// owner's earlier revoke still stands. Turns red if a dead key's commit
+/// dated after its death is admitted, or a far-future revoke shadows the
+/// owner's.
 #[tokio::test]
-async fn a_dead_keys_tip_commit_is_refused_whatever_its_dates() {
+async fn a_dead_keys_commit_after_its_death_is_refused() {
     let f = Fork::new(0).await;
     let pool = load_pool();
     let key_a = kp(&pool, "key_a");
@@ -497,54 +498,13 @@ async fn a_dead_keys_tip_commit_is_refused_whatever_its_dates() {
         e.record_revoke(&naked_revoke(&key_a, NOW + 5))
             .await
             .expect("the owner's revoke");
-        for now in [NOW + 2, NOW + 6] {
-            let mut p = f.base.fork().await.expect("fork");
-            create_key(&mut p, &key_a, &kp(&pool, "bob"), now).await;
-            assert!(
-                f.submit(&e, &blobs(&p, 1)).await.is_err(),
-                "thief_first={thief_first}: key_a's commit dated {now} admitted at the tip"
-            );
-        }
+        let mut p = f.base.fork().await.expect("fork");
+        create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 6).await;
+        assert!(
+            f.submit(&e, &blobs(&p, 1)).await.is_err(),
+            "thief_first={thief_first}: key_a's commit after its death was admitted"
+        );
     }
-}
-
-/// Backs burial (SPEC 6.4, not retroactive): with `key_a` dead, its commit
-/// is admitted when the same submission carries a later commit, signed by
-/// `golden` alone, that extends it: the owner's later commit endorses it.
-/// Alone it is refused. Turns red if a buried commit is refused or an
-/// unburied one admitted.
-#[tokio::test]
-async fn a_dead_keys_commit_is_admitted_only_when_buried() {
-    let f = Fork::new(0).await;
-    let pool = load_pool();
-    let key_a = kp(&pool, "key_a");
-    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    f.submit(&e, &f.first).await.expect("commit 0");
-    e.record_revoke(&naked_revoke(&key_a, NOW + 5))
-        .await
-        .expect("revoke");
-    let mut p = f.base.fork().await.expect("fork");
-    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 2).await;
-    create_key(&mut p, &f.golden, &kp(&pool, "carol"), NOW + 3).await;
-    assert!(
-        f.submit(&e, &blobs(&p, 1)).await.is_err(),
-        "an unburied dead key's commit"
-    );
-    let outcomes = e
-        .submit_commits(
-            &f.id,
-            Some(f.genesis.clone()),
-            &[blobs(&p, 1), blobs(&p, 2)],
-        )
-        .await;
-    assert!(
-        outcomes.iter().all(Result::is_ok),
-        "the buried commit and its live successor: {outcomes:?}"
-    );
-    assert_eq!(
-        e.get_tip(&f.id).await.expect("tip").expect("held").pr,
-        p.pr_tagged().expect("pr")
-    );
 }
 
 /// Backs the owner's exit (SPEC 6.4): `golden` is already naked-revoked

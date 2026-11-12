@@ -1654,11 +1654,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .map_err(|e| e.to_string())
                     .and_then(|evidence| verify_revoke(&evidence));
                 match verified {
-                    // One record per key is written; should a store hold
-                    // more, the earliest death stands.
+                    // The least (rvk, record hash) stands, as when live.
                     Ok((tmb, rvk)) => {
-                        let at = revoked.entry(tmb).or_insert(rvk);
-                        *at = (*at).min(rvk);
+                        let death = Death {
+                            rvk,
+                            record: *hash.as_bytes(),
+                        };
+                        let at = revoked.entry(tmb).or_insert(death);
+                        *at = (*at).min(death);
                     },
                     Err(why) => quarantined.push(QuarantinedManifest {
                         manifest: hash,
@@ -2692,40 +2695,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: Option<crate::Genesis>,
         bundle: &WireBundle,
     ) -> Result<IngestResult, EngineError> {
-        self.submit(principal_id, genesis, bundle, &[]).await
-    }
-
-    /// [`Self::submit_commit`] for each of `bundles` in order, as one
-    /// submission: a commit a revoked key signed is admitted only when a
-    /// later bundle of the same submission, signed by live keys alone,
-    /// extends it ([`dead_key_in`], burial). A catch-up hands its whole
-    /// chain here, so history the dead key signed before its death, which
-    /// the owner's later commits endorse, is not refused. Each bundle's
-    /// outcome, in order.
-    pub async fn submit_commits(
-        &self,
-        principal_id: &str,
-        genesis: Option<crate::Genesis>,
-        bundles: &[WireBundle],
-    ) -> Vec<Result<IngestResult, EngineError>> {
-        let mut outcomes = Vec::with_capacity(bundles.len());
-        for (i, bundle) in bundles.iter().enumerate() {
-            let later = bundles.get(i + 1..).unwrap_or_default();
-            outcomes.push(
-                self.submit(principal_id, genesis.clone(), bundle, later)
-                    .await,
-            );
-        }
-        outcomes
-    }
-
-    async fn submit(
-        &self,
-        principal_id: &str,
-        genesis: Option<crate::Genesis>,
-        bundle: &WireBundle,
-        later: &[WireBundle],
-    ) -> Result<IngestResult, EngineError> {
         self.ensure_healed().await?;
 
         if bundle.is_empty() {
@@ -2809,11 +2778,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // Key death (SPEC 6.4), read under the lock. A revoke recorded
         // concurrently is not serialized with it (it takes no principal
         // lock), so it acts as one that arrived just after this bundle.
-        if let Some(dead) = dead_key_in(bundle, &self.revoked())
-            && !self
-                .buried(principal_id, &genesis, next_seq, bundle, later)
-                .await?
-        {
+        if let Some(dead) = dead_key_in(bundle, &self.revoked()) {
             return Err(dead);
         }
 
@@ -3227,73 +3192,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
-    /// Whether `bundle`, which a revoked key signs, is buried: some bundle
-    /// of `later` extends it, all of them applying in order on the stored
-    /// chain at `next_seq`, and every signer of that bundle is a key the
-    /// stored chain held, active and not revoked, at `next_seq`, before
-    /// `bundle`. A key `bundle` or any commit between it and the burier
-    /// introduced never counts, so a dead key cannot mint its own burier. Verified on a private
-    /// in-memory replay, before anything is written. The caller holds the
-    /// principal's write lock; the burying bundle is submitted next, on top
-    /// of `bundle`, under the same verification.
-    async fn buried(
-        &self,
-        principal_id: &str,
-        genesis: &crate::Genesis,
-        next_seq: u64,
-        bundle: &WireBundle,
-        later: &[WireBundle],
-    ) -> Result<bool, EngineError> {
-        use crate::import::replay_commit;
-
-        let revoked = self.revoked();
-        let entries = self.stored_entries(principal_id, None).await?;
-        let actions = self.action_history(principal_id).await?;
-        let mut principal =
-            Self::principal_from_genesis(genesis.clone(), cyphr::eml::MemoryStorage::new()).await?;
-        for (position, entry) in entries.iter().enumerate() {
-            replay_actions_at(&mut principal, &actions, position as u64).await?;
-            replay_commit(&mut principal, entry, position).await?;
-        }
-        replay_actions_at(&mut principal, &actions, next_seq).await?;
-        // The keys that may bury: the stored chain's, live, before `bundle`.
-        let live_before: HashSet<String> = principal
-            .active_keys()
-            .map(|k| k.tmb().to_b64())
-            .filter(|t| !revoked.contains_key(t))
-            .collect();
-        let signed_by_live = |b: &WireBundle| {
-            b.cozies().all(|raw| {
-                serde_json::from_slice::<serde_json::Value>(raw)
-                    .ok()
-                    .and_then(|coz| coz["pay"]["tmb"].as_str().map(str::to_owned))
-                    .is_some_and(|tmb| live_before.contains(&tmb))
-            })
-        };
-        let Some(live) = later.iter().position(|b| {
-            !b.txs.is_empty() && dead_key_in(b, &revoked).is_none() && signed_by_live(b)
-        }) else {
-            return Ok(false);
-        };
-        let mut seq = next_seq;
-        for b in std::iter::once(bundle).chain(&later[..=live]) {
-            let Ok(b) = canonical_bundle(b) else {
-                return Ok(false);
-            };
-            match Self::build_commit(&mut principal, &b, principal_id, seq).await {
-                Ok(Some(staged)) => {
-                    if staged.staged.commit().await.is_err() {
-                        return Ok(false);
-                    }
-                    seq += 1;
-                },
-                Ok(None) => {},
-                Err(_) => return Ok(false),
-            }
-        }
-        Ok(true)
-    }
-
     /// Test a refused `bundle` as the extension of a retained rival, the
     /// one record a fork resolution leaves (SPEC 15.8: a new commit whose
     /// `pre` is the chosen branch's tip; the engine keeps no other).
@@ -3577,31 +3475,39 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// `rvk`. Key death is global by thumbprint, so the record names no
     /// principal.
     ///
-    /// One durable record per thumbprint, the first valid one: a later
-    /// revoke of a key already revoked stores nothing, whatever its `rvk`
-    /// or digest, so a key holder cannot grow the store by re-signing.
+    /// One revoke stands per thumbprint, the one with the least `(rvk,
+    /// record hash)`: a revoke that is not less than the one held stores
+    /// nothing, so re-signing at the same or a later `rvk` cannot grow the
+    /// store, and a far-future revoke recorded first (by a key's thief,
+    /// say) gives way to the owner's earlier one. Each strictly earlier
+    /// revoke stores one record, ending the key sooner.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
         let (tmb, rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         // Held across the write, so two revokes of one key store one record.
         let lock = self.principal_lock(&format!("revoke\0{tmb}"));
         let _one_record = lock.lock().await;
-        if self
-            .revoked
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains_key(&tmb)
-        {
-            return Ok(());
-        }
         let mut bytes = REVOKE_RECORD_PREFIX.to_vec();
         serde_json::to_writer(&mut bytes, evidence)
             .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
+        let death = Death {
+            rvk,
+            record: *blake3::hash(&bytes).as_bytes(),
+        };
+        let held = self
+            .revoked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&tmb)
+            .copied();
+        if held.is_some_and(|held| held <= death) {
+            return Ok(());
+        }
         self.blob_store.put(&bytes).await?;
         self.revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(tmb, rvk);
+            .insert(tmb, death);
         Ok(())
     }
 
@@ -4203,38 +4109,44 @@ impl Held {
     }
 }
 
-/// The naked-revoked thumbprints (base64url), each with the `rvk` its
-/// revoke declares, kept for display only (admission and [`participants`]
-/// read only the thumbprint): a cache of the revoke
-/// records, one per thumbprint (I1).
-type Revoked = HashMap<String, i64>;
+/// A naked revoke the engine keeps for one key: its `rvk` and the hash of
+/// its revoke record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Death {
+    rvk: i64,
+    record: [u8; 32],
+}
+
+/// The naked-revoked thumbprints (base64url), each with the revoke the
+/// engine keeps for it, the one with the least `(rvk, record hash)`: a
+/// cache of the revoke records (I1).
+type Revoked = HashMap<String, Death>;
 
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
 /// store): the refusal for `bundle` if a coz in it is signed by a revoked
-/// key or introduces one. Neither `now` nor `rvk` is read: both are chosen
-/// by the key's holder, so neither can bound what it may still sign.
+/// key, or introduces one, and is dated at or after the revoke's `rvk` (a
+/// coz with no readable `now` is judged dated after it). Not retroactive:
+/// history a key signed before its revoke stands everywhere, so a node that
+/// learned the revoke first still syncs it. A coz that revokes its own
+/// signer is never refused: it can only end the key.
 ///
-/// Two commits a dead key signs are not refused here. One whose dead-key
-/// cozies each revoke their own signer (a chain-level `key/revoke`) can
-/// only end the key, so it helps no thief. And a commit buried by a later
-/// commit of the same submission that live keys alone sign is admitted
-/// ([`StorageEngine::submit_commits`]): death is not retroactive, so a
-/// node that knows a revoke still catches up through history the key
-/// signed while alive and the owner's later commits endorse (nrd: "You
-/// cant make all sigs retroactively invalid"). A dead key's commit at the
-/// tip with no live successor is refused, whatever it is dated.
+/// The key's holder chooses both `now` and `rvk`, so a holder of a
+/// compromised key can date a commit below `rvk`. That is not prevented
+/// here: the owner recovers by mutating the principal forward (a revoke,
+/// a delete or a replace of the key, SPEC 6.4), since Cyphr does not use
+/// reversion (SPEC 14.12). A revoked key's rival is evidence only through
+/// [`participants`], whatever its date.
 ///
 /// Admission only: a commit already stored keeps the standing it was
 /// admitted with. A revoke never demotes a canonical commit (rule 1), and a
 /// rebuild replays the stored chain without this check, so live and
-/// rebuilt state agree. A rival a dead key signs is evidence only through
-/// [`participants`].
+/// rebuilt state agree.
 ///
-/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.id` and
-/// `pay.typ` before any signature is checked, so a forgery can at worst
-/// refuse the bundle it travels in. It must never admit or authorize on
-/// these fields.
+/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.id`,
+/// `pay.typ` and `pay.now` before any signature is checked, so a forgery
+/// can at worst refuse the bundle it travels in. It must never admit or
+/// authorize on these fields.
 fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
     if revoked.is_empty() {
         return None;
@@ -4244,10 +4156,14 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
             continue;
         };
         let pay = &coz["pay"];
+        let dead_at = |tmb: &str| {
+            revoked
+                .get(tmb)
+                .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.rvk))
+        };
         let typ = pay["typ"].as_str().unwrap_or_default();
-        let id = pay["id"].as_str();
         if cyphr::parsed_coz::typ::is_key_introducing(typ)
-            && let Some(id) = id.filter(|id| revoked.contains_key(*id))
+            && let Some(id) = pay["id"].as_str().filter(|id| dead_at(id))
         {
             return Some(EngineError::DeadKey {
                 key: id.to_owned(),
@@ -4256,7 +4172,7 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         }
         let self_revoke =
             cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
-        if let Some(tmb) = pay["tmb"].as_str().filter(|t| revoked.contains_key(*t))
+        if let Some(tmb) = pay["tmb"].as_str().filter(|t| dead_at(t))
             && !self_revoke
         {
             return Some(EngineError::DeadKey {
