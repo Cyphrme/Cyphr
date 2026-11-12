@@ -146,9 +146,15 @@ async fn s04_theft() {
     // Each side reaches its own peers before gossip carries the other's
     // rotation across: without the cut, whichever pushes second finds its
     // peers already on the rival branch.
+    // The same holds between Alice's own peers: her push goes to p1 then
+    // p2, and if gossip carried the rotation from p1 to p2 in between, the
+    // CLI's push to p2 would meet a chain whose replaced key is already
+    // gone ("unknown key"), a race between push and gossip, not a defect.
     for from in ["p1", "p2"] {
         h.proxy.partition(from, "p3");
     }
+    h.proxy.partition("p1", "p2");
+    h.proxy.partition("p2", "p1");
     let tt2 = h
         .ok(thief.push(&pr2, &["p3"]).await)
         .accepted("thief rotation");
@@ -158,6 +164,8 @@ async fn s04_theft() {
     for from in ["p1", "p2"] {
         h.proxy.heal(from, "p3");
     }
+    h.proxy.heal("p1", "p2");
+    h.proxy.heal("p2", "p1");
     assert_ne!(at2, tt2);
 
     h.eventually("both branches to be reported", CONVERGE, || async {
