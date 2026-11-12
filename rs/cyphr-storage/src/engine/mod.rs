@@ -240,48 +240,36 @@ struct Frame {
     shape: Shape,
     keys: Vec<KeyEntry>,
     signed: Signed,
-    removes: Vec<(String, Removal)>,
     seen: Option<i64>,
 }
 
-/// The thumbprints that signed a commit's cozies: what a revocation or a
-/// key removal judges a rival by.
-type Signed = Vec<String>;
+/// Who signed a commit's cozies, and when, in coz order: what a revoke
+/// judges a commit by (SPEC 14.12: by `now`, never `rvk`). Parsed from the
+/// stored commit, so a rebuild derives it again.
+type Signed = Vec<SignedCoz>;
+
+/// One coz of a commit as the fork rule reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SignedCoz {
+    /// Its signer's thumbprint (base64url).
+    tmb: String,
+    /// Its own `now`.
+    now: i64,
+    /// Whether it is a `key/revoke` of its own signer (SPEC 6.4): a revoke
+    /// from `now` on, which never disqualifies its own commit.
+    revokes_signer: bool,
+}
 
 fn signed_of(commit: &IndexableCommit) -> Signed {
-    commit.cozies.iter().map(|c| c.tmb.clone()).collect()
-}
-
-/// How a commit removes a key from its principal (SPEC 6.2-6.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Removal {
-    /// `key/delete` (its `id`) or `key/replace` (its own signer): the key
-    /// leaves the principal from this commit on.
-    Delete,
-    /// `key/revoke` (its own signer): the key is never to be trusted again.
-    Revoke,
-}
-
-/// The keys a commit removes from its principal, and how.
-fn removes_of(commit: &IndexableCommit) -> Vec<(String, Removal)> {
     use cyphr::parsed_coz::typ;
 
     commit
         .cozies
         .iter()
-        .filter_map(|c| {
-            if typ::has_suffix(&c.typ, typ::KEY_DELETE) {
-                let pay: serde_json::Value = serde_json::from_str(c.payload.as_deref()?).ok()?;
-                pay["id"]
-                    .as_str()
-                    .map(|id| (id.to_string(), Removal::Delete))
-            } else if typ::has_suffix(&c.typ, typ::KEY_REPLACE) {
-                Some((c.tmb.clone(), Removal::Delete))
-            } else if typ::has_suffix(&c.typ, typ::KEY_REVOKE) {
-                Some((c.tmb.clone(), Removal::Revoke))
-            } else {
-                None
-            }
+        .map(|c| SignedCoz {
+            tmb: c.tmb.clone(),
+            now: c.now,
+            revokes_signer: typ::has_suffix(&c.typ, typ::KEY_REVOKE),
         })
         .collect()
 }
@@ -570,11 +558,10 @@ pub trait Recovery: Send + Sync {
 /// ([`StorageEngine::assess`]) both apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assessment {
-    /// Error while any fork stands.
+    /// Error while two counted commits share the greatest height.
     pub consensus: Consensus,
-    /// The live heads, sorted: each participating commit no participating
-    /// commit extends, off every settled fork's abandoned side. One while
-    /// Active; under a standing fork, each of its branches' heads.
+    /// The heads, sorted: the counted commits of the greatest height. One
+    /// while Active; in Error, each tied head.
     pub heads: Vec<String>,
     /// Every position where two or more held commits share a `pre`, in
     /// position order.
@@ -591,12 +578,12 @@ pub struct Contest {
     pub pre: Option<String>,
     /// Their commit ids, sorted.
     pub commits: Vec<String>,
-    /// The commit the fork settled on; `None` while it stands.
+    /// The commit the fork rule's walk follows here; `None` where the walk
+    /// stops at a tie, or follows none of them.
     pub kept: Option<String>,
-    /// The key that settled it: the signer of the commit extending the
-    /// kept one, or of the canonical commit that removed a rival's signer.
-    /// `None` while the fork stands, or when no commit settled it (a naked
-    /// revoke).
+    /// The key that settled it: the first signer of the walked commit
+    /// extending the kept one. `None` while the fork stands, or when no
+    /// commit settled it (a revoke left the kept commit alone).
     pub by: Option<String>,
 }
 
@@ -1158,7 +1145,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     shape: shape.clone(),
                     keys: key_entries(&commit.keys),
                     signed: signed_of(commit),
-                    removes: removes_of(commit),
                     seen,
                 },
             );
@@ -3025,28 +3011,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 self.keep_branch(bundle, next_commit).await?;
                 return Ok(None);
             }
-            // Only a line that takes part in the fork can be promoted,
-            // Error or not: every commit of it, and `bundle`, judged by
-            // [`participants`] over what is held now, with the canonical
-            // removals as they stand before the promotion. A line signed
-            // by a key the chain revoked, or deleted above it, is evidence
-            // only, and so is what extends it.
+            // `bundle` takes the position above the canonical head, which
+            // no held commit reaches, so if it and its line are counted it
+            // is the one tallest commit: the fork rule's head, Active, in
+            // Error or not ([`assessment`]). A line a revoked key signed
+            // after its revoke is evidence only, and so is what extends it.
             if !line_takes_part(held, revoked, &line, &next_commit) {
                 self.keep_evidence(bundle, next_commit).await;
                 return Ok(None);
-            }
-            // In Error, a promotion that leaves it standing is kept, not
-            // made (SPEC 15.5). It is judged in the state after it: the
-            // line and `bundle` canonical, the displaced chain retained, so
-            // a removal `bundle` carries counts as it would on the peer
-            // that held this line all along.
-            if in_error(held, revoked)
-                && in_error(&promoted(held, base, &line_commits, &next_commit), revoked)
-            {
-                self.keep_evidence(bundle, next_commit).await;
-                return Err(EngineError::Errored {
-                    principal_id: principal_id.to_string(),
-                });
             }
             return self
                 .promote_branch(principal_id, &line, &mut line_commits, bundle, next_commit)
@@ -3189,18 +3161,24 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// revoke arrived in; it is verified here, since a rebuild trusts only
     /// what the blobs prove.
     ///
-    /// A revoke never changes a served chain: it is prospective for the
-    /// commits a principal's chain already holds, and it takes every rival
-    /// its key signed out of the fork ([`participants`]), whatever its
-    /// `rvk`. Key death is global by thumbprint, so the record names no
-    /// principal.
+    /// A revoke takes effect from its own `now`; its `rvk` decides nothing
+    /// (SPEC 14.12). It never changes a served chain: the fork rule stops
+    /// counting the key's commits dated at or after that `now`
+    /// ([`counted`]), and the key's later commits are refused at admission
+    /// ([`dead_key_in`]). Key death is global by thumbprint, so the record
+    /// names no principal.
     ///
-    /// One revoke stands per thumbprint, the one with the least `(rvk,
-    /// record hash)`: a revoke that is not less than the one held stores
-    /// nothing, so re-signing at the same or a later `rvk` cannot grow the
-    /// store, and a far-future revoke recorded first (by a key's thief,
-    /// say) gives way to the owner's earlier one. Each strictly earlier
-    /// revoke stores one record, ending the key sooner.
+    /// One revoke stands per thumbprint, the one with the least `(now,
+    /// record hash)`. A revoke whose `now` is not strictly earlier than the
+    /// one held stores nothing, so re-signing it cannot grow the store, and
+    /// a far-future revoke recorded first (by a key's thief, say) gives way
+    /// to the owner's earlier one. Each strictly earlier revoke stores one
+    /// record, ending the key sooner. The record hash only orders records
+    /// a rebuild finds at one `now`.
+    ///
+    /// No receipt check here: a revoke relayed by gossip or a witness's
+    /// sync was received elsewhere. A server holds a pushed revoke to SPEC
+    /// 15.9's receipt window before it calls this.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
         let (tmb, now) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
@@ -3220,7 +3198,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .unwrap_or_else(|p| p.into_inner())
             .get(&tmb)
             .copied();
-        if held.is_some_and(|held| held <= death) {
+        if held.is_some_and(|held| held.now <= death.now) {
             return Ok(());
         }
         self.blob_store.put(&bytes).await?;
@@ -3493,8 +3471,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pre: c.pre,
                 pr: c.pr,
                 signed: frame.signed,
-                canonical: true,
-                removes: frame.removes,
             });
         }
         if let Some(kept) = self
@@ -3509,8 +3485,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pre: r.tip.pre.clone(),
                 pr: r.pr.clone(),
                 signed: r.signed.clone(),
-                canonical: false,
-                removes: Vec::new(),
             }));
         }
         Ok(held)
@@ -3786,7 +3760,7 @@ struct Walk {
     rest: Vec<(Blake3Hash, CommitManifest)>,
 }
 
-/// A commit the engine holds, canonical or retained, as [`in_error`] reads it.
+/// A commit the engine holds, canonical or retained, as [`assessment`] reads it.
 #[derive(Debug, Clone)]
 struct Held {
     sequence: u64,
@@ -3794,28 +3768,22 @@ struct Held {
     pre: Option<String>,
     pr: String,
     signed: Signed,
-    /// Whether it is on the canonical chain.
-    canonical: bool,
-    /// The keys it removes ([`removes_of`]); counted for canonical commits.
-    removes: Vec<(String, Removal)>,
 }
 
 impl Held {
-    fn of(commit: &IndexableCommit, canonical: bool) -> Self {
+    fn of(commit: &IndexableCommit) -> Self {
         Self {
             sequence: commit.sequence,
             id: commit.commit_ids.first().cloned().unwrap_or_default(),
             pre: commit.pre.clone(),
             pr: commit.prs.first().cloned().unwrap_or_default(),
             signed: signed_of(commit),
-            canonical,
-            removes: removes_of(commit),
         }
     }
 }
 
-/// A naked revoke the engine keeps for one key: its `rvk` and the hash of
-/// its revoke record.
+/// A naked revoke the engine keeps for one key: its own `now`, from which
+/// it takes effect, and the hash of its revoke record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Death {
     now: i64,
@@ -3823,30 +3791,25 @@ struct Death {
 }
 
 /// The naked-revoked thumbprints (base64url), each with the revoke the
-/// engine keeps for it, the one with the least `(rvk, record hash)`: a
+/// engine keeps for it, the one with the least `(now, record hash)`: a
 /// cache of the revoke records (I1).
 type Revoked = HashMap<String, Death>;
 
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
-/// store): the refusal for `bundle` if a coz in it is signed by a revoked
-/// key, or introduces one, and is dated at or after the revoke's `rvk` (a
-/// coz with no readable `now` is judged dated after it). Not retroactive:
-/// history a key signed before its revoke stands everywhere, so a node that
-/// learned the revoke first still syncs it. A coz that revokes its own
-/// signer is never refused: it can only end the key.
+/// store): the refusal for `bundle` if a transaction coz in it is signed by
+/// a revoked key, or introduces one, and is dated at or after the revoke's
+/// own `now` (SPEC 14.12: by `now`, never `rvk`; a coz with no readable
+/// `now` is judged dated after it). Not retroactive: history a key signed
+/// before its revoke stands everywhere, so a node that learned the revoke
+/// first still syncs it. A coz that revokes its own signer is never
+/// refused: it can only end the key (SPEC 6.4: "sign a standard revoke, a
+/// subsequent `key/delete` ... and commit").
 ///
-/// The key's holder chooses both `now` and `rvk`, so a holder of a
-/// compromised key can date a commit below `rvk`. That is not prevented
-/// here: the owner recovers by mutating the principal forward (a revoke,
-/// a delete or a replace of the key, SPEC 6.4), since Cyphr does not use
-/// reversion (SPEC 14.12). A revoked key's rival is evidence only through
-/// [`participants`], whatever its date.
-///
-/// Admission only: a commit already stored keeps the standing it was
-/// admitted with. A revoke never demotes a canonical commit (rule 1), and a
-/// rebuild replays the stored chain without this check, so live and
-/// rebuilt state agree.
+/// The key's holder chooses `now`, so a holder of a compromised key can
+/// date a commit below the revoke's. That is not prevented here: the owner
+/// recovers by mutating the principal forward (SPEC 14.12), since Cyphr
+/// does not use reversion.
 ///
 /// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.id`,
 /// `pay.typ` and `pay.now` before any signature is checked, so a forgery
@@ -3892,97 +3855,107 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
     None
 }
 
-/// The ids of the held commits that take part in a fork:
+/// The ids of the held commits the fork rule counts ([`assessment`]):
+/// each held commit, canonical or retained, whose parent is counted (a
+/// genesis commit has none), unless a coz of it is signed by a revoked key
+/// at or after the revoke's own `now` (SPEC 6.4, 14.12: a revoke takes
+/// effect from its `now`, and `rvk` decides nothing). A key's revoke is
+/// the earliest of its naked revoke and every revoke a held commit
+/// carries: a self-signed revoke proves itself wherever it is held, and key
+/// death is global by thumbprint.
 ///
-/// * every canonical commit: a revoke is prospective for the chain a witness already serves, and
-///   never makes it untrusted (SPEC 6.4; nrd: "You cant make all sigs retroactively invalid or that
-///   would mark legitimate commits as untrusted too");
-/// * a rival whose parent takes part and none of whose cozies is signed by a key that is
-///   naked-revoked or revoked on the canonical chain (at any position: a revoked key "should never
-///   be trusted again", SPEC 6.4), or deleted or replaced by a canonical commit strictly above the
-///   rival's position. A contested commit is judged against the state before its position, so a
-///   canonical commit at that position (its participant rival) cannot disqualify it.
-///
-/// Neither a rival's `now` nor a revoke's `rvk` decides anything here.
-/// Every other rival is evidence only: kept and served, never counted.
-///
-/// Known limit, with the spec author on #203: a fork at n of ordinary
-/// commits, then each side deleting the other's key at n+1. Each witness
-/// demotes the side it saw second, since only its canonical removal
-/// counts, and reports Active, so witnesses that saw the two in another
-/// order disagree.
-// The same-position delete race is accepted, not closed here: the owner's
-// canonical delete of K at p and K's line from p, extended first, is the
-// SPEC 15.8 residual stated on #203 (one branch extended resolves the fork).
-fn participants(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<String> {
-    // Each canonically removed key, with the lowest position it is
-    // deleted at; a revoked key counts at every position.
-    let mut deleted_at: HashMap<&str, u64> = HashMap::new();
-    let mut never: std::collections::HashSet<&str> = revoked.keys().map(String::as_str).collect();
-    for h in held.iter().filter(|h| h.canonical) {
-        for (tmb, how) in &h.removes {
-            match how {
-                Removal::Revoke => {
-                    never.insert(tmb.as_str());
-                },
-                Removal::Delete => {
-                    let at = deleted_at.entry(tmb.as_str()).or_insert(h.sequence);
-                    *at = (*at).min(h.sequence);
-                },
-            }
-        }
+/// A signature from a key's active period stands even after the key is
+/// deleted or replaced (SPEC 6.2), so a removal disqualifies nothing: a
+/// rival signed while its key was active is a fork participant. Every
+/// held commit verified when it was admitted or retained, so this reads
+/// only who signed it when.
+fn counted(held: &[Held], revoked: &Revoked) -> HashSet<String> {
+    let mut death: HashMap<&str, i64> = revoked
+        .iter()
+        .map(|(tmb, d)| (tmb.as_str(), d.now))
+        .collect();
+    for c in held
+        .iter()
+        .flat_map(|h| &h.signed)
+        .filter(|c| c.revokes_signer)
+    {
+        let at = death.entry(c.tmb.as_str()).or_insert(c.now);
+        *at = (*at).min(c.now);
     }
-    let disqualified = |h: &Held| {
-        h.signed.iter().any(|tmb| {
-            never.contains(tmb.as_str())
-                || deleted_at
-                    .get(tmb.as_str())
-                    .is_some_and(|at| *at > h.sequence)
-        })
+    let dead = |h: &Held| {
+        h.signed
+            .iter()
+            .any(|c| !c.revokes_signer && death.get(c.tmb.as_str()).is_some_and(|at| c.now >= *at))
     };
     let mut order: Vec<&Held> = held.iter().collect();
     order.sort_by_key(|h| h.sequence);
-    let mut taking: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut taking_prs: std::collections::HashSet<(u64, &str)> = std::collections::HashSet::new();
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut prs: HashSet<(u64, &str)> = HashSet::new();
     for h in order {
-        let parent_ok = match (&h.pre, h.sequence.checked_sub(1)) {
-            (Some(pre), Some(below)) => taking_prs.contains(&(below, pre.as_str())),
+        let parent = match (&h.pre, h.sequence.checked_sub(1)) {
+            (Some(pre), Some(below)) => prs.contains(&(below, pre.as_str())),
             _ => true,
         };
-        if h.canonical || (parent_ok && !disqualified(h)) {
-            taking.insert(h.id.clone());
-            taking_prs.insert((h.sequence, h.pr.as_str()));
+        if parent && !dead(h) {
+            ids.insert(h.id.clone());
+            prs.insert((h.sequence, h.pr.as_str()));
         }
     }
-    taking
+    ids
 }
 
-/// The forks of a principal as the protocol reads them (SPEC 15.5, 15.6,
-/// 15.8): some position holds two or more participating commits
-/// ([`participants`]) over one `pre`, and the fork stands while the number
-/// of them a participating commit extends is not exactly one. A plain fork
-/// (none extended) stands until a commit extends exactly one tip; a fork
-/// whose branches are both extended stands until a revocation or a key
-/// removal takes one out of it (SPEC 15.7.1).
+/// The forks of a principal as the protocol reads them (SPEC 15.5-15.8):
+/// walk from genesis over the counted commits ([`counted`]) and, where a
+/// position has more than one counted child, follow the child whose
+/// subtree is tallest; two equally tall subtrees are Error, and the walk
+/// stops there. That is the spec's "the commit resolves the fork" made
+/// deterministic: a fork is settled by out-extending the other branch,
+/// and a malicious settlement is undone only by recovery (SPEC 14).
+///
+/// The walk ends at a commit of the greatest counted height, and two
+/// commits of that height tie at the fork where their lines part, so the
+/// principal is Active exactly when one counted commit is the highest:
+/// the heads are the counted commits of the greatest height.
 ///
 /// A pure function of the held commits and the revocations, so a live
 /// engine and one rebuilt from the blobs answer alike (I1), whether a
 /// candidate commit would leave Error is this function over the held
 /// commits plus the candidate, and a verifier holding the same commits
-/// reaches the same verdict, heads and settlements as a peer.
+/// reaches the same verdict, heads and settlements as a peer. "Tallest"
+/// is a statement about what is held now; the forks are what stays true.
 fn assessment(held: &[Held], revoked: &Revoked) -> Assessment {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let taking = participants(held, revoked);
+    let taking = counted(held, revoked);
     let takes = |h: &Held| taking.contains(&h.id);
-    // Each participating commit's parent, as (position, PR): a commit is
-    // extended when it is some participating commit's parent.
-    let parents: HashSet<(u64, &str)> = held
+    let top = held.iter().filter(|h| takes(h)).map(|h| h.sequence).max();
+    let heads: Vec<&Held> = held
         .iter()
-        .filter(|h| takes(h))
-        .filter_map(|h| Some((h.sequence.checked_sub(1)?, h.pre.as_deref()?)))
+        .filter(|h| takes(h) && Some(h.sequence) == top)
         .collect();
-    let extended = |h: &Held| parents.contains(&(h.sequence, h.pr.as_str()));
+
+    // The walked line: the commits every head descends from (each head's
+    // own line while Active).
+    let by_pr: HashMap<(u64, &str), &Held> = held
+        .iter()
+        .map(|h| ((h.sequence, h.pr.as_str()), h))
+        .collect();
+    fn line_of<'a>(h: &'a Held, by_pr: &HashMap<(u64, &str), &'a Held>) -> HashSet<&'a str> {
+        let mut line = HashSet::new();
+        let mut at = Some(h);
+        while let Some(h) = at {
+            line.insert(h.id.as_str());
+            at = h
+                .pre
+                .as_deref()
+                .zip(h.sequence.checked_sub(1))
+                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+        }
+        line
+    }
+    let mut lines = heads.iter().map(|h| line_of(h, &by_pr));
+    let first = lines.next().unwrap_or_default();
+    let walked: HashSet<&str> = lines.fold(first, |acc, line| &acc & &line);
 
     // The distinct held commits over each (position, pre).
     type Over<'a> = (u64, Option<&'a str>);
@@ -3993,73 +3966,26 @@ fn assessment(held: &[Held], revoked: &Revoked) -> Assessment {
             .entry(h.id.as_str())
             .or_insert(h);
     }
-    let mut standing = false;
-    let mut abandoned: BTreeSet<&str> = BTreeSet::new();
-    let mut forks = Vec::new();
-    for (&(sequence, pre), commits) in over.iter().filter(|(_, c)| c.len() > 1) {
-        let taking_here: Vec<&Held> = commits.values().copied().filter(|h| takes(h)).collect();
-        let continued: Vec<&Held> = taking_here
-            .iter()
-            .copied()
-            .filter(|h| extended(h))
-            .collect();
-        let stands = taking_here.len() > 1 && continued.len() != 1;
-        standing |= stands;
-        let kept = match (stands, taking_here.as_slice(), continued.as_slice()) {
-            (true, ..) => None,
-            (false, [only], _) | (false, _, [only]) => Some(*only),
-            _ => None,
-        };
-        let by = kept.and_then(|k| {
-            if taking_here.len() > 1 {
-                settled_by_extension(held, k, &takes)
-            } else {
-                settled_by_removal(
-                    held,
-                    sequence,
-                    commits.values().copied().filter(|h| h.id != k.id),
-                )
-            }
-        });
-        if let Some(k) = kept {
-            abandoned.extend(commits.keys().copied().filter(|id| *id != k.id));
-        }
-        forks.push(Contest {
-            sequence,
-            pre: pre.map(str::to_owned),
-            commits: commits.keys().map(|id| (*id).to_owned()).collect(),
-            kept: kept.map(|k| k.id.clone()),
-            by,
-        });
-    }
-
-    // A commit is off the live branches when it or an ancestor was
-    // abandoned by a settled fork.
-    let by_pr: HashMap<(u64, &str), &Held> = held
+    let forks = over
         .iter()
-        .map(|h| ((h.sequence, h.pr.as_str()), h))
-        .collect();
-    let abandoned_line = |h: &Held| {
-        let mut at = Some(h);
-        while let Some(h) = at {
-            if abandoned.contains(h.id.as_str()) {
-                return true;
+        .filter(|(_, c)| c.len() > 1)
+        .map(|(&(sequence, pre), commits)| {
+            let kept = commits
+                .values()
+                .copied()
+                .find(|h| walked.contains(h.id.as_str()));
+            Contest {
+                sequence,
+                pre: pre.map(str::to_owned),
+                commits: commits.keys().map(|id| (*id).to_owned()).collect(),
+                kept: kept.map(|k| k.id.clone()),
+                by: kept.and_then(|k| settled_by_extension(held, k, &walked)),
             }
-            at = h
-                .pre
-                .as_deref()
-                .zip(h.sequence.checked_sub(1))
-                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
-        }
-        false
-    };
-    let heads: BTreeSet<String> = held
-        .iter()
-        .filter(|h| takes(h) && !extended(h) && !abandoned_line(h))
-        .map(|h| h.id.clone())
+        })
         .collect();
+    let heads: BTreeSet<String> = heads.iter().map(|h| h.id.clone()).collect();
     Assessment {
-        consensus: if standing {
+        consensus: if heads.len() > 1 {
             Consensus::Error
         } else {
             Consensus::Active
@@ -4075,83 +4001,25 @@ fn in_error(held: &[Held], revoked: &Revoked) -> bool {
 }
 
 /// The key that settled a fork by extending `kept`: the first signer of
-/// the participating commit whose `pre` is `kept`'s PR.
-fn settled_by_extension(
-    held: &[Held],
-    kept: &Held,
-    takes: &impl Fn(&Held) -> bool,
-) -> Option<String> {
+/// the walked commit whose `pre` is `kept`'s PR.
+fn settled_by_extension(held: &[Held], kept: &Held, walked: &HashSet<&str>) -> Option<String> {
     held.iter()
         .find(|c| {
-            takes(c)
+            walked.contains(c.id.as_str())
                 && c.sequence == kept.sequence + 1
                 && c.pre.as_deref() == Some(kept.pr.as_str())
         })
-        .and_then(|c| c.signed.first().cloned())
-}
-
-/// The key that settled a fork at `sequence` by taking `rivals` out of it:
-/// the first signer of the lowest canonical commit that revokes one of
-/// their signers, or deletes one above `sequence` ([`participants`]).
-/// `None` when no commit did (a naked revoke, say).
-fn settled_by_removal<'a>(
-    held: &[Held],
-    sequence: u64,
-    rivals: impl Iterator<Item = &'a Held>,
-) -> Option<String> {
-    let signers: HashSet<&str> = rivals
-        .flat_map(|h| h.signed.iter().map(String::as_str))
-        .collect();
-    held.iter()
-        .filter(|h| {
-            h.canonical
-                && h.removes.iter().any(|(tmb, how)| {
-                    signers.contains(tmb.as_str())
-                        && (*how == Removal::Revoke || h.sequence > sequence)
-                })
-        })
-        .min_by_key(|h| h.sequence)
-        .and_then(|h| h.signed.first().cloned())
+        .and_then(|c| c.signed.first().map(|c| c.tmb.clone()))
 }
 
 /// Whether the principal `(held, revoked)` describes, in Error, stays in
-/// Error once `candidate` is held too as the new canonical head, so a
-/// `key/delete` or `key/revoke` it carries takes the removed key's rivals
-/// out of the fork (provisional, pending the spec author).
+/// Error once `candidate` is held too as the new canonical head: the
+/// Error gate, which admits a commit only if it extends one of the tied
+/// heads ([`assessment`]).
 fn stays_errored((held, revoked): (&[Held], &Revoked), candidate: &IndexableCommit) -> bool {
     let mut after = held.to_vec();
-    after.push(Held::of(candidate, true));
+    after.push(Held::of(candidate));
     in_error(&after, revoked)
-}
-
-/// The held commits as they stand once a retained line (`line`, from
-/// position `base`) is promoted and extended by `next`: the line and
-/// `next` canonical, each canonical commit from `base` on retained.
-fn promoted(
-    held: &[Held],
-    base: u64,
-    line: &[IndexableCommit],
-    next: &IndexableCommit,
-) -> Vec<Held> {
-    let line: Vec<Held> = line
-        .iter()
-        .chain(std::iter::once(next))
-        .map(|c| Held::of(c, true))
-        .collect();
-    let mut after: Vec<Held> = held
-        .iter()
-        .filter(|h| !line.iter().any(|l| l.id == h.id))
-        .cloned()
-        .map(|mut h| {
-            if h.canonical && h.sequence >= base {
-                h.canonical = false;
-                h.removes.clear();
-            }
-            h
-        })
-        .collect();
-    after.extend(line);
-    after
 }
 
 /// The retained line `rival` ends, lowest first: `rival` and, while one is
@@ -4178,8 +4046,9 @@ fn retained_line(by_pr: &HashMap<(u64, &str), &Retained>, rival: &Retained) -> V
 }
 
 /// Whether every commit of the retained `line` and `next`, which extends
-/// it, takes part ([`participants`]) in the principal `(held, revoked)`
-/// describes, `next` counted as a retained commit.
+/// it, is counted ([`counted`]) in the principal `(held, revoked)`
+/// describes, `next` held as a retained commit: a line a revoked key
+/// signed after its revoke is evidence only, and so is what extends it.
 fn line_takes_part(
     held: &[Held],
     revoked: &Revoked,
@@ -4187,10 +4056,10 @@ fn line_takes_part(
     next: &IndexableCommit,
 ) -> bool {
     let mut with_next = held.to_vec();
-    let next = Held::of(next, false);
+    let next = Held::of(next);
     let next_id = next.id.clone();
     with_next.push(next);
-    let taking = participants(&with_next, revoked);
+    let taking = counted(&with_next, revoked);
     taking.contains(&next_id) && line.iter().all(|r| taking.contains(&r.tip.tip))
 }
 
