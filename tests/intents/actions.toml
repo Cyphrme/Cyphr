@@ -72,6 +72,7 @@ tx = [
 
 [test.expected]
 key_count = 1
+level     = 4
 
 # Test 3: An action alone leaves PR unchanged
 # DT/DR is first empty; without a ds/create the action is in DT but DR is
