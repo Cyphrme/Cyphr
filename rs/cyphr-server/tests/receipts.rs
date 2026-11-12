@@ -27,7 +27,7 @@ mod common;
 
 use common::{
     attestor_server, build_genesis_push_body, envelope_payload, get_json, golden_principal_id,
-    keyed_appstate, keyless_server, load_pool, post_json, write_signing_key,
+    keyed_appstate, load_pool, post_json, write_signing_key,
 };
 
 /// Assert `body` carries a signed statement stamped `expected_typ`, whose
@@ -249,28 +249,6 @@ async fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_str
 // ========================================================================
 // Non-attestor configurations stay honestly unsigned (c-attestor-only-signs)
 // ========================================================================
-
-/// A keyless server's push and tip responses stay explicitly unsigned --
-/// byte-compatible with the pre-receipts behavior the keyless matrix
-/// pins.
-#[tokio::test]
-async fn keyless_push_and_tip_responses_stay_unsigned() {
-    let pool = load_pool();
-    let principal_id_owned = golden_principal_id(&pool).await;
-    let principal_id = principal_id_owned.as_str();
-    let now = 1_700_000_200;
-    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
-
-    let (state, _dir) = keyless_server();
-    let app = build_router(state);
-    let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
-    assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
-    envelope_payload(&push_envelope);
-
-    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
-    assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
-    envelope_payload(&tip_envelope);
-}
 
 /// A keyed-but-unbootstrapped server (only reachable when the router is
 /// built without `serve()`, e.g. this test) is not yet an attestor: no

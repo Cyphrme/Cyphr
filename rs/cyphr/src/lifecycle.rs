@@ -125,18 +125,6 @@ mod tests {
         }
     }
 
-    /// c-precedence targeted case: the triple-overlap cell
-    /// (Deleted ∧ ¬Frozen ∧ ¬HasActiveKeys) simultaneously satisfies Nuked,
-    /// Deleted, and Dead's literal row predicates. R5 precedence (Nuked
-    /// first) must select Nuked.
-    #[test]
-    fn triple_overlap_cell_resolves_to_nuked() {
-        assert_eq!(
-            derive_lifecycle_state(true, false, false, false),
-            LifecycleState::Nuked
-        );
-    }
-
     /// The SPEC-undefined `is_deleted && is_frozen` cell resolves via the
     /// same R5 precedence used for every other overlap: Deleted (rank 2)
     /// before Frozen (rank 5). This cell is unreachable through

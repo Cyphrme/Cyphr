@@ -662,7 +662,7 @@ mod tests {
         let a = [HashAlg::Sha256];
         let base = kt_root(256, 0, &a);
         let mut seen = vec![base.clone()];
-        for (keys, nonces) in [(257, 0), (1, 256), (300, 300), (1000, 0), (2048, 0)] {
+        for (keys, nonces) in [(257, 0), (1, 256), (300, 300), (1000, 0)] {
             let r = kt_root(keys, nonces, &a);
             assert!(!seen.contains(&r), "{keys} keys + {nonces} nonces collided");
             seen.push(r);

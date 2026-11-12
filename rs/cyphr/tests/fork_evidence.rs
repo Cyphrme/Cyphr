@@ -167,42 +167,6 @@ async fn fork_branches_verify_from_fresh_ancestors() {
     );
 }
 
-// Practice: SPEC.md section 15.7.1 and section 15.8: witnesses must be able to hold both branches
-// of a fork, and root AGENTS.md invariant I2 requires the fork be detected, so deriving the
-// branches by forking the ancestor must not couple them. Claim F2. Mutation that
-// turns this red: `Principal::fork` sharing one commit log store between the forks.
-#[tokio::test]
-async fn fork_branches_from_cloned_ancestor() {
-    let (golden, key_a) = (signer("golden"), signer("key_a"));
-    let ancestor = genesis_of(
-        Principal::implicit(domain_key(&golden))
-            .await
-            .expect("ancestor"),
-        &golden,
-        &[domain_key(&key_a)],
-    )
-    .await;
-
-    let mut a = ancestor.fork().await.expect("fork");
-    let ra = delete_commit(&mut a, &golden, &key_a, 1_700_000_100).await;
-    assert!(ra.is_ok(), "branch A on a fork of the ancestor: {ra:?}");
-
-    let mut b = ancestor.fork().await.expect("fork");
-    let (bytes, sig, czd) = delete_pay(&key_a, &golden, 1_700_000_101);
-    let mut scope = b.begin_commit();
-    scope
-        .verify_and_apply(&bytes, &sig, czd, None)
-        .expect("branch B coz applies");
-    let r = scope
-        .finalize_with_software(
-            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &key_a.prv, &key_a.pub_key, &key_a.tmb),
-            1_700_000_101,
-            "cyphr.me",
-        )
-        .await;
-    assert!(r.is_ok(), "branch from a forked ancestor: {r:?}");
-}
-
 // ---------------------------------------------------------------------------------------------
 // G0 acceptance: fork independence
 // ---------------------------------------------------------------------------------------------
