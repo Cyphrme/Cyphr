@@ -80,8 +80,19 @@ pub enum LoadError {
     /// line. The same defect `submit_commit` refuses as
     /// [`EngineError::MalformedBlob`](crate::engine::EngineError::MalformedBlob),
     /// so one defect has one kind on both paths.
-    #[error("malformed coz at index {index}: {message}")]
-    MalformedBlob { index: usize, message: String },
+    ///
+    /// `commit` is the line's position; `coz` is the coz's position in the
+    /// line's bundle order (actions, then transactions), or `None` when the
+    /// defect is in the line's `keys`, as in `submit_commit`'s wording.
+    #[error("{}: {message}", match coz {
+        Some(coz) => format!("commit {commit}: blob {coz} is malformed"),
+        None => format!("commit {commit}: keys are malformed"),
+    })]
+    MalformedBlob {
+        commit: usize,
+        coz: Option<usize>,
+        message: String,
+    },
 
     /// JSON parsing error.
     #[error("JSON error at index {index}: {source}")]
@@ -205,6 +216,7 @@ fn stored_bundle(
     let mut i = 0;
     let mut coz = |value: &serde_json::Value| {
         let index = commit_idx * 1000 + i;
+        let position = i;
         i += 1;
         let pay = value
             .get("pay")
@@ -218,7 +230,7 @@ fn stored_bundle(
                 index,
                 message: "invalid base64 signature".into(),
             })?;
-        StoredCoz::new(pay, sig).map_err(|e| wire_error(e, index))
+        StoredCoz::new(pay, sig).map_err(|e| wire_error(e, commit_idx, Some(position)))
     };
     let actions = commit
         .actions
@@ -235,19 +247,19 @@ fn stored_bundle(
         .iter()
         .map(key_entry_to_key)
         .collect::<Result<_, _>>()?;
-    Bundle::new(actions, txs, keys)
-        .map_err(|e| wire_error(e.error, commit_idx * 1000 + e.coz.unwrap_or_default()))
+    Bundle::new(actions, txs, keys).map_err(|e| wire_error(e.error, commit_idx, e.coz))
 }
 
 /// A wire refusal as a load error, classified as `submit_commit` classifies
 /// it: a core rule the coz breaks (or a key whose `tmb` is not its `pub`'s)
 /// is a protocol refusal, anything else a malformed coz.
-fn wire_error(e: cyphr::replay::WireError, index: usize) -> LoadError {
+fn wire_error(e: cyphr::replay::WireError, commit: usize, coz: Option<usize>) -> LoadError {
     use cyphr::replay::WireError;
     match e {
         WireError::Key(p) | WireError::Protocol(p) => LoadError::Protocol(p),
         other => LoadError::MalformedBlob {
-            index,
+            commit,
+            coz,
             message: other.to_string(),
         },
     }

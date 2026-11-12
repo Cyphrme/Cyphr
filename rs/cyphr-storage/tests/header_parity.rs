@@ -83,7 +83,7 @@ proptest! {
             };
             let replayed = load_principal_from_commits(genesis, &[line]).await;
             prop_assert!(
-                matches!(replayed, Err(LoadError::MalformedBlob { .. })),
+                matches!(replayed, Err(LoadError::MalformedBlob { commit: 0, coz: Some(0), .. })),
                 "replay, missing {missing:?}: {replayed:?}"
             );
             Ok(())
