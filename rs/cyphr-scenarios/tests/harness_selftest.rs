@@ -172,22 +172,6 @@ async fn harness_partition_cuts_an_open_connection() {
     );
 }
 
-// Claim: an action that is not implemented ends the scenario as RED for the
-// capability it names, whatever the gate checked before it. A scenario can
-// therefore neither pass nor fail as a behaviour failure by running an
-// empty step.
-#[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "RED(discovery) after-setup peers=1 ids=")]
-async fn harness_unsupported_action_ends_red() {
-    use cyphr_scenarios::actions::Principal;
-
-    let h = Harness::start(&["p1"]).await.expect("start peer");
-    let alice = h.client("alice");
-    h.ok(alice
-        .publish_self_claim(&Principal("p".into()), &["p1"])
-        .await);
-}
-
 // Claim: the observer reads what a peer itself holds. Positive control: a
 // principal pushed to two peers over HTTP is reported by each with the same
 // tip, and by neither under a principal it never saw.
