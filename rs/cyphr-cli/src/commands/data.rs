@@ -2,8 +2,9 @@
 //! Principal Tree by a signed `ds/create`, and send an action to a peer.
 //!
 //! SPEC 4.8.1: a data action is recorded in the Data Tree (DT) and forms no
-//! commit. SPEC 4.8.2: DR = MR(DT) enters PR only by a signed `ds/create`
-//! whose `id` is the computed DR. How actions travel on the wire is open
+//! commit. SPEC 4.8.2: DR enters PR only by a signed `ds/create`, as its
+//! `id`; the signer computes that `id` over the DT it holds, and no
+//! verifier checks it against DT. How actions travel on the wire is open
 //! with the spec author; actions travel as action-only bundles.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
@@ -152,8 +153,8 @@ pub(crate) fn apply_ds_create(
     Ok(dr)
 }
 
-/// `cyphr data commit`: include DR = MR(DT) in PR by a signed `ds/create`,
-/// finalized as one commit.
+/// `cyphr data commit`: sign a `ds/create` whose `id` is MR over the DT
+/// this client holds, finalized as one commit; that `id` becomes DR.
 fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;

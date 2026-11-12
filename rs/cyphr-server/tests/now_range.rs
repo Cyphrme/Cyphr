@@ -79,13 +79,28 @@ fn sign(k: &Kp, mut pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     (v, sig, czd)
 }
 
+/// A principal over `g` with its genesis committed now: a data action
+/// needs a principal to record into (SPEC 5.1).
+async fn established(g: &Kp) -> cyphr::Principal {
+    let mut p = cyphr::Principal::implicit(key_of(g))
+        .await
+        .expect("genesis");
+    p.commit_genesis(
+        &cyphr::signer::SoftwareSigner::new(&g.alg, &g.prv, &g.pubb, &g.tmb),
+        &[],
+        wall_clock(),
+        "cyphr.me",
+    )
+    .await
+    .expect("genesis commit");
+    p
+}
+
 /// Apply the same `now` through both core entry paths (a data action and a
 /// `key/create` commit) on a default `Principal`.
 async fn now_outcomes(at: i64) -> (cyphr::error::Result<()>, cyphr::error::Result<()>) {
     let (g, k2) = (kp(), kp());
-    let mut p = cyphr::Principal::implicit(key_of(&g))
-        .await
-        .expect("genesis");
+    let mut p = established(&g).await;
     let (pay, sig, czd) = sign(
         &g,
         serde_json::json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
@@ -148,9 +163,7 @@ async fn now_bound_far_future_is_refused_on_every_entry_path() {
 async fn now_bound_range_ceiling_holds_for_a_runaway_clock() {
     let outcome = async |at: i64| {
         let g = kp();
-        let mut p = cyphr::Principal::implicit(key_of(&g))
-            .await
-            .expect("genesis");
+        let mut p = established(&g).await;
         p.set_clock(|| i64::MAX);
         let (pay, sig, czd) = sign(
             &g,

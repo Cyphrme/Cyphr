@@ -153,31 +153,6 @@ typ    = "cyphr.me/action"
 error = "KeyRevoked"
 
 # ============================================================================
-# ds/create naming a DR that is not MR(DT) fails with StateMismatch
-# (SPEC 4.8.2: the id is the computed new DR)
-# ============================================================================
-
-[[test]]
-name      = "ds_create_wrong_id_fails"
-principal = ["golden"]
-
-[[test.action]]
-msg    = "Recorded action"
-now    = 1700000001
-signer = "golden"
-typ    = "cyphr.me/action"
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000002, signer = "golden", id = "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU", typ = "cyphr.me/cyphr/ds/create" },
-  ],
-]
-
-[test.expected]
-error = "StateMismatch"
-
-# ============================================================================
 # ds/create on a deleted principal fails with AlreadyDeleted
 # (SPEC 11.4: no transactions or actions on a closed account). The id is
 # MR(DT) over the recorded action, so only the lifecycle gate refuses it.
@@ -254,6 +229,18 @@ error = "UnknownKey"
 name      = "action_unknown_signer_fails"
 principal = ["golden"]                    # Only golden in principal
 
+# The genesis commit (SPEC 5.1): a data action needs a principal to
+# record into.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Action from unknown key"
 now    = 1700000001
@@ -262,6 +249,21 @@ typ    = "cyphr.me/action"
 
 [test.expected]
 error = "UnknownKey"
+
+# A data action for a principal with no genesis commit is refused: there
+# is no principal to record it into, and no key history to authorize it.
+[[test]]
+name      = "action_without_genesis_fails"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Action before any genesis"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+error = "GenesisIncomplete"
 
 # ============================================================================
 # Timestamp past tests (multi-commit, error on commit 2)
@@ -284,26 +286,6 @@ tx = [
     { now = 1700000050, signer = "golden", target = "key_b", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
-
-[test.expected]
-error = "TimestampPast"
-
-# Action timestamp past (multi-action, error on action 2)
-[[test]]
-name      = "action_timestamp_past_fails"
-principal = ["golden"]
-
-[[test.action]]
-msg    = "First action"
-now    = 1700000100
-signer = "golden"
-typ    = "cyphr.me/action"
-
-[[test.action]]
-msg    = "Second action with older timestamp"
-now    = 1700000050                           # Earlier than action 1!
-signer = "golden"
-typ    = "cyphr.me/action"
 
 [test.expected]
 error = "TimestampPast"

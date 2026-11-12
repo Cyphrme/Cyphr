@@ -688,7 +688,7 @@ impl<'a> Generator<'a> {
 
     /// The `id` a coz of kind `typ` names when the intent states none: a
     /// `principal/create` names the future SR (SPEC 5.1 step 3), a
-    /// `ds/create` the computed DR = MR(DT) (SPEC 4.8.2), and the lifecycle
+    /// `ds/create` MR over the actions recorded (SPEC 4.8.2), and the lifecycle
     /// transactions the PR `pre` before the commit.
     fn derived_id(
         scope: &cyphr::CommitScope<'_>,
@@ -1746,7 +1746,7 @@ impl<'a> Generator<'a> {
         if let Some(id) = &cz.id {
             // A stated `id`, for values no pool key's thumbprint can
             // express (e.g. a nonce of an off-by-one width, or a
-            // `ds/create` naming a DR that is not MR(DT)).
+            // `ds/create` naming a DR over actions this principal lacks).
             let id = match id.strip_prefix("peer:") {
                 Some(_) => self.resolve_ref(id)?,
                 None => id.clone(),

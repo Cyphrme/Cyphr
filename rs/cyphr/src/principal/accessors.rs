@@ -267,6 +267,7 @@ impl<S: eml::Storage> Principal<S> {
             .ok_or(Error::UnknownKey)?;
         key.set_revocation(Revocation { rvk, by: None });
         core.auth.revoked.insert(tmb_b64, key);
+        core.key_timeline.close(tmb, rvk);
         Ok(())
     }
 

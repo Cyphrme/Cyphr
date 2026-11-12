@@ -673,12 +673,9 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
         order.sort_by(|(_, a), (_, b)| {
             (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
         });
-        principal.open_action_bundle();
-        let recorded = order
+        order
             .into_iter()
-            .try_for_each(|(i, c)| record(principal, i, c));
-        principal.close_action_bundle();
-        recorded?;
+            .try_for_each(|(i, c)| record(principal, i, c))?;
         return Ok(StagedBundle::Actions(BundleId {
             czds,
             tr: None,
@@ -686,11 +683,7 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
         }));
     }
 
-    principal.open_action_bundle();
-    let recorded =
-        (bundle.actions.iter().enumerate()).try_for_each(|(i, c)| record(principal, i, c));
-    principal.close_action_bundle();
-    recorded?;
+    (bundle.actions.iter().enumerate()).try_for_each(|(i, c)| record(principal, i, c))?;
     let mut scope = principal.begin_commit();
     let mut i = bundle.actions.len();
     for tx in &bundle.txs {

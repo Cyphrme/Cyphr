@@ -51,11 +51,8 @@ pub struct PatchResponse {
     pub principal_id: String,
     /// Ordered commit entries with their blob contents.
     pub entries: Vec<PatchEntry>,
-    /// The action-only bundles accepted in the served range that the
-    /// chain has not left out: those a `ds/create` included and those
-    /// still pending, in accepted order. A replay needs them in place
-    /// (SPEC 4.8.2) and selects among them by the same rule, so it never
-    /// trusts this list ([`StorageEngine::not_included`] serves the rest).
+    /// The action-only bundles accepted in the served range, in accepted
+    /// order.
     pub actions: Vec<PatchActions>,
 }
 
@@ -428,10 +425,6 @@ struct ActionBundle {
     bundle: cyphr::replay::Bundle,
 }
 
-/// What a [`StorageEngine::left_out`] result was derived from: the
-/// canonical tip's commit id and every stored action manifest, in order.
-type LeftOutKey = (String, Vec<Blake3Hash>);
-
 /// A principal's action-only bundles by the chain position they were
 /// accepted at, each position's in replay order ([`replay_order`]).
 type ActionHistory = std::collections::BTreeMap<u64, Vec<ActionBundle>>;
@@ -788,11 +781,6 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// manifests in the blob store (I1), filled by the rebuild scan and by
     /// ingest.
     actions: std::sync::Mutex<HashMap<String, Vec<StoredActions>>>,
-    /// Per principal id, the action manifests its canonical chain left out
-    /// ([`Self::left_out`]), with the chain tip and manifest set they were
-    /// derived from: a cache of a replay of the blobs (I1), recomputed
-    /// whenever either moves.
-    left_out: std::sync::Mutex<HashMap<String, (LeftOutKey, HashSet<Blake3Hash>)>>,
     /// How each stored chain commit's blobs group into its bundle, and the
     /// keys it introduced, by principal id and commit id: a cache of the
     /// commit manifests in the blob store (I1), filled by the rebuild scan
@@ -840,7 +828,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
-            left_out: std::sync::Mutex::new(HashMap::new()),
             frames: std::sync::Mutex::new(HashMap::new()),
             revoked: std::sync::Mutex::new(Revoked::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
@@ -1001,8 +988,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // Bundles accepted before the first served commit that the caller
         // already holds are skipped; those after the last served commit
         // ride along unless `to` bounds the range short of them.
-        // A bundle the chain left out is no part of its DT (SPEC 4.8.2).
-        let left_out = self.left_out(principal_id).await?;
         let held: Vec<(u64, Vec<Blake3Hash>)> = {
             let guard = self.actions.lock().unwrap_or_else(|p| p.into_inner());
             guard
@@ -1010,7 +995,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .into_iter()
                 .flatten()
                 .filter(|a| a.after >= from_seq.unwrap_or(0) && to.is_none_or(|t| a.after <= t))
-                .filter(|a| !left_out.contains(&a.manifest))
                 .map(|a| (a.after, a.blobs.clone()))
                 .collect()
         };
@@ -1033,104 +1017,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             entries,
             actions,
         })
-    }
-
-    /// The action-only bundles stored for `principal_id` that its
-    /// canonical chain left out: a `ds/create` was signed while each was
-    /// pending and did not include it (SPEC 4.8.2). They stay stored (I1)
-    /// and are served here, in accepted order, so a holder can show what a
-    /// chain never took in; the owner re-records what it still wants.
-    ///
-    /// # Errors
-    ///
-    /// [`EngineError::NotFound`] for a principal that is not stored; a
-    /// replay or storage failure as [`Self::load_principal`].
-    pub async fn not_included(&self, principal_id: &str) -> Result<Vec<PatchActions>, EngineError> {
-        self.ensure_healed().await?;
-        let principal_id = self.canonical_principal_id(principal_id).await?;
-        let left_out = self.left_out(&principal_id).await?;
-        let mut held: Vec<StoredActions> = self
-            .actions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&principal_id)
-            .into_iter()
-            .flatten()
-            .filter(|a| left_out.contains(&a.manifest))
-            .cloned()
-            .collect();
-        held.sort_by_key(|a| a.after);
-        let mut out = Vec::with_capacity(held.len());
-        for a in held {
-            out.push(PatchActions {
-                after: a.after,
-                blobs: self.read_blobs(&a.blobs).await?,
-            });
-        }
-        Ok(out)
-    }
-
-    /// The action manifests of `principal_id` its canonical chain left
-    /// out, decided by replaying the chain from the blobs onto a private
-    /// log: the mark is a cache of the blobs (I1), never stored. A
-    /// manifest is left out when none of its actions is in the chain's DT.
-    async fn left_out(&self, principal_id: &str) -> Result<HashSet<Blake3Hash>, EngineError> {
-        let held: Vec<StoredActions> = self
-            .actions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .cloned()
-            .unwrap_or_default();
-        let Some(tip) = self.indexer.get_tip(principal_id).await? else {
-            return Ok(HashSet::new());
-        };
-        if held.is_empty() {
-            return Ok(HashSet::new());
-        }
-        let key: LeftOutKey = (tip.commit_id, held.iter().map(|a| a.manifest).collect());
-        if let Some((at, set)) = self
-            .left_out
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            && *at == key
-        {
-            return Ok(set.clone());
-        }
-        let genesis = self.genesis_of_stored(principal_id).await?;
-        let principal = self
-            .replay_onto(
-                principal_id,
-                genesis,
-                cyphr::eml::MemoryStorage::new(),
-                None,
-            )
-            .await?;
-        // What the chain's DT holds: actions a `ds/create` included or that
-        // are still pending. A manifest none of whose actions is among them
-        // is left out, whether a `ds/create` passed it over or the replay
-        // never recorded it (a bundle a promotion displaced, which the
-        // canonical commit there does not verify over).
-        let kept: HashSet<Vec<u8>> = principal
-            .actions()
-            .filter(|a| !a.is_not_included())
-            .map(|a| a.czd().as_bytes().to_vec())
-            .collect();
-        let mut out = HashSet::new();
-        for stored in held {
-            let bundle = action_bundle(self.read_blobs(&stored.blobs).await?).map_err(|why| {
-                EngineError::MalformedBlob(format!("action manifest {}: {why}", stored.manifest))
-            })?;
-            if !bundle.cozies().any(|c| kept.contains(c.czd().as_bytes())) {
-                out.insert(stored.manifest);
-            }
-        }
-        self.left_out
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(principal_id.to_string(), (key, out.clone()));
-        Ok(out)
     }
 
     /// Resolve a `/patch` resync anchor (a content digest) to the chain
@@ -2858,21 +2744,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Whether every blob of `blobs` is already in an action bundle recorded
-    /// for `principal_id` that the canonical chain has not left out: an
-    /// action a `ds/create` passed over was never applied, so its owner may
-    /// record it again ([`Self::left_out`]).
+    /// for `principal_id` (SPEC 7.6: a replayed data action is ignored).
     async fn all_actions_recorded(
         &self,
         principal_id: &str,
         blobs: &[Vec<u8>],
     ) -> Result<bool, EngineError> {
-        let left_out = self.left_out(principal_id).await?;
         let held = self.actions.lock().unwrap_or_else(|p| p.into_inner());
         let recorded: HashSet<Blake3Hash> = held
             .get(principal_id)
             .into_iter()
             .flatten()
-            .filter(|a| !left_out.contains(&a.manifest))
             .flat_map(|a| a.blobs.iter().copied())
             .collect();
         Ok(!blobs.is_empty()
@@ -3681,11 +3563,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .get(&principal_id)
             .cloned()
             .unwrap_or_default();
-        let left_out = if rivals.is_empty() {
-            Vec::new()
-        } else {
-            self.not_included(&principal_id).await?
-        };
         let mut out = Vec::with_capacity(rivals.len());
         for rival in rivals {
             let at = rival.tip.sequence;
@@ -3696,7 +3573,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Some(canonical) = chain.first() else {
                 continue;
             };
-            let mut rival_bundle = rival
+            let rival_bundle = rival
                 .shape
                 .group(self.read_blobs(&rival.blobs).await?, rival.keys.clone())
                 .ok_or_else(|| {
@@ -3704,16 +3581,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         "a retained branch's shape groups a different number of blobs".into(),
                     )
                 })?;
-            // The bundles the canonical chain left out at this position
-            // may be the ones the rival's `ds/create` included: they lead
-            // it, so the item replays on its own (SPEC 4.8.2; a verifier
-            // selects among them by the same rule).
-            let leading: Vec<Vec<u8>> = left_out
-                .iter()
-                .filter(|a| a.after == at)
-                .flat_map(|a| a.blobs.iter().cloned())
-                .collect();
-            rival_bundle.actions.splice(0..0, leading);
             out.push(ForkEvidence {
                 sequence: at,
                 pre: rival.tip.pre.clone(),

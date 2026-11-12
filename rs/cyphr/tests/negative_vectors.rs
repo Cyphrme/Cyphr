@@ -5,10 +5,10 @@
 //! - C1: an ES256 signature with high `S` is rejected (signature malleability would let a third
 //!   party mint a second `czd` for the same signed action).
 //! - C2: an Ed25519 signature with non-canonical `s` (`s + L`) is rejected, for the same reason.
-//! - C3: a key removed by `key/delete` cannot sign an accepted data action, whether the action is
-//!   dated inside its old active period, after the delete, or spliced into history before the
-//!   delete commit. An action recorded before the delete stays recorded after it (C3a asserts
-//!   this); only new actions by the deleted key are refused.
+//! - C3: a data action is authorized by the key active at its own `now` (SPEC 6.2, 6.5). A key
+//!   removed by `key/delete` still authorizes an action dated inside its old active period (C3a),
+//!   cannot sign one dated after the delete (C3b), and an action spliced into history before the
+//!   delete commit does not change the PR it signed (C3c).
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::{Error, Key, Principal};
@@ -278,12 +278,14 @@ async fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principa
     p
 }
 
-// Practice: SPEC.md section 6.2 (`key/delete`) says "actions signed after it has been removed are ignored" and "Only actions signed while a ley is active in KT are interpreted", but also "Past signatures from previous active periods remain valid even after the key is no longer active". The second sentence does not say whether a signer-dated action claiming a past period is accepted on replay, and no public spec-author position exists: forge issue #200 item 1 is open with the spec author. This test therefore pins the implementation's current fail-closed behaviour (rejection by current KT membership, not by `now`), not a ruling of the spec.
-// Claim C3a. Mutation that turns this red: making `verify_and_record_action` check the signer
-// against the key's historical active periods by the payload `now` instead of current KT
-// membership.
+// Practice: SPEC.md section 6.2 (`key/delete`): "Only actions signed while a ley is active in KT
+// are interpreted" and "Past signatures from previous active periods remain valid even after the
+// key is no longer active"; section 6.5 is the key timeline table that answers "was a particular
+// key authorized for this principal at a particular timestamp?". An action is judged by the key
+// set the commits dated at or before its `now` left. Claim C3a. Mutation that turns this red:
+// checking the signer against the key set at the tip instead of at the action's `now`.
 #[tokio::test]
-async fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
+async fn deleted_key_action_dated_inside_old_active_period_is_accepted() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let mut p = principal_with_deleted_key(&golden, &key_a).await;
     // The genuine pre-delete action is still recorded after the delete.
@@ -292,13 +294,10 @@ async fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
 
     let r = record(
         &mut p,
-        action(&key_a, 1_700_000_050, "forged, dated inside active period"),
+        action(&key_a, 1_700_000_050, "dated inside the active period"),
     );
-    assert!(
-        matches!(r, Err(Error::UnknownKey)),
-        "expected Err(UnknownKey), got {r:?}"
-    );
-    assert_eq!(p.action_count(), count, "rejection recorded nothing");
+    assert!(r.is_ok(), "expected Ok, got {r:?}");
+    assert_eq!(p.action_count(), count + 1, "the action is recorded");
 }
 
 // Practice: SPEC.md section 6.2 (`key/delete`): "actions signed after it has been removed are
@@ -316,14 +315,14 @@ async fn deleted_key_action_dated_after_delete_is_rejected() {
     );
 }
 
-// Practice: SPEC.md section 4.8.2 (a `ds/create` names DR = MR(DT)) with section 4.2 (`arrow`):
-// the delete commit includes DR as it stood, so history rewritten to hold a later forged action
-// re-verifies only with that action left out of DR: the replay reaches the honest PR and the
-// forged action is marked not included. Claim C3c. Mutation that turns this red: not checking a
-// `ds/create`'s `id` against the Data Tree it is applied to, or including a bundle it did not name.
+// Practice: SPEC.md section 4.8.2 (the DR transaction updates DR to its `id`) with section 2.3.3
+// (DT is a point-in-time snapshot): the delete commit's `ds/create` signed DR as it stood, so
+// history rewritten to hold a later forged action still replays to the honest PR. Claim C3c.
+// Mutation that turns this red: deriving DR from the actions a replayer holds instead of the
+// signed `id`.
 // @docket: rv-state-recomputed :: scripts/docket-run rv-state-recomputed
 #[tokio::test]
-async fn forged_action_spliced_before_delete_commit_is_left_out() {
+async fn forged_action_spliced_before_delete_commit_leaves_pr() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let honest = principal_with_deleted_key(&golden, &key_a).await;
     let cozies = honest.commits().last().expect("delete commit").all_cozies();
@@ -367,8 +366,8 @@ async fn forged_action_spliced_before_delete_commit_is_left_out() {
     )
     .expect("key_a is still active at this position in the forged history");
 
-    // The delete commit's `ds/create` named DR over the genuine action
-    // alone, so it includes that bundle and leaves the forged one out.
+    // The delete commit's `ds/create` signed DR over the genuine action
+    // alone, and DR is that `id` whatever this replayer holds.
     let mut scope = p.begin_commit();
     for vc in &cozies {
         let raw = vc.raw();
@@ -382,11 +381,5 @@ async fn forged_action_spliced_before_delete_commit_is_left_out() {
         p.pr_tagged().expect("pr"),
         honest_pr,
         "DR holds no forged action"
-    );
-    let left_out: Vec<bool> = p.actions().map(cyphr::Action::is_not_included).collect();
-    assert_eq!(
-        left_out,
-        [false, true],
-        "only the forged action is left out"
     );
 }

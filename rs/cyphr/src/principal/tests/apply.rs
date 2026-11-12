@@ -96,8 +96,8 @@ async fn transaction_updates_signer_last_used() {
 async fn action_updates_signer_last_used() {
     let key = make_test_key(0xAA);
     let mut principal = Principal::implicit(key.clone()).await.unwrap();
-
     assert!(principal.get_key(key.tmb()).unwrap().last_used().is_none());
+    principal.genesis_test(Vec::new()).await.unwrap();
 
     // Record action with now=7000
     let action = make_test_action(key.tmb());

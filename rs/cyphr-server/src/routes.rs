@@ -110,10 +110,6 @@ pub struct TipResponse {
 #[derive(Debug, Serialize)]
 pub struct BranchesResponse {
     pub branches: Vec<cyphr_storage::engine::BranchTip>,
-    /// The action-only bundles the canonical chain left out: a
-    /// `ds/create` was signed while each was pending and did not include
-    /// it (SPEC 4.8.2). Kept and served, never part of the chain's DR.
-    pub not_included: Vec<PatchActionsResponse>,
 }
 
 /// Response for `GET /evidence`.
@@ -140,9 +136,7 @@ pub struct PatchResponseBody {
     pub principal_id: String,
     pub entries: Vec<PatchEntryResponse>,
     /// Action-only bundles (SPEC 4.8.1), each preceding the commit at
-    /// `after`: those the chain included and those still pending, never
-    /// one it left out (`/branches` serves those). A puller re-selects
-    /// among them by the same rule (SPEC 4.8.2), so it trusts no list.
+    /// `after`.
     pub actions: Vec<PatchActionsResponse>,
 }
 
@@ -354,18 +348,7 @@ pub async fn branches(
         .list_branches(&query.pr)
         .await
         .map_err(AppError::engine)?;
-    let not_included = state
-        .engine
-        .not_included(&query.pr)
-        .await
-        .map_err(AppError::engine)?
-        .into_iter()
-        .map(PatchActionsResponse::of)
-        .collect();
-    Ok(Json(Envelope::unsigned(BranchesResponse {
-        branches,
-        not_included,
-    })))
+    Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds
