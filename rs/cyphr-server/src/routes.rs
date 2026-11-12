@@ -622,6 +622,60 @@ async fn sign_tip_attestation(
     }
 }
 
+/// The attestation `/patch` attaches to a served range, or `None` to serve
+/// it unsigned.
+///
+/// The tip `t` is read AFTER the entries, so it can be newer than what was
+/// served; an attestation is only true of the response when the range
+/// reaches the attested tip. `served_end` is the last served entry's commit
+/// id; with no entries, the range is empty and reaches the tip only when the
+/// resync `anchor` is the attested tip itself.
+async fn sign_patch_envelope(
+    state: &Arc<AppState>,
+    t: &TipState,
+    pr: &str,
+    bounded: bool,
+    served_end: Option<&str>,
+    anchor: Option<&cyphr::state::TaggedDigest>,
+) -> Option<coz::CozJson> {
+    if bounded {
+        tracing::debug!(
+            principal = %pr,
+            "patch response bounded by `to`; serving unsigned to avoid attesting a later \
+             state than what was actually served"
+        );
+        return None;
+    }
+    // What the response reaches, judged against the tip actually attested
+    // (which `sign_tip_attestation` may have advanced past `t`).
+    let reaches = |tip: &TipState| match served_end {
+        Some(end) => end == tip.commit_id,
+        None => anchor.is_some_and(|a| {
+            let a = a.to_string();
+            a == tip.pr || a == tip.commit_id
+        }),
+    };
+    match sign_tip_attestation(state, t).await {
+        Ok(Some(signed)) if reaches(&signed.tip) => Some(signed.coz),
+        Ok(Some(_)) => {
+            tracing::debug!(
+                principal = %pr,
+                "patch range does not reach the attested tip; serving unsigned"
+            );
+            None
+        },
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                principal = %pr,
+                error = %err,
+                "patch envelope signing unavailable; serving unsigned"
+            );
+            None
+        },
+    }
+}
+
 /// `GET /patch?pr=<PG>&from=<n>&to=<n>` — commit chain delta.
 #[tracing::instrument(skip(state))]
 pub async fn patch(
@@ -667,6 +721,11 @@ pub async fn patch(
         )));
     }
 
+    let served_end = response
+        .entries
+        .last()
+        .map(|entry| entry.commit.commit_id.clone());
+
     let entries = response
         .entries
         .into_iter()
@@ -710,35 +769,16 @@ pub async fn patch(
     // desync guard `/tip` enforces strictly) is safer serving them
     // unsigned than refusing to serve at all.
     let coz = match tip {
-        Some(_) if query.to.is_some() => {
-            tracing::debug!(
-                principal = %query.pr,
-                to = ?query.to,
-                "patch response bounded by `to`; serving unsigned to avoid attesting a later \
-                 state than what was actually served"
-            );
-            None
-        },
-        Some(t) => match sign_tip_attestation(&state, &t).await {
-            // The entries above end at `t`; an attestation of a newer tip
-            // (a commit landed meanwhile) would misdescribe them.
-            Ok(Some(signed)) if signed.tip.commit_id == t.commit_id => Some(signed.coz),
-            Ok(Some(_)) => {
-                tracing::debug!(
-                    principal = %query.pr,
-                    "tip moved while signing patch envelope; serving unsigned"
-                );
-                None
-            },
-            Ok(None) => None,
-            Err(err) => {
-                tracing::warn!(
-                    principal = %query.pr,
-                    error = %err,
-                    "patch envelope signing unavailable; serving unsigned"
-                );
-                None
-            },
+        Some(t) => {
+            sign_patch_envelope(
+                &state,
+                &t,
+                &query.pr,
+                query.to.is_some(),
+                served_end.as_deref(),
+                anchor.as_ref(),
+            )
+            .await
         },
         None => None,
     };
@@ -1333,6 +1373,89 @@ mod commit_count_underflow_tests {
                 .is_none(),
             "roots of a newer commit were cached under the stale commit id"
         );
+    }
+
+    /// Claim: `/patch` signs only a range that reaches the attested tip. The
+    /// tip is read after the entries, so a commit landing between the two
+    /// reads leaves entries ending at the older commit while the tip is
+    /// newer. Red when such a response is signed anyway.
+    #[tokio::test]
+    async fn patch_envelope_unsigned_when_a_commit_lands_after_the_entries() {
+        let (state, _dir) = attestor_state().await;
+        let g = push_test_genesis_full(&state, 1_700_400_000).await;
+        let principal_id = g.principal_id.clone();
+        let served = state
+            .engine
+            .get_patch(&principal_id, None, None)
+            .await
+            .expect("get_patch");
+        let served_end = served.entries.last().map(|e| e.commit.commit_id.clone());
+        push_second_commit(&state, g, 1_700_400_100).await;
+        let later = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("tip");
+        assert_ne!(served_end.as_deref(), Some(later.commit_id.as_str()));
+
+        let coz = sign_patch_envelope(
+            &state,
+            &later,
+            &principal_id,
+            false,
+            served_end.as_deref(),
+            None,
+        )
+        .await;
+        assert!(coz.is_none(), "entries end before the attested tip");
+
+        // Control: a range that does reach the tip is signed.
+        let full = state
+            .engine
+            .get_patch(&principal_id, None, None)
+            .await
+            .expect("get_patch");
+        let end = full.entries.last().map(|e| e.commit.commit_id.clone());
+        let coz =
+            sign_patch_envelope(&state, &later, &principal_id, false, end.as_deref(), None).await;
+        assert!(coz.is_some(), "a range reaching the tip is attested");
+    }
+
+    /// Claim: an anchored request with no entries is signed only when the
+    /// anchor is the attested tip. Red when it is signed against a tip that
+    /// moved past the anchor.
+    #[tokio::test]
+    async fn patch_envelope_empty_range_signs_only_at_the_anchor() {
+        let (state, _dir) = attestor_state().await;
+        let g = push_test_genesis_full(&state, 1_700_500_000).await;
+        let principal_id = g.principal_id.clone();
+        let t1 = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("tip");
+        let at_t1: cyphr::state::TaggedDigest = t1.pr.parse().expect("tip pr is a digest");
+        push_second_commit(&state, g, 1_700_500_100).await;
+        let t2 = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("tip");
+
+        // Nothing served after t1, but the tip is t2: the empty range does
+        // not reach it.
+        let stale =
+            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(&at_t1)).await;
+        assert!(stale.is_none(), "anchor t1 is not the attested tip t2");
+
+        // Caught up: the anchor is the attested tip.
+        let at_t2: cyphr::state::TaggedDigest = t2.pr.parse().expect("tip pr is a digest");
+        let fresh =
+            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(&at_t2)).await;
+        assert!(fresh.is_some(), "anchor at the tip is attested");
     }
 
     /// Claim: the tip `submit_commit` returns is exactly the tip the index
