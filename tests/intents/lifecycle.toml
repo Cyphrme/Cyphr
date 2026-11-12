@@ -196,3 +196,55 @@ tx = [
 deleted   = false
 frozen    = false
 key_count = 0
+
+# Test: a data action taken before a freeze stays in DT. The freeze
+# (SPEC 14.9) refuses actions from its own `now`; an action dated before
+# it was taken while the principal was open, and a replay judges it at
+# that `now`, not at the frozen tip.
+[[test]]
+name      = "action_before_freeze_stays_in_dt"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Taken while open"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/freeze/create" },
+  ],
+]
+
+[test.expected]
+deleted   = false
+frozen    = true
+key_count = 1
+level     = 4
+
+# Test: a data action taken before a principal/delete stays in DT, judged
+# at its own `now` (SPEC 11.4), not at the deleted tip.
+[[test]]
+name      = "action_before_delete_stays_in_dt"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Taken while open"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/principal/delete" },
+  ],
+]
+
+[test.expected]
+deleted   = true
+frozen    = false
+key_count = 1
+level     = 4

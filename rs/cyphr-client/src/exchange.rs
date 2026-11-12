@@ -19,8 +19,9 @@ use serde_json::{Value, json};
 use crate::connector::{ChannelBinding, ConnectError, Connector, Request};
 use crate::sync::{ForkFinding, Record};
 
-/// Bundle file version this build writes and reads.
-pub const BUNDLE_VERSION: u64 = 1;
+/// Bundle file version this build writes and reads. Version 2 drops the
+/// chain position (`after`) from action bundles (SPEC 4.8.1).
+pub const BUNDLE_VERSION: u64 = 2;
 
 /// Why a bundle file was refused.
 #[derive(Debug, thiserror::Error)]
@@ -38,12 +39,10 @@ pub enum BundleError {
     },
 }
 
-/// Action blobs recorded after `after` commits (they precede commit
-/// `after`, SPEC 4.8.2).
+/// One bundle of data actions (SPEC 4.8.1): not chained, so it holds no
+/// place among the commits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BundleActions {
-    /// Commits held when the actions were recorded.
-    pub after: u64,
     /// The signed actions, base64url.
     pub blobs: Vec<String>,
 }
@@ -53,7 +52,7 @@ pub struct BundleActions {
 pub struct BundleChain {
     /// The commits, oldest first.
     pub commits: Vec<WireBundle>,
-    /// The action-only bundles between them.
+    /// The action-only bundles.
     #[serde(default)]
     pub actions: Vec<BundleActions>,
 }
@@ -81,7 +80,6 @@ impl Bundle {
         for bundle in record.bundles_since(0) {
             if bundle.txs.is_empty() && !bundle.actions.is_empty() {
                 own.actions.push(BundleActions {
-                    after: own.commits.len() as u64,
                     blobs: bundle
                         .actions
                         .iter()
@@ -94,16 +92,11 @@ impl Bundle {
         }
         let mut chains = vec![own.clone()];
         for fork in forks {
-            // The other branch is the shared prefix plus the rival, whose
-            // own leading actions travel inside it.
+            // The other branch is the shared prefix plus the rival. Actions
+            // belong to no branch, so it carries them all.
             let mut chain = BundleChain {
                 commits: own.commits.iter().take(fork.height).cloned().collect(),
-                actions: own
-                    .actions
-                    .iter()
-                    .filter(|a| a.after < fork.height as u64)
-                    .cloned()
-                    .collect(),
+                actions: own.actions.clone(),
             };
             chain.commits.push(fork.rival.clone());
             chains.push(chain);
@@ -200,7 +193,7 @@ impl Connector for BundleConnector {
                     .chain
                     .actions
                     .iter()
-                    .map(|a| json!({"after": a.after, "blobs": a.blobs}))
+                    .map(|a| json!({"blobs": a.blobs}))
                     .collect();
                 envelope(&json!({"entries": entries, "actions": actions}))
             },

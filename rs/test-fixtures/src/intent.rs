@@ -151,7 +151,7 @@ pub struct OverrideIntent {
     /// Override timestamp (for TimestampPast tests).
     #[serde(default)]
     pub now: Option<i64>,
-    /// Force-inject a `pre` field onto actions (for [data-action-no-pre] tests).
+    /// Force-inject a `pre` field onto actions (for [data-action-pre-ignored] tests).
     #[serde(default)]
     pub inject_pre: Option<bool>,
     /// Bypass the empty commit validation to force an empty commit generation (for

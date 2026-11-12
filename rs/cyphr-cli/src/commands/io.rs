@@ -8,8 +8,8 @@ use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    Placed, block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
-    parse_principal_genesis, parse_store, place, save_principal_to_engine,
+    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
+    parse_principal_genesis, parse_store, save_principal_to_engine,
 };
 use crate::{Cli, Error, OutputFormat};
 
@@ -27,8 +27,8 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     let file = File::create(output)?;
     let mut writer = BufWriter::new(file);
 
-    // Action-only lines carry the data actions a `ds/create` includes, each
-    // ahead of the commit that follows it, as `export_commits` writes them.
+    // Action-only lines follow the commits, as `export_commits` writes
+    // them: actions hold no chain position (SPEC 4.8.1).
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let bundles = block_on(store.get_patch(&principal_id, None, None))??
         .actions
@@ -37,12 +37,11 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
         let line = CommitEntry::from_bundle(&cyphr::replay::WireBundle::actions(blobs.to_vec()))?;
         Ok(serde_json::to_string(&line)?)
     };
-    for step in place(
-        commits.iter().map(|c| Ok(serde_json::to_string(c)?)),
-        bundles.map(|a| (a.after as usize, action_line(&a.blobs))),
-    ) {
-        let (Placed::Commit(_, line) | Placed::Actions(_, line)) = step;
-        writeln!(writer, "{}", line?)?;
+    for commit in &commits {
+        writeln!(writer, "{}", serde_json::to_string(commit)?)?;
+    }
+    for bundle in bundles {
+        writeln!(writer, "{}", action_line(&bundle.blobs)?)?;
     }
     writer.flush()?;
 

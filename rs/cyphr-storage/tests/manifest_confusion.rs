@@ -777,7 +777,7 @@ async fn action_only_no_error_after_store() {
             stored: stored.clone(),
         },
     );
-    // The vector's first line is its genesis commit; its second is one data
+    // The vector's first line is its genesis commit; its last is one data
     // action on its own, which only a principal with a genesis commit takes.
     let fx = load_golden("actions", "single_action_promotes_ds");
     let (g, id) = genesis_of(&fx);
@@ -790,7 +790,7 @@ async fn action_only_no_error_after_store() {
     e.submit_commit(&id, Some(g.clone()), &wire(&line(0)))
         .await
         .expect("genesis commit");
-    let blobs = line(1);
+    let blobs = line(2);
 
     armed.store(true, Ordering::SeqCst);
     let result = e.submit_commit(&id, Some(g), &wire(&blobs)).await;

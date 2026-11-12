@@ -924,7 +924,7 @@ fn children_of_a_disqualified_rival_are_not_a_fork() {
         held(2, "r2a", Some("pr-r1"), "ok", false),
         held(2, "r2b", Some("pr-r1"), "ok", false),
     ];
-    let revoked: Revoked = ["revoked".to_string()].into_iter().collect();
+    let revoked: Revoked = [("revoked".to_string(), 0)].into_iter().collect();
     assert!(
         !in_error(&commits, &revoked),
         "two children of a disqualified rival counted as a fork"

@@ -30,7 +30,7 @@ use cyphr::{Commit, Principal};
 use serde::Deserialize as _;
 use serde_json::Value;
 
-use crate::patch::{ActionBundle, PatchEntry, Step, replay_order};
+use crate::patch::PatchEntry;
 
 /// The most coz blobs one served commit may carry; a bound on what an
 /// untrusted item can make the verifier decode.
@@ -188,49 +188,18 @@ pub struct ForkProof {
 /// [`EvidenceFailure::BadCommit`] or [`EvidenceFailure::Replay`] naming
 /// the first commit that fails.
 pub async fn replay_chain(
-    base: Principal<MemoryStorage>,
-    entries: &[PatchEntry],
-) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
-    replay_chain_with_actions(base, entries, &[]).await
-}
-
-/// [`replay_chain`] with the action-only bundles a patch serves beside its
-/// commits, replayed in the order they were accepted: a data commit needs
-/// the actions before it.
-///
-/// # Errors
-///
-/// As [`replay_chain`]; an undecodable action bundle is a
-/// [`EvidenceFailure::BadCommit`] at the commit it precedes.
-pub async fn replay_chain_with_actions(
     mut base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
-    actions: &[ActionBundle],
 ) -> Result<Principal<MemoryStorage>, EvidenceFailure> {
-    for step in replay_order(0, entries, actions) {
-        match step {
-            Step::Commit(index, entry) => {
-                let bundle = entry
-                    .bundle
-                    .as_ref()
-                    .map_err(|_| EvidenceFailure::BadCommit {
-                        commit: index,
-                        what: "entry is undecodable",
-                    })?;
-                replay_commit(&mut base, index, bundle).await?;
-            },
-            Step::Actions(bundle) => {
-                let blobs = bundle
-                    .blobs
-                    .as_ref()
-                    .map_err(|_| EvidenceFailure::BadCommit {
-                        commit: usize::try_from(bundle.after).unwrap_or(usize::MAX),
-                        what: "action bundle is undecodable",
-                    })?;
-                let at = usize::try_from(bundle.after).unwrap_or(usize::MAX);
-                replay_commit(&mut base, at, &WireBundle::actions(blobs.clone())).await?;
-            },
-        }
+    for (index, entry) in entries.iter().enumerate() {
+        let bundle = entry
+            .bundle
+            .as_ref()
+            .map_err(|_| EvidenceFailure::BadCommit {
+                commit: index,
+                what: "entry is undecodable",
+            })?;
+        replay_commit(&mut base, index, bundle).await?;
     }
     Ok(base)
 }
@@ -258,23 +227,6 @@ pub async fn verify_principal_fork(
     pg: &str,
     base: Principal<MemoryStorage>,
     entries: &[PatchEntry],
-) -> Result<ForkProof, EvidenceFailure> {
-    verify_principal_fork_with_actions(item, pg, base, entries, &[]).await
-}
-
-/// [`verify_principal_fork`] for a principal whose history carries data
-/// actions: `actions` are the patch's action-only bundles, replayed with
-/// the commits (those accepted up to the fork's position precede it).
-///
-/// # Errors
-///
-/// As [`verify_principal_fork`].
-pub async fn verify_principal_fork_with_actions(
-    item: &Value,
-    pg: &str,
-    base: Principal<MemoryStorage>,
-    entries: &[PatchEntry],
-    actions: &[ActionBundle],
 ) -> Result<ForkProof, EvidenceFailure> {
     let EvidenceItem::PrincipalFork {
         pg: item_pg,
@@ -321,23 +273,7 @@ pub async fn verify_principal_fork_with_actions(
             return Err(EvidenceFailure::GenesisMismatch);
         }
     }
-    // The state at `pre` holds the actions accepted before the fork's
-    // position only. Those accepted AT it (`after == height`) lead the
-    // commit of whichever branch the patch's holder kept: they are no
-    // part of the other branch's `pre`, which brings its own actions
-    // inline (SPEC 4.8.2), so each branch is tried with and without them.
-    let before_fork: Vec<ActionBundle> = actions
-        .iter()
-        .filter(|a| a.after < height)
-        .cloned()
-        .collect();
-    let leading: Vec<WireBundle> = actions
-        .iter()
-        .filter(|a| a.after == height)
-        .filter_map(|a| a.blobs.as_ref().ok())
-        .map(|blobs| WireBundle::actions(blobs.clone()))
-        .collect();
-    let state = replay_chain_with_actions(base, prefix, &before_fork).await?;
+    let state = replay_chain(base, prefix).await?;
     if genesis_commit.is_some() && !named_by_key && !pg_names(&state, pg) {
         return Err(EvidenceFailure::GenesisMismatch);
     }
@@ -353,41 +289,17 @@ pub async fn verify_principal_fork_with_actions(
     let branch = async |which,
                         blobs: &WireBundle|
            -> Result<(Principal<MemoryStorage>, Commit), EvidenceFailure> {
-        let mut tried = None;
-        // A branch that carries its own actions is replayed from `pre`
-        // alone; one that carries none may lean on the leading actions.
-        let with_leading = blobs.actions.is_empty() && !leading.is_empty();
-        for lead in [with_leading, false] {
-            let mut copy = state
-                .fork()
-                .await
-                .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
-            if lead {
-                for held in &leading {
-                    replay_commit(&mut copy, at, held).await?;
-                }
-            }
-            match replay_commit(&mut copy, at, blobs).await {
-                Ok(()) => {
-                    tried = Some(Ok(copy));
-                    break;
-                },
-                Err(e) => tried = Some(Err(e)),
-            }
-        }
-        let copy = match tried {
-            Some(Ok(copy)) => copy,
-            Some(Err(EvidenceFailure::Replay { source, .. })) => {
+        let mut copy = state
+            .fork()
+            .await
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })?;
+        match replay_commit(&mut copy, at, blobs).await {
+            Ok(()) => {},
+            Err(EvidenceFailure::Replay { source, .. }) => {
                 return Err(EvidenceFailure::CommitRefused { which, source });
             },
-            Some(Err(other)) => return Err(other),
-            None => {
-                return Err(EvidenceFailure::BadCommit {
-                    commit: at,
-                    what: "no commit formed",
-                });
-            },
-        };
+            Err(other) => return Err(other),
+        }
         let commit = copy
             .commits()
             .last()

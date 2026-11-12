@@ -515,58 +515,58 @@ pub fn sign_pay(
     Ok((sig, czd))
 }
 
-/// One step of a replayable history, in order.
-pub enum Placed<C, A> {
-    /// The commit at this position.
-    Commit(usize, C),
-    /// An action-only bundle accepted when this many commits existed.
-    Actions(usize, A),
+/// Whether the action `blob` is signed by a key `principal_id` ever held:
+/// a refusal for an inactive signer is then a verdict its history flipped,
+/// ignored (SPEC 6.2); a stranger key's is not.
+async fn signed_by_held_key(
+    engine: &CliStorageEngine,
+    principal_id: &str,
+    genesis: Option<&Genesis>,
+    blob: &[u8],
+) -> crate::Result<bool> {
+    let coz = cyphr::replay::StoredCoz::from_wire(blob)
+        .map_err(|e| cyphr_storage::engine::EngineError::MalformedBlob(e.to_string()))?;
+    let genesis = match genesis {
+        Some(g) => g.clone(),
+        None => engine.resolve_genesis(principal_id, &[]).await?,
+    };
+    let principal = engine.load_principal(principal_id, genesis).await?;
+    Ok(principal.held_key(&coz.header().tmb))
 }
 
-/// Order a history for replay: a bundle accepted when `n` commits existed
-/// precedes commit `n`, and later ones come last, so a `ds/create` finds
-/// the actions it includes (SPEC 4.8.2). The one placement rule fetch,
-/// rebase, verify and export share, matching `cyphr_storage::export_commits`.
-pub fn place<C, A>(
-    commits: impl IntoIterator<Item = C>,
-    actions: impl IntoIterator<Item = (usize, A)>,
-) -> Vec<Placed<C, A>> {
-    let mut out = Vec::new();
-    let mut bundles = actions.into_iter().peekable();
-    for (i, commit) in commits.into_iter().enumerate() {
-        while let Some((after, held)) = bundles.next_if(|(after, _)| *after <= i) {
-            out.push(Placed::Actions(after, held));
-        }
-        out.push(Placed::Commit(i, commit));
-    }
-    out.extend(bundles.map(|(after, held)| Placed::Actions(after, held)));
-    out
-}
-
-/// Submit a peer's or a store's history to `engine` in replay order, from
-/// the commit at `from` on (and the bundles that precede it). A bundle the
-/// engine already holds is a no-op (SPEC 7.6). Returns the commits applied.
+/// Submit a peer's or a store's history to `engine`: the commits from the
+/// one at `from` on, then every action (actions hold no chain position,
+/// SPEC 4.8.1), one at a time. One the engine already holds is a no-op
+/// (SPEC 7.6), and one whose signer was not active at its own `now` on
+/// this history is ignored (SPEC 6.2). Returns the commits applied.
 pub async fn submit_history(
     engine: &CliStorageEngine,
     principal_id: &str,
     genesis: Option<Genesis>,
     commits: &[WireBundle],
-    actions: &[(usize, Vec<Vec<u8>>)],
+    actions: &[Vec<Vec<u8>>],
     from: usize,
 ) -> crate::Result<usize> {
     let mut applied = 0;
-    for step in place(commits, actions.iter().map(|(a, b)| (*a, b))) {
-        let (index, bundle, is_commit) = match step {
-            Placed::Commit(i, bundle) => (i, bundle.clone(), true),
-            Placed::Actions(after, blobs) => (after, WireBundle::actions(blobs.clone()), false),
-        };
-        if index < from {
-            continue;
-        }
+    for bundle in commits.iter().skip(from) {
         engine
-            .submit_commit(principal_id, genesis.clone(), &bundle)
+            .submit_commit(principal_id, genesis.clone(), bundle)
             .await?;
-        applied += usize::from(is_commit);
+        applied += 1;
+    }
+    for blob in actions.iter().flatten() {
+        let one = WireBundle::actions(vec![blob.clone()]);
+        match engine
+            .submit_commit(principal_id, genesis.clone(), &one)
+            .await
+        {
+            Ok(_) => {},
+            Err(cyphr_storage::engine::EngineError::Protocol(e))
+                if e.is_inactive_signer()
+                    && signed_by_held_key(engine, principal_id, genesis.as_ref(), blob).await? => {
+            },
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(applied)
 }

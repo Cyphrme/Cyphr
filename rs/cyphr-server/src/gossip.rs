@@ -124,7 +124,6 @@ async fn round_principal(
         .actions
         .iter()
         .map(|a| ActionBundle {
-            after: a.after,
             blobs: Ok(a.blobs.clone()),
         })
         .collect();
@@ -211,17 +210,9 @@ async fn follow_branch(
         },
     };
     for (index, entry) in patch.entries.iter().enumerate().skip(height + 1) {
-        let Ok(mut bundle) = entry.bundle.clone() else {
+        let Ok(bundle) = entry.bundle.clone() else {
             return;
         };
-        let leading: Vec<Vec<u8>> = patch
-            .actions
-            .iter()
-            .filter(|a| a.after == index as u64)
-            .filter_map(|a| a.blobs.clone().ok())
-            .flatten()
-            .collect();
-        bundle.actions.splice(0..0, leading);
         match state
             .engine
             .submit_commit(principal_id, None, &bundle)

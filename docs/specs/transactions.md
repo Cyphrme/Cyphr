@@ -45,7 +45,7 @@ TYPE Authority      = String                               -- domain name or Pri
 TYPE Action         = "<noun>[/<noun>...]/<verb>"
 TYPE Verb           = "create" | "read" | "update" | "upsert" | "delete"
 TYPE TransactionCoz = Coz                                  -- classified by `typ` (key/*, principal/create, commit/create); carries no `pre`
-TYPE DataActionCoz  = Coz                                  -- MUST NOT contain `pre` (see [data-action-no-pre])
+TYPE DataActionCoz  = Coz                                  -- a `pre` carries no meaning (see [data-action-pre-ignored])
 
 -- Transaction structure: list of lists
 TYPE Transaction    = List<Coz>                            -- ≥1 related cozies
@@ -73,7 +73,7 @@ rejected. (Coz itself makes all fields optional; Cyphr constrains this.)
 and advances the commit chain) if and only if its `typ` is one of `key/create`,
 `key/delete`, `key/replace`, `key/revoke`, `principal/create`, or
 `commit/create`. Every other `typ` is a data action (see
-[data-action-no-pre]). Transaction cozies carry no `pre` field; classification
+[data-action-pre-ignored]). Transaction cozies carry no `pre` field; classification
 is by `typ`, not by field presence. Per-mutation `pre` was rejected-draft
 residue and has been removed from the wire format and implementation — commit
 atomicity, bundling, and order are carried entirely by the commit transaction's
@@ -81,10 +81,11 @@ atomicity, bundling, and order are carried entirely by the commit transaction's
 [txs-list-of-lists], [tx-grouping]), not by a chained `pre` reference.
 `VERIFIED: agent-check — updated 2026-07-06, per-mutation pre removed (rejected draft, PR #39 thread)`
 
-**[data-action-no-pre]**: Data action cozies MUST NOT contain `pre`. Data
-actions are stateless signed messages that do not mutate AT and are not part
-of the commit chain.
-`VERIFIED: agent-check — updated 2026-03-09 per B-5 (AR→AT)`
+**[data-action-pre-ignored]**: A `pre` in a data action coz has no protocol
+meaning and does not refuse it. Data actions are stateless signed messages
+that do not mutate AT and are not part of the commit chain: the Data Tree has
+no chain (SPEC §2.3.3).
+`VERIFIED: test — tests/golden/data_action_constraints/data_action_with_pre_is_accepted.json`
 
 #### Authorization
 
@@ -423,7 +424,7 @@ data action that registers an external witness (represented as a principal)
 with the principal's clients. The protocol message remains in SPEC and the
 golden corpus (`tests/golden/witness/`); `cyphr-server` has no registration
 endpoint and does not act on it. The transaction MUST NOT mutate PT or AT and MUST NOT
-contain `pre` (per [data-action-stateless] and [data-action-no-pre]). The payload MUST
+depend on `pre` (per [data-action-stateless] and [data-action-pre-ignored]). The payload MUST
 include `id` containing the witness principal's Principal Genesis (PG) value.
 
 - **PRE**: Signing key MUST be active in KR.
@@ -432,8 +433,8 @@ include `id` containing the witness principal's Principal Genesis (PG) value.
 
 **[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` (no longer routed by `cyphr-server`) is a
 data action that removes a previously registered external witness. The transaction
-MUST NOT mutate PT or AT and MUST NOT contain `pre` (per [data-action-stateless] and
-[data-action-no-pre]). The payload MUST include `id` identifying the witness
+MUST NOT mutate PT or AT and does not depend on `pre` (per [data-action-stateless] and
+[data-action-pre-ignored]). The payload MUST include `id` identifying the witness
 principal's PG to remove.
 
 - **PRE**: Signing key MUST be active in KR. Witness MUST be currently registered.
@@ -535,7 +536,7 @@ itself).
 | :---------------------------- | :---------- | :----- | :------------------------------------------------------------------------------- |
 | [coz-required-fields]         | agent-check | pass   | Explicit in §2.3.1                                                               |
 | [transaction-classification]  | agent-check | pass   | §4.1 (no `pre` in example); `rs/cyphr-storage/src/import.rs::is_transaction_typ` |
-| [data-action-no-pre]          | agent-check | pass   | §4.8.1 (data actions are not chained)                                            |
+| [data-action-pre-ignored]     | test        | pass   | §2.3.3 (DT has no chain); `data_action_with_pre_is_accepted` golden vector       |
 | [authorization-triple]        | agent-check | pass   | §2.3.2 (Antecedent Authorization Gate)                                           |
 | [pre-mutation-key-rule]       | agent-check | pass   | §2.3.2; verified against `rs/cyphr/src/commit.rs` (see Authorization section)    |
 | [commit-append-only]          | agent-check | pass   | Explicit in §2.3.2                                                               |

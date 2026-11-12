@@ -153,8 +153,9 @@ impl PrincipalState {
 
     /// Determine the current feature level.
     pub fn level(&self) -> Level {
-        // Level 4: has actions
-        if !self.data.actions.is_empty() {
+        // Level 4: a Data Tree (SPEC 3.0, 3.4): DR in the Principal Tree,
+        // set by a signed `ds/create`, or data actions recorded in DT.
+        if self.dr.is_some() || !self.data.actions.is_empty() {
             return Level::L4;
         }
         // Level 3: multiple keys or has commits
@@ -267,7 +268,7 @@ impl<S: eml::Storage> Principal<S> {
             .ok_or(Error::UnknownKey)?;
         key.set_revocation(Revocation { rvk, by: None });
         core.auth.revoked.insert(tmb_b64, key);
-        core.key_timeline.close(tmb, rvk);
+        core.key_timeline.revoke(tmb, rvk);
         Ok(())
     }
 
