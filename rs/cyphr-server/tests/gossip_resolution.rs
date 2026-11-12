@@ -397,3 +397,57 @@ async fn a_key_the_dead_commit_introduced_cannot_bury_it() {
         "X1 and X2 were admitted: a key X1 introduced buried it"
     );
 }
+
+/// Backs burial by live keys only, with the key minted mid-span: P2 serves
+/// X1, signed by the dead `eve`; X2, also signed by `eve`, which introduces
+/// `alice`; and X3, signed by `alice` alone. `alice` was not a key of the
+/// chain before X1, so X3 buries neither: one round of P1's gossip admits
+/// none of the three. Turns red if a key introduced between the dead
+/// commit and its burier counts as live.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_introduced_mid_span_cannot_bury_it() {
+    let (genesis, id, ..) = dead_key_fixture().await;
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let eve = pool.get("eve_ed25519").expect("eve");
+    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let again = test_fixtures::bundle::genesis_bundle(&mut p, g, &[eve.key().expect("eve")], T)
+        .await
+        .expect("genesis");
+    assert_eq!(again, genesis, "one genesis");
+    let x1 = common::key_commit_by(&mut p, "eve_ed25519", "bob", T + 1).await;
+    let x2 = common::key_commit_by(&mut p, "eve_ed25519", "alice", T + 2).await;
+    let x3 = common::key_commit_by(&mut p, "alice", "carol", T + 3).await;
+
+    let (p1, _d1) = keyless_server();
+    let (p2, _d2) = keyless_server();
+    let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
+    for app in [&app1, &app2] {
+        assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
+    }
+    for (name, bundle) in [("X1", &x1), ("X2", &x2), ("X3", &x3)] {
+        assert_eq!(
+            push(&app2, &id, bundle).await,
+            StatusCode::CREATED,
+            "{name} on P2"
+        );
+    }
+    let (status, body) = post_json(
+        app1.clone(),
+        "/revoke",
+        common::eve_revoke(T + 5).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+    let before = tip_pr(&app1, &id).await;
+
+    one_round(&p1, &p2).await;
+
+    assert_eq!(
+        tip_pr(&app1, &id).await,
+        before,
+        "a key introduced mid-span buried the dead commits"
+    );
+}
