@@ -10,6 +10,13 @@
 //! store's [`assess`](cyphr_storage::engine::StorageEngine::assess), the
 //! rule a peer applies, over the branches this verifier holds as a peer
 //! holds them.
+//!
+//! What a verdict claims is bounded by what was seen: Active means no fork
+//! was seen among the peers that answered this round, not that no fork
+//! exists. A peer that lists a single branch head is not asked for
+//! evidence, and a peer's evidence is read only up to a fixed number of
+//! items, so a peer that pads its list with items that do not verify can
+//! push a real fork past what is read.
 
 use std::time::Duration;
 
