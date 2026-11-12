@@ -233,7 +233,12 @@ async fn action_only_push_of_recorded_actions_stores_nothing() {
         serde_json::json!({"msg": "once", "now": T + 1, "typ": "cyphr.me/comment/create"}),
     );
     let blob = wire(&pay, &sig);
-    let (s, b) = post_json(app.clone(), "/push", push_body(&id, &[blob.clone()])).await;
+    let (s, b) = post_json(
+        app.clone(),
+        "/push",
+        push_body(&id, std::slice::from_ref(&blob)),
+    )
+    .await;
     assert!(s.is_success(), "first action-only push: {s} {b:?}");
     p.verify_and_record_action(&pay, &sig, czd)
         .expect("action records");
