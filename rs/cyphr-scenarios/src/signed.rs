@@ -385,7 +385,12 @@ pub async fn verify_evidence_set(
         } else {
             (a, ida)
         };
-        let mut line = chain.served.0.get(..height).ok_or("fork above the chain")?.to_vec();
+        let mut line = chain
+            .served
+            .0
+            .get(..height)
+            .ok_or("fork above the chain")?
+            .to_vec();
         line.push(PatchEntry {
             sequence: height as u64,
             bundle: Ok(rival),

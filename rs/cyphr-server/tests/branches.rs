@@ -1486,10 +1486,17 @@ async fn key_delete_promotes_at_the_losing_peer() {
     )
     .await;
     let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
-    assert_eq!(status, StatusCode::CREATED, "the delete promotes D: {body:?}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the delete promotes D: {body:?}"
+    );
     assert!(!errored(&state, &t.id).await, "eve's rivals left the fork");
     let tip = tip_payload(app.clone(), &t.id).await;
-    assert_eq!(tip["commit_id"], body["payload"]["commit_id"], "the delete is /tip");
+    assert_eq!(
+        tip["commit_id"], body["payload"]["commit_id"],
+        "the delete is /tip"
+    );
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
     assert!(!errored(&state, &t.id).await, "a rebuild agrees");

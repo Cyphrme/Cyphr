@@ -301,10 +301,13 @@ pub async fn verify_branch_extension(
         return Err(EvidenceFailure::PreMismatch);
     }
     for blobs in [b, a] {
-        let mut copy = state.fork().await.map_err(|source| EvidenceFailure::Replay {
-            commit: line.len(),
-            source,
-        })?;
+        let mut copy = state
+            .fork()
+            .await
+            .map_err(|source| EvidenceFailure::Replay {
+                commit: line.len(),
+                source,
+            })?;
         if replay_commit(&mut copy, line.len(), &blobs).await.is_ok() {
             let id = copy
                 .commits()

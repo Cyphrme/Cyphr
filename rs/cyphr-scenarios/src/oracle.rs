@@ -320,7 +320,6 @@ impl Harness {
         Some(v["payload"]["now"].as_i64()? - v["payload"]["last_updated"].as_i64()?)
     }
 
-
     /// The thumbprint that signed the peer's last `commit/create`, read from
     /// the replayed chain (so every signature up to it verified). `None`
     /// when the patch route cannot answer; a patch that does not replay
