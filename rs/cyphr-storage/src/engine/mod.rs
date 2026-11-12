@@ -243,7 +243,7 @@ struct Frame {
     shape: Shape,
     keys: Vec<KeyEntry>,
     signed: Signed,
-    removes: Vec<String>,
+    removes: Vec<(String, Removal)>,
     seen: Option<i64>,
 }
 
@@ -255,10 +255,18 @@ fn signed_of(commit: &IndexableCommit) -> Signed {
     commit.cozies.iter().map(|c| c.tmb.clone()).collect()
 }
 
-/// The keys a commit removes from its principal (SPEC 6.2-6.4): the `id`
-/// of a `key/delete`, and the signer of a `key/revoke` or of a
-/// `key/replace` (which swaps out its own signer).
-fn removes_of(commit: &IndexableCommit) -> Vec<String> {
+/// How a commit removes a key from its principal (SPEC 6.2-6.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    /// `key/delete` (its `id`) or `key/replace` (its own signer): the key
+    /// leaves the principal from this commit on.
+    Delete,
+    /// `key/revoke` (its own signer): the key is never to be trusted again.
+    Revoke,
+}
+
+/// The keys a commit removes from its principal, and how.
+fn removes_of(commit: &IndexableCommit) -> Vec<(String, Removal)> {
     use cyphr::parsed_coz::typ;
 
     commit
@@ -267,11 +275,13 @@ fn removes_of(commit: &IndexableCommit) -> Vec<String> {
         .filter_map(|c| {
             if typ::has_suffix(&c.typ, typ::KEY_DELETE) {
                 let pay: serde_json::Value = serde_json::from_str(c.payload.as_deref()?).ok()?;
-                pay["id"].as_str().map(str::to_string)
-            } else if typ::has_suffix(&c.typ, typ::KEY_REVOKE)
-                || typ::has_suffix(&c.typ, typ::KEY_REPLACE)
-            {
-                Some(c.tmb.clone())
+                pay["id"]
+                    .as_str()
+                    .map(|id| (id.to_string(), Removal::Delete))
+            } else if typ::has_suffix(&c.typ, typ::KEY_REPLACE) {
+                Some((c.tmb.clone(), Removal::Delete))
+            } else if typ::has_suffix(&c.typ, typ::KEY_REVOKE) {
+                Some((c.tmb.clone(), Removal::Revoke))
             } else {
                 None
             }
@@ -779,7 +789,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             branches: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
             frames: std::sync::Mutex::new(HashMap::new()),
-            revoked: std::sync::Mutex::new(HashMap::new()),
+            revoked: std::sync::Mutex::new(Revoked::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
         }
@@ -1431,7 +1441,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .map_err(|e| e.to_string())
                     .and_then(|evidence| verify_revoke(&evidence));
                 match verified {
-                    Ok((tmb, rvk)) => keep_earliest(&mut revoked, tmb, (rvk, hash)),
+                    Ok((tmb, _)) => {
+                        revoked.insert(tmb);
+                    },
                     Err(why) => quarantined.push(QuarantinedManifest {
                         manifest: hash,
                         principal_id: None,
@@ -3034,40 +3046,35 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// A revoke never changes a served chain: it is prospective for the
     /// commits a principal's chain already holds, and it takes every rival
-    /// its key signed out of the fork ([`participants`]). Key death is
-    /// global by thumbprint, so the record names no principal.
+    /// its key signed out of the fork ([`participants`]), whatever its
+    /// `rvk`. Key death is global by thumbprint, so the record names no
+    /// principal.
     ///
-    /// One record per thumbprint: a revoke is stored only if it is
-    /// strictly earlier, by `(rvk, record digest)`, than the one held, so
-    /// which record stands is decided by the records and not by arrival
-    /// order. A key holder can still add records by lowering `rvk` or the
-    /// digest; bounding that fully needs blob deletion, which
-    /// [`BlobStore`] does not offer.
+    /// One durable record per thumbprint, the first valid one: a later
+    /// revoke of a key already revoked stores nothing, whatever its `rvk`
+    /// or digest, so a key holder cannot grow the store by re-signing.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
-        let (tmb, rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
-        let mut bytes = REVOKE_RECORD_PREFIX.to_vec();
-        serde_json::to_writer(&mut bytes, evidence)
-            .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
-        let record = (
-            rvk,
-            Blake3Hash::from_bytes(*blake3::hash(&bytes).as_bytes()),
-        );
-        let held = self
+        let (tmb, _rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
+        // Held across the write, so two revokes of one key store one record.
+        let lock = self.principal_lock(&format!("revoke\0{tmb}"));
+        let _one_record = lock.lock().await;
+        if self
             .revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&tmb)
-            .copied();
-        if held.is_some_and(|h| earlier(h, record)) || held == Some(record) {
+            .contains(&tmb)
+        {
             return Ok(());
         }
+        let mut bytes = REVOKE_RECORD_PREFIX.to_vec();
+        serde_json::to_writer(&mut bytes, evidence)
+            .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
         self.blob_store.put(&bytes).await?;
-        keep_earliest(
-            &mut self.revoked.lock().unwrap_or_else(|p| p.into_inner()),
-            tmb,
-            record,
-        );
+        self.revoked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(tmb);
         Ok(())
     }
 
@@ -3630,7 +3637,7 @@ struct Held {
     /// Whether it is on the canonical chain.
     canonical: bool,
     /// The keys it removes ([`removes_of`]); counted for canonical commits.
-    removes: Vec<String>,
+    removes: Vec<(String, Removal)>,
 }
 
 impl Held {
@@ -3647,40 +3654,55 @@ impl Held {
     }
 }
 
-/// The revoke record standing for each revoked thumbprint (base64url): its
-/// `rvk` and its record digest, the earliest by that pair.
-type Revoked = HashMap<String, (i64, Blake3Hash)>;
-
-/// Whether revoke record `a` is earlier than `b`: lower `rvk`, then lower
-/// digest.
-fn earlier(a: (i64, Blake3Hash), b: (i64, Blake3Hash)) -> bool {
-    (a.0, *a.1.as_bytes()) < (b.0, *b.1.as_bytes())
-}
-
-/// Keep `record` for `tmb` if it is earlier than the one held.
-fn keep_earliest(revoked: &mut Revoked, tmb: String, record: (i64, Blake3Hash)) {
-    let standing = revoked.entry(tmb).or_insert(record);
-    if earlier(record, *standing) {
-        *standing = record;
-    }
-}
+/// The naked-revoked thumbprints (base64url): a cache of the revoke
+/// records, one per thumbprint (I1).
+type Revoked = std::collections::HashSet<String>;
 
 /// The ids of the held commits that take part in a fork:
 ///
 /// * every canonical commit: a revoke is prospective for the chain a witness already serves, and
 ///   never makes it untrusted (SPEC 6.4; nrd: "You cant make all sigs retroactively invalid or that
 ///   would mark legitimate commits as untrusted too");
-/// * a rival none of whose cozies is signed by a naked-revoked key (whatever its `now` or the
-///   `rvk`) or by a key the canonical chain removed ([`removes_of`]), and whose parent takes part.
+/// * a rival whose parent takes part and none of whose cozies is signed by a key that is
+///   naked-revoked or revoked on the canonical chain (at any position: a revoked key "should never
+///   be trusted again", SPEC 6.4), or deleted or replaced by a canonical commit strictly above the
+///   rival's position. A contested commit is judged against the state before its position, so a
+///   canonical commit at that position (its participant rival) cannot disqualify it.
 ///
+/// Neither a rival's `now` nor a revoke's `rvk` decides anything here.
 /// Every other rival is evidence only: kept and served, never counted.
+///
+/// Known limit, with the spec author on #203: a fork at n of ordinary
+/// commits, then each side deleting the other's key at n+1. Each witness
+/// demotes the side it saw second, since only its canonical removal
+/// counts, and reports Active, so witnesses that saw the two in another
+/// order disagree.
 fn participants(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<String> {
-    let removed: std::collections::HashSet<&str> = held
-        .iter()
-        .filter(|h| h.canonical)
-        .flat_map(|h| h.removes.iter().map(String::as_str))
-        .chain(revoked.keys().map(String::as_str))
-        .collect();
+    // Each canonically removed key, with the lowest position it is
+    // deleted at; a revoked key counts at every position.
+    let mut deleted_at: HashMap<&str, u64> = HashMap::new();
+    let mut never: std::collections::HashSet<&str> = revoked.iter().map(String::as_str).collect();
+    for h in held.iter().filter(|h| h.canonical) {
+        for (tmb, how) in &h.removes {
+            match how {
+                Removal::Revoke => {
+                    never.insert(tmb.as_str());
+                },
+                Removal::Delete => {
+                    let at = deleted_at.entry(tmb.as_str()).or_insert(h.sequence);
+                    *at = (*at).min(h.sequence);
+                },
+            }
+        }
+    }
+    let disqualified = |h: &Held| {
+        h.signed.iter().any(|tmb| {
+            never.contains(tmb.as_str())
+                || deleted_at
+                    .get(tmb.as_str())
+                    .is_some_and(|at| *at > h.sequence)
+        })
+    };
     let mut order: Vec<&Held> = held.iter().collect();
     order.sort_by_key(|h| h.sequence);
     let mut taking: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -3690,8 +3712,7 @@ fn participants(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<S
             (Some(pre), Some(below)) => taking_prs.contains(&(below, pre.as_str())),
             _ => true,
         };
-        let signers_ok = h.signed.iter().all(|tmb| !removed.contains(tmb.as_str()));
-        if h.canonical || (signers_ok && parent_ok) {
+        if h.canonical || (parent_ok && !disqualified(h)) {
             taking.insert(h.id.clone());
             taking_prs.insert((h.sequence, h.pr.as_str()));
         }
@@ -3878,6 +3899,9 @@ fn authenticated_signers(
     }
 
     let mut signers = Vec::new();
+    // Keys this bundle introduces: they are not held at any `pre`, so
+    // they are not signers retention looks for there.
+    let mut introduced: std::collections::HashSet<String> = std::collections::HashSet::new();
     for blob in bundle.cozies() {
         let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
         let mut pay = value.get("pay")?.clone();
@@ -3889,7 +3913,31 @@ fn authenticated_signers(
         if coz::verify_json(&pay_json, &sig, alg, public) != Some(true) {
             return None;
         }
-        if cyphr::parsed_coz::typ::is_transaction(&header.typ) {
+        // A key a verified coz of this bundle introduces (`key/create`,
+        // `key/replace`) may sign the cozies after it, as its own commit
+        // does when it finalizes a rotation; the bundle discloses it, bound
+        // to the `id` by its thumbprint.
+        if cyphr::parsed_coz::typ::is_key_introducing(&header.typ) {
+            if let Some(id) = pay.get("id").and_then(|v| v.as_str()) {
+                // A key the principal already held is no new signer.
+                let disclosed = bundle
+                    .keys
+                    .iter()
+                    .find(|k| k.tmb == id && !history.contains_key(id));
+                if let Some(k) = disclosed {
+                    let public = Base64UrlUnpadded::decode_vec(&k.pub_key).ok()?;
+                    let bound = coz::compute_thumbprint_for_alg(&k.alg, &public)
+                        .is_some_and(|t| t.to_b64() == id);
+                    if bound {
+                        history.insert(id.to_string(), (k.alg.clone(), public));
+                        introduced.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        if cyphr::parsed_coz::typ::is_transaction(&header.typ)
+            && !introduced.contains(&header.tmb.to_b64())
+        {
             signers.push(header.tmb);
         }
     }
