@@ -356,7 +356,8 @@ impl PrincipalState {
             return Err(Error::CozReuse);
         }
 
-        // Validate timestamp is not in the past (SPEC §14.1)
+        // Validate timestamp is not in the past (SPEC §14.1). Pending
+        // actions do not bound a commit: only included ones are the chain's.
         if cz.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
         }
@@ -622,14 +623,17 @@ impl PrincipalState {
                 // principal is not in.
                 let core = self.core_mut();
                 let algs = core.active_algs();
-                let left_out = core
+                let settled = core
                     .data
                     .include_matching(&algs, |dr| id.0.matches(&dr.0))?;
                 // A left-out action was never applied on this chain, so
                 // its owner may record it again (SPEC 7.6 ignores only an
-                // applied one).
-                for czd in left_out {
+                // applied one), and it constrains no later timestamp.
+                for czd in settled.left_out {
                     core.included_czds.remove(czd.as_bytes());
+                }
+                if let Some(newest) = settled.newest {
+                    core.latest_timestamp = core.latest_timestamp.max(newest);
                 }
             },
         }

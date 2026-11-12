@@ -221,7 +221,10 @@ in `spec_conformance.rs` and `rs/cyphr-server/tests/now_range.rs`.
 A coz whose `now` is earlier than the latest timestamp the principal has
 recorded is rejected with `TimestampPast`, on both the transaction path and
 the data-action path. A coz whose `now` equals the latest is accepted by this
-rule.
+rule. The latest timestamp is the chain's: its commits' cozies and the data
+actions a `ds/create` included. A pending action also bounds later actions,
+which stay in `now` order (SPEC 4.8.1), but bounds no commit, and an action a
+`ds/create` left out bounds nothing.
 
 ```claim
 kind: requirement
@@ -230,8 +233,11 @@ evaluator: test
 
 The code is `apply_transaction_internal` in
 `rs/cyphr/src/principal/apply.rs` and `record_action` in
-`rs/cyphr/src/principal/data.rs`; both compare `now` with `latest_timestamp`
-using a strict `<`. Two golden vectors pin the rejection, `timestamp_past_fails`
+`rs/cyphr/src/principal/data.rs`; both compare `now` with a strict `<`, the
+first against `latest_timestamp`, the second against `latest_now` (that and
+the pending actions' newest `now`). `left_out_action_does_not_bound_time` in
+`rs/cyphr-storage/tests/action_inclusion.rs` pins that a left-out action
+bounds no later commit. Two golden vectors pin the rejection, `timestamp_past_fails`
 and `action_timestamp_past_fails` in `tests/golden/errors/`. The marker sits at
 `test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs`, and the runner
 entry runs that whole test. It runs every vector in `tests/golden/errors/`, not
@@ -287,8 +293,9 @@ enter the commit's state: the commit's `ds/create` names DR = MR(DT) over the
 action bundles its signer included (SPEC 4.8.2), so a replay includes exactly
 the pending bundles whose root is that `id` and leaves the spliced one out. A
 `ds/create` whose `id` no subset of the pending bundles reaches is refused with
-`StateMismatch`, and one facing more pending bundles than the search tries is
-refused with `TooManyPendingBundles`.
+`StateMismatch`. All the pending bundles together are tried first, with no
+limit; only when that fails are subsets searched, and a search over more
+pending bundles than it tries is refused with `TooManyPendingBundles`.
 
 ```claim
 kind: requirement

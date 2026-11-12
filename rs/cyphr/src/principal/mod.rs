@@ -103,6 +103,11 @@ pub struct DataLedger {
     /// The bundle actions recorded now join, while one is open; with none
     /// open, each action is its own bundle.
     open: Option<usize>,
+    /// The newest `now` among pending actions. It bounds later actions
+    /// (they stay in `now` order, SPEC 4.8.1) but no commit; a `ds/create`
+    /// settles it, and only the actions it includes join the chain's
+    /// latest timestamp, so a left-out bundle never blocks the chain.
+    pub(crate) pending_latest: Option<i64>,
 }
 
 impl DataLedger {
@@ -150,23 +155,26 @@ impl DataLedger {
 
     /// Apply a `ds/create` (SPEC 4.8.2): include the pending bundles whose
     /// root, with what is already included, `names` accepts, and leave out
-    /// the other pending bundles. Returns the left-out actions' digests.
+    /// the other pending bundles.
     ///
-    /// Subsets are tried in one fixed order, so every replay of the same
-    /// bundles selects the same one: bundles in recording order, every
-    /// subset as a binary number with the first bundle its highest bit,
-    /// counted down from all of them. All-in comes first, so a chain that
-    /// holds only its signer's bundles costs one root.
+    /// Every pending bundle together is tried first, uncapped, so a chain
+    /// holding only its signer's bundles costs one root however many it
+    /// holds. Only when that fails are subsets searched, in one fixed
+    /// order so every replay of the same bundles selects the same one:
+    /// bundles in recording order, every subset as a binary number with
+    /// the first bundle its highest bit, counted down. The search alone is
+    /// capped at [`MAX_PENDING_BUNDLES`].
     ///
     /// # Errors
     ///
-    /// [`Error::TooManyPendingBundles`] past [`MAX_PENDING_BUNDLES`];
-    /// [`Error::StateMismatch`] when no subset matches.
+    /// [`Error::TooManyPendingBundles`] when all-in fails and more bundles
+    /// are pending than the search tries; [`Error::StateMismatch`] when no
+    /// subset matches.
     pub(crate) fn include_matching(
         &mut self,
         algs: &[HashAlg],
         names: impl Fn(&DataRoot) -> bool,
-    ) -> Result<Vec<coz::Czd>> {
+    ) -> Result<Included> {
         let mut pending: Vec<usize> = self
             .actions
             .iter()
@@ -174,50 +182,70 @@ impl DataLedger {
             .map(|a| a.bundle)
             .collect();
         pending.dedup();
-        if pending.len() > MAX_PENDING_BUNDLES {
-            return Err(Error::TooManyPendingBundles {
-                pending: pending.len(),
-                cap: MAX_PENDING_BUNDLES,
-            });
-        }
         let n = pending.len();
-        let chosen = |mask: u32, bundle: usize| {
-            pending
-                .iter()
-                .position(|b| *b == bundle)
-                .is_some_and(|i| mask & (1 << (n - 1 - i)) != 0)
-        };
-        for mask in (0..1u32 << n).rev() {
+        let matches = |pick: &dyn Fn(usize) -> bool| -> Result<bool> {
             let set: Vec<&Action> = self
                 .actions
                 .iter()
                 .filter(|a| match a.inclusion {
                     Inclusion::Included => true,
-                    Inclusion::Pending => chosen(mask, a.bundle),
+                    Inclusion::Pending => pick(a.bundle),
                     Inclusion::NotIncluded => false,
                 })
                 .collect();
-            let Some(root) = crate::state::compute_dr(&set, None, algs)? else {
-                continue;
+            Ok(crate::state::compute_dr(&set, None, algs)?.is_some_and(|root| names(&root)))
+        };
+        if matches(&|_| true)? {
+            return Ok(self.settle(&|_| true));
+        }
+        if n > MAX_PENDING_BUNDLES {
+            return Err(Error::TooManyPendingBundles {
+                pending: n,
+                cap: MAX_PENDING_BUNDLES,
+            });
+        }
+        for mask in (0..(1u32 << n) - 1).rev() {
+            let pick = |bundle: usize| {
+                pending
+                    .iter()
+                    .position(|b| *b == bundle)
+                    .is_some_and(|i| mask & (1 << (n - 1 - i)) != 0)
             };
-            if !names(&root) {
-                continue;
+            if matches(&pick)? {
+                return Ok(self.settle(&pick));
             }
-            let mut left_out = Vec::new();
-            for a in &mut self.actions {
-                if a.inclusion == Inclusion::Pending {
-                    if chosen(mask, a.bundle) {
-                        a.inclusion = Inclusion::Included;
-                    } else {
-                        a.inclusion = Inclusion::NotIncluded;
-                        left_out.push(a.czd.clone());
-                    }
-                }
-            }
-            return Ok(left_out);
         }
         Err(Error::StateMismatch)
     }
+
+    /// Mark every pending action included when `pick` takes its bundle,
+    /// not included otherwise.
+    fn settle(&mut self, pick: &dyn Fn(usize) -> bool) -> Included {
+        let mut out = Included::default();
+        self.pending_latest = None;
+        for a in &mut self.actions {
+            if a.inclusion != Inclusion::Pending {
+                continue;
+            }
+            if pick(a.bundle) {
+                a.inclusion = Inclusion::Included;
+                out.newest = out.newest.max(Some(a.now));
+            } else {
+                a.inclusion = Inclusion::NotIncluded;
+                out.left_out.push(a.czd.clone());
+            }
+        }
+        out
+    }
+}
+
+/// What one `ds/create` settled ([`DataLedger::include_matching`]).
+#[derive(Debug, Default)]
+pub(crate) struct Included {
+    /// The digests of the pending actions it left out.
+    pub(crate) left_out: Vec<coz::Czd>,
+    /// The newest `now` among the actions it included.
+    pub(crate) newest: Option<i64>,
 }
 
 // ============================================================================
@@ -296,7 +324,9 @@ pub struct PrincipalCore {
     pub(crate) included_czds: HashSet<Vec<u8>>,
     /// Nonces held at the PR, AT and KT levels (SPEC §10.1).
     pub(crate) nonces: NonceSets,
-    /// Latest timestamp seen (SPEC §14.1).
+    /// Latest timestamp of the chain (SPEC §14.1): its commits' cozies and
+    /// the actions a `ds/create` included. Pending actions are held apart
+    /// ([`DataLedger::pending_latest`]); [`Self::latest_now`] is both.
     pub(crate) latest_timestamp: i64,
     /// Maximum allowed future timestamp (seconds from verifier time).
     pub(crate) max_clock_skew: u64,
@@ -630,6 +660,14 @@ impl PrincipalCore {
         pt.set_sr(&sr, &algs)?;
         pt.set_nonces(&self.nonces.at_level(NonceLevel::Pr), &algs)?;
         pt.pr(&algs)
+    }
+
+    /// The newest `now` a data action must not precede (SPEC §14.1): the
+    /// chain's latest timestamp and its pending actions'.
+    pub(crate) fn latest_now(&self) -> i64 {
+        self.data
+            .pending_latest
+            .map_or(self.latest_timestamp, |p| p.max(self.latest_timestamp))
     }
 
     pub(crate) fn active_algs(&self) -> Vec<HashAlg> {

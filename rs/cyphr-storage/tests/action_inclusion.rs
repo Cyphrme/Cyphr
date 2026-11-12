@@ -262,8 +262,10 @@ async fn rule2_a_rival_bundle_is_not_included() {
 }
 
 /// Claim (rule 2's bound): the subset search tries at most
-/// [`cyphr::principal::MAX_PENDING_BUNDLES`] bundles; a `ds/create` facing
-/// more is refused with the typed error, never searched.
+/// [`cyphr::principal::MAX_PENDING_BUNDLES`] bundles. The phone pushes
+/// eight actions, another device a ninth at the same position, and the
+/// phone's `ds/create` names its own eight: all-in fails, nine bundles are
+/// too many to search, and the engine refuses with the typed error.
 ///
 /// Turns red if: nine pending bundles are searched (the `ds/create` is
 /// accepted) or refused with any other error. End to end over the engine:
@@ -273,7 +275,7 @@ async fn rule2_nine_bundles_are_refused() {
     let (mut p, id, genesis, g) = base().await;
     let e = Engine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     push(&e, &id, &genesis, &g).await.expect("genesis");
-    for i in 0..9 {
+    for i in 0..8 {
         let a = action(&format!("a{i}"), NOW + 1 + i);
         p.verify_and_record_action(&a.pay, &a.sig, a.czd.clone())
             .expect("records");
@@ -281,32 +283,12 @@ async fn rule2_nine_bundles_are_refused() {
             .await
             .expect("an action-only bundle");
     }
-    let id_dr = p
-        .begin_commit()
-        .data_tree_id()
-        .expect("DR")
-        .expect("DT holds actions");
-    let s = golden_signs(
-        serde_json::json!({"id": id_dr, "now": NOW + 20, "typ": "cyphr.me/cyphr/ds/create"}),
-    );
-    let bundle = WireBundle {
-        txs: vec![vec![s.wire]],
-        ..WireBundle::default()
-    };
-    // The local principal refuses it as the engine does.
-    let mut scope = p.begin_commit();
-    let local = scope.verify_and_apply(&s.pay, &s.sig, s.czd, None);
-    assert!(
-        matches!(
-            local,
-            Err(cyphr::Error::TooManyPendingBundles { pending: 9, .. })
-        ),
-        "{local:?}"
-    );
-    drop(scope);
-    // The `ds/create` is refused before the commit closes, so it travels
-    // alone: the engine meets the same refusal first.
-    let refused = e.submit_commit(&id, Some(genesis), &bundle).await;
+    let other = action("another device", NOW + 9);
+    push(&e, &id, &genesis, &WireBundle::actions(vec![other.wire]))
+        .await
+        .expect("the other device's bundle");
+    ds_create(&mut p, NOW + 20).await;
+    let refused = e.submit_commit(&id, Some(genesis), &last(&p)).await;
     assert!(
         matches!(
             refused,
@@ -317,4 +299,85 @@ async fn rule2_nine_bundles_are_refused() {
         ),
         "{refused:?}"
     );
+}
+
+/// Claim (rule 2, all-in uncapped): a single device that pushes ten
+/// actions one at a time and then one `ds/create` over all of them is
+/// accepted. Every pending bundle together is tried before any search, so
+/// the search cap never refuses a chain that holds only its signer's
+/// bundles.
+///
+/// Turns red if: the cap applies to all-in (ten bundles refused). End to
+/// end over the engine: yes.
+#[tokio::test]
+async fn rule2_all_in_is_uncapped() {
+    let (mut p, id, genesis, g) = base().await;
+    let e = Engine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&e, &id, &genesis, &g).await.expect("genesis");
+    for i in 0..10 {
+        let a = action(&format!("a{i}"), NOW + 1 + i);
+        p.verify_and_record_action(&a.pay, &a.sig, a.czd.clone())
+            .expect("records");
+        push(&e, &id, &genesis, &WireBundle::actions(vec![a.wire]))
+            .await
+            .expect("an action-only bundle");
+    }
+    ds_create(&mut p, NOW + 20).await;
+    push(&e, &id, &genesis, &last(&p))
+        .await
+        .expect("a ds/create over ten pushed bundles");
+    let (pr, tip, actions) = view(&e, &id).await;
+    assert_eq!((&pr, &tip), (&p.pr_tagged().expect("pr"), &pr));
+    assert_eq!(actions.len(), 10, "all ten are included and served");
+}
+
+/// Claim: only actions a chain includes bound its timestamps. The phone
+/// pushes an action; the laptop pushes one dated far ahead at the same
+/// position. The phone's `ds/create`, dated before the laptop's action,
+/// includes the phone's alone and is accepted, and so is the phone's next
+/// commit; live and after a restart that replays the blobs.
+///
+/// Turns red if: a pending or left-out action bounds a commit (the
+/// `ds/create` or the next commit is refused as `TimestampPast`). End to
+/// end over the engine: yes.
+#[tokio::test]
+async fn left_out_action_does_not_bound_time() {
+    let (mut phone, id, genesis, g) = base().await;
+    let e = Engine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&e, &id, &genesis, &g).await.expect("genesis");
+    let mine = action("phone", NOW + 2);
+    phone
+        .verify_and_record_action(&mine.pay, &mine.sig, mine.czd.clone())
+        .expect("records");
+    push(&e, &id, &genesis, &WireBundle::actions(vec![mine.wire]))
+        .await
+        .expect("the phone's action");
+    let laptop = action("laptop, dated ahead", NOW + 50);
+    push(&e, &id, &genesis, &WireBundle::actions(vec![laptop.wire]))
+        .await
+        .expect("the laptop's action");
+    ds_create(&mut phone, NOW + 3).await;
+    push(&e, &id, &genesis, &last(&phone))
+        .await
+        .expect("the ds/create leaves the laptop's action out");
+    let key_a = pool().get("key_a").expect("key_a").key().expect("key");
+    commit(
+        &mut phone,
+        "cyphr.me/cyphr/key/create",
+        &key_a.tmb().to_b64(),
+        Some(key_a),
+        NOW + 4,
+    )
+    .await;
+    push(&e, &id, &genesis, &last(&phone))
+        .await
+        .expect("the left-out action bounds nothing");
+    let live = view(&e, &id).await;
+    assert_eq!(live.0, phone.pr_tagged().expect("pr"));
+    let restarted = Engine::new(e.blob_store().clone(), MemoryIndexer::new());
+    restarted
+        .rebuild_index_from_manifests()
+        .await
+        .expect("restart");
+    assert_eq!(view(&restarted, &id).await, live, "a restart agrees");
 }
