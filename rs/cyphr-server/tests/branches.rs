@@ -1872,3 +1872,77 @@ async fn owner_delete_promotes_over_thief_data_chain() {
     assert_eq!(tip_payload(app, &id).await, tip, "a rebuild agrees");
     assert!(!errored(&state, &id).await, "a rebuild agrees: Active");
 }
+
+
+/// Backs `/patch` matching the server's own replay after a promotion over
+/// a thief's data chain (SPEC 4.8.2, 15.8): the thief's action, pushed
+/// alone at the fork position, is no part of the owner's promoted chain,
+/// so `/patch` does not serve it and a fresh client that replays the
+/// served chain from its genesis commit reaches the PR `/tip` publishes.
+///
+/// Turns red if: `/patch` serves the displaced action, which the fresh
+/// client records ahead of the owner's older inline action
+/// (`TimestampPast`) and so refuses the peer. End to end over `/push`,
+/// `/patch` and the client's pull replay: yes.
+#[tokio::test]
+async fn fresh_client_replays_after_thief_data_promotion() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..n {
+        assert_eq!(push(&app, &shared, i, &id).await, StatusCode::CREATED);
+    }
+    let mut thief = shared.fork().await.expect("fork");
+    let (action, commit) = data_commit_by(&mut thief, &e, "thief", NOW + 10).await;
+    let (status, body) = post_json(app.clone(), "/push", common::push_blobs(&id, &[action])).await;
+    assert!(status.is_success(), "thief action: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &commit)).await;
+    assert_eq!(status, StatusCode::CREATED, "thief commit: {body:?}");
+    let mut owner = shared.fork().await.expect("fork");
+    let (action, mut commit) = data_commit_by(&mut owner, &g, "owner", NOW + 3).await;
+    commit.actions = vec![action];
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &commit)).await;
+    assert!(status.is_client_error(), "owner's rival: {body:?}");
+    revoke_eve(&app, NOW + 100).await;
+    sign_commit(
+        &mut owner,
+        &g,
+        serde_json::json!({"id": e.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 12,
+    )
+    .await;
+    let del = cyphr::replay::WireBundle::of_commit(owner.commits().last().expect("a commit"))
+        .expect("bundle");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &del)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete promotes: {body:?}");
+
+    let published = tip_payload(app.clone(), &id).await["pr"]
+        .as_str()
+        .expect("pr")
+        .to_owned();
+    let (status, served) = get_json(app.clone(), &format!("/patch?pr={}", enc(&id))).await;
+    assert_eq!(status, StatusCode::OK, "{served:?}");
+    let bytes = serde_json::to_vec(&served).expect("body");
+    let patch = cyphr_client::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
+    let genesis_commit = envelope_payload(&served)["entries"][0]["commit_id"]
+        .as_str()
+        .expect("genesis commit id")
+        .to_owned();
+    let record = cyphr_client::Record::from_entries(
+        &id,
+        cyphr_client::Anchor::GenesisCommit(genesis_commit),
+        cyphr::principal::system_clock,
+        &patch.entries,
+        &patch.actions,
+    )
+    .await
+    .expect("a fresh client replays the served chain");
+    assert_eq!(record.tip().expect("tip").pr, published);
+    assert_eq!(owner.pr_tagged().expect("pr"), published);
+}

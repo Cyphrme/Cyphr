@@ -1021,7 +1021,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The action manifests of `principal_id` its canonical chain left
     /// out, decided by replaying the chain from the blobs onto a private
     /// log: the mark is a cache of the blobs (I1), never stored. A
-    /// manifest is left out when every action of it is.
+    /// manifest is left out when none of its actions is in the chain's DT.
     async fn left_out(&self, principal_id: &str) -> Result<HashSet<Blake3Hash>, EngineError> {
         let held: Vec<StoredActions> = self
             .actions
@@ -1055,9 +1055,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 None,
             )
             .await?;
-        let dropped: HashSet<Vec<u8>> = principal
+        // What the chain's DT holds: actions a `ds/create` included or that
+        // are still pending. A manifest none of whose actions is among them
+        // is left out, whether a `ds/create` passed it over or the replay
+        // never recorded it (a bundle a promotion displaced, which the
+        // canonical commit there does not verify over).
+        let kept: HashSet<Vec<u8>> = principal
             .actions()
-            .filter(|a| a.is_not_included())
+            .filter(|a| !a.is_not_included())
             .map(|a| a.czd().as_bytes().to_vec())
             .collect();
         let mut out = HashSet::new();
@@ -1065,10 +1070,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let bundle = action_bundle(self.read_blobs(&stored.blobs).await?).map_err(|why| {
                 EngineError::MalformedBlob(format!("action manifest {}: {why}", stored.manifest))
             })?;
-            if bundle
-                .cozies()
-                .all(|c| dropped.contains(c.czd().as_bytes()))
-            {
+            if !bundle.cozies().any(|c| kept.contains(c.czd().as_bytes())) {
                 out.insert(stored.manifest);
             }
         }
@@ -2453,8 +2455,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let at = position as u64;
             if actions.get(&at).is_some_and(|held| !held.is_empty()) {
                 let without = principal.fork().await?;
-                replay_actions_at(&mut principal, actions, at).await?;
-                if replay_commit(&mut principal, entry, position).await.is_ok() {
+                // An action the canonical base refuses (signed by a key the
+                // promoted branch removed, say) marks the position off-chain
+                // like a commit that does not verify over it.
+                if replay_actions_at(&mut principal, actions, at).await.is_ok()
+                    && replay_commit(&mut principal, entry, position).await.is_ok()
+                {
                     continue;
                 }
                 principal = without;
