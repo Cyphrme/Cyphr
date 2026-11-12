@@ -464,6 +464,184 @@ async fn scratch_quarantine_survives_a_restart() {
     );
 }
 
+/// An [`Indexer`] over a shared [`MemoryIndexer`] whose `index_commit`
+/// fails once `clear` has run while armed: a crash after a scratch rebuild
+/// cleared the index and before it indexed anything.
+struct FailsAfterClear {
+    inner: std::sync::Arc<MemoryIndexer>,
+    armed: bool,
+    cleared: std::sync::atomic::AtomicBool,
+}
+
+impl Indexer for FailsAfterClear {
+    fn get_tip(
+        &self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<Option<cyphr_storage::index::TipState>, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.get_tip(id)
+    }
+
+    fn is_pg_established(
+        &self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.is_pg_established(id)
+    }
+
+    fn get_commit_chain(
+        &self,
+        id: &str,
+        from: Option<u64>,
+        to: Option<u64>,
+    ) -> impl std::future::Future<Output = Result<Vec<cyphr_storage::index::CommitRef>, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.get_commit_chain(id, from, to)
+    }
+
+    fn resolve_digest(
+        &self,
+        digest: &cyphr::state::TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Option<cyphr_storage::index::EntityRef>, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.resolve_digest(digest)
+    }
+
+    fn list_principals(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<cyphr_storage::index::PrincipalSummary>, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.list_principals()
+    }
+
+    fn is_blob_indexed(
+        &self,
+        hash: &cyphr_storage::blob::Blake3Hash,
+    ) -> impl std::future::Future<Output = Result<bool, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.is_blob_indexed(hash)
+    }
+
+    fn get_key(
+        &self,
+        thumbprint: &str,
+    ) -> impl std::future::Future<Output = Result<Option<cyphr_storage::index::PublicKeyInfo>, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.get_key(thumbprint)
+    }
+}
+
+impl cyphr_storage::index::IndexerWrite for FailsAfterClear {
+    fn check_commit(
+        &self,
+        commit: &cyphr_storage::index::IndexableCommit,
+        token: &cyphr_storage::index::DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.check_commit(commit, token)
+    }
+
+    fn index_commit(
+        &self,
+        commit: &cyphr_storage::index::IndexableCommit,
+        token: &cyphr_storage::index::DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), cyphr_storage::index::IndexerError>> + Send
+    {
+        let fail = self.armed && self.cleared.load(std::sync::atomic::Ordering::SeqCst);
+        let inner = self.inner.index_commit(commit, token);
+        async move {
+            if fail {
+                return Err(cyphr_storage::index::IndexerError::Backend(
+                    "injected fault after the clear".into(),
+                ));
+            }
+            inner.await
+        }
+    }
+
+    fn replace_chain_from(
+        &self,
+        id: &str,
+        sequence: u64,
+        commits: &[cyphr_storage::index::IndexableCommit],
+        token: &cyphr_storage::index::DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.replace_chain_from(id, sequence, commits, token)
+    }
+
+    fn clear(
+        &self,
+        token: &cyphr_storage::index::DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), cyphr_storage::index::IndexerError>> + Send
+    {
+        self.cleared
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.clear(token)
+    }
+
+    fn set_quarantined(
+        &self,
+        manifests: &[(cyphr_storage::blob::Blake3Hash, String)],
+        token: &cyphr_storage::index::DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.set_quarantined(manifests, token)
+    }
+
+    fn quarantined(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<(cyphr_storage::blob::Blake3Hash, String)>, cyphr_storage::index::IndexerError>> + Send
+    {
+        self.inner.quarantined()
+    }
+}
+
+/// Claim (architect ruling: the scratch rebuild writes its quarantine set
+/// before it clears the index): a rebuild that fails after the clear and
+/// before it re-indexes leaves a store whose next start does not index the
+/// manifest the rebuild would have quarantined. Scenario: a store holding a
+/// forged manifest (no earlier scratch rebuild, so no earlier set), a scratch
+/// rebuild that fails once the index is cleared, then a fresh engine on the
+/// same blobs and index: its heal pass, which trusts manifests but honours
+/// the quarantine set, indexes the chain only up to the last commit that
+/// replays.
+///
+/// Turns red if: the set is written only after the re-index, so the restart
+/// heals the forged manifest back in. End-to-end scenario: yes (forged
+/// store, failing rebuild, restart on the same files).
+#[tokio::test]
+async fn quarantine_is_written_before_the_index_is_cleared() {
+    let blobs = MemoryBlobStore::new();
+    let (id, held_pr) = forge_into(&blobs).await;
+    let index = std::sync::Arc::new(MemoryIndexer::new());
+    let engine = |armed| {
+        StorageEngine::new(
+            blobs.clone(),
+            FailsAfterClear {
+                inner: index.clone(),
+                armed,
+                cleared: std::sync::atomic::AtomicBool::new(false),
+            },
+        )
+    };
+
+    let rebuild = engine(true).rebuild_index_from_scratch_with_report().await;
+    assert!(rebuild.is_err(), "the injected fault stops the rebuild");
+
+    let tip = engine(false)
+        .get_tip(&id)
+        .await
+        .expect("tip")
+        .expect("a tip");
+    assert_eq!(
+        (tip.commit_count, tip.pr.as_str()),
+        (1, held_pr.as_str()),
+        "the restart's heal pass kept the forged manifest out"
+    );
+}
+
 /// A pool key that signs: its domain key and raw key material.
 struct Signer {
     key: cyphr::Key,

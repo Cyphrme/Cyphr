@@ -1548,6 +1548,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`Self::build_commit`]), and a manifest whose commit the replay
     /// does not reproduce is quarantined ([`QuarantineReason::Unreplayable`]).
     async fn rebuild_pass(&self, replay: bool) -> Result<RebuildReport, EngineError> {
+        self.rebuild_pass_on(&self.indexer, replay).await
+    }
+
+    /// [`Self::rebuild_pass`] building into `index` rather than the
+    /// engine's own, so a scan can run without touching the real index.
+    async fn rebuild_pass_on<X: Indexer + IndexerWrite>(
+        &self,
+        index: &X,
+        replay: bool,
+    ) -> Result<RebuildReport, EngineError> {
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
 
@@ -1716,7 +1726,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let skip: HashMap<Blake3Hash, String> = if replay {
             HashMap::new()
         } else {
-            self.indexer.quarantined().await?.into_iter().collect()
+            index.quarantined().await?.into_iter().collect()
         };
         let mut histories = self
             .read_action_manifests(action_manifests, &skip, &mut quarantined)
@@ -1768,12 +1778,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .or_insert(commit.sequence);
                 continue;
             }
-            let mut written = self.indexer.index_commit(commit, &DeriveToken::new()).await;
+            let mut written = index.index_commit(commit, &DeriveToken::new()).await;
             if let Err(crate::index::IndexerError::Consistency(_)) = written {
                 // The index holds another commit here: it was built before
                 // the fork was resolved, and the chain is re-pointed.
-                written = self
-                    .indexer
+                written = index
                     .replace_chain_from(
                         &commit.principal_id,
                         commit.sequence,
@@ -1839,7 +1848,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 reason: QuarantineReason::Unreplayable(why),
             });
         }
-        let actions = self.place_actions(histories, &mut quarantined).await?;
+        let actions = self
+            .place_actions(index, histories, &mut quarantined)
+            .await?;
         *self.actions.lock().unwrap_or_else(|p| p.into_inner()) = actions;
 
         let branches = self
@@ -1916,15 +1927,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// accepted after more commits than its principal's indexed chain holds
     /// would be replayed before a commit it never preceded, so it is
     /// quarantined as orphaned.
-    async fn place_actions(
+    async fn place_actions<X: Indexer>(
         &self,
+        index: &X,
         histories: HashMap<String, ActionHistory>,
         quarantined: &mut Vec<QuarantinedManifest>,
     ) -> Result<HashMap<String, Vec<StoredActions>>, EngineError> {
         let mut placed: HashMap<String, Vec<StoredActions>> = HashMap::new();
         for (principal_id, history) in histories {
-            let chain = self
-                .indexer
+            let chain = index
                 .get_tip(&principal_id)
                 .await?
                 .map_or(0, |tip| tip.commit_count);
@@ -3845,15 +3856,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub async fn rebuild_index_from_scratch_with_report(
         &self,
     ) -> Result<RebuildReport, EngineError> {
+        // The quarantine set is written before the index is cleared. It
+        // derives from a replaying scan, which runs into a throwaway index
+        // first: a failure after the clear and before the re-index then
+        // leaves a store whose next heal, which trusts the manifests and
+        // honours the set, keeps a quarantined manifest out.
+        let scan = self
+            .rebuild_pass_on(&crate::index::MemoryIndexer::new(), true)
+            .await?;
+        self.indexer
+            .set_quarantined(&Self::quarantine_set(&scan), &DeriveToken::new())
+            .await?;
         self.indexer.clear(&DeriveToken::new()).await?;
         let report = self.rebuild_pass(true).await?;
-        let set: Vec<(Blake3Hash, String)> = report
-            .quarantined
-            .iter()
-            .map(|q| (q.manifest, format!("{:?}", q.reason)))
-            .collect();
         self.indexer
-            .set_quarantined(&set, &DeriveToken::new())
+            .set_quarantined(&Self::quarantine_set(&report), &DeriveToken::new())
             .await?;
         // This pass is a full heal: without marking it, the first read
         // would run the trusting heal pass and re-index the manifests this
@@ -3861,6 +3878,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // clear above has superseded either way.
         let _already_healed = self.healed.set(());
         Ok(report)
+    }
+}
+
+impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
+    /// The quarantine set a rebuild report records in the index.
+    fn quarantine_set(report: &RebuildReport) -> Vec<(Blake3Hash, String)> {
+        report
+            .quarantined
+            .iter()
+            .map(|q| (q.manifest, format!("{:?}", q.reason)))
+            .collect()
     }
 }
 

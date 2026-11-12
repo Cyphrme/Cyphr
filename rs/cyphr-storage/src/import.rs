@@ -200,7 +200,7 @@ fn stored_bundle(
     commit_idx: usize,
 ) -> Result<cyphr::replay::Bundle, LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    use cyphr::replay::{Bundle, StoredCoz, WireError};
+    use cyphr::replay::{Bundle, StoredCoz};
 
     let mut i = 0;
     let mut coz = |value: &serde_json::Value| {
