@@ -396,7 +396,11 @@ async fn hand_signed(p: &mut cyphr::Principal, txs: Vec<Signed>, commit_now: i64
             .expect("applies locally");
     }
     let prepared = scope
-        .prepare_commit(&g.software_signer().expect("signer"), commit_now, "cyphr.me")
+        .prepare_commit(
+            &g.software_signer().expect("signer"),
+            commit_now,
+            "cyphr.me",
+        )
         .expect("prepares");
     let commit = golden_signs(prepared.pay().clone());
     let mut all: Vec<Vec<Vec<u8>>> = txs.into_iter().map(|t| vec![t.wire]).collect();
@@ -444,7 +448,9 @@ async fn included_action_bounds_the_rest_of_its_commit() {
         serde_json::json!({"id": dr, "now": NOW + 3, "typ": "cyphr.me/cyphr/ds/create"}),
     );
     let closing_early = hand_signed(&mut p.fork().await.expect("fork"), vec![ds], NOW + 4).await;
-    let refused = e.submit_commit(&id, Some(genesis.clone()), &closing_early).await;
+    let refused = e
+        .submit_commit(&id, Some(genesis.clone()), &closing_early)
+        .await;
     assert!(
         matches!(
             refused,
@@ -516,9 +522,14 @@ async fn left_out_action_can_be_recorded_again() {
         .await
         .expect("the phone's action");
     let laptop = action("laptop", NOW + 5);
-    push(&e, &id, &genesis, &WireBundle::actions(vec![laptop.wire.clone()]))
-        .await
-        .expect("the laptop's action");
+    push(
+        &e,
+        &id,
+        &genesis,
+        &WireBundle::actions(vec![laptop.wire.clone()]),
+    )
+    .await
+    .expect("the laptop's action");
     ds_create(&mut phone, NOW + 3).await;
     push(&e, &id, &genesis, &last(&phone))
         .await
