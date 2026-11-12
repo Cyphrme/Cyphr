@@ -444,35 +444,45 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         })??;
 
         let mut principal = load_principal_from_engine(&new, &keystore, identity)?;
-        // Re-record the local actions the peer's history lacks, deduplicated
-        // by czd, as one action-only bundle (recorded in `now` order).
+        // Re-record the local actions the peer's history lacks, as signed:
+        // a re-signed action is a new digest, a duplicate of the original.
+        // Only one the adopted history does not authorize at its own `now`
+        // (SPEC 6.5) is re-signed with the current `now`, and named.
         let held: std::collections::HashSet<Vec<u8>> = principal
             .actions()
             .map(|a| a.czd().as_bytes().to_vec())
             .collect();
-        // Each is re-signed with the current `now`, as the rebase re-signs
-        // the local commits it replays: the rebased history then judges it
-        // by the keys active now (SPEC 6.5), not at a time its own history
-        // no longer describes.
         let now = current_timestamp();
-        let missing = local_actions
+        let missing: Vec<_> = local_actions
             .iter()
             .filter(|(czd, _)| !held.contains(czd))
-            .map(|(czd, blob)| {
-                let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
-                resigned.push(json!({
-                    "czd": Base64UrlUnpadded::encode_string(czd),
-                    "was_now": pay["now"].clone(),
-                }));
-                pay["now"] = now.into();
-                let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
-                let signed = super::data::sign(&keystore.signer(tmb)?, pay.clone())?;
-                Ok(serde_json::to_vec(&signed.wire())?)
-            })
-            .collect::<crate::Result<Vec<Vec<u8>>>>()?;
+            .collect();
+        for (czd, blob) in &missing {
+            let submit = |blob: Vec<u8>| {
+                block_on(new.submit_commit(
+                    &principal_id,
+                    Some(genesis.clone()),
+                    &WireBundle::actions(vec![blob]),
+                ))
+            };
+            match submit(blob.clone())? {
+                Err(cyphr_storage::engine::EngineError::Protocol(e)) if e.is_inactive_signer() => {
+                    let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
+                    resigned.push(json!({
+                        "czd": Base64UrlUnpadded::encode_string(czd),
+                        "was_now": pay["now"].clone(),
+                    }));
+                    pay["now"] = now.into();
+                    let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
+                    let signed = super::data::sign(&keystore.signer(tmb)?, pay.clone())?;
+                    submit(serde_json::to_vec(&signed.wire())?)??;
+                },
+                result => {
+                    result?;
+                },
+            }
+        }
         if !missing.is_empty() {
-            let bundle = WireBundle::actions(missing);
-            block_on(new.submit_commit(&principal_id, Some(genesis.clone()), &bundle))??;
             principal = load_principal_from_engine(&new, &keystore, identity)?;
         }
         for intent in &replay {

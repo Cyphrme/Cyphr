@@ -393,8 +393,9 @@ fn data_push_sends_actions_ahead_of_their_ds_create() {
 /// client verifies the result.
 /// End-to-end: yes (two devices of one principal, one real server).
 /// Turns red if rebase rebuilds the store from commits alone: the action is
-/// gone, `data commit` has no DR to include and fails; or if it re-signs the
-/// action without naming it in `resigned_actions` (never silently).
+/// gone, `data commit` has no DR to include and fails; or if it re-signs an
+/// action the adopted history still authorizes at its own `now` (a
+/// duplicate under a new digest, SPEC 6.5).
 #[test]
 fn data_rebase_keeps_local_actions() {
     let server = Server::start();
@@ -413,12 +414,10 @@ fn data_rebase_keeps_local_actions() {
 
     let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
     let resigned = rebased["resigned_actions"].as_array().expect("resigned");
-    assert_eq!(
-        resigned.len(),
-        1,
-        "rebase names the re-signed action: {rebased}"
+    assert!(
+        resigned.is_empty(),
+        "an action B's key still authorizes is kept as signed: {rebased}"
     );
-    assert!(resigned[0]["was_now"].is_i64() && resigned[0]["czd"].is_string());
     let made = b.setup(&["data", "commit", &ident, &signer]);
     let pushed = b.push(&id, &server.url);
     accepted(&pushed, "push of the rebased history with its ds/create");
@@ -433,11 +432,11 @@ fn data_rebase_keeps_local_actions() {
 }
 
 /// Claim (architect ruling, SPEC 4.8.2, 15.9): an offline device that
-/// committed a `ds/create` rejoins: rebase re-signs its data actions at the
-/// current time, signs a FRESH `ds/create` whose id is the Data Root of the
-/// rebased tree (never the old one, which the peer's history lacks), and
-/// reports both. Defect that turns it red: rebase refusing `ds/create`
-/// (`RebaseUnsupported`), repeating the old DR, or a rebased history the
+/// committed a `ds/create` rejoins: rebase keeps its data actions as signed
+/// (its key still authorizes them at their own `now`, SPEC 6.5), signs a
+/// FRESH `ds/create` whose id is the Data Root of the rebased tree (never
+/// the old one, which the peer's history lacks), and reports it. Defect that turns it red: rebase
+/// refusing `ds/create` (`RebaseUnsupported`), repeating the old DR, or a rebased history the
 /// peer refuses. End-to-end: yes (real peer, two devices).
 #[test]
 fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
@@ -456,19 +455,17 @@ fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
     accepted(&a.push(&id, &server.url), "A moves the peer on");
     assert!(!b.push(&id, &server.url).ok, "B is stale");
 
-    // A later `now` makes the re-signed action (and so the DR) differ.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     let rebased = b.setup(&["rebase", &ident, &format!("--peer={}", server.url)]);
     assert_eq!(
         rebased["resigned_actions"].as_array().map(Vec::len),
-        Some(1),
-        "the action is re-signed and reported: {rebased}"
+        Some(0),
+        "the action is kept as signed: {rebased}"
     );
     let included = rebased["ds_create"].as_array().expect("ds_create reported");
     assert_eq!(included.len(), 1, "one fresh ds/create: {rebased}");
     assert_ne!(
         included[0]["dr"], old["dr"],
-        "the DR is of the rebased tree (the action was re-signed), not the old one: {rebased}"
+        "the DR is of the rebased tree (both devices' actions), not the old one: {rebased}"
     );
     let pushed = b.push(&id, &server.url);
     accepted(
