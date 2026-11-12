@@ -242,9 +242,10 @@ impl Harness {
     }
 
     /// How many data actions `peer` itself holds for `p`, read from its own
-    /// `GET /patch`. An action-only bundle moves no tip, root or height, so
-    /// `/tip` cannot show that one was accepted. `None` if the peer does not
-    /// know the principal.
+    /// `GET /patch`: those carried in a commit's bundle and those in
+    /// action-only bundles. An action-only bundle moves no tip, root or
+    /// height, so `/tip` cannot show that one was accepted. `None` if the
+    /// peer does not know the principal.
     pub async fn peer_actions(&self, peer: &str, p: &Principal) -> Option<usize> {
         let addr = self.upstream(peer);
         let resp = self
@@ -258,13 +259,14 @@ impl Harness {
             return None;
         }
         let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
-        let bundles = v["payload"]["actions"].as_array()?;
-        Some(
-            bundles
-                .iter()
-                .map(|b| b["blobs"].as_array().map_or(0, Vec::len))
-                .sum(),
-        )
+        let count = |bundles: &serde_json::Value, field: &str| {
+            bundles.as_array().map_or(0, |bs| {
+                bs.iter()
+                    .map(|b| b[field].as_array().map_or(0, Vec::len))
+                    .sum::<usize>()
+            })
+        };
+        Some(count(&v["payload"]["actions"], "blobs") + count(&v["payload"]["entries"], "actions"))
     }
 
     /// Read `peer`'s view of `p` until two reads 600ms apart agree, then
