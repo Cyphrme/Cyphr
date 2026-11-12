@@ -76,6 +76,15 @@ pub enum EngineError {
         signer: String,
     },
 
+    /// The principal is in Error (SPEC 15.5: an unresolved fork) and the
+    /// bundle does not resolve it, so it is refused. A refused commit that
+    /// verifies on a held branch is kept as evidence.
+    #[error("principal {principal_id} is in Error: only a fork resolution is admitted")]
+    Errored {
+        /// The principal's storage key.
+        principal_id: String,
+    },
+
     /// The engine's commit-tree storage factory failed to produce a fresh
     /// storage instance for a `Principal`.
     #[error("storage: {0}")]

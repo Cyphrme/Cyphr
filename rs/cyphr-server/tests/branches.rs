@@ -568,15 +568,14 @@ async fn resolution() {
     );
 }
 
-/// Backs SPEC 15.8 (be0663f) with its open question: a principal is in
-/// Error iff some position holds two commits that are each extended, and
-/// nothing exits Error by itself. After C resolves to B, D (extending A)
-/// is a new fork at the resolution point: both kept, C still the tip. An
-/// extension E of C afterwards does not clear Error, and the verdict, tip
-/// and branch list are the same live and after a restart that rebuilds
-/// from the blobs. Turns red if D is accepted as the tip or dropped, E
-/// clears Error, or a rebuild disagrees with the live engine. End to end:
-/// yes.
+/// Backs SPEC 15.8 (be0663f) and 15.7.1: after C resolves to B, D
+/// (extending A) is a new fork at the resolution point: both kept, C still
+/// the tip, and the principal is in Error. An extension E of C afterwards
+/// does not resolve it, so it is refused (423), and the verdict, tip and
+/// branch list are the same live and after a restart that rebuilds from
+/// the blobs. Turns red if D is accepted as the tip or dropped, E is
+/// accepted or clears Error, or a rebuild disagrees with the live engine.
+/// End to end: yes.
 #[tokio::test]
 async fn second_resolution_then_extension() {
     let Resolved {
@@ -621,10 +620,10 @@ async fn second_resolution_then_extension() {
         "a rebuild agrees: Error"
     );
 
-    let (tip, list) = extend_c(&app, &c, n, id).await;
+    let (tip, list) = extend_c(&app, &c, n, id, ERRORED).await;
     assert!(
         state.engine.is_errored(id).await.expect("verdict"),
-        "extending C does not clear Error"
+        "extending C does not clear Error, so it is refused"
     );
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
@@ -655,7 +654,7 @@ async fn extension_then_second_resolution() {
     let id = &f.id;
     let (status, body) = post_json(app.clone(), "/push", wire(&c, n + 1, id)).await;
     assert_eq!(status, StatusCode::CREATED, "C: {body:?}");
-    let _ = extend_c(&app, &c, n, id).await;
+    let _ = extend_c(&app, &c, n, id, StatusCode::CREATED).await;
     assert!(
         !state.engine.is_errored(id).await.expect("verdict"),
         "only B's branch is extended: Active"
@@ -693,18 +692,20 @@ async fn extension_then_second_resolution() {
     );
 }
 
-/// Push E, a commit extending C, and return the tip and branch list after.
+/// Push E, a commit extending C, expecting `status`, and return the tip
+/// and branch list after.
 async fn extend_c(
     app: &axum::Router,
     c: &cyphr::Principal,
     n: usize,
     id: &str,
+    status: StatusCode,
 ) -> (serde_json::Value, Vec<(u64, bool, String)>) {
     let pool = load_pool();
     let mut e = c.fork().await.expect("fork");
     create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
-    let (status, body) = post_json(app.clone(), "/push", wire(&e, n + 2, id)).await;
-    assert_eq!(status, StatusCode::CREATED, "E extends C: {body:?}");
+    let (got, body) = post_json(app.clone(), "/push", wire(&e, n + 2, id)).await;
+    assert_eq!(got, status, "E extends C: {body:?}");
     (tip_payload(app.clone(), id).await, heads(app, id).await)
 }
 
@@ -723,4 +724,844 @@ async fn reopen(dir: &std::path::Path) -> (axum::Router, std::sync::Arc<cyphr_se
         .await
         .expect("rebuild");
     (build_router(state.clone()), state)
+}
+
+// ========================================================================
+// ERR1: Error is entered on any unresolved fork, refuses what does not
+// resolve it, and is left only by protocol (SPEC 15.5, 15.7.1, 15.8).
+// ========================================================================
+
+/// A refusal while the principal is in Error (SPEC 15.5: "No new
+/// transactions or actions are processed until resolved").
+const ERRORED: StatusCode = StatusCode::LOCKED;
+
+/// A theft: genesis keys `golden`, `diana_es384`, `eve_ed25519`; the owner
+/// (`golden`) signs A and D, the thief (`eve`) signs the rival B and its
+/// extension C. A at NOW+3, B at NOW+4; of C and D, the one the thief
+/// (`thief_first`) or the owner pushes first is at NOW+5, the other at
+/// NOW+6 (a later push dated earlier than the tip is TIMESTAMP_PAST).
+struct Theft {
+    id: String,
+    n: usize,
+    shared: cyphr::Principal,
+    a: cyphr::Principal,
+    b: cyphr::Principal,
+    c: cyphr::Principal,
+    d: cyphr::Principal,
+    /// C's `now`.
+    c_now: i64,
+}
+
+async fn theft(thief_first: bool) -> Theft {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let mut a = shared.fork().await.expect("fork");
+    create_key(&mut a, &g, &kp(&pool, "key_a"), NOW + 3).await;
+    let mut b = shared.fork().await.expect("fork");
+    create_key(&mut b, &e, &kp(&pool, "key_b"), NOW + 4).await;
+    let (c_now, d_now) = if thief_first {
+        (NOW + 5, NOW + 6)
+    } else {
+        (NOW + 6, NOW + 5)
+    };
+    let mut c = b.fork().await.expect("fork");
+    create_key(&mut c, &e, &kp(&pool, "carol"), c_now).await;
+    let mut d = a.fork().await.expect("fork");
+    create_key(&mut d, &g, &kp(&pool, "bob"), d_now).await;
+    Theft {
+        id,
+        n,
+        shared,
+        a,
+        b,
+        c,
+        d,
+        c_now,
+    }
+}
+
+/// Push `p`'s commit at `i` and return the status.
+async fn push(app: &axum::Router, p: &cyphr::Principal, i: usize, id: &str) -> StatusCode {
+    post_json(app.clone(), "/push", wire(p, i, id)).await.0
+}
+
+/// A server holding `t`'s shared prefix and A.
+async fn theft_server(
+    t: &Theft,
+) -> (
+    axum::Router,
+    std::sync::Arc<cyphr_server::AppState>,
+    tempfile::TempDir,
+) {
+    let (state, dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..t.n {
+        assert_eq!(
+            push(&app, &t.shared, i, &t.id).await,
+            StatusCode::CREATED,
+            "shared {i}"
+        );
+    }
+    assert_eq!(push(&app, &t.a, t.n, &t.id).await, StatusCode::CREATED, "A");
+    (app, state, dir)
+}
+
+/// `eve` self-revokes (SPEC 6.4) as of `rvk`, over `/revoke`.
+async fn revoke_eve(app: &axum::Router, rvk: i64) {
+    let pool = load_pool();
+    let e = kp(&pool, "eve_ed25519");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": e.alg, "now": rvk, "rvk": rvk, "tmb": e.tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/revoke"
+    }))
+    .expect("pay");
+    let (sig, _) = coz::sign_json(&pay, &e.alg, &e.prv, &e.pubb).expect("sign");
+    let body = serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)},
+    });
+    let (status, body) = post_json(app.clone(), "/revoke", body.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+}
+
+async fn errored(state: &cyphr_server::AppState, id: &str) -> bool {
+    state.engine.is_errored(id).await.expect("verdict")
+}
+
+/// Backs SPEC 15.6 ("Active -> Error: Fork detected") and 15.8 item 1: a
+/// plain fork, neither branch extended, is Error at once, live and after a
+/// rebuild; a commit extending exactly one tip (here the canonical head)
+/// resolves it, and Active survives a rebuild. Turns red if an unextended
+/// fork is Active, or the extension is refused or leaves Error. End to end.
+#[tokio::test]
+async fn plain_fork_is_error_until_extended() {
+    let t = theft(true).await;
+    let (app, state, dir) = theft_server(&t).await;
+    assert_eq!(
+        push(&app, &t.b, t.n, &t.id).await,
+        StatusCode::CONFLICT,
+        "B is a rival"
+    );
+    assert!(errored(&state, &t.id).await, "an unextended fork is Error");
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(errored(&state, &t.id).await, "a rebuild agrees: Error");
+
+    assert_eq!(
+        push(&app, &t.d, t.n + 1, &t.id).await,
+        StatusCode::CREATED,
+        "D resolves"
+    );
+    assert!(!errored(&state, &t.id).await, "one extended branch: Active");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(!errored(&state, &t.id).await, "Active survives a rebuild");
+    assert_eq!(tip_payload(app, &t.id).await, tip);
+}
+
+/// The state both arrival orders reach: A, B, then `first` resolves the
+/// plain fork and `second` extends the other branch, so both are extended.
+async fn both_extended(
+    t: &Theft,
+    thief_first: bool,
+) -> (
+    axum::Router,
+    std::sync::Arc<cyphr_server::AppState>,
+    tempfile::TempDir,
+) {
+    // The fixture dates the first resolution earlier.
+    debug_assert_eq!(thief_first, t.c_now == NOW + 5);
+    let (app, state, dir) = theft_server(t).await;
+    assert_eq!(
+        push(&app, &t.b, t.n, &t.id).await,
+        StatusCode::CONFLICT,
+        "B"
+    );
+    let (first, second) = if thief_first {
+        (&t.c, &t.d)
+    } else {
+        (&t.d, &t.c)
+    };
+    assert_eq!(
+        push(&app, first, t.n + 1, &t.id).await,
+        StatusCode::CREATED,
+        "resolution"
+    );
+    assert_eq!(
+        push(&app, second, t.n + 1, &t.id).await,
+        StatusCode::CONFLICT,
+        "the other branch's extension is retained"
+    );
+    assert!(
+        errored(&state, &t.id).await,
+        "both branches extended: Error"
+    );
+    (app, state, dir)
+}
+
+/// Backs SPEC 15.5 and 15.7.1 ("rejection of both branches until
+/// resolved"): in Error, a commit that leaves Error standing (E, extending
+/// the canonical head) and an action-only bundle are refused (423) without
+/// moving the tip, and E is retained as evidence (listed at `/branches`),
+/// live and after a rebuild. Turns red if either is accepted, the tip
+/// moves, or E is dropped. End to end.
+#[tokio::test]
+async fn errored_refuses_and_retains() {
+    let t = theft(false).await;
+    let (app, state, dir) = both_extended(&t, false).await;
+    let tip = tip_payload(app.clone(), &t.id).await;
+    let pool = load_pool();
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    assert_eq!(
+        push(&app, &e, t.n + 2, &t.id).await,
+        ERRORED,
+        "E does not resolve"
+    );
+    let (pay, sig, _) = golden_signs(
+        &pool,
+        serde_json::json!({"msg": "hi", "now": NOW + 8, "typ": "cyphr.me/comment/create"}),
+    );
+    let action = serde_json::to_vec(&serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("coz");
+    let (status, body) =
+        post_json(app.clone(), "/push", common::push_blobs(&t.id, &[action])).await;
+    assert_eq!(
+        status, ERRORED,
+        "an action-only bundle is refused: {body:?}"
+    );
+    assert_eq!(
+        tip_payload(app.clone(), &t.id).await,
+        tip,
+        "nothing moved the tip"
+    );
+    let list = heads(&app, &t.id).await;
+    assert!(
+        list.iter().any(|h| !h.1 && h.0 == t.n as u64 + 2),
+        "E is retained as evidence: {list:?}"
+    );
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(errored(&state, &t.id).await, "Error survives a rebuild");
+    assert_eq!(tip_payload(app.clone(), &t.id).await, tip);
+    assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
+}
+
+/// Backs the revoke resolution (SPEC 15.7.1 "revocation"; 6.4), under the
+/// rule that a revoke never changes the served chain:
+///
+/// * the owner's branch is canonical: the thief's self-revoke takes its rivals B and C out of the
+///   fork whatever their `now` or the `rvk` (here an `rvk` after every thief commit), so the
+///   principal is Active with D the tip, B and C kept as evidence; a rebuild agrees;
+/// * the thief's branch is canonical: the revoke is prospective for the chain this witness already
+///   serves, so nothing moves and Error stands (a fraudulent resolution is for recovery, not the
+///   engine); a rebuild agrees.
+///
+/// Turns red if a revoke moves or truncates a served chain, leaves the
+/// thief's rivals in the fork, or a rebuild disagrees. End to end over
+/// `/push`, `/revoke`, `/tip`, `/branches`.
+#[tokio::test]
+async fn revoke_resolves_both_extended() {
+    for thief_first in [true, false] {
+        let t = theft(thief_first).await;
+        let (app, state, dir) = both_extended(&t, thief_first).await;
+        let d_id = d_commit_id(&t).await;
+        let tip_before = tip_payload(app.clone(), &t.id).await;
+        revoke_eve(&app, NOW + 100).await;
+        let tip = tip_payload(app.clone(), &t.id).await;
+        assert_eq!(
+            tip, tip_before,
+            "thief_first={thief_first}: a revoke moves no chain"
+        );
+        let list = heads(&app, &t.id).await;
+        assert_eq!(
+            list.len(),
+            3,
+            "thief_first={thief_first}: nothing is dropped: {list:?}"
+        );
+        if thief_first {
+            assert!(
+                errored(&state, &t.id).await,
+                "the thief's chain is served, the owner's rivals take part: Error"
+            );
+        } else {
+            assert!(
+                !errored(&state, &t.id).await,
+                "the thief's rivals leave the fork: Active"
+            );
+            assert_eq!(tip["commit_id"], d_id, "D is /tip");
+        }
+        let verdict = errored(&state, &t.id).await;
+        drop((app, state));
+        let (app, state) = reopen(dir.path()).await;
+        assert_eq!(errored(&state, &t.id).await, verdict, "a rebuild agrees");
+        assert_eq!(tip_payload(app.clone(), &t.id).await, tip);
+        assert_eq!(heads(&app, &t.id).await, list);
+    }
+}
+
+/// D's commit id: listed at D's position, and not C's (which `eve` signed).
+async fn d_commit_id(t: &Theft) -> String {
+    // Read off a fresh server holding the shared prefix, A and D only.
+    let (state, _dir) = keyless_server();
+    let fresh = build_router(state);
+    for i in 0..t.n {
+        assert_eq!(push(&fresh, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&fresh, &t.a, t.n, &t.id).await, StatusCode::CREATED);
+    assert_eq!(
+        push(&fresh, &t.d, t.n + 1, &t.id).await,
+        StatusCode::CREATED
+    );
+    tip_payload(fresh, &t.id).await["commit_id"]
+        .as_str()
+        .expect("commit_id")
+        .to_string()
+}
+
+/// Backs a commit admitted after a revoke resolution: E, refused while in
+/// Error, is accepted once the revoke leaves Error, and listed once. Turns
+/// red if Error outlives its resolution or E is double-listed. End to end.
+#[tokio::test]
+async fn refused_commit_lands_after_resolution() {
+    let t = theft(false).await;
+    let (app, state, _dir) = both_extended(&t, false).await;
+    let pool = load_pool();
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    assert_eq!(push(&app, &e, t.n + 2, &t.id).await, ERRORED);
+    revoke_eve(&app, NOW + 5).await;
+    assert!(!errored(&state, &t.id).await);
+    assert_eq!(
+        push(&app, &e, t.n + 2, &t.id).await,
+        StatusCode::CREATED,
+        "E lands"
+    );
+    let list = heads(&app, &t.id).await;
+    assert_eq!(
+        list.iter().filter(|h| h.0 == t.n as u64 + 2).count(),
+        1,
+        "E is listed once, canonical: {list:?}"
+    );
+}
+
+/// Backs SPEC 15.9 for branch commits: a rival dated past the witness
+/// clock's tolerance (TIMESTAMP_FUTURE) is refused and never retained; one
+/// dated before the principal's latest known `now` (TIMESTAMP_PAST) is
+/// refused without moving the tip, and kept only as proof of error (SPEC
+/// 15.7.1: a quick-succession fork is evidence of compromise). Turns red if
+/// either moves the tip, the future-dated rival is kept, or the past-dated
+/// one puts the extended chain in Error. End to end.
+#[tokio::test]
+async fn branch_commits_obey_timestamps() {
+    let t = theft(true).await;
+    let pool = load_pool();
+    let (app, state, _dir) = theft_server(&t).await;
+    let mut ahead = t.a.fork().await.expect("fork");
+    create_key(
+        &mut ahead,
+        &kp(&pool, "golden"),
+        &kp(&pool, "alice"),
+        NOW + 50,
+    )
+    .await;
+    assert_eq!(
+        push(&app, &ahead, t.n + 1, &t.id).await,
+        StatusCode::CREATED
+    );
+
+    let tip = tip_payload(app.clone(), &t.id).await;
+
+    // B (NOW+4) is older than the latest known `now` (NOW+50).
+    let (status, body) = post_json(app.clone(), "/push", wire(&t.b, t.n, &t.id)).await;
+    assert!(
+        status.is_client_error(),
+        "a past-dated rival is refused: {body:?}"
+    );
+
+    let mut future = t.shared.fork().await.expect("fork");
+    future.set_clock(|| i64::from(u32::MAX));
+    let late = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 3600;
+    create_key(&mut future, &kp(&pool, "golden"), &kp(&pool, "bob"), late).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&future, t.n, &t.id)).await;
+    assert!(
+        status.is_client_error(),
+        "a future-dated rival is refused: {body:?}"
+    );
+
+    assert_eq!(
+        tip_payload(app.clone(), &t.id).await,
+        tip,
+        "the tip did not move"
+    );
+    let list = heads(&app, &t.id).await;
+    let kept: Vec<_> = list.iter().filter(|h| !h.1).collect();
+    assert_eq!(kept.len(), 1, "only B is kept: {list:?}");
+    assert_eq!(kept[0].0, t.n as u64, "B, at the fork position: {list:?}");
+    assert!(
+        !errored(&state, &t.id).await,
+        "A is extended and B is not: Active"
+    );
+}
+
+/// Backs first-seen time (SPEC 15.9; #203 "I saw this at x time"): every
+/// listed branch carries the time this server first stored it, and a
+/// rebuild serves the same time. Turns red if `seen` is absent, outside
+/// the push window, or changes across a rebuild. End to end.
+#[tokio::test]
+async fn first_seen_survives_rebuild() {
+    let t = theft(true).await;
+    let clock = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs() as i64
+    };
+    let before = clock();
+    let (app, state, dir) = theft_server(&t).await;
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    let after = clock();
+    let (_, payload) = branches(app.clone(), &t.id).await;
+    let listed = payload["branches"].as_array().expect("branches").clone();
+    assert_eq!(listed.len(), 2, "{payload:?}");
+    for b in &listed {
+        let seen = b["seen"].as_i64().expect("seen is served");
+        assert!(
+            (before..=after).contains(&seen),
+            "{seen} outside {before}..={after}"
+        );
+    }
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    let (_, payload) = branches(app, &t.id).await;
+    assert_eq!(payload["branches"].as_array().expect("branches"), &listed);
+}
+
+/// A viewer that takes the protocol's word.
+struct Protocol;
+
+impl cyphr_storage::engine::Recovery for Protocol {
+    fn review(
+        &self,
+        _: &str,
+        protocol: cyphr_storage::engine::Consensus,
+        _: &[cyphr_storage::engine::BranchTip],
+    ) -> cyphr_storage::engine::Consensus {
+        protocol
+    }
+}
+
+/// A viewer that distrusts every resolved fork: one stolen key may have
+/// resolved it first, so it holds the principal in Error while any
+/// abandoned branch exists.
+struct DistrustResolutions;
+
+impl cyphr_storage::engine::Recovery for DistrustResolutions {
+    fn review(
+        &self,
+        _: &str,
+        protocol: cyphr_storage::engine::Consensus,
+        branches: &[cyphr_storage::engine::BranchTip],
+    ) -> cyphr_storage::engine::Consensus {
+        if branches.iter().any(|b| !b.canonical) {
+            cyphr_storage::engine::Consensus::Error
+        } else {
+            protocol
+        }
+    }
+}
+
+/// Backs the recovery seam: the verdict layer consults the strategy it is
+/// given, and the engine's admission does not. After the thief's C
+/// resolves the fork, the protocol (and a viewer taking its word) says
+/// Active, a viewer distrusting resolutions says Error, and a commit
+/// extending C is still admitted, since no strategy is wired into the
+/// engine. Turns red if the strategy is ignored, or a strategy changes
+/// what the engine admits. End to end over `/push` and the engine.
+#[tokio::test]
+async fn recovery_is_a_seam_not_a_rule() {
+    use cyphr_storage::engine::Consensus;
+
+    let t = theft(true).await;
+    let (app, state, _dir) = theft_server(&t).await;
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CREATED);
+    let verdict = |r: &'static dyn cyphr_storage::engine::Recovery| {
+        let state = state.clone();
+        let id = t.id.clone();
+        async move { state.engine.verdict(&id, r).await.expect("verdict") }
+    };
+    assert_eq!(verdict(&Protocol).await, Consensus::Active);
+    assert_eq!(verdict(&DistrustResolutions).await, Consensus::Error);
+
+    let pool = load_pool();
+    let mut next = t.c.fork().await.expect("fork");
+    create_key(
+        &mut next,
+        &kp(&pool, "golden"),
+        &kp(&pool, "alice"),
+        NOW + 9,
+    )
+    .await;
+    assert_eq!(
+        push(&app, &next, t.n + 2, &t.id).await,
+        StatusCode::CREATED,
+        "the engine admits by the protocol alone"
+    );
+}
+
+// ========================================================================
+// ERR1 attack review (at 180a221): each path as a failing test, ignored
+// until the design ruling. Every test asserts the safe outcome, so it is
+// red while the path is open.
+// ========================================================================
+
+/// `signer` signs a one-transaction commit of `pay` (its `alg`, `now`,
+/// `tmb` filled in) on `p`, introducing `new` if given.
+async fn sign_commit(
+    p: &mut cyphr::Principal,
+    signer: &Kp,
+    mut pay: serde_json::Value,
+    new: Option<&Kp>,
+    now: i64,
+) {
+    pay["alg"] = signer.alg.clone().into();
+    pay["now"] = now.into();
+    pay["tmb"] = signer.tmb.to_b64().into();
+    // The wire form is canonical (sorted) JSON; sign exactly that.
+    if let Some(obj) = pay.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &signer.alg, &signer.prv, &signer.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, new.map(key_of))
+        .expect("apply");
+    scope
+        .finalize_with_software(&signer_of(signer), now, "cyphr.me")
+        .await
+        .expect("finalize");
+}
+
+/// The chain the A1/A3 attacks start from: genesis (`golden`, `diana`,
+/// `eve`) at NOW+2, then A by `golden` at NOW+3, X by `eve` (K) at NOW+10,
+/// Y by `golden` at NOW+11. The attacker holds `eve` and builds B over A,
+/// dated A's `now` (NOW+3), and B' over B at NOW+3.
+struct Rewrite {
+    id: String,
+    n: usize,
+    chain: cyphr::Principal,
+    b: cyphr::Principal,
+    b2: cyphr::Principal,
+}
+
+async fn rewrite() -> Rewrite {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let mut a = shared.fork().await.expect("fork");
+    create_key(&mut a, &g, &kp(&pool, "key_a"), NOW + 3).await;
+    let mut chain = a.fork().await.expect("fork");
+    create_key(&mut chain, &e, &kp(&pool, "alice"), NOW + 10).await;
+    create_key(&mut chain, &g, &kp(&pool, "bob"), NOW + 11).await;
+    let mut b = a.fork().await.expect("fork");
+    create_key(&mut b, &e, &kp(&pool, "key_b"), NOW + 3).await;
+    let mut b2 = b.fork().await.expect("fork");
+    create_key(&mut b2, &e, &kp(&pool, "carol"), NOW + 3).await;
+    Rewrite {
+        id,
+        n,
+        chain,
+        b,
+        b2,
+    }
+}
+
+/// A server holding the whole canonical chain of `r` (genesis .. Y).
+async fn rewrite_server(
+    r: &Rewrite,
+) -> (
+    axum::Router,
+    std::sync::Arc<cyphr_server::AppState>,
+    tempfile::TempDir,
+) {
+    let (state, dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..r.n + 3 {
+        assert_eq!(
+            push(&app, &r.chain, i, &r.id).await,
+            StatusCode::CREATED,
+            "chain {i}"
+        );
+    }
+    (app, state, dir)
+}
+
+/// A1: a stolen key plus a chosen `rvk` rewrites history. The holder of K
+/// (`eve`, which signed canonical X at n+1) pushes B at n+1 dated A's
+/// `now`, then B' over B, then self-revokes K as of A's `now` + 1. That
+/// invalidates X (and Y over it) but not B or B', and `settle` moves the
+/// chain onto the attacker's B, B'. Safe outcome: the chain the owner
+/// built is not replaced by a branch only K signed.
+#[tokio::test]
+async fn a1_stolen_key_and_chosen_rvk_rewrite_history() {
+    let r = rewrite().await;
+    let (app, _state, _dir) = rewrite_server(&r).await;
+    let tip = tip_payload(app.clone(), &r.id).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&r.b, r.n + 1, &r.id)).await;
+    assert!(status.is_client_error(), "B is refused: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", wire(&r.b2, r.n + 2, &r.id)).await;
+    assert!(status.is_client_error(), "B' is refused: {body:?}");
+    revoke_eve(&app, NOW + 4).await;
+    assert_eq!(
+        tip_payload(app.clone(), &r.id).await["commit_id"],
+        tip["commit_id"],
+        "a revoke dated by the key's own holder moved the chain onto its branch"
+    );
+}
+
+/// A2: a deleted key locks the owner out. `eve` was active at position n
+/// and the owner has since deleted it on-chain (A then D at n+1). Its
+/// holder pushes a backdated B at n and B' over B: both branches are
+/// extended, the principal is in Error, and the owner's next ordinary
+/// commit is refused (423), with no exit the owner can sign (`eve` is
+/// already deleted). Safe outcome: the owner's commit is admitted.
+#[tokio::test]
+async fn a2_deleted_key_locks_the_owner_out() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let mut chain = shared.fork().await.expect("fork");
+    create_key(&mut chain, &g, &kp(&pool, "key_a"), NOW + 3).await;
+    sign_commit(
+        &mut chain,
+        &g,
+        serde_json::json!({"id": e.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 4,
+    )
+    .await;
+    let mut b = shared.fork().await.expect("fork");
+    create_key(&mut b, &e, &kp(&pool, "key_b"), NOW + 3).await;
+    let mut b2 = b.fork().await.expect("fork");
+    create_key(&mut b2, &e, &kp(&pool, "carol"), NOW + 3).await;
+
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..n + 2 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&chain, i, &id)).await;
+        assert_eq!(status, StatusCode::CREATED, "chain {i}: {body:?}");
+    }
+    let (status, body) = post_json(app.clone(), "/push", wire(&b, n, &id)).await;
+    assert!(status.is_client_error(), "B: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", wire(&b2, n + 1, &id)).await;
+    assert!(status.is_client_error(), "B': {body:?}");
+
+    let mut next = chain.fork().await.expect("fork");
+    create_key(&mut next, &g, &kp(&pool, "bob"), NOW + 5).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&next, n + 2, &id)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the owner is locked out by a deleted key's backdated branch (errored={}): {body:?}",
+        errored(&state, &id).await
+    );
+}
+
+/// A3: live and rebuilt state disagree. K (`eve`) is revoked first as of
+/// NOW+5, which invalidates X and Y but leaves no alternative, so live
+/// keeps Y. Then B and B' (dated NOW+3, below `rvk`) arrive by gossip
+/// ingest (`submit_commit`, which the server's dead-key gate does not
+/// front). Live never runs `settle` on ingest, so Y stays the tip; a
+/// rebuild runs it and moves the chain to B'. Safe outcome: the rebuilt
+/// tip equals the live tip.
+#[tokio::test]
+async fn a3_live_and_rebuild_disagree() {
+    let r = rewrite().await;
+    let (app, state, dir) = rewrite_server(&r).await;
+    revoke_eve(&app, NOW + 5).await;
+    for (p, at) in [(&r.b, r.n + 1), (&r.b2, r.n + 2)] {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[at]
+            .bundle()
+            .expect("bundle");
+        let refused = state.engine.submit_commit(&r.id, None, &bundle).await;
+        assert!(refused.is_err(), "a rival is refused as the tip");
+    }
+    let live = tip_payload(app.clone(), &r.id).await;
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    assert_eq!(
+        tip_payload(app, &r.id).await["commit_id"],
+        live["commit_id"],
+        "a rebuild serves another tip than the live engine did"
+    );
+}
+
+/// A4: unbounded blobs. One durable revoke record per thumbprint, the
+/// first valid one: re-signed revokes of a dead key, with other messages
+/// (so other digests), lower `rvk` values or higher ones, add no blob.
+/// Turns red if any of them stores a record.
+#[tokio::test]
+async fn a4_resigned_revokes_grow_storage() {
+    use cyphr_storage::blob::BlobStore;
+
+    let t = theft(true).await;
+    let (app, state, _dir) = theft_server(&t).await;
+    let blobs = || async {
+        state
+            .engine
+            .blob_store()
+            .iter()
+            .await
+            .expect("iter")
+            .count()
+    };
+    let pool = load_pool();
+    let e = kp(&pool, "eve_ed25519");
+    let revoke = |msg: &'static str, rvk: i64| {
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": e.alg, "msg": msg, "now": rvk, "rvk": rvk,
+            "tmb": e.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/revoke"
+        }))
+        .expect("pay");
+        let (sig, _) = coz::sign_json(&pay, &e.alg, &e.prv, &e.pubb).expect("sign");
+        serde_json::json!({
+            "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+            "key": {"alg": e.alg, "pub": Base64UrlUnpadded::encode_string(&e.pubb)},
+        })
+        .to_string()
+    };
+    let (status, body) = post_json(app.clone(), "/revoke", revoke("first", NOW + 5)).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let before = blobs().await;
+    for (msg, rvk) in [
+        ("second", NOW + 5),
+        ("third", NOW + 1),
+        ("fourth", 1),
+        ("fifth", NOW + 50),
+    ] {
+        let (status, body) = post_json(app.clone(), "/revoke", revoke(msg, rvk)).await;
+        assert!(status.is_success(), "{body:?}");
+    }
+    assert_eq!(
+        blobs().await,
+        before,
+        "a re-signed revoke of a dead key stored a new blob"
+    );
+}
+
+/// Backs rule 5 (provisional, pending the spec author; SPEC 3.3, 6.2):
+/// in Error, a `key/delete` by another active key of the key behind the
+/// rival branch is a resolving entry. It is admitted, and the removed
+/// key's rivals leave the fork: Active, live and after a rebuild. Turns
+/// red if the delete is refused (423) or Error stands. End to end.
+#[tokio::test]
+async fn key_delete_of_rival_signer_resolves() {
+    let pool = load_pool();
+    let t = theft(false).await;
+    let (app, state, dir) = both_extended(&t, false).await;
+    let mut del = t.d.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({
+            "id": kp(&pool, "eve_ed25519").tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/delete"
+        }),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete resolves: {body:?}");
+    assert!(!errored(&state, &t.id).await, "eve's rivals left the fork");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(!errored(&state, &t.id).await, "a rebuild agrees");
+    assert_eq!(tip_payload(app, &t.id).await, tip);
+}
+
+/// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
+/// finalized by `new`, the key it leaves active.
+async fn replace_key(p: &mut cyphr::Principal, old: &Kp, new: &Kp, now: i64) {
+    let mut pay = serde_json::json!({
+        "alg": old.alg, "id": new.tmb.to_b64(), "now": now,
+        "tmb": old.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/replace"
+    });
+    if let Some(obj) = pay.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &old.alg, &old.prv, &old.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &old.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(new)))
+        .expect("apply");
+    scope
+        .finalize_with_software(&signer_of(new), now, "cyphr.me")
+        .await
+        .expect("finalize");
+}
+
+/// Backs the narrowed rule 3 on S04's rotation shape: the owner and the
+/// thief each `key/replace` the stolen key (`eve`) at the same position.
+/// A contested commit is judged against the state before its position, so
+/// neither replacement disqualifies its rival: every peer, whichever it
+/// saw first, is in Error with no branch picked, live and after a
+/// rebuild. Turns red if either peer reports Active. End to end.
+#[tokio::test]
+async fn rival_rotations_are_error_at_every_peer() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let mut owner = shared.fork().await.expect("fork");
+    replace_key(&mut owner, &e, &kp(&pool, "alice"), NOW + 3).await;
+    let mut thief = shared.fork().await.expect("fork");
+    replace_key(&mut thief, &e, &kp(&pool, "bob"), NOW + 4).await;
+
+    for (first, second) in [(&owner, &thief), (&thief, &owner)] {
+        let (state, dir) = keyless_server();
+        let app = build_router(state.clone());
+        for i in 0..n {
+            assert_eq!(push(&app, &shared, i, &id).await, StatusCode::CREATED);
+        }
+        let (status, body) = post_json(app.clone(), "/push", wire(first, n, &id)).await;
+        assert_eq!(status, StatusCode::CREATED, "first rotation: {body:?}");
+        let (status, body) = post_json(app.clone(), "/push", wire(second, n, &id)).await;
+        // Refused as the tip: the key it replaces is gone from the tip.
+        assert!(status.is_client_error(), "second rotation: {body:?}");
+        let list = heads(&app, &id).await;
+        assert_eq!(list.len(), 2, "both rotations are held: {list:?}");
+        assert!(errored(&state, &id).await, "rival rotations: Error");
+        drop((app, state));
+        let (_app, state) = reopen(dir.path()).await;
+        assert!(errored(&state, &id).await, "a rebuild agrees: Error");
+    }
 }

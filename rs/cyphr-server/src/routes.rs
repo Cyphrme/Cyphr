@@ -378,6 +378,8 @@ pub async fn evidence(
                 "pre": f.pre,
                 "a": f.canonical,
                 "b": f.rival,
+                "a_seen": f.canonical_seen,
+                "b_seen": f.rival_seen,
             })
         })
         .collect();
@@ -949,12 +951,20 @@ pub async fn revoke(
             }
             state
                 .observations
-                .record_seen(&verified.revoked_tmb, verified.evidence)
+                .record_seen(&verified.revoked_tmb, verified.evidence.clone())
                 .await
                 .map_err(AppError::observation)?;
         },
         Err(e) => return Err(AppError::observation(e)),
     }
+
+    // The engine keeps the revoke too, as a record a rebuild re-verifies:
+    // it judges forks by it (SPEC 15.7.1, a revocation resolves one).
+    state
+        .engine
+        .record_revoke(&verified.evidence)
+        .await
+        .map_err(AppError::engine)?;
 
     let payload = RevokeResponse {
         revoked_tmb: Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes()),
