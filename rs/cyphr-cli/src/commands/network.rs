@@ -84,12 +84,34 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .peekable();
         let mut sent_actions = 0usize;
         for (i, commit) in local.iter().enumerate().skip(start) {
+            let mut bundle = commit.bundle.clone();
+            let mut leading = Vec::new();
             while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
-                peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
-                    .await?;
-                sent_actions += 1;
+                leading.push(blob);
             }
-            peer.push_commit(&wire, &commit.bundle).await?;
+            // Actions go ahead of their commit, as a bundle of their own. A
+            // principal in Error refuses (423) a bundle of actions alone, and
+            // only a resolving commit is processed, so then they travel
+            // inside the commit's bundle instead.
+            let mut inline = false;
+            for blob in leading {
+                sent_actions += 1;
+                if inline {
+                    bundle.actions.push(blob);
+                    continue;
+                }
+                match peer
+                    .push_commit(&wire, &WireBundle::actions(vec![blob.clone()]))
+                    .await
+                {
+                    Err(PeerError::Status { status: 423, .. }) => {
+                        inline = true;
+                        bundle.actions.push(blob);
+                    },
+                    other => other?,
+                }
+            }
+            peer.push_commit(&wire, &bundle).await?;
         }
         for (_, blob) in actions {
             peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
@@ -191,18 +213,17 @@ fn signed_identity(blob: &[u8]) -> Vec<u8> {
 }
 
 /// Whether two commits are the same signed commit, whatever their encoding:
-/// the same cozies, grouped into the same transactions (the grouping is a
-/// hash input of TR, SPEC 3.7.5).
+/// the same transaction cozies, grouped the same way (the grouping is a hash
+/// input of TR, SPEC 3.7.5). The data actions a bundle carries inline are
+/// recorded data, not part of the commit, so a holder that kept them apart
+/// still holds the same commit.
 fn same_commit(a: &WireBundle, b: &WireBundle) -> bool {
-    let shape = |w: &WireBundle| {
-        (
-            w.actions.len(),
-            w.txs.iter().map(Vec::len).collect::<Vec<_>>(),
-        )
-    };
+    let shape = |w: &WireBundle| w.txs.iter().map(Vec::len).collect::<Vec<_>>();
     shape(a) == shape(b)
-        && a.cozies()
-            .zip(b.cozies())
+        && a.txs
+            .iter()
+            .flatten()
+            .zip(b.txs.iter().flatten())
             .all(|(x, y)| signed_identity(x) == signed_identity(y))
 }
 
