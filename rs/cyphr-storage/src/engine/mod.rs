@@ -770,6 +770,10 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     retention_replays: std::sync::atomic::AtomicU64,
     /// Candidate positions [`Self::retain_rival`] has tried a bundle at.
     retention_trials: std::sync::atomic::AtomicU64,
+    /// Commits whose manifest was stored but whose commit-log append failed
+    /// ([`Self::log_append_failures`]): the log is behind until the next
+    /// load repairs it.
+    log_append_failures: std::sync::atomic::AtomicU64,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -804,7 +808,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             revoked: std::sync::Mutex::new(Revoked::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
+            log_append_failures: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many accepted commits have had their commit-log append fail
+    /// after their manifest was stored, over this engine's lifetime. Each
+    /// is repaired by the next load of its principal; a count that keeps
+    /// rising means the log store is failing, which the push answers alone
+    /// do not show.
+    pub fn log_append_failures(&self) -> u64 {
+        self.log_append_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Fetch (or create) this `principal_id`'s serialization point.
@@ -1442,6 +1457,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             Some(staged) => Some(staged.commit().await),
             None => None,
         } {
+            self.log_append_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 principal = %commit.principal_id,
                 error = %e,

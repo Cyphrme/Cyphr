@@ -1374,14 +1374,14 @@ pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-/// `GET /metrics` -- Prometheus text exposition of the request, refusal and
-/// accepted-push counters.
+/// `GET /metrics` -- Prometheus text exposition of the request, refusal,
+/// accepted-push and commit-log-behind counters.
 pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (
         [(
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        state.metrics.render(),
+        state.metrics.render(state.engine.log_append_failures()),
     )
 }

@@ -294,8 +294,9 @@ async fn manifest_failure_leaves_no_eml_leaf_or_index_entry() {
 /// data directory accepts the next push, whose load replays the stored
 /// commit onto the log with no `DurableLeafMismatch`, leaving the EML whole.
 /// Turns red if: the core writes the EML before the manifest (the failed
-/// write then refuses the push and stores no manifest). End-to-end
-/// scenario: yes.
+/// write then refuses the push and stores no manifest), or the failed
+/// append is not counted (the `cyphr_eml_append_failures_total` metric
+/// reads that count). End-to-end scenario: yes.
 #[tokio::test]
 async fn eml_failure_after_manifest_is_repaired_by_the_next_load() {
     let pool = common::load_pool();
@@ -327,6 +328,11 @@ async fn eml_failure_after_manifest_is_repaired_by_the_next_load() {
             eml_leaves(&s.db, &id).await,
             1,
             "the EML is behind by the failed write"
+        );
+        assert_eq!(
+            s.engine.log_append_failures(),
+            1,
+            "the failed append is counted, so `/metrics` shows a log that keeps failing"
         );
     }
     push_through_server(&config, &id, &third).await;

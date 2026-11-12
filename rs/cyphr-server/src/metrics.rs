@@ -92,8 +92,10 @@ impl Metrics {
         }
     }
 
-    /// Render the Prometheus text exposition.
-    pub fn render(&self) -> String {
+    /// Render the Prometheus text exposition. `eml_append_failures` is the
+    /// storage engine's own count of commits whose log append failed after
+    /// the commit was stored; the engine owns it, so it is passed in.
+    pub fn render(&self, eml_append_failures: u64) -> String {
         let mut out = String::new();
         // `write!` into a `String` is infallible; the results are discarded.
         let _ = writeln!(
@@ -121,6 +123,12 @@ impl Metrics {
                 self.refusals[kind as usize].load(Ordering::Relaxed)
             );
         }
+        let _ = writeln!(
+            out,
+            "# HELP cyphr_eml_append_failures_total Commits stored whose commit-log append \
+             failed (repaired by the next load).\n# TYPE cyphr_eml_append_failures_total \
+             counter\ncyphr_eml_append_failures_total {eml_append_failures}"
+        );
         out
     }
 }
