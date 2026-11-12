@@ -695,7 +695,11 @@ fn fetch_from_a_diverged_peer_is_a_typed_fork() {
     b.add_key(&id);
     accepted(&a.push(&id, &s1.url), "A's branch to peer 1");
 
-    let r = b.run(&["fetch", &format!("--identity={id}"), &format!("--peer={}", s1.url)]);
+    let r = b.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", s1.url),
+    ]);
     assert!(!r.ok, "a diverged peer must be refused, got: {}", r.stdout);
     let err: Value = serde_json::from_str(r.stderr.lines().last().unwrap_or(""))
         .unwrap_or_else(|e| panic!("no typed error on stderr ({e}): {}", r.stderr));

@@ -86,8 +86,8 @@ async fn s02_partition() {
     );
     assert!(
         during.freshness.age <= watch_began.elapsed() + Duration::from_secs(2),
-        "a view cannot be older than the time since the watch began (whole-second \
-         clocks at both ends add up to 2s), got {:?}",
+        "a view cannot be older than the time since the watch began (whole-second clocks at both \
+         ends add up to 2s), got {:?}",
         during.freshness.age
     );
 
