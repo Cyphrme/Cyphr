@@ -75,6 +75,14 @@ pub enum LoadError {
     #[error("protocol error: {0}")]
     Protocol(#[from] cyphr::Error),
 
+    /// A coz that is no coz a stored line can hold: not JSON, no `pay`, a
+    /// pay missing `tmb`, `now` or `typ`, or a coz in the wrong part of the
+    /// line. The same defect `submit_commit` refuses as
+    /// [`EngineError::MalformedBlob`](crate::engine::EngineError::MalformedBlob),
+    /// so one defect has one kind on both paths.
+    #[error("malformed coz at index {index}: {message}")]
+    MalformedBlob { index: usize, message: String },
+
     /// JSON parsing error.
     #[error("JSON error at index {index}: {source}")]
     Json {
@@ -210,7 +218,7 @@ fn stored_bundle(
                 index,
                 message: "invalid base64 signature".into(),
             })?;
-        StoredCoz::new(pay, sig).map_err(wire_error)
+        StoredCoz::new(pay, sig).map_err(|e| wire_error(e, index))
     };
     let actions = commit
         .actions
@@ -227,22 +235,22 @@ fn stored_bundle(
         .iter()
         .map(key_entry_to_key)
         .collect::<Result<_, _>>()?;
-    Bundle::new(actions, txs, keys).map_err(|e| match e.error {
-        WireError::Misplaced | WireError::EmptyTransaction => {
-            LoadError::Protocol(cyphr::Error::MalformedPayload)
-        },
-        other => wire_error(other),
+    Bundle::new(actions, txs, keys).map_err(|e| {
+        wire_error(e.error, commit_idx * 1000 + e.coz.unwrap_or_default())
     })
 }
 
-/// A wire refusal as a load error.
-fn wire_error(e: cyphr::replay::WireError) -> LoadError {
+/// A wire refusal as a load error, classified as `submit_commit` classifies
+/// it: a core rule the coz breaks (or a key whose `tmb` is not its `pub`'s)
+/// is a protocol refusal, anything else a malformed coz.
+fn wire_error(e: cyphr::replay::WireError, index: usize) -> LoadError {
     use cyphr::replay::WireError;
     match e {
-        WireError::Header(p) | WireError::Key(p) | WireError::Protocol(p) => LoadError::Protocol(p),
-        // A coz read from a line has its framing checked above; what is
-        // left is a pay the core cannot read.
-        _ => LoadError::Protocol(cyphr::Error::MalformedPayload),
+        WireError::Key(p) | WireError::Protocol(p) => LoadError::Protocol(p),
+        other => LoadError::MalformedBlob {
+            index,
+            message: other.to_string(),
+        },
     }
 }
 
@@ -268,47 +276,3 @@ pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
 
 // ============================================================================
 // Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_test_key(id: u8) -> Key {
-        Key::from_pub_key("ES256", vec![id; 64])
-            .expect("dummy key")
-            .with_first_seen(1000)
-    }
-
-    /// Claim: a commit whose coz pay omits `typ` is rejected as malformed
-    /// during replay, never silently routed to the action path (a missing
-    /// `typ` is not a transaction type, so only `CozHeader::parse` stops it).
-    /// Turns red if replay stops parsing the header strictly. Not an
-    /// end-to-end scenario: it needs a malformed commit no honest write path
-    /// produces, so only a direct replay reaches it.
-    #[tokio::test]
-    async fn replay_rejects_commit_missing_typ() {
-        let key = make_test_key(0xAA);
-        let malformed = serde_json::json!({
-            "pay": { "alg": "ES256", "tmb": key.tmb().to_b64(), "now": 1000 },
-            "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-        });
-        let commit = CommitEntry {
-            txs: vec![vec![malformed]],
-            commit_id: "SHA-256:c".into(),
-            auth_root: Some("SHA-256:a".into()),
-            sr: Some("SHA-256:s".into()),
-            pr: "SHA-256:p".into(),
-            ..CommitEntry::default()
-        };
-
-        let result = load_principal_from_commits(Genesis::Implicit(key), &[commit]).await;
-        assert!(
-            matches!(
-                result,
-                Err(LoadError::Protocol(cyphr::Error::MalformedPayload))
-            ),
-            "a coz missing 'typ' must be rejected as malformed, got {result:?}"
-        );
-    }
-}

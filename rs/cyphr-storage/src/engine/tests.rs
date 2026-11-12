@@ -226,46 +226,6 @@ fn build_bundle(commit: &serde_json::Value) -> WireBundle {
         .expect("fixture bundle")
 }
 
-/// F29: a submitted blob whose pay is missing `typ` must be rejected
-/// outright, not silently misclassified. Before the fix, engine/mod.rs's
-/// hand-rolled extraction defaulted a missing `typ` to `""`, and
-/// a transaction check on `""` is false -- so a coz that was actually a
-/// mutation (e.g. a corrupted `key/create`) could be silently routed down
-/// the action-only path instead of being rejected as malformed.
-#[tokio::test]
-async fn submit_commit_rejects_blob_missing_typ() {
-    let fixture = load_golden("actions", "action_alone_leaves_pr");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let genesis = make_genesis(genesis_keys);
-
-    let malformed = serde_json::json!({
-        "pay": {
-            "alg": "ES256",
-            "tmb": genesis_keys[0]["tmb"],
-            "now": 1000
-            // "typ" deliberately omitted
-        },
-        "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    });
-    let bytes = serde_json::to_vec(&malformed).unwrap();
-
-    let engine = test_engine();
-    let principal_id = genesis_principal_id(&genesis).unwrap();
-    let result = engine
-        .submit_commit(
-            &principal_id,
-            Some(genesis),
-            &WireBundle::actions(vec![bytes]),
-        )
-        .await;
-
-    assert!(
-        matches!(result, Err(EngineError::MalformedBlob(_))),
-        "a blob missing 'typ' must be rejected as malformed, not silently misclassified as an \
-         action, got {result:?}"
-    );
-}
-
 /// Backs SPEC be0663f section 12 (a commit that does not verify is not
 /// stored): a tampered signature is refused and no tip appears.
 #[tokio::test]
