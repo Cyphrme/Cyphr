@@ -350,8 +350,10 @@ impl PrincipalState {
         let cz = &*vtx;
 
         // SPEC §7.6: a transaction coz this principal already included is
-        // rejected; the first inclusion is authoritative. Checked first so a
-        // replay is typed COZ_REUSE whatever state or timestamp it meets.
+        // rejected; the first inclusion is authoritative. Checked ahead of the
+        // timestamp and signer rules below, but not ahead of signer
+        // resolution: `CommitScope::verify` resolves the signer before this
+        // runs and so performs the same check itself, first.
         if self.included_czds.contains(cz.czd.as_bytes()) {
             return Err(Error::CozReuse);
         }

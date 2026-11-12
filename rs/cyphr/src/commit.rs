@@ -486,7 +486,9 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// # Errors
     ///
     /// `MalformedPayload` for an unreadable pay or one with no `tmb`;
-    /// `UnknownKey` for an inactive signer; as
+    /// `CozReuse` for a coz this principal already included (checked before
+    /// the signer, which that coz may have retired); `UnknownKey` for an
+    /// inactive signer; as
     /// [`verify_coz`](crate::parsed_coz::verify_coz) otherwise.
     pub fn verify(
         &self,
@@ -501,6 +503,20 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .tmb
             .as_ref()
             .ok_or(crate::error::Error::MalformedPayload)?;
+        // SPEC 7.6: a coz already included is `COZ_REUSE`. Decided before the
+        // signer is resolved, since the coz may have retired its own signer
+        // (key/replace, revoke, delete), and from the coz's own bytes, never
+        // the caller's `czd`. A pay naming no usable `alg` has no digest to
+        // match and falls through to the ordinary refusals.
+        if let Some(own) = pay
+            .alg
+            .as_deref()
+            .and_then(|alg| crate::parsed_coz::compute_czd(pay_json, sig, alg))
+        {
+            if self.projected.included_czds.contains(own.as_bytes()) {
+                return Err(crate::error::Error::CozReuse);
+            }
+        }
         let signer_key = self.resolve_signer(signer_tmb)?;
         crate::parsed_coz::verify_coz(pay_json, sig, signer_key, czd, new_key)
     }
