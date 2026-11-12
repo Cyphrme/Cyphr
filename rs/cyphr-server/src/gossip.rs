@@ -141,17 +141,12 @@ async fn round_principal(
     }
 
     // Verified revokes first, where the engine judges admission and forks
-    // by them (SPEC 6.4, 15.7.1), so a dead key's commits served in this
-    // same round are refused unless the round's later commits bury them.
+    // by them (SPEC 6.4, 15.7.1), so a dead key's later commits served in
+    // this same round are refused.
     record_revokes(state, &report.revoked).await;
 
-    // One submission, so a commit its successors bury is admitted.
-    let caught_up = state
-        .engine
-        .submit_commits(principal_id, None, record.bundles_since(mark))
-        .await;
-    for outcome in caught_up {
-        match outcome {
+    for bundle in record.bundles_since(mark) {
+        match state.engine.submit_commit(principal_id, None, bundle).await {
             Ok(_) => info!(principal = %principal_id, "gossip: stored a verified commit"),
             // The principal may have advanced here since the round began
             // (a client's push): the engine refuses what it already holds.
@@ -164,13 +159,12 @@ async fn round_principal(
     // The engine refuses a rival as a tip but retains it as a branch (I2: a
     // fork is evidence, never merged), and accepts a forked peer's later
     // commits only if they verify (SPEC 15.8).
-    let branch = branch_bundles(&record, &report, &dialled).await;
-    for outcome in state
-        .engine
-        .submit_commits(principal_id, None, &branch)
-        .await
-    {
-        match outcome {
+    for bundle in branch_bundles(&record, &report, &dialled).await {
+        match state
+            .engine
+            .submit_commit(principal_id, None, &bundle)
+            .await
+        {
             Ok(_) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
             Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
         }

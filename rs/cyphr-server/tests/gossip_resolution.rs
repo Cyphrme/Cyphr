@@ -315,11 +315,10 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
 
 /// Backs the rule that key death is not retroactive (SPEC 6.4; nrd: "You
 /// cant make all sigs retroactively invalid"): P1 holds only the genesis
-/// and already knows `eve` is revoked; P2 serves the chain, in which `eve`
-/// signed R and B and `golden` then signed C over them. C buries R and B,
-/// so one round of P1's gossip catches P1 up through them to P2's tip.
-/// Turns red if a node that knows a revoke refuses the key's commits that
-/// a live key's later commit endorses.
+/// and already knows `eve` is revoked as of T+5; P2 serves the chain, in
+/// which `eve` signed R and B before that, and `golden` C after them. One
+/// round of P1's gossip catches P1 up to P2's tip. Turns red if a node that
+/// knows a revoke refuses the key's commits dated before it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
     let (genesis, id, _, _, r, b, mut thief) = dead_key_fixture().await;
@@ -350,14 +349,14 @@ async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
     );
 }
 
-/// Backs burial by live keys only (SPEC 6.4): P1 holds the genesis and
-/// knows `eve` is revoked. P2 serves X1, which dead `eve` signs and in
-/// which it introduces `alice`, then X2, signed by `alice` alone. `alice`
-/// was not a key of the chain before X1, so X2 buries nothing: one round
-/// of P1's gossip admits neither, and P1 keeps the genesis. Turns red if a
-/// key the dead commit introduced can bury it.
+/// Backs honest rotation under a later revoke (SPEC 6.4, not
+/// retroactive): `eve` adds `alice`, and `alice` commits; later `eve` is
+/// revoked. P1 learns the revoke first, then syncs from P2 and catches up
+/// through the whole history, the commit `eve` signed and the one
+/// `alice` signed. Turns red if a revoke learned first blocks honest
+/// history signed before it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_key_the_dead_commit_introduced_cannot_bury_it() {
+async fn honest_rotation_syncs_after_a_later_revoke() {
     let (genesis, id, ..) = dead_key_fixture().await;
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
@@ -369,8 +368,8 @@ async fn a_key_the_dead_commit_introduced_cannot_bury_it() {
         .await
         .expect("genesis");
     assert_eq!(again, genesis, "one genesis");
-    let x1 = common::key_commit_by(&mut p, "eve_ed25519", "alice", T + 1).await;
-    let x2 = common::key_commit_by(&mut p, "alice", "carol", T + 2).await;
+    let added = common::key_commit_by(&mut p, "eve_ed25519", "alice", T + 1).await;
+    let rotated = common::key_commit_by(&mut p, "alice", "carol", T + 2).await;
 
     let (p1, _d1) = keyless_server();
     let (p2, _d2) = keyless_server();
@@ -378,62 +377,16 @@ async fn a_key_the_dead_commit_introduced_cannot_bury_it() {
     for app in [&app1, &app2] {
         assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
     }
-    assert_eq!(push(&app2, &id, &x1).await, StatusCode::CREATED, "X1 on P2");
-    assert_eq!(push(&app2, &id, &x2).await, StatusCode::CREATED, "X2 on P2");
-    let (status, body) = post_json(
-        app1.clone(),
-        "/revoke",
-        common::eve_revoke(T + 5).to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
-    let before = tip_pr(&app1, &id).await;
-
-    one_round(&p1, &p2).await;
-
     assert_eq!(
-        tip_pr(&app1, &id).await,
-        before,
-        "X1 and X2 were admitted: a key X1 introduced buried it"
+        push(&app2, &id, &added).await,
+        StatusCode::CREATED,
+        "eve adds alice"
     );
-}
-
-/// Backs burial by live keys only, with the key minted mid-span: P2 serves
-/// X1, signed by the dead `eve`; X2, also signed by `eve`, which introduces
-/// `alice`; and X3, signed by `alice` alone. `alice` was not a key of the
-/// chain before X1, so X3 buries neither: one round of P1's gossip admits
-/// none of the three. Turns red if a key introduced between the dead
-/// commit and its burier counts as live.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_key_introduced_mid_span_cannot_bury_it() {
-    let (genesis, id, ..) = dead_key_fixture().await;
-    let pool = load_pool();
-    let g = pool.get("golden").expect("golden");
-    let eve = pool.get("eve_ed25519").expect("eve");
-    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
-        .await
-        .expect("implicit");
-    let again = test_fixtures::bundle::genesis_bundle(&mut p, g, &[eve.key().expect("eve")], T)
-        .await
-        .expect("genesis");
-    assert_eq!(again, genesis, "one genesis");
-    let x1 = common::key_commit_by(&mut p, "eve_ed25519", "bob", T + 1).await;
-    let x2 = common::key_commit_by(&mut p, "eve_ed25519", "alice", T + 2).await;
-    let x3 = common::key_commit_by(&mut p, "alice", "carol", T + 3).await;
-
-    let (p1, _d1) = keyless_server();
-    let (p2, _d2) = keyless_server();
-    let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
-    for app in [&app1, &app2] {
-        assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
-    }
-    for (name, bundle) in [("X1", &x1), ("X2", &x2), ("X3", &x3)] {
-        assert_eq!(
-            push(&app2, &id, bundle).await,
-            StatusCode::CREATED,
-            "{name} on P2"
-        );
-    }
+    assert_eq!(
+        push(&app2, &id, &rotated).await,
+        StatusCode::CREATED,
+        "alice commits"
+    );
     let (status, body) = post_json(
         app1.clone(),
         "/revoke",
@@ -441,13 +394,12 @@ async fn a_key_introduced_mid_span_cannot_bury_it() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
-    let before = tip_pr(&app1, &id).await;
 
     one_round(&p1, &p2).await;
 
     assert_eq!(
         tip_pr(&app1, &id).await,
-        before,
-        "a key introduced mid-span buried the dead commits"
+        p.pr_tagged().expect("pr"),
+        "P1 synced the honest rotation signed before the revoke"
     );
 }

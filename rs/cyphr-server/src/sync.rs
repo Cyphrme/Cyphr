@@ -309,24 +309,19 @@ async fn sync_locked(
     }
 
     // The authority's verified revokes of the keys these commits name go to
-    // the engine first, as gossip's do, so its admission refuses a dead
-    // key's unburied commit (SPEC 6.4).
+    // the engine first, as gossip's do, so its admission refuses what a dead
+    // key signed after its death (SPEC 6.4).
     let keys = named_keys(&bundles);
     match cyphr_client::verified_revokes(&connector, "authority", &keys).await {
         Ok((found, _)) => crate::gossip::record_revokes(state, &found).await,
         Err(err) => warn!(principal = %principal_id, %err, "witness sync: revokes not fetched"),
     }
 
-    // The engine verifies each commit in memory before persisting it, and
-    // takes the delta as one submission, so a commit the authority's later
-    // commits bury is admitted (`submit_commits`). An entry it refuses is
-    // skipped (wedge fix, site 2): it must not block a later genuine one.
-    let outcomes = state
-        .engine
-        .submit_commits(principal_id, None, &bundles)
-        .await;
-    for (seq, outcome) in seqs.iter().zip(outcomes) {
-        match outcome {
+    // The engine verifies each commit in memory before persisting it. An
+    // entry it refuses is skipped (wedge fix, site 2): it must not block a
+    // later genuine one.
+    for (seq, bundle) in seqs.iter().zip(&bundles) {
+        match state.engine.submit_commit(principal_id, None, bundle).await {
             Ok(_) => applied += 1,
             Err(err) => {
                 warn!(

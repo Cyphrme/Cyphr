@@ -2353,11 +2353,11 @@ async fn sync_locks_bounded() {
 /// Backs key death at admission on the witness path (SPEC 6.4): the
 /// authority holds a principal whose genesis keys are `golden` and `eve`,
 /// a `golden` commit, then `eve`'s commit at the tip, then `eve`'s naked
-/// revoke. A witness syncing from it learns the authority's revokes before
-/// it submits the delta: the genesis, buried by `golden`'s commit, is
-/// admitted, and `eve`'s commit, with no live-key commit after it, is
-/// refused. Turns red if the witness admits a
-/// dead key's tip commit its authority served beside the revoke.
+/// revoke dated no later than that commit. A witness syncing from it
+/// learns the authority's revokes before it submits the delta, so it
+/// admits the history signed before the revoke and refuses `eve`'s commit
+/// dated at its death. Turns red if the witness admits a dead key's commit
+/// dated after its revoke.
 #[tokio::test]
 async fn witness_refuses_a_dead_keys_tip_commit() {
     let pool = load_pool();
@@ -2394,7 +2394,7 @@ async fn witness_refuses_a_dead_keys_tip_commit() {
     let (status, body) = post_json(
         app.clone(),
         "/revoke",
-        common::eve_revoke(t + 5).to_string(),
+        common::eve_revoke(t + 2).to_string(),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
