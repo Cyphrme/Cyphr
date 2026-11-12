@@ -18,12 +18,12 @@ use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
 use cyphr_client::{
     Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
-    PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record, Request,
+    PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record,
     branch_bundles, fetch_patch, opener_of, pull,
 };
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::{
-    Assessment, BranchTip, Consensus, EngineError, ForkView, Recovery, Review, bare_digest,
+    Assessment, Consensus, EngineError, ForkView, Recovery, Review, bare_digest,
 };
 use serde_json::{Value, json};
 
@@ -285,40 +285,6 @@ fn latest_now(record: &Record) -> Option<i64> {
         .max()
 }
 
-/// The non-canonical branch heads the peers list at `/branches`: claims,
-/// for the heads whose commits this verifier could not verify (see
-/// [`StorageEngine::assess`](cyphr_storage::engine::StorageEngine::assess)).
-/// A peer that cannot answer contributes none.
-async fn rival_heads<C: Connector>(wire: &str, peers: &[PullPeer<'_, C>]) -> Vec<BranchTip> {
-    let mut heads = Vec::new();
-    for peer in peers {
-        let Ok(body) = peer
-            .connector
-            .exchange(&Request::get(format!("/branches?pr={wire}")))
-            .await
-        else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_slice::<Value>(&body) else {
-            continue;
-        };
-        for b in doc["payload"]["branches"].as_array().into_iter().flatten() {
-            if b["canonical"].as_bool() == Some(false)
-                && let (Some(sequence), Some(tip)) = (b["sequence"].as_u64(), b["tip"].as_str())
-            {
-                heads.push(BranchTip {
-                    tip: tip.to_owned(),
-                    pre: b["pre"].as_str().map(str::to_owned),
-                    sequence,
-                    canonical: false,
-                    seen: None,
-                });
-            }
-        }
-    }
-    heads
-}
-
 /// A held fork as the store's [`Assessment`] reads it: resolved once the
 /// contest holding its commits settled, and unresolved again should it
 /// stand once more.
@@ -377,8 +343,7 @@ async fn run_round<C: Connector>(
     // What the store holds now, branches kept as a peer keeps them: its
     // canonical chain is the record, and its assessment the verdict.
     let record = round.record().await?;
-    let claimed = rival_heads(&round.wire, peers).await;
-    let assessed = round.store.assess(&round.principal_id, &claimed).await?;
+    let assessed = round.store.assess(&round.principal_id).await?;
     let tip = record
         .tip()
         .ok_or_else(|| Error::EmptyHistory(round.identity.to_owned()))?;

@@ -3674,7 +3674,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// No [`Recovery`] is consulted: what the engine admits is the protocol
     /// alone.
     pub async fn is_errored(&self, principal_id: &str) -> Result<bool, EngineError> {
-        Ok(self.assess(principal_id, &[]).await?.consensus == Consensus::Error)
+        Ok(self.assess(principal_id).await?.consensus == Consensus::Error)
     }
 
     /// The principal's forks by the protocol ([`Assessment`]), from the
@@ -3682,45 +3682,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// revocations it holds: the rule [`Self::is_errored`] reads, with the
     /// live heads and settled forks a viewer reports. A principal that is
     /// not stored has no heads and no forks.
-    ///
-    /// `claimed` are branch heads a peer lists that this engine does not
-    /// hold, unverified (a peer serves a rival's extension at `/branches`
-    /// but the evidence for it does not replay on this chain). Each counts
-    /// only as a commit extending a retained rival its `pre` names, signed
-    /// by no key: a claim can keep a verified fork standing, never open
-    /// one, and a rival the held commits take out of the fork takes its
-    /// claimed extensions with it.
-    pub async fn assess(
-        &self,
-        principal_id: &str,
-        claimed: &[BranchTip],
-    ) -> Result<Assessment, EngineError> {
+    pub async fn assess(&self, principal_id: &str) -> Result<Assessment, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
-        let mut held = self.held(&principal_id).await?;
-        let extends_rival = |c: &BranchTip| {
-            held.iter().any(|h| {
-                !h.canonical
-                    && h.sequence + 1 == c.sequence
-                    && c.pre.as_deref() == Some(h.pr.as_str())
-            })
-        };
-        let claims: Vec<Held> = claimed
-            .iter()
-            .filter(|c| !held.iter().any(|h| h.id == c.tip) && extends_rival(c))
-            .map(|c| Held {
-                sequence: c.sequence,
-                id: c.tip.clone(),
-                pre: c.pre.clone(),
-                // Its own PR is unknown, and no PR has this form, so nothing
-                // held extends a claim.
-                pr: format!("claimed\0{}", c.tip),
-                signed: Vec::new(),
-                canonical: false,
-                removes: Vec::new(),
-            })
-            .collect();
-        held.extend(claims);
+        let held = self.held(&principal_id).await?;
         Ok(assessment(&held, &self.revoked()))
     }
 
