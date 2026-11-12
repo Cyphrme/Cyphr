@@ -1138,7 +1138,8 @@ impl Client<'_> {
                 )?)));
             },
             409 => RefusalKind::Stale,
-            400 | 422 => RefusalKind::Malformed,
+            400 => RefusalKind::Malformed,
+            422 => cli::protocol_kind(body["payload"]["error"].as_str().unwrap_or_default()),
             401 | 403 => RefusalKind::Unauthorized,
             413 => RefusalKind::TooLarge,
             _ => {

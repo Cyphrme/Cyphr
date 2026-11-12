@@ -28,6 +28,14 @@ pub enum PeerError {
         /// The HTTP status.
         status: u16,
     },
+    /// The peer refused the request as a protocol violation, and said why.
+    #[error("peer {peer} refused: {message}")]
+    Refused {
+        /// The peer's base URL.
+        peer: String,
+        /// The peer's own error text.
+        message: String,
+    },
     /// The peer holds a tip the sender's history does not contain.
     #[error("peer {peer} holds a newer or different tip ({detail}); rebase onto it first")]
     Stale {
@@ -88,6 +96,7 @@ impl PeerError {
         match self {
             Self::Unreachable { .. } => "unreachable",
             Self::CleartextRefused { .. } => "other",
+            Self::Refused { .. } => "protocol",
             Self::Stale { .. } => "stale",
             Self::Malformed { .. } => "malformed",
             Self::TooLarge { .. } => "toolarge",
@@ -97,9 +106,7 @@ impl PeerError {
                 status: 401 | 403, ..
             } => "unauthorized",
             Self::Status { status: 413, .. } => "toolarge",
-            Self::Status {
-                status: 400 | 422, ..
-            } => "malformed",
+            Self::Status { status: 400, .. } => "malformed",
             Self::Status { .. } => "other",
         }
     }
@@ -281,6 +288,7 @@ impl Peer {
         let peer = peer.to_owned();
         match err {
             ConnectError::NonSuccess(status) => PeerError::Status { peer, status },
+            ConnectError::Refused { message, .. } => PeerError::Refused { peer, message },
             ConnectError::TooLarge { limit } => PeerError::TooLarge { peer, limit },
             ConnectError::CleartextRefused { .. } => PeerError::CleartextRefused { peer },
             ConnectError::Unreachable(reason) => PeerError::Unreachable { peer, reason },

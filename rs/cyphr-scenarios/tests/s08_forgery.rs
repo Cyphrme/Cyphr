@@ -67,32 +67,25 @@ async fn s08_forgery() {
     let forged = h.ok(alice.forge_backdated(&pr, &retired).await);
     for peer in peers {
         let out = h.ok(alice.submit(&forged, peer).await);
-        // A peer answers an action by a key not in the timeline with 400, and
-        // the CLI's carrier does not pass the peer's message on, so the kind
-        // that reaches the scenario is Malformed, not KeyNotActive. What the
-        // forgery must not do is move the peer, asserted below.
         assert_eq!(
             out.refused(&format!("{peer} on a forgery")),
-            RefusalKind::Malformed,
-            "{peer}: a key retired by key/delete is refused"
+            RefusalKind::KeyNotActive,
+            "{peer}: a key retired by key/delete is not active"
         );
     }
 
     // A replayed data action is accepted as a no-op (SPEC 7.6); a re-pushed
-    // old commit is refused as stale. Neither moves state.
+    // old commit re-includes applied transaction cozies and is refused as
+    // reuse. Neither moves state.
     let replay = h.ok(alice.submit(&act, "p1").await);
     assert!(
         matches!(replay, PushOutcome::Accepted(_)),
         "a replayed data action is a no-op, not a refusal: {replay:?}"
     );
     let repush = h.ok(alice.repush_commit(&pr, "p1", 1).await);
-    // The peer answers a commit it already holds with 400, not the 409 of a
-    // tip it does not extend; either way it is refused, and the state
-    // assertions below carry the property.
-    let kind = repush.refused("re-pushed old commit");
-    assert!(
-        matches!(kind, RefusalKind::Stale | RefusalKind::Malformed),
-        "a re-pushed old commit must be refused, got {kind:?}"
+    assert_eq!(
+        repush.refused("re-pushed old commit"),
+        RefusalKind::CozReuse
     );
 
     // Absence is only meaningful once the peers have gone quiet.
