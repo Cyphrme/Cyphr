@@ -466,7 +466,11 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 ))
             };
             match submit(blob.clone())? {
-                Err(cyphr_storage::engine::EngineError::Protocol(e)) if e.is_inactive_signer() => {
+                Err(cyphr_storage::engine::EngineError::Protocol(e))
+                    if e.is_inactive_signer()
+                        && cyphr::replay::StoredCoz::from_wire(blob)
+                            .is_ok_and(|c| principal.held_key(&c.header().tmb)) =>
+                {
                     let mut pay = serde_json::from_slice::<Value>(blob)?["pay"].clone();
                     resigned.push(json!({
                         "czd": Base64UrlUnpadded::encode_string(czd),

@@ -515,6 +515,25 @@ pub fn sign_pay(
     Ok((sig, czd))
 }
 
+/// Whether the action `blob` is signed by a key `principal_id` ever held:
+/// a refusal for an inactive signer is then a verdict its history flipped,
+/// ignored (SPEC 6.2); a stranger key's is not.
+async fn signed_by_held_key(
+    engine: &CliStorageEngine,
+    principal_id: &str,
+    genesis: Option<&Genesis>,
+    blob: &[u8],
+) -> crate::Result<bool> {
+    let coz = cyphr::replay::StoredCoz::from_wire(blob)
+        .map_err(|e| cyphr_storage::engine::EngineError::MalformedBlob(e.to_string()))?;
+    let genesis = match genesis {
+        Some(g) => g.clone(),
+        None => engine.resolve_genesis(principal_id, &[]).await?,
+    };
+    let principal = engine.load_principal(principal_id, genesis).await?;
+    Ok(principal.held_key(&coz.header().tmb))
+}
+
 /// Submit a peer's or a store's history to `engine`: the commits from the
 /// one at `from` on, then every action (actions hold no chain position,
 /// SPEC 4.8.1), one at a time. One the engine already holds is a no-op
@@ -542,7 +561,10 @@ pub async fn submit_history(
             .await
         {
             Ok(_) => {},
-            Err(cyphr_storage::engine::EngineError::Protocol(e)) if e.is_inactive_signer() => {},
+            Err(cyphr_storage::engine::EngineError::Protocol(e))
+                if e.is_inactive_signer()
+                    && signed_by_held_key(engine, principal_id, genesis.as_ref(), blob).await? => {
+            },
             Err(e) => return Err(e.into()),
         }
     }
