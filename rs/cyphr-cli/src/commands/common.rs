@@ -23,7 +23,14 @@ pub type CliStorageEngine =
 pub type CliPrincipal = cyphr::Principal<cyphr_blob_fjall::storage_fjall::FjallStorage>;
 
 use crate::Error;
-use crate::keystore::{Error as KeystoreError, KeyBackend};
+use crate::keystore::{Error as KeystoreError, JsonKeyStore, KeyBackend};
+
+/// The one place a command opens the key backend. Selecting a backend at
+/// runtime (an OS keychain, a hardware token) changes this function and
+/// nothing else: commands see only the [`KeyBackend`] trait.
+pub fn open_backend(cli: &crate::Cli) -> crate::Result<JsonKeyStore> {
+    Ok(JsonKeyStore::open(&cli.keystore)?)
+}
 
 /// Build a fresh single-threaded tokio runtime and drive `fut` to
 /// completion on it.

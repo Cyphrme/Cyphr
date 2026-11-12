@@ -168,6 +168,28 @@ impl Connector for HttpConnector {
             .await
             .map_err(unreachable)?;
         let status = res.status();
+        if status.as_u16() == 422 {
+            // A protocol refusal says why in its envelope; the reason is
+            // read bounded, and a body that is not an envelope leaves the
+            // bare status.
+            let mut body = Vec::new();
+            while let Some(chunk) = res.chunk().await.ok().flatten() {
+                if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                    break;
+                }
+                body.extend_from_slice(&chunk);
+            }
+            let message = serde_json::from_slice::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["payload"]["error"].as_str().map(str::to_owned));
+            return Err(match message {
+                Some(message) => ConnectError::Refused {
+                    status: 422,
+                    message,
+                },
+                None => ConnectError::NonSuccess(422),
+            });
+        }
         if !status.is_success() {
             return Err(ConnectError::NonSuccess(status.as_u16()));
         }

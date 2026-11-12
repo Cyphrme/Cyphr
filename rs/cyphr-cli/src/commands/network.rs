@@ -15,7 +15,7 @@ use super::common::{
     local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
     submit_history,
 };
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
 
@@ -46,7 +46,7 @@ fn wire_id(identity: &str) -> crate::Result<String> {
 /// what it holds, which would remove the resend and with it the question.
 pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
@@ -84,12 +84,13 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .peekable();
         let mut sent_actions = 0usize;
         for (i, commit) in local.iter().enumerate().skip(start) {
+            // The actions a commit includes travel inside its bundle.
+            let mut bundle = commit.bundle.clone();
             while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
-                peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
-                    .await?;
+                bundle.actions.push(blob);
                 sent_actions += 1;
             }
-            peer.push_commit(&wire, &commit.bundle).await?;
+            peer.push_commit(&wire, &bundle).await?;
         }
         for (_, blob) in actions {
             peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
@@ -115,7 +116,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 /// `cyphr fetch`: verify and store the peer's commits the local store lacks.
 pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let genesis = local_genesis(&keystore, identity)?;
@@ -134,7 +135,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Some(g) => g.clone(),
                 None => store.resolve_genesis(&principal_id, &[]).await?,
             };
-            if let Err(reason) = replays(&replay_from, &theirs, &actions) {
+            if let Err(reason) = replays(&replay_from, &theirs, &actions).await {
                 return Err(PeerError::Malformed {
                     peer: peer.url().to_owned(),
                     reason,
@@ -191,18 +192,17 @@ fn signed_identity(blob: &[u8]) -> Vec<u8> {
 }
 
 /// Whether two commits are the same signed commit, whatever their encoding:
-/// the same cozies, grouped into the same transactions (the grouping is a
-/// hash input of TR, SPEC 3.7.5).
+/// the same transaction cozies, grouped the same way (the grouping is a hash
+/// input of TR, SPEC 3.7.5). The data actions a bundle carries inline are
+/// recorded data, not part of the commit, so a holder that kept them apart
+/// still holds the same commit.
 fn same_commit(a: &WireBundle, b: &WireBundle) -> bool {
-    let shape = |w: &WireBundle| {
-        (
-            w.actions.len(),
-            w.txs.iter().map(Vec::len).collect::<Vec<_>>(),
-        )
-    };
+    let shape = |w: &WireBundle| w.txs.iter().map(Vec::len).collect::<Vec<_>>();
     shape(a) == shape(b)
-        && a.cozies()
-            .zip(b.cozies())
+        && a.txs
+            .iter()
+            .flatten()
+            .zip(b.txs.iter().flatten())
             .all(|(x, y)| signed_identity(x) == signed_identity(y))
 }
 
@@ -252,6 +252,14 @@ enum Intent {
         id: String,
         signer: String,
     },
+    DeleteKey {
+        id: String,
+        signer: String,
+    },
+    ReplaceKey {
+        id: String,
+        signer: String,
+    },
     RevokeKey {
         signer: String,
     },
@@ -281,6 +289,20 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
                 id: id.to_owned(),
                 signer: tmb.to_owned(),
             });
+        } else if let Some(a) = t.strip_suffix(typ::KEY_DELETE) {
+            authority = a.trim_end_matches('/').to_owned();
+            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
+            out.push(Intent::DeleteKey {
+                id: id.to_owned(),
+                signer: tmb.to_owned(),
+            });
+        } else if let Some(a) = t.strip_suffix(typ::KEY_REPLACE) {
+            authority = a.trim_end_matches('/').to_owned();
+            let id = pay["id"].as_str().ok_or(Error::MissingField("pay.id"))?;
+            out.push(Intent::ReplaceKey {
+                id: id.to_owned(),
+                signer: tmb.to_owned(),
+            });
         } else if let Some(a) = t.strip_suffix(typ::KEY_REVOKE) {
             authority = a.trim_end_matches('/').to_owned();
             out.push(Intent::RevokeKey {
@@ -306,7 +328,7 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
 /// replay therefore builds a fresh store, copies every other principal into
 /// it unchanged, and swaps it in; the old store is kept as a backup.
 pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let genesis = local_genesis(&keystore, identity)?
@@ -459,6 +481,26 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                         &authority,
                     )?;
                 },
+                Intent::DeleteKey { id, signer } => {
+                    super::key::apply_key_delete(
+                        &mut principal,
+                        &keystore,
+                        id,
+                        signer,
+                        &authority,
+                    )?;
+                },
+                Intent::ReplaceKey { id, signer } => {
+                    let key = super::common::load_key_from_keystore(&keystore, id)?;
+                    super::key::apply_key_replace(
+                        &mut principal,
+                        &keystore,
+                        id,
+                        &key,
+                        signer,
+                        &authority,
+                    )?;
+                },
                 Intent::DsCreate { signer } => {
                     let dr = super::data::apply_ds_create(
                         &mut principal,
@@ -528,7 +570,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 
 /// Replay a peer's history from `genesis`; a history that does not replay
 /// is not an answer about the principal.
-fn replays(
+async fn replays(
     genesis: &Genesis,
     chain: &[WireBundle],
     actions: &[(usize, Vec<Vec<u8>>)],
@@ -541,8 +583,8 @@ fn replays(
         };
         entries.push(CommitEntry::from_bundle(&bundle).map_err(|e| e.to_string())?);
     }
-    block_on(load_principal_from_commits(genesis.clone(), &entries))
-        .map_err(|e| e.to_string())?
+    load_principal_from_commits(genesis.clone(), &entries)
+        .await
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

@@ -71,6 +71,15 @@ pub enum ConnectError {
     /// The peer answered with a non-success status.
     #[error("peer answered with status {0}")]
     NonSuccess(u16),
+    /// The peer refused the request as a protocol violation (HTTP 422);
+    /// `message` is the error text of its answer envelope.
+    #[error("peer refused with status {status}: {message}")]
+    Refused {
+        /// The HTTP status.
+        status: u16,
+        /// The peer's own error text.
+        message: String,
+    },
     /// The peer's answer is longer than the carrier will read.
     #[error("peer answered with more than {limit} bytes")]
     TooLarge {

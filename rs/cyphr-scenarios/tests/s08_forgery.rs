@@ -14,7 +14,6 @@ use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(key-pairing): N22"]
 async fn s08_forgery() {
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
     h.require(&[
@@ -38,8 +37,10 @@ async fn s08_forgery() {
 
     // A legitimate action must change state, or "unchanged" proves nothing.
     let act = h.ok(alice.data_action(&pr, "once").await);
+    // An action-only bundle moves no tip, root or height, so what it changes
+    // is the set of actions the peer holds.
     let pre = h
-        .settled_view("p1", &pr)
+        .peer_actions("p1", &pr)
         .await
         .expect("P1 holds the principal");
     h.ok(alice.submit(&act, "p1").await);
@@ -47,7 +48,15 @@ async fn s08_forgery() {
         .settled_view("p1", &pr)
         .await
         .expect("P1 holds the principal");
-    assert_ne!(applied, pre, "the legitimate action must change P1's state");
+    let held = h
+        .peer_actions("p1", &pr)
+        .await
+        .expect("P1 holds the principal");
+    assert_eq!(
+        held,
+        pre + 1,
+        "the legitimate action must change P1's state"
+    );
     let p2_before = h
         .settled_view("p2", &pr)
         .await
@@ -66,14 +75,18 @@ async fn s08_forgery() {
     }
 
     // A replayed data action is accepted as a no-op (SPEC 7.6); a re-pushed
-    // old commit is refused as stale. Neither moves state.
+    // old commit re-includes applied transaction cozies and is refused as
+    // reuse. Neither moves state.
     let replay = h.ok(alice.submit(&act, "p1").await);
     assert!(
         matches!(replay, PushOutcome::Accepted(_)),
         "a replayed data action is a no-op, not a refusal: {replay:?}"
     );
     let repush = h.ok(alice.repush_commit(&pr, "p1", 1).await);
-    assert_eq!(repush.refused("re-pushed old commit"), RefusalKind::Stale);
+    assert_eq!(
+        repush.refused("re-pushed old commit"),
+        RefusalKind::CozReuse
+    );
 
     // Absence is only meaningful once the peers have gone quiet.
     assert_eq!(
@@ -85,6 +98,11 @@ async fn s08_forgery() {
         h.settled_view("p2", &pr).await,
         Some(p2_before),
         "attacks must not move P2"
+    );
+    assert_eq!(
+        h.peer_actions("p1", &pr).await,
+        Some(held),
+        "attacks must not add an action to P1"
     );
     let v = h.ok(bob.verdict(&pr, &["p1"]).await);
     h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;

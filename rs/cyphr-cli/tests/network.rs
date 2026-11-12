@@ -680,6 +680,32 @@ fn verify_forked_principal_is_error_with_evidence() {
     );
 }
 
+/// Claim: `fetch` from a peer whose chain diverged from the local one
+/// refuses with the typed `forked` error (SPEC 15.8) and exits, rather than
+/// crashing while it replays the peer's chain. End-to-end: yes (two devices,
+/// two servers). Turns red on: a fetch whose divergence path nests a second
+/// runtime inside the first (the process panics, no typed error).
+#[test]
+fn fetch_from_a_diverged_peer_is_a_typed_fork() {
+    let s1 = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    let b = a.clone_identity(&id);
+    a.add_key(&id);
+    b.add_key(&id);
+    accepted(&a.push(&id, &s1.url), "A's branch to peer 1");
+
+    let r = b.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", s1.url),
+    ]);
+    assert!(!r.ok, "a diverged peer must be refused, got: {}", r.stdout);
+    let err: Value = serde_json::from_str(r.stderr.lines().last().unwrap_or(""))
+        .unwrap_or_else(|e| panic!("no typed error on stderr ({e}): {}", r.stderr));
+    assert_eq!(err["error"]["kind"], "forked", "{err}");
+}
+
 /// Claim: a choices file with an unknown (misspelled) key is refused with a
 /// typed `malformed` error and never silently falls back to defaults.
 /// End-to-end: yes (CLI process). Turns red on: a parser that ignores

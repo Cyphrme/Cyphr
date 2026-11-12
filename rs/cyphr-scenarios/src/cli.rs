@@ -67,7 +67,7 @@ impl Device {
             .and_then(|e| e["error"]["message"].as_str())
             .unwrap_or(&stderr)
             .to_owned();
-        match kind.and_then(refusal_kind) {
+        match kind.and_then(|k| refusal_kind(k, &detail)) {
             Some(kind) => Err(ActionError::Refused(Refusal { kind, detail })),
             None => Err(ActionError::Failed(format!("cyphr {args:?}: {detail}"))),
         }
@@ -96,9 +96,12 @@ fn bind_values(args: &[&str]) -> Vec<String> {
 }
 
 /// The CLI's `error.kind` names a [`RefusalKind`] lowercased.
-fn refusal_kind(kind: &str) -> Option<RefusalKind> {
+///
+/// A `protocol` refusal (HTTP 422) is read from the peer's own message.
+fn refusal_kind(kind: &str, detail: &str) -> Option<RefusalKind> {
     use RefusalKind::*;
     Some(match kind {
+        "protocol" => protocol_kind(detail),
         "stale" => Stale,
         "unauthorized" => Unauthorized,
         "revoked" => Revoked,
@@ -175,4 +178,18 @@ pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// What a peer's protocol refusal says went wrong.
+pub(crate) fn protocol_kind(message: &str) -> RefusalKind {
+    let m = message.to_ascii_lowercase();
+    if m.contains("coz_reuse") {
+        RefusalKind::CozReuse
+    } else if m.contains("revoked") {
+        RefusalKind::Revoked
+    } else if m.contains("not active") || m.contains("unknown key") || m.contains("unknownkey") {
+        RefusalKind::KeyNotActive
+    } else {
+        RefusalKind::Malformed
+    }
 }

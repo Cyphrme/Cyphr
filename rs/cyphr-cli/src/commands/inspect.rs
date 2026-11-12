@@ -3,13 +3,12 @@
 use cyphr::StateDigest;
 
 use super::common::{CliPrincipal, load_principal_from_engine, parse_store};
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.
 pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     match cli.output {

@@ -544,7 +544,55 @@ pub enum KeyCommands {
         signer: String,
     },
 
-    /// Revoke a key from an identity
+    /// Remove a key from an identity without marking it compromised (SPEC 6.2)
+    Delete {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Thumbprint of the key to remove
+        #[arg(long)]
+        key: String,
+
+        /// Thumbprint of signing key
+        #[arg(long)]
+        signer: String,
+    },
+
+    /// Swap the signing key for a new one in one commit (SPEC 6.3)
+    Replace {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Thumbprint of the new key (if omitted, generates one)
+        #[arg(long)]
+        key: Option<String>,
+
+        /// Thumbprint of the key to replace, which signs
+        #[arg(long)]
+        signer: String,
+    },
+
+    /// Sign a naked revoke with the key itself, outside any commit (SPEC 6.4)
+    ///
+    /// The revoke names no principal and changes no chain; each peer that
+    /// accepts it refuses further use of the key.
+    NakedRevoke {
+        /// Thumbprint of the key to revoke, which must be in the keystore
+        #[arg(long)]
+        key: String,
+
+        /// Why the key is compromised
+        #[arg(long)]
+        msg: Option<String>,
+
+        /// Peer base URL to send the revoke to (repeatable)
+        #[arg(long)]
+        peer: Vec<String>,
+    },
+
+    /// Revoke a key from an identity, by a commit signed by that key
     Revoke {
         /// Principal Root (base64url)
         #[arg(long)]

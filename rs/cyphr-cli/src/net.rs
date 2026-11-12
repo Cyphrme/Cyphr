@@ -28,6 +28,14 @@ pub enum PeerError {
         /// The HTTP status.
         status: u16,
     },
+    /// The peer refused the request as a protocol violation, and said why.
+    #[error("peer {peer} refused: {message}")]
+    Refused {
+        /// The peer's base URL.
+        peer: String,
+        /// The peer's own error text.
+        message: String,
+    },
     /// The peer holds a tip the sender's history does not contain.
     #[error("peer {peer} holds a newer or different tip ({detail}); rebase onto it first")]
     Stale {
@@ -88,6 +96,7 @@ impl PeerError {
         match self {
             Self::Unreachable { .. } => "unreachable",
             Self::CleartextRefused { .. } => "other",
+            Self::Refused { .. } => "protocol",
             Self::Stale { .. } => "stale",
             Self::Malformed { .. } => "malformed",
             Self::TooLarge { .. } => "toolarge",
@@ -97,9 +106,7 @@ impl PeerError {
                 status: 401 | 403, ..
             } => "unauthorized",
             Self::Status { status: 413, .. } => "toolarge",
-            Self::Status {
-                status: 400 | 422, ..
-            } => "malformed",
+            Self::Status { status: 400, .. } => "malformed",
             Self::Status { .. } => "other",
         }
     }
@@ -241,6 +248,16 @@ impl Peer {
         }
     }
 
+    /// Send a naked revoke envelope (`{pay, sig, key}`, SPEC 6.4) to the peer.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError`] when the peer is unreachable or refuses the revoke.
+    pub async fn post_revoke(&self, envelope: &Value) -> Result<(), PeerError> {
+        let bytes = serde_json::to_vec(envelope).map_err(|e| self.malformed(e.to_string()))?;
+        self.send(&Request::post("/revoke", bytes)).await.map(drop)
+    }
+
     fn malformed(&self, reason: String) -> PeerError {
         PeerError::Malformed {
             peer: self.url.clone(),
@@ -271,6 +288,7 @@ impl Peer {
         let peer = peer.to_owned();
         match err {
             ConnectError::NonSuccess(status) => PeerError::Status { peer, status },
+            ConnectError::Refused { message, .. } => PeerError::Refused { peer, message },
             ConnectError::TooLarge { limit } => PeerError::TooLarge { peer, limit },
             ConnectError::CleartextRefused { .. } => PeerError::CleartextRefused { peer },
             ConnectError::Unreachable(reason) => PeerError::Unreachable { peer, reason },

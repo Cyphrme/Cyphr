@@ -6,7 +6,6 @@ use super::common::{
     CliPrincipal, get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
     parse_store,
 };
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat, TxCommands};
 
 /// Run a tx subcommand.
@@ -85,7 +84,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
+        let keystore = super::common::open_backend(cli)?;
         let key = load_key_from_keystore(&keystore, identity)?;
         let principal = cyphr::PrincipalState::genesis(key)?;
 
@@ -127,7 +126,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     }
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Verify PG matches
@@ -197,6 +196,6 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 /// Load identity from storage or keystore.
 fn load_identity(cli: &Cli, identity: &str) -> crate::Result<CliPrincipal> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     load_principal_from_engine(&store, &keystore, identity)
 }

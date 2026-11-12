@@ -241,6 +241,32 @@ impl Harness {
         Some(held)
     }
 
+    /// How many data actions `peer` itself holds for `p`, read from its own
+    /// `GET /patch`. An action-only bundle moves no tip, root or height, so
+    /// `/tip` cannot show that one was accepted. `None` if the peer does not
+    /// know the principal.
+    pub async fn peer_actions(&self, peer: &str, p: &Principal) -> Option<usize> {
+        let addr = self.upstream(peer);
+        let resp = self
+            .http
+            .get(format!("http://{addr}/patch"))
+            .query(&[("pr", p.0.as_str())])
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
+        let bundles = v["payload"]["actions"].as_array()?;
+        Some(
+            bundles
+                .iter()
+                .map(|b| b["blobs"].as_array().map_or(0, Vec::len))
+                .sum(),
+        )
+    }
+
     /// Read `peer`'s view of `p` until two reads 600ms apart agree, then
     /// return it. A negative claim ("nothing changed") is only meaningful
     /// once in-flight work has settled, so assert on this, never on an

@@ -14,7 +14,7 @@ use super::common::{
     load_principal_from_engine, local_genesis, parse_principal_genesis, parse_store,
     save_principal_to_engine,
 };
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::net::Peer;
 use crate::{Cli, DataCommands, Error, OutputFormat};
 
@@ -91,7 +91,7 @@ fn action(
     now: Option<i64>,
     sign_only: bool,
 ) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let signer = keystore.signer(signer_tmb)?;
     let now = now.unwrap_or_else(current_timestamp);
     let signed = sign(
@@ -155,7 +155,7 @@ pub(crate) fn apply_ds_create(
 /// `cyphr data commit`: include DR = MR(DT) in PR by a signed `ds/create`,
 /// finalized as one commit.
 fn commit(cli: &Cli, identity: &str, signer_tmb: &str) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
     let dr = apply_ds_create(&mut principal, &keystore, signer_tmb, &cli.authority)?;

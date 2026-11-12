@@ -20,7 +20,7 @@ use cyphr::replay::WireBundle;
 use cyphr_client::{
     Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
     PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record, RecordTip,
-    fetch_patch, opener_of, pull,
+    Request, fetch_patch, opener_of, pull,
 };
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::bare_digest;
@@ -31,7 +31,7 @@ use super::common::{
     parse_store, raw_chain, store_path,
 };
 use crate::choices::Choices;
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::net::PeerError;
 use crate::state::{
     HeldFork, HeldRevoke, PeerSeen, PrincipalState, Resolution, VerifierState, path_for,
@@ -149,7 +149,7 @@ impl<'a> Round<'a> {
         offered_first: Option<&WireBundle>,
     ) -> crate::Result<Self> {
         let store = parse_store(cli)?;
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
+        let keystore = super::common::open_backend(cli)?;
         let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
         let wire = bare_digest(&principal_id).to_owned();
         let local = block_on(raw_chain(&store, &principal_id))??;
@@ -281,15 +281,54 @@ fn signer_at(record: &Record, index: usize) -> Option<String> {
 
 /// A fresh record pulled from the same peers: the chain they converge on,
 /// which decides whether the forks held are resolved.
+/// A branch head a peer serves beside its canonical chain: `(sequence, tip)`,
+/// as `/branches` reports it.
+type BranchHead = (usize, String);
+
+/// The non-canonical heads the peers serve at `/branches`. A peer that
+/// cannot answer contributes none: a fork then settles on the chain alone.
+async fn rival_heads<C: Connector>(wire: &str, peers: &[PullPeer<'_, C>]) -> Vec<BranchHead> {
+    let mut heads = Vec::new();
+    for peer in peers {
+        let Ok(body) = peer
+            .connector
+            .exchange(&Request::get(format!("/branches?pr={wire}")))
+            .await
+        else {
+            continue;
+        };
+        let Ok(doc) = serde_json::from_slice::<Value>(&body) else {
+            continue;
+        };
+        for b in doc["payload"]["branches"].as_array().into_iter().flatten() {
+            if b["canonical"].as_bool() == Some(false)
+                && let (Some(seq), Some(tip)) = (b["sequence"].as_u64(), b["tip"].as_str())
+                && let Ok(seq) = usize::try_from(seq)
+            {
+                heads.push((seq, tip.to_owned()));
+            }
+        }
+    }
+    heads
+}
+
 fn settle_resolutions(
     state: &mut PrincipalState,
     fresh: &Record,
     fresh_report: &PullReport,
+    rivals: &[BranchHead],
 ) -> bool {
     let Some(RecordTip { commits, .. }) = fresh.tip() else {
         return false;
     };
-    if !fresh_report.forks.is_empty() {
+    // Peers keep serving a resolved fork as evidence, so a fork finding
+    // alone does not unsettle it. A finding of a fork this state does not
+    // hold is a new fork, and nothing settles while one is open.
+    if fresh_report
+        .forks
+        .iter()
+        .any(|f| !state.forks.iter().any(|held| held.is(&f.commits)))
+    {
         return false;
     }
     let mut resolved = false;
@@ -300,6 +339,14 @@ fn settle_resolutions(
         let Some(other) = fork.commits.iter().find(|c| **c != at).cloned() else {
             continue;
         };
+        // A rival head above the fork means both branches went on: the
+        // fork stays unresolved (an Error neither side has settled).
+        if rivals
+            .iter()
+            .any(|(seq, tip)| *seq > fork.height && fresh.commit_id_at(*seq).as_ref() != Some(tip))
+        {
+            continue;
+        }
         if !fork.commits.contains(&at) || commits <= fork.height + 1 {
             continue;
         }
@@ -412,7 +459,8 @@ async fn run_round<C: Connector>(
     if entry.forks.iter().any(|f| f.resolution.is_none()) || !report.forks.is_empty() {
         let mut fresh = Record::new(&round.wire, round.anchor.clone());
         let fresh_report = pull(&mut fresh, peers).await;
-        settle_resolutions(entry, &fresh, &fresh_report);
+        let rivals = rival_heads(&round.wire, peers).await;
+        settle_resolutions(entry, &fresh, &fresh_report, &rivals);
         let followed = entry.forks.iter().any(|f| f.resolution.is_some());
         if let Some(t) = fresh.tip().filter(|t| followed && t.commits >= tip.commits) {
             shown = t;

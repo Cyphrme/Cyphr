@@ -6,7 +6,7 @@ use super::common::{
     block_on, current_timestamp, generate_key, load_key_from_keystore, parse_store,
     save_principal_to_engine,
 };
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::{Cli, Error, OutputFormat};
 
 /// Commit the principal's genesis (SPEC 5.1, 5.2, 5.3) if it has none:
@@ -37,7 +37,7 @@ pub fn run(
     keys_tmb: Option<&[String]>,
     genesis_commit: bool,
 ) -> crate::Result<()> {
-    let mut keystore = JsonKeyStore::open(&cli.keystore)?;
+    let mut keystore = super::common::open_backend(cli)?;
 
     // The genesis key, and the further keys its genesis commit creates.
     let (genesis, others) = match (key_tmb, keys_tmb) {
