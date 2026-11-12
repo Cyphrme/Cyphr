@@ -417,18 +417,19 @@ fn human_recovery_is_a_local_revisable_choice_that_leaves_the_verdict_error() {
     d.add_key(&id2);
     let abandoned = c.push(&id2, &s3.url);
     accepted(&abandoned, "C's branch");
-    accepted(&d.push(&id2, &s4.url), "D's branch");
+    let kept_fork = d.push(&id2, &s4.url);
+    accepted(&kept_fork, "D's branch");
     let ident2 = format!("--identity={id2}");
     let (q3, q4) = (format!("--peer={}", s3.url), format!("--peer={}", s4.url));
     assert_eq!(c.setup(&["verify", &ident2, &q3, &q4])["verdict"], "Error");
     d.add_key(&id2);
-    let kept = d.push(&id2, &s4.url);
-    accepted(&kept, "D resolves");
+    accepted(&d.push(&id2, &s4.url), "D resolves");
     let v = c.setup(&["verify", &ident2, &q4]);
     assert_eq!(v["verdict"], "Active", "{v}");
     assert!(v.get("recovery").is_none(), "no choice, no note: {v}");
     let lost = abandoned.json()["tip"].as_str().expect("tip").to_owned();
-    let won = kept.json()["tip"].as_str().expect("tip").to_owned();
+    // The fork's kept head is D's first tip, not the resolving commit above it.
+    let won = kept_fork.json()["tip"].as_str().expect("tip").to_owned();
     assert!(
         !c.run(&["recover", &ident2, &format!("--head={won}")]).ok,
         "the kept head is the protocol's own answer, not a choice"

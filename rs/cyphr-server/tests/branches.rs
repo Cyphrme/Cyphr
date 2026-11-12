@@ -1150,77 +1150,16 @@ async fn first_seen_survives_rebuild() {
     assert_eq!(payload["branches"].as_array().expect("branches"), &listed);
 }
 
-/// A viewer that takes the protocol's word.
-struct Protocol;
-
-impl cyphr_storage::engine::Recovery for Protocol {
-    fn review(
-        &self,
-        _: &str,
-        _: cyphr_storage::engine::Consensus,
-        _: &[cyphr_storage::engine::ForkView],
-    ) -> cyphr_storage::engine::Review {
-        cyphr_storage::engine::Review {
-            trusted: None,
-            note: "no recovery".to_owned(),
-        }
-    }
-}
-
-/// A viewer that distrusts every resolved fork: one stolen key may have
-/// resolved it first, so it trusts the abandoned head instead.
-struct DistrustResolutions;
-
-impl cyphr_storage::engine::Recovery for DistrustResolutions {
-    fn review(
-        &self,
-        _: &str,
-        _: cyphr_storage::engine::Consensus,
-        forks: &[cyphr_storage::engine::ForkView],
-    ) -> cyphr_storage::engine::Review {
-        let abandoned = forks
-            .iter()
-            .filter(|f| f.kept.is_some())
-            .find_map(|f| f.alternatives().first().map(|h| (*h).to_owned()));
-        let note = abandoned.as_ref().map_or_else(
-            || "no resolved fork".to_owned(),
-            |h| format!("distrusting the resolution: trusting {h}"),
-        );
-        cyphr_storage::engine::Review {
-            trusted: abandoned,
-            note,
-        }
-    }
-}
-
-/// Backs the recovery seam: the verdict layer consults the strategy it is
-/// given, and the engine's admission does not. After the thief's C
-/// resolves the fork, the consensus is Active whatever the strategy: a
-/// viewer taking the protocol's word trusts no head, one distrusting
-/// resolutions trusts the abandoned head, and a commit extending C is
-/// still admitted, since no strategy is wired into the engine. Turns red
-/// if the strategy is ignored, overrides the consensus, or changes what
-/// the engine admits. End to end over `/push` and the engine.
+/// After the thief's C resolves the fork, a commit extending C is still
+/// admitted: what the engine admits is the protocol alone, and no viewer
+/// strategy is wired into it. Turns red if admission consults anything but
+/// the protocol. End to end over `/push` and the engine.
 #[tokio::test]
-async fn recovery_is_a_seam_not_a_rule() {
-    use cyphr_storage::engine::Consensus;
-
+async fn a_commit_extending_the_resolution_is_admitted() {
     let t = theft(true).await;
-    let (app, state, _dir) = theft_server(&t).await;
+    let (app, _state, _dir) = theft_server(&t).await;
     assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
     assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CREATED);
-    let verdict = |r: &'static dyn cyphr_storage::engine::Recovery| {
-        let state = state.clone();
-        let id = t.id.clone();
-        async move { state.engine.verdict(&id, r).await.expect("verdict") }
-    };
-    let (consensus, review) = verdict(&Protocol).await;
-    assert_eq!((consensus, review.trusted), (Consensus::Active, None));
-    let (consensus, review) = verdict(&DistrustResolutions).await;
-    assert_eq!(consensus, Consensus::Active, "a strategy never overrides");
-    let forks = state.engine.forks(&t.id).await.expect("forks");
-    let abandoned = forks[0].alternatives()[0].to_owned();
-    assert_eq!(review.trusted.as_deref(), Some(abandoned.as_str()));
 
     let pool = load_pool();
     let mut next = t.c.fork().await.expect("fork");
