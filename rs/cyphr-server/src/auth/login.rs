@@ -621,43 +621,35 @@ mod tests {
 
     // --- within_window ---
 
-    /// Backs: SPEC 17.2 timestamp window, exact edges (the e2e tests probe far-out and future-dated
-    /// values only). Unit: e2e cannot place `now` on the one-second boundary.
-    #[test]
-    fn window_accepts_edges_and_rejects_just_beyond() {
-        let server = 1_000_000;
-        assert!(within_window(server, server, TIMESTAMP_WINDOW_SECS));
-        assert!(within_window(
-            server - TIMESTAMP_WINDOW_SECS,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-        assert!(within_window(
-            server + TIMESTAMP_WINDOW_SECS,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-        assert!(!within_window(
-            server - TIMESTAMP_WINDOW_SECS - 1,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-        assert!(!within_window(
-            server + TIMESTAMP_WINDOW_SECS + 1,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-    }
+    proptest::proptest! {
+        /// Backs: SPEC 17.2 timestamp window. For any signed `now` pair (extremes
+        /// included, so an attacker-chosen `now` can never overflow) the window
+        /// is exactly `|client - server| <= window`, computed here in i128.
+        /// Property: e2e cannot place `now` on the one-second boundary or at
+        /// `i64::MIN`.
+        #[test]
+        fn window_is_exactly_the_absolute_difference(
+            client in proptest::prelude::any::<i64>(),
+            server in proptest::prelude::any::<i64>(),
+            window in 0i64..=i64::MAX,
+        ) {
+            let diff = (i128::from(server) - i128::from(client)).abs();
+            proptest::prop_assert_eq!(
+                within_window(client, server, window),
+                diff <= i128::from(window)
+            );
+        }
 
-    /// Backs: an attacker-chosen extreme `now` is refused, never an arithmetic overflow panic.
-    /// Unit: a JSON `now` this large cannot be signed through the e2e helpers.
-    #[test]
-    fn window_rejects_extreme_client_now_without_overflow() {
-        // client_now is attacker-controlled; a subtract-then-abs would
-        // overflow on these boundary values instead of just failing closed.
-        assert!(!within_window(i64::MIN, 1_000_000, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(i64::MAX, 1_000_000, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(i64::MIN, i64::MAX, TIMESTAMP_WINDOW_SECS));
+        /// The edge the generator rarely lands on: one second either side of
+        /// the production window.
+        #[test]
+        fn window_edges_at_the_production_constant(server in -1_000_000i64..1_000_000) {
+            let w = TIMESTAMP_WINDOW_SECS;
+            proptest::prop_assert!(within_window(server - w, server, w));
+            proptest::prop_assert!(within_window(server + w, server, w));
+            proptest::prop_assert!(!within_window(server - w - 1, server, w));
+            proptest::prop_assert!(!within_window(server + w + 1, server, w));
+        }
     }
 
     // --- ChallengeStore ---
