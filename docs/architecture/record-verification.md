@@ -221,7 +221,10 @@ in `spec_conformance.rs` and `rs/cyphr-server/tests/now_range.rs`.
 A coz whose `now` is earlier than the latest timestamp the principal has
 recorded is rejected with `TimestampPast`, on both the transaction path and
 the data-action path. A coz whose `now` equals the latest is accepted by this
-rule.
+rule. The latest timestamp is the chain's: its commits' cozies and the data
+actions a `ds/create` included. A pending action also bounds later actions,
+which stay in `now` order (SPEC 4.8.1), but bounds no commit, and an action a
+`ds/create` left out bounds nothing.
 
 ```claim
 kind: requirement
@@ -230,8 +233,11 @@ evaluator: test
 
 The code is `apply_transaction_internal` in
 `rs/cyphr/src/principal/apply.rs` and `record_action` in
-`rs/cyphr/src/principal/data.rs`; both compare `now` with `latest_timestamp`
-using a strict `<`. Two golden vectors pin the rejection, `timestamp_past_fails`
+`rs/cyphr/src/principal/data.rs`; both compare `now` with a strict `<`, the
+first against `latest_timestamp`, the second against `latest_now` (that and
+the pending actions' newest `now`). `left_out_action_does_not_bound_time` in
+`rs/cyphr-storage/tests/action_inclusion.rs` pins that a left-out action
+bounds no later commit. Two golden vectors pin the rejection, `timestamp_past_fails`
 and `action_timestamp_past_fails` in `tests/golden/errors/`. The marker sits at
 `test_golden_errors` in `rs/cyphr/tests/golden_fixtures.rs`, and the runner
 entry runs that whole test. It runs every vector in `tests/golden/errors/`, not
@@ -283,23 +289,27 @@ alone.
 A replay recomputes the forward state the `arrow` commits to, the data root
 included, and a commit whose signed `arrow` was made over different state is
 rejected. A forged data action spliced into the history before a commit cannot
-be hidden by replaying the commit's own cozies: the commit's `ds/create` names
-DR = MR(DT) over the actions recorded before it (SPEC 4.8.2), and over a
-spliced DT that `id` names a state the history is not in.
+enter the commit's state: the commit's `ds/create` names DR = MR(DT) over the
+action bundles its signer included (SPEC 4.8.2), so a replay includes exactly
+the pending bundles whose root is that `id` and leaves the spliced one out. A
+`ds/create` whose `id` no subset of the pending bundles reaches is refused with
+`StateMismatch`. All the pending bundles together are tried first, with no
+limit; only when that fails are subsets searched, and a search over more
+pending bundles than it tries is refused with `TooManyPendingBundles`.
 
 ```claim
 kind: requirement
 evaluator: test
 ```
 
-Backed by `forged_action_spliced_before_delete_commit_breaks_replay` in
+Backed by `forged_action_spliced_before_delete_commit_is_left_out` in
 `rs/cyphr/tests/negative_vectors.rs`. The scenario replays one real delete
 commit twice, once without and once with a forged action inserted before it;
 every coz verifies on its own, the honest replay (the control) finalizes, and
-the forged one fails with `StateMismatch` at the `ds/create`, before the
-`arrow` is reached. Rule 6 pins `pre`; this rule pins the forward state, DR
-included. Not checked by a named test: a root-by-root comparison of replayed
-SR, AR, KR, CR and PR with roots a server published.
+the forged one finalizes to the same PR with the forged action marked not
+included. Rule 6 pins `pre`; this rule pins the forward state, DR included.
+Not checked by a named test: a root-by-root comparison of replayed SR, AR, KR,
+CR and PR with roots a server published.
 
 ### Authorization and lifecycle
 
@@ -756,43 +766,44 @@ points to a different claim than the classification, or a claim is neither
 bound nor declared unbound. Variants the test classifies as outside the core
 paths have no row; its source gives the reason for each.
 
-| Error                  | Claim                      |
-| :--------------------- | :------------------------- |
-| `Signer`               | `rv-signer-faults`         |
-| `InvalidSignature`     | `rv-sig-verifies`          |
-| `UnknownKey`           | `rv-key-active-gate`       |
-| `UnknownAlg`           | `rv-alg-support`           |
-| `TimestampPast`        | `rv-timestamp-monotone`    |
-| `TimestampFuture`      | `rv-timestamp-future`      |
-| `KeyRevoked`           | `rv-key-active-gate`       |
-| `MalformedPayload`     | `rv-coz-wellformed`        |
-| `TmbMismatch`          | `rv-key-material`          |
-| `AlgMismatch`          | `rv-alg-alignment`         |
-| `CzdMismatch`          | `rv-alg-alignment`         |
-| `DuplicateKey`         | `rv-key-set`               |
-| `DuplicateNonce`       | `rv-nonce-ledger`          |
-| `UnknownNonce`         | `rv-nonce-ledger`          |
-| `CozReuse`             | `rv-no-coz-reuse`          |
-| `StateMismatch`        | `rv-state-recomputed`      |
-| `EmptyMultihash`       | `rv-internal-invariants`   |
-| `MissingVariant`       | `rv-internal-invariants`   |
-| `NoActiveKeys`         | `rv-key-set`               |
-| `AlreadyDeleted`       | `rv-lifecycle-gate`        |
-| `AlreadyFrozen`        | `rv-lifecycle-transitions` |
-| `NotFrozen`            | `rv-lifecycle-transitions` |
-| `Frozen`               | `rv-lifecycle-gate`        |
-| `EmbeddedErrored`      | `rv-key-active-gate`       |
-| `MixedTransactionTyp`  | `rv-intra-commit-shape`    |
-| `UnsupportedAlgorithm` | `rv-alg-support`           |
-| `Storage`              | `rv-storage-backend`       |
-| `EmptyCommit`          | `rv-commit-nonempty`       |
-| `GenesisIncomplete`    | `rv-genesis-immutable`     |
-| `CommitNotLast`        | `rv-intra-commit-shape`    |
-| `MissingCommit`        | `rv-commit-nonempty`       |
-| `CommitMismatch`       | `rv-arrow-chain`           |
-| `DurableLeafMismatch`  | `rv-storage-backend`       |
-| `MalformedDigest`      | `rv-digest-wellformed`     |
-| `DigestLengthMismatch` | `rv-digest-wellformed`     |
+| Error                   | Claim                      |
+| :---------------------- | :------------------------- |
+| `Signer`                | `rv-signer-faults`         |
+| `InvalidSignature`      | `rv-sig-verifies`          |
+| `UnknownKey`            | `rv-key-active-gate`       |
+| `UnknownAlg`            | `rv-alg-support`           |
+| `TimestampPast`         | `rv-timestamp-monotone`    |
+| `TimestampFuture`       | `rv-timestamp-future`      |
+| `KeyRevoked`            | `rv-key-active-gate`       |
+| `MalformedPayload`      | `rv-coz-wellformed`        |
+| `TmbMismatch`           | `rv-key-material`          |
+| `AlgMismatch`           | `rv-alg-alignment`         |
+| `CzdMismatch`           | `rv-alg-alignment`         |
+| `DuplicateKey`          | `rv-key-set`               |
+| `DuplicateNonce`        | `rv-nonce-ledger`          |
+| `UnknownNonce`          | `rv-nonce-ledger`          |
+| `CozReuse`              | `rv-no-coz-reuse`          |
+| `StateMismatch`         | `rv-state-recomputed`      |
+| `TooManyPendingBundles` | `rv-state-recomputed`      |
+| `EmptyMultihash`        | `rv-internal-invariants`   |
+| `MissingVariant`        | `rv-internal-invariants`   |
+| `NoActiveKeys`          | `rv-key-set`               |
+| `AlreadyDeleted`        | `rv-lifecycle-gate`        |
+| `AlreadyFrozen`         | `rv-lifecycle-transitions` |
+| `NotFrozen`             | `rv-lifecycle-transitions` |
+| `Frozen`                | `rv-lifecycle-gate`        |
+| `EmbeddedErrored`       | `rv-key-active-gate`       |
+| `MixedTransactionTyp`   | `rv-intra-commit-shape`    |
+| `UnsupportedAlgorithm`  | `rv-alg-support`           |
+| `Storage`               | `rv-storage-backend`       |
+| `EmptyCommit`           | `rv-commit-nonempty`       |
+| `GenesisIncomplete`     | `rv-genesis-immutable`     |
+| `CommitNotLast`         | `rv-intra-commit-shape`    |
+| `MissingCommit`         | `rv-commit-nonempty`       |
+| `CommitMismatch`        | `rv-arrow-chain`           |
+| `DurableLeafMismatch`   | `rv-storage-backend`       |
+| `MalformedDigest`       | `rv-digest-wellformed`     |
+| `DigestLengthMismatch`  | `rv-digest-wellformed`     |
 
 ## Storage replay
 

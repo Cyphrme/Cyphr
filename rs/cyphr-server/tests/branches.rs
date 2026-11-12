@@ -1566,6 +1566,124 @@ async fn rival_rotations_are_error_at_every_peer() {
     }
 }
 
+// ========================================================================
+// RES-1c rule 3: a bundle a `ds/create` left out is kept and served, never
+// included and never deleted (SPEC 4.8.2, I1).
+// ========================================================================
+
+/// The `not_included` bundles `/branches` lists, as (after, blobs).
+async fn not_included_of(app: &axum::Router, id: &str) -> Vec<(u64, Vec<Vec<u8>>)> {
+    let (status, payload) = branches(app.clone(), id).await;
+    assert_eq!(status, StatusCode::OK, "{payload:?}");
+    payload["not_included"]
+        .as_array()
+        .expect("not_included array")
+        .iter()
+        .map(|a| {
+            let blobs = a["blobs"]
+                .as_array()
+                .expect("blobs")
+                .iter()
+                .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("b64")).expect("b64"))
+                .collect();
+            (a["after"].as_u64().expect("after"), blobs)
+        })
+        .collect()
+}
+
+/// Backs rule 3: the laptop pushes an action alone, then the data commit A
+/// including it; the phone's rival data commit B carries its own action
+/// inline and is retained; the phone resolves onto B with C (SPEC 15.8).
+/// The laptop's action is now left out of the canonical chain: `/branches`
+/// lists it as not included, `/patch` no longer carries it, the evidence
+/// item's displaced commit A carries it so the fork still proves offline,
+/// and a restart that rebuilds from the blobs serves the same.
+///
+/// Turns red if: the laptop's bundle is deleted, hidden from `/branches`,
+/// still carried by `/patch` as included, or the evidence or a rebuild
+/// loses it. End to end over `/push`, `/branches`, `/patch`, `/evidence`
+/// and a restart: yes.
+#[tokio::test]
+async fn not_included_bundle_is_kept_and_served() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let f = forked().await;
+    let (state, dir) = keyless_server();
+    let app = build_router(state.clone());
+    let n = cyphr_storage::export_commits(&f.shared)
+        .expect("export")
+        .len();
+    for i in 0..n {
+        let (status, body) = post_json(app.clone(), "/push", wire(&f.shared, i, &f.id)).await;
+        assert_eq!(status, StatusCode::CREATED, "shared commit {i}: {body:?}");
+    }
+
+    let mut laptop = f.shared.fork().await.expect("fork");
+    let (laptop_action, a) = data_commit(&mut laptop, &pool, "laptop", NOW + 10).await;
+    let (status, body) = post_json(
+        app.clone(),
+        "/push",
+        common::push_blobs(&f.id, std::slice::from_ref(&laptop_action)),
+    )
+    .await;
+    assert!(status.is_success(), "laptop action: {status} {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &a)).await;
+    assert_eq!(status, StatusCode::CREATED, "A: {body:?}");
+
+    let mut phone = f.shared.fork().await.expect("fork");
+    let (phone_action, mut b) = data_commit(&mut phone, &pool, "phone", NOW + 20).await;
+    b.actions = vec![phone_action];
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &b)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "B is retained: {body:?}");
+    assert!(
+        not_included_of(&app, &f.id).await.is_empty(),
+        "A includes it"
+    );
+
+    let mut c = phone.fork().await.expect("fork");
+    create_key(&mut c, &g, &kp(&pool, "carol"), NOW + 30).await;
+    let c_bundle =
+        cyphr::replay::WireBundle::of_commit(c.commits().last().expect("C")).expect("bundle");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &c_bundle)).await;
+    assert_eq!(status, StatusCode::CREATED, "C resolves onto B: {body:?}");
+    let tip = tip_payload(app.clone(), &f.id).await;
+    assert_eq!(tip["pr"], c.pr_tagged().expect("pr"), "{tip:?}");
+
+    let left_out = vec![(n as u64, vec![laptop_action.clone()])];
+    assert_eq!(not_included_of(&app, &f.id).await, left_out);
+    let (status, patch) = get_json(app.clone(), &format!("/patch?pr={}", enc(&f.id))).await;
+    assert_eq!(status, StatusCode::OK, "{patch:?}");
+    let carried = envelope_payload(&patch)["actions"].to_string();
+    let b64 = Base64UrlUnpadded::encode_string(&laptop_action);
+    assert!(
+        !carried.contains(&b64),
+        "/patch does not include it: {carried}"
+    );
+    let (status, body) = get_json(app.clone(), &format!("/evidence?pr={}", enc(&f.id))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let items = envelope_payload(&body)["items"]
+        .as_array()
+        .expect("items")
+        .clone();
+    assert_eq!(items.len(), 1, "{body:?}");
+    let rival: cyphr::replay::WireBundle =
+        serde_json::from_value(items[0]["b"].clone()).expect("rival bundle");
+    assert_eq!(rival.actions, vec![laptop_action.clone()], "A carries it");
+
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    assert_eq!(
+        tip_payload(app.clone(), &f.id).await,
+        tip,
+        "the tip survives"
+    );
+    assert_eq!(
+        not_included_of(&app, &f.id).await,
+        left_out,
+        "so does the mark"
+    );
+}
+
 /// Backs the S04 shape at the witness holding the thief's chain: the
 /// thief's B is canonical and the owner's A is retained; the stolen key
 /// (`eve`) is naked-revoked; the owner then pushes a commit extending A
@@ -1752,4 +1870,77 @@ async fn owner_delete_promotes_over_thief_data_chain() {
     let (app, state) = reopen(&dir.path().join("data")).await;
     assert_eq!(tip_payload(app, &id).await, tip, "a rebuild agrees");
     assert!(!errored(&state, &id).await, "a rebuild agrees: Active");
+}
+
+/// Backs `/patch` matching the server's own replay after a promotion over
+/// a thief's data chain (SPEC 4.8.2, 15.8): the thief's action, pushed
+/// alone at the fork position, is no part of the owner's promoted chain,
+/// so `/patch` does not serve it and a fresh client that replays the
+/// served chain from its genesis commit reaches the PR `/tip` publishes.
+///
+/// Turns red if: `/patch` serves the displaced action, which the fresh
+/// client records ahead of the owner's older inline action
+/// (`TimestampPast`) and so refuses the peer. End to end over `/push`,
+/// `/patch` and the client's pull replay: yes.
+#[tokio::test]
+async fn fresh_client_replays_after_thief_data_promotion() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..n {
+        assert_eq!(push(&app, &shared, i, &id).await, StatusCode::CREATED);
+    }
+    let mut thief = shared.fork().await.expect("fork");
+    let (action, commit) = data_commit_by(&mut thief, &e, "thief", NOW + 10).await;
+    let (status, body) = post_json(app.clone(), "/push", common::push_blobs(&id, &[action])).await;
+    assert!(status.is_success(), "thief action: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &commit)).await;
+    assert_eq!(status, StatusCode::CREATED, "thief commit: {body:?}");
+    let mut owner = shared.fork().await.expect("fork");
+    let (action, mut commit) = data_commit_by(&mut owner, &g, "owner", NOW + 3).await;
+    commit.actions = vec![action];
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &commit)).await;
+    assert!(status.is_client_error(), "owner's rival: {body:?}");
+    revoke_eve(&app, NOW + 100).await;
+    sign_commit(
+        &mut owner,
+        &g,
+        serde_json::json!({"id": e.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 12,
+    )
+    .await;
+    let del = cyphr::replay::WireBundle::of_commit(owner.commits().last().expect("a commit"))
+        .expect("bundle");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, &del)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete promotes: {body:?}");
+
+    let published = tip_payload(app.clone(), &id).await["pr"]
+        .as_str()
+        .expect("pr")
+        .to_owned();
+    let (status, served) = get_json(app.clone(), &format!("/patch?pr={}", enc(&id))).await;
+    assert_eq!(status, StatusCode::OK, "{served:?}");
+    let bytes = serde_json::to_vec(&served).expect("body");
+    let patch = cyphr_client::verify_patch_body(&bytes, &id, None).expect("well-formed patch");
+    let genesis_commit = envelope_payload(&served)["entries"][0]["commit_id"]
+        .as_str()
+        .expect("genesis commit id")
+        .to_owned();
+    let record = cyphr_client::Record::from_entries(
+        &id,
+        cyphr_client::Anchor::GenesisCommit(genesis_commit),
+        cyphr::principal::system_clock,
+        &patch.entries,
+        &patch.actions,
+    )
+    .await
+    .expect("a fresh client replays the served chain");
+    assert_eq!(record.tip().expect("tip").pr, published);
+    assert_eq!(owner.pr_tagged().expect("pr"), published);
 }

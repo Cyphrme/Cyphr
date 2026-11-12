@@ -356,7 +356,8 @@ impl PrincipalState {
             return Err(Error::CozReuse);
         }
 
-        // Validate timestamp is not in the past (SPEC §14.1)
+        // Validate timestamp is not in the past (SPEC §14.1). Pending
+        // actions do not bound a commit: only included ones are the chain's.
         if cz.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
         }
@@ -611,19 +612,29 @@ impl PrincipalState {
                 self.core_mut().frozen = false;
             },
             CozKind::DataRootCreate { id } => {
-                // SPEC 4.8.2: `id` is the computed new DR = MR(DT), over
-                // every action recorded so far. Matching one variant
-                // suffices, as for every tagged `id` (all variants name the
-                // same content); DR itself is folded into SR at finalize.
-                // A stale or foreign DR is the same refusal as any other
-                // `id` that names a state the principal is not in.
+                // SPEC 4.8.2: `id` is the computed new DR = MR(DT). DT may
+                // hold bundles the signer never saw (another device's, at
+                // this position), so the `ds/create` includes the pending
+                // bundles whose root it names and leaves out the rest.
+                // Matching one variant suffices, as for every tagged `id`
+                // (all variants name the same content); DR itself is folded
+                // into SR at finalize. A stale or foreign DR is the same
+                // refusal as any other `id` that names a state the
+                // principal is not in.
                 let core = self.core_mut();
                 let algs = core.active_algs();
-                let dt = core.data.tree_root(&algs)?;
-                if !dt.is_some_and(|dt| id.0.matches(&dt.0)) {
-                    return Err(Error::StateMismatch);
+                let settled = core
+                    .data
+                    .include_matching(&algs, |dr| id.0.matches(&dr.0))?;
+                // A left-out action was never applied on this chain, so
+                // its owner may record it again (SPEC 7.6 ignores only an
+                // applied one), and it constrains no later timestamp.
+                for czd in settled.left_out {
+                    core.included_czds.remove(czd.as_bytes());
                 }
-                core.data.include_all();
+                if let Some(newest) = settled.newest {
+                    core.latest_timestamp = core.latest_timestamp.max(newest);
+                }
             },
         }
 

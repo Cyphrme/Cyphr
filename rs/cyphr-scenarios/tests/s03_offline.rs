@@ -18,7 +18,8 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(RES-1c): peers switch canonical branch on a resolution commit (SPEC 15.8)"]
+#[ignore = "RED(RES-1c): the CLI verdict never settles a resolved fork while peers still serve its \
+            evidence"]
 async fn s03_offline() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await
@@ -166,8 +167,17 @@ async fn s03_offline() {
     want.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(seen, want, "exactly the two pushed branches");
 
-    // Alice resolves (SPEC 15.8); the abandoned branch stays in the record.
-    let resolved = h.ok(phone.resolve_fork(&pr, &pt).await);
+    // Alice resolves (SPEC 15.8, resolution 1: a new commit whose `pre` is
+    // the chosen branch's tip); the abandoned branch stays in the record.
+    // The peers are in Error (15.5: no new transactions or actions until
+    // resolved), so the resolution is a commit that carries everything it
+    // needs: a key add. A data commit would push its action alone first,
+    // and a peer in Error refuses that action (423) before the commit
+    // that would resolve arrives.
+    h.ok(phone.add_backup_key(&pr).await);
+    let resolved = h
+        .ok(phone.push(&pr, &["p1"]).await)
+        .accepted("the resolution");
     h.eventually("the peers to hold the resolution", CONVERGE, || async {
         Ok(
             h.peer_view("p1", &pr).await.map(|v| v.tip) == Some(resolved.clone())

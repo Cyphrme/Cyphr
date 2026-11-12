@@ -87,7 +87,7 @@ impl Tip {
     /// The newest `now` in B's chain at this tip.
     #[must_use]
     pub fn newest_now(&self) -> i64 {
-        self.state.latest_timestamp
+        self.state.latest_now()
     }
 
     /// Whether B is in `Error`.

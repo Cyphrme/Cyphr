@@ -292,22 +292,24 @@ fn push_fetch_pulls_peer_history() {
 // ------------------------------------------------------------------- data
 
 /// Claim (SPEC 4.8.1, 4.8.2): a data action the CLI records and pushes enters
-/// the peer's Data Tree, and DR joins PR only by a signed `ds/create` naming
-/// MR(DT): a `ds/create` over the peer's whole DT is accepted and moves the
-/// tip; one a device signed over a DT that lacks an action the peer holds is
-/// refused and the peer's tip does not move.
+/// the peer's Data Tree, and DR joins PR only by a signed `ds/create`. A
+/// `ds/create` a device signed over a DT that lacks an action the peer holds
+/// includes exactly the actions it names: the peer accepts it, its tip moves
+/// to that commit, and the action the device never saw is left out.
 /// End-to-end: yes (two devices of one principal, one real server).
 /// Turns red on: a CLI with no data command (every `data` call fails), a push
 /// that omits the recorded actions (the server's DT is then empty and the
-/// correct `ds/create` is refused), a `data commit` that names a DR other
-/// than MR(DT), or a refusal the CLI reports as success.
+/// `ds/create` is refused), a `data commit` that names a DR other than
+/// MR(DT), or a peer that counts the unseen action in DT (it then refuses
+/// the `ds/create`).
 /// A fresh client fetches the chain and `verify` reaches the published tip;
 /// red while `/patch` carries no actions (the replay of the `ds/create`
-/// finds an empty DT: state mismatch, #202).
+/// finds an empty DT: state mismatch, #202), or carries the left-out action
+/// as included.
 /// Red on base: `data` is an unknown subcommand, so the first `data action`
 /// fails.
 #[test]
-fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
+fn data_commit_includes_only_the_actions_it_names() {
     let server = Server::start();
     let a = User::new();
     let id = a.new_identity();
@@ -337,29 +339,14 @@ fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
     a.setup(&["data", "action", &ident, &signer, "--msg=two"]);
     accepted(&a.push(&id, &server.url), "push of A's second action");
 
-    // B's ds/create names MR(DT) over its one action, but the peer's DT
-    // holds two: the peer refuses it and keeps its tip.
-    b.setup(&["data", "commit", &ident, &signer]);
-    let wrong = b.push(&id, &server.url);
-    assert!(
-        !wrong.ok,
-        "a ds/create naming a DR the peer's DT does not have must be refused"
-    );
-    assert_eq!(peer_tip(&a), base_tip, "a refused ds/create moves no tip");
-
-    // A's ds/create names MR(DT) over every action the peer holds: accepted,
-    // and the peer's tip is the commit A made.
-    let made = a.setup(&["data", "commit", &ident, &signer]);
-    accepted(&a.push(&id, &server.url), "push of the data commit");
-    assert_ne!(
-        peer_tip(&a),
-        base_tip,
-        "the accepted ds/create moves the tip"
-    );
+    // B's ds/create names MR(DT) over its one action; the peer's DT holds
+    // two. It includes the one it names and leaves A's second out.
+    let made = b.setup(&["data", "commit", &ident, &signer]);
+    accepted(&b.push(&id, &server.url), "push of B's data commit");
     assert_eq!(
-        peer_tip(&a),
+        peer_tip(&b),
         made["commit_id"].as_str().expect("commit_id"),
-        "the peer's tip is the commit `data commit` made"
+        "the peer's tip is the commit B made"
     );
 
     // A fresh client was not there: it fetches the chain holding the
@@ -367,7 +354,7 @@ fn data_action_then_ds_create_is_accepted_and_wrong_dr_refused() {
     let reader = User::new();
     let fetched = reader.run(&["fetch", &ident, &format!("--peer={}", server.url)]);
     assert!(fetched.ok, "fetch of a data chain: {}", fetched.stderr);
-    assert_eq!(reader.commit_count(&id), a.commit_count(&id));
+    assert_eq!(reader.commit_count(&id), b.commit_count(&id));
     let verified = reader.setup(&["verify", &ident, &format!("--peer={}", server.url)]);
     assert_eq!(verified["verdict"], "Active");
     assert_eq!(verified["tip"], made["commit_id"], "verify reaches the tip");
