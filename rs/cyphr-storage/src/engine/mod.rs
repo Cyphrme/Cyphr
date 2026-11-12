@@ -2643,6 +2643,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 let genesis = match (disclosed_genesis(bundle), genesis) {
                     (Some(disclosed), _) => disclosed?,
                     (None, Some(given)) => given,
+                    // Actions alone are not a genesis that failed to
+                    // disclose its keys: the principal has no genesis
+                    // commit yet (be0663f 2.3.2).
+                    (None, None) if bundle.txs.is_empty() => {
+                        return Err(EngineError::Protocol(cyphr::Error::GenesisIncomplete));
+                    },
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
                 let key = record_key(&genesis, bundle).await;
@@ -2702,12 +2708,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 });
             },
             Ok(None) => {
+                // An action is included only by a commit of its principal,
+                // and a principal's commits start at its genesis commit
+                // (be0663f 2.3.2): actions pushed ahead of it would be
+                // recorded under a key no chain includes.
+                if tip_before.is_none() {
+                    return Err(EngineError::Protocol(cyphr::Error::GenesisIncomplete));
+                }
                 // Action-only bundle: no commit is formed and nothing is
                 // indexed, but its actions are in DT from now on, so every
                 // later replay records them here (`after` = `next_seq`).
-                let blob_hashes = self
-                    .store_actions(principal_id, next_seq, &bundle.actions)
-                    .await?;
+                // One whose every action is already recorded is the same
+                // push repeated (a client cannot tell which trailing actions
+                // a peer holds): it stores nothing.
+                let blob_hashes = if self.all_actions_recorded(principal_id, &bundle.actions).await? {
+                    bundle
+                        .actions
+                        .iter()
+                        .map(|blob| Blake3Hash::from_bytes(*blake3::hash(blob).as_bytes()))
+                        .collect()
+                } else {
+                    self.store_actions(principal_id, next_seq, &bundle.actions)
+                        .await?
+                };
                 // Built from the tip read before any write: once the blobs are
                 // durable this response cannot fail (an error would report a
                 // stored bundle as not stored).
@@ -2781,6 +2804,30 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             },
         };
         self.ingest_commit(bundle, build).await
+    }
+
+    /// Whether every blob of `blobs` is already in an action bundle recorded
+    /// for `principal_id` that the canonical chain has not left out: an
+    /// action a `ds/create` passed over was never applied, so its owner may
+    /// record it again ([`Self::left_out`]).
+    async fn all_actions_recorded(
+        &self,
+        principal_id: &str,
+        blobs: &[Vec<u8>],
+    ) -> Result<bool, EngineError> {
+        let left_out = self.left_out(principal_id).await?;
+        let held = self.actions.lock().unwrap_or_else(|p| p.into_inner());
+        let recorded: HashSet<Blake3Hash> = held
+            .get(principal_id)
+            .into_iter()
+            .flatten()
+            .filter(|a| !left_out.contains(&a.manifest))
+            .flat_map(|a| a.blobs.iter().copied())
+            .collect();
+        Ok(!blobs.is_empty()
+            && blobs.iter().all(|b| {
+                recorded.contains(&Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
+            }))
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],

@@ -758,12 +758,20 @@ async fn action_only_no_error_after_store() {
             stored: stored.clone(),
         },
     );
-    let fx = load_golden("actions", "action_alone_leaves_pr");
+    // The vector's first line is its genesis commit; its second is one data
+    // action on its own, which only a principal with a genesis commit takes.
+    let fx = load_golden("actions", "single_action_promotes_ds");
     let (g, id) = genesis_of(&fx);
-    let blobs: Vec<Vec<u8>> = raw_blobs(&fx["commits"][0])
-        .iter()
-        .map(|b| serde_json::to_vec(b).unwrap())
-        .collect();
+    let line = |i: usize| -> Vec<Vec<u8>> {
+        raw_blobs(&fx["commits"][i])
+            .iter()
+            .map(|b| serde_json::to_vec(b).unwrap())
+            .collect()
+    };
+    e.submit_commit(&id, Some(g.clone()), &wire(&line(0)))
+        .await
+        .expect("genesis commit");
+    let blobs = line(1);
 
     armed.store(true, Ordering::SeqCst);
     let result = e.submit_commit(&id, Some(g), &wire(&blobs)).await;
@@ -1761,7 +1769,13 @@ async fn action_only_bundle_cannot_create_a_principal() {
     let err = submit_as_witness(&e, &aid, &blobs)
         .await
         .expect_err("refused");
-    assert!(matches!(err, EngineError::MalformedBlob(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            EngineError::Protocol(cyphr::Error::GenesisIncomplete)
+        ),
+        "{err:?}"
+    );
     assert!(e.get_tip(&aid).await.unwrap().is_none());
     assert!(principals(&e).await.is_empty());
 }

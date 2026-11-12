@@ -215,15 +215,36 @@ async fn check_chain(chain: &Chain) {
         // One store per chain: corpus vectors share genesis keys, so their
         // principals would collide in one store.
         let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-        let id = ingest(&engine, chain).await;
-        same_history(&engine, &id, chain, &core, "ingest").await;
-        let tip = engine.get_tip(&id).await.expect("tip");
         if core.commits().next().is_none() {
-            // Action-only bundles form no commit, so nothing is indexed.
-            assert!(tip.is_none(), "{}: no commit, no tip", chain.name);
+            // A chain of data actions alone has no genesis commit, and
+            // commits (and what they include) start at it (be0663f 2.3.2):
+            // the engine refuses each bundle and records nothing.
+            let id = principal_id(chain).await;
+            for (i, bundle) in chain.bundles.iter().enumerate() {
+                let refused = engine
+                    .submit_commit(&id, Some(chain.genesis.clone()), bundle)
+                    .await;
+                assert!(
+                    matches!(
+                        refused,
+                        Err(cyphr_storage::engine::EngineError::Protocol(
+                            cyphr::Error::GenesisIncomplete
+                        ))
+                    ),
+                    "{}: bundle {i} before any genesis commit: {refused:?}",
+                    chain.name
+                );
+            }
+            assert!(
+                engine.get_tip(&id).await.expect("tip").is_none(),
+                "{}: no commit, no tip",
+                chain.name
+            );
             return;
         }
-        let tip = tip.expect("a tip");
+        let id = ingest(&engine, chain).await;
+        same_history(&engine, &id, chain, &core, "ingest").await;
+        let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
         // The tip is the last commit's; actions after it are in DT only and
         // form no commit.
         let last = core.commits().last().expect("a commit");
