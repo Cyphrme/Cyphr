@@ -310,6 +310,13 @@ pub async fn tip(
 
     let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
 
+    // The reported tip is the one attested: a commit that landed since the
+    // read above moves both together rather than failing the request.
+    let (t, coz) = match sign_tip_attestation(&state, &t).await? {
+        Some(SignedTip { tip, coz }) => (tip, Some(coz)),
+        None => (t, None),
+    };
+
     let payload = TipResponse {
         principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         pr: t.pr.clone(),
@@ -322,7 +329,7 @@ pub async fn tip(
         now: crate::auth::server_now(),
     };
 
-    match sign_tip_attestation(&state, &t).await? {
+    match coz {
         Some(coz) => Ok(Json(Envelope::signed(payload, coz))),
         None => Ok(Json(Envelope::unsigned(payload))),
     }
@@ -468,11 +475,13 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
         .ok_or_else(|| AppError::internal("tip commit_count is zero: cannot derive sequence"))
 }
 
-/// The roots re-derived from the blob store for tip `t`, memoized per
-/// (principal, commit id): the replay is a pure function of the chain up to
-/// that commit, so a hit is exact and the next commit misses by construction.
-/// The caller still compares the result against the index's roots, so a
-/// diverging index is caught on every request, cached or not.
+/// Re-derivation attempts for an attestation whose tip moved underneath it.
+const ATTEST_ATTEMPTS: usize = 3;
+
+/// The roots re-derived from the blob store for tip `t`. The replay reads the
+/// principal's *current* chain, so on a principal that committed since `t`
+/// was read these are the roots of a newer commit, not `t`'s; a memo hit is
+/// exact because [`attested_roots`] only ever stores roots that matched.
 async fn derived_roots(
     state: &Arc<AppState>,
     t: &TipState,
@@ -487,7 +496,7 @@ async fn derived_roots(
         .principal
         .as_ref()
         .filter(|p| p.pg() == t.principal_id);
-    let derived = match own {
+    match own {
         Some(p) => {
             state
                 .engine
@@ -499,33 +508,70 @@ async fn derived_roots(
         },
         None => state.engine.rederive_roots(&t.principal_id).await,
     }
-    .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?;
-    state.derived_roots.insert(key, derived.clone());
-    Ok(derived)
+    .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))
 }
 
-/// The roots every attestation of tip `t` signs: re-derived from the blob
-/// store and required to agree with the index, so no statement attests a
-/// state the chain does not hold.
-async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
-    let derived = derived_roots(state, t).await?;
+/// The tip an attestation signs, and the roots it signs over it.
+struct AttestedRoots {
+    tip: TipState,
+    roots: receipt::Roots,
+}
 
-    if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr {
-        return Err(AppError::internal(
-            "attestation root desynchronized with index",
-        ));
+/// The roots every attestation signs: re-derived from the blob store and
+/// required to agree with the index, so no statement attests a state the
+/// chain does not hold.
+///
+/// A commit landing between the caller's index read and the replay makes
+/// the roots disagree with `t` without any corruption. A disagreement is
+/// therefore re-checked against a fresh index read, up to
+/// [`ATTEST_ATTEMPTS`] times: if the tip moved, the attestation is of the
+/// newer tip (returned, so callers report the tip they attest); if it did
+/// not move, the index genuinely disagrees with the chain and that stays a
+/// 500. Roots are memoized only once they equal the index's for that
+/// commit, never under a commit id they do not belong to.
+async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedRoots, AppError> {
+    let mut t = t.clone();
+    for _ in 0..ATTEST_ATTEMPTS {
+        let derived = derived_roots(state, &t).await?;
+
+        if derived.pr == t.pr && derived.sr == t.sr && derived.ar == t.ar && derived.cr == t.cr {
+            state
+                .derived_roots
+                .insert((t.principal_id.clone(), t.commit_id.clone()), derived.clone());
+            let roots = receipt::Roots {
+                pr: derived.pr,
+                sr: derived.sr,
+                ar: derived.ar,
+                // Storage's own re-derivation still reports "no commit root
+                // yet" as an empty string (cyphr-storage, out of this
+                // node's surface) -- this is the boundary where that
+                // sentinel becomes the receipt's typed absence (#147).
+                cr: (!derived.cr.is_empty()).then_some(derived.cr),
+            };
+            return Ok(AttestedRoots { tip: t, roots });
+        }
+
+        let fresh = state
+            .engine
+            .get_tip(&t.principal_id)
+            .await
+            .map_err(AppError::engine)?
+            .ok_or_else(|| AppError::internal("tip vanished during attestation"))?;
+        if fresh.commit_id == t.commit_id {
+            break;
+        }
+        t = fresh;
     }
+    Err(AppError::internal(
+        "attestation root desynchronized with index",
+    ))
+}
 
-    Ok(receipt::Roots {
-        pr: derived.pr,
-        sr: derived.sr,
-        ar: derived.ar,
-        // Storage's own re-derivation still reports "no commit root yet"
-        // as an empty string (cyphr-storage, out of this node's surface)
-        // -- this is the boundary where that sentinel becomes the
-        // receipt's typed absence (#147).
-        cr: (!derived.cr.is_empty()).then_some(derived.cr),
-    })
+/// A tip-report attestation and the tip it attests, which is newer than the
+/// tip the caller held if a commit landed during signing.
+struct SignedTip {
+    tip: TipState,
+    coz: coz::CozJson,
 }
 
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
@@ -536,12 +582,13 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::
 async fn sign_tip_attestation(
     state: &Arc<AppState>,
     t: &TipState,
-) -> Result<Option<coz::CozJson>, AppError> {
+) -> Result<Option<SignedTip>, AppError> {
     let Some(signer) = state.attestor_signer() else {
         return Ok(None);
     };
 
-    let roots = attested_roots(state, t).await?;
+    let AttestedRoots { tip: t, roots } = attested_roots(state, t).await?;
+    let t = &t;
     let sequence = commit_sequence(t.commit_count)?;
     // The tip is true whether or not the server could attest it: a signer
     // that cannot sign degrades the answer to unsigned, with the typed
@@ -559,7 +606,10 @@ async fn sign_tip_attestation(
     )
     .await
     {
-        Ok(coz) => Ok(Some(coz)),
+        Ok(coz) => Ok(Some(SignedTip {
+            tip: t.clone(),
+            coz,
+        })),
         Err(reason) => {
             tracing::warn!(
                 principal = %t.principal_id,
@@ -669,7 +719,17 @@ pub async fn patch(
             None
         },
         Some(t) => match sign_tip_attestation(&state, &t).await {
-            Ok(coz) => coz,
+            // The entries above end at `t`; an attestation of a newer tip
+            // (a commit landed meanwhile) would misdescribe them.
+            Ok(Some(signed)) if signed.tip.commit_id == t.commit_id => Some(signed.coz),
+            Ok(Some(_)) => {
+                tracing::debug!(
+                    principal = %query.pr,
+                    "tip moved while signing patch envelope; serving unsigned"
+                );
+                None
+            },
+            Ok(None) => None,
             Err(err) => {
                 tracing::warn!(
                     principal = %query.pr,
@@ -1103,6 +1163,20 @@ mod commit_count_underflow_tests {
         state: &AppState,
         now: i64,
     ) -> (String, cyphr_storage::engine::IngestResult) {
+        let g = push_test_genesis_full(state, now).await;
+        (g.principal_id, g.ingest)
+    }
+
+    /// A pushed genesis, with the live principal and the key that can sign
+    /// its next commit.
+    struct PushedGenesis {
+        principal_id: String,
+        ingest: cyphr_storage::engine::IngestResult,
+        principal: cyphr::Principal,
+        golden_kp: coz::KeyPair,
+    }
+
+    async fn push_test_genesis_full(state: &AppState, now: i64) -> PushedGenesis {
         let key_of = |kp: &coz::KeyPair| {
             let tmb = kp
                 .alg
@@ -1141,7 +1215,120 @@ mod commit_count_underflow_tests {
             .submit_commit(&principal_id, None, &bundle)
             .await
             .expect("genesis push succeeds");
-        (principal_id, ingest)
+        PushedGenesis {
+            principal_id,
+            ingest,
+            principal,
+            golden_kp,
+        }
+    }
+
+    /// Push a second commit (`key/create` of a fresh key, signed by the
+    /// genesis key) onto a [`PushedGenesis`], moving the index tip.
+    async fn push_second_commit(state: &AppState, g: PushedGenesis, now: i64) {
+        let PushedGenesis {
+            principal_id,
+            mut principal,
+            golden_kp,
+            ..
+        } = g;
+        let new_kp = coz::Alg::Ed25519.generate_keypair();
+        let new_tmb = new_kp
+            .alg
+            .compute_thumbprint(&new_kp.pub_bytes)
+            .expect("thumbprint");
+        let golden_tmb = golden_kp
+            .alg
+            .compute_thumbprint(&golden_kp.pub_bytes)
+            .expect("thumbprint");
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": golden_kp.alg.name(),
+            "id": Base64UrlUnpadded::encode_string(new_tmb.as_bytes()),
+            "now": now,
+            "tmb": Base64UrlUnpadded::encode_string(golden_tmb.as_bytes()),
+            "typ": "cyphr.me/cyphr/key/create",
+        }))
+        .expect("pay json");
+        let (sig, cad) = coz::sign_json(
+            &pay,
+            golden_kp.alg.name(),
+            &golden_kp.prv_bytes,
+            &golden_kp.pub_bytes,
+        )
+        .expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, golden_kp.alg.name()).expect("czd");
+        let new_key = cyphr::Key::new(
+            new_kp.alg.name().to_string(),
+            new_tmb.clone(),
+            new_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb")
+        .with_first_seen(now);
+        let mut scope = principal.begin_commit();
+        scope
+            .verify_and_apply(&pay, &sig, czd, Some(new_key))
+            .expect("key/create verifies");
+        scope
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    golden_kp.alg.name(),
+                    &golden_kp.prv_bytes,
+                    &golden_kp.pub_bytes,
+                    &golden_tmb,
+                ),
+                now,
+                "cyphr.me",
+            )
+            .await
+            .expect("second commit finalizes");
+        let bundle = test_fixtures::bundle::last_commit_bundle(&principal).expect("bundle");
+        state
+            .engine
+            .submit_commit(&principal_id, None, &bundle)
+            .await
+            .expect("second push succeeds");
+    }
+
+    /// Claim: a tip read before a commit lands is still attestable after
+    /// it -- the race `GET /tip` and `GET /patch` have between reading the
+    /// index tip and re-deriving roots from the chain. Red when the stale
+    /// tip's roots (derived from the now-longer chain) are reported as an
+    /// index desync, or are memoized under the stale commit id.
+    #[tokio::test]
+    async fn stale_tip_attests_the_current_tip_not_a_desync() {
+        let (state, _dir) = attestor_state().await;
+        let g = push_test_genesis_full(&state, 1_700_300_000).await;
+        let principal_id = g.principal_id.clone();
+        let t1 = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("tip");
+        push_second_commit(&state, g, 1_700_300_100).await;
+        let t2 = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("tip");
+        assert_ne!(t1.commit_id, t2.commit_id, "the second commit moved the tip");
+
+        let attested = sign_tip_attestation(&state, &t1)
+            .await
+            .expect("a moved tip is retried, not a 500")
+            .expect("keyed server signs");
+        assert_eq!(attested.tip.commit_id, t2.commit_id);
+        assert_eq!(attested.coz.pay["sequence"], serde_json::json!(1));
+
+        // Nothing may be memoized under the stale commit id.
+        assert!(
+            state
+                .derived_roots
+                .get(&(t1.principal_id.clone(), t1.commit_id.clone()))
+                .is_none(),
+            "roots of a newer commit were cached under the stale commit id"
+        );
     }
 
     /// Claim: the tip `submit_commit` returns is exactly the tip the index
@@ -1192,7 +1379,8 @@ mod commit_count_underflow_tests {
         let coz = sign_tip_attestation(&state, &tip)
             .await
             .expect("legitimate commit_count must sign without error")
-            .expect("a keyed, bootstrapped server must sign");
+            .expect("a keyed, bootstrapped server must sign")
+            .coz;
         assert_eq!(
             coz.pay["sequence"],
             serde_json::json!(0),
@@ -1251,8 +1439,8 @@ mod commit_count_underflow_tests {
             Err(join_err) => panic!(
                 "commit_count == 0 must not panic (a debug-mode u64 underflow trap): {join_err}"
             ),
-            Ok(Ok(Some(coz))) => {
-                let sequence = coz.pay["sequence"].clone();
+            Ok(Ok(Some(signed))) => {
+                let sequence = signed.coz.pay["sequence"].clone();
                 panic!(
                     "commit_count == 0 must never produce a signed receipt at all (a typed \
                      absence is required, not a value) -- got a signed sequence claim: {sequence}"
