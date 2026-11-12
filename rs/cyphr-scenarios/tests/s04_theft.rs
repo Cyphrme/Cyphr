@@ -20,7 +20,7 @@ use cyphr_scenarios::{Capability, Harness};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(key-pairing): N22 naked_revoke; audit and resolve_fork are G3, landed"]
+#[ignore = "RED(server): the resolution does not reach P3, which holds the thief branch"]
 async fn s04_theft() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
         .await
@@ -81,8 +81,17 @@ async fn s04_theft() {
     assert!(forked.branches.contains(&at) && forked.branches.contains(&tt));
     assert_eq!(forked.branches.len(), 2);
 
-    h.ok(alice.naked_revoke(&pr, &laptop_key).await);
-    let rt = h.ok(alice.resolve_fork(&pr, &at).await);
+    // The revoke is self-signed (SPEC 6.4): the laptop, which still holds
+    // its own key, signs it; Alice holds only the genesis key.
+    h.ok(laptop.naked_revoke(&pr, &laptop_key).await);
+    // SPEC 6.4: on a naked revoke the principal removes the key by a
+    // key/delete and commits. That commit, on Alice's branch, is the
+    // resolution (SPEC 15.8): a commit that carries no key/delete or
+    // key/revoke does not resolve a fork, and the peers answer it 423.
+    h.ok(alice.remove_key(&pr, &laptop_key).await);
+    let rt = h
+        .ok(alice.push(&pr, &["p1", "p2"]).await)
+        .accepted("resolution push");
     h.eventually("all peers to hold Alice's resolution", CONVERGE, || async {
         for peer in all {
             if h.peer_view(peer, &pr).await.map(|v| v.tip) != Some(rt.clone()) {

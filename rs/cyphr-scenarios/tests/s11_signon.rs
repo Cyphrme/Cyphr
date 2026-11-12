@@ -15,7 +15,6 @@ use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(key-pairing): N22 remove_key; session binding is SO3, landed"]
 async fn s11_signon() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[
@@ -114,10 +113,17 @@ async fn s11_signon() {
         removed_at.elapsed() <= window,
         "the session outlived the window"
     );
-    // The ended session's token is dead on the channel it came from, too.
-    // PROVISIONAL: the kind for an ended session awaits the architect.
+    // The ended session's token is dead on the channel it came from, too. The
+    // relying party drops a session when it finds its key gone, so the token
+    // is then unknown to it: refused as Unauthorized, naming no live session.
     match h.ok(rp.present(&session.token, Channel::Original).await) {
-        Presented::Refused(r) => assert_eq!(r.kind, RefusalKind::KeyNotActive),
+        Presented::Refused(r) => {
+            assert_eq!(r.kind, RefusalKind::Unauthorized);
+            assert!(
+                r.detail.contains("no live session"),
+                "an ended session was refused for the wrong reason: {r:?}"
+            );
+        },
         Presented::Accepted => panic!("an ended session's token was accepted"),
     }
 }

@@ -177,14 +177,14 @@ async fn harness_partition_cuts_an_open_connection() {
 // therefore neither pass nor fail as a behaviour failure by running an
 // empty step.
 #[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "RED(key-pairing) after-setup peers=1 ids=")]
+#[should_panic(expected = "RED(discovery) after-setup peers=1 ids=")]
 async fn harness_unsupported_action_ends_red() {
-    use cyphr_scenarios::actions::{KeyRef, Principal};
+    use cyphr_scenarios::actions::Principal;
 
     let h = Harness::start(&["p1"]).await.expect("start peer");
     let alice = h.client("alice");
     h.ok(alice
-        .remove_key(&Principal("p".into()), &KeyRef("k".into()))
+        .publish_self_claim(&Principal("p".into()), &["p1"])
         .await);
 }
 

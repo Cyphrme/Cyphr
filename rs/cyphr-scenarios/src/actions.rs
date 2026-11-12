@@ -678,21 +678,53 @@ impl Client<'_> {
         Ok(())
     }
 
-    /// `key/replace` has no CLI command; N22 owns key replace.
-    pub async fn rotate_key(&self, _p: &Principal) -> ActionResult<KeyRef> {
-        unsupported("rotate_key", Capability::KeyPairing)
+    /// `cyphr key replace`: swap the key this device signs `p` with for a
+    /// fresh one in one commit (SPEC 6.3); the device signs with the new key
+    /// from then on.
+    pub async fn rotate_key(&self, p: &Principal) -> ActionResult<KeyRef> {
+        let s = self.signer(p)?;
+        let v = self
+            .cyphr(&["key", "replace", "--identity", &p.0, "--signer", &s])
+            .await?;
+        let tmb = field(&v, "new_key")?;
+        self.state().signer.insert(p.0.clone(), tmb.clone());
+        Ok(KeyRef(tmb))
     }
 
-    /// Revoke a key without being authorised by it: another active key
-    /// removing a lost device, which N22 owns.
-    pub async fn naked_revoke(&self, _p: &Principal, _key: &KeyRef) -> ActionResult<()> {
-        unsupported("naked_revoke", Capability::KeyPairing)
+    /// `cyphr key naked-revoke`: this device signs a revoke of `key` with
+    /// `key` itself, outside any commit (SPEC 6.4), and sends it to every
+    /// peer it knows for `p`. The device must hold `key`'s private half; a
+    /// revoke is self-signed, so no other key can make one.
+    pub async fn naked_revoke(&self, p: &Principal, key: &KeyRef) -> ActionResult<()> {
+        let mut args = vec![
+            "key".to_owned(),
+            "naked-revoke".to_owned(),
+            format!("--key={}", key.0),
+        ];
+        for peer in self.known(p) {
+            args.push(format!("--peer={}", self.url(&peer).await));
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.cyphr(&args).await?;
+        Ok(())
     }
 
-    /// Retire a key with `key/delete`, which the CLI cannot sign; N22 owns
-    /// removing a key by another active key.
-    pub async fn remove_key(&self, _p: &Principal, _key: &KeyRef) -> ActionResult<()> {
-        unsupported("remove_key", Capability::KeyPairing)
+    /// `cyphr key delete`: retire `key` from `p` without marking it
+    /// compromised (SPEC 6.2), signed by this device's own key.
+    pub async fn remove_key(&self, p: &Principal, key: &KeyRef) -> ActionResult<()> {
+        let s = self.signer(p)?;
+        self.cyphr(&[
+            "key",
+            "delete",
+            "--identity",
+            &p.0,
+            "--key",
+            &key.0,
+            "--signer",
+            &s,
+        ])
+        .await?;
+        Ok(())
     }
 
     /// Resolve a fork by selecting a branch (SPEC 15.8, a new commit on the
