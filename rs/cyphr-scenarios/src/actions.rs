@@ -200,8 +200,8 @@ pub struct Verdict {
     pub evidence: Vec<Evidence>,
     /// The key that resolved a fork, when one did.
     pub resolved_by: Option<KeyRef>,
-    /// When the verdict was read, so an oracle can bound the time that
-    /// passed before it compared the verdict's age with a peer's.
+    /// When the CLI that computed the verdict was started, so an oracle can
+    /// bound the time between the CLI's reading of the peer and its own.
     pub observed_at: std::time::Instant,
 }
 
@@ -862,11 +862,12 @@ impl Client<'_> {
         for url in &urls {
             args.extend(["--peer".into(), url.clone()]);
         }
+        let started = std::time::Instant::now();
         let v = self
             .cyphr(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         self.know(p, &names.iter().map(String::as_str).collect::<Vec<_>>());
-        parse_verdict(&v, p, &names, &urls)
+        parse_verdict(&v, p, &names, &urls, started)
     }
 
     async fn urls(&self, names: &[String]) -> Vec<String> {
@@ -975,11 +976,12 @@ impl Client<'_> {
     pub async fn audit(&self, p: &Principal) -> ActionResult<Verdict> {
         let names = self.known(p);
         let args = self.peer_args(p, "audit").await?;
+        let started = std::time::Instant::now();
         let v = self
             .cyphr(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         let urls = self.urls(&names).await;
-        parse_verdict(&v, p, &names, &urls)
+        parse_verdict(&v, p, &names, &urls, started)
     }
 
     // ---- data actions ----
@@ -1179,6 +1181,7 @@ fn parse_verdict(
     p: &Principal,
     names: &[String],
     urls: &[String],
+    started: std::time::Instant,
 ) -> ActionResult<Verdict> {
     let bad = |what: &str| ActionError::Failed(format!("verify answered without {what}: {v}"));
     let standing = match v["verdict"].as_str() {
@@ -1221,7 +1224,7 @@ fn parse_verdict(
         .as_array()
         .is_some_and(|e| e.iter().any(|x| x["kind"] == "principal_fork"));
     Ok(Verdict {
-        observed_at: std::time::Instant::now(),
+        observed_at: started,
         standing,
         freshness: Freshness {
             // The age of the principal's newest signed `now`, on the
