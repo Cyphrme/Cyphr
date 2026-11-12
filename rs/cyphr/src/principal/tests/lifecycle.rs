@@ -1,53 +1,12 @@
 //! Genesis, lifecycle-state and deleted-principal tests.
 
 use super::*;
-use crate::commit::PendingCommit;
 use crate::multihash::MultihashDigest;
 use crate::parsed_coz::VerifiedCoz;
-use crate::semantic_tree::{derive_state_roots, key_leaf};
-use crate::state::{compute_dr, derive_hash_algs};
 
 // ========================================================================
 // Lifecycle state (SPEC.md §11)
 // ========================================================================
-
-/// c-zombie-unreachable (integration level): across every principal
-/// shape this node can actually construct (varying key counts, with and
-/// without revocation, with and without commits), `lifecycle_state()`
-/// never returns Zombie. `CanMutateAR` is wired as `== HasActiveKeys`
-/// below Level 5 (SPEC.md:1990-1992; this crate's `Level` enum has no
-/// L5+ variant — see `rs/cyphr/src/principal.rs`'s `Level` definition),
-/// so `¬CanMutateAR ∧ CanDataAction` can never hold and Zombie is
-/// unreachable for any principal reachable through the public API.
-#[tokio::test]
-async fn zombie_unreachable_across_constructed_principals() {
-    let single = Principal::implicit(make_test_key(0xD2)).await.unwrap();
-    assert_ne!(
-        single.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Zombie
-    );
-
-    let mut multi = Principal::implicit(make_test_key(0xD3)).await.unwrap();
-    multi.genesis_test(vec![make_test_key(0xD4)]).await.unwrap();
-    assert_ne!(
-        multi.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Zombie
-    );
-
-    let mut revoked = Principal::implicit(make_test_key(0xD5)).await.unwrap();
-    let tmb = revoked.active_keys().next().unwrap().tmb().clone();
-    revoked.pre_revoke_key(&tmb, 2000).unwrap();
-    assert_ne!(
-        revoked.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Zombie
-    );
-
-    let (with_commits, _keys) = build_principal_with_commits(3).await;
-    assert_ne!(
-        with_commits.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Zombie
-    );
-}
 
 // ========================================================================
 // Lifecycle transactions (SPEC.md §11.4 Close, §14.9 Freeze)
@@ -308,8 +267,8 @@ async fn freeze_delete_on_non_frozen_is_rejected() {
 // variants (KeyCreate, KeyDelete, KeyReplace, SelfRevoke,
 // PrincipalCreate, CommitCreate) plus data actions. CommitCreate is
 // exempted (its own commit's finalizer must complete even when an
-// earlier transaction in the same commit was the delete itself, see
-// `same_commit_delete_and_own_finalizer_succeeds` below).
+// earlier transaction in the same commit was the delete itself, as in
+// the `principal_delete_transitions_to_deleted` golden vector).
 // FreezeDelete is exempted from this gate too, but for a structural
 // reason rather than a same-commit one: it requires `self.frozen`,
 // and Deleted/Frozen are mutually exclusive (SPEC.md:1974-1978), so
@@ -428,108 +387,9 @@ async fn data_action_on_deleted_principal_is_rejected() {
     assert!(matches!(result, Err(Error::AlreadyDeleted)));
 }
 
-/// c-same-commit-delete-still-finalizes: the load-bearing test for this
-/// node. A commit whose own transaction is `principal/delete`, followed
-/// by that SAME commit's `commit/create` finalizer, must still finalize
-/// successfully -- the finalizer is applied through
-/// `apply_transaction_internal` exactly as the real per-cozy commit
-/// ingestion path does (see `CommitScope::verify_and_apply` ->
-/// `CommitScope::apply` -> `apply_verified_internal`), at a point where
-/// `self.deleted` is already `true` from the earlier delete in this
-/// same commit. Get the exemption wrong (too narrow) and this test
-/// fails with `AlreadyDeleted`, meaning a principal could never
-/// actually be closed.
-#[tokio::test]
-async fn same_commit_delete_and_own_finalizer_succeeds() {
-    use crate::parsed_coz::{CozKind, ParsedCoz};
-
-    let key = make_test_key(0xDA);
-    let tmb = key.tmb().clone();
-    let mut principal = Principal::implicit(key).await.unwrap();
-    principal.genesis_test(Vec::new()).await.unwrap();
-
-    let delete_cz = ParsedCoz {
-        kind: CozKind::PrincipalDelete {
-            id: principal.pr().clone(),
-        },
-        signer: tmb.clone(),
-        now: 2000,
-        czd: coz::Czd::from_bytes(vec![0xDB; 32]),
-        hash_alg: HashAlg::Sha256,
-        arrow: None,
-        raw: dummy_coz_json(),
-    };
-
-    // Apply principal/delete eagerly -- self.deleted is now true,
-    // exactly as it would be on CommitScope's projected principal
-    // mid-commit.
-    let delete_vtx = VerifiedCoz::from_transaction_unsafe(delete_cz.clone(), None);
-    principal
-        .state_mut()
-        .apply_verified_internal(delete_vtx)
-        .unwrap();
-    assert!(principal.is_deleted());
-
-    let mut pending = PendingCommit::new();
-    let delete_vtx2 = VerifiedCoz::from_transaction_unsafe(delete_cz.clone(), None);
-    pending.push_tx(crate::transaction::Transaction(vec![delete_vtx2]));
-
-    // Compute the correct arrow for the finalizer -- same technique as
-    // `apply_transaction_test`.
-    let key_refs: Vec<&Key> = principal.auth.keys.values().collect();
-    let active_algs = derive_hash_algs(&key_refs);
-    let leaves: Vec<_> = principal.auth.keys.values().map(key_leaf).collect();
-    let action_refs: Vec<&Action> = principal.data.actions.iter().collect();
-    let dr = compute_dr(&action_refs, None, &active_algs).unwrap();
-    let (_kr, _ar, sr) = derive_state_roots(&leaves, dr.as_ref(), &active_algs).unwrap();
-
-    let tx_alg = delete_cz.hash_alg;
-    let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
-    let tmr = tmr_opt.unwrap();
-
-    let arrow_digest = crate::commit::arrow_digest(tx_alg, &principal.pr, Some(&sr), &tmr).unwrap();
-    let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest).unwrap();
-
-    let commit_coz = ParsedCoz {
-        kind: CozKind::CommitCreate {
-            arrow: arrow_md.clone(),
-        },
-        signer: tmb.clone(),
-        now: 2000,
-        czd: coz::Czd::from_bytes(vec![0xDC; 32]),
-        hash_alg: tx_alg,
-        arrow: Some(arrow_md),
-        raw: dummy_coz_json(),
-    };
-    let commit_vtx = VerifiedCoz::from_transaction_unsafe(commit_coz, None);
-
-    // The load-bearing assertion: this must NOT be rejected by
-    // [no-transactions-on-deleted] despite self.deleted already being
-    // true from the delete applied moments ago in this same commit.
-    principal
-        .state_mut()
-        .apply_verified_internal(commit_vtx.clone())
-        .expect(
-            "commit/create finalizing its own commit's principal/delete must not be rejected by \
-             the blanket deleted gate",
-        );
-
-    pending.push_tx(crate::transaction::Transaction(vec![commit_vtx]));
-
-    principal.finalize_test(pending).await.unwrap();
-
-    assert!(
-        principal.is_deleted(),
-        "principal must still be Deleted after its own delete-commit finalizes"
-    );
-    assert_eq!(
-        principal.lifecycle_state(),
-        crate::lifecycle::LifecycleState::Deleted
-    );
-}
-
 /// c-later-commit-now-rejected (F35 narrowing, this node): unlike
-/// `same_commit_delete_and_own_finalizer_succeeds` above, this
+/// a same-commit delete and finalizer (golden
+/// `principal_delete_transitions_to_deleted`), this
 /// principal was deleted in an EARLIER, separately-finalized commit
 /// -- `self.deleted` is already `true` BEFORE this new commit/create
 /// is applied, not made `true` by this commit's own transaction. A

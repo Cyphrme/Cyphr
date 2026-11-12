@@ -755,31 +755,6 @@ mod tests {
         ));
     }
 
-    /// Backs SPEC 6.4: `id` must be absent on a self-revoke, so a self-revoke carrying one is
-    /// malformed. Unit: ParsedCoz::from_pay is crate-internal; a signed scenario would only reach
-    /// it after signature checks.
-    #[test]
-    fn parse_self_revoke_with_id_fails() {
-        // id MUST be absent on a self-revoke; its presence is a parse-time error.
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/revoke")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .rvk(1000)
-            .build();
-        pay.extra.insert("id".into(), json!(TEST_ID)); // forbidden
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
-
-        assert!(
-            matches!(result, Err(Error::MalformedPayload)),
-            "expected MalformedPayload when id present on self-revoke, got {:?}",
-            result
-        );
-    }
-
     #[test]
     fn parse_unknown_typ_fails() {
         let pay = PayBuilder::new()

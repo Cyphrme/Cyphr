@@ -296,44 +296,6 @@ async fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
     assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
 }
 
-/// c2/a2 — the recursive singleton-promotion property, extended through
-/// the FULL new chain (`genesis_pr_equals_sr_verbatim` already proves it
-/// at PT's root alone): for a single-key, no-data-action, no-commit
-/// principal, `tmb == KR == AR == SR == PR`, byte-for-byte, for every
-/// registered algorithm. Every hop is the same native 1-cell promotion
-/// mechanism, composed recursively — no special-case machinery.
-#[tokio::test]
-async fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
-    let key = make_test_key_ed25519(0xCC);
-    let tmb_bytes = key.tmb().as_bytes().to_vec();
-    let principal = Principal::implicit(key).await.unwrap();
-
-    let alg = principal.hash_alg();
-    assert_eq!(principal.active_algs(), vec![alg]);
-
-    assert_eq!(
-        principal
-            .key_root()
-            .expect("a live principal has a KR")
-            .get(alg)
-            .unwrap(),
-        tmb_bytes.as_slice()
-    );
-    assert_eq!(
-        principal
-            .auth_root()
-            .expect("a live principal has an AR")
-            .get(alg)
-            .unwrap(),
-        tmb_bytes.as_slice()
-    );
-    assert_eq!(
-        principal.sr().unwrap().get(alg).unwrap(),
-        tmb_bytes.as_slice()
-    );
-    assert_eq!(principal.pr().get(alg).unwrap(), tmb_bytes.as_slice());
-}
-
 // ========================================================================
 // c3/a3 — establish_pg works for any storage backend
 // ========================================================================

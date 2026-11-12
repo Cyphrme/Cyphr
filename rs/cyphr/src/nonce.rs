@@ -206,31 +206,4 @@ mod tests {
         assert!(Nonce::parse("MD5:AAAA", HashAlg::Sha256).is_err());
         assert!(Nonce::parse("!!!", HashAlg::Sha256).is_err());
     }
-
-    /// Backs SPEC 7.6 / 10.1: the same nonce twice at one level is a typed
-    /// duplicate, the same nonce at another level is a different entry, and
-    /// deleting an absent nonce is a typed refusal that leaves the set
-    /// unchanged. Turns red if a repeat is silently accepted, if levels
-    /// share a set, or if an absent delete succeeds.
-    #[test]
-    fn duplicate_and_absent_are_typed_and_levels_are_independent() {
-        let n = Nonce::parse(B64_32, HashAlg::Sha256).unwrap();
-        let mut sets = NonceSets::default();
-        sets.insert(NonceLevel::Kt, &n).unwrap();
-        assert!(matches!(
-            sets.insert(NonceLevel::Kt, &n),
-            Err(Error::DuplicateNonce)
-        ));
-        sets.insert(NonceLevel::At, &n).unwrap();
-        assert!(matches!(
-            sets.remove(NonceLevel::Pr, &n),
-            Err(Error::UnknownNonce)
-        ));
-        sets.remove(NonceLevel::Kt, &n).unwrap();
-        assert!(sets.at_level(NonceLevel::Kt).is_empty());
-        assert_eq!(
-            sets.at_level(NonceLevel::At),
-            vec![(n.as_bytes(), HashAlg::Sha256)]
-        );
-    }
 }

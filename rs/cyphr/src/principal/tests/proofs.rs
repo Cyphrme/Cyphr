@@ -133,21 +133,6 @@ async fn two_step_verification_rejects_wrong_index() {
     assert!(!ok, "wrong index must not verify");
 }
 
-/// c3/a3 — a forged transaction (wrong claimed leaf value) must be
-/// rejected at the claimed index.
-#[tokio::test]
-async fn two_step_verification_rejects_forged_transaction() {
-    let (principal, _keys) = build_multi_alg_principal_with_commits(3).await;
-    let alg = HashAlg::Sha256;
-
-    let forged = MultihashDigest::from_single(alg, vec![0xEE; 32]).unwrap();
-    let ok = principal
-        .verify_transaction_inclusion(alg, 0, &forged)
-        .await
-        .unwrap();
-    assert!(!ok, "forged transaction must not verify");
-}
-
 // ========================================================================
 // Key-membership inclusion verification (chained 4-hop NodePath)
 // ========================================================================

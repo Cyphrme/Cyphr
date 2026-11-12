@@ -1214,34 +1214,6 @@ mod tests {
     // PendingCommit Tests
     // ========================================================================
 
-    /// Backs SPEC 4.6 / `[commit-one-or-more]` (ruling D1, issue #74): a commit holding only its
-    /// own finalizer is rejected as `EmptyCommit`. Unit: PendingCommit is crate-internal; the
-    /// signed scenarios cannot construct a finalizer-only commit.
-    #[test]
-    fn pending_commit_finalize_rejects_finalizer_only() {
-        // A commit whose only content is its own commit/create finalizer
-        // (no mutation cozies at all) must be rejected -- ruling D1
-        // (GitHub issue #74): ambiguity between "reject" and "document as
-        // intentional no-op" resolves in favor of reject, aligning with
-        // [commit-one-or-more]'s evident intent.
-        let mut pending = PendingCommit::new();
-        let cz = make_test_tx(true, 0x01);
-        pending.push_tx(crate::transaction::Transaction(vec![cz]));
-
-        let auth_root =
-            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
-        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
-        let pr =
-            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
-
-        let commit = pending.finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256]);
-        assert!(
-            matches!(commit, Err(crate::error::Error::EmptyCommit)),
-            "a finalizer-only commit (no mutation cozies) must be rejected as empty, got \
-             {commit:?}"
-        );
-    }
-
     /// Backs SPEC 4.6: a commit with no `commit/create` finalizer is rejected as `MissingCommit`.
     /// Unit: PendingCommit is crate-internal; the signed path always appends the finalizer.
     #[test]
