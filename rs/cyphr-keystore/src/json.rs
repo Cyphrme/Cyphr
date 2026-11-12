@@ -1,49 +1,14 @@
-//! Keystore abstraction for private key storage.
-//!
-//! This module provides a trait for key storage backends and an MVP
-//! plaintext JSON implementation.
+//! The plaintext JSON software backend.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
 
+use base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::signer::SoftwareSigner;
 use serde::{Deserialize, Serialize};
 
-/// Error type for keystore operations.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// I/O error reading or writing keystore file.
-    #[error("keystore I/O error: {0}")]
-    Io(#[from] io::Error),
-
-    /// JSON serialization/deserialization error.
-    #[error("keystore JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    /// Key not found in keystore.
-    #[error("key not found: {0}")]
-    NotFound(String),
-
-    /// Key already exists in keystore.
-    #[error("key already exists: {0}")]
-    AlreadyExists(String),
-
-    /// Unknown algorithm.
-    #[error("unknown algorithm: {0}")]
-    UnknownAlgorithm(String),
-
-    /// The file states a format version this build does not read. No key
-    /// was read from it.
-    #[error("{file} version {found} is not the supported {supported}")]
-    UnsupportedVersion {
-        /// Which file was refused.
-        file: &'static str,
-        /// The version the file states.
-        found: u64,
-        /// The one version this build reads.
-        supported: u64,
-    },
-}
+use crate::{Error, KeyBackend, PublicKeyInfo};
 
 /// The format version of the keystore: a flat map with a top-level `v`; a
 /// file from before versions has none and is v1 (same layout), and is
@@ -83,46 +48,37 @@ fn to_versioned<T: Serialize>(entries: &HashMap<String, T>) -> Result<String, Er
     Ok(serde_json::to_string_pretty(&doc)?)
 }
 
-/// A stored key entry with algorithm, public, and private key material.
+/// A stored key entry: the on-disk record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredKey {
-    /// Algorithm identifier (ES256, ES384, ES512, Ed25519).
-    pub alg: String,
+struct StoredKey {
+    alg: String,
 
-    /// Public key bytes (base64url encoded in JSON).
     #[serde(with = "base64url_bytes")]
-    pub pub_key: Vec<u8>,
+    pub_key: Vec<u8>,
 
-    /// Private key bytes (base64url encoded in JSON).
     #[serde(with = "base64url_bytes")]
-    pub prv_key: Vec<u8>,
+    prv_key: Vec<u8>,
 
-    /// Optional human-readable tag.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
+    tag: Option<String>,
 }
 
-/// Keystore trait for private key storage.
-///
-/// Implementations may use files, OS keychains, HSMs, etc.
-pub trait KeyStore {
-    /// Store a key by its thumbprint.
-    fn store(&mut self, tmb: &str, key: StoredKey) -> Result<(), Error>;
-
-    /// Retrieve a key by its thumbprint.
-    fn get(&self, tmb: &str) -> Result<&StoredKey, Error>;
-
-    /// List all stored key thumbprints.
-    fn list(&self) -> Vec<&str>;
-
-    /// Persist changes to backing storage.
-    fn save(&self) -> Result<(), Error>;
+impl StoredKey {
+    fn info(&self, tmb: &str) -> PublicKeyInfo {
+        PublicKeyInfo {
+            alg: self.alg.clone(),
+            pub_key: self.pub_key.clone(),
+            tmb: tmb.to_string(),
+            tag: self.tag.clone(),
+        }
+    }
 }
 
-/// Plaintext JSON keystore (MVP implementation).
+/// Plaintext JSON keystore: the software [`KeyBackend`].
 ///
 /// Stores keys in a JSON file on disk. **NOT SECURE** for production use.
-/// Keys are stored in plaintext. Use only for development and testing.
+/// Keys are stored in plaintext. Use only for development and testing. The
+/// file format is the stable surface: existing key files keep working.
 pub struct JsonKeyStore {
     path: PathBuf,
     keys: HashMap<String, StoredKey>,
@@ -142,35 +98,66 @@ impl JsonKeyStore {
         Ok(Self { path, keys })
     }
 
-    /// Get the path to the keystore file.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl KeyStore for JsonKeyStore {
-    fn store(&mut self, tmb: &str, key: StoredKey) -> Result<(), Error> {
-        if self.keys.contains_key(tmb) {
-            return Err(Error::AlreadyExists(tmb.to_string()));
-        }
-        self.keys.insert(tmb.to_string(), key);
+    fn save(&self) -> Result<(), Error> {
+        fs::write(&self.path, to_versioned(&self.keys)?)?;
         Ok(())
     }
 
-    fn get(&self, tmb: &str) -> Result<&StoredKey, Error> {
+    fn entry(&self, tmb: &str) -> Result<&StoredKey, Error> {
         self.keys
             .get(tmb)
             .ok_or_else(|| Error::NotFound(tmb.to_string()))
     }
+}
 
-    fn list(&self) -> Vec<&str> {
-        self.keys.keys().map(String::as_str).collect()
+impl KeyBackend for JsonKeyStore {
+    type Signer = SoftwareSigner;
+
+    fn generate(&mut self, alg: &str, tag: Option<&str>) -> Result<PublicKeyInfo, Error> {
+        let alg_enum =
+            coz::Alg::from_str(alg).ok_or_else(|| Error::UnknownAlgorithm(alg.to_string()))?;
+        let keypair = alg_enum.generate_keypair();
+        let tmb = Base64UrlUnpadded::encode_string(keypair.thumbprint.as_bytes());
+        if self.keys.contains_key(&tmb) {
+            return Err(Error::AlreadyExists(tmb));
+        }
+        let stored = StoredKey {
+            alg: alg.to_string(),
+            pub_key: keypair.pub_bytes,
+            prv_key: keypair.prv_bytes,
+            tag: tag.map(String::from),
+        };
+        let info = stored.info(&tmb);
+        self.keys.insert(tmb, stored);
+        self.save()?;
+        Ok(info)
     }
 
-    fn save(&self) -> Result<(), Error> {
-        let content = to_versioned(&self.keys)?;
-        fs::write(&self.path, content)?;
-        Ok(())
+    fn list(&self) -> Result<Vec<PublicKeyInfo>, Error> {
+        Ok(self.keys.iter().map(|(tmb, k)| k.info(tmb)).collect())
+    }
+
+    fn public(&self, tmb: &str) -> Result<PublicKeyInfo, Error> {
+        Ok(self.entry(tmb)?.info(tmb))
+    }
+
+    fn remove(&mut self, tmb: &str) -> Result<(), Error> {
+        self.keys
+            .remove(tmb)
+            .ok_or_else(|| Error::NotFound(tmb.to_string()))?;
+        self.save()
+    }
+
+    fn signer(&self, tmb: &str) -> Result<SoftwareSigner, Error> {
+        let k = self.entry(tmb)?;
+        let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb)
+            .map_err(|_| Error::InvalidThumbprint(tmb.to_string()))?;
+        Ok(SoftwareSigner::new(
+            &k.alg,
+            &k.prv_key,
+            &k.pub_key,
+            &coz::Thumbprint::from_bytes(tmb_bytes),
+        ))
     }
 }
 
@@ -183,8 +170,7 @@ mod base64url_bytes {
     where
         S: Serializer,
     {
-        let encoded = Base64UrlUnpadded::encode_string(bytes);
-        serializer.serialize_str(&encoded)
+        serializer.serialize_str(&Base64UrlUnpadded::encode_string(bytes))
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
@@ -200,31 +186,21 @@ mod base64url_bytes {
 mod tests {
     use super::*;
 
-    fn stored() -> StoredKey {
-        StoredKey {
-            alg: "Ed25519".into(),
-            pub_key: vec![1; 32],
-            prv_key: vec![2; 32],
-            tag: None,
-        }
-    }
-
-    /// Claim: the keystore file states its format
-    /// version, and `open` refuses one it does not know as a typed
-    /// `UnsupportedVersion`, before any key is read out of it. The current
-    /// version still round-trips. Turns red on files written unstamped, or an
-    /// `open` that ignores `v` (today an extra top-level field is mis-read
-    /// as a key entry and fails as a bare JSON error). A unit test: the
-    /// files are the unit under claim and no scenario reaches them cheaply.
+    /// Claim: the keystore file states its format version, and `open`
+    /// refuses one it does not know as a typed `UnsupportedVersion`, before
+    /// any key is read out of it. The current version still round-trips.
+    /// Turns red on files written unstamped, or an `open` that ignores `v`
+    /// (an extra top-level field is then mis-read as a key entry and fails
+    /// as a bare JSON error). A unit test: the files are the unit under
+    /// claim and no scenario reaches them cheaply.
     #[test]
     fn version_keystore_unknown_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.json");
         let mut ks = JsonKeyStore::open(&path).unwrap();
-        ks.store("tmb-1", stored()).unwrap();
-        ks.save().unwrap();
+        let tmb = ks.generate("Ed25519", None).unwrap().tmb;
         let reopened = JsonKeyStore::open(&path).expect("the current version reopens");
-        reopened.get("tmb-1").expect("and still holds the key");
+        reopened.public(&tmb).expect("and still holds the key");
 
         let file = &path;
         let mut doc: serde_json::Value =

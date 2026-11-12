@@ -609,6 +609,7 @@ dependencies = [
  "cyphr-blob-fjall",
  "cyphr-client",
  "cyphr-index-fjall",
+ "cyphr-keystore",
  "cyphr-storage",
  "fjall",
  "indexmap",
@@ -664,6 +665,20 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cyphr-keystore"
+version = "0.1.0"
+dependencies = [
+ "base64ct",
+ "coz-rs",
+ "cyphr",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
