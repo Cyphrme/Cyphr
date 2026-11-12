@@ -979,7 +979,9 @@ pub async fn revoke(
     }
 
     // The engine keeps the revoke too, as a record a rebuild re-verifies:
-    // it judges forks by it (SPEC 15.7.1, a revocation resolves one).
+    // it judges forks by it (SPEC 15.7.1, a revocation resolves one). Its
+    // future bound cannot refuse what the receipt window above admitted,
+    // so the observation recorded first never outlives a refusal here.
     state
         .engine
         .record_revoke(&verified.evidence)

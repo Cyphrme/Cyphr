@@ -383,3 +383,39 @@ async fn honest_rotation_syncs_after_a_later_revoke() {
         "P1 synced the honest rotation signed before the revoke"
     );
 }
+
+/// Backs SPEC 15.9 ("rejecting future-dated messages") for a relayed
+/// revoke: P2 serves `eve`'s naked revoke dated an hour ahead (an older
+/// peer kept it). One round of P1's gossip refuses it, and a refused revoke
+/// is refused, not kept: P1 records it nowhere, so `/revoked` serves no
+/// revoke of `eve`. Turns red if P1 keeps or serves the refused revoke.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relayed_future_revoke_is_refused_and_not_kept() {
+    let (genesis, id, ..) = dead_key_fixture().await;
+    let (p1, _d1) = keyless_server();
+    let (p2, _d2) = keyless_server();
+    let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
+    for app in [&app1, &app2] {
+        assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
+    }
+    let future = common::eve_revoke(common::wall_clock() + 3600);
+    let eve = load_pool()
+        .get("eve_ed25519")
+        .expect("eve")
+        .compute_tmb()
+        .expect("tmb");
+    p2.observations
+        .record_seen(&eve, future)
+        .await
+        .expect("P2 serves it");
+
+    one_round(&p1, &p2).await;
+
+    let (status, body) = get_json(app1.clone(), &format!("/revoked?tmbs={}", eve.to_b64())).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(
+        envelope_payload(&body)["revoked"],
+        serde_json::json!([]),
+        "P1 kept a refused revoke"
+    );
+}
