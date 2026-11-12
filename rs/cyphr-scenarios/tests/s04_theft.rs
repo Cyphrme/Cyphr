@@ -146,16 +146,9 @@ async fn s04_theft() {
     // Each side reaches its own peers before gossip carries the other's
     // rotation across: without the cut, whichever pushes second finds its
     // peers already on the rival branch.
-    // RED(CZR): core resolves the signer before the COZ_REUSE check, so
-    // re-pushing a held rotation is refused (422 unknown key, not reuse);
-    // CZR fixes the order and removes the p1-p2 partition below. Without
-    // it, gossip carrying Alice's rotation from p1 to p2 between her two
-    // pushes makes her push to p2 hit that defect.
     for from in ["p1", "p2"] {
         h.proxy.partition(from, "p3");
     }
-    h.proxy.partition("p1", "p2");
-    h.proxy.partition("p2", "p1");
     let tt2 = h
         .ok(thief.push(&pr2, &["p3"]).await)
         .accepted("thief rotation");
@@ -165,8 +158,6 @@ async fn s04_theft() {
     for from in ["p1", "p2"] {
         h.proxy.heal(from, "p3");
     }
-    h.proxy.heal("p1", "p2");
-    h.proxy.heal("p2", "p1");
     assert_ne!(at2, tt2);
 
     h.eventually("both branches to be reported", CONVERGE, || async {
