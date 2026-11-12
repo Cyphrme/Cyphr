@@ -77,7 +77,7 @@ async fn single_key_explicit_genesis_establishes_pg() {
 
     let genesis_key =
         cyphr::Key::new(alg.clone(), tmb.clone(), kp.pub_bytes.clone()).expect("key binds its tmb");
-    let genesis = Genesis::Explicit(vec![genesis_key.clone()]);
+    let genesis = Genesis::Disclosed(vec![genesis_key.clone()]);
 
     // Client-side: build the principal and derive its PG, which for a
     // single-key genesis is the genesis key's own PR (SPEC 5.2).
@@ -285,7 +285,7 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
     // Reload the chain and inspect its key state.
     let principal = state
         .engine
-        .load_principal(sp.pg(), Genesis::Explicit(vec![sp.genesis_key().clone()]))
+        .load_principal(sp.pg(), Genesis::Disclosed(vec![sp.genesis_key().clone()]))
         .await
         .expect("reload the rotated chain");
 
@@ -367,7 +367,7 @@ async fn principal_can_rotate_again_after_rotation() {
 
     let principal = state
         .engine
-        .load_principal(sp.pg(), Genesis::Explicit(vec![sp.genesis_key().clone()]))
+        .load_principal(sp.pg(), Genesis::Disclosed(vec![sp.genesis_key().clone()]))
         .await
         .expect("reload the twice-rotated chain");
     assert!(

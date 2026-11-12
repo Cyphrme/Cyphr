@@ -110,7 +110,7 @@ pub enum ServerPrincipalError {
 ///
 /// Holds only public material: the stable PG (the engine `principal_id`)
 /// and the sole genesis key needed to reconstruct the chain via
-/// `Genesis::Explicit`. The private signing key stays in the separate key
+/// `Genesis::Disclosed`. The private signing key stays in the separate key
 /// file, and this record survives a key rotation unchanged — after a
 /// rotation the key file holds a different key, but the *genesis* key
 /// recorded here does not change, so the chain remains loadable.
@@ -243,7 +243,7 @@ impl ServerPrincipal {
         engine
             .submit_commit(
                 &pg,
-                Some(Genesis::Explicit(vec![genesis_key.clone()])),
+                Some(Genesis::Disclosed(vec![genesis_key.clone()])),
                 &bundle,
             )
             .await?;
@@ -300,7 +300,7 @@ impl ServerPrincipal {
         }
 
         let principal = engine
-            .load_principal(&record.pg, Genesis::Explicit(vec![genesis_key.clone()]))
+            .load_principal(&record.pg, Genesis::Disclosed(vec![genesis_key.clone()]))
             .await?;
 
         let current_tmb = identity_thumbprint(identity)?;
@@ -340,7 +340,7 @@ impl ServerPrincipal {
                 let principal = engine
                     .load_principal(
                         &record.pg,
-                        Genesis::Explicit(vec![record.genesis_key.to_key()?]),
+                        Genesis::Disclosed(vec![record.genesis_key.to_key()?]),
                     )
                     .await?;
                 // An unreadable `.next` is a torn staging write; it cannot
@@ -369,7 +369,7 @@ impl ServerPrincipal {
     }
 
     /// The sole genesis key (public material), needed to reload or
-    /// independently verify the chain via `Genesis::Explicit`.
+    /// independently verify the chain via `Genesis::Disclosed`.
     pub fn genesis_key(&self) -> &cyphr::Key {
         &self.genesis_key
     }
@@ -423,7 +423,7 @@ impl ServerPrincipal {
         let alg = current.alg().name();
 
         let mut principal = engine
-            .load_principal(&self.pg, Genesis::Explicit(vec![self.genesis_key.clone()]))
+            .load_principal(&self.pg, Genesis::Disclosed(vec![self.genesis_key.clone()]))
             .await?;
 
         // Keep the new coz strictly monotonic over the chain's latest
@@ -496,7 +496,7 @@ impl ServerPrincipal {
         engine
             .submit_commit(
                 &self.pg,
-                Some(Genesis::Explicit(vec![self.genesis_key.clone()])),
+                Some(Genesis::Disclosed(vec![self.genesis_key.clone()])),
                 &bundle,
             )
             .await?;

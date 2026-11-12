@@ -190,7 +190,7 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> crate::Genesis {
     if keys.len() == 1 {
         crate::Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        crate::Genesis::Explicit(keys)
+        crate::Genesis::Disclosed(keys)
     }
 }
 

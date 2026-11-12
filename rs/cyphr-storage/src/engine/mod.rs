@@ -4088,7 +4088,7 @@ fn authenticated_signers(
     let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
     let genesis_keys: &[cyphr::Key] = match genesis {
         crate::Genesis::Implicit(key) => std::slice::from_ref(key),
-        crate::Genesis::Explicit(keys) => keys,
+        crate::Genesis::Disclosed(keys) => keys,
     };
     for key in genesis_keys {
         history.insert(
@@ -4192,7 +4192,7 @@ fn disclosed_genesis(bundle: &WireBundle) -> Option<Result<crate::Genesis, Engin
             Err(e) => Some(Err(e)),
             Ok(mut keys) if keys.len() == 1 => keys.pop().map(|k| Ok(crate::Genesis::Implicit(k))),
             Ok(keys) if keys.is_empty() => None,
-            Ok(keys) => Some(Ok(crate::Genesis::Explicit(keys))),
+            Ok(keys) => Some(Ok(crate::Genesis::Disclosed(keys))),
         };
     }
     None

@@ -9,7 +9,7 @@
 //!
 //! The spine test, `offline_verification_replays_chain_and_verifies_commit_receipt`,
 //! proves offline verification end-to-end: a client pins the PG from `/server`,
-//! reconstructs `Genesis::Explicit` from the published genesis-key hint,
+//! reconstructs `Genesis::Disclosed` from the published genesis-key hint,
 //! replays the server's own chain (fetched via the ordinary public
 //! `/patch` surface) into a second, independent local engine, and verifies
 //! the receipt's signature with plain `coz::verify_json` -- never touching
@@ -286,7 +286,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
 // ========================================================================
 
 /// An attestor's discovery payload carries the genesis-key fields the
-/// offline verifier needs to reconstruct `Genesis::Explicit`, distinct
+/// offline verifier needs to reconstruct `Genesis::Disclosed`, distinct
 /// from the current-key fields already published.
 #[tokio::test]
 async fn attestor_discovery_payload_carries_genesis_key_fields() {
@@ -323,7 +323,7 @@ async fn attestor_discovery_payload_carries_genesis_key_fields() {
 // Offline verification: this section's spine test
 // ========================================================================
 
-/// A client pins the PG from `/server`, reconstructs `Genesis::Explicit`
+/// A client pins the PG from `/server`, reconstructs `Genesis::Disclosed`
 /// from the published genesis-key hint, replays the server's own chain
 /// (fetched via the ordinary public `/patch` surface) into a SECOND,
 /// independent local engine, and verifies a push receipt's signature with
@@ -403,7 +403,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
         local_engine
             .submit_commit(
                 &pinned_pg,
-                Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
+                Some(cyphr_storage::Genesis::Disclosed(vec![genesis_key.clone()])),
                 &blobs,
             )
             .await
@@ -413,7 +413,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let replayed = local_engine
         .load_principal(
             &pinned_pg,
-            cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()]),
+            cyphr_storage::Genesis::Disclosed(vec![genesis_key.clone()]),
         )
         .await
         .expect("load the fully replayed principal");

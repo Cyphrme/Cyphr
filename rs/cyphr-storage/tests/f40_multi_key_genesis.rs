@@ -94,7 +94,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let tmb_a = key_a.compute_tmb().expect("golden tmb");
 
     let genesis_domain_keys = vec![pool_key_to_domain(key_a), pool_key_to_domain(key_b)];
-    let genesis = Genesis::Explicit(genesis_domain_keys.clone());
+    let genesis = Genesis::Disclosed(genesis_domain_keys.clone());
     let genesis_keys_entries: Vec<cyphr_storage::KeyEntry> = genesis_domain_keys
         .iter()
         .map(cyphr_storage::KeyEntry::of)

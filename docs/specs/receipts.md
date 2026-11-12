@@ -233,7 +233,7 @@ issued it, using only HTTP responses and local replay:
 4. **Replay into a SECOND, independent local engine** -- a fresh
    in-memory `StorageEngine`, never the server's own engine or state.
    Submit each patch entry's blobs via `submit_commit`, passing
-   `Genesis::Explicit(vec![genesis_key])` explicitly on every call: the
+   `Genesis::Disclosed(vec![genesis_key])` explicitly on every call: the
    genesis key is never embedded on the wire, so auto-detection cannot
    recover it from the replayed blobs themselves.
 5. **Confirm the receipt's signing key is active in the REPLAYED

@@ -116,7 +116,7 @@ async fn build(
     for (n, name) in later.iter().enumerate() {
         commit_key_create(&mut p, &g, &kp(pool, name), NOW + 1 + n as i64).await;
     }
-    (p, Genesis::Explicit(keys), id)
+    (p, Genesis::Disclosed(keys), id)
 }
 
 /// Every PG spelling: each hash-variant label and each bare digest.

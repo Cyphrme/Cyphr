@@ -211,7 +211,7 @@ pub struct RevokeResponse {
 
 /// The server's genesis key, published as a trustless HINT for offline
 /// verification (`docs/specs/server-identity.md`'s TOFU story): a client
-/// reconstructs `Genesis::Explicit` from it and re-derives the PG,
+/// reconstructs `Genesis::Disclosed` from it and re-derives the PG,
 /// trusting the hint only once that derivation matches the pinned `pg` --
 /// never on discovery's say-so alone. Nested under `genesis` so these
 /// fields are unambiguously distinct from [`IdentityResponse::Attestor`]'s
@@ -493,7 +493,7 @@ async fn derived_roots(
                 .engine
                 .rederive_roots_with_genesis(
                     &t.principal_id,
-                    cyphr_storage::Genesis::Explicit(vec![p.genesis_key().clone()]),
+                    cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]),
                 )
                 .await
         },

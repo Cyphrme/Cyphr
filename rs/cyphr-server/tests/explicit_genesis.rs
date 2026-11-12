@@ -152,7 +152,7 @@ async fn multi_key_explicit_genesis_is_pushed_and_replayed_from_blobs() {
         .engine
         .load_principal(
             &pg,
-            cyphr_storage::Genesis::Explicit(kps.iter().map(key_of).collect()),
+            cyphr_storage::Genesis::Disclosed(kps.iter().map(key_of).collect()),
         )
         .await
         .expect("storage replays the genesis");
@@ -254,7 +254,7 @@ async fn rebuild_replays_the_server_principal_and_the_server_signs_after() {
         .engine
         .load_principal(
             sp.pg(),
-            cyphr_storage::Genesis::Explicit(vec![sp.genesis_key().clone()]),
+            cyphr_storage::Genesis::Disclosed(vec![sp.genesis_key().clone()]),
         )
         .await
         .expect("server chain");

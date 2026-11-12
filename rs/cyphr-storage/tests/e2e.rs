@@ -73,7 +73,7 @@ fn make_genesis(genesis_keys: &[GoldenKey]) -> Genesis {
     if keys.len() == 1 {
         Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        Genesis::Explicit(keys)
+        Genesis::Disclosed(keys)
     }
 }
 /// Convert Golden.commits to format suitable for load_principal_from_commits.
@@ -292,7 +292,7 @@ async fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestInten
         if test.principal.is_empty() {
             // Load the empty explicit genesis through the production loader: this is
             // the only check that `load_principal_from_commits` refuses it.
-            let err = load_principal_from_commits(Genesis::Explicit(Vec::new()), &[])
+            let err = load_principal_from_commits(Genesis::Disclosed(Vec::new()), &[])
                 .await
                 .err()
                 .unwrap_or_else(|| panic!("{}: an empty explicit genesis loaded", test.name));

@@ -91,7 +91,7 @@ fn corpus() -> Vec<Chain> {
             let genesis = if implicit {
                 Genesis::Implicit(keys[0].clone())
             } else {
-                Genesis::Explicit(keys)
+                Genesis::Disclosed(keys)
             };
             // Each line is pushed as the bundle it is: a commit, or one data
             // action on its own (SPEC 4.8.1: actions are not chained).
