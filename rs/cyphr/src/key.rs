@@ -151,11 +151,4 @@ impl Key {
     pub fn is_active(&self) -> bool {
         self.revocation.is_none()
     }
-
-    /// Returns true if the key was active at the given timestamp.
-    ///
-    /// Critical for validating historical cozies.
-    pub fn is_active_at(&self, timestamp: i64) -> bool {
-        self.revocation.as_ref().is_none_or(|r| timestamp < r.rvk)
-    }
 }
