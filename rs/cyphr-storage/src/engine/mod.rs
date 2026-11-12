@@ -428,6 +428,10 @@ struct ActionBundle {
     bundle: cyphr::replay::Bundle,
 }
 
+/// What a [`StorageEngine::left_out`] result was derived from: the
+/// canonical tip's commit id and every stored action manifest, in order.
+type LeftOutKey = (String, Vec<Blake3Hash>);
+
 /// A principal's action-only bundles by the chain position they were
 /// accepted at, each position's in replay order ([`replay_order`]).
 type ActionHistory = std::collections::BTreeMap<u64, Vec<ActionBundle>>;
@@ -747,6 +751,11 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// manifests in the blob store (I1), filled by the rebuild scan and by
     /// ingest.
     actions: std::sync::Mutex<HashMap<String, Vec<StoredActions>>>,
+    /// Per principal id, the action manifests its canonical chain left out
+    /// ([`Self::left_out`]), with the chain tip and manifest set they were
+    /// derived from: a cache of a replay of the blobs (I1), recomputed
+    /// whenever either moves.
+    left_out: std::sync::Mutex<HashMap<String, (LeftOutKey, HashSet<Blake3Hash>)>>,
     /// How each stored chain commit's blobs group into its bundle, and the
     /// keys it introduced, by principal id and commit id: a cache of the
     /// commit manifests in the blob store (I1), filled by the rebuild scan
@@ -790,6 +799,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
+            left_out: std::sync::Mutex::new(HashMap::new()),
             frames: std::sync::Mutex::new(HashMap::new()),
             revoked: std::sync::Mutex::new(Revoked::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
@@ -1020,8 +1030,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .get(principal_id)
             .cloned()
             .unwrap_or_default();
-        if held.is_empty() || self.indexer.get_tip(principal_id).await?.is_none() {
+        let Some(tip) = self.indexer.get_tip(principal_id).await? else {
             return Ok(HashSet::new());
+        };
+        if held.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let key: LeftOutKey = (tip.commit_id, held.iter().map(|a| a.manifest).collect());
+        if let Some((at, set)) = self
+            .left_out
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            && *at == key
+        {
+            return Ok(set.clone());
         }
         let genesis = self.genesis_of_stored(principal_id).await?;
         let principal = self
@@ -1032,9 +1055,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .filter(|a| a.is_not_included())
             .map(|a| a.czd().as_bytes().to_vec())
             .collect();
-        if dropped.is_empty() {
-            return Ok(HashSet::new());
-        }
         let mut out = HashSet::new();
         for stored in held {
             let bundle = action_bundle(self.read_blobs(&stored.blobs).await?).map_err(|why| {
@@ -1047,6 +1067,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 out.insert(stored.manifest);
             }
         }
+        self.left_out
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(principal_id.to_string(), (key, out.clone()));
         Ok(out)
     }
 
