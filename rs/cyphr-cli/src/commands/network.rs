@@ -84,32 +84,11 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .peekable();
         let mut sent_actions = 0usize;
         for (i, commit) in local.iter().enumerate().skip(start) {
+            // The actions a commit includes travel inside its bundle.
             let mut bundle = commit.bundle.clone();
-            let mut leading = Vec::new();
             while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
-                leading.push(blob);
-            }
-            // Actions go ahead of their commit, as a bundle of their own. A
-            // principal in Error refuses (423) a bundle of actions alone, and
-            // only a resolving commit is processed, so then they travel
-            // inside the commit's bundle instead.
-            let mut inline = false;
-            for blob in leading {
+                bundle.actions.push(blob);
                 sent_actions += 1;
-                if inline {
-                    bundle.actions.push(blob);
-                    continue;
-                }
-                match peer
-                    .push_commit(&wire, &WireBundle::actions(vec![blob.clone()]))
-                    .await
-                {
-                    Err(PeerError::Status { status: 423, .. }) => {
-                        inline = true;
-                        bundle.actions.push(blob);
-                    },
-                    other => other?,
-                }
             }
             peer.push_commit(&wire, &bundle).await?;
         }
