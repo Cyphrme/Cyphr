@@ -3394,30 +3394,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             });
         }
 
-        // The displaced commits are retained in the line's place, within the
-        // same bounds as any rival ([`has_slot`]); a promotion they would
-        // overflow is refused before anything is written.
-        {
-            let kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-            let mut after: Vec<Retained> = kept
-                .get(principal_id)
-                .into_iter()
-                .flatten()
-                .filter(|b| {
-                    !line
-                        .iter()
-                        .any(|r| r.tip.tip == b.tip.tip && r.tip.sequence == b.tip.sequence)
-                })
-                .cloned()
-                .collect();
-            for d in &displaced {
-                if !has_slot(&after, &d.signer) {
-                    return Err(EngineError::BranchLimit {
-                        key: d.signer.clone(),
-                    });
-                }
-                after.push(d.clone());
-            }
+        // The displaced commits are blobs already held, retained one for one
+        // in the line's place (both span `base` to the head), so a promotion
+        // never grows the retained set and never counts against a signer's
+        // quota: a quota a thief can fill must never refuse the owner's
+        // resolution.
+        if displaced.len() != line.len() {
+            return Err(EngineError::Indexer(
+                crate::index::IndexerError::Consistency(format!(
+                    "promotion of {principal_id} from {base} displaces {} commits for a line of {}",
+                    displaced.len(),
+                    line.len()
+                )),
+            ));
         }
 
         // Claims first, so a refusal leaves no manifest behind; the alias

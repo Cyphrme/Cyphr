@@ -1592,6 +1592,48 @@ async fn a_deleted_keys_line_is_not_promoted_while_active() {
     assert!(!errored(&state, &t.id).await, "still Active");
 }
 
+/// Backs the retention bound on promotion against a thief: the thief's B
+/// and C are canonical here, the owner's A and D retained, and the thief
+/// also retains one more `eve`-signed rival B2 at n. The owner's
+/// `key/delete` of `eve` over D promotes the owner's line and displaces B
+/// and C. Displaced commits are blobs already held, swapped one for one
+/// with the line, so they never count against `eve`'s per-key quota: the
+/// thief cannot arm that quota to refuse the owner's resolution. The
+/// delete is admitted, the principal is Active and the delete is `/tip`.
+/// Turns red if the resolution is refused.
+#[tokio::test]
+async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
+    let pool = load_pool();
+    let t = theft(true).await;
+    let (app, state, _dir) = both_extended(&t, true).await;
+    let eve = kp(&pool, "eve_ed25519");
+    let mut b2 = t.shared.fork().await.expect("fork");
+    create_key(&mut b2, &eve, &kp(&pool, "bob"), NOW + 4).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&b2, t.n, &t.id)).await;
+    assert!(status.is_client_error(), "B2 is a rival: {body:?}");
+    let retained = |b: &Vec<cyphr_storage::engine::BranchTip>| {
+        b.iter().filter(|b| !b.canonical).count()
+    };
+    let before = state.engine.list_branches(&t.id).await.expect("branches");
+    assert_eq!(retained(&before), 3, "A, D and B2 are retained");
+    let mut del = t.d.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({"id": eve.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
+    assert_eq!(status, StatusCode::CREATED, "the owner's resolution: {body:?}");
+    assert!(!errored(&state, &t.id).await, "eve's rivals left the fork");
+    let tip = tip_payload(app, &t.id).await;
+    assert_eq!(tip["commit_id"], body["payload"]["commit_id"], "the delete is /tip");
+    let after = state.engine.list_branches(&t.id).await.expect("branches");
+    assert_eq!(retained(&after), 3, "B, C and B2 retained in A and D's place");
+}
+
 /// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
 /// finalized by `new`, the key it leaves active.
 async fn replace_key(p: &mut cyphr::Principal, old: &Kp, new: &Kp, now: i64) {

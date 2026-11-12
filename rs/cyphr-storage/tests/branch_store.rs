@@ -431,12 +431,13 @@ async fn revoked_keys_rival_is_never_promoted() {
 /// Backs the retention bound on promotion: `golden` already has its
 /// [`BRANCH_PER_KEY`](cyphr_storage::engine::BRANCH_PER_KEY) rivals
 /// retained at position 1 beside its canonical commit there, and
-/// `key_a`'s rival R at 1 is extended by B. Promoting R would retain the
-/// displaced canonical commit, a third `golden` rival, past the bound, so
-/// B is refused and nothing moves. Turns red if the promotion is made and
-/// the retained set outgrows the bound.
+/// `key_a`'s rival R at 1 is extended by B. The promotion swaps R for the
+/// displaced canonical commit one for one: it is admitted whatever
+/// `golden`'s quota holds, B is the tip, and the retained set does not
+/// grow. Turns red if a full quota refuses the promotion or the retained
+/// set outgrows its size before it.
 #[tokio::test]
-async fn promotion_respects_the_retention_bound() {
+async fn promotion_swaps_retained_commits_one_for_one() {
     let f = Fork::new(3).await;
     let (e, outcomes) = f.engine_with(&[0, 1, 2]).await;
     assert!(outcomes[0].is_ok(), "rival 0 is the canonical commit");
@@ -446,20 +447,14 @@ async fn promotion_respects_the_retention_bound() {
     create_key(&mut r, &key_a, &kp(&pool, "bob"), NOW + 20).await;
     create_key(&mut r, &key_a, &kp(&pool, "carol"), NOW + 21).await;
     assert!(f.submit(&e, &blobs(&r, 1)).await.is_err(), "R is a rival");
-    let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
     let held = e.list_branches(&f.id).await.expect("branches").len();
-    assert!(
-        f.submit(&e, &blobs(&r, 2)).await.is_err(),
-        "B promoted R past the retention bound"
-    );
+    f.submit(&e, &blobs(&r, 2))
+        .await
+        .expect("B promotes R whatever golden's quota holds");
     assert_eq!(
-        e.get_tip(&f.id)
-            .await
-            .expect("tip")
-            .expect("held")
-            .commit_id,
-        tip.commit_id,
-        "nothing moved"
+        e.get_tip(&f.id).await.expect("tip").expect("held").pr,
+        r.pr_tagged().expect("pr"),
+        "B is the tip"
     );
     assert_eq!(e.list_branches(&f.id).await.expect("branches").len(), held);
 }
