@@ -110,6 +110,10 @@ pub struct TipResponse {
 #[derive(Debug, Serialize)]
 pub struct BranchesResponse {
     pub branches: Vec<cyphr_storage::engine::BranchTip>,
+    /// The action-only bundles the canonical chain left out: a
+    /// `ds/create` was signed while each was pending and did not include
+    /// it (SPEC 4.8.2). Kept and served, never part of the chain's DR.
+    pub not_included: Vec<PatchActionsResponse>,
 }
 
 /// Response for `GET /evidence`.
@@ -136,7 +140,9 @@ pub struct PatchResponseBody {
     pub principal_id: String,
     pub entries: Vec<PatchEntryResponse>,
     /// Action-only bundles (SPEC 4.8.1), each preceding the commit at
-    /// `after`; a `ds/create` includes exactly the actions before it.
+    /// `after`: those the chain included and those still pending, never
+    /// one it left out (`/branches` serves those). A puller re-selects
+    /// among them by the same rule (SPEC 4.8.2), so it trusts no list.
     pub actions: Vec<PatchActionsResponse>,
 }
 
@@ -146,6 +152,20 @@ pub struct PatchActionsResponse {
     pub after: u64,
     /// Raw coz blobs as base64url strings.
     pub blobs: Vec<String>,
+}
+
+impl PatchActionsResponse {
+    fn of(a: cyphr_storage::engine::PatchActions) -> Self {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        Self {
+            after: a.after,
+            blobs: a
+                .blobs
+                .iter()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .collect(),
+        }
+    }
 }
 
 /// Response for `POST /push`.
@@ -327,7 +347,18 @@ pub async fn branches(
         .list_branches(&query.pr)
         .await
         .map_err(AppError::engine)?;
-    Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
+    let not_included = state
+        .engine
+        .not_included(&query.pr)
+        .await
+        .map_err(AppError::engine)?
+        .into_iter()
+        .map(PatchActionsResponse::of)
+        .collect();
+    Ok(Json(Envelope::unsigned(BranchesResponse {
+        branches,
+        not_included,
+    })))
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds
@@ -606,8 +637,6 @@ pub async fn patch(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     witness_sync(&state, &query.pr).await;
 
     // Retyped from a bare sequence to a content digest (Zami #140; S0.1: the
@@ -661,14 +690,7 @@ pub async fn patch(
     let actions = response
         .actions
         .into_iter()
-        .map(|a| PatchActionsResponse {
-            after: a.after,
-            blobs: a
-                .blobs
-                .iter()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
-                .collect(),
-        })
+        .map(PatchActionsResponse::of)
         .collect();
 
     let payload = PatchResponseBody {

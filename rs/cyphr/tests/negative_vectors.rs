@@ -318,11 +318,12 @@ async fn deleted_key_action_dated_after_delete_is_rejected() {
 
 // Practice: SPEC.md section 4.8.2 (a `ds/create` names DR = MR(DT)) with section 4.2 (`arrow`):
 // the delete commit includes DR as it stood, so history rewritten to hold a later forged action
-// cannot re-verify. Claim C3c. Mutation that turns this red: not checking a `ds/create`'s `id`
-// against the Data Tree it is applied to.
+// re-verifies only with that action left out of DR: the replay reaches the honest PR and the
+// forged action is marked not included. Claim C3c. Mutation that turns this red: not checking a
+// `ds/create`'s `id` against the Data Tree it is applied to, or including a bundle it did not name.
 // @docket: rv-state-recomputed :: scripts/docket-run rv-state-recomputed
 #[tokio::test]
-async fn forged_action_spliced_before_delete_commit_breaks_replay() {
+async fn forged_action_spliced_before_delete_commit_is_left_out() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let honest = principal_with_deleted_key(&golden, &key_a).await;
     let cozies = honest.commits().last().expect("delete commit").all_cozies();
@@ -347,6 +348,7 @@ async fn forged_action_spliced_before_delete_commit_breaks_replay() {
             .expect("coz applies");
     }
     scope.finalize().await.expect("honest replay finalizes");
+    let honest_pr = honest_replay.pr_tagged().expect("pr");
 
     // Replayer: the same genesis and genuine action, plus a forged action
     // dated inside key_a's active period, inserted before the delete commit.
@@ -366,15 +368,17 @@ async fn forged_action_spliced_before_delete_commit_breaks_replay() {
     .expect("key_a is still active at this position in the forged history");
 
     // The delete commit's `ds/create` named DR over the genuine action
-    // alone; over the spliced DT it names a state this history is not in.
+    // alone, so it includes that bundle and leaves the forged one out.
     let mut scope = p.begin_commit();
-    let r = cozies.iter().try_for_each(|vc| {
+    for vc in &cozies {
         let raw = vc.raw();
         let bytes = serde_json::to_vec(&raw.pay).expect("serialize pay");
-        scope.verify_and_apply(&bytes, &raw.sig, vc.czd().clone(), None)
-    });
-    assert!(
-        matches!(r, Err(Error::StateMismatch)),
-        "expected Err(StateMismatch), got {r:?}"
-    );
+        scope
+            .verify_and_apply(&bytes, &raw.sig, vc.czd().clone(), None)
+            .expect("coz applies");
+    }
+    scope.finalize().await.expect("the replay finalizes");
+    assert_eq!(p.pr_tagged().expect("pr"), honest_pr, "DR holds no forged action");
+    let left_out: Vec<bool> = p.actions().map(cyphr::Action::is_not_included).collect();
+    assert_eq!(left_out, [false, true], "only the forged action is left out");
 }

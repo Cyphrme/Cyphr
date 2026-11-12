@@ -283,23 +283,26 @@ alone.
 A replay recomputes the forward state the `arrow` commits to, the data root
 included, and a commit whose signed `arrow` was made over different state is
 rejected. A forged data action spliced into the history before a commit cannot
-be hidden by replaying the commit's own cozies: the commit's `ds/create` names
-DR = MR(DT) over the actions recorded before it (SPEC 4.8.2), and over a
-spliced DT that `id` names a state the history is not in.
+enter the commit's state: the commit's `ds/create` names DR = MR(DT) over the
+action bundles its signer included (SPEC 4.8.2), so a replay includes exactly
+the pending bundles whose root is that `id` and leaves the spliced one out. A
+`ds/create` whose `id` no subset of the pending bundles reaches is refused with
+`StateMismatch`, and one facing more pending bundles than the search tries is
+refused with `TooManyPendingBundles`.
 
 ```claim
 kind: requirement
 evaluator: test
 ```
 
-Backed by `forged_action_spliced_before_delete_commit_breaks_replay` in
+Backed by `forged_action_spliced_before_delete_commit_is_left_out` in
 `rs/cyphr/tests/negative_vectors.rs`. The scenario replays one real delete
 commit twice, once without and once with a forged action inserted before it;
 every coz verifies on its own, the honest replay (the control) finalizes, and
-the forged one fails with `StateMismatch` at the `ds/create`, before the
-`arrow` is reached. Rule 6 pins `pre`; this rule pins the forward state, DR
-included. Not checked by a named test: a root-by-root comparison of replayed
-SR, AR, KR, CR and PR with roots a server published.
+the forged one finalizes to the same PR with the forged action marked not
+included. Rule 6 pins `pre`; this rule pins the forward state, DR included.
+Not checked by a named test: a root-by-root comparison of replayed SR, AR, KR,
+CR and PR with roots a server published.
 
 ### Authorization and lifecycle
 
@@ -774,6 +777,7 @@ paths have no row; its source gives the reason for each.
 | `UnknownNonce`         | `rv-nonce-ledger`          |
 | `CozReuse`             | `rv-no-coz-reuse`          |
 | `StateMismatch`        | `rv-state-recomputed`      |
+| `TooManyPendingBundles` | `rv-state-recomputed`      |
 | `EmptyMultihash`       | `rv-internal-invariants`   |
 | `MissingVariant`       | `rv-internal-invariants`   |
 | `NoActiveKeys`         | `rv-key-set`               |

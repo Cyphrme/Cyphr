@@ -153,9 +153,9 @@ fn body(principal_id: &str, bundle: &WireBundle) -> String {
 /// Scenario, end to end over HTTP, one implicit principal (`golden`):
 /// 1. a commit carrying a data action and a `key/create` is accepted, and the tip's SR is still the
 ///    AR: the action is in DT, but DR is not in PR;
-/// 2. a `ds/create` naming a stale DR (DT before the bundle's own action) is refused with the typed
-///    `StateMismatch` (409, as for any `id` naming a state the principal is not in), and the tip
-///    does not move;
+/// 2. a `ds/create` naming a DR no set of the pending bundles reaches (it covers an action the
+///    server never received) is refused with the typed `StateMismatch` (409, as for any `id`
+///    naming a state the principal is not in), and the tip does not move;
 /// 3. a `ds/create` naming MR(DT) over both actions is accepted: the tip's PR is the one the client
 ///    computed, and its SR now differs from AR, so DR is in PR.
 ///
@@ -199,8 +199,16 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
         "a data action without ds/create must leave DR out of PR (SR is AR): {tip:?}"
     );
 
-    // 2. A ds/create whose id is not MR(DT) is refused.
-    let stale = data_tree_id(&p);
+    // 2. A ds/create whose id no pending bundles reach is refused. A DR
+    // over a strict subset of them would be a legitimate choice (the
+    // `ds/create` includes the bundles it names, SPEC 4.8.2), so this one
+    // covers an action the server never received.
+    let mut elsewhere = p.fork().await.expect("fork");
+    let unseen = action(&pool, T + 3, "never pushed");
+    elsewhere
+        .verify_and_record_action(&unseen.pay, &unseen.sig, unseen.czd.clone())
+        .expect("records");
+    let stale = data_tree_id(&elsewhere);
     let refused = WireBundle {
         actions: vec![action(&pool, T + 3, "two").wire()],
         txs: vec![vec![ds_create(&pool, &stale, T + 4).wire()]],

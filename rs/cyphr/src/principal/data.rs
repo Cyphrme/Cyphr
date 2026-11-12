@@ -39,6 +39,7 @@ impl PrincipalState {
         }
         core.included_czds.insert(action.czd.as_bytes().to_vec());
         action.recorded_after = core.auth.commits.len();
+        action.bundle = core.data.bundle_for_next();
         core.data.actions.push(action);
 
         Ok(&self.pr)
@@ -155,10 +156,23 @@ impl PrincipalState {
 }
 
 impl<S: eml::Storage> Principal<S> {
+    /// Record the actions of one accepted bundle: those recorded until
+    /// [`Self::close_action_bundle`] are one bundle, which a `ds/create`
+    /// includes or leaves out whole (SPEC 4.8.2).
+    pub(crate) fn open_action_bundle(&mut self) {
+        self.state.core_mut().data.open_bundle();
+    }
+
+    /// End the bundle [`Self::open_action_bundle`] opened.
+    pub(crate) fn close_action_bundle(&mut self) {
+        self.state.core_mut().data.close_bundle();
+    }
+
     /// Verify signature and record an action in one step.
     ///
     /// This is the primary method for processing incoming actions. An
     /// action enters DT only, in memory: nothing reaches the commit log.
+    /// Each call records its own bundle (SPEC 4.8.2).
     ///
     /// # Errors
     ///

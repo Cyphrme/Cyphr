@@ -24,7 +24,7 @@ use coz::Thumbprint;
 use indexmap::IndexMap;
 pub(crate) use proofs::{NodePath, NodePathHop};
 
-use crate::action::Action;
+use crate::action::{Action, Inclusion};
 use crate::commit::Commit;
 use crate::error::{Error, Result};
 use crate::key::Key;
@@ -82,38 +82,141 @@ pub struct AuthLedger {
     pub commits: Vec<Commit>,
 }
 
+/// The most pending action bundles one `ds/create` chooses among: the
+/// inclusion search tries every subset of them, so it is bounded.
+pub const MAX_PENDING_BUNDLES: usize = 8;
+
 /// Data ledger holding actions (Level 4+): the Data Tree (DT).
 ///
 /// A data action is recorded in DT at once, but DR enters the Principal
-/// Tree only when a `ds/create` includes it (SPEC 4.8.2). `included` marks
-/// how much of DT the last `ds/create` covered, so DR can be rehashed under
-/// a new algorithm set without taking in actions recorded since.
+/// Tree only when a `ds/create` includes it (SPEC 4.8.2). Actions are
+/// recorded in bundles, as they were accepted, and a `ds/create` includes
+/// the subset of pending bundles whose root is the `id` it signed: a chain
+/// may hold bundles its signer never saw (another device's, accepted at
+/// the same position), and those are left out, not refused.
 #[derive(Debug, Clone, Default)]
 pub struct DataLedger {
     /// All recorded actions, in recording order.
     pub actions: Vec<Action>,
-    /// How many of `actions` (a prefix, in recording order) the last
-    /// `ds/create` included into DR.
-    pub(crate) included: usize,
+    /// How many bundles have been opened: the next bundle's number.
+    bundles: usize,
+    /// The bundle actions recorded now join, while one is open; with none
+    /// open, each action is its own bundle.
+    open: Option<usize>,
 }
 
 impl DataLedger {
-    /// MR(DT) over every recorded action: the `id` a `ds/create` names.
+    /// MR over every action a `ds/create` applied now could name: the
+    /// included and the pending ones (all of DT but what was left out).
     pub(crate) fn tree_root(&self, algs: &[HashAlg]) -> Result<Option<DataRoot>> {
-        let actions: Vec<&Action> = self.actions.iter().collect();
+        let actions: Vec<&Action> = self
+            .actions
+            .iter()
+            .filter(|a| a.inclusion != Inclusion::NotIncluded)
+            .collect();
         crate::state::compute_dr(&actions, None, algs)
     }
 
-    /// The DR the Principal Tree holds: MR over the actions the last
-    /// `ds/create` included, `None` before any.
+    /// The DR the Principal Tree holds: MR over the actions `ds/create`s
+    /// included, `None` before any.
     pub(crate) fn included_root(&self, algs: &[HashAlg]) -> Result<Option<DataRoot>> {
-        let actions: Vec<&Action> = self.actions.iter().take(self.included).collect();
+        let actions: Vec<&Action> = self
+            .actions
+            .iter()
+            .filter(|a| a.inclusion == Inclusion::Included)
+            .collect();
         crate::state::compute_dr(&actions, None, algs)
     }
 
-    /// Include all of DT into DR.
-    pub(crate) fn include_all(&mut self) {
-        self.included = self.actions.len();
+    /// Group the actions recorded until [`Self::close_bundle`] into one
+    /// bundle.
+    pub(crate) fn open_bundle(&mut self) {
+        self.open = Some(self.bundles);
+        self.bundles += 1;
+    }
+
+    /// End the bundle [`Self::open_bundle`] opened.
+    pub(crate) fn close_bundle(&mut self) {
+        self.open = None;
+    }
+
+    /// The bundle an action recorded now belongs to.
+    pub(crate) fn bundle_for_next(&mut self) -> usize {
+        self.open.unwrap_or_else(|| {
+            self.bundles += 1;
+            self.bundles - 1
+        })
+    }
+
+    /// Apply a `ds/create` (SPEC 4.8.2): include the pending bundles whose
+    /// root, with what is already included, `names` accepts, and leave out
+    /// the other pending bundles. Returns the left-out actions' digests.
+    ///
+    /// Subsets are tried in one fixed order, so every replay of the same
+    /// bundles selects the same one: bundles in recording order, every
+    /// subset as a binary number with the first bundle its highest bit,
+    /// counted down from all of them. All-in comes first, so a chain that
+    /// holds only its signer's bundles costs one root.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TooManyPendingBundles`] past [`MAX_PENDING_BUNDLES`];
+    /// [`Error::StateMismatch`] when no subset matches.
+    pub(crate) fn include_matching(
+        &mut self,
+        algs: &[HashAlg],
+        names: impl Fn(&DataRoot) -> bool,
+    ) -> Result<Vec<coz::Czd>> {
+        let mut pending: Vec<usize> = self
+            .actions
+            .iter()
+            .filter(|a| a.inclusion == Inclusion::Pending)
+            .map(|a| a.bundle)
+            .collect();
+        pending.dedup();
+        if pending.len() > MAX_PENDING_BUNDLES {
+            return Err(Error::TooManyPendingBundles {
+                pending: pending.len(),
+                cap: MAX_PENDING_BUNDLES,
+            });
+        }
+        let n = pending.len();
+        let chosen = |mask: u32, bundle: usize| {
+            pending
+                .iter()
+                .position(|b| *b == bundle)
+                .is_some_and(|i| mask & (1 << (n - 1 - i)) != 0)
+        };
+        for mask in (0..1u32 << n).rev() {
+            let set: Vec<&Action> = self
+                .actions
+                .iter()
+                .filter(|a| match a.inclusion {
+                    Inclusion::Included => true,
+                    Inclusion::Pending => chosen(mask, a.bundle),
+                    Inclusion::NotIncluded => false,
+                })
+                .collect();
+            let Some(root) = crate::state::compute_dr(&set, None, algs)? else {
+                continue;
+            };
+            if !names(&root) {
+                continue;
+            }
+            let mut left_out = Vec::new();
+            for a in &mut self.actions {
+                if a.inclusion == Inclusion::Pending {
+                    if chosen(mask, a.bundle) {
+                        a.inclusion = Inclusion::Included;
+                    } else {
+                        a.inclusion = Inclusion::NotIncluded;
+                        left_out.push(a.czd.clone());
+                    }
+                }
+            }
+            return Ok(left_out);
+        }
+        Err(Error::StateMismatch)
     }
 }
 

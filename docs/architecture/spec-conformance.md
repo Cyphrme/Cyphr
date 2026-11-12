@@ -209,7 +209,7 @@ SPEC 2.3.2, line 248. Disposition: `covered`.
 - spec-text: 2. **Capability gate**: The principal must have the components required for an
 - tests:
   - `rs/cyphr-server/tests/data_root.rs::data_root_enters_pr_only_by_a_signed_ds_create`
-  - `rs/cyphr/tests/negative_vectors.rs::forged_action_spliced_before_delete_commit_breaks_replay`
+  - `rs/cyphr/tests/negative_vectors.rs::forged_action_spliced_before_delete_commit_is_left_out`
 - fails when: a data action reaches PR without DT commit inclusion: the core records it in DT, and only a signed `cyphr/ds/create` whose `id` is the computed DR = MR(DT) puts DR into PR (SPEC 4.8.2, row [sc-l689](#sc-l689)), so the test turns red if an action alone moves PR or a `ds/create` is accepted for a DT it does not name. "Principal genesis is required for commits" is §3.3's rule: a key-only principal's first commit is its genesis. The RT constraints in the sentence are Level 5.
 
 ```claim

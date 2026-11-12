@@ -1565,3 +1565,104 @@ async fn rival_rotations_are_error_at_every_peer() {
         assert!(errored(&state, &id).await, "a rebuild agrees: Error");
     }
 }
+
+// ========================================================================
+// RES-1c rule 3: a bundle a `ds/create` left out is kept and served, never
+// included and never deleted (SPEC 4.8.2, I1).
+// ========================================================================
+
+/// The `not_included` bundles `/branches` lists, as (after, blobs).
+async fn not_included_of(app: &axum::Router, id: &str) -> Vec<(u64, Vec<Vec<u8>>)> {
+    let (status, payload) = branches(app.clone(), id).await;
+    assert_eq!(status, StatusCode::OK, "{payload:?}");
+    payload["not_included"]
+        .as_array()
+        .expect("not_included array")
+        .iter()
+        .map(|a| {
+            let blobs = a["blobs"]
+                .as_array()
+                .expect("blobs")
+                .iter()
+                .map(|b| Base64UrlUnpadded::decode_vec(b.as_str().expect("b64")).expect("b64"))
+                .collect();
+            (a["after"].as_u64().expect("after"), blobs)
+        })
+        .collect()
+}
+
+/// Backs rule 3: the laptop pushes an action alone, then the data commit A
+/// including it; the phone's rival data commit B carries its own action
+/// inline and is retained; the phone resolves onto B with C (SPEC 15.8).
+/// The laptop's action is now left out of the canonical chain: `/branches`
+/// lists it as not included, `/patch` no longer carries it, the evidence
+/// item's displaced commit A carries it so the fork still proves offline,
+/// and a restart that rebuilds from the blobs serves the same.
+///
+/// Turns red if: the laptop's bundle is deleted, hidden from `/branches`,
+/// still carried by `/patch` as included, or the evidence or a rebuild
+/// loses it. End to end over `/push`, `/branches`, `/patch`, `/evidence`
+/// and a restart: yes.
+#[tokio::test]
+async fn not_included_bundle_is_kept_and_served() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let f = forked().await;
+    let (state, dir) = keyless_server();
+    let app = build_router(state.clone());
+    let n = cyphr_storage::export_commits(&f.shared)
+        .expect("export")
+        .len();
+    for i in 0..n {
+        let (status, body) = post_json(app.clone(), "/push", wire(&f.shared, i, &f.id)).await;
+        assert_eq!(status, StatusCode::CREATED, "shared commit {i}: {body:?}");
+    }
+
+    let mut laptop = f.shared.fork().await.expect("fork");
+    let (laptop_action, a) = data_commit(&mut laptop, &pool, "laptop", NOW + 10).await;
+    let (status, body) = post_json(
+        app.clone(),
+        "/push",
+        common::push_blobs(&f.id, std::slice::from_ref(&laptop_action)),
+    )
+    .await;
+    assert!(status.is_success(), "laptop action: {status} {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &a)).await;
+    assert_eq!(status, StatusCode::CREATED, "A: {body:?}");
+
+    let mut phone = f.shared.fork().await.expect("fork");
+    let (phone_action, mut b) = data_commit(&mut phone, &pool, "phone", NOW + 20).await;
+    b.actions = vec![phone_action];
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &b)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "B is retained: {body:?}");
+    assert!(not_included_of(&app, &f.id).await.is_empty(), "A includes it");
+
+    let mut c = phone.fork().await.expect("fork");
+    create_key(&mut c, &g, &kp(&pool, "carol"), NOW + 30).await;
+    let c_bundle =
+        cyphr::replay::WireBundle::of_commit(c.commits().last().expect("C")).expect("bundle");
+    let (status, body) = post_json(app.clone(), "/push", common::push_body(&f.id, &c_bundle)).await;
+    assert_eq!(status, StatusCode::CREATED, "C resolves onto B: {body:?}");
+    let tip = tip_payload(app.clone(), &f.id).await;
+    assert_eq!(tip["pr"], c.pr_tagged().expect("pr"), "{tip:?}");
+
+    let left_out = vec![(n as u64, vec![laptop_action.clone()])];
+    assert_eq!(not_included_of(&app, &f.id).await, left_out);
+    let (status, patch) = get_json(app.clone(), &format!("/patch?pr={}", enc(&f.id))).await;
+    assert_eq!(status, StatusCode::OK, "{patch:?}");
+    let carried = envelope_payload(&patch)["actions"].to_string();
+    let b64 = Base64UrlUnpadded::encode_string(&laptop_action);
+    assert!(!carried.contains(&b64), "/patch does not include it: {carried}");
+    let (status, body) = get_json(app.clone(), &format!("/evidence?pr={}", enc(&f.id))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let items = envelope_payload(&body)["items"].as_array().expect("items").clone();
+    assert_eq!(items.len(), 1, "{body:?}");
+    let rival: cyphr::replay::WireBundle =
+        serde_json::from_value(items[0]["b"].clone()).expect("rival bundle");
+    assert_eq!(rival.actions, vec![laptop_action.clone()], "A carries it");
+
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    assert_eq!(tip_payload(app.clone(), &f.id).await, tip, "the tip survives");
+    assert_eq!(not_included_of(&app, &f.id).await, left_out, "so does the mark");
+}

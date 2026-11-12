@@ -263,7 +263,7 @@ _claim_rv_arrow_chain=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
 )
 _claim_rv_state_recomputed=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors forged_action_spliced_before_delete_commit_breaks_replay -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors forged_action_spliced_before_delete_commit_is_left_out -- --exact"
 )
 _claim_rv_key_active_gate=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr --test negative_vectors deleted_key_action_dated_after_delete_is_rejected -- --exact"
