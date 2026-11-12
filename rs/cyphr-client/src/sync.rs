@@ -37,8 +37,7 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
 use crate::evidence::{
-    EvidenceFailure, EvidenceItem, names_pg, pg_names, verify_branch_extension,
-    verify_principal_fork_with_actions,
+    EvidenceFailure, names_pg, pg_names, verify_fork_items,
 };
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
@@ -935,120 +934,32 @@ async fn evidence<C: Connector>(
             .push(EvidenceFailure::Malformed("items is not an array"));
         return;
     };
-    let mut off_chain = Vec::new();
-    for item in items.iter().take(MAX_EVIDENCE_ITEMS) {
-        let verified = async {
-            let mut base = Principal::implicit(held.root.clone())
-                .await
-                .map_err(|source| EvidenceFailure::Replay { commit: 0, source })?;
-            base.set_clock(record.clock);
-            let proof = verify_principal_fork_with_actions(
-                item,
-                record.bare_id(),
-                base,
-                &held.entries,
-                &held.actions,
-            )
-            .await?;
-            let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
-            let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
-            let mine = held.ids.get(height).and_then(commit_id);
-            let rival = if mine.as_ref() == Some(&proof.commits[1]) {
-                a
-            } else {
-                b
-            };
-            Ok(ForkFinding {
-                height,
-                pre: proof.pre,
-                commits: proof.commits,
-                rival,
-            })
-        }
-        .await;
-        match verified {
-            Ok(finding) => forks.push(finding),
-            // Maybe an extension of a rival: tried once the rivals are known.
-            Err(EvidenceFailure::PreMismatch) => off_chain.push(item),
-            Err(failure) => outcome.rejected_evidence.push(failure),
-        }
-    }
-    extend_rivals(record, forks, off_chain, outcome, extensions).await;
-}
-
-/// Verify each item whose `pre` is off the record's chain as a commit
-/// extending a rival branch: the record's prefix below a fork, the rival,
-/// and the extensions verified so far. Repeated while one verifies, so a
-/// branch is followed up however its items are ordered; what never
-/// verifies is rejected as [`EvidenceFailure::PreMismatch`].
-async fn extend_rivals(
-    record: &Record,
-    forks: &[ForkFinding],
-    mut pending: Vec<&Value>,
-    outcome: &mut PeerOutcome,
-    extensions: &mut Vec<WireBundle>,
-) {
-    let Some(held) = &record.held else { return };
-    // Each branch: the fork position it leaves the record at, and its
-    // entries from genesis.
-    let mut lines: Vec<(usize, Vec<PatchEntry>)> = forks
-        .iter()
-        .filter_map(|f| {
-            let mut line = held.entries.get(..f.height)?.to_vec();
-            line.push(PatchEntry {
-                sequence: f.height as u64,
-                bundle: Ok(f.rival.clone()),
-            });
-            Some((f.height, line))
-        })
-        .collect();
-    let mut progress = true;
-    while progress && !pending.is_empty() {
-        progress = false;
-        let mut still = Vec::new();
-        for item in pending {
-            let mut verified = None;
-            for (fork_at, line) in &lines {
-                // The holder's actions below the fork; the branch brings
-                // its own from there on.
-                let actions: Vec<ActionBundle> = held
-                    .actions
-                    .iter()
-                    .filter(|a| a.after < *fork_at as u64)
-                    .cloned()
-                    .collect();
-                let Ok(mut base) = Principal::implicit(held.root.clone()).await else {
-                    continue;
-                };
-                base.set_clock(record.clock);
-                if let Ok((bundle, _)) =
-                    verify_branch_extension(item, record.bare_id(), base, line, &actions).await
-                {
-                    let mut next = line.clone();
-                    next.push(PatchEntry {
-                        sequence: line.len() as u64,
-                        bundle: Ok(bundle.clone()),
-                    });
-                    verified = Some((bundle, (*fork_at, next)));
-                    break;
-                }
-            }
-            match verified {
-                Some((bundle, next)) => {
-                    if !extensions.contains(&bundle) {
-                        extensions.push(bundle);
-                    }
-                    lines.push(next);
-                    progress = true;
-                },
-                None => still.push(item),
-            }
-        }
-        pending = still;
-    }
-    outcome
-        .rejected_evidence
-        .extend(pending.iter().map(|_| EvidenceFailure::PreMismatch));
+    let Ok(mut base) = Principal::implicit(held.root.clone()).await else {
+        outcome.rejected_evidence.push(EvidenceFailure::Malformed(
+            "the record's genesis does not open a principal",
+        ));
+        return;
+    };
+    base.set_clock(record.clock);
+    let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
+    let chain_ids: Vec<Option<String>> = held.ids.iter().map(commit_id).collect();
+    let set = verify_fork_items(
+        &items,
+        record.bare_id(),
+        &base,
+        &held.entries,
+        &held.actions,
+        &chain_ids,
+    )
+    .await;
+    forks.extend(set.forks.into_iter().map(|(proof, rival)| ForkFinding {
+        height: usize::try_from(proof.height).unwrap_or(usize::MAX),
+        pre: proof.pre,
+        commits: proof.commits,
+        rival,
+    }));
+    extensions.extend(set.extensions.into_iter().map(|e| e.bundle));
+    outcome.rejected_evidence.extend(set.rejected);
 }
 
 /// Fetch the naked revokes `connector` holds for `tmbs`, as served and
