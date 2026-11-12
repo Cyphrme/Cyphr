@@ -241,15 +241,17 @@ impl<'a> Round<'a> {
                 opener_of(first).map_err(|e| Error::InvalidArgument(e.to_owned()))?,
             ),
         };
-        for bundle in bundles {
+        // One submission, so a commit its successors bury is admitted.
+        for outcome in self
+            .store
+            .submit_commits(&self.principal_id, Some(genesis), bundles)
+            .await
+        {
             if let Err(
                 fault @ (EngineError::BlobStore(_)
                 | EngineError::Indexer(_)
                 | EngineError::Storage(_)),
-            ) = self
-                .store
-                .submit_commit(&self.principal_id, Some(genesis.clone()), bundle)
-                .await
+            ) = outcome
             {
                 return Err(fault.into());
             }
