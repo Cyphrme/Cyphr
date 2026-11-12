@@ -243,18 +243,39 @@ struct Frame {
     shape: Shape,
     keys: Vec<KeyEntry>,
     signed: Signed,
+    removes: Vec<String>,
     seen: Option<i64>,
 }
 
-/// Each coz's signer (`tmb`) and `now`: what a revocation judges a commit
-/// by (SPEC 6.4).
-type Signed = Vec<(String, i64)>;
+/// The thumbprints that signed a commit's cozies: what a revocation or a
+/// key removal judges a rival by.
+type Signed = Vec<String>;
 
 fn signed_of(commit: &IndexableCommit) -> Signed {
+    commit.cozies.iter().map(|c| c.tmb.clone()).collect()
+}
+
+/// The keys a commit removes from its principal (SPEC 6.2-6.4): the `id`
+/// of a `key/delete`, and the signer of a `key/revoke` or of a
+/// `key/replace` (which swaps out its own signer).
+fn removes_of(commit: &IndexableCommit) -> Vec<String> {
+    use cyphr::parsed_coz::typ;
+
     commit
         .cozies
         .iter()
-        .map(|c| (c.tmb.clone(), c.now))
+        .filter_map(|c| {
+            if typ::has_suffix(&c.typ, typ::KEY_DELETE) {
+                let pay: serde_json::Value = serde_json::from_str(c.payload.as_deref()?).ok()?;
+                pay["id"].as_str().map(str::to_string)
+            } else if typ::has_suffix(&c.typ, typ::KEY_REVOKE)
+                || typ::has_suffix(&c.typ, typ::KEY_REPLACE)
+            {
+                Some(c.tmb.clone())
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -1049,6 +1070,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     shape: shape.clone(),
                     keys: key_entries(&commit.keys),
                     signed: signed_of(commit),
+                    removes: removes_of(commit),
                     seen,
                 },
             );
@@ -1409,10 +1431,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .map_err(|e| e.to_string())
                     .and_then(|evidence| verify_revoke(&evidence));
                 match verified {
-                    Ok((tmb, rvk)) => {
-                        let earliest = revoked.entry(tmb).or_insert(rvk);
-                        *earliest = (*earliest).min(rvk);
-                    },
+                    Ok((tmb, rvk)) => keep_earliest(&mut revoked, tmb, (rvk, hash)),
                     Err(why) => quarantined.push(QuarantinedManifest {
                         manifest: hash,
                         principal_id: None,
@@ -1684,15 +1703,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let branches = self
             .classify_branches(branch_manifests, &held, &mut quarantined)
             .await?;
-        let forked: Vec<String> = branches.keys().cloned().collect();
         *self.branches.lock().unwrap_or_else(|p| p.into_inner()) = branches;
         *self.revoked.lock().unwrap_or_else(|p| p.into_inner()) = revoked;
-        // The walk above chooses by the blobs' shape alone; revocations then
-        // move a chain onto the branch they leave standing, by the same
-        // rule the live engine applies when a revoke arrives.
-        for principal_id in forked {
-            self.settle(&principal_id).await?;
-        }
 
         quarantined.sort_by_key(|q| *q.manifest.as_bytes());
         Ok(RebuildReport {
@@ -2458,7 +2470,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let errored = in_error(&held, &revoked).then_some((held.as_slice(), &revoked));
 
         let build = match Self::build_commit(&mut principal, bundle, principal_id, next_seq).await {
-            Ok(Some(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit)) => {
+            Ok(Some(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit, true)) => {
                 // Refused, and kept as evidence: it verifies on the chain.
                 self.keep_evidence(bundle, build.commit).await;
                 return Err(EngineError::Errored {
@@ -2905,7 +2917,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
             // In Error, an extension that leaves it standing is kept, not
             // promoted (SPEC 15.5).
-            if errored.is_some_and(|e| stays_errored(e, &next_commit)) {
+            if errored.is_some_and(|e| stays_errored(e, &next_commit, false)) {
                 self.keep_evidence(bundle, next_commit).await;
                 return Err(EngineError::Errored {
                     principal_id: principal_id.to_string(),
@@ -2950,6 +2962,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             keys,
             signed,
             seen: displaced_seen,
+            ..
         } = self.frame(principal_id, &displaced).ok_or_else(|| {
             EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
                 "index commit {} of {principal_id} has no commit manifest",
@@ -3015,259 +3028,47 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// Record a self-signed naked revoke (SPEC 6.4) as a revoke record in
-    /// the blob store, and settle every forked principal it may resolve
-    /// ([`Self::settle`]). `evidence` is the `{pay, sig, key}` envelope the
+    /// the blob store. `evidence` is the `{pay, sig, key}` envelope the
     /// revoke arrived in; it is verified here, since a rebuild trusts only
-    /// what the blobs prove. A revoke is never retroactive: it invalidates
-    /// the key's cozies dated at or after its `rvk`, nothing before.
+    /// what the blobs prove.
     ///
-    /// Key death is global by thumbprint, so the record names no principal.
+    /// A revoke never changes a served chain: it is prospective for the
+    /// commits a principal's chain already holds, and it takes every rival
+    /// its key signed out of the fork ([`participants`]). Key death is
+    /// global by thumbprint, so the record names no principal.
+    ///
+    /// One record per thumbprint: a revoke is stored only if it is
+    /// strictly earlier, by `(rvk, record digest)`, than the one held, so
+    /// which record stands is decided by the records and not by arrival
+    /// order. A key holder can still add records by lowering `rvk` or the
+    /// digest; bounding that fully needs blob deletion, which
+    /// [`BlobStore`] does not offer.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
         let (tmb, rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         let mut bytes = REVOKE_RECORD_PREFIX.to_vec();
         serde_json::to_writer(&mut bytes, evidence)
             .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
+        let record = (
+            rvk,
+            Blake3Hash::from_bytes(*blake3::hash(&bytes).as_bytes()),
+        );
+        let held = self
+            .revoked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&tmb)
+            .copied();
+        if held.is_some_and(|h| earlier(h, record)) || held == Some(record) {
+            return Ok(());
+        }
         self.blob_store.put(&bytes).await?;
-        {
-            let mut revoked = self.revoked.lock().unwrap_or_else(|p| p.into_inner());
-            let earliest = revoked.entry(tmb).or_insert(rvk);
-            *earliest = (*earliest).min(rvk);
-        }
-        // Only a forked principal has another branch to settle on.
-        let forked: Vec<String> = self
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .cloned()
-            .collect();
-        for principal_id in forked {
-            let lock = self.principal_lock(&principal_id);
-            let _serialize_writes = lock.lock().await;
-            self.settle(&principal_id).await?;
-        }
+        keep_earliest(
+            &mut self.revoked.lock().unwrap_or_else(|p| p.into_inner()),
+            tmb,
+            record,
+        );
         Ok(())
-    }
-
-    /// Serve the chain the protocol selects, once revocations have spoken
-    /// (SPEC 15.8: witnesses "treat the selected branch as canonical").
-    ///
-    /// Not in Error, the selected chain is unique: from genesis, at each
-    /// position take the valid commit over the previous one's PR, or of
-    /// several the one a valid commit extends. When it parts from the
-    /// indexed chain at a position where it holds a commit, the indexed
-    /// chain is replaced from there by the selected one ([`Self::repoint`]).
-    /// Selection stops at the indexed chain's length, so a commit refused
-    /// in Error and kept past the head is never admitted by it, and it
-    /// never truncates a chain to a shorter valid prefix that no other
-    /// branch replaces.
-    ///
-    /// Without a revocation an Active principal's indexed chain already is
-    /// the selected one, so this changes nothing. Caller holds the
-    /// principal's write lock, or is the rebuild.
-    async fn settle(&self, principal_id: &str) -> Result<(), EngineError> {
-        let held = self.held(principal_id).await?;
-        let revoked = self.revoked();
-        if in_error(&held, &revoked) {
-            return Ok(());
-        }
-        let valid = valid_ids(&held, &revoked);
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, None, None)
-            .await?;
-        let valid_held: Vec<&Held> = held.iter().filter(|h| valid.contains(&h.id)).collect();
-        let mut selected: Vec<&Held> = Vec::new();
-        let mut pre: Option<&str> = None;
-        for at in 0..chain.len() as u64 {
-            let mut over: Vec<&Held> = valid_held
-                .iter()
-                .copied()
-                .filter(|h| h.sequence == at && h.pre.as_deref() == pre)
-                .collect();
-            over.dedup_by(|a, b| a.id == b.id);
-            let extended = |h: &Held| {
-                valid_held
-                    .iter()
-                    .any(|c| c.sequence == at + 1 && c.pre.as_deref() == Some(h.pr.as_str()))
-            };
-            let pick = match over.as_slice() {
-                [only] => Some(*only),
-                several => several.iter().copied().find(|h| extended(h)),
-            };
-            let Some(pick) = pick else { break };
-            selected.push(pick);
-            pre = Some(pick.pr.as_str());
-        }
-        let Some(from) = selected
-            .iter()
-            .zip(&chain)
-            .position(|(s, c)| s.id != c.commit_id)
-        else {
-            return Ok(());
-        };
-        let ids: Vec<&str> = selected[from..].iter().map(|h| h.id.as_str()).collect();
-        self.repoint(principal_id, from as u64, &ids).await
-    }
-
-    /// Replace `principal_id`'s indexed chain from position `from` by the
-    /// retained branch commits `ids` (in order), retaining the commits
-    /// they displace. Each newly canonical commit is re-verified by the
-    /// admission path ([`Self::build_commit`]) over the chain below it, and
-    /// recorded as a commit manifest before the index moves (I1 order), so
-    /// a rebuild's walk finds it.
-    async fn repoint(
-        &self,
-        principal_id: &str,
-        from: u64,
-        ids: &[&str],
-    ) -> Result<(), EngineError> {
-        use crate::import::replay_commit;
-
-        let kept = self
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .cloned()
-            .unwrap_or_default();
-        let survivors: Vec<Retained> = ids
-            .iter()
-            .enumerate()
-            .map(|(k, id)| {
-                kept.iter()
-                    .find(|r| r.tip.tip == *id && r.tip.sequence == from + k as u64)
-                    .cloned()
-                    .ok_or_else(|| {
-                        EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
-                            "selected commit {id} of {principal_id} is not a retained branch"
-                        )))
-                    })
-            })
-            .collect::<Result<_, _>>()?;
-
-        let genesis = self.genesis_of_stored(principal_id).await?;
-        let entries = self.stored_entries(principal_id, None).await?;
-        let actions = self.action_history(principal_id).await?;
-        let mut principal =
-            Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
-        let below = usize::try_from(from).unwrap_or(usize::MAX);
-        for (position, entry) in entries.iter().take(below).enumerate() {
-            replay_actions_at(&mut principal, &actions, position as u64).await?;
-            replay_commit(&mut principal, entry, position).await?;
-        }
-        let mut built = Vec::with_capacity(survivors.len());
-        for (k, survivor) in survivors.iter().enumerate() {
-            let at = from + k as u64;
-            let bundle = survivor
-                .shape
-                .group(
-                    self.read_blobs(&survivor.blobs).await?,
-                    survivor.keys.clone(),
-                )
-                .ok_or_else(|| {
-                    EngineError::MalformedBlob(
-                        "a retained branch's shape groups a different number of blobs".into(),
-                    )
-                })?;
-            // Over the actions accepted at its position, then without them,
-            // as the branch was verified when kept ([`Self::retain_rival`]).
-            let fork_point = principal.fork().await?;
-            replay_actions_at(&mut principal, &actions, at).await?;
-            let mut next = None;
-            for mut base in [principal, fork_point] {
-                let Ok(Some(StagedBuild { commit, staged })) =
-                    Self::build_commit(&mut base, &bundle, principal_id, at).await
-                else {
-                    continue;
-                };
-                if staged.commit().await.is_err() {
-                    continue;
-                }
-                next = Some((base, commit));
-                break;
-            }
-            let Some((base, commit)) = next else {
-                return Err(EngineError::Indexer(
-                    crate::index::IndexerError::Consistency(format!(
-                        "retained commit {} of {principal_id} no longer verifies",
-                        survivor.tip.tip
-                    )),
-                ));
-            };
-            principal = base;
-            built.push((bundle, commit));
-        }
-
-        let displaced_refs = self
-            .indexer
-            .get_commit_chain(principal_id, Some(from), None)
-            .await?;
-        let mut displaced = Vec::with_capacity(displaced_refs.len());
-        for c in &displaced_refs {
-            displaced.push(self.displaced(principal_id, c).await?);
-        }
-        let commits: Vec<&IndexableCommit> = built.iter().map(|(_, c)| c).collect();
-        let alias_locks = self.alias_locks(&commits);
-        let mut _alias_guards = Vec::with_capacity(alias_locks.len());
-        for lock in &alias_locks {
-            _alias_guards.push(lock.lock().await);
-        }
-        let mut stored = Vec::with_capacity(built.len());
-        for ((bundle, commit), survivor) in built.iter().zip(&survivors) {
-            let (commit, _) = self
-                .store_blobs_and_manifest(bundle, commit.clone(), survivor.tip.seen)
-                .await?;
-            stored.push(commit);
-        }
-        self.indexer
-            .replace_chain_from(principal_id, from, &stored, &DeriveToken::new())
-            .await?;
-        for (commit, survivor) in stored.iter().zip(&survivors) {
-            self.record_frame(commit, &survivor.shape, survivor.tip.seen);
-        }
-        let mut kept = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        let of_principal = kept.entry(principal_id.to_string()).or_default();
-        of_principal.retain(|r| {
-            !survivors
-                .iter()
-                .any(|s| s.tip.tip == r.tip.tip && s.tip.sequence == r.tip.sequence)
-        });
-        of_principal.extend(displaced);
-        Ok(())
-    }
-
-    /// The canonical commit `c`, as the branch it becomes when the chain
-    /// is re-pointed past it.
-    async fn displaced(&self, principal_id: &str, c: &CommitRef) -> Result<Retained, EngineError> {
-        let bundle = self.commit_bundle(principal_id, c).await?;
-        let Frame {
-            shape,
-            keys,
-            signed,
-            seen,
-        } = self.frame(principal_id, c).ok_or_else(|| {
-            EngineError::Indexer(crate::index::IndexerError::Consistency(format!(
-                "index commit {} of {principal_id} has no commit manifest",
-                c.commit_id
-            )))
-        })?;
-        Ok(Retained {
-            pr: c.pr.clone(),
-            tip: BranchTip {
-                tip: c.commit_id.clone(),
-                pre: c.pre.clone(),
-                sequence: c.sequence,
-                canonical: false,
-                seen,
-            },
-            signer: bundle_signer(&bundle)?,
-            blobs: c.blob_hashes.clone(),
-            shape,
-            keys,
-            signed,
-        })
     }
 
     /// Keep a commit refused because the principal is in Error, as
@@ -3542,6 +3343,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pre: c.pre,
                 pr: c.pr,
                 signed: frame.signed,
+                canonical: true,
+                removes: frame.removes,
             });
         }
         if let Some(kept) = self
@@ -3556,6 +3359,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 pre: r.tip.pre.clone(),
                 pr: r.pr.clone(),
                 signed: r.signed.clone(),
+                canonical: false,
+                removes: Vec::new(),
             }));
         }
         Ok(held)
@@ -3822,57 +3627,85 @@ struct Held {
     pre: Option<String>,
     pr: String,
     signed: Signed,
+    /// Whether it is on the canonical chain.
+    canonical: bool,
+    /// The keys it removes ([`removes_of`]); counted for canonical commits.
+    removes: Vec<String>,
 }
 
 impl Held {
-    fn of(commit: &IndexableCommit) -> Self {
+    fn of(commit: &IndexableCommit, canonical: bool) -> Self {
         Self {
             sequence: commit.sequence,
             id: commit.commit_ids.first().cloned().unwrap_or_default(),
             pre: commit.pre.clone(),
             pr: commit.prs.first().cloned().unwrap_or_default(),
             signed: signed_of(commit),
+            canonical,
+            removes: removes_of(commit),
         }
     }
 }
 
-/// Revocations in force: each revoked key's thumbprint (base64url) and the
-/// earliest `rvk` it declared.
-type Revoked = HashMap<String, i64>;
+/// The revoke record standing for each revoked thumbprint (base64url): its
+/// `rvk` and its record digest, the earliest by that pair.
+type Revoked = HashMap<String, (i64, Blake3Hash)>;
 
-/// The ids of the held commits that are valid: none of their cozies is
-/// signed by a revoked key at or after its `rvk` (SPEC 6.4: a key is valid
-/// for a `now` before its `rvk`, so a revocation is never retroactive), and
-/// the commit they extend is valid. A commit over an invalid one is invalid
-/// whoever signed it, since its state includes the invalid one.
-fn valid_ids(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<String> {
+/// Whether revoke record `a` is earlier than `b`: lower `rvk`, then lower
+/// digest.
+fn earlier(a: (i64, Blake3Hash), b: (i64, Blake3Hash)) -> bool {
+    (a.0, *a.1.as_bytes()) < (b.0, *b.1.as_bytes())
+}
+
+/// Keep `record` for `tmb` if it is earlier than the one held.
+fn keep_earliest(revoked: &mut Revoked, tmb: String, record: (i64, Blake3Hash)) {
+    let standing = revoked.entry(tmb).or_insert(record);
+    if earlier(record, *standing) {
+        *standing = record;
+    }
+}
+
+/// The ids of the held commits that take part in a fork:
+///
+/// * every canonical commit: a revoke is prospective for the chain a witness already serves, and
+///   never makes it untrusted (SPEC 6.4; nrd: "You cant make all sigs retroactively invalid or that
+///   would mark legitimate commits as untrusted too");
+/// * a rival none of whose cozies is signed by a naked-revoked key (whatever its `now` or the
+///   `rvk`) or by a key the canonical chain removed ([`removes_of`]), and whose parent takes part.
+///
+/// Every other rival is evidence only: kept and served, never counted.
+fn participants(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<String> {
+    let removed: std::collections::HashSet<&str> = held
+        .iter()
+        .filter(|h| h.canonical)
+        .flat_map(|h| h.removes.iter().map(String::as_str))
+        .chain(revoked.keys().map(String::as_str))
+        .collect();
     let mut order: Vec<&Held> = held.iter().collect();
     order.sort_by_key(|h| h.sequence);
-    let mut valid: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut valid_prs: std::collections::HashSet<(u64, &str)> = std::collections::HashSet::new();
+    let mut taking: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut taking_prs: std::collections::HashSet<(u64, &str)> = std::collections::HashSet::new();
     for h in order {
-        let signed_ok = h
-            .signed
-            .iter()
-            .all(|(tmb, now)| revoked.get(tmb).is_none_or(|rvk| now < rvk));
         let parent_ok = match (&h.pre, h.sequence.checked_sub(1)) {
-            (Some(pre), Some(below)) => valid_prs.contains(&(below, pre.as_str())),
+            (Some(pre), Some(below)) => taking_prs.contains(&(below, pre.as_str())),
             _ => true,
         };
-        if signed_ok && parent_ok {
-            valid.insert(h.id.clone());
-            valid_prs.insert((h.sequence, h.pr.as_str()));
+        let signers_ok = h.signed.iter().all(|tmb| !removed.contains(tmb.as_str()));
+        if h.canonical || (signers_ok && parent_ok) {
+            taking.insert(h.id.clone());
+            taking_prs.insert((h.sequence, h.pr.as_str()));
         }
     }
-    valid
+    taking
 }
 
 /// Whether a principal is in Error (SPEC 15.5, 15.6, 15.8): some position
-/// holds two or more valid commits over one `pre`, and the number of them
-/// a valid commit extends is not exactly one. A plain fork (none extended)
-/// is Error until a commit extends exactly one tip; a fork whose branches
-/// are both extended is Error until a revocation invalidates one of them
-/// (SPEC 15.7.1). Validity is [`valid_ids`].
+/// holds two or more participating commits ([`participants`]) over one
+/// `pre`, and the number of them a participating commit extends is not
+/// exactly one. A plain fork (none extended) is Error until a commit
+/// extends exactly one tip; a fork whose branches are both extended is
+/// Error until a revocation or a key removal takes one out of the fork
+/// (SPEC 15.7.1).
 ///
 /// A pure function of the held commits and the revocations, so a live
 /// engine and one rebuilt from the blobs answer alike (I1), and so whether
@@ -3881,9 +3714,9 @@ fn valid_ids(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<Stri
 fn in_error(held: &[Held], revoked: &Revoked) -> bool {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let valid = valid_ids(held, revoked);
-    let held: Vec<&Held> = held.iter().filter(|h| valid.contains(&h.id)).collect();
-    // The distinct valid commits (id, PR) over each (position, pre).
+    let taking = participants(held, revoked);
+    let held: Vec<&Held> = held.iter().filter(|h| taking.contains(&h.id)).collect();
+    // The distinct participating commits (id, PR) over each (position, pre).
     type Over<'a> = (u64, Option<&'a str>);
     let mut rivals: BTreeMap<Over<'_>, BTreeSet<(&str, &str)>> = BTreeMap::new();
     for h in &held {
@@ -3906,10 +3739,17 @@ fn in_error(held: &[Held], revoked: &Revoked) -> bool {
 }
 
 /// Whether the principal `(held, revoked)` describes, in Error, stays in
-/// Error once `candidate` is held too.
-fn stays_errored((held, revoked): (&[Held], &Revoked), candidate: &IndexableCommit) -> bool {
+/// Error once `candidate` is held too: as the new canonical head when
+/// `canonical` (so a `key/delete` or `key/revoke` it carries takes the
+/// removed key's rivals out of the fork; provisional, pending the spec
+/// author), else as a commit of its branch.
+fn stays_errored(
+    (held, revoked): (&[Held], &Revoked),
+    candidate: &IndexableCommit,
+    canonical: bool,
+) -> bool {
     let mut after = held.to_vec();
-    after.push(Held::of(candidate));
+    after.push(Held::of(candidate, canonical));
     in_error(&after, revoked)
 }
 
