@@ -392,8 +392,7 @@ pub async fn verify_fork_items(
     let mut off_chain = Vec::new();
     for item in items {
         let verified = async {
-            let proof =
-                verify_principal_fork(item, pg, fork_of(base, 0).await?, entries).await?;
+            let proof = verify_principal_fork(item, pg, fork_of(base, 0).await?, entries).await?;
             let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
             let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
             let mine = chain_ids.get(height).cloned().flatten();

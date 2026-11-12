@@ -364,14 +364,7 @@ pub async fn verify_evidence_set(
     }
     let genesis = chain.genesis.as_ref().ok_or("no chain to replay from")?;
     let chain_ids: Vec<Option<String>> = chain.commit_ids.iter().cloned().map(Some).collect();
-    let set = verify_fork_items(
-        &forks,
-        requested,
-        genesis,
-        &chain.entries,
-        &chain_ids,
-    )
-    .await;
+    let set = verify_fork_items(&forks, requested, genesis, &chain.entries, &chain_ids).await;
     if let Some(why) = set.rejected.first() {
         return Err(why.to_string());
     }

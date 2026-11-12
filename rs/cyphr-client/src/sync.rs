@@ -605,9 +605,9 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
 
 /// What a holder that keeps branches is handed after `report`, in order:
 /// each fork's rival, the verified commits extending a rival, then the
-/// chain of each peer that forked, past the lowest fork position. A peer on the other side of a fork may have
-/// extended its branch or resolved the fork; only its commits past the fork
-/// show which.
+/// chain of each peer that forked, past the lowest fork position. A peer
+/// on the other side of a fork may have extended its branch or resolved
+/// the fork; only its commits past the fork show which.
 ///
 /// Nothing here is verified past what the pull verified: the holder admits
 /// or retains each commit only if it verifies, and refuses what it holds.
@@ -921,14 +921,7 @@ async fn evidence<C: Connector>(
     base.set_clock(record.clock);
     let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
     let chain_ids: Vec<Option<String>> = held.ids.iter().map(commit_id).collect();
-    let set = verify_fork_items(
-        &items,
-        record.bare_id(),
-        &base,
-        &held.entries,
-        &chain_ids,
-    )
-    .await;
+    let set = verify_fork_items(&items, record.bare_id(), &base, &held.entries, &chain_ids).await;
     forks.extend(set.forks.into_iter().map(|(proof, rival)| ForkFinding {
         height: usize::try_from(proof.height).unwrap_or(usize::MAX),
         pre: proof.pre,
