@@ -8,7 +8,6 @@
 //
 // Required capabilities: transport,cli-network,data-commit.
 
-use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
