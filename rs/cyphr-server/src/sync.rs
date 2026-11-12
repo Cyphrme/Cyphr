@@ -458,8 +458,8 @@ mod tests {
     /// The integration-level sibling this pinned before
     /// (`witness_accepts_genesis_report_at_ingestion`) could not hold: no
     /// push path on this authority produces a witness-resulting tip whose
-    /// OWN `cr` is empty (`finalize_commit` writes a real CR on every
-    /// finalized commit), so a wire fixture built by doctoring the *report*
+    /// OWN `cr` is empty (committing a staged commit writes a real CR on
+    /// every finalized commit), so a wire fixture built by doctoring the *report*
     /// alone was fixture-vs-entries incoherent -- a `cr`-mismatch is the
     /// entries' true, correct verdict. This unit test asserts the same
     /// property directly against the pure comparison, with no fixture
