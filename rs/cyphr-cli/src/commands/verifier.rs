@@ -31,7 +31,7 @@ use super::common::{
     parse_store, raw_chain, store_path,
 };
 use crate::choices::Choices;
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::net::PeerError;
 use crate::state::{
     HeldFork, HeldRevoke, PeerSeen, PrincipalState, Resolution, VerifierState, path_for,
@@ -149,7 +149,7 @@ impl<'a> Round<'a> {
         offered_first: Option<&WireBundle>,
     ) -> crate::Result<Self> {
         let store = parse_store(cli)?;
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
+        let keystore = super::common::open_backend(cli)?;
         let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
         let wire = bare_digest(&principal_id).to_owned();
         let local = block_on(raw_chain(&store, &principal_id))??;

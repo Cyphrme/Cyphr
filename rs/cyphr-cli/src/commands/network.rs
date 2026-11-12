@@ -15,7 +15,7 @@ use super::common::{
     local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
     submit_history,
 };
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
 
@@ -46,7 +46,7 @@ fn wire_id(identity: &str) -> crate::Result<String> {
 /// what it holds, which would remove the resend and with it the question.
 pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
@@ -115,7 +115,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 /// `cyphr fetch`: verify and store the peer's commits the local store lacks.
 pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let genesis = local_genesis(&keystore, identity)?;
@@ -306,7 +306,7 @@ fn intents(commit: &RawCommit) -> crate::Result<(Vec<Intent>, String)> {
 /// replay therefore builds a fresh store, copies every other principal into
 /// it unchanged, and swaps it in; the old store is kept as a backup.
 pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
     let genesis = local_genesis(&keystore, identity)?

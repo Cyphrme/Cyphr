@@ -11,7 +11,6 @@ use super::common::{
     Placed, block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
     parse_principal_genesis, parse_store, place, save_principal_to_engine,
 };
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
@@ -68,7 +67,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
 
 /// Run the import command.
 pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
 
     // Read commits from JSONL file

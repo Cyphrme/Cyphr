@@ -6,7 +6,7 @@ use super::common::{
     CliPrincipal, block_on, current_timestamp, generate_key, load_key_from_keystore,
     load_principal_from_engine, parse_store, save_principal_to_engine,
 };
-use crate::keystore::{JsonKeyStore, KeyBackend};
+use crate::keystore::KeyBackend;
 use crate::{Cli, KeyCommands, OutputFormat};
 
 /// Run a key subcommand.
@@ -29,7 +29,7 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
 
 /// Generate a new keypair and store it in the keystore.
 fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
-    let mut keystore = JsonKeyStore::open(&cli.keystore)?;
+    let mut keystore = super::common::open_backend(cli)?;
 
     let (tmb, _key) = generate_key(&mut keystore, algo, tag)?;
 
@@ -63,7 +63,7 @@ fn add(
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
-    let mut keystore = JsonKeyStore::open(&cli.keystore)?;
+    let mut keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
 
@@ -121,7 +121,7 @@ fn revoke(
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
 
@@ -250,7 +250,7 @@ fn list(cli: &Cli, identity: Option<&str>) -> crate::Result<()> {
 
 /// List all keys in the keystore.
 fn list_keystore(cli: &Cli) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let keys = keystore.list()?;
 
     if keys.is_empty() {
@@ -289,7 +289,7 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
 
 /// List keys for an identity.
 fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
