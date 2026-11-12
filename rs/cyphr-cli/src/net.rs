@@ -33,6 +33,8 @@ pub enum PeerError {
     Refused {
         /// The peer's base URL.
         peer: String,
+        /// The HTTP status: 422, or 401/403 for a key the peer will not take.
+        status: u16,
         /// The peer's own error text.
         message: String,
     },
@@ -96,7 +98,8 @@ impl PeerError {
         match self {
             Self::Unreachable { .. } => "unreachable",
             Self::CleartextRefused { .. } => "other",
-            Self::Refused { .. } => "protocol",
+            Self::Refused { status: 422, .. } => "protocol",
+            Self::Refused { .. } => "unauthorized",
             Self::Stale { .. } => "stale",
             Self::Malformed { .. } => "malformed",
             Self::TooLarge { .. } => "toolarge",
@@ -288,7 +291,11 @@ impl Peer {
         let peer = peer.to_owned();
         match err {
             ConnectError::NonSuccess(status) => PeerError::Status { peer, status },
-            ConnectError::Refused { message, .. } => PeerError::Refused { peer, message },
+            ConnectError::Refused { status, message } => PeerError::Refused {
+                peer,
+                status,
+                message,
+            },
             ConnectError::TooLarge { limit } => PeerError::TooLarge { peer, limit },
             ConnectError::CleartextRefused { .. } => PeerError::CleartextRefused { peer },
             ConnectError::Unreachable(reason) => PeerError::Unreachable { peer, reason },

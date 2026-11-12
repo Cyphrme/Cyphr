@@ -168,8 +168,8 @@ impl Connector for HttpConnector {
             .await
             .map_err(unreachable)?;
         let status = res.status();
-        if status.as_u16() == 422 {
-            // A protocol refusal says why in its envelope; the reason is
+        if matches!(status.as_u16(), 401 | 403 | 422) {
+            // A refusal (422, or 401/403 for a key the peer will not take) says why in its envelope; the reason is
             // read bounded, and a body that is not an envelope leaves the
             // bare status.
             let mut body = Vec::new();
@@ -184,10 +184,10 @@ impl Connector for HttpConnector {
                 .and_then(|v| v["payload"]["error"].as_str().map(str::to_owned));
             return Err(match message {
                 Some(message) => ConnectError::Refused {
-                    status: 422,
+                    status: status.as_u16(),
                     message,
                 },
-                None => ConnectError::NonSuccess(422),
+                None => ConnectError::NonSuccess(status.as_u16()),
             });
         }
         if !status.is_success() {
