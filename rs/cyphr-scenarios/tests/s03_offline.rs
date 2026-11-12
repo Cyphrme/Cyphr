@@ -179,11 +179,9 @@ async fn s03_offline() {
         },
     )
     .await;
-    // Checked here, not by the oracle: it holds a verdict over differing
-    // peer heads to every commit the peers list at `/branches`, and with
-    // both branches extended that is each branch's commits, not its heads;
-    // and it refuses the evidence a peer serves for a rival's extension.
     let forked = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(&forked, &pr, &Expect::new(&both, &pr.0))
+        .await;
     assert_eq!(
         sorted(&forked.branches),
         sorted(&[lt.clone(), pt.clone()]),
@@ -202,10 +200,9 @@ async fn s03_offline() {
     // resolved), so the resolution is a commit that carries everything it
     // needs, not a data commit whose action a peer in Error would refuse.
     let resolved = resolve_by_removal(&h, &phone, &pr).await;
-    // Checked here, not by the oracle, which refuses the evidence a peer
-    // serves for the rival's extension (its `pre` is not on the peer's
-    // chain).
-    let healed = h.ok(observer.verdict(&pr, &["p1"]).await);
+    let healed = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
+        .await;
     assert_eq!(healed.standing, Standing::Active);
     assert_eq!(
         healed.branches,
@@ -222,9 +219,9 @@ async fn s03_offline() {
 }
 
 /// SPEC 15.8 with a server's rule for a rival signed by a removed key: a
-/// verifier that first looks only once a peer holds both extended branches
-/// reports Error, then Active once the principal deletes the rival's
-/// signer, as that peer does. A verifier that settles a fork only on a
+/// verifier that first looks only once the peers hold both extended
+/// branches reports Error, then Active once the principal deletes the
+/// rival's signer, as the peers do. A verifier that settles a fork only on a
 /// branch continuing past it never leaves Error here.
 #[tokio::test(flavor = "multi_thread")]
 async fn s03_removal_settles_extended_fork() {
@@ -250,18 +247,20 @@ async fn s03_removal_settles_extended_fork() {
 
     let (laptop_branch, _) = extend_both(&h, &laptop, &phone, &pr).await;
     h.proxy.heal("p1", "p2");
-    // P1 holds the laptop's whole branch, both of its commits, beside its
-    // own chain; the observer asks P1 alone, so it holds the rival's
-    // extension only as P1 lists it.
-    h.eventually("P1 to hold the rival branch", CONVERGE, || async {
-        Ok(evidence(&h, "p1", &pr).await >= 2)
+    // Each peer holds the other's whole branch, both of its commits.
+    h.eventually("each peer to hold the rival branch", CONVERGE, || async {
+        Ok(evidence(&h, "p1", &pr).await >= 2 && evidence(&h, "p2", &pr).await >= 2)
     })
     .await;
-    let forked = h.ok(observer.verdict(&pr, &["p1"]).await);
+    let forked = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(&forked, &pr, &Expect::new(&both, &pr.0))
+        .await;
     assert_eq!(forked.standing, Standing::Error, "both branches extended");
 
     let resolved = resolve_by_removal(&h, &phone, &pr).await;
-    let healed = h.ok(observer.verdict(&pr, &["p1"]).await);
+    let healed = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
+        .await;
     assert_eq!(
         (healed.standing, healed.branches),
         (Standing::Active, vec![resolved]),
@@ -318,22 +317,23 @@ async fn extend_both(
     (pair(laptop_tips), pair(phone_tips))
 }
 
-/// The phone deletes the laptop's key (the genesis key) and pushes to P1.
-/// The resolution's tip, once P1 holds it. P2 holds the laptop's branch as
-/// its chain, so whether it adopts a removal that settles the fork against
-/// that chain is a question for the peer, not for this verifier: the
-/// verdicts after it ask P1, which admitted it.
+/// The phone deletes the laptop's key (the genesis key) and pushes to P1;
+/// gossip carries it to P2, whose chain is the laptop's branch, and P2
+/// promotes the phone's branch under it. The resolution's tip, once both
+/// peers hold it.
 async fn resolve_by_removal(h: &Harness, phone: &Client<'_>, pr: &Principal) -> Tip {
     let laptop_key = KeyRef(h.genesis_tmb(pr).expect("genesis tmb"));
     h.ok(phone.remove_key(pr, &laptop_key).await);
     let resolved = h
         .ok(phone.push(pr, &["p1"]).await)
         .accepted("the resolution");
-    assert_eq!(
-        h.peer_view("p1", pr).await.map(|v| v.tip),
-        Some(resolved.clone()),
-        "P1 admitted the resolution"
-    );
+    h.eventually("the peers to hold the resolution", CONVERGE, || async {
+        Ok(
+            h.peer_view("p1", pr).await.map(|v| v.tip) == Some(resolved.clone())
+                && h.peer_view("p2", pr).await.map(|v| v.tip) == Some(resolved.clone()),
+        )
+    })
+    .await;
     resolved
 }
 
