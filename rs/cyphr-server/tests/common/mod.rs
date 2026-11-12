@@ -512,7 +512,12 @@ pub fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
 
 /// One commit on `p` in which pool key `signer` creates pool key `name`,
 /// finalized by `signer` at `now`; its bundle.
-pub async fn key_commit_by(p: &mut cyphr::Principal, signer: &str, name: &str, now: i64) -> WireBundle {
+pub async fn key_commit_by(
+    p: &mut cyphr::Principal,
+    signer: &str,
+    name: &str,
+    now: i64,
+) -> WireBundle {
     let pool = load_pool();
     let s = pool.get(signer).expect("signer");
     let key = pool.get(name).expect("pool key").key().expect("key");

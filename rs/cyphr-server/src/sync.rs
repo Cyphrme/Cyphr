@@ -457,6 +457,33 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
     tip.cr == report_cr
 }
 
+/// Every key `bundles` name, as signer (`pay.tmb`) or as introduced
+/// (`pay.id` of a key-introducing coz): what a revoke could bear on.
+fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let mut keys: Vec<coz::Thumbprint> = Vec::new();
+    for raw in bundles.iter().flat_map(cyphr::replay::WireBundle::cozies) {
+        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
+            continue;
+        };
+        let pay = &coz["pay"];
+        let introduced =
+            cyphr::parsed_coz::typ::is_key_introducing(pay["typ"].as_str().unwrap_or(""))
+                .then(|| pay["id"].as_str())
+                .flatten();
+        for named in [pay["tmb"].as_str(), introduced].into_iter().flatten() {
+            if let Ok(bytes) = Base64UrlUnpadded::decode_vec(named) {
+                let tmb = coz::Thumbprint::from_bytes(bytes);
+                if !keys.contains(&tmb) {
+                    keys.push(tmb);
+                }
+            }
+        }
+    }
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use cyphr::HashAlg;
@@ -535,30 +562,4 @@ mod tests {
             "a binding refusal must not be reported as an unreachable upstream"
         );
     }
-}
-
-/// Every key `bundles` name, as signer (`pay.tmb`) or as introduced
-/// (`pay.id` of a key-introducing coz): what a revoke could bear on.
-fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let mut keys: Vec<coz::Thumbprint> = Vec::new();
-    for raw in bundles.iter().flat_map(cyphr::replay::WireBundle::cozies) {
-        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
-            continue;
-        };
-        let pay = &coz["pay"];
-        let introduced = cyphr::parsed_coz::typ::is_key_introducing(pay["typ"].as_str().unwrap_or(""))
-            .then(|| pay["id"].as_str())
-            .flatten();
-        for named in [pay["tmb"].as_str(), introduced].into_iter().flatten() {
-            if let Ok(bytes) = Base64UrlUnpadded::decode_vec(named) {
-                let tmb = coz::Thumbprint::from_bytes(bytes);
-                if !keys.contains(&tmb) {
-                    keys.push(tmb);
-                }
-            }
-        }
-    }
-    keys
 }

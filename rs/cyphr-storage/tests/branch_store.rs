@@ -531,7 +531,11 @@ async fn a_dead_keys_commit_is_admitted_only_when_buried() {
         "an unburied dead key's commit"
     );
     let outcomes = e
-        .submit_commits(&f.id, Some(f.genesis.clone()), &[blobs(&p, 1), blobs(&p, 2)])
+        .submit_commits(
+            &f.id,
+            Some(f.genesis.clone()),
+            &[blobs(&p, 1), blobs(&p, 2)],
+        )
         .await;
     assert!(
         outcomes.iter().all(Result::is_ok),

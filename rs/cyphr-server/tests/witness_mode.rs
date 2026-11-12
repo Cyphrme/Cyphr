@@ -2391,7 +2391,12 @@ async fn witness_refuses_a_dead_keys_tip_commit() {
         let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, bundle)).await;
         assert_eq!(status, StatusCode::CREATED, "authority push: {body:?}");
     }
-    let (status, body) = post_json(app.clone(), "/revoke", common::eve_revoke(t + 5).to_string()).await;
+    let (status, body) = post_json(
+        app.clone(),
+        "/revoke",
+        common::eve_revoke(t + 5).to_string(),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     let (witness, _) = witness_for(&url, None).await;
@@ -2402,5 +2407,8 @@ async fn witness_refuses_a_dead_keys_tip_commit() {
         .await
         .expect("tip")
         .expect("the witness holds the live history");
-    assert_eq!(tip.commit_count, 2, "the witness admitted eve's commit after its death");
+    assert_eq!(
+        tip.commit_count, 2,
+        "the witness admitted eve's commit after its death"
+    );
 }

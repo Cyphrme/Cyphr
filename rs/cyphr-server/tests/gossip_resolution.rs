@@ -256,7 +256,8 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
         assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
         assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
         let to = if on_p1 { &app1 } else { &app2 };
-        let (status, body) = post_json(to.clone(), "/revoke", common::eve_revoke(T + 1).to_string()).await;
+        let (status, body) =
+            post_json(to.clone(), "/revoke", common::eve_revoke(T + 1).to_string()).await;
         assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
         let want = owner.pr_tagged().expect("pr");
 
@@ -295,7 +296,12 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
         p1.engine.is_errored(&id).await.expect("verdict"),
         "a plain fork"
     );
-    let (status, body) = post_json(app2.clone(), "/revoke", common::eve_revoke(T + 1).to_string()).await;
+    let (status, body) = post_json(
+        app2.clone(),
+        "/revoke",
+        common::eve_revoke(T + 1).to_string(),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;
@@ -327,7 +333,12 @@ async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
     assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
     assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
     assert_eq!(push(&app2, &id, &c).await, StatusCode::CREATED, "C on P2");
-    let (status, body) = post_json(app1.clone(), "/revoke", common::eve_revoke(T + 5).to_string()).await;
+    let (status, body) = post_json(
+        app1.clone(),
+        "/revoke",
+        common::eve_revoke(T + 5).to_string(),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;

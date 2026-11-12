@@ -2711,7 +2711,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut outcomes = Vec::with_capacity(bundles.len());
         for (i, bundle) in bundles.iter().enumerate() {
             let later = bundles.get(i + 1..).unwrap_or_default();
-            outcomes.push(self.submit(principal_id, genesis.clone(), bundle, later).await);
+            outcomes.push(
+                self.submit(principal_id, genesis.clone(), bundle, later)
+                    .await,
+            );
         }
         outcomes
     }
@@ -4235,7 +4238,8 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
                 introduced: true,
             });
         }
-        let self_revoke = cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
+        let self_revoke =
+            cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
         if let Some(tmb) = pay["tmb"].as_str().filter(|t| revoked.contains_key(*t))
             && !self_revoke
         {
