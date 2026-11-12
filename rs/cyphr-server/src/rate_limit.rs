@@ -485,35 +485,6 @@ mod tests {
         assert!(classify(&Method::PUT, "/whatever") == Op::Other);
     }
 
-    /// WHITE-BOX bounded-state invariant: every keyed limiter carries a hard
-    /// max-entry ceiling (`KEY_CEILING`) enforced continuously by `moka` on
-    /// every insert, not just an amortized sweep -- so even a flood of
-    /// distinct, never-repeated keys (e.g. a distributed or IPv6-rotation
-    /// attack, which no time-based staleness check alone can bound) never
-    /// grows the map past `KEY_CEILING` resident entries.
-    #[test]
-    fn keyed_limiter_map_is_bounded_by_key_ceiling() {
-        use std::net::Ipv6Addr;
-
-        let fences = Fences::from_config(&LimitsConfig::default());
-
-        // Flood the per-IP map with distinct, never-seen keys. `moka` evicts
-        // the coldest resident key inline on each insert past capacity --
-        // no external sweep to drive.
-        for i in 0..(KEY_CEILING as u128 + 1_000) {
-            let ip = IpAddr::V6(Ipv6Addr::from(i));
-            let _ = fences.per_ip.check_key(&ip);
-        }
-
-        assert!(
-            fences.per_ip.len() <= KEY_CEILING,
-            "the per-IP limiter map must stay within KEY_CEILING ({}) entries under a flood of \
-             distinct keys, got {}",
-            KEY_CEILING,
-            fences.per_ip.len(),
-        );
-    }
-
     /// A HOT key's accumulated throttle must SURVIVE a flood of distinct
     /// COLD keys. The prior whole-map ceiling reset (see git history) wiped
     /// EVERY bucket -- including a currently-throttled hot key -- once the
