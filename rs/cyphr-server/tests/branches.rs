@@ -1418,12 +1418,10 @@ async fn a3_live_and_rebuild_disagree() {
     );
 }
 
-/// A4: unbounded blobs, as far as the engine bounds them. One revoke
-/// record per thumbprint stands, the earliest by `(rvk, digest)`: a
-/// revoke that is not earlier than the standing one (a re-send, a re-sign
-/// at the same `rvk` whose record digest is higher, or a later `rvk`) grows
-/// the blob store by nothing. Not closed: an earlier record is still
-/// stored beside the one it supersedes, since `BlobStore` cannot delete.
+/// A4: unbounded blobs. One durable revoke record per thumbprint, the
+/// first valid one: re-signed revokes of a dead key, with other messages
+/// (so other digests), lower `rvk` values or higher ones, add no blob.
+/// Turns red if any of them stores a record.
 #[tokio::test]
 async fn a4_resigned_revokes_grow_storage() {
     use cyphr_storage::blob::BlobStore;
@@ -1455,23 +1453,22 @@ async fn a4_resigned_revokes_grow_storage() {
         })
         .to_string()
     };
-    for msg in ["first", "second", "third", "fourth"] {
-        let (status, body) = post_json(app.clone(), "/revoke", revoke(msg, NOW + 5)).await;
-        assert!(status.is_success(), "{body:?}");
-    }
+    let (status, body) = post_json(app.clone(), "/revoke", revoke("first", NOW + 5)).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
     let before = blobs().await;
-    for msg in ["first", "second", "third", "fourth"] {
-        let (status, body) = post_json(app.clone(), "/revoke", revoke(msg, NOW + 5)).await;
-        assert!(status.is_success(), "{body:?}");
-    }
-    for msg in ["later", "much later"] {
-        let (status, body) = post_json(app.clone(), "/revoke", revoke(msg, NOW + 50)).await;
+    for (msg, rvk) in [
+        ("second", NOW + 5),
+        ("third", NOW + 1),
+        ("fourth", 1),
+        ("fifth", NOW + 50),
+    ] {
+        let (status, body) = post_json(app.clone(), "/revoke", revoke(msg, rvk)).await;
         assert!(status.is_success(), "{body:?}");
     }
     assert_eq!(
         blobs().await,
         before,
-        "a revoke no earlier than the standing record stored a new blob"
+        "a re-signed revoke of a dead key stored a new blob"
     );
 }
 
@@ -1505,4 +1502,66 @@ async fn key_delete_of_rival_signer_resolves() {
     let (app, state) = reopen(dir.path()).await;
     assert!(!errored(&state, &t.id).await, "a rebuild agrees");
     assert_eq!(tip_payload(app, &t.id).await, tip);
+}
+
+/// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
+/// finalized by `new`, the key it leaves active.
+async fn replace_key(p: &mut cyphr::Principal, old: &Kp, new: &Kp, now: i64) {
+    let mut pay = serde_json::json!({
+        "alg": old.alg, "id": new.tmb.to_b64(), "now": now,
+        "tmb": old.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/replace"
+    });
+    if let Some(obj) = pay.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &old.alg, &old.prv, &old.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &old.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(new)))
+        .expect("apply");
+    scope
+        .finalize_with_software(&signer_of(new), now, "cyphr.me")
+        .await
+        .expect("finalize");
+}
+
+/// Backs the narrowed rule 3 on S04's rotation shape: the owner and the
+/// thief each `key/replace` the stolen key (`eve`) at the same position.
+/// A contested commit is judged against the state before its position, so
+/// neither replacement disqualifies its rival: every peer, whichever it
+/// saw first, is in Error with no branch picked, live and after a
+/// rebuild. Turns red if either peer reports Active. End to end.
+#[tokio::test]
+async fn rival_rotations_are_error_at_every_peer() {
+    let pool = load_pool();
+    let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
+    let n = cyphr_storage::export_commits(&shared)
+        .expect("export")
+        .len();
+    let mut owner = shared.fork().await.expect("fork");
+    replace_key(&mut owner, &e, &kp(&pool, "alice"), NOW + 3).await;
+    let mut thief = shared.fork().await.expect("fork");
+    replace_key(&mut thief, &e, &kp(&pool, "bob"), NOW + 4).await;
+
+    for (first, second) in [(&owner, &thief), (&thief, &owner)] {
+        let (state, dir) = keyless_server();
+        let app = build_router(state.clone());
+        for i in 0..n {
+            assert_eq!(push(&app, &shared, i, &id).await, StatusCode::CREATED);
+        }
+        let (status, body) = post_json(app.clone(), "/push", wire(first, n, &id)).await;
+        assert_eq!(status, StatusCode::CREATED, "first rotation: {body:?}");
+        let (status, body) = post_json(app.clone(), "/push", wire(second, n, &id)).await;
+        // Refused as the tip: the key it replaces is gone from the tip.
+        assert!(status.is_client_error(), "second rotation: {body:?}");
+        let list = heads(&app, &id).await;
+        assert_eq!(list.len(), 2, "both rotations are held: {list:?}");
+        assert!(errored(&state, &id).await, "rival rotations: Error");
+        drop((app, state));
+        let (_app, state) = reopen(dir.path()).await;
+        assert!(errored(&state, &id).await, "a rebuild agrees: Error");
+    }
 }
