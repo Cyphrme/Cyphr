@@ -29,6 +29,7 @@ pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
     Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerOutcome, PeerStanding, PullPeer, PullReport,
     Record, RecordTip, RevokedKey, branch_bundles, fetch_revoked, opener_of, pull,
+    verified_revokes,
 };
 
 #[cfg(feature = "http")]

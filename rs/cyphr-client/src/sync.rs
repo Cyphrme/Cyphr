@@ -1000,35 +1000,56 @@ async fn pull_revokes<C: Connector>(
         .map(|k| k.tmb().clone())
         .filter(|t| !record.dead.contains_key(&t.to_b64()))
         .collect();
-    for batch in asked.chunks(REVOKE_BATCH) {
-        let envelopes = match fetch_revoked(peer.connector, batch).await {
-            Ok(envelopes) => envelopes,
-            Err(failure) => {
-                outcome.revoke_fetch = Some(failure);
-                return;
-            },
-        };
-        for envelope in &envelopes {
+    let found = match verified_revokes(peer.connector, peer.name, &asked).await {
+        Ok((found, rejected)) => {
+            outcome.rejected_revokes.extend(rejected);
+            found
+        },
+        Err(failure) => {
+            outcome.revoke_fetch = Some(failure);
+            return;
+        },
+    };
+    for revoke in found {
+        let known = record.dead.get(&revoke.tmb.to_b64()).copied();
+        if known.is_none_or(|rvk| revoke.rvk < rvk) {
+            record.dead.insert(revoke.tmb.to_b64(), revoke.rvk);
+        }
+        if known.is_none() {
+            revoked.push(revoke);
+        }
+    }
+}
+
+/// The naked revokes `connector` (named `peer`) serves for `keys`, each
+/// verified (SPEC 6.4), and why each other one was refused. Only revokes
+/// of keys asked about are kept: a peer cannot grow a holder's memory with
+/// revokes of strangers. The pull step and a witness's sync both ask
+/// through this.
+///
+/// # Errors
+///
+/// A [`PatchFailure`] when the revokes cannot be fetched.
+pub async fn verified_revokes<C: Connector>(
+    connector: &C,
+    peer: &str,
+    keys: &[Thumbprint],
+) -> Result<(Vec<RevokedKey>, Vec<RevokeFailure>), PatchFailure> {
+    let mut found = Vec::new();
+    let mut rejected = Vec::new();
+    for batch in keys.chunks(REVOKE_BATCH) {
+        for envelope in &fetch_revoked(connector, batch).await? {
             match verify_naked_revoke(envelope) {
-                // Only keys the record holds are recorded: a peer cannot
-                // grow the record's memory with revokes of strangers.
-                Ok(revoke) if batch.contains(&revoke.tmb) => {
-                    let known = record.dead.get(&revoke.tmb.to_b64()).copied();
-                    if known.is_none_or(|rvk| revoke.rvk < rvk) {
-                        record.dead.insert(revoke.tmb.to_b64(), revoke.rvk);
-                    }
-                    if known.is_none() {
-                        revoked.push(RevokedKey {
-                            tmb: revoke.tmb,
-                            rvk: revoke.rvk,
-                            peer: peer.name.to_owned(),
-                            envelope: envelope.clone(),
-                        });
-                    }
-                },
+                Ok(revoke) if batch.contains(&revoke.tmb) => found.push(RevokedKey {
+                    tmb: revoke.tmb,
+                    rvk: revoke.rvk,
+                    peer: peer.to_owned(),
+                    envelope: envelope.clone(),
+                }),
                 Ok(_) => {},
-                Err(failure) => outcome.rejected_revokes.push(failure),
+                Err(failure) => rejected.push(failure),
             }
         }
     }
+    Ok((found, rejected))
 }
