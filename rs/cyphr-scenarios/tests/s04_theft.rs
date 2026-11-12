@@ -146,10 +146,11 @@ async fn s04_theft() {
     // Each side reaches its own peers before gossip carries the other's
     // rotation across: without the cut, whichever pushes second finds its
     // peers already on the rival branch.
-    // The same holds between Alice's own peers: her push goes to p1 then
-    // p2, and if gossip carried the rotation from p1 to p2 in between, the
-    // CLI's push to p2 would meet a chain whose replaced key is already
-    // gone ("unknown key"), a race between push and gossip, not a defect.
+    // RED(CZR): core resolves the signer before the COZ_REUSE check, so
+    // re-pushing a held rotation is refused (422 unknown key, not reuse);
+    // CZR fixes the order and removes the p1-p2 partition below. Without
+    // it, gossip carrying Alice's rotation from p1 to p2 between her two
+    // pushes makes her push to p2 hit that defect.
     for from in ["p1", "p2"] {
         h.proxy.partition(from, "p3");
     }
