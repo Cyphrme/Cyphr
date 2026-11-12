@@ -381,3 +381,165 @@ async fn left_out_action_does_not_bound_time() {
         .expect("restart");
     assert_eq!(view(&restarted, &id).await, live, "a restart agrees");
 }
+
+/// A bundle of `p` whose cozies are signed as given, outside the local
+/// scope's own timestamp check: `txs` are applied on `p`'s scope (to
+/// compute the arrow) and the `commit/create` is signed by `golden` at
+/// `commit_now`.
+async fn hand_signed(p: &mut cyphr::Principal, txs: Vec<Signed>, commit_now: i64) -> WireBundle {
+    let pool = pool();
+    let g = pool.get("golden").expect("golden");
+    let mut scope = p.begin_commit();
+    for tx in &txs {
+        scope
+            .verify_and_apply(&tx.pay, &tx.sig, tx.czd.clone(), None)
+            .expect("applies locally");
+    }
+    let prepared = scope
+        .prepare_commit(&g.software_signer().expect("signer"), commit_now, "cyphr.me")
+        .expect("prepares");
+    let commit = golden_signs(prepared.pay().clone());
+    let mut all: Vec<Vec<Vec<u8>>> = txs.into_iter().map(|t| vec![t.wire]).collect();
+    all.push(vec![commit.wire]);
+    WireBundle {
+        txs: all,
+        ..WireBundle::default()
+    }
+}
+
+/// A store holding genesis and one pending action dated `NOW + 50`, and a
+/// local principal holding the same.
+async fn with_action_ahead() -> (cyphr::Principal, String, Genesis, Engine) {
+    let (mut p, id, genesis, g) = base().await;
+    let e = Engine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&e, &id, &genesis, &g).await.expect("genesis");
+    let a = action("dated ahead", NOW + 50);
+    p.verify_and_record_action(&a.pay, &a.sig, a.czd.clone())
+        .expect("records");
+    push(&e, &id, &genesis, &WireBundle::actions(vec![a.wire]))
+        .await
+        .expect("the action");
+    (p, id, genesis, e)
+}
+
+/// Claim: the actions a `ds/create` includes join the chain's latest
+/// timestamp at once (SPEC 14.1, 4.8.2). After a `ds/create` includes an
+/// action dated `NOW + 50`, the `commit/create` closing that same commit,
+/// dated before it, is refused as `TimestampPast`. (A later commit is
+/// dated after that `commit/create`, so it is bounded by it anyway; a
+/// later transaction in the same commit is the other case, below.)
+///
+/// Turns red if: an included action does not raise the latest timestamp
+/// (the commit is accepted with cozies older than what it includes). End
+/// to end over the engine: yes.
+#[tokio::test]
+async fn included_action_bounds_the_rest_of_its_commit() {
+    let (mut p, id, genesis, e) = with_action_ahead().await;
+    let dr = p
+        .begin_commit()
+        .data_tree_id()
+        .expect("DR")
+        .expect("DT holds an action");
+    let ds = golden_signs(
+        serde_json::json!({"id": dr, "now": NOW + 3, "typ": "cyphr.me/cyphr/ds/create"}),
+    );
+    let closing_early = hand_signed(&mut p.fork().await.expect("fork"), vec![ds], NOW + 4).await;
+    let refused = e.submit_commit(&id, Some(genesis.clone()), &closing_early).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Protocol(cyphr::Error::TimestampPast))
+        ),
+        "a commit/create dated before what its ds/create includes: {refused:?}"
+    );
+}
+
+/// Claim: as [`included_action_bounds_the_rest_of_its_commit`], for a
+/// transaction after the `ds/create` in the same commit: a `key/create`
+/// dated before the included action is refused as `TimestampPast`.
+///
+/// Turns red if: an included action does not raise the latest timestamp.
+/// End to end over the engine: yes.
+#[tokio::test]
+async fn included_action_bounds_a_later_transaction() {
+    let (mut p, id, genesis, e) = with_action_ahead().await;
+    let dr = p
+        .begin_commit()
+        .data_tree_id()
+        .expect("DR")
+        .expect("DT holds an action");
+    let ds = golden_signs(
+        serde_json::json!({"id": dr, "now": NOW + 3, "typ": "cyphr.me/cyphr/ds/create"}),
+    );
+    let key_a = pool().get("key_a").expect("key_a").key().expect("key");
+    let key = golden_signs(serde_json::json!({
+        "id": key_a.tmb().to_b64(), "now": NOW + 4, "typ": "cyphr.me/cyphr/key/create"
+    }));
+    // The `key/create` is refused before the commit closes, so the
+    // bundle carries no `commit/create`: the engine meets that refusal
+    // first.
+    let bundle = WireBundle {
+        txs: vec![vec![ds.wire], vec![key.wire]],
+        keys: vec![cyphr::replay::KeyEntry::of(&key_a)],
+        ..WireBundle::default()
+    };
+    let refused = e.submit_commit(&id, Some(genesis), &bundle).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Protocol(cyphr::Error::TimestampPast))
+        ),
+        "a transaction after the ds/create dated before what it includes: {refused:?}"
+    );
+}
+
+/// Claim (rule 3): an action a `ds/create` left out was never applied on
+/// the chain, so its owner can record it again (SPEC 7.6 ignores only an
+/// applied coz) and a later `ds/create` naming it includes it. The laptop's
+/// action is left out by the phone's `ds/create`; the phone then records
+/// that same signed action, pushes it, and includes it. The served PR is
+/// the phone's, live and after a restart.
+///
+/// Turns red if: the left-out action is still taken as applied (its
+/// re-recording is ignored and the `ds/create` naming it is refused). End
+/// to end over the engine: yes.
+#[tokio::test]
+async fn left_out_action_can_be_recorded_again() {
+    let (mut phone, id, genesis, g) = base().await;
+    let e = Engine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&e, &id, &genesis, &g).await.expect("genesis");
+    let mine = action("phone", NOW + 2);
+    phone
+        .verify_and_record_action(&mine.pay, &mine.sig, mine.czd.clone())
+        .expect("records");
+    push(&e, &id, &genesis, &WireBundle::actions(vec![mine.wire]))
+        .await
+        .expect("the phone's action");
+    let laptop = action("laptop", NOW + 5);
+    push(&e, &id, &genesis, &WireBundle::actions(vec![laptop.wire.clone()]))
+        .await
+        .expect("the laptop's action");
+    ds_create(&mut phone, NOW + 3).await;
+    push(&e, &id, &genesis, &last(&phone))
+        .await
+        .expect("the ds/create leaves the laptop's action out");
+
+    phone
+        .verify_and_record_action(&laptop.pay, &laptop.sig, laptop.czd.clone())
+        .expect("the phone records it");
+    push(&e, &id, &genesis, &WireBundle::actions(vec![laptop.wire]))
+        .await
+        .expect("recorded again");
+    ds_create(&mut phone, NOW + 6).await;
+    push(&e, &id, &genesis, &last(&phone))
+        .await
+        .expect("a later ds/create includes it");
+    let live = view(&e, &id).await;
+    assert_eq!(live.0, phone.pr_tagged().expect("pr"));
+    let restarted = Engine::new(e.blob_store().clone(), MemoryIndexer::new());
+    restarted
+        .rebuild_index_from_manifests()
+        .await
+        .expect("restart");
+    assert_eq!(view(&restarted, &id).await.0, live.0, "a restart agrees");
+}
