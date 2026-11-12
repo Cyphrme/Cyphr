@@ -1684,7 +1684,6 @@ async fn not_included_bundle_is_kept_and_served() {
     );
 }
 
-
 /// Backs the S04 shape at the witness holding the thief's chain: the
 /// thief's B is canonical and the owner's A is retained; the stolen key
 /// (`eve`) is naked-revoked; the owner then pushes a commit extending A
@@ -1872,7 +1871,6 @@ async fn owner_delete_promotes_over_thief_data_chain() {
     assert_eq!(tip_payload(app, &id).await, tip, "a rebuild agrees");
     assert!(!errored(&state, &id).await, "a rebuild agrees: Active");
 }
-
 
 /// Backs `/patch` matching the server's own replay after a promotion over
 /// a thief's data chain (SPEC 4.8.2, 15.8): the thief's action, pushed
