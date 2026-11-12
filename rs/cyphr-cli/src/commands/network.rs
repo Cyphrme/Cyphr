@@ -15,7 +15,7 @@ use super::common::{
     local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
     submit_history,
 };
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::{JsonKeyStore, KeyBackend};
 use crate::net::{Peer, PeerError, PeerHistory};
 use crate::{Cli, Error, OutputFormat};
 
@@ -437,7 +437,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 }));
                 pay["now"] = now.into();
                 let tmb = pay["tmb"].as_str().ok_or(Error::MissingField("pay.tmb"))?;
-                let signed = super::data::sign(keystore.get(tmb)?, tmb, pay.clone())?;
+                let signed = super::data::sign(&keystore.signer(tmb)?, pay.clone())?;
                 Ok(serde_json::to_vec(&signed.wire())?)
             })
             .collect::<crate::Result<Vec<Vec<u8>>>>()?;

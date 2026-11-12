@@ -14,7 +14,7 @@ use super::common::{
     load_principal_from_engine, local_genesis, parse_principal_genesis, parse_store,
     save_principal_to_engine,
 };
-use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
+use crate::keystore::{JsonKeyStore, KeyBackend};
 use crate::net::Peer;
 use crate::{Cli, DataCommands, Error, OutputFormat};
 
@@ -54,17 +54,17 @@ impl Signed {
 
 /// Sign `fields` plus the signer's `alg` and `tmb`, members sorted as the
 /// core signs its own cozies.
-pub(super) fn sign(key: &StoredKey, tmb: &str, mut fields: Value) -> crate::Result<Signed> {
-    fields["alg"] = key.alg.clone().into();
-    fields["tmb"] = tmb.into();
+pub(super) fn sign(
+    signer: &impl cyphr::signer::Signer,
+    mut fields: Value,
+) -> crate::Result<Signed> {
+    fields["alg"] = signer.alg().into();
+    fields["tmb"] = signer.tmb().to_b64().into();
     if let Some(obj) = fields.as_object_mut() {
         obj.sort_keys();
     }
     let pay_bytes = serde_json::to_vec(&fields)?;
-    let (sig, cad) = coz::sign_json(&pay_bytes, &key.alg, &key.prv_key, &key.pub_key)
-        .ok_or_else(|| Error::Signing("sign_json failed".into()))?;
-    let czd = coz::czd_for_alg(&cad, &sig, &key.alg)
-        .ok_or_else(|| Error::Signing("czd_for_alg failed".into()))?;
+    let (sig, czd) = super::common::sign_pay(signer, &pay_bytes)?;
     Ok(Signed {
         pay: fields,
         pay_bytes,
@@ -92,11 +92,10 @@ fn action(
     sign_only: bool,
 ) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let key = keystore.get(signer_tmb)?;
+    let signer = keystore.signer(signer_tmb)?;
     let now = now.unwrap_or_else(current_timestamp);
     let signed = sign(
-        key,
-        signer_tmb,
+        &signer,
         json!({"msg": msg, "now": now, "typ": format!("{}/comment/create", cli.authority)}),
     )?;
     let czd = signed.czd.to_b64();
@@ -131,11 +130,11 @@ fn action(
 /// tree's root and never an earlier one's.
 pub(crate) fn apply_ds_create(
     principal: &mut CliPrincipal,
-    keystore: &JsonKeyStore,
+    keystore: &impl KeyBackend,
     signer_tmb: &str,
     authority: &str,
 ) -> crate::Result<String> {
-    let key = keystore.get(signer_tmb)?;
+    let signer = keystore.signer(signer_tmb)?;
     super::init::commit_genesis(principal, keystore, &[], authority)?;
 
     let now = current_timestamp();
@@ -144,15 +143,12 @@ pub(crate) fn apply_ds_create(
         Error::InvalidArgument("no data action is recorded; there is no DR to include".into())
     })?;
     let signed = sign(
-        key,
-        signer_tmb,
+        &signer,
         json!({"id": dr, "now": now,
             "typ": format!("{authority}/{}", cyphr::parsed_coz::typ::DS_CREATE)}),
     )?;
     scope.verify_and_apply(&signed.pay_bytes, &signed.sig, signed.czd.clone(), None)?;
-    let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(signer_tmb)?);
-    let signer = cyphr::signer::SoftwareSigner::new(&key.alg, &key.prv_key, &key.pub_key, &tmb);
-    block_on(scope.finalize_with_software(&signer, now, authority))??;
+    block_on(scope.finalize_with_signer(&signer, now, authority))??;
     Ok(dr)
 }
 
