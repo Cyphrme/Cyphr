@@ -88,7 +88,8 @@ fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
 /// back the same commit lines in the same order and the same actions in
 /// the order they were recorded, whatever lines carried them in.
 fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
-    let split = |lines: &[CommitEntry]| -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), String> {
+    type Lines = (Vec<serde_json::Value>, Vec<serde_json::Value>);
+    let split = |lines: &[CommitEntry]| -> Result<Lines, String> {
         let (mut commits, mut actions) = (Vec::new(), Vec::new());
         for line in lines {
             if line.txs.is_empty() {
