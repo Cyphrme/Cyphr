@@ -19,7 +19,6 @@ pub enum Capability {
     ChoicesFile,
     KeyPairing,
     KeyOps,
-    Discovery,
     BranchStore,
     Evidence,
     PeerGossip,
@@ -35,13 +34,12 @@ pub enum Capability {
     DataCommit,
 }
 
-pub const ALL: [Capability; 19] = [
+pub const ALL: [Capability; 18] = [
     Capability::Transport,
     Capability::CliNetwork,
     Capability::ChoicesFile,
     Capability::KeyPairing,
     Capability::KeyOps,
-    Capability::Discovery,
     Capability::BranchStore,
     Capability::Evidence,
     Capability::PeerGossip,
@@ -97,7 +95,6 @@ impl Capability {
             Self::ChoicesFile => "choices-file",
             Self::KeyPairing => "key-pairing",
             Self::KeyOps => "key-ops",
-            Self::Discovery => "discovery",
             Self::BranchStore => "branch-store",
             Self::Evidence => "evidence",
             Self::PeerGossip => "peer-gossip",
@@ -121,7 +118,6 @@ impl Capability {
             Self::CliNetwork | Self::ChoicesFile => "N16",
             Self::KeyPairing => "N22",
             Self::KeyOps => "KOPS",
-            Self::Discovery => "G4",
             Self::BranchStore => "G1",
             Self::Evidence => "N18a",
             Self::PeerGossip => "G2",
@@ -148,7 +144,6 @@ impl Capability {
             Self::ChoicesFile => Probe::Cli(&["verify", "--help"], Some("--choices")),
             Self::KeyPairing => Probe::Cli(&["key", "accept", "--help"], None),
             Self::KeyOps => Probe::Cli(&["key", "naked-revoke", "--help"], None),
-            Self::Discovery => Probe::Cli(&["discover", "--help"], None),
             // Bare, so the route answers 400 (no `pr`) where an absent route
             // answers 404; a probe with a `pr` would read a stored-branch
             // lookup's own 404 for an unknown principal as an absent route.

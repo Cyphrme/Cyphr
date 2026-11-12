@@ -36,6 +36,9 @@
 //! and a session is never extended: only a new login, which proves
 //! possession of the key again, mints a new token. A timestamp-flow login
 //! can be replayed inside its window; the challenge flow is single-use.
+//! That residual is why Authenticated Atomic Actions (AAA), each signed
+//! individually by the key, are preferred over a bearer token for
+//! sensitive operations.
 //! The binding is a signed claim rather than a server-side session table,
 //! so it survives a restart and adds no state.
 

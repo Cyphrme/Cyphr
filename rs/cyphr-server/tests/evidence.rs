@@ -1,7 +1,6 @@
 //! Evidence (`docs/architecture/equivocation-detection.md`): a server
 //! serves the principal forks it holds at `GET /evidence`, and a client
-//! checks them, and a peer's equivocation, offline from signatures and the
-//! chain alone.
+//! checks them offline from signatures and the chain alone.
 //!
 //! Every test runs over real servers and real signed commits; the client
 //! side is `cyphr_client::evidence`, fed only what it fetched.
@@ -11,9 +10,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_client::evidence::{
-    EvidenceFailure, replay_chain, verify_peer_equivocation, verify_principal_fork,
-};
+use cyphr_client::evidence::{EvidenceFailure, verify_principal_fork};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::{AppState, build_router};
@@ -165,51 +162,12 @@ async fn fetch_entries(app: &axum::Router, pr: &str) -> Vec<cyphr_client::PatchE
         .entries
 }
 
-/// The peer's own principal chain, replayed by the client from the genesis
-/// key the peer publishes at `/server` and the commits at `/patch`.
-async fn peer_chain(
-    app: &axum::Router,
-) -> (
-    cyphr::Principal<cyphr::eml::MemoryStorage>,
-    cyphr_client::evidence::KeyHistory,
-) {
-    let (_, discovery) = get_json(app.clone(), "/server").await;
-    let d = &discovery["payload"];
-    let pg = d["pg"].as_str().expect("attestor pg").to_string();
-    let g = &d["genesis"];
-    let genesis_key = cyphr::Key::new(
-        g["alg"].as_str().expect("alg").to_string(),
-        coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(g["tmb"].as_str().expect("tmb")).expect("tmb b64"),
-        ),
-        Base64UrlUnpadded::decode_vec(g["pub"].as_str().expect("pub")).expect("pub b64"),
-    )
-    .expect("key binds its tmb")
-    .with_first_seen(g["first_seen"].as_i64().expect("first_seen"));
-    let base = cyphr::Principal::implicit(genesis_key.clone())
-        .await
-        .expect("peer genesis");
-    let chain = replay_chain(base, &fetch_entries(app, &pg).await)
-        .await
-        .expect("the peer chain replays");
-    let history = cyphr_client::evidence::KeyHistory::of(&[genesis_key], &chain);
-    (chain, history)
-}
-
-fn thumbprint(pr: &str) -> coz::Thumbprint {
-    coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(pr).expect("pr b64"))
-}
-
-/// The signed coz of a peer's `GET /view`.
-async fn view_of(app: &axum::Router, pr: &str) -> serde_json::Value {
-    let (status, body) = get_json(app.clone(), &format!("/view?pr={pr}")).await;
+/// The signed coz of a server's `GET /tip`.
+async fn tip_of(app: &axum::Router, pr: &str) -> serde_json::Value {
+    let (status, body) = get_json(app.clone(), &format!("/tip?pr={pr}")).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
     body["statement"]["coz"].clone()
-}
-
-fn equivocation_item(pr: &str, a: &serde_json::Value, b: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({"kind": "peer-equivocation", "pg": pr, "peer": "p1", "a": a, "b": b})
 }
 
 /// The principal both servers hold, as its genesis commit (`golden` with
@@ -493,7 +451,7 @@ async fn slots_one_key_cannot_crowd_out_another() {
 }
 
 /// Claim (`arch-signing-stays-stateless`): holding fork evidence changes
-/// nothing about what a server signs. The view statement after a refused
+/// nothing about what a server signs. The tip report after a refused
 /// fork is the same claim as before it (only the signed `now` may move)
 /// and verifies under the server's key.
 ///
@@ -513,7 +471,7 @@ async fn signing_is_unchanged_by_held_evidence() {
         StatusCode::CREATED
     );
 
-    let before = view_of(&app, &pr.id).await;
+    let before = tip_of(&app, &pr.id).await;
     let rival = pr.extend(&pr.g, "alice", NOW + 2).await;
     assert_eq!(pr.push_commit(&app, &rival, 1).await, StatusCode::CONFLICT);
     assert_eq!(
@@ -521,7 +479,7 @@ async fn signing_is_unchanged_by_held_evidence() {
         1,
         "evidence is held"
     );
-    let after = view_of(&app, &pr.id).await;
+    let after = tip_of(&app, &pr.id).await;
 
     let claim = |v: &serde_json::Value| {
         let mut pay = v["pay"].clone();
@@ -535,234 +493,6 @@ async fn signing_is_unchanged_by_held_evidence() {
         Some(true),
         "the statement verifies under the server key"
     );
-}
-
-/// Two servers that sign as one peer (one key file), each holding the
-/// principal at a different state: the situation an equivocating peer
-/// produces for two clients.
-struct SplitPeer {
-    a: axum::Router,
-    b: axum::Router,
-    /// The shared signing key file, for a further server of the same peer.
-    key: PathBuf,
-    _dirs: (TempDir, TempDir),
-}
-
-async fn split_peer(pr: &Pr) -> SplitPeer {
-    let (sa, _, dir_a, key_a) = attestor(None).await;
-    let (sb, _, dir_b, _) = attestor(Some(&key_a)).await;
-    let (a, b) = (build_router(Arc::new(sa)), build_router(Arc::new(sb)));
-    for app in [&a, &b] {
-        assert_eq!(pr.push_commit(app, &pr.base, 0).await, StatusCode::CREATED);
-    }
-    SplitPeer {
-        a,
-        b,
-        key: key_a,
-        _dirs: (dir_a, dir_b),
-    }
-}
-
-/// Claim (`arch-one-key-equivocation`): two views of one principal signed
-/// under one peer's chain that disagree at one position are evidence the
-/// client verifies against that peer's own chain; the same disagreement
-/// between views signed by different servers is never evidence against
-/// either.
-///
-/// Turns red if: a conflicting pair from one peer is not accepted, or a
-/// pair from two servers is. End-to-end scenario: yes.
-// @docket: arch-one-key-equivocation :: scripts/docket-run arch-one-key-equivocation
-#[tokio::test]
-async fn peer_equivocation_is_judged_against_one_peers_chain() {
-    let pr = principal().await;
-    let peer = split_peer(&pr).await;
-    let (c1a, c1b) = (
-        pr.extend(&pr.g, "key_b", NOW + 1).await,
-        pr.extend(&pr.g, "alice", NOW + 2).await,
-    );
-    assert_eq!(pr.push_commit(&peer.a, &c1a, 1).await, StatusCode::CREATED);
-    assert_eq!(pr.push_commit(&peer.b, &c1b, 1).await, StatusCode::CREATED);
-
-    let (va, vb) = (
-        view_of(&peer.a, &pr.id).await,
-        view_of(&peer.b, &pr.id).await,
-    );
-    let (_, chain) = peer_chain(&peer.a).await;
-    let pg = thumbprint(&pr.id);
-    let item = equivocation_item(&pr.id, &va, &vb);
-    let proof = verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&item, &pg, &chain, None)
-        .expect("one peer, two disagreeing views at one position");
-    assert_eq!(proof.signers[0], proof.signers[1], "one key signed both");
-
-    // Tip reports are statements of the same kind: two signed under the one
-    // peer chain that disagree at one position convict it too.
-    let tip_of = |app: &axum::Router| {
-        let app = app.clone();
-        let id = pr.id.clone();
-        async move {
-            let (status, body) = get_json(app, &format!("/tip?pr={id}")).await;
-            assert_eq!(status, StatusCode::OK, "{body:?}");
-            assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
-            body["statement"]["coz"].clone()
-        }
-    };
-    let tips = equivocation_item(&pr.id, &tip_of(&peer.a).await, &tip_of(&peer.b).await);
-    verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&tips, &pg, &chain, None)
-        .expect("two tip reports of one peer that disagree");
-
-    let (stranger, _, _dir, _) = attestor(None).await;
-    let stranger = build_router(Arc::new(stranger));
-    assert_eq!(
-        pr.push_commit(&stranger, &pr.base, 0).await,
-        StatusCode::CREATED
-    );
-    assert_eq!(
-        pr.push_commit(&stranger, &c1b, 1).await,
-        StatusCode::CREATED
-    );
-    let theirs = view_of(&stranger, &pr.id).await;
-    let framed = equivocation_item(&pr.id, &va, &theirs);
-    let refused = verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&framed, &pg, &chain, None)
-        .expect_err("two servers' views are never evidence against one");
-    assert!(
-        matches!(refused, EvidenceFailure::Statement { which: "b", .. }),
-        "{refused:?}"
-    );
-}
-
-/// Claim (`arch-behind-is-not-fork`): a peer that is merely behind is not
-/// equivocating. An older view followed by a newer one of one chain is a
-/// prefix: refused as evidence, and without the higher chain to compare
-/// with, no verdict at all. A lower view that is NOT a prefix of the
-/// higher one is evidence.
-///
-/// Turns red if: a stale prefix is accepted (a behind peer framed), a
-/// check that could not complete is reported as a conflict, or a real
-/// fork at different sizes is missed. End-to-end scenario: yes.
-// @docket: arch-behind-is-not-fork :: scripts/docket-run arch-behind-is-not-fork
-#[tokio::test]
-async fn stale_prefix_is_not_evidence() {
-    let pr = principal().await;
-    let peer = split_peer(&pr).await;
-    let pg = thumbprint(&pr.id);
-    let (_, chain) = peer_chain(&peer.a).await;
-    let old = view_of(&peer.a, &pr.id).await;
-
-    let c1 = pr.extend(&pr.g, "key_b", NOW + 1).await;
-    assert_eq!(pr.push_commit(&peer.a, &c1, 1).await, StatusCode::CREATED);
-    let new = view_of(&peer.a, &pr.id).await;
-
-    // The higher view's own principal chain, as the client fetched it.
-    let higher = replay_chain(pr.genesis().await, &fetch_entries(&peer.a, &pr.id).await)
-        .await
-        .expect("the principal chain replays");
-
-    let item = equivocation_item(&pr.id, &old, &new);
-    let stale = verify_peer_equivocation(&item, &pg, &chain, Some(&higher))
-        .expect_err("an older tip then a newer one is not evidence");
-    assert!(
-        matches!(stale, EvidenceFailure::NotConflicting(_)),
-        "{stale:?}"
-    );
-    let undecided = verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&item, &pg, &chain, None)
-        .expect_err("different sizes need the higher chain");
-    assert!(
-        matches!(undecided, EvidenceFailure::NeedsChain),
-        "{undecided:?}"
-    );
-
-    // A higher chain that does not hold the higher statement's commit
-    // cannot settle the comparison: no verdict, never a conflict.
-    let c1b = pr.extend(&pr.g, "alice", NOW + 2).await;
-    assert_eq!(pr.push_commit(&peer.b, &c1b, 1).await, StatusCode::CREATED);
-    let elsewhere = replay_chain(pr.genesis().await, &fetch_entries(&peer.b, &pr.id).await)
-        .await
-        .expect("the other chain replays");
-    let unbacked = verify_peer_equivocation(&item, &pg, &chain, Some(&elsewhere))
-        .expect_err("the chain does not back the higher statement");
-    assert!(
-        matches!(unbacked, EvidenceFailure::NeedsChain),
-        "{unbacked:?}"
-    );
-
-    // The same peer key, signing a one-commit chain whose commit is not
-    // the higher chain's first: not a prefix, so evidence.
-    let (third, _, _dir, _) = attestor(Some(&peer.key)).await;
-    let third = build_router(Arc::new(third));
-    let other = pr.other_genesis(NOW + 9).await;
-    assert_eq!(pr.push_commit(&third, &other, 0).await, StatusCode::CREATED);
-    let short = view_of(&third, &pr.id).await;
-    let forked = equivocation_item(&pr.id, &short, &new);
-    verify_peer_equivocation(&forked, &pg, &chain, Some(&higher))
-        .expect("a lower view that is not a prefix of the higher is evidence");
-}
-
-/// Claim (historical form, `arch-finding-never-clears`): a view is
-/// verified against the key the peer chain held at the view's own time, so
-/// the peer's later rotation, which revokes that key, does not erase the
-/// evidence; a statement signed after the revocation is refused; the
-/// current-view verifier is unchanged and still refuses the retired key.
-///
-/// Turns red if: evidence stops verifying once the key is revoked, a
-/// post-revocation statement is accepted, or `verify_view_statement` starts
-/// accepting a retired key. End-to-end scenario: yes.
-// @docket: arch-finding-never-clears :: scripts/docket-run arch-finding-never-clears
-#[tokio::test]
-async fn historical_view_survives_the_signing_keys_revocation() {
-    let pr = principal().await;
-    let (a, _, dir_a, key_a) = attestor(None).await;
-    let (b, _, dir_b, _) = attestor(Some(&key_a)).await;
-    let a = Arc::new(a);
-    let (app_a, app_b) = (build_router(a.clone()), build_router(Arc::new(b)));
-    for app in [&app_a, &app_b] {
-        assert_eq!(pr.push_commit(app, &pr.base, 0).await, StatusCode::CREATED);
-    }
-    let c1a = pr.extend(&pr.g, "key_b", NOW + 1).await;
-    let c1b = pr.extend(&pr.g, "alice", NOW + 2).await;
-    assert_eq!(pr.push_commit(&app_a, &c1a, 1).await, StatusCode::CREATED);
-    assert_eq!(pr.push_commit(&app_b, &c1b, 1).await, StatusCode::CREATED);
-    let (va, vb) = (view_of(&app_a, &pr.id).await, view_of(&app_b, &pr.id).await);
-
-    // The signed `now` has second resolution: let the rotation fall after it.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    drop(app_a);
-    let mut a = Arc::into_inner(a).expect("the router is gone, so the state is ours");
-    a.rotate_signing_key(&coz::Alg::Ed25519.generate_keypair())
-        .await
-        .expect("rotate the signing key");
-    let app_a = build_router(Arc::new(a));
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-
-    let (chain, history) = peer_chain(&app_a).await;
-    let pg = thumbprint(&pr.id);
-    let retired = thumbprint(va["pay"]["tmb"].as_str().expect("tmb"));
-    assert!(
-        !chain.is_key_active(&retired),
-        "premise: the key is retired"
-    );
-
-    let item = equivocation_item(&pr.id, &va, &vb);
-    verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&item, &pg, &history, None)
-        .expect("the revocation does not erase evidence signed before it");
-
-    let envelope = serde_json::json!({"v": 1, "statement": {"kind": "signed", "coz": va}});
-    assert!(
-        cyphr_client::verify_view_statement(&envelope, &chain, &pr.id).is_err(),
-        "the current-view verifier still refuses the retired key"
-    );
-
-    // The retired key keeps signing on the second server, now after the
-    // revocation: that statement is not evidence.
-    let late = view_of(&app_b, &pr.id).await;
-    let late_item = equivocation_item(&pr.id, &va, &late);
-    let refused =
-        verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&late_item, &pg, &history, None)
-            .expect_err("a statement signed after the revocation");
-    assert!(
-        matches!(refused, EvidenceFailure::Statement { which: "b", .. }),
-        "{refused:?}"
-    );
-    drop((dir_a, dir_b));
 }
 
 /// Claim (`arch-principal-fork-evidence`, at the first position): two
@@ -925,161 +655,5 @@ async fn a_nonce_siblings_fork_is_not_evidence_against_the_other() {
     assert!(matches!(
         verify_principal_fork(&relabel(&items[0]), &honest_pg, genesis().await, &[]).await,
         Err(EvidenceFailure::GenesisMismatch)
-    ));
-}
-
-/// A view statement signed by `signer`, claiming the principal `pr` at
-/// `size` with commit id `id` and Principal Root `root`.
-fn crafted_view(
-    signer: &Kp,
-    pr: &str,
-    now: i64,
-    size: u64,
-    id: &str,
-    root: &str,
-) -> serde_json::Value {
-    let pay = serde_json::json!({
-        "alg": signer.alg, "commit_id": id, "index": size - 1, "now": now, "pr": pr,
-        "roots": {"ar": null, "cr": null, "pr": root, "sr": null},
-        "tmb": signer.tmb.to_b64(), "tree_size": size, "typ": "cyphr-server/view",
-    });
-    let (sig, _) = coz::sign_json(
-        &serde_json::to_vec(&pay).expect("pay"),
-        &signer.alg,
-        &signer.prv,
-        &signer.pubb,
-    )
-    .expect("sign");
-    serde_json::json!({"pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig)})
-}
-
-/// Claim (historical form, `arch-finding-never-clears`, and the comparison
-/// rules of `arch-behind-is-not-fork`): the peer's key history is bounded by
-/// signed times, a key is judged at each statement's own time (introduced
-/// by a coz, ended at its `rvk`, its delete, exclusive), and a statement is
-/// evidence only when it verifies, is about the principal asked, and
-/// disagrees in commit id or root. Unit-level on purpose: a running server
-/// cannot be made to delete or self-revoke its own keys, and the exact
-/// boundaries of a signed time need hand-made statements.
-///
-/// Turns red if: a key vouches outside its life (before it was introduced,
-/// at or after its revoke or delete), a tampered statement or one about
-/// another principal passes, agreeing statements convict, or a lower view
-/// whose root differs from the chain's is taken for a prefix.
-#[tokio::test]
-async fn key_history_bounds_a_key_by_its_signed_times() {
-    const T: i64 = NOW;
-    let pool = load_pool();
-    let (g, a, bob) = (kp(&pool, "golden"), kp(&pool, "key_a"), kp(&pool, "bob"));
-    // The genesis commit creates golden and key_a at T.
-    let mut peer = genesis_commit(&[&g, &a], T).await;
-    create_key(&mut peer, &a, &bob, T + 10).await;
-    apply(
-        &mut peer,
-        &a,
-        &a,
-        serde_json::json!({"alg": a.alg, "id": bob.tmb.to_b64(), "now": T + 20,
-                           "tmb": a.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/delete"}),
-        None,
-        T + 20,
-    )
-    .await;
-    // bob is added again after its delete: the later interval is its own.
-    create_key(&mut peer, &a, &bob, T + 25).await;
-    apply(
-        &mut peer,
-        &g,
-        &a,
-        serde_json::json!({"alg": g.alg, "now": T + 30, "rvk": T + 30,
-                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/revoke"}),
-        None,
-        T + 30,
-    )
-    .await;
-    let history = cyphr_client::evidence::KeyHistory::of(&[key_of(&g), key_of(&a)], &peer);
-
-    let pr = Base64UrlUnpadded::encode_string(&[9; 32]);
-    let pg = thumbprint(&pr);
-    let id = |n: u8| format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[n; 32]));
-    let item = |x: &serde_json::Value, y: &serde_json::Value| equivocation_item(&pr, x, y);
-    let check = |x: &serde_json::Value, y: &serde_json::Value| {
-        verify_peer_equivocation::<cyphr::eml::MemoryStorage>(&item(x, y), &pg, &history, None)
-    };
-    let other = crafted_view(&a, &pr, T + 40, 2, &id(2), &id(2));
-    let signs = |k: &Kp, now: i64| crafted_view(k, &pr, now, 2, &id(1), &id(1));
-
-    check(&signs(&g, T + 29), &other).expect("golden vouches until its revoke");
-    check(&signs(&g, T + 30), &other).expect_err("not at the instant of its revoke");
-    check(&signs(&bob, T + 15), &other).expect("bob vouches while held");
-    check(&signs(&bob, T + 20), &other).expect_err("not at the instant of its delete");
-    check(&signs(&bob, T + 5), &other).expect_err("not before it was introduced");
-    check(&signs(&bob, T + 22), &other).expect_err("not between the delete and the re-add");
-    check(&signs(&bob, T + 27), &other).expect("a key added again vouches in its later interval");
-
-    let mut tampered = signs(&a, T + 40);
-    tampered["pay"]["tree_size"] = 3.into();
-    tampered["pay"]["index"] = 2.into();
-    assert!(matches!(
-        check(&tampered, &other),
-        Err(EvidenceFailure::Statement { which: "a", .. })
-    ));
-    let foreign = crafted_view(
-        &a,
-        &Base64UrlUnpadded::encode_string(&[8; 32]),
-        T + 40,
-        2,
-        &id(1),
-        &id(1),
-    );
-    assert!(matches!(
-        check(&foreign, &other),
-        Err(EvidenceFailure::OtherPrincipal)
-    ));
-    let stranger = kp(&pool, "alice");
-    assert!(matches!(
-        check(&signs(&stranger, T + 40), &other),
-        Err(EvidenceFailure::Statement { which: "a", .. })
-    ));
-
-    // At one size: agreement is no conflict; either difference is one.
-    let same = signs(&a, T + 41);
-    assert!(matches!(
-        check(&same, &signs(&a, T + 42)),
-        Err(EvidenceFailure::NotConflicting(_))
-    ));
-    check(&same, &crafted_view(&a, &pr, T + 42, 2, &id(1), &id(7))).expect("same id, other root");
-    check(&same, &crafted_view(&a, &pr, T + 42, 2, &id(7), &id(1))).expect("same root, other id");
-
-    // At different sizes the lower is compared with the higher's own chain,
-    // here the peer principal itself standing in for a principal chain.
-    let tagged = |c: &cyphr::Commit| {
-        let d = c.tr().0.get(cyphr::HashAlg::Sha256).expect("sha256 id");
-        let r = c.pr().0.get(cyphr::HashAlg::Sha256).expect("sha256 pr");
-        (
-            cyphr::state::TaggedDigest::new(cyphr::HashAlg::Sha256, d.to_vec())
-                .expect("id")
-                .to_string(),
-            cyphr::state::TaggedDigest::new(cyphr::HashAlg::Sha256, r.to_vec())
-                .expect("pr")
-                .to_string(),
-        )
-    };
-    let commits: Vec<_> = peer.commits().map(tagged).collect();
-    let run = |lo: &serde_json::Value, hi: &serde_json::Value, chain: Option<&cyphr::Principal>| {
-        verify_peer_equivocation(&item(lo, hi), &pg, &history, chain)
-    };
-    let (hi_id, hi_root) = &commits[3];
-    let hi = crafted_view(&a, &pr, T + 40, 4, hi_id, hi_root);
-    let behind = crafted_view(&a, &pr, T + 40, 2, &commits[1].0, &commits[1].1);
-    assert!(matches!(
-        run(&behind, &hi, Some(&peer)),
-        Err(EvidenceFailure::NotConflicting(_))
-    ));
-    let wrong_root = crafted_view(&a, &pr, T + 40, 2, &commits[1].0, &id(5));
-    run(&wrong_root, &hi, Some(&peer)).expect("the chain's commit with another root is no prefix");
-    let unbacked = crafted_view(&a, &pr, T + 40, 4, &id(6), &id(6));
-    assert!(matches!(
-        run(&behind, &unbacked, Some(&peer)),
-        Err(EvidenceFailure::NeedsChain)
     ));
 }

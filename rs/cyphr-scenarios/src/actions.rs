@@ -2,15 +2,11 @@
 //! an operator does, named after the protocol.
 //!
 //! Scenarios express their steps only through these actions and assert on
-//! what they return. An action whose capability has landed drives the
+//! what they return. An action drives the
 //! shipped binaries: a person's steps run the `cyphr` CLI of that person's
 //! device over the fault proxy, an operator's steps run `cyphr-server`
 //! commands, and a read the CLI has no command for goes to the peer's own
-//! route. An action whose capability has not landed returns
-//! [`ActionError::Unsupported`], naming that capability, and
-//! [`Harness::ok`] turns it into the same `RED(<capability>) after-setup
-//! ...` panic the capability gate raises, so a scenario can neither pass
-//! nor fail as a behaviour failure on a step that does not exist.
+//! route.
 //!
 //! The data types carry only vocabulary the protocol already fixes: SPEC
 //! 15.5 (principal consensus states Active and Error, fork evidence,
@@ -29,12 +25,6 @@ use crate::harness::Harness;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ActionError {
-    /// The action is not implemented; `Capability` names what must land.
-    #[error("action `{action}` is unsupported until `{}` lands", .capability.name())]
-    Unsupported {
-        action: &'static str,
-        capability: Capability,
-    },
     /// The system refused the action (a verdict, not a defect).
     #[error("refused ({:?}): {}", .0.kind, .0.detail)]
     Refused(Refusal),
@@ -83,10 +73,6 @@ pub struct Refusal {
 }
 
 pub type ActionResult<T> = Result<T, ActionError>;
-
-fn unsupported<T>(action: &'static str, capability: Capability) -> ActionResult<T> {
-    Err(ActionError::Unsupported { action, capability })
-}
 
 /// A principal's canonical address: the PG once it is established, or the
 /// genesis tmb (equal to its PR) while it is a Level 1-2 principal that has
@@ -214,6 +200,9 @@ pub struct Verdict {
     pub evidence: Vec<Evidence>,
     /// The key that resolved a fork, when one did.
     pub resolved_by: Option<KeyRef>,
+    /// When the CLI that computed the verdict was started, so an oracle can
+    /// bound the time between the CLI's reading of the peer and its own.
+    pub observed_at: std::time::Instant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -356,12 +345,10 @@ impl Harness {
         }
     }
 
-    /// Unwrap an action result; an unsupported action ends the scenario as
-    /// RED for the capability it names, any other error is a defect.
+    /// Unwrap an action result; an error is a defect.
     pub fn ok<T>(&self, r: ActionResult<T>) -> T {
         match r {
             Ok(v) => v,
-            Err(ActionError::Unsupported { capability, .. }) => self.red(capability),
             Err(e) => panic!("scenario step failed: {e}"),
         }
     }
@@ -401,32 +388,6 @@ impl Harness {
             .await
             .map(KeyRef)
             .map_err(|e| ActionError::Failed(e.to_string()))
-    }
-
-    /// Make a peer serve `to` the given tips for `principal` instead of
-    /// its real branch: a rigged, equivocating peer. A shipped peer cannot
-    /// be rigged, so this needs a hostile responder the harness runs; it is
-    /// owed with the first scenario that reaches it (S05, under G3).
-    pub async fn equivocate(
-        &self,
-        _peer: &str,
-        _principal: &Principal,
-        _tips: &[(&Client<'_>, Tip)],
-    ) -> ActionResult<()> {
-        unsupported("equivocate", Capability::ClientGossip)
-    }
-
-    /// Make a peer serve `to` an old, genuine tip of `principal`: a stale
-    /// view, which is a strict prefix of the real chain and not equivocation.
-    /// A rigged peer, as [`Harness::equivocate`].
-    pub async fn serve_stale_view(
-        &self,
-        _peer: &str,
-        _principal: &Principal,
-        _to: &Client<'_>,
-        _tip: &Tip,
-    ) -> ActionResult<()> {
-        unsupported("serve_stale_view", Capability::ClientGossip)
     }
 
     /// Make a peer answer with an envelope of version `v`.
@@ -837,11 +798,6 @@ impl Client<'_> {
         self.local_tip(p, &peer).await
     }
 
-    /// Publish a discovery self-claim naming the peers that hold the principal.
-    pub async fn publish_self_claim(&self, _p: &Principal, _peers: &[&str]) -> ActionResult<()> {
-        unsupported("publish_self_claim", Capability::Discovery)
-    }
-
     // ---- knowing a principal ----
 
     /// Hold a principal's genesis out of band, with a hint of where to look:
@@ -866,11 +822,6 @@ impl Client<'_> {
         let hint = other.known(p);
         self.know(p, &hint.iter().map(String::as_str).collect::<Vec<_>>());
         Ok(())
-    }
-
-    /// Follow the principal's discovery self-claim to its current peers.
-    pub async fn follow_claim(&self, _p: &Principal) -> ActionResult<()> {
-        unsupported("follow_claim", Capability::Discovery)
     }
 
     /// `cyphr watch`: the verify command on a timer, here one round that
@@ -911,11 +862,12 @@ impl Client<'_> {
         for url in &urls {
             args.extend(["--peer".into(), url.clone()]);
         }
+        let started = std::time::Instant::now();
         let v = self
             .cyphr(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         self.know(p, &names.iter().map(String::as_str).collect::<Vec<_>>());
-        parse_verdict(&v, p, &names, &urls)
+        parse_verdict(&v, p, &names, &urls, started)
     }
 
     async fn urls(&self, names: &[String]) -> Vec<String> {
@@ -1024,11 +976,12 @@ impl Client<'_> {
     pub async fn audit(&self, p: &Principal) -> ActionResult<Verdict> {
         let names = self.known(p);
         let args = self.peer_args(p, "audit").await?;
+        let started = std::time::Instant::now();
         let v = self
             .cyphr(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         let urls = self.urls(&names).await;
-        parse_verdict(&v, p, &names, &urls)
+        parse_verdict(&v, p, &names, &urls, started)
     }
 
     // ---- data actions ----
@@ -1228,6 +1181,7 @@ fn parse_verdict(
     p: &Principal,
     names: &[String],
     urls: &[String],
+    started: std::time::Instant,
 ) -> ActionResult<Verdict> {
     let bad = |what: &str| ActionError::Failed(format!("verify answered without {what}: {v}"));
     let standing = match v["verdict"].as_str() {
@@ -1270,6 +1224,7 @@ fn parse_verdict(
         .as_array()
         .is_some_and(|e| e.iter().any(|x| x["kind"] == "principal_fork"));
     Ok(Verdict {
+        observed_at: started,
         standing,
         freshness: Freshness {
             // The age of the principal's newest signed `now`, on the
@@ -1521,7 +1476,7 @@ impl RelyingParty<'_> {
 /// relying party over a real authenticated Noise session, its token is
 /// accepted on that channel and refused as `Unauthorized` on a second one.
 /// `Ok(false)` when the capability is observably absent (the token works on
-/// another channel, or an action it needs is unsupported).
+/// another channel).
 pub async fn observe_session_binding(h: &Harness) -> ActionResult<bool> {
     let peer = h
         .peers
@@ -1531,7 +1486,7 @@ pub async fn observe_session_binding(h: &Harness) -> ActionResult<bool> {
         .clone();
     let alice = h.client("session-binding-probe");
     let rp = h.start_relying_party().await?;
-    let observed = async {
+    async {
         let pr = alice.create_principal().await?;
         match alice.push(&pr, &[&peer]).await? {
             PushOutcome::Accepted(_) => {},
@@ -1545,9 +1500,5 @@ pub async fn observe_session_binding(h: &Harness) -> ActionResult<bool> {
         Ok(original == Presented::Accepted
             && matches!(other, Presented::Refused(r) if r.kind == RefusalKind::Unauthorized))
     }
-    .await;
-    match observed {
-        Err(ActionError::Unsupported { .. }) => Ok(false),
-        other => other,
-    }
+    .await
 }

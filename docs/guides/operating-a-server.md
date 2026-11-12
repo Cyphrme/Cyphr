@@ -779,6 +779,7 @@ right upstream with the wrong `pub` and reads simply fail to find anything:
   "v": 1,
   "payload": {
     "error": "principal AkQKBDXinn-_73V0UNuISr5n7pNVItqqrHI_6zcaYgA not found",
+    "kind": "not_found",
     "now": 1785872751
   },
   "statement": { "kind": "unsigned" }
@@ -937,8 +938,27 @@ RUST_LOG=cyphr_server=info,tower_http=debug cyphr-server serve …
 Every request carries a generated `request_id` through its span, so a
 failure and its handler's own log lines join up.
 
-**There is no metrics endpoint and no health endpoint.** `/health`,
-`/healthz`, `/metrics`, and `/readyz` all return the ordinary `404`:
+**Two operability endpoints exist.** `GET /healthz` answers `200` with
+`{"status":"ok"}` when the record directory accepts a write, and `503` with
+`{"status":"unavailable","error":"storage unavailable"}` when it does not;
+the cause goes to the log, not the wire. It is a real write probe (one
+fixed one-byte sentinel file, never concurrent), so it detects a vanished
+or unwritable store but not a full disk or failing device. `GET /metrics`
+is Prometheus text exposition (`text/plain; version=0.0.4`) of fixed
+counters, with no label drawn from a request, principal or key:
+
+- `cyphr_requests_total`: every request answered.
+- `cyphr_pushes_accepted_total`: pushes answered 2xx.
+- `cyphr_refusals_total{kind="…"}`: requests answered 4xx or 5xx, by a
+  closed set of kinds (`bad_request`, `denied`, `not_found`, `conflict`,
+  `too_large`, `unprocessable`, `rate_limited`, `server_error`).
+- `cyphr_eml_append_failures_total`: accepted commits whose commit-log
+  (EML) append failed after the commit was stored. The push still
+  succeeded and the next load of that principal repairs the log, so a
+  count that keeps rising means the log store is failing even though
+  every push answers success.
+
+`/readyz` and `/health` are not routes and return the ordinary `404`:
 
 ```json
 {
@@ -948,7 +968,8 @@ failure and its handler's own log lines join up.
 }
 ```
 
-Use `GET /server` as a liveness probe. It reads memory only, writes nothing,
+`GET /server` is the cheapest probe, and the one to use to check the
+configuration. It reads memory only, writes nothing,
 touches no store, and its `tier` doubles as a check that the server came up
 in the configuration you intended — a probe that starts answering
 `repository` on a server you deployed as an attestor is telling you that
@@ -984,11 +1005,39 @@ layer sitting _inside_ the tracing, so it does show up like any other
 response. Seeing one `403` in the log is what makes it natural to assume
 the `429`s are in there somewhere too. They are not.
 
-That leaves the fences observable only from outside the process — from the
-reverse proxy or load balancer in front of it, which sees the status codes
-the server actually returned. If you want an alarm on rate-limit storms,
-oversized bodies, or quota exhaustion, that is where the counter has to
-live. There is nowhere inside the server to put it.
+The fences are not invisible, though. The `/metrics` counters wrap the
+fences too, so `cyphr_refusals_total{kind="rate_limited"}` and
+`{kind="too_large"}` count what the fences refused even though no log line
+does. Alarm on those, or on the status codes at the reverse proxy in front
+of the server; the logs are the wrong place for either.
+
+### Refusals name their kind
+
+A refusal the caller can act on carries a stable `kind` beside the human
+`error` message, so a client branches on the kind and never on the text.
+An action-only push for a principal with no genesis commit, for example, is
+a `422`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "error": "protocol: genesis incomplete",
+    "kind": "genesis_incomplete",
+    "now": 1785872960
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+(`statement.kind` is the signature slot, not the refusal kind.) The kinds
+are `not_found`, `ambiguous`, `invalid_input`, `malformed_blob`,
+`malformed_body`, `too_large`, `branch_limit`, `errored`,
+`embedded_unsupported`, `state_mismatch`, `commit_mismatch`, `coz_reuse`,
+`genesis_incomplete` and `protocol` (any other protocol refusal). A server
+fault carries no `kind`, and neither do refusals built by the fences and
+auth layers. The set may grow, so treat an unknown kind as the generic
+refusal its status code says.
 
 ## Restarting and upgrading
 
@@ -1071,7 +1120,7 @@ reading them here:
 
 - **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
-- **No metrics, no health endpoint, no access log by default.**
+- **No access log by default** (see above to turn one on); counters are `GET /metrics`.
 - **No backup command.** `cyphr-server export` is listed in `--help` and prints `error: export is not yet implemented`. Consistent backups mean stopping the server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
 - **No `Retry-After` on a `429`,** and no indication of which bucket refused, so a well-behaved client cannot back off intelligently.

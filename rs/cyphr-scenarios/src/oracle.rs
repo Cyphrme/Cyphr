@@ -154,13 +154,17 @@ impl Harness {
             "freshness.peer_reported_newer disagrees with the peers' heights"
         );
         if let Some((name, _)) = held.iter().find(|(_, t)| t.tip == v.tip) {
-            // The peer's age is whole seconds, so allow its truncation plus
-            // the time between the two reads.
-            let age_ms = self.peer_age(name, p).await.expect("peer reported a tip") * 1000;
-            let diff = (age_ms - v.freshness.age.as_millis() as i64).abs();
+            // The peer's age is whole seconds (truncated, so up to 1s low)
+            // and is read after the verdict: it can exceed the verdict's age
+            // by at most the time that really passed between the two reads,
+            // which is measured, not guessed, so load cannot flake it.
+            let peer_s = self.peer_age(name, p).await.expect("peer reported a tip");
+            let gap_ms = v.observed_at.elapsed().as_millis() as i64;
+            let age_ms = peer_s * 1000;
+            let verdict_ms = v.freshness.age.as_millis() as i64;
             assert!(
-                diff <= 2500,
-                "freshness.age {:?} vs observed lag {age_ms}ms",
+                age_ms >= verdict_ms - 1000 - gap_ms && age_ms <= verdict_ms + 1000 + gap_ms,
+                "freshness.age {:?} vs observed lag {age_ms}ms (reads {gap_ms}ms apart)",
                 v.freshness.age
             );
         }

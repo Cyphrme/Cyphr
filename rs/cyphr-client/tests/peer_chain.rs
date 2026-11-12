@@ -19,14 +19,12 @@ use cyphr_client::{PeerChain, PeerFailure, PeerLimits};
 
 /// Claim: a client that pinned a peer holds only what it has followed, so a
 /// statement signed by a key the peer introduced LATER is refused until the
-/// client follows once, after which the same statement is accepted, for a
-/// tip and for a view alike, and a key the followed chain still does not
-/// hold stays refused.
+/// client follows once, after which the same statement is accepted, and a
+/// key the followed chain still does not hold stays refused.
 ///
 /// Turns red if: `follow` does not extend the held chain with the peer's
-/// commits; `verify_tip` or `verify_view` accept a key the held chain lacks
-/// (trusting the statement's own say-so); `verify_view` ignores the held
-/// chain's active keys; or `verify_tip_following` does not follow.
+/// commits; `verify_tip` accepts a key the held chain lacks
+/// (trusting the statement's own say-so); or `verify_tip_following` does not follow.
 /// End-to-end scenario: yes (real chain replayed from a carrier).
 #[tokio::test]
 async fn follow_extends_the_chain_and_statements_verify_against_held_keys() {
@@ -36,7 +34,7 @@ async fn follow_extends_the_chain_and_statements_verify_against_held_keys() {
     let mut peer = Chain::new(&g).await;
     let c1 = peer.commit(&k1, 1_700_000_100).await;
     let pipe = Pipe::new(peer.patch(std::slice::from_ref(&c1)));
-    let (pr, pr_tmb) = subject();
+    let (pr, _) = subject();
 
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000)).await;
 
@@ -54,13 +52,6 @@ async fn follow_extends_the_chain_and_statements_verify_against_held_keys() {
         held.verify_tip(&tip_envelope(&g), &pr).is_ok(),
         "the pinned genesis key verifies from the start"
     );
-    assert!(
-        matches!(
-            held.verify_view(&view_coz(&k1), &pr_tmb),
-            Err(PeerFailure::KeyNotActive { .. })
-        ),
-        "verify_view uses the held chain's active keys, not the statement's"
-    );
 
     held.follow(&pipe).await.expect("follow the peer chain");
     assert_eq!(pipe.exchanges(), 1, "one follow is one patch fetch");
@@ -69,14 +60,10 @@ async fn follow_extends_the_chain_and_statements_verify_against_held_keys() {
         .verify_tip(&tip, &pr)
         .expect("the introduced key verifies after following");
     assert_eq!(report.sequence, 1);
-    let view = held
-        .verify_view(&view_coz(&k1), &pr_tmb)
-        .expect("a view by the introduced key verifies after following");
-    assert_eq!((view.tree_size, view.index), (2, 1));
 
     // A key the followed chain never held stays refused.
     assert!(matches!(
-        held.verify_view(&view_coz(&outsider), &pr_tmb),
+        held.verify_tip(&tip_envelope(&outsider), &pr),
         Err(PeerFailure::KeyNotActive { .. })
     ));
 }
@@ -194,11 +181,11 @@ async fn pin_naming_another_pg_is_refused() {
     );
 }
 
-/// Claim: a key the followed chain REVOKED is refused for a tip and for a
-/// view, while a sibling key the chain still holds verifies, so lookup is
-/// among ACTIVE keys and never among every key the chain ever held.
+/// Claim: a key the followed chain REVOKED is refused for a tip, while a sibling key the chain
+/// still holds verifies, so lookup is among ACTIVE keys and never among every key the chain ever
+/// held.
 ///
-/// Turns red if: `verify_tip` or `verify_view` look a key up among all keys
+/// Turns red if: `verify_tip` looks a key up among all keys
 /// the chain has held (a revoked key still vouches), or trust the
 /// statement's own signature without the chain's say-so.
 /// End-to-end scenario: yes (real chain with a revocation, replayed from a
@@ -212,7 +199,7 @@ async fn revoked_key_in_the_held_chain_is_refused() {
     let c1 = peer.commit(&k1, 1_700_000_100).await;
     let c2 = peer.commit(&k2, 1_700_000_200).await;
     let c3 = peer.revoke(&k1, 1_700_000_300).await;
-    let (pr, pr_tmb) = subject();
+    let (pr, _) = subject();
 
     let pipe = Pipe::new(peer.patch(&[c1.clone(), c2.clone()]));
     let mut held = PeerChain::pin(&peer.pg(), g.domain_key(1_700_000_000)).await;
@@ -223,10 +210,6 @@ async fn revoked_key_in_the_held_chain_is_refused() {
     held.follow(&pipe).await.expect("follow the revoke");
     assert!(matches!(
         held.verify_tip(&tip_envelope(&k1), &pr),
-        Err(PeerFailure::KeyNotActive { .. })
-    ));
-    assert!(matches!(
-        held.verify_view(&view_coz(&k1), &pr_tmb),
         Err(PeerFailure::KeyNotActive { .. })
     ));
     assert!(held.verify_tip(&tip_envelope(&k2), &pr).is_ok());

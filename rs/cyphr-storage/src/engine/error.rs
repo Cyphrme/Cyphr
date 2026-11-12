@@ -5,6 +5,7 @@ use crate::index::IndexerError;
 
 /// Errors from [`super::StorageEngine`] operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EngineError {
     /// Propagated from the blob store backend.
     #[error("blob store: {0}")]

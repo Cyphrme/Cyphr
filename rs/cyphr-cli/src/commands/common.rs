@@ -139,7 +139,7 @@ pub fn extract_genesis_from_commits(
     if genesis_keys.len() == 1 {
         Ok(Genesis::Implicit(genesis_keys.remove(0)))
     } else {
-        Ok(Genesis::Explicit(genesis_keys))
+        Ok(Genesis::Disclosed(genesis_keys))
     }
 }
 

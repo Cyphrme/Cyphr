@@ -140,7 +140,7 @@ pub fn make_genesis(genesis_keys: &[serde_json::Value]) -> cyphr_storage::Genesi
     if keys.len() == 1 {
         cyphr_storage::Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        cyphr_storage::Genesis::Explicit(keys)
+        cyphr_storage::Genesis::Disclosed(keys)
     }
 }
 

@@ -3,7 +3,7 @@
 //!
 //! A receipt is a Coz message the server signs through a
 //! [`ReceiptSigner`] -- the one attest path for every server signature
-//! (commit receipts, tip reports, view statements). The signer is a seam:
+//! (commit receipts and tip reports). The signer is a seam:
 //! it wraps the server's [`ServerIdentity`] today and any non-exportable
 //! key later, without this module learning key bytes. Each kind gets its
 //! own `typ` so no signature can be replayed across purposes, the same
@@ -23,7 +23,6 @@ use cyphr::state::TaggedDigest;
 // The canonical report parse lives in the client crate; `check_equivocation`
 // consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
 pub use cyphr_client::TipReport;
-use cyphr_client::VIEW_STATEMENT_TYP;
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -215,44 +214,6 @@ pub async fn tip_report(
             ("roots", roots.to_value()),
             ("commit_count", Value::from(commit_count)),
             ("last_updated", Value::from(last_updated)),
-        ],
-    )
-    .await
-}
-
-/// Compose and sign a view statement for `/view`: the peer's own claim "I
-/// hold `pr` at this tree size and index" (GOSSIP.md section 3). The tree
-/// size is the principal's `commit_count`; the index is the newest
-/// commit's position, `tree_size - 1`, so a zero-size tree has no
-/// statement to sign.
-///
-/// # Errors
-///
-/// As [`commit_receipt`]; additionally [`ReceiptError::Compose`] for a
-/// zero `tree_size`.
-pub async fn view_statement(
-    signer: &dyn ReceiptSigner,
-    now: i64,
-    pr: impl Into<String>,
-    tree_size: u64,
-    commit_id: impl Into<String>,
-    roots: &Roots,
-) -> Result<coz::CozJson, ReceiptError> {
-    let (pr, commit_id) = (pr.into(), commit_id.into());
-    validate(&pr, &commit_id, roots)?;
-    let index = tree_size
-        .checked_sub(1)
-        .ok_or_else(|| ReceiptError::Compose("a tree of size zero has no index".into()))?;
-    sign_statement(
-        signer,
-        now,
-        VIEW_STATEMENT_TYP,
-        [
-            ("pr", Value::String(pr)),
-            ("tree_size", Value::from(tree_size)),
-            ("index", Value::from(index)),
-            ("commit_id", Value::String(commit_id)),
-            ("roots", roots.to_value()),
         ],
     )
     .await

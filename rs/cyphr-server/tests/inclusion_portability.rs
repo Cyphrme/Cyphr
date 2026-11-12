@@ -368,7 +368,7 @@ async fn build_fixture() -> PortabilityFixture {
         local_engine
             .submit_commit(
                 &pinned_server_pg,
-                Some(cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()])),
+                Some(cyphr_storage::Genesis::Disclosed(vec![genesis_key.clone()])),
                 &blobs,
             )
             .await
@@ -377,7 +377,7 @@ async fn build_fixture() -> PortabilityFixture {
     let replayed_server = local_engine
         .load_principal(
             &pinned_server_pg,
-            cyphr_storage::Genesis::Explicit(vec![genesis_key.clone()]),
+            cyphr_storage::Genesis::Disclosed(vec![genesis_key.clone()]),
         )
         .await
         .expect("load the fully replayed server principal");

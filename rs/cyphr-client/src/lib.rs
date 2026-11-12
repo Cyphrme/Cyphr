@@ -47,7 +47,4 @@ pub use patch::{
     VerifiedPatch, fetch_patch, verify_authenticated_envelope, verify_patch_body,
 };
 pub use peer::{HeldTip, PeerChain, PeerFailure, PeerLimits};
-pub use report::{
-    TipReport, TipReportParseError, TipReportRoots, VIEW_STATEMENT_TYP, ViewFailure, ViewStatement,
-    ViewStatementParseError, verify_view, verify_view_statement,
-};
+pub use report::{TipReport, TipReportParseError, TipReportRoots};

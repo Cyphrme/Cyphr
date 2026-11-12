@@ -468,7 +468,7 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
     for (i, signer) in signers.iter().enumerate() {
         let mut principal = cyphr::Principal::implicit(match genesis_of(signer) {
             cyphr_storage::Genesis::Implicit(k) => k,
-            cyphr_storage::Genesis::Explicit(_) => unreachable!("genesis_of builds implicit"),
+            _ => unreachable!("genesis_of builds implicit"),
         })
         .await
         .expect("implicit genesis");

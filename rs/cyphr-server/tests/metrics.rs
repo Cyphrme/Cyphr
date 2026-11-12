@@ -31,6 +31,7 @@ use common::{build_genesis_push_body, golden_principal_id, keyless_server, load_
 const REQUESTS: &str = "cyphr_requests_total";
 const PUSHES: &str = "cyphr_pushes_accepted_total";
 const REFUSALS: &str = "cyphr_refusals_total";
+const EML_BEHIND: &str = "cyphr_eml_append_failures_total";
 
 async fn send(app: &Router, req: Request<Body>) -> (StatusCode, HeaderMap, String) {
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -160,6 +161,16 @@ async fn metrics_counters_move_exactly_with_traffic() {
         moved,
         vec![1.0, 1.0],
         "two refusal kinds must move two distinct series by one each: {a:?}"
+    );
+
+    // The commit-log-behind series is exposed, and none of the traffic
+    // above (accepted or refused) counts as a failed log append. A real
+    // append failure cannot be injected below the server's concrete
+    // storage; `commit_order` pins that the engine count it reads moves.
+    assert_eq!(
+        after.get(EML_BEHIND).copied(),
+        Some(0.0),
+        "the commit-log-behind series is exposed and stays 0 on a healthy log: {after:?}"
     );
 }
 

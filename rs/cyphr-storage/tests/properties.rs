@@ -279,7 +279,7 @@ async fn run_engine_recovery_test<B, I>(
             let genesis = if genesis_keys.len() == 1 {
                 Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
             } else {
-                Genesis::Explicit(genesis_keys.iter().map(golden_key_to_domain).collect())
+                Genesis::Disclosed(genesis_keys.iter().map(golden_key_to_domain).collect())
             };
 
             engine
@@ -311,7 +311,7 @@ async fn run_engine_recovery_test<B, I>(
         let genesis = if genesis_keys.len() == 1 {
             Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
         } else {
-            Genesis::Explicit(genesis_keys.iter().map(golden_key_to_domain).collect())
+            Genesis::Disclosed(genesis_keys.iter().map(golden_key_to_domain).collect())
         };
 
         let _ = engine

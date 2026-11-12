@@ -157,7 +157,7 @@ impl Fork {
         let pool = load_pool();
         let golden = kp(&pool, "golden");
         let key_a = kp(&pool, "key_a");
-        let genesis = Genesis::Explicit(vec![key_of(&golden), key_of(&key_a)]);
+        let genesis = Genesis::Disclosed(vec![key_of(&golden), key_of(&key_a)]);
         let base = genesis_of(&[&golden, &key_a], NOW).await;
         let pre = base.pr_tagged().expect("pr after commit 0");
         let first = blobs(&base, 0);

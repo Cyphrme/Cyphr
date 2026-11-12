@@ -1,6 +1,6 @@
 //! End-to-end peer-chain following against a real server: a client pins the
 //! server's PG and genesis key from `/server`, follows `/patch`, verifies
-//! signed `/tip` and `/view` against the keys active in that chain, and
+//! signed `/tip` against the keys active in that chain, and
 //! follows once when the server rotates its signing key.
 //!
 //! Rotation goes through `AppState::rotate_signing_key`; no key
@@ -136,13 +136,6 @@ async fn push_golden(app: &Router, pr: &str) {
     }
 }
 
-/// The digest bytes of a principal id, which may carry an algorithm label
-/// (`SHA-256:<b64ut>`, as the PG does) or be a bare digest.
-fn pr_thumbprint(pr: &str) -> coz::Thumbprint {
-    let digest = pr.rsplit_once(':').map_or(pr, |(_, d)| d);
-    coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(digest).expect("pr b64"))
-}
-
 /// Claim: a client pins the server by PG and genesis key from `/server`,
 /// follows its chain, and verifies a signed `/tip`; when the server rotates
 /// its signing key, a tip signed by the NEW key is refused by the stale
@@ -204,7 +197,7 @@ async fn client_follows_the_server_chain_across_a_key_rotation() {
 
 /// Claim: a statement signed by a key the server has rotated away from is
 /// refused as `KeyNotActive` by a client holding the current chain, for a
-/// tip and for a view, even after following, and never loops.
+/// tip, even after following, and never loops.
 ///
 /// Turns red if: the retired key is accepted (lookup among every key the
 /// chain ever held instead of the active ones); the refusal is another
@@ -239,16 +232,6 @@ async fn statement_signed_by_the_retired_key_is_refused() {
         "a retired key's tip must be refused: {refused:?}"
     );
     assert!(carrier.patches() <= 1, "at most one follow, no loop");
-
-    let (status, view) = get_json(app, &format!("/view?pr={pr}")).await;
-    assert_eq!(status, StatusCode::OK, "{view:?}");
-    let coz: coz::CozJson =
-        serde_json::from_value(view["statement"]["coz"].clone()).expect("view coz");
-    let refused = held.verify_view(&coz, &pr_thumbprint(&pr));
-    assert!(
-        matches!(refused, Err(PeerFailure::KeyNotActive { .. })),
-        "a retired key's view must be refused: {refused:?}"
-    );
 }
 
 /// Claim: a pin whose PG is not the server's own (here, another principal's

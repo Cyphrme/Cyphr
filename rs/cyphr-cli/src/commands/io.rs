@@ -106,7 +106,9 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
                 cyphr::state::hash_alg_from_str(k.alg())?,
                 k.tmb().as_bytes().to_vec(),
             )?,
-            Genesis::Explicit(_) => {
+            // `Disclosed` is the case that matters; a variant added later
+            // (the enum is non-exhaustive) has no thumbprint-only form either.
+            _ => {
                 return Err(Error::ExplicitGenesisWithoutPg);
             },
         },

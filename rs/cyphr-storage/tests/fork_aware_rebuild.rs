@@ -109,7 +109,7 @@ impl Scenario {
 
         Self {
             id,
-            genesis: Genesis::Explicit(vec![golden.key().expect("golden"), key_a]),
+            genesis: Genesis::Disclosed(vec![golden.key().expect("golden"), key_a]),
             g,
             a: last(&a),
             b: last(&b),

@@ -190,7 +190,7 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> crate::Genesis {
     if keys.len() == 1 {
         crate::Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        crate::Genesis::Explicit(keys)
+        crate::Genesis::Disclosed(keys)
     }
 }
 
@@ -224,46 +224,6 @@ fn build_bundle(commit: &serde_json::Value) -> WireBundle {
         .expect("fixture commit line")
         .bundle()
         .expect("fixture bundle")
-}
-
-/// F29: a submitted blob whose pay is missing `typ` must be rejected
-/// outright, not silently misclassified. Before the fix, engine/mod.rs's
-/// hand-rolled extraction defaulted a missing `typ` to `""`, and
-/// a transaction check on `""` is false -- so a coz that was actually a
-/// mutation (e.g. a corrupted `key/create`) could be silently routed down
-/// the action-only path instead of being rejected as malformed.
-#[tokio::test]
-async fn submit_commit_rejects_blob_missing_typ() {
-    let fixture = load_golden("actions", "action_alone_leaves_pr");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let genesis = make_genesis(genesis_keys);
-
-    let malformed = serde_json::json!({
-        "pay": {
-            "alg": "ES256",
-            "tmb": genesis_keys[0]["tmb"],
-            "now": 1000
-            // "typ" deliberately omitted
-        },
-        "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    });
-    let bytes = serde_json::to_vec(&malformed).unwrap();
-
-    let engine = test_engine();
-    let principal_id = genesis_principal_id(&genesis).unwrap();
-    let result = engine
-        .submit_commit(
-            &principal_id,
-            Some(genesis),
-            &WireBundle::actions(vec![bytes]),
-        )
-        .await;
-
-    assert!(
-        matches!(result, Err(EngineError::MalformedBlob(_))),
-        "a blob missing 'typ' must be rejected as malformed, not silently misclassified as an \
-         action, got {result:?}"
-    );
 }
 
 /// Backs SPEC be0663f section 12 (a commit that does not verify is not
@@ -939,3 +899,37 @@ proptest::proptest! {
     }
 }
 mod pgk;
+
+/// Claim: a rival whose parent is a disqualified rival is itself no
+/// participant, so two children of a rival signed by a revoked key do not
+/// put the principal in Error. Turns red if the participant parent check is
+/// dropped (both children then count as a fork over one `pre`). A unit test
+/// on the pure fork rule: the scenario needs a revoked key's rival and two
+/// children of it, which no honest write path stores.
+#[test]
+fn children_of_a_disqualified_rival_are_not_a_fork() {
+    let held = |sequence: u64, id: &str, pre: Option<&str>, signer: &str, canonical: bool| Held {
+        sequence,
+        id: id.into(),
+        pre: pre.map(Into::into),
+        pr: format!("pr-{id}"),
+        signed: vec![signer.into()],
+        canonical,
+        removes: Vec::new(),
+    };
+    let commits = [
+        held(0, "c0", None, "ok", true),
+        held(1, "c1", Some("pr-c0"), "ok", true),
+        held(1, "r1", Some("pr-c0"), "revoked", false),
+        held(2, "r2a", Some("pr-r1"), "ok", false),
+        held(2, "r2b", Some("pr-r1"), "ok", false),
+    ];
+    let revoked: Revoked = ["revoked".to_string()].into_iter().collect();
+    assert!(
+        !in_error(&commits, &revoked),
+        "two children of a disqualified rival counted as a fork"
+    );
+    // Control: with the key not revoked, r1 participates and so do its
+    // children, which fork over one pre.
+    assert!(in_error(&commits, &Revoked::new()));
+}

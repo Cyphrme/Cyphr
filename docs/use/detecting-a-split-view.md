@@ -75,9 +75,7 @@ calling an honest server a liar because the record it holds forked, is
 a false accusation anyone can take apart, and it costs you the
 credibility you need the next time you are right. The architecture page
 states the rule that separates them:
-[arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
-and
-[arch-one-key-equivocation](../architecture/equivocation-detection.md#arch-one-key-equivocation).
+[arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork).
 
 ## What you can do today
 

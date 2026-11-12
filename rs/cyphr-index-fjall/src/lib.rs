@@ -66,6 +66,10 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 /// from the held commits).
 const SCHEMA_VERSION: u32 = 7;
 
+/// The partition schema 6 kept Error rows in, deleted when an older store is
+/// discarded on open.
+const RETIRED_ERRORED_KEYSPACE: &str = "index_errored";
+
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
 const META_KEY: &[u8] = b"index-meta";
@@ -325,6 +329,13 @@ impl FjallIndexer {
                     if !ks.is_empty().map_err(to_backend_err)? {
                         ks.clear().map_err(to_backend_err)?;
                     }
+                }
+                // Schema 6 kept an `index_errored` partition that 7 no longer
+                // opens; clearing the live partitions would leave it behind
+                // for good.
+                if db.keyspace_exists(RETIRED_ERRORED_KEYSPACE) {
+                    let orphan = open(RETIRED_ERRORED_KEYSPACE)?;
+                    db.delete_keyspace(orphan).map_err(to_backend_err)?;
                 }
                 if stored.is_some() {
                     meta.remove(META_KEY).map_err(to_backend_err)?;

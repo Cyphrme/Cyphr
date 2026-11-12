@@ -246,6 +246,7 @@ fn standing<'a>(report: &'a cyphr_client::PullReport, name: &str) -> &'a PeerSta
 /// changes the record; the tip is not the longest verified one; or the
 /// pull re-fetches what the verifier already holds.
 /// End-to-end scenario: yes (real chains over a carrier that plays peers).
+// @docket: arch-behind-is-not-fork :: scripts/docket-run arch-behind-is-not-fork
 #[tokio::test]
 async fn pull_classifies_peers_from_the_own_record() {
     let (g, other, k1, k2, k3) = (kp(), kp(), kp(), kp(), kp());

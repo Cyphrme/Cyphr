@@ -329,7 +329,7 @@ pub fn sign_as(signer: &Kp, pay: serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig) })
 }
 
-/// The principal a tip or view statement is about (not the peer's own).
+/// The principal a tip statement is about (not the peer's own).
 pub fn subject() -> (String, coz::Thumbprint) {
     (b64(7), coz::Thumbprint::from_bytes(vec![7; 32]))
 }
@@ -356,21 +356,4 @@ pub fn tip_envelope(signer: &Kp) -> serde_json::Value {
         "payload": {},
         "statement": { "kind": "signed", "coz": sign_as(signer, pay) },
     })
-}
-
-/// A view statement coz signed by `signer`.
-pub fn view_coz(signer: &Kp) -> coz::CozJson {
-    let (pr, _) = subject();
-    let pay = serde_json::json!({
-        "alg": signer.kp.alg.name(),
-        "now": 1_700_000_500,
-        "tmb": signer.tmb.to_b64(),
-        "typ": "cyphr-server/view",
-        "pr": pr,
-        "tree_size": 2,
-        "index": 1,
-        "commit_id": digest(9),
-        "roots": { "pr": digest(1), "sr": digest(2), "ar": digest(3), "cr": digest(4) },
-    });
-    serde_json::from_value(sign_as(signer, pay)).expect("coz json")
 }

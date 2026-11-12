@@ -807,6 +807,10 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     retention_replays: std::sync::atomic::AtomicU64,
     /// Candidate positions [`Self::retain_rival`] has tried a bundle at.
     retention_trials: std::sync::atomic::AtomicU64,
+    /// Commits whose manifest was stored but whose commit-log append failed
+    /// ([`Self::log_append_failures`]): the log is behind until the next
+    /// load repairs it.
+    log_append_failures: std::sync::atomic::AtomicU64,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -841,7 +845,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             revoked: std::sync::Mutex::new(Revoked::new()),
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
+            log_append_failures: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many accepted commits have had their commit-log append fail
+    /// after their manifest was stored, over this engine's lifetime. Each
+    /// is repaired by the next load of its principal; a count that keeps
+    /// rising means the log store is failing, which the push answers alone
+    /// do not show.
+    pub fn log_append_failures(&self) -> u64 {
+        self.log_append_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Fetch (or create) this `principal_id`'s serialization point.
@@ -1479,6 +1494,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             Some(staged) => Some(staged.commit().await),
             None => None,
         } {
+            self.log_append_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 principal = %commit.principal_id,
                 error = %e,
@@ -1568,6 +1585,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`Self::build_commit`]), and a manifest whose commit the replay
     /// does not reproduce is quarantined ([`QuarantineReason::Unreplayable`]).
     async fn rebuild_pass(&self, replay: bool) -> Result<RebuildReport, EngineError> {
+        self.rebuild_pass_on(&self.indexer, replay).await
+    }
+
+    /// [`Self::rebuild_pass`] building into `index` rather than the
+    /// engine's own, so a scan can run without touching the real index.
+    async fn rebuild_pass_on<X: Indexer + IndexerWrite>(
+        &self,
+        index: &X,
+        replay: bool,
+    ) -> Result<RebuildReport, EngineError> {
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
 
@@ -1736,7 +1763,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let skip: HashMap<Blake3Hash, String> = if replay {
             HashMap::new()
         } else {
-            self.indexer.quarantined().await?.into_iter().collect()
+            index.quarantined().await?.into_iter().collect()
         };
         let mut histories = self
             .read_action_manifests(action_manifests, &skip, &mut quarantined)
@@ -1788,12 +1815,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .or_insert(commit.sequence);
                 continue;
             }
-            let mut written = self.indexer.index_commit(commit, &DeriveToken::new()).await;
+            let mut written = index.index_commit(commit, &DeriveToken::new()).await;
             if let Err(crate::index::IndexerError::Consistency(_)) = written {
                 // The index holds another commit here: it was built before
                 // the fork was resolved, and the chain is re-pointed.
-                written = self
-                    .indexer
+                written = index
                     .replace_chain_from(
                         &commit.principal_id,
                         commit.sequence,
@@ -1859,7 +1885,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 reason: QuarantineReason::Unreplayable(why),
             });
         }
-        let actions = self.place_actions(histories, &mut quarantined).await?;
+        let actions = self
+            .place_actions(index, histories, &mut quarantined)
+            .await?;
         *self.actions.lock().unwrap_or_else(|p| p.into_inner()) = actions;
 
         let branches = self
@@ -1936,15 +1964,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// accepted after more commits than its principal's indexed chain holds
     /// would be replayed before a commit it never preceded, so it is
     /// quarantined as orphaned.
-    async fn place_actions(
+    async fn place_actions<X: Indexer>(
         &self,
+        index: &X,
         histories: HashMap<String, ActionHistory>,
         quarantined: &mut Vec<QuarantinedManifest>,
     ) -> Result<HashMap<String, Vec<StoredActions>>, EngineError> {
         let mut placed: HashMap<String, Vec<StoredActions>> = HashMap::new();
         for (principal_id, history) in histories {
-            let chain = self
-                .indexer
+            let chain = index
                 .get_tip(&principal_id)
                 .await?
                 .map_or(0, |tip| tip.commit_count);
@@ -2663,6 +2691,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 let genesis = match (disclosed_genesis(bundle), genesis) {
                     (Some(disclosed), _) => disclosed?,
                     (None, Some(given)) => given,
+                    // Actions alone are not a genesis that failed to
+                    // disclose its keys: the principal has no genesis
+                    // commit yet (be0663f 2.3.2).
+                    (None, None) if bundle.txs.is_empty() => {
+                        return Err(EngineError::Protocol(cyphr::Error::GenesisIncomplete));
+                    },
                     (None, None) => return Err(no_disclosed_genesis()),
                 };
                 let key = record_key(&genesis, bundle).await;
@@ -2722,12 +2756,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 });
             },
             Ok(None) => {
+                // An action is included only by a commit of its principal,
+                // and a principal's commits start at its genesis commit
+                // (be0663f 2.3.2): actions pushed ahead of it would be
+                // recorded under a key no chain includes.
+                if tip_before.is_none() {
+                    return Err(EngineError::Protocol(cyphr::Error::GenesisIncomplete));
+                }
                 // Action-only bundle: no commit is formed and nothing is
                 // indexed, but its actions are in DT from now on, so every
                 // later replay records them here (`after` = `next_seq`).
-                let blob_hashes = self
-                    .store_actions(principal_id, next_seq, &bundle.actions)
-                    .await?;
+                // One whose every action is already recorded is the same
+                // push repeated (a client cannot tell which trailing actions
+                // a peer holds): it stores nothing.
+                let blob_hashes = if self
+                    .all_actions_recorded(principal_id, &bundle.actions)
+                    .await?
+                {
+                    bundle
+                        .actions
+                        .iter()
+                        .map(|blob| Blake3Hash::from_bytes(*blake3::hash(blob).as_bytes()))
+                        .collect()
+                } else {
+                    self.store_actions(principal_id, next_seq, &bundle.actions)
+                        .await?
+                };
                 // Built from the tip read before any write: once the blobs are
                 // durable this response cannot fail (an error would report a
                 // stored bundle as not stored).
@@ -2801,6 +2855,30 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             },
         };
         self.ingest_commit(bundle, build).await
+    }
+
+    /// Whether every blob of `blobs` is already in an action bundle recorded
+    /// for `principal_id` that the canonical chain has not left out: an
+    /// action a `ds/create` passed over was never applied, so its owner may
+    /// record it again ([`Self::left_out`]).
+    async fn all_actions_recorded(
+        &self,
+        principal_id: &str,
+        blobs: &[Vec<u8>],
+    ) -> Result<bool, EngineError> {
+        let left_out = self.left_out(principal_id).await?;
+        let held = self.actions.lock().unwrap_or_else(|p| p.into_inner());
+        let recorded: HashSet<Blake3Hash> = held
+            .get(principal_id)
+            .into_iter()
+            .flatten()
+            .filter(|a| !left_out.contains(&a.manifest))
+            .flat_map(|a| a.blobs.iter().copied())
+            .collect();
+        Ok(!blobs.is_empty()
+            && blobs
+                .iter()
+                .all(|b| recorded.contains(&Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))))
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],
@@ -3799,15 +3877,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub async fn rebuild_index_from_scratch_with_report(
         &self,
     ) -> Result<RebuildReport, EngineError> {
+        // The quarantine set is written before the index is cleared. It
+        // derives from a replaying scan, which runs into a throwaway index
+        // first: a failure after the clear and before the re-index then
+        // leaves a store whose next heal, which trusts the manifests and
+        // honours the set, keeps a quarantined manifest out.
+        let scan = self
+            .rebuild_pass_on(&crate::index::MemoryIndexer::new(), true)
+            .await?;
+        self.indexer
+            .set_quarantined(&Self::quarantine_set(&scan), &DeriveToken::new())
+            .await?;
         self.indexer.clear(&DeriveToken::new()).await?;
         let report = self.rebuild_pass(true).await?;
-        let set: Vec<(Blake3Hash, String)> = report
-            .quarantined
-            .iter()
-            .map(|q| (q.manifest, format!("{:?}", q.reason)))
-            .collect();
         self.indexer
-            .set_quarantined(&set, &DeriveToken::new())
+            .set_quarantined(&Self::quarantine_set(&report), &DeriveToken::new())
             .await?;
         // This pass is a full heal: without marking it, the first read
         // would run the trusting heal pass and re-index the manifests this
@@ -3815,6 +3899,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // clear above has superseded either way.
         let _already_healed = self.healed.set(());
         Ok(report)
+    }
+}
+
+impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
+    /// The quarantine set a rebuild report records in the index.
+    fn quarantine_set(report: &RebuildReport) -> Vec<(Blake3Hash, String)> {
+        report
+            .quarantined
+            .iter()
+            .map(|q| (q.manifest, format!("{:?}", q.reason)))
+            .collect()
     }
 }
 
@@ -4106,7 +4201,7 @@ fn authenticated_signers(
     let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
     let genesis_keys: &[cyphr::Key] = match genesis {
         crate::Genesis::Implicit(key) => std::slice::from_ref(key),
-        crate::Genesis::Explicit(keys) => keys,
+        crate::Genesis::Disclosed(keys) => keys,
     };
     for key in genesis_keys {
         history.insert(
@@ -4210,7 +4305,7 @@ fn disclosed_genesis(bundle: &WireBundle) -> Option<Result<crate::Genesis, Engin
             Err(e) => Some(Err(e)),
             Ok(mut keys) if keys.len() == 1 => keys.pop().map(|k| Ok(crate::Genesis::Implicit(k))),
             Ok(keys) if keys.is_empty() => None,
-            Ok(keys) => Some(Ok(crate::Genesis::Explicit(keys))),
+            Ok(keys) => Some(Ok(crate::Genesis::Disclosed(keys))),
         };
     }
     None

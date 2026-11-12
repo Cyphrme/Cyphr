@@ -73,8 +73,8 @@ pub struct AppState {
     /// explicitly rather than assume presence.
     pub identity: Option<Arc<auth::ServerIdentity>>,
 
-    /// Overrides the backend every receipt, tip attestation and view
-    /// statement signs through; `None` signs with `identity`. A field, not
+    /// Overrides the backend every receipt and tip attestation
+    /// signs through; `None` signs with `identity`. A field, not
     /// a copy of `identity`, so a key rotation (which swaps `identity`)
     /// can never leave receipts signing with the retired key. Set with
     /// [`AppState::with_receipt_signer`].
@@ -172,7 +172,7 @@ impl AppState {
         })
     }
 
-    /// Route every receipt, tip attestation and view statement through
+    /// Route every receipt and tip attestation through
     /// `signer` instead of the server identity -- the seam a non-exportable
     /// key plugs into. Attestor capability still requires a bootstrapped
     /// principal; the identity stays what bearer tokens sign with.
@@ -293,7 +293,6 @@ async fn witness_write_refusal_middleware(
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
     let mut router = axum::Router::new()
         .route("/tip", axum::routing::get(routes::tip))
-        .route("/view", axum::routing::get(routes::view))
         .route("/patch", axum::routing::get(routes::patch))
         .route("/branches", axum::routing::get(routes::branches))
         .route("/evidence", axum::routing::get(routes::evidence))
