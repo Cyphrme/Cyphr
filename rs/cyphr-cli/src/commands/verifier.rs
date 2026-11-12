@@ -456,9 +456,12 @@ async fn run_round<C: Connector>(
     // A fork is resolved by what the peers converge on, which only a fresh
     // record shows: the held one keeps the branch it already had.
     let mut shown = tip.clone();
+    // The forks the peers serve evidence of in this round.
+    let mut served: Vec<[String; 2]> = report.forks.iter().map(|f| f.commits.clone()).collect();
     if entry.forks.iter().any(|f| f.resolution.is_none()) || !report.forks.is_empty() {
         let mut fresh = Record::new(&round.wire, round.anchor.clone());
         let fresh_report = pull(&mut fresh, peers).await;
+        served.extend(fresh_report.forks.iter().map(|f| f.commits.clone()));
         let rivals = rival_heads(&round.wire, peers).await;
         settle_resolutions(entry, &fresh, &fresh_report, &rivals);
         let followed = entry.forks.iter().any(|f| f.resolution.is_some());
@@ -485,27 +488,28 @@ async fn run_round<C: Connector>(
                 "commits": f.commits, "first_seen": f.first_seen})
         })
         .collect();
+    // A resolved fork stays evidence while the peers serve it: a verdict
+    // that omitted the items would claim less than the peers show, and one
+    // that kept them after the peers dropped them would claim more.
+    evidence.extend(
+        resolved
+            .iter()
+            .filter(|f| served.iter().any(|c| f.is(c)))
+            .map(|f| {
+                json!({"kind": "principal_fork", "height": f.height, "pre": f.pre,
+                    "commits": f.commits, "first_seen": f.first_seen, "resolved": true})
+            }),
+    );
     evidence.extend(
         entry
             .revoked
             .iter()
             .map(|r| json!({"kind": "naked_revoke", "tmb": r.tmb, "rvk": r.rvk, "peer": r.peer})),
     );
+    // Live heads only: once forks are resolved the chain has one head, and
+    // the resolved pair is reported in `resolved_forks`.
     let branches: Vec<&str> = if unresolved.is_empty() {
-        let mut b = vec![shown.commit_id.as_str()];
-        for f in &resolved {
-            if let Some(r) = &f.resolution {
-                b.extend([r.kept.as_str(), r.abandoned.as_str()]);
-            }
-        }
-        b.dedup();
-        let mut seen = Vec::new();
-        b.retain(|c| {
-            let fresh = !seen.contains(c);
-            seen.push(c);
-            fresh
-        });
-        b
+        vec![shown.commit_id.as_str()]
     } else {
         unresolved
             .iter()
