@@ -23,7 +23,7 @@ use cyphr_client::{
     Request, fetch_patch, opener_of, pull,
 };
 use cyphr_storage::Genesis;
-use cyphr_storage::engine::bare_digest;
+use cyphr_storage::engine::{Consensus, ForkView, Recovery, Review, bare_digest};
 use serde_json::{Value, json};
 
 use super::common::{
@@ -572,8 +572,22 @@ async fn run_round<C: Connector>(
         "resolved_forks": resolved.iter().filter_map(|f| f.resolution.as_ref().map(|r| json!({"height": f.height, "kept": r.kept, "abandoned": r.abandoned, "by": r.by}))).collect::<Vec<_>>(),
     });
     let mut out = out;
-    if !unresolved.is_empty() {
-        out["recovery"] = recovery_note(entry.recovery.as_ref(), &branches);
+    // Reported beside the protocol verdict, never in place of it: shown for
+    // a principal in Error, and for any viewer choice still in force (a
+    // resolved fork's abandoned head included).
+    let review = HumanRecovery(entry.recovery.clone()).review(
+        &round.wire,
+        if unresolved.is_empty() {
+            Consensus::Active
+        } else {
+            Consensus::Error
+        },
+        &fork_views(&entry.forks),
+    );
+    if !unresolved.is_empty() || review.trusted.is_some() {
+        out["recovery"] = json!({"note": review.note, "head": review.trusted,
+            "reason": entry.recovery.as_ref().and_then(|c| c.reason.clone()),
+            "chosen_at": review.trusted.as_ref().and(entry.recovery.as_ref().map(|c| c.chosen_at))});
     }
     if !evidence.is_empty() {
         out["evidence"] = Value::Array(evidence);
@@ -582,27 +596,47 @@ async fn run_round<C: Connector>(
     Ok(out)
 }
 
-/// What human recovery says of a principal in Error: the viewer's chosen
-/// head when it is still a live branch, else that none is chosen. A report
-/// beside the verdict, never a change to it.
-///
-/// This is the client-side shape of the engine's `Recovery` seam
-/// (`cyphr_storage::engine::Recovery`): it reviews held branches and adopts
-/// a head. The trait is not implemented here because its `review` returns
-/// only a `Consensus`, which cannot carry the "trusting <head>" note, and
-/// because the verifier holds forks in its own state, not the engine's
-/// `BranchTip`s.
-fn recovery_note(choice: Option<&RecoveryChoice>, branches: &[&str]) -> Value {
-    match choice.filter(|c| branches.contains(&c.head.as_str())) {
-        Some(c) => {
-            let why = c
-                .reason
-                .as_deref()
-                .map_or_else(String::new, |r| format!(" ({r})"));
-            json!({"note": format!("human recovery: trusting {} by local choice{why}", c.head),
-                "head": c.head, "reason": c.reason, "chosen_at": c.chosen_at})
-        },
-        None => json!({"note": "no branch chosen"}),
+/// The forks a verifier holds, resolved or not, as the engine's
+/// [`ForkView`]s.
+fn fork_views(forks: &[HeldFork]) -> Vec<ForkView> {
+    forks
+        .iter()
+        .map(|f| ForkView {
+            height: u64::try_from(f.height).unwrap_or(u64::MAX),
+            heads: f.commits.clone(),
+            kept: f.resolution.as_ref().map(|r| r.kept.clone()),
+        })
+        .collect()
+}
+
+/// Human recovery as a [`Recovery`] strategy: it trusts the viewer's
+/// chosen head while that head is still one a fork offers as an
+/// alternative to the protocol's answer, and reports what it did. It never
+/// changes the consensus it is shown.
+struct HumanRecovery(Option<RecoveryChoice>);
+
+impl Recovery for HumanRecovery {
+    fn review(&self, _principal_id: &str, _protocol: Consensus, forks: &[ForkView]) -> Review {
+        match self.0.as_ref().filter(|c| {
+            forks
+                .iter()
+                .any(|f| f.alternatives().contains(&c.head.as_str()))
+        }) {
+            Some(c) => {
+                let why = c
+                    .reason
+                    .as_deref()
+                    .map_or_else(String::new, |r| format!(" ({r})"));
+                Review {
+                    trusted: Some(c.head.clone()),
+                    note: format!("human recovery: trusting {} by local choice{why}", c.head),
+                }
+            },
+            None => Review {
+                trusted: None,
+                note: "no branch chosen".to_owned(),
+            },
+        }
     }
 }
 
@@ -817,7 +851,8 @@ pub fn audit(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<()> {
 }
 
 /// `cyphr recover`: set, replace or clear the local branch-head choice for
-/// a principal in Error. Local only: it touches the verifier state file and
+/// a principal in Error, or one whose fork was resolved fraudulently (the
+/// abandoned head is then the choice). Local only: it touches the verifier state file and
 /// nothing a server or a commit sees.
 pub fn recover(
     cli: &Cli,
@@ -832,15 +867,14 @@ pub fn recover(
     entry.recovery = match head {
         None => None,
         Some(head) => {
-            let live = entry
-                .forks
+            if !fork_views(&entry.forks)
                 .iter()
-                .filter(|f| f.resolution.is_none())
-                .any(|f| f.commits.iter().any(|c| c == head));
-            if !live {
+                .any(|f| f.alternatives().contains(&head))
+            {
                 return Err(Error::InvalidArgument(format!(
-                    "{head} is not a head of an unresolved fork held for {identity}: run `verify` \
-                     first, and choose one of the branches it lists"
+                    "{head} is not a head of a fork held for {identity} that the protocol leaves \
+                     open to choice (either head of an unresolved fork, the abandoned head of a \
+                     resolved one): run `verify` first"
                 )));
             }
             Some(RecoveryChoice {

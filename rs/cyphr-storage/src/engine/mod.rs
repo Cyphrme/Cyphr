@@ -516,16 +516,53 @@ pub enum Consensus {
     Error,
 }
 
+/// One fork as a viewer sees it: two commits over one `pre`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkView {
+    /// The commit position both commits take.
+    pub height: u64,
+    /// The two commit ids.
+    pub heads: [String; 2],
+    /// The head the chain kept, once it continued past one branch (SPEC
+    /// 15.8); `None` while the fork is unresolved.
+    pub kept: Option<String>,
+}
+
+impl ForkView {
+    /// The heads a viewer may choose to trust instead of the protocol's
+    /// answer: both while the fork is unresolved, else only the abandoned
+    /// one (trusting the kept head is the protocol's own answer).
+    #[must_use]
+    pub fn alternatives(&self) -> Vec<&str> {
+        self.heads
+            .iter()
+            .map(String::as_str)
+            .filter(|h| self.kept.as_deref() != Some(h))
+            .collect()
+    }
+}
+
+/// What a recovery strategy adopted, reported beside the protocol's
+/// verdict, never in place of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Review {
+    /// The branch head the strategy trusts, if it chose one.
+    pub trusted: Option<String>,
+    /// Why, or that nothing was chosen, in words for the viewer.
+    pub note: String,
+}
+
 /// A recovery strategy (SPEC 14): how a viewer reviews the protocol's
 /// verdict on a principal, for when a resolution was itself fraudulent
 /// (say, a stolen key resolved the fork first). Recovery is not fully
 /// defined by the protocol and a viewer may bring its own, so it is a seam
 /// the verdict layer ([`StorageEngine::verdict`]) consults and never a
-/// rule the engine applies: what the engine admits is the protocol alone.
+/// rule the engine applies: what the engine admits is the protocol alone,
+/// and a strategy never overrides the [`Consensus`] it is shown.
 pub trait Recovery: Send + Sync {
-    /// The state this strategy adopts for `principal_id`, given the
-    /// protocol's verdict and every branch the engine holds.
-    fn review(&self, principal_id: &str, protocol: Consensus, branches: &[BranchTip]) -> Consensus;
+    /// The head this strategy trusts for `principal_id`, given the
+    /// protocol's verdict and every fork the viewer holds, resolved or not.
+    fn review(&self, principal_id: &str, protocol: Consensus, forks: &[ForkView]) -> Review;
 }
 
 /// Why a stored manifest was left out of a rebuilt index.
@@ -3490,24 +3527,57 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(in_error(&held, &self.revoked()))
     }
 
-    /// The principal's consensus state as a viewer adopts it: the
-    /// protocol's verdict ([`Self::is_errored`]) reviewed by `recovery`
-    /// against the branches the engine holds ([`Self::list_branches`]).
-    /// The engine itself never consults a strategy: what it admits is the
+    /// Every fork the engine holds for the principal: each retained rival
+    /// beside the canonical commit at its height, as a [`ForkView`]. A
+    /// fork is resolved (`kept` is set) once the canonical chain has gone
+    /// on past its height.
+    pub async fn forks(&self, principal_id: &str) -> Result<Vec<ForkView>, EngineError> {
+        let branches = self.list_branches(principal_id).await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let head_sequence = branches
+            .iter()
+            .find(|b| b.canonical)
+            .map_or(0, |b| b.sequence);
+        let mut forks = Vec::new();
+        for rival in branches.iter().filter(|b| !b.canonical) {
+            let Some(kept) = self
+                .indexer
+                .get_commit_chain(&principal_id, Some(rival.sequence), Some(rival.sequence))
+                .await?
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let mut heads = [kept.commit_id.clone(), rival.tip.clone()];
+            heads.sort();
+            forks.push(ForkView {
+                height: rival.sequence,
+                heads,
+                kept: (head_sequence > rival.sequence).then_some(kept.commit_id),
+            });
+        }
+        Ok(forks)
+    }
+
+    /// The protocol's verdict ([`Self::is_errored`]) with what `recovery`
+    /// adopts beside it, reviewed against the forks the engine holds
+    /// ([`Self::forks`]). The consensus is the protocol's, unchanged; the
+    /// engine itself never consults a strategy: what it admits is the
     /// protocol's fixed rule alone.
     pub async fn verdict(
         &self,
         principal_id: &str,
         recovery: &dyn Recovery,
-    ) -> Result<Consensus, EngineError> {
+    ) -> Result<(Consensus, Review), EngineError> {
         let protocol = if self.is_errored(principal_id).await? {
             Consensus::Error
         } else {
             Consensus::Active
         };
-        let branches = self.list_branches(principal_id).await?;
+        let forks = self.forks(principal_id).await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
-        Ok(recovery.review(&principal_id, protocol, &branches))
+        Ok((protocol, recovery.review(&principal_id, protocol, &forks)))
     }
 
     /// The revocations in force (a cache of the revoke records, I1).

@@ -405,4 +405,45 @@ fn human_recovery_is_a_local_revisable_choice_that_leaves_the_verdict_error() {
     let v = a.setup(&["verify", &ident, &p1, &p2]);
     assert_eq!(v["verdict"], "Error", "{v}");
     assert_eq!(v["recovery"]["note"], "no branch chosen", "{v}");
+
+    // A fork the protocol resolved: the abandoned head can still be chosen
+    // (the resolution may have been fraudulent), the consensus is the
+    // protocol's Active, and the kept head is not an alternative.
+    let (s3, s4) = (Server::start(), Server::start());
+    let c = User::new();
+    let id2 = c.new_identity();
+    let d = c.clone_identity(&id2);
+    c.add_key(&id2);
+    d.add_key(&id2);
+    let abandoned = c.push(&id2, &s3.url);
+    accepted(&abandoned, "C's branch");
+    accepted(&d.push(&id2, &s4.url), "D's branch");
+    let ident2 = format!("--identity={id2}");
+    let (q3, q4) = (format!("--peer={}", s3.url), format!("--peer={}", s4.url));
+    assert_eq!(c.setup(&["verify", &ident2, &q3, &q4])["verdict"], "Error");
+    d.add_key(&id2);
+    let kept = d.push(&id2, &s4.url);
+    accepted(&kept, "D resolves");
+    let v = c.setup(&["verify", &ident2, &q4]);
+    assert_eq!(v["verdict"], "Active", "{v}");
+    assert!(v.get("recovery").is_none(), "no choice, no note: {v}");
+    let lost = abandoned.json()["tip"].as_str().expect("tip").to_owned();
+    let won = kept.json()["tip"].as_str().expect("tip").to_owned();
+    assert!(
+        !c.run(&["recover", &ident2, &format!("--head={won}")]).ok,
+        "the kept head is the protocol's own answer, not a choice"
+    );
+    c.setup(&[
+        "recover",
+        &ident2,
+        &format!("--head={lost}"),
+        "--reason=stolen key",
+    ]);
+    let v = c.setup(&["verify", &ident2, &q4]);
+    assert_eq!(v["verdict"], "Active", "the protocol verdict stands: {v}");
+    assert_eq!(
+        v["recovery"]["note"],
+        format!("human recovery: trusting {lost} by local choice (stolen key)"),
+        "{v}"
+    );
 }
