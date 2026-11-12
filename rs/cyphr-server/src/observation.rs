@@ -113,6 +113,15 @@ fn backend(e: fjall::Error) -> ObservationError {
     ObservationError::Backend(e.to_string())
 }
 
+/// Why the key-death gate refuses a bundle ([`ObservationStore::dead_key_in`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadKey {
+    /// A coz re-adds a dead key to a principal.
+    Introduced,
+    /// A coz is signed (by its declared `pay.tmb`) by a dead key.
+    Signer,
+}
+
 /// A durable server-local set of naked-revoked (dead) keys, backed by a
 /// dedicated fjall database and keyed by thumbprint.
 pub struct ObservationStore {
@@ -288,5 +297,44 @@ impl ObservationStore {
         tokio::task::spawn_blocking(move || dead_keys.contains_key(&key).map_err(backend))
             .await
             .map_err(|e| ObservationError::Join(e.to_string()))?
+    }
+
+    /// The global key-death gate (SPEC 6.4): why `bundle` must be refused,
+    /// if any of its cozies re-adds a dead key or names one as its signer
+    /// (`pay.tmb`). Every path that hands a commit to the engine (`/push`,
+    /// gossip) runs it first, so a naked-revoked key is refused for every
+    /// capability, whichever way its commits arrive. A blob whose shape the
+    /// engine will itself reject (unparseable, no tmb, non-b64url tmb) is
+    /// left to that authoritative validation.
+    ///
+    /// INVARIANT (refusal-only): this consults an UNVERIFIED, declared
+    /// `pay.tmb`; signatures are checked only by the engine after it. It is
+    /// sound only because its outcome is pure refusal: a forged `pay.tmb`
+    /// naming a dead key can at worst refuse a bundle its forger was sending
+    /// anyway. It must NEVER be extended to admit, authorize, or otherwise
+    /// act on this unverified `tmb`.
+    pub async fn dead_key_in(
+        &self,
+        bundle: &cyphr::replay::WireBundle,
+    ) -> Result<Option<DeadKey>, ObservationError> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        for raw in bundle.cozies() {
+            let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw) else {
+                continue;
+            };
+            if self.introduces_dead_key(&parsed).await? {
+                return Ok(Some(DeadKey::Introduced));
+            }
+            let Some(tmb) = parsed["pay"]["tmb"]
+                .as_str()
+                .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
+            else {
+                continue;
+            };
+            if self.is_dead(&Thumbprint::from_bytes(tmb)).await? {
+                return Ok(Some(DeadKey::Signer));
+            }
+        }
+        Ok(None)
     }
 }

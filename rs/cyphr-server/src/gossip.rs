@@ -141,6 +141,9 @@ async fn round_principal(
     }
 
     for bundle in record.bundles_since(mark) {
+        if refused_as_dead(state, principal_id, bundle).await {
+            continue;
+        }
         match state.engine.submit_commit(principal_id, None, bundle).await {
             Ok(_) => info!(principal = %principal_id, "gossip: stored a verified commit"),
             // The principal may have advanced here since the round began
@@ -155,6 +158,9 @@ async fn round_principal(
     // fork is evidence, never merged), and accepts a forked peer's later
     // commits only if they verify (SPEC 15.8).
     for bundle in branch_bundles(&record, &report, &dialled).await {
+        if refused_as_dead(state, principal_id, &bundle).await {
+            continue;
+        }
         match state
             .engine
             .submit_commit(principal_id, None, &bundle)
@@ -174,4 +180,25 @@ async fn round_principal(
         }
     }
     Ok(())
+}
+
+/// Whether the key-death gate `/push` runs refuses `bundle` (SPEC 6.4): a
+/// commit a peer serves is held to it exactly as one a client pushes. A
+/// gate that cannot be read refuses, so a store fault never admits.
+async fn refused_as_dead(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    bundle: &cyphr::replay::WireBundle,
+) -> bool {
+    match state.observations.dead_key_in(bundle).await {
+        Ok(None) => false,
+        Ok(Some(why)) => {
+            debug!(principal = %principal_id, ?why, "gossip: commit refused by the key-death gate");
+            true
+        },
+        Err(err) => {
+            warn!(principal = %principal_id, %err, "gossip: key-death gate unreadable; commit refused");
+            true
+        },
+    }
 }
