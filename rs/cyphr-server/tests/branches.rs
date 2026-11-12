@@ -1046,10 +1046,12 @@ async fn refused_commit_lands_after_resolution() {
 }
 
 /// Backs SPEC 15.9 for branch commits: a rival dated past the witness
-/// clock's tolerance (TIMESTAMP_FUTURE) or before the principal's latest
-/// known `now` (TIMESTAMP_PAST) is refused and never retained, so it can
-/// neither fork the principal nor put it in Error. Turns red if such a
-/// rival is listed or makes the principal Error. End to end.
+/// clock's tolerance (TIMESTAMP_FUTURE) is refused and never retained; one
+/// dated before the principal's latest known `now` (TIMESTAMP_PAST) is
+/// refused without moving the tip, and kept only as proof of error (SPEC
+/// 15.7.1: a quick-succession fork is evidence of compromise). Turns red if
+/// either moves the tip, the future-dated rival is kept, or the past-dated
+/// one puts the extended chain in Error. End to end.
 #[tokio::test]
 async fn branch_commits_obey_timestamps() {
     let t = theft(true).await;
@@ -1067,6 +1069,8 @@ async fn branch_commits_obey_timestamps() {
         push(&app, &ahead, t.n + 1, &t.id).await,
         StatusCode::CREATED
     );
+
+    let tip = tip_payload(app.clone(), &t.id).await;
 
     // B (NOW+4) is older than the latest known `now` (NOW+50).
     let (status, body) = post_json(app.clone(), "/push", wire(&t.b, t.n, &t.id)).await;
@@ -1089,12 +1093,15 @@ async fn branch_commits_obey_timestamps() {
         "a future-dated rival is refused: {body:?}"
     );
 
+    assert_eq!(tip_payload(app.clone(), &t.id).await, tip, "the tip did not move");
     let list = heads(&app, &t.id).await;
+    let kept: Vec<_> = list.iter().filter(|h| !h.1).collect();
+    assert_eq!(kept.len(), 1, "only B is kept: {list:?}");
+    assert_eq!(kept[0].0, t.n as u64, "B, at the fork position: {list:?}");
     assert!(
-        list.iter().all(|h| h.1),
-        "neither rival is retained: {list:?}"
+        !errored(&state, &t.id).await,
+        "A is extended and B is not: Active"
     );
-    assert!(!errored(&state, &t.id).await, "no fork, no Error");
 }
 
 /// Backs first-seen time (SPEC 15.9; #203 "I saw this at x time"): every
