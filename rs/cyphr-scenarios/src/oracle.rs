@@ -94,20 +94,26 @@ impl Harness {
             }
         } else {
             self.require_route(Capability::BranchStore).await;
-            let mut stored = BTreeSet::new();
+            self.require_route(Capability::Evidence).await;
+            // The live heads: each peer's own head, and each rival branch's
+            // tip the peers prove by evidence, less any commit a peer's
+            // chain or a proved extension continues past.
+            let (_, rival_tips) = self.verified_evidence(&live, p).await;
+            let mut inner = BTreeSet::new();
             for name in &live {
-                let Some(branches) = self.peer_branches(name, p).await else {
-                    panic!("peer `{name}` did not list its branches for the principal");
-                };
-                stored.extend(branches);
+                let chain = self.chain_read(name, p).await;
+                let n = chain.commit_ids.len().saturating_sub(1);
+                inner.extend(chain.commit_ids.into_iter().take(n).map(Tip));
             }
+            let live_heads: BTreeSet<Tip> = heads
+                .iter()
+                .cloned()
+                .chain(rival_tips.into_iter().map(Tip))
+                .filter(|t| !inner.contains(t))
+                .collect();
             assert_eq!(
-                claimed_branches, stored,
-                "verdict branches differ from the peers' stored branches"
-            );
-            assert!(
-                heads.is_subset(&stored),
-                "a peer's head {heads:?} is not among its stored branches {stored:?}"
+                claimed_branches, live_heads,
+                "verdict branches differ from the peers' live heads"
             );
             assert_eq!(v.standing, Standing::Error, "a fork is reported in Error");
         }
@@ -121,7 +127,7 @@ impl Harness {
         // evidence: re-verified offline from signed items a peer serves.
         // With no such route, even "no evidence" would be an unchecked claim.
         self.require_route(Capability::Evidence).await;
-        let proven = self.proven_evidence(&live, p).await;
+        let (proven, _) = self.verified_evidence(&live, p).await;
         let claimed: BTreeSet<Proven> = v
             .evidence
             .iter()
@@ -197,7 +203,11 @@ impl Harness {
     /// offline against keys the harness read from the peers themselves. A
     /// served item that does not verify fails the scenario. PROVISIONAL: the
     /// item shape is owned by the evidence route.
-    async fn proven_evidence(&self, peers: &[&str], p: &Principal) -> BTreeSet<Proven> {
+    async fn verified_evidence(
+        &self,
+        peers: &[&str],
+        p: &Principal,
+    ) -> (BTreeSet<Proven>, BTreeSet<String>) {
         let mut keys = Keys::new();
         let mut by_peer = BTreeMap::new();
         let mut chains = BTreeMap::new();
@@ -209,6 +219,7 @@ impl Harness {
             chains.insert((*name).to_owned(), self.chain_read(name, p).await);
         }
         let mut out = BTreeSet::new();
+        let mut tips = BTreeSet::new();
         for name in peers {
             let Some(addr) = self.peers.iter().find(|x| x.name == *name).map(|x| x.addr) else {
                 continue;
@@ -229,17 +240,17 @@ impl Harness {
                 .unwrap_or_else(|e| panic!("peer `{name}`: evidence body: {e}"));
             let items = signed::evidence_items(status, &bytes)
                 .unwrap_or_else(|why| panic!("peer `{name}`: {why}"));
-            for item in &items {
-                match signed::verify_evidence(item, p.bare(), &keys, &by_peer, &chains[*name]).await
-                {
-                    Ok(proven) => {
-                        out.insert(proven);
-                    },
-                    Err(why) => panic!("peer `{name}` served evidence that does not verify: {why}"),
-                }
+            match signed::verify_evidence_set(&items, p.bare(), &keys, &by_peer, &chains[*name])
+                .await
+            {
+                Ok(set) => {
+                    out.extend(set.proven);
+                    tips.extend(set.rival_tips);
+                },
+                Err(why) => panic!("peer `{name}` served evidence that does not verify: {why}"),
             }
         }
-        out
+        (out, tips)
     }
 
     /// A peer's identity, algorithm, public key and key thumbprint, from its
@@ -304,27 +315,6 @@ impl Harness {
         Some(v["payload"]["now"].as_i64()? - v["payload"]["last_updated"].as_i64()?)
     }
 
-    /// The branch heads `peer` stores for `p` (commit ids), read from its
-    /// `/branches` route. `None` when the route cannot answer.
-    async fn peer_branches(&self, peer: &str, p: &Principal) -> Option<BTreeSet<Tip>> {
-        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
-        let resp = self
-            .http
-            .get(format!("http://{addr}/branches"))
-            .query(&[("pr", p.0.as_str())])
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let v: Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
-        v["payload"]["branches"]
-            .as_array()?
-            .iter()
-            .map(|b| b["tip"].as_str().map(|t| Tip(t.to_owned())))
-            .collect()
-    }
 
     /// The thumbprint that signed the peer's last `commit/create`, read from
     /// the replayed chain (so every signature up to it verified). `None`
