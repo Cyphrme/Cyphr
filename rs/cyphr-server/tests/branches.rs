@@ -1458,6 +1458,44 @@ async fn key_delete_of_rival_signer_resolves() {
     assert_eq!(tip_payload(app, &t.id).await, tip);
 }
 
+/// Backs rule 5 at the peer whose canonical chain is the losing branch:
+/// the thief resolved first here, so B and C are canonical and the
+/// owner's A and D are retained. The owner's `key/delete` of `eve`
+/// extends D, so it promotes the owner's branch (SPEC 15.8 item 1), and
+/// it is judged in the state after that promotion: `eve` is removed
+/// strictly above the contested position, so B and C leave the fork and
+/// the principal is Active with the delete as `/tip`, live and after a
+/// rebuild, as at the peer where the owner was canonical
+/// ([`key_delete_of_rival_signer_resolves`]). Turns red if the delete is
+/// refused (423) or Error stands. End to end.
+#[tokio::test]
+async fn key_delete_promotes_at_the_losing_peer() {
+    let pool = load_pool();
+    let t = theft(true).await;
+    let (app, state, dir) = both_extended(&t, true).await;
+    let mut del = t.d.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({
+            "id": kp(&pool, "eve_ed25519").tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/delete"
+        }),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete promotes D: {body:?}");
+    assert!(!errored(&state, &t.id).await, "eve's rivals left the fork");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    assert_eq!(tip["commit_id"], body["payload"]["commit_id"], "the delete is /tip");
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(!errored(&state, &t.id).await, "a rebuild agrees");
+    assert_eq!(tip_payload(app, &t.id).await, tip);
+}
+
 /// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
 /// finalized by `new`, the key it leaves active.
 async fn replace_key(p: &mut cyphr::Principal, old: &Kp, new: &Kp, now: i64) {
