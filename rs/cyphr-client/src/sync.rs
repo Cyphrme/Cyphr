@@ -602,6 +602,61 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
     report
 }
 
+/// What a holder that keeps branches is handed after `report`, in order:
+/// each fork's rival, then the chain of each peer that forked, past the
+/// lowest fork position, each commit with the data actions recorded before
+/// it (as a rival carries them). A peer on the other side of a fork may have
+/// extended its branch or resolved the fork; only its commits past the fork
+/// show which.
+///
+/// Nothing here is verified past what the pull verified: the holder admits
+/// or retains each commit only if it verifies, and refuses what it holds.
+pub async fn branch_bundles<C: Connector>(
+    record: &Record,
+    report: &PullReport,
+    peers: &[PullPeer<'_, C>],
+) -> Vec<WireBundle> {
+    let mut bundles: Vec<WireBundle> = report.forks.iter().map(|f| f.rival.clone()).collect();
+    let Some(height) = report.forks.iter().map(|f| f.height).min() else {
+        return bundles;
+    };
+    let forked = report
+        .peers
+        .iter()
+        .filter(|o| matches!(o.standing, PeerStanding::Forked));
+    for outcome in forked {
+        let Some(peer) = peers.iter().find(|p| p.name == outcome.peer) else {
+            continue;
+        };
+        let request = PatchRequest {
+            principal_id: &record.id,
+            anchor: None,
+        };
+        // A peer that cannot serve its chain now adds nothing: its fork
+        // finding stands on the rival alone.
+        let Ok(patch) =
+            fetch_patch(peer.connector, &request, BindingPolicy::NotRequired, None).await
+        else {
+            continue;
+        };
+        for (index, entry) in patch.entries.iter().enumerate().skip(height + 1) {
+            let Ok(mut bundle) = entry.bundle.clone() else {
+                break;
+            };
+            let leading: Vec<Vec<u8>> = patch
+                .actions
+                .iter()
+                .filter(|a| a.after == index as u64)
+                .filter_map(|a| a.blobs.clone().ok())
+                .flatten()
+                .collect();
+            bundle.actions.splice(0..0, leading);
+            bundles.push(bundle);
+        }
+    }
+    bundles
+}
+
 impl ForkFinding {
     fn same_fork(&self, other: &Self) -> bool {
         let sorted = |f: &Self| {

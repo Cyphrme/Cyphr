@@ -27,8 +27,7 @@ use std::time::Duration;
 
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ActionBundle, Anchor, BindingPolicy, HttpConnector, PatchEntry, PatchRequest, PeerStanding,
-    PullPeer, Record, fetch_patch, pull,
+    ActionBundle, Anchor, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, pull,
 };
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, info, warn};
@@ -150,31 +149,19 @@ async fn round_principal(
         }
     }
     for fork in &report.forks {
-        // The engine refuses the rival as a tip but retains it as a branch
-        // (I2: a fork is evidence, never merged), which is the point.
-        if let Err(err) = state
-            .engine
-            .submit_commit(principal_id, None, &fork.rival)
-            .await
-        {
-            debug!(principal = %principal_id, %err, "gossip: rival branch submit answered");
-        }
         warn!(principal = %principal_id, height = fork.height, commits = ?fork.commits, "gossip: principal fork");
     }
-    // A peer on the other side of a fork may have resolved it: the commits
-    // it holds past the fork point extend the branch the rival opened. The
-    // engine accepts them only if they verify (SPEC 15.8), and ignores them
-    // otherwise.
-    if let Some(height) = report.forks.iter().map(|f| f.height).min() {
-        for outcome in report
-            .peers
-            .iter()
-            .filter(|o| matches!(o.standing, PeerStanding::Forked))
+    // The engine refuses a rival as a tip but retains it as a branch (I2: a
+    // fork is evidence, never merged), and accepts a forked peer's later
+    // commits only if they verify (SPEC 15.8).
+    for bundle in branch_bundles(&record, &report, &dialled).await {
+        match state
+            .engine
+            .submit_commit(principal_id, None, &bundle)
+            .await
         {
-            let Some((_, connector)) = peers.iter().find(|(name, _)| *name == outcome.peer) else {
-                continue;
-            };
-            follow_branch(state, connector, principal_id, height).await;
+            Ok(_) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
+            Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
         }
     }
     for revoked in &report.revoked {
@@ -187,50 +174,4 @@ async fn round_principal(
         }
     }
     Ok(())
-}
-
-/// Hand the engine the commits `connector`'s chain holds after position
-/// `height`, in order, each with the data actions recorded before it (as a
-/// pulled rival carries them). The engine refuses what it holds or cannot
-/// verify, which is most of them.
-async fn follow_branch(
-    state: &Arc<AppState>,
-    connector: &HttpConnector,
-    principal_id: &str,
-    height: usize,
-) {
-    let request = PatchRequest {
-        principal_id,
-        anchor: None,
-    };
-    let patch = match fetch_patch(connector, &request, BindingPolicy::NotRequired, None).await {
-        Ok(patch) => patch,
-        Err(err) => {
-            debug!(principal = %principal_id, %err, "gossip: peer chain not fetched");
-            return;
-        },
-    };
-    for (index, entry) in patch.entries.iter().enumerate().skip(height + 1) {
-        let Ok(mut bundle) = entry.bundle.clone() else {
-            return;
-        };
-        let leading: Vec<Vec<u8>> = patch
-            .actions
-            .iter()
-            .filter(|a| a.after == index as u64)
-            .filter_map(|a| a.blobs.clone().ok())
-            .flatten()
-            .collect();
-        bundle.actions.splice(0..0, leading);
-        match state
-            .engine
-            .submit_commit(principal_id, None, &bundle)
-            .await
-        {
-            Ok(_) => info!(principal = %principal_id, index, "gossip: a peer's resolution adopted"),
-            Err(err) => {
-                debug!(principal = %principal_id, index, %err, "gossip: branch commit not stored")
-            },
-        }
-    }
 }
