@@ -262,6 +262,72 @@ pub async fn verify_principal_fork(
     verify_principal_fork_with_actions(item, pg, base, entries, &[]).await
 }
 
+/// Verify the commit a served fork item adds to a rival branch: the item's
+/// `pre` is not on the holder's chain but is the root `line` reaches (a
+/// rival branch: the holder's prefix below the fork, then the rival and
+/// any extensions already verified). `actions` are the holder's action
+/// bundles accepted before the fork; a rival brings its own inline.
+///
+/// Returns the item's commit that applies at `pre`, with its commit id;
+/// the other is the serving peer's own commit at that position, which its
+/// chain answers for, not this item.
+///
+/// # Errors
+///
+/// An [`EvidenceFailure`] naming the first check that refused:
+/// [`EvidenceFailure::PreMismatch`] when `line` does not reach `pre`.
+pub async fn verify_branch_extension(
+    item: &Value,
+    pg: &str,
+    base: Principal<MemoryStorage>,
+    line: &[PatchEntry],
+    actions: &[ActionBundle],
+) -> Result<(WireBundle, String), EvidenceFailure> {
+    let EvidenceItem::PrincipalFork {
+        pg: item_pg,
+        height,
+        pre,
+        a,
+        b,
+    } = EvidenceItem::parse(item)?;
+    if item_pg != pg {
+        return Err(EvidenceFailure::OtherPrincipal);
+    }
+    if usize::try_from(height).ok() != Some(line.len()) {
+        return Err(EvidenceFailure::PreMismatch);
+    }
+    let state = replay_chain_with_actions(base, line, actions).await?;
+    if pre.is_none() || state.pr_tagged().ok() != pre {
+        return Err(EvidenceFailure::PreMismatch);
+    }
+    for blobs in [b, a] {
+        let mut copy = state.fork().await.map_err(|source| EvidenceFailure::Replay {
+            commit: line.len(),
+            source,
+        })?;
+        if replay_commit(&mut copy, line.len(), &blobs).await.is_ok() {
+            let id = copy
+                .commits()
+                .last()
+                .map(|c| c.tr().0.tagged_first().map(|d| d.to_string()))
+                .transpose()
+                .map_err(|source| EvidenceFailure::Replay {
+                    commit: line.len(),
+                    source,
+                })?
+                .ok_or(EvidenceFailure::BadCommit {
+                    commit: line.len(),
+                    what: "no commit formed",
+                })?;
+            return Ok((blobs, id));
+        }
+    }
+    Err(EvidenceFailure::BadCommit {
+        commit: line.len(),
+        what: "neither commit extends the rival branch",
+    })
+}
+
 /// [`verify_principal_fork`] for a principal whose history carries data
 /// actions: `actions` are the patch's action-only bundles, replayed with
 /// the commits (those accepted up to the fork's position precede it).
