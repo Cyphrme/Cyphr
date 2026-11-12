@@ -244,34 +244,54 @@ fn eve_revoke(rvk: i64) -> serde_json::Value {
     })
 }
 
-/// Backs the global key-death gate (SPEC 6.4) on the gossip path: P1
-/// holds X canonical and knows `eve` is naked-revoked; P2 serves `eve`'s
-/// rival R at X's position and B over it. One round of P1's gossip must
+/// A shared genesis (`golden`, `eve`), the owner's X at 1 (`golden`), and
+/// `eve`'s line R at 1, B at 2: `(genesis, id, owner after X, X, R, B)`.
+async fn dead_key_fixture() -> (
+    WireBundle,
+    String,
+    cyphr::Principal,
+    WireBundle,
+    WireBundle,
+    WireBundle,
+) {
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let eve = pool.get("eve_ed25519").expect("eve");
+    let mut shared = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let genesis =
+        test_fixtures::bundle::genesis_bundle(&mut shared, g, &[eve.key().expect("eve")], T)
+            .await
+            .expect("genesis");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
+    let mut owner = shared.fork().await.expect("fork");
+    let x = key_commit_by(&mut owner, "golden", "key_a", T + 1).await;
+    let mut thief = shared.fork().await.expect("fork");
+    let r = key_commit_by(&mut thief, "eve_ed25519", "key_b", T + 1).await;
+    let b = key_commit_by(&mut thief, "eve_ed25519", "carol", T + 2).await;
+    (genesis, id, owner, x, r, b)
+}
+
+async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
+    let url = serve(to).await;
+    let connector =
+        HttpConnector::with_client(from.http_client.clone(), &url, true).expect("connector");
+    cyphr_server::gossip::round(from, &[(url, connector)]).await;
+}
+
+/// Backs key death at admission (SPEC 6.4) on the gossip path: P1 holds X
+/// canonical, P2 serves `eve`'s line R, B over X's position, and `eve` is
+/// naked-revoked as of a time after both. One round of P1's gossip must
 /// not promote R's line: X stays P1's tip and P1 stays Active. Pinned
-/// twice, once with the revoke posted to P1 (its engine holds it) and
-/// once with it recorded only as a death P1 saw (as gossip records one),
-/// so both the participation rule and the shared dead-key gate are held.
-/// Turns red if either round moves P1's tip.
+/// with the revoke posted to P1 beforehand, and with it posted only to P2,
+/// so P1 learns it in the very round that serves the line: verified
+/// revokes are recorded before any bundle is submitted. Turns red if
+/// either round moves P1's tip.
 #[tokio::test(flavor = "multi_thread")]
 async fn gossip_never_promotes_a_dead_keys_rival() {
-    for posted in [true, false] {
-        let pool = load_pool();
-        let g = pool.get("golden").expect("golden");
-        let eve = pool.get("eve_ed25519").expect("eve");
-        let mut shared = cyphr::Principal::implicit(g.key().expect("golden"))
-            .await
-            .expect("implicit");
-        let genesis =
-            test_fixtures::bundle::genesis_bundle(&mut shared, g, &[eve.key().expect("eve")], T)
-                .await
-                .expect("genesis");
-        let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
-        let mut owner = shared.fork().await.expect("fork");
-        let x = key_commit_by(&mut owner, "golden", "key_a", T + 1).await;
-        let mut thief = shared.fork().await.expect("fork");
-        let r = key_commit_by(&mut thief, "eve_ed25519", "key_b", T + 1).await;
-        let b = key_commit_by(&mut thief, "eve_ed25519", "carol", T + 2).await;
-
+    for on_p1 in [true, false] {
+        let (genesis, id, owner, x, r, b) = dead_key_fixture().await;
         let (p1, _d1) = keyless_server();
         let (p2, _d2) = keyless_server();
         let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
@@ -281,32 +301,80 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
         assert_eq!(push(&app1, &id, &x).await, StatusCode::CREATED, "X on P1");
         assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
         assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
-        let revoke = eve_revoke(T + 5);
-        if posted {
-            let (status, body) = post_json(app1.clone(), "/revoke", revoke.to_string()).await;
-            assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
-        } else {
-            let tmb = eve.key().expect("eve").tmb().clone();
-            p1.observations
-                .record_seen(&tmb, revoke)
-                .await
-                .expect("death recorded");
-        }
+        let to = if on_p1 { &app1 } else { &app2 };
+        let (status, body) = post_json(to.clone(), "/revoke", eve_revoke(T + 1).to_string()).await;
+        assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
         let want = owner.pr_tagged().expect("pr");
 
-        let url = serve(&p2).await;
-        let connector =
-            HttpConnector::with_client(p1.http_client.clone(), &url, true).expect("connector");
-        cyphr_server::gossip::round(&p1, &[(url, connector)]).await;
+        one_round(&p1, &p2).await;
 
         assert_eq!(
             tip_pr(&app1, &id).await,
             want,
-            "posted={posted}: P1 promoted a dead key's rival"
+            "revoke on P1={on_p1}: P1 promoted a dead key's rival"
         );
         assert!(
             !p1.engine.is_errored(&id).await.expect("verdict"),
-            "posted={posted}: a dead key's rival is evidence only"
+            "revoke on P1={on_p1}: a dead key's rival is evidence only"
         );
     }
+}
+
+/// Backs gossip feeding the engine's revocations (SPEC 6.4, 15.7.1): P1
+/// holds X canonical and `eve`'s rival R at X's position, a plain fork in
+/// Error. P2 holds X and `eve`'s naked revoke. One round of P1's gossip
+/// records the revoke where the engine judges forks, so R leaves the fork
+/// and P1 is Active, as P2 would be. Turns red if a revoke learned by
+/// gossip leaves P1 in Error.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoke_learned_by_gossip_settles_the_fork() {
+    let (genesis, id, owner, x, r, _) = dead_key_fixture().await;
+    let (p1, _d1) = keyless_server();
+    let (p2, _d2) = keyless_server();
+    let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
+    for app in [&app1, &app2] {
+        assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
+        assert_eq!(push(app, &id, &x).await, StatusCode::CREATED, "X");
+    }
+    assert!(push(&app1, &id, &r).await.is_client_error(), "R is a rival");
+    assert!(p1.engine.is_errored(&id).await.expect("verdict"), "a plain fork");
+    let (status, body) = post_json(app2.clone(), "/revoke", eve_revoke(T + 1).to_string()).await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+
+    one_round(&p1, &p2).await;
+
+    assert!(
+        !p1.engine.is_errored(&id).await.expect("verdict"),
+        "a revoke learned by gossip takes R out of the fork"
+    );
+    assert_eq!(tip_pr(&app1, &id).await, owner.pr_tagged().expect("pr"));
+}
+
+/// Backs the rule that key death is not retroactive (SPEC 6.4; nrd: "You
+/// cant make all sigs retroactively invalid"): P1 holds only the genesis
+/// and already knows `eve` is revoked as of T+5; P2 serves the chain, in
+/// which `eve` signed R at T+1 and B at T+2, before its death. One round
+/// of P1's gossip catches P1 up through those commits to P2's tip. Turns
+/// red if a node that knows a revoke refuses the key's earlier commits.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
+    let (genesis, id, _, _, r, b) = dead_key_fixture().await;
+    let (p1, _d1) = keyless_server();
+    let (p2, _d2) = keyless_server();
+    let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
+    for app in [&app1, &app2] {
+        assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
+    assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
+    let (status, body) = post_json(app1.clone(), "/revoke", eve_revoke(T + 5).to_string()).await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+
+    one_round(&p1, &p2).await;
+
+    assert_eq!(
+        tip_pr(&app1, &id).await,
+        tip_pr(&app2, &id).await,
+        "P1 caught up through eve's commits made before its death"
+    );
 }

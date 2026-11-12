@@ -323,12 +323,14 @@ async fn run_round<C: Connector>(
     let mark = pulled.log_len();
     let held_before = pulled.tip().map_or(0, |t| t.commits);
     let report = pull(&mut pulled, peers).await;
-    let mut handed = pulled.bundles_since(mark).to_vec();
-    handed.extend(branch_bundles(&pulled, &report, peers).await);
-    round.keep(&pulled, &handed).await?;
+    // Verified revokes first: the store refuses a dead key's commits at
+    // admission and judges forks by them.
     for found in &report.revoked {
         round.store.record_revoke(&found.envelope).await?;
     }
+    let mut handed = pulled.bundles_since(mark).to_vec();
+    handed.extend(branch_bundles(&pulled, &report, peers).await);
+    round.keep(&pulled, &handed).await?;
 
     let answered: Vec<&str> = report
         .peers

@@ -1654,8 +1654,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .map_err(|e| e.to_string())
                     .and_then(|evidence| verify_revoke(&evidence));
                 match verified {
-                    Ok((tmb, _)) => {
-                        revoked.insert(tmb);
+                    // One record per key is written; should a store hold
+                    // more, the earliest death stands.
+                    Ok((tmb, rvk)) => {
+                        let at = revoked.entry(tmb).or_insert(rvk);
+                        *at = (*at).min(rvk);
                     },
                     Err(why) => quarantined.push(QuarantinedManifest {
                         manifest: hash,
@@ -2699,6 +2702,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // bundle, never the caller's bytes.
         let canonical = canonical_bundle(bundle)?;
         let bundle = &canonical;
+        if let Some(dead) = dead_key_in(bundle, &self.revoked()) {
+            return Err(dead);
+        }
 
         // 1. Resolve the principal's storage key.
         //
@@ -3478,7 +3484,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// or digest, so a key holder cannot grow the store by re-signing.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
-        let (tmb, _rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
+        let (tmb, rvk) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         // Held across the write, so two revokes of one key store one record.
         let lock = self.principal_lock(&format!("revoke\0{tmb}"));
         let _one_record = lock.lock().await;
@@ -3486,7 +3492,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .contains(&tmb)
+            .contains_key(&tmb)
         {
             return Ok(());
         }
@@ -3497,7 +3503,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(tmb);
+            .insert(tmb, rvk);
         Ok(())
     }
 
@@ -4099,9 +4105,55 @@ impl Held {
     }
 }
 
-/// The naked-revoked thumbprints (base64url): a cache of the revoke
+/// The naked-revoked thumbprints (base64url), each with the `rvk` it died
+/// at: a cache of the revoke
 /// records, one per thumbprint (I1).
-type Revoked = std::collections::HashSet<String>;
+type Revoked = HashMap<String, i64>;
+
+/// Key death at admission (SPEC 6.4), the one check every path that hands
+/// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
+/// store): the refusal for `bundle` if a coz in it, dated at or after its
+/// key's death, is signed by a revoked key or introduces one. Not
+/// retroactive: a dead key's commits from before its `rvk` are admitted,
+/// so a node that knows a revoke still catches up through history the key
+/// signed while alive (nrd: "You cant make all sigs retroactively
+/// invalid"). A backdated commit is still held: as the tip by the
+/// timestamp rule (SPEC 15.9), as a rival by [`participants`].
+///
+/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.id` and
+/// `pay.now` before any signature is checked, so a forgery can at worst
+/// refuse the bundle it travels in. It must never admit or authorize on
+/// these fields. A coz with no readable `now` is judged dead.
+fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
+    if revoked.is_empty() {
+        return None;
+    }
+    for raw in bundle.cozies() {
+        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
+            continue;
+        };
+        let pay = &coz["pay"];
+        let dead_at = |tmb: Option<&str>| {
+            let rvk = revoked.get(tmb?)?;
+            pay["now"].as_i64().is_none_or(|now| now >= *rvk).then_some(())
+        };
+        let typ = pay["typ"].as_str().unwrap_or_default();
+        if cyphr::parsed_coz::typ::is_key_introducing(typ) && dead_at(pay["id"].as_str()).is_some()
+        {
+            return Some(EngineError::DeadKey {
+                key: pay["id"].as_str().unwrap_or_default().to_owned(),
+                introduced: true,
+            });
+        }
+        if dead_at(pay["tmb"].as_str()).is_some() {
+            return Some(EngineError::DeadKey {
+                key: pay["tmb"].as_str().unwrap_or_default().to_owned(),
+                introduced: false,
+            });
+        }
+    }
+    None
+}
 
 /// The ids of the held commits that take part in a fork:
 ///
@@ -4122,11 +4174,14 @@ type Revoked = std::collections::HashSet<String>;
 /// demotes the side it saw second, since only its canonical removal
 /// counts, and reports Active, so witnesses that saw the two in another
 /// order disagree.
+// The same-position delete race is accepted, not closed here: the owner's
+// canonical delete of K at p and K's line from p, extended first, is the
+// SPEC 15.8 residual stated on #203 (one branch extended resolves the fork).
 fn participants(held: &[Held], revoked: &Revoked) -> std::collections::HashSet<String> {
     // Each canonically removed key, with the lowest position it is
     // deleted at; a revoked key counts at every position.
     let mut deleted_at: HashMap<&str, u64> = HashMap::new();
-    let mut never: std::collections::HashSet<&str> = revoked.iter().map(String::as_str).collect();
+    let mut never: std::collections::HashSet<&str> = revoked.keys().map(String::as_str).collect();
     for h in held.iter().filter(|h| h.canonical) {
         for (tmb, how) in &h.removes {
             match how {
@@ -4364,7 +4419,10 @@ fn promoted(
 
 /// The retained line `rival` ends, lowest first: `rival` and, while one is
 /// retained, the commit its `pre` names one position down. `by_pr` indexes
-/// the retained commits by (position, PR), so the walk is linear.
+/// the retained commits by (position, PR), so the walk is linear. The key
+/// is unique: PR = MR(SR, CR) and CR covers every commit's TR (SPEC 3.7.6),
+/// so two distinct commits never share a PR, and a commit already held is
+/// never retained twice ([`Self::is_already_stored`]).
 fn retained_line(by_pr: &HashMap<(u64, &str), &Retained>, rival: &Retained) -> Vec<Retained> {
     let mut line = vec![rival.clone()];
     let mut at = rival;

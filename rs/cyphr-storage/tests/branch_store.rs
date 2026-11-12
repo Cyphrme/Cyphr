@@ -464,6 +464,51 @@ async fn promotion_respects_the_retention_bound() {
     assert_eq!(e.list_branches(&f.id).await.expect("branches").len(), held);
 }
 
+/// `k`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, key}`.
+fn naked_revoke(k: &Kp, rvk: i64) -> serde_json::Value {
+    let pay = serde_json::json!({
+        "alg": k.alg, "now": rvk, "rvk": rvk, "tmb": k.tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/revoke"
+    });
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) = coz::sign_json(&bytes, &k.alg, &k.prv, &k.pubb).expect("sign");
+    serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {"alg": k.alg, "pub": Base64UrlUnpadded::encode_string(&k.pubb)},
+    })
+}
+
+/// Backs key death at admission (SPEC 6.4), at the engine seam every path
+/// ingests through (`/push`, gossip, witness sync, a verifier's store):
+/// once the engine holds `key_a`'s naked revoke as of NOW+5, a commit
+/// `key_a` signs at or after NOW+5 is refused as the tip; a commit it
+/// signed before its death is admitted, since death is not retroactive. Turns red if the engine
+/// admits a dead key's later commit or refuses its earlier one.
+#[tokio::test]
+async fn a_dead_keys_later_commits_are_refused_at_admission() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    f.submit(&e, &f.first).await.expect("commit 0");
+    e.record_revoke(&naked_revoke(&key_a, NOW + 5))
+        .await
+        .expect("revoke");
+
+    let mut late = f.base.fork().await.expect("fork");
+    create_key(&mut late, &key_a, &kp(&pool, "bob"), NOW + 6).await;
+    assert!(
+        f.submit(&e, &blobs(&late, 1)).await.is_err(),
+        "a commit key_a signed after its death is admitted"
+    );
+    let mut early = f.base.fork().await.expect("fork");
+    create_key(&mut early, &key_a, &kp(&pool, "bob"), NOW + 2).await;
+    f.submit(&e, &blobs(&early, 1))
+        .await
+        .expect("a commit key_a signed before its death");
+}
+
 /// Backs a-verify: a bundle at a position after a key was revoked, signed
 /// by that revoked key, is refused and stores nothing. The control builds
 /// the same position-2 commit with the active `key_a` and it is accepted,

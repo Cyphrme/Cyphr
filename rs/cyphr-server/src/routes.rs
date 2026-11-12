@@ -845,23 +845,8 @@ pub async fn push(
         )));
     }
 
-    // Global key-death gate (SPEC §6.4), before submit_commit so a dead key
-    // is an auth refusal, never a stale-predecessor 409. Refusal-only: see
-    // `ObservationStore::dead_key_in`.
-    match state
-        .observations
-        .dead_key_in(&request.bundle)
-        .await
-        .map_err(AppError::observation)?
-    {
-        Some(crate::observation::DeadKey::Introduced) => {
-            return Err(AppError::forbidden("push introduces a revoked key"));
-        },
-        Some(crate::observation::DeadKey::Signer) => {
-            return Err(AppError::unauthorized("push signing key was revoked"));
-        },
-        None => {},
-    }
+    // Key death (SPEC §6.4) is refused by the engine at admission
+    // (`EngineError::DeadKey`), for this route and every other that submits.
 
     // Genesis auto-detection: the engine resolves genesis from stored
     // state (existing principal) or from the submitted blobs (new principal).
