@@ -345,3 +345,66 @@ async fn eml_failure_after_manifest_is_repaired_by_the_next_load() {
         "the next load repaired the EML"
     );
 }
+
+/// Claim: a read that derives roots (the one behind signed `/tip` roots and
+/// portable proofs) answered after an EML append failed, and before any
+/// further push, is correct and leaves the log whole. The log is a cache of
+/// the stored record (I1), so the read repairs it by replaying the manifest
+/// rather than serving the stale log or refusing. Scenario: after the
+/// failed append the engine derives the roots; they equal those of a twin
+/// store that never failed, and the EML then holds every commit.
+/// Turns red if: the read serves roots from the log that is a leaf behind,
+/// refuses with a leaf mismatch, or leaves the EML short. End-to-end
+/// scenario: yes (signed commits through the server's own stack).
+#[tokio::test]
+async fn proof_read_after_an_eml_failure_repairs_the_log() {
+    let pool = common::load_pool();
+    let (id, [genesis, second, _]) = chain(&pool).await;
+
+    let healthy_dir = tempfile::tempdir().expect("tempdir");
+    let healthy = stack(&ServerConfig {
+        data_dir: healthy_dir.path().to_path_buf(),
+        ..Default::default()
+    });
+    for bundle in [&genesis, &second] {
+        healthy
+            .engine
+            .submit_commit(&id, None, bundle)
+            .await
+            .expect("healthy push");
+    }
+    let expected = healthy.engine.rederive_roots(&id).await.expect("roots");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let s = stack(&ServerConfig {
+        data_dir: dir.path().to_path_buf(),
+        ..Default::default()
+    });
+    s.engine
+        .submit_commit(&id, None, &genesis)
+        .await
+        .expect("genesis push");
+    s.fail_eml.store(true, Ordering::SeqCst);
+    s.engine
+        .submit_commit(&id, None, &second)
+        .await
+        .expect("the commit is recorded once its manifest is stored");
+    assert_eq!(eml_leaves(&s.db, &id).await, 1, "the EML is behind");
+    s.fail_eml.store(false, Ordering::SeqCst);
+
+    let derived = s
+        .engine
+        .rederive_roots(&id)
+        .await
+        .expect("a roots read after the failed append");
+    assert_eq!(
+        (&derived.pr, &derived.sr, &derived.ar, &derived.cr),
+        (&expected.pr, &expected.sr, &expected.ar, &expected.cr),
+        "the read served roots that differ from a store whose log never failed"
+    );
+    assert_eq!(
+        eml_leaves(&s.db, &id).await,
+        2,
+        "the read left the EML short of the stored commits"
+    );
+}
