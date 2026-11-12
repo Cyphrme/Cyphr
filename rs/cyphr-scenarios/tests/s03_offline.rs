@@ -4,8 +4,10 @@
 // Must hold: case 1, the laptop push is refused as stale and rebases, no fork; an
 // action the laptop recorded but never committed survives the rebase, re-signed
 // and named in the rebase output (SPEC 15.9), and reaches the peers;
-// case 2, the commits reach different partitioned peers (a real principal fork):
-// Error plus evidence until Alice resolves (SPEC 15.8); the abandoned branch is kept.
+// case 2, the commits reach different partitioned peers (a real principal fork),
+// each branch extended twice: Error plus evidence, both extended heads live and
+// neither settled, until Alice deletes the rival's signer (SPEC 15.8); the
+// abandoned branch is kept.
 //
 // Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
@@ -138,28 +140,21 @@ async fn s03_offline() {
     // from the partition and not from a stale local view.
     assert_eq!(h.ok(phone.sync(&pr, &both).await), merged);
 
-    // Case 2: the devices commit to different, partitioned peers.
-    h.proxy.partition("p1", "p2");
-    h.proxy.partition("alice-laptop", "p1");
-    h.proxy.partition("alice-phone", "p2");
-    assert!(!h.reach("alice-laptop", "p1").await && !h.reach("alice-phone", "p2").await);
-    assert!(h.reach("alice-laptop", "p2").await && h.reach("alice-phone", "p1").await);
-    h.ok(laptop.commit_data(&pr, "laptop, branch").await);
-    h.ok(phone.commit_data(&pr, "phone, branch").await);
-    let lt = h
-        .ok(laptop.push(&pr, &["p2"]).await)
-        .accepted("laptop branch");
-    let pt = h
-        .ok(phone.push(&pr, &["p1"]).await)
-        .accepted("phone branch");
-    assert_ne!(lt, pt, "the two devices must have forked");
+    // Case 2: the devices commit to different, partitioned peers, each
+    // extending its branch past the fork point before anyone sees the
+    // other.
+    let (laptop_branch, phone_branch) = extend_both(&h, &laptop, &phone, &pr).await;
+    let (lt, pt) = (laptop_branch[1].clone(), phone_branch[1].clone());
+
+    // Before the link heals each peer holds one branch, but an observer
+    // asking both already sees two chains over one `pre`, each extended:
+    // neither is settled (SPEC 15.8), so it is Error with both extended
+    // heads live, and stays so once the rival's extension is served.
+    let early = h.ok(observer.verdict(&pr, &both).await);
     assert_eq!(
-        h.peer_view("p2", &pr).await.map(|v| v.tip),
-        Some(lt.clone())
-    );
-    assert_eq!(
-        h.peer_view("p1", &pr).await.map(|v| v.tip),
-        Some(pt.clone())
+        (early.standing, sorted(&early.branches)),
+        (Standing::Error, sorted(&[lt.clone(), pt.clone()])),
+        "both extended heads, unsettled, before the peers compare"
     );
     h.eventually(
         "a peer-to-peer attempt on the cut link",
@@ -169,10 +164,9 @@ async fn s03_offline() {
     .await;
     h.proxy.heal("p1", "p2");
 
-    // The observer finds the fork by comparing the two peers' chains as soon
-    // as the link heals; each peer retains the other's branch, and serves it
-    // as evidence, only after its next gossip round. The oracle checks the
-    // verdict against what the peers serve, so wait for both.
+    // Each peer retains the other's branch, and serves it as evidence, only
+    // after its next gossip round. The oracle checks the verdict against
+    // what the peers serve, so wait for both.
     h.eventually(
         "the fork to surface as Error plus evidence the peers serve",
         CONVERGE,
@@ -185,44 +179,168 @@ async fn s03_offline() {
         },
     )
     .await;
+    // Checked here, not by the oracle: it holds a verdict over differing
+    // peer heads to every commit the peers list at `/branches`, and with
+    // both branches extended that is each branch's commits, not its heads;
+    // and it refuses the evidence a peer serves for a rival's extension.
     let forked = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(&forked, &pr, &Expect::new(&both, &pr.0))
-        .await;
-    let mut seen = forked.branches.clone();
-    seen.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut want = [lt.clone(), pt.clone()];
-    want.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(seen, want, "exactly the two pushed branches");
+    assert_eq!(
+        sorted(&forked.branches),
+        sorted(&[lt.clone(), pt.clone()]),
+        "exactly the two extended branch heads"
+    );
+    assert!(
+        forked.resolved_by.is_none(),
+        "no branch is settled while both are extended"
+    );
 
-    // Alice resolves (SPEC 15.8, resolution 1: a new commit whose `pre` is
-    // the chosen branch's tip); the abandoned branch stays in the record.
+    // Alice resolves (SPEC 15.8); the abandoned branch stays in the record.
+    // Both branches are extended, so one more commit on either settles
+    // nothing (15.7.1): the phone deletes the laptop's key, and the
+    // laptop's branch, signed by a key the chain removed, is evidence only.
     // The peers are in Error (15.5: no new transactions or actions until
     // resolved), so the resolution is a commit that carries everything it
-    // needs: a key add. A data commit would push its action alone first,
-    // and a peer in Error refuses that action (423) before the commit
-    // that would resolve arrives.
-    h.ok(phone.add_backup_key(&pr).await);
-    let resolved = h
-        .ok(phone.push(&pr, &["p1"]).await)
-        .accepted("the resolution");
-    h.eventually("the peers to hold the resolution", CONVERGE, || async {
-        Ok(
-            h.peer_view("p1", &pr).await.map(|v| v.tip) == Some(resolved.clone())
-                && h.peer_view("p2", &pr).await.map(|v| v.tip) == Some(resolved.clone()),
-        )
-    })
-    .await;
-    let healed = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
-        .await;
+    // needs, not a data commit whose action a peer in Error would refuse.
+    let resolved = resolve_by_removal(&h, &phone, &pr).await;
+    // Checked here, not by the oracle, which refuses the evidence a peer
+    // serves for the rival's extension (its `pre` is not on the peer's
+    // chain).
+    let healed = h.ok(observer.verdict(&pr, &["p1"]).await);
     assert_eq!(healed.standing, Standing::Active);
+    assert_eq!(
+        healed.branches,
+        std::slice::from_ref(&resolved),
+        "one live head"
+    );
     assert_eq!(healed.tip, resolved);
     // Retained as proof of error (SPEC 15.8), not as a live head.
     assert!(
-        healed.abandoned.contains(&lt),
+        healed.abandoned.contains(&laptop_branch[0]),
         "the abandoned branch is kept"
     );
     assert!(healed.resolved_by.is_some());
+}
+
+/// SPEC 15.8 with a server's rule for a rival signed by a removed key: a
+/// verifier that first looks only once a peer holds both extended branches
+/// reports Error, then Active once the principal deletes the rival's
+/// signer, as that peer does. A verifier that settles a fork only on a
+/// branch continuing past it never leaves Error here.
+#[tokio::test(flavor = "multi_thread")]
+async fn s03_removal_settles_extended_fork() {
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
+    h.require(&[
+        Capability::Transport,
+        Capability::CliNetwork,
+        Capability::BranchStore,
+        Capability::Evidence,
+        Capability::PeerGossip,
+        Capability::DataCommit,
+    ])
+    .await;
+    let (laptop, phone) = (h.client("alice-laptop"), h.client("alice-phone"));
+    let observer = h.client("bob");
+    let both = ["p1", "p2"];
+    let pr = h.ok(laptop.create_principal().await);
+    h.ok(laptop.pair_device(&pr, &phone).await);
+    let base = h.ok(laptop.push(&pr, &both).await).accepted("base push");
+    assert_eq!(h.ok(phone.sync(&pr, &both).await), base);
+
+    let (laptop_branch, _) = extend_both(&h, &laptop, &phone, &pr).await;
+    h.proxy.heal("p1", "p2");
+    // P1 holds the laptop's whole branch, both of its commits, beside its
+    // own chain; the observer asks P1 alone, so it holds the rival's
+    // extension only as P1 lists it.
+    h.eventually("P1 to hold the rival branch", CONVERGE, || async {
+        Ok(evidence(&h, "p1", &pr).await >= 2)
+    })
+    .await;
+    let forked = h.ok(observer.verdict(&pr, &["p1"]).await);
+    assert_eq!(forked.standing, Standing::Error, "both branches extended");
+
+    let resolved = resolve_by_removal(&h, &phone, &pr).await;
+    let healed = h.ok(observer.verdict(&pr, &["p1"]).await);
+    assert_eq!(
+        (healed.standing, healed.branches),
+        (Standing::Active, vec![resolved]),
+        "the rival's signer was deleted: Active, as the peers are"
+    );
+    assert!(
+        healed.abandoned.contains(&laptop_branch[0]),
+        "the abandoned branch is kept"
+    );
+}
+
+/// Partition the laptop with P2 and the phone with P1, then have each
+/// commit and push twice on its side: two branches over one `pre`, both
+/// extended past the fork point. The commits of each branch, in order.
+async fn extend_both(
+    h: &Harness,
+    laptop: &Client<'_>,
+    phone: &Client<'_>,
+    pr: &Principal,
+) -> ([Tip; 2], [Tip; 2]) {
+    h.proxy.partition("p1", "p2");
+    h.proxy.partition("alice-laptop", "p1");
+    h.proxy.partition("alice-phone", "p2");
+    assert!(!h.reach("alice-laptop", "p1").await && !h.reach("alice-phone", "p2").await);
+    assert!(h.reach("alice-laptop", "p2").await && h.reach("alice-phone", "p1").await);
+    let mut laptop_tips = Vec::new();
+    let mut phone_tips = Vec::new();
+    for round in 1..=2 {
+        h.ok(laptop
+            .commit_data(pr, &format!("laptop, branch {round}"))
+            .await);
+        h.ok(phone
+            .commit_data(pr, &format!("phone, branch {round}"))
+            .await);
+        laptop_tips.push(
+            h.ok(laptop.push(pr, &["p2"]).await)
+                .accepted("laptop branch"),
+        );
+        phone_tips.push(h.ok(phone.push(pr, &["p1"]).await).accepted("phone branch"));
+    }
+    assert_ne!(
+        laptop_tips[0], phone_tips[0],
+        "the two devices must have forked"
+    );
+    assert_eq!(
+        h.peer_view("p2", pr).await.map(|v| v.tip),
+        laptop_tips.last().cloned()
+    );
+    assert_eq!(
+        h.peer_view("p1", pr).await.map(|v| v.tip),
+        phone_tips.last().cloned()
+    );
+    let pair = |t: Vec<Tip>| -> [Tip; 2] { t.try_into().expect("two rounds") };
+    (pair(laptop_tips), pair(phone_tips))
+}
+
+/// The phone deletes the laptop's key (the genesis key) and pushes to P1.
+/// The resolution's tip, once P1 holds it. P2 holds the laptop's branch as
+/// its chain, so whether it adopts a removal that settles the fork against
+/// that chain is a question for the peer, not for this verifier: the
+/// verdicts after it ask P1, which admitted it.
+async fn resolve_by_removal(h: &Harness, phone: &Client<'_>, pr: &Principal) -> Tip {
+    let laptop_key = KeyRef(h.genesis_tmb(pr).expect("genesis tmb"));
+    h.ok(phone.remove_key(pr, &laptop_key).await);
+    let resolved = h
+        .ok(phone.push(pr, &["p1"]).await)
+        .accepted("the resolution");
+    assert_eq!(
+        h.peer_view("p1", pr).await.map(|v| v.tip),
+        Some(resolved.clone()),
+        "P1 admitted the resolution"
+    );
+    resolved
+}
+
+fn sorted(tips: &[Tip]) -> Vec<Tip> {
+    let mut tips = tips.to_vec();
+    tips.sort_by(|a, b| a.0.cmp(&b.0));
+    tips
 }
 
 /// How many principal-fork items `peer` serves for `p`, read from the peer

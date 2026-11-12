@@ -68,8 +68,10 @@ pub struct Resolution {
     pub kept: String,
     /// The fork commit it abandoned.
     pub abandoned: String,
-    /// The signer of the commit that continued past the kept branch.
-    pub by: String,
+    /// The key that settled the fork: the signer of the commit extending
+    /// the kept one, or of the commit that removed the rival's signer;
+    /// `None` when no commit did (a naked revoke).
+    pub by: Option<String>,
 }
 
 /// Two commits over one `pre`, with the other branch kept as evidence.

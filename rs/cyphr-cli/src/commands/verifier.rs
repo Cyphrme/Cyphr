@@ -3,14 +3,13 @@
 //! All of them are one round of the G2 pull step ([`cyphr_client::pull`])
 //! over a peer set (HTTP peers, or a bundle file served as peers), against
 //! a record rebuilt from the local store. What the pull returns is what is
-//! persisted (new commits into the store; peers, forks and naked revokes
-//! into the [`state`](crate::state) file) and printed. No verdict rule
-//! lives here: classification is the pull step's.
-//!
-//! One reading of SPEC 15.8 is made here, not in the pull: a fork is
-//! resolved when the peers' own chain, pulled into a fresh record, is
-//! fork-free and continues past one of the fork's two commits; the signer of
-//! that continuing commit is the resolving key.
+//! persisted (new commits, rival branches and naked revokes into the store;
+//! peers and forks into the [`state`](crate::state) file) and printed. No
+//! verdict rule lives here: classification is the pull step's, and whether
+//! a fork stands, which heads are live and who settled a fork are the
+//! store's [`assess`](cyphr_storage::engine::StorageEngine::assess), the
+//! rule a peer applies, over the branches this verifier holds as a peer
+//! holds them.
 
 use std::time::Duration;
 
@@ -19,11 +18,13 @@ use cyphr::principal::system_clock;
 use cyphr::replay::WireBundle;
 use cyphr_client::{
     Anchor, BindingPolicy, Bundle, BundleError, Connector, HttpConnector, HttpOptions,
-    PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record, RecordTip,
-    Request, fetch_patch, opener_of, pull,
+    PatchFailure, PatchRequest, PeerFailure, PeerStanding, PullPeer, PullReport, Record, Request,
+    branch_bundles, fetch_patch, opener_of, pull,
 };
 use cyphr_storage::Genesis;
-use cyphr_storage::engine::{Consensus, ForkView, Recovery, Review, bare_digest};
+use cyphr_storage::engine::{
+    Assessment, BranchTip, Consensus, EngineError, ForkView, Recovery, Review, bare_digest,
+};
 use serde_json::{Value, json};
 
 use super::common::{
@@ -218,10 +219,12 @@ impl<'a> Round<'a> {
         })
     }
 
-    /// Write what the pull added to the store, which replays each bundle
-    /// again before keeping it.
-    async fn keep(&self, record: &Record, mark: usize) -> crate::Result<()> {
-        let added = record.bundles_since(mark);
+    /// Hand `bundles` to the store, which replays each again and admits it,
+    /// retains it as a branch, or refuses it, as a peer's store does. A
+    /// refusal is the store's answer, not a failure of this round (a commit
+    /// it holds, or one refused in Error and kept as evidence); a storage
+    /// fault is.
+    async fn keep(&self, record: &Record, bundles: &[WireBundle]) -> crate::Result<()> {
         let Some(first) = record.bundles_since(0).first() else {
             return Ok(());
         };
@@ -231,10 +234,18 @@ impl<'a> Round<'a> {
                 opener_of(first).map_err(|e| Error::InvalidArgument(e.to_owned()))?,
             ),
         };
-        for bundle in added {
-            self.store
+        for bundle in bundles {
+            if let Err(
+                fault @ (EngineError::BlobStore(_)
+                | EngineError::Indexer(_)
+                | EngineError::Storage(_)),
+            ) = self
+                .store
                 .submit_commit(&self.principal_id, Some(genesis.clone()), bundle)
-                .await?;
+                .await
+            {
+                return Err(fault.into());
+            }
         }
         Ok(())
     }
@@ -274,24 +285,11 @@ fn latest_now(record: &Record) -> Option<i64> {
         .max()
 }
 
-/// The signer of the commit at `index` of the record's chain.
-fn signer_at(record: &Record, index: usize) -> Option<String> {
-    let bundle = record.entries().get(index)?.bundle.as_ref().ok()?;
-    let blob = bundle.cozies().next()?;
-    serde_json::from_slice::<Value>(blob).ok()?["pay"]["tmb"]
-        .as_str()
-        .map(str::to_owned)
-}
-
-/// A fresh record pulled from the same peers: the chain they converge on,
-/// which decides whether the forks held are resolved.
-/// A branch head a peer serves beside its canonical chain: `(sequence, tip)`,
-/// as `/branches` reports it.
-type BranchHead = (usize, String);
-
-/// The non-canonical heads the peers serve at `/branches`. A peer that
-/// cannot answer contributes none: a fork then settles on the chain alone.
-async fn rival_heads<C: Connector>(wire: &str, peers: &[PullPeer<'_, C>]) -> Vec<BranchHead> {
+/// The non-canonical branch heads the peers list at `/branches`: claims,
+/// for the heads whose commits this verifier could not verify (see
+/// [`StorageEngine::assess`](cyphr_storage::engine::StorageEngine::assess)).
+/// A peer that cannot answer contributes none.
+async fn rival_heads<C: Connector>(wire: &str, peers: &[PullPeer<'_, C>]) -> Vec<BranchTip> {
     let mut heads = Vec::new();
     for peer in peers {
         let Ok(body) = peer
@@ -306,65 +304,36 @@ async fn rival_heads<C: Connector>(wire: &str, peers: &[PullPeer<'_, C>]) -> Vec
         };
         for b in doc["payload"]["branches"].as_array().into_iter().flatten() {
             if b["canonical"].as_bool() == Some(false)
-                && let (Some(seq), Some(tip)) = (b["sequence"].as_u64(), b["tip"].as_str())
-                && let Ok(seq) = usize::try_from(seq)
+                && let (Some(sequence), Some(tip)) = (b["sequence"].as_u64(), b["tip"].as_str())
             {
-                heads.push((seq, tip.to_owned()));
+                heads.push(BranchTip {
+                    tip: tip.to_owned(),
+                    pre: b["pre"].as_str().map(str::to_owned),
+                    sequence,
+                    canonical: false,
+                    seen: None,
+                });
             }
         }
     }
     heads
 }
 
-fn settle_resolutions(
-    state: &mut PrincipalState,
-    fresh: &Record,
-    fresh_report: &PullReport,
-    rivals: &[BranchHead],
-) -> bool {
-    let Some(RecordTip { commits, .. }) = fresh.tip() else {
-        return false;
-    };
-    // Peers keep serving a resolved fork as evidence, so a fork finding
-    // alone does not unsettle it. A finding of a fork this state does not
-    // hold is a new fork, and nothing settles while one is open.
-    if fresh_report
+/// A held fork as the store's [`Assessment`] reads it: resolved once the
+/// contest holding its commits settled, and unresolved again should it
+/// stand once more.
+fn resolution_of(fork: &HeldFork, assessed: &Assessment) -> Option<Resolution> {
+    let contest = assessed
         .forks
         .iter()
-        .any(|f| !state.forks.iter().any(|held| held.is(&f.commits)))
-    {
-        return false;
-    }
-    let mut resolved = false;
-    for fork in state.forks.iter_mut().filter(|f| f.resolution.is_none()) {
-        let Some(at) = fresh.commit_id_at(fork.height) else {
-            continue;
-        };
-        let Some(other) = fork.commits.iter().find(|c| **c != at).cloned() else {
-            continue;
-        };
-        // A rival head above the fork means both branches went on: the
-        // fork stays unresolved (an Error neither side has settled).
-        if rivals
-            .iter()
-            .any(|(seq, tip)| *seq > fork.height && fresh.commit_id_at(*seq).as_ref() != Some(tip))
-        {
-            continue;
-        }
-        if !fork.commits.contains(&at) || commits <= fork.height + 1 {
-            continue;
-        }
-        let Some(by) = signer_at(fresh, fork.height + 1) else {
-            continue;
-        };
-        fork.resolution = Some(Resolution {
-            kept: at,
-            abandoned: other,
-            by,
-        });
-        resolved = true;
-    }
-    resolved
+        .find(|c| fork.commits.iter().all(|id| c.commits.contains(id)))?;
+    let kept = contest.kept.clone()?;
+    let abandoned = fork.commits.iter().find(|c| **c != kept)?.clone();
+    Some(Resolution {
+        kept,
+        abandoned,
+        by: contest.by.clone(),
+    })
 }
 
 /// One round of the pull step over `peers`, persisted and described.
@@ -377,11 +346,16 @@ async fn run_round<C: Connector>(
     let mut state = VerifierState::load(&state_path)?;
     let now = current_timestamp();
 
-    let mut record = round.record().await?;
-    let mark = record.log_len();
-    let held_before = record.tip().map_or(0, |t| t.commits);
-    let report = pull(&mut record, peers).await;
-    round.keep(&record, mark).await?;
+    let mut pulled = round.record().await?;
+    let mark = pulled.log_len();
+    let held_before = pulled.tip().map_or(0, |t| t.commits);
+    let report = pull(&mut pulled, peers).await;
+    let mut handed = pulled.bundles_since(mark).to_vec();
+    handed.extend(branch_bundles(&pulled, &report, peers).await);
+    round.keep(&pulled, &handed).await?;
+    for found in &report.revoked {
+        round.store.record_revoke(&found.envelope).await?;
+    }
 
     let answered: Vec<&str> = report
         .peers
@@ -400,6 +374,11 @@ async fn run_round<C: Connector>(
     if answered.is_empty() {
         return Err(no_answer(peers, &failures, &report));
     }
+    // What the store holds now, branches kept as a peer keeps them: its
+    // canonical chain is the record, and its assessment the verdict.
+    let record = round.record().await?;
+    let claimed = rival_heads(&round.wire, peers).await;
+    let assessed = round.store.assess(&round.principal_id, &claimed).await?;
     let tip = record
         .tip()
         .ok_or_else(|| Error::EmptyHistory(round.identity.to_owned()))?;
@@ -457,22 +436,11 @@ async fn run_round<C: Connector>(
         }
     }
 
-    // A fork is resolved by what the peers converge on, which only a fresh
-    // record shows: the held one keeps the branch it already had.
-    let mut shown = tip.clone();
-    // The forks the peers serve evidence of in this round.
-    let mut served: Vec<[String; 2]> = report.forks.iter().map(|f| f.commits.clone()).collect();
-    if entry.forks.iter().any(|f| f.resolution.is_none()) || !report.forks.is_empty() {
-        let mut fresh = Record::new(&round.wire, round.anchor.clone());
-        let fresh_report = pull(&mut fresh, peers).await;
-        served.extend(fresh_report.forks.iter().map(|f| f.commits.clone()));
-        let rivals = rival_heads(&round.wire, peers).await;
-        settle_resolutions(entry, &fresh, &fresh_report, &rivals);
-        let followed = entry.forks.iter().any(|f| f.resolution.is_some());
-        if let Some(t) = fresh.tip().filter(|t| followed && t.commits >= tip.commits) {
-            shown = t;
-        }
+    for fork in &mut entry.forks {
+        fork.resolution = resolution_of(fork, &assessed);
     }
+    // The forks the peers serve evidence of in this round.
+    let served: Vec<&[String; 2]> = report.forks.iter().map(|f| &f.commits).collect();
 
     let added = tip.commits.saturating_sub(held_before);
     let unresolved: Vec<&HeldFork> = entry
@@ -510,16 +478,8 @@ async fn run_round<C: Connector>(
             .iter()
             .map(|r| json!({"kind": "naked_revoke", "tmb": r.tmb, "rvk": r.rvk, "peer": r.peer})),
     );
-    // Live heads only: once forks are resolved the chain has one head, and
-    // the resolved pair is reported in `resolved_forks`.
-    let branches: Vec<&str> = if unresolved.is_empty() {
-        vec![shown.commit_id.as_str()]
-    } else {
-        unresolved
-            .iter()
-            .flat_map(|f| f.commits.iter().map(String::as_str))
-            .collect()
-    };
+    // Live heads only: a resolved pair is reported in `resolved_forks`.
+    let branches = &assessed.heads;
     let principal_now = latest_now(&record);
     let age = |t: i64| u64::try_from(now - t).unwrap_or(0);
     let pull_age = age(now);
@@ -551,8 +511,8 @@ async fn run_round<C: Connector>(
         .collect();
     let out = json!({
         "identity": round.identity,
-        "tip": shown.commit_id,
-        "commits": shown.commits,
+        "tip": tip.commit_id,
+        "commits": tip.commits,
         "added": added,
         "view_age_secs": pull_age,
         "peers_queried": answered.len(),
@@ -569,9 +529,12 @@ async fn run_round<C: Connector>(
         // it vouches for nothing.
         "anchor": {"value": round.anchor_value, "source": round.anchor_source,
             "is_identity": bare_digest(&round.anchor_value) == round.wire},
-        "verdict": if unresolved.is_empty() { "Active" } else { "Error" },
+        "verdict": match assessed.consensus {
+            Consensus::Active => "Active",
+            Consensus::Error => "Error",
+        },
         "branches": branches,
-        "resolved_by": resolved.iter().filter_map(|f| f.resolution.as_ref()).next_back().map(|r| r.by.clone()),
+        "resolved_by": resolved.iter().filter_map(|f| f.resolution.as_ref()).next_back().and_then(|r| r.by.clone()),
         "resolved_forks": resolved.iter().filter_map(|f| f.resolution.as_ref().map(|r| json!({"height": f.height, "kept": r.kept, "abandoned": r.abandoned, "by": r.by}))).collect::<Vec<_>>(),
     });
     let mut out = out;
@@ -580,14 +543,10 @@ async fn run_round<C: Connector>(
     // resolved fork's abandoned head included).
     let review = HumanRecovery(entry.recovery.clone()).review(
         &round.wire,
-        if unresolved.is_empty() {
-            Consensus::Active
-        } else {
-            Consensus::Error
-        },
+        assessed.consensus,
         &fork_views(&entry.forks),
     );
-    if !unresolved.is_empty() || review.trusted.is_some() {
+    if assessed.consensus == Consensus::Error || review.trusted.is_some() {
         out["recovery"] = json!({"note": review.note, "head": review.trusted,
             "reason": entry.recovery.as_ref().and_then(|c| c.reason.clone()),
             "chosen_at": review.trusted.as_ref().and(entry.recovery.as_ref().map(|c| c.chosen_at))});
