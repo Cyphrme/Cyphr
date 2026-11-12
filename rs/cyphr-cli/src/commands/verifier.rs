@@ -289,7 +289,14 @@ fn settle_resolutions(
     let Some(RecordTip { commits, .. }) = fresh.tip() else {
         return false;
     };
-    if !fresh_report.forks.is_empty() {
+    // Peers keep serving a resolved fork as evidence, so a fork finding
+    // alone does not unsettle it. A finding of a fork this state does not
+    // hold is a new fork, and nothing settles while one is open.
+    if fresh_report
+        .forks
+        .iter()
+        .any(|f| !state.forks.iter().any(|held| held.is(&f.commits)))
+    {
         return false;
     }
     let mut resolved = false;
