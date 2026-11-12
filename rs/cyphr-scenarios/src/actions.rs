@@ -766,7 +766,13 @@ impl Client<'_> {
     pub async fn record_data(&self, p: &Principal, msg: &str) -> ActionResult<String> {
         let (id, signer) = (format!("--identity={}", p.0), self.signer(p)?);
         let v = self
-            .cyphr(&["data", "action", &id, &format!("--signer={signer}"), &format!("--msg={msg}")])
+            .cyphr(&[
+                "data",
+                "action",
+                &id,
+                &format!("--signer={signer}"),
+                &format!("--msg={msg}"),
+            ])
             .await?;
         field(&v, "czd")
     }

@@ -93,7 +93,10 @@ async fn s03_offline() {
     );
     let p1_actions = h.peer_actions("p1", &pr).await.expect("P1 holds actions");
     let rebased = h.ok(laptop.rebase(&pr).await);
-    assert_ne!(rebased.tip, phone_tip, "a rebase adds the laptop's own commit");
+    assert_ne!(
+        rebased.tip, phone_tip,
+        "a rebase adds the laptop's own commit"
+    );
     // SPEC 15.9: a rebase re-signs the actions the peer lacks at the current
     // time and names each, with its old czd and time; never silently.
     let named = rebased.resigned.iter().find(|r| r.czd == pending);
