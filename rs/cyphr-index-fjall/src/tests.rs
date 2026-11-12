@@ -385,3 +385,27 @@ fn version_index_unknown_is_refused() {
         "v{unknown} must be refused as UnsupportedVersion: {refused:?}"
     );
 }
+
+/// Backs the schema-7 discard: opening a store stamped with schema 6 deletes
+/// the `index_errored` partition that version kept, not only the live ones.
+/// Turns red if the discard path clears the live partitions and leaves the
+/// retired one on disk. A unit test: schema 6 is reachable only by stamp.
+#[test]
+fn older_store_discard_deletes_the_retired_errored_partition() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    store_stamped_with(dir.path(), 6);
+    {
+        let db = Database::builder(dir.path()).open().expect("raw open");
+        let errored = db
+            .keyspace("index_errored", KeyspaceCreateOptions::default)
+            .expect("errored keyspace");
+        errored.insert("principal", b"row").expect("seed a schema-6 row");
+        db.persist(fjall::PersistMode::SyncAll).expect("persist");
+    }
+    drop(FjallIndexer::open(dir.path()).expect("discard and reopen"));
+    let db = Database::builder(dir.path()).open().expect("raw reopen");
+    assert!(
+        !db.keyspace_exists("index_errored"),
+        "the retired partition survived the discard"
+    );
+}
