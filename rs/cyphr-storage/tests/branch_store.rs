@@ -1160,3 +1160,32 @@ mod retained {
         );
     }
 }
+
+/// Backs SPEC 15.9 ("rejecting future-dated messages") on every path a
+/// naked revoke reaches the engine by, a relay's included: a revoke dated
+/// past the engine's clock plus the tolerance is refused and stores no
+/// record; one dated within it is kept. Turns red if a far-future revoke,
+/// which would stop nothing, is recorded.
+#[tokio::test]
+async fn a_future_dated_revoke_is_refused_and_stores_nothing() {
+    let pool = load_pool();
+    let k = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    let skew = cyphr::principal::DEFAULT_MAX_CLOCK_SKEW as i64;
+    let count = || async { e.blob_store().iter().await.expect("iter").count() };
+    assert!(
+        e.record_revoke(&naked_revoke(&k, clock + skew + 60))
+            .await
+            .is_err(),
+        "a future-dated revoke is refused"
+    );
+    assert_eq!(count().await, 0, "and stores nothing");
+    e.record_revoke(&naked_revoke(&k, clock))
+        .await
+        .expect("a revoke dated now is kept");
+    assert_eq!(count().await, 1);
+}

@@ -2391,13 +2391,7 @@ async fn witness_refuses_a_dead_keys_tip_commit() {
         let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, bundle)).await;
         assert_eq!(status, StatusCode::CREATED, "authority push: {body:?}");
     }
-    let (status, body) = post_json(
-        app.clone(),
-        "/revoke",
-        common::eve_revoke(t + 2).to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+    common::relay_revoke(&authority.state, &common::eve_revoke(t + 2)).await;
 
     let (witness, _) = witness_for(&url, None).await;
     let _ = sync_from_authority(&witness, &id).await;

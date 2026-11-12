@@ -562,3 +562,37 @@ pub fn eve_revoke(rvk: i64) -> serde_json::Value {
         "key": {"alg": e.alg, "pub": e.pub_key},
     })
 }
+
+/// Record the naked revoke `envelope` at `state` as a relayed one is
+/// (gossip, a witness's sync): the observations every capability
+/// consults, and the engine. A revoke pushed over `/revoke` is held to the
+/// receipt window (SPEC 15.9), which a fixture dated in the past fails; a
+/// relayed one is not.
+#[allow(dead_code)]
+pub async fn relay_revoke(state: &cyphr_server::AppState, envelope: &serde_json::Value) {
+    let tmb = envelope["pay"]["tmb"]
+        .as_str()
+        .and_then(|t| Base64UrlUnpadded::decode_vec(t).ok())
+        .map(coz::Thumbprint::from_bytes)
+        .expect("the revoke names a base64url tmb");
+    state
+        .observations
+        .record_seen(&tmb, envelope.clone())
+        .await
+        .expect("observed");
+    state
+        .engine
+        .record_revoke(envelope)
+        .await
+        .expect("the engine keeps the revoke");
+}
+
+/// The wall clock, Unix seconds: the `now` of a revoke pushed over
+/// `/revoke`, which must fall within the receipt window (SPEC 15.9).
+#[allow(dead_code)]
+pub fn wall_clock() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+}

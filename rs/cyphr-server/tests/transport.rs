@@ -849,7 +849,7 @@ async fn a_naked_revoked_initiator_key_is_refused() {
     let pub_key = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("pub");
     let pay = serde_json::json!({
         "alg": key_a.alg,
-        "now": 1_700_000_000,
+        "now": common::wall_clock(),
         "rvk": 1_700_000_000,
         "tmb": key_a.compute_tmb_b64().expect("tmb"),
         "typ": "cyphr.me/cyphr/key/revoke",
@@ -886,7 +886,7 @@ async fn a_naked_revoked_initiator_key_is_refused() {
 fn naked_revoke_body(kp: &coz::KeyPair, tmb: &coz::Thumbprint, disclosed: &coz::KeyPair) -> String {
     let pay = serde_json::json!({
         "alg": kp.alg.name(),
-        "now": 1_700_000_000,
+        "now": common::wall_clock(),
         "rvk": 1_700_000_000,
         "tmb": tmb.to_b64(),
         "typ": "cyphr.me/cyphr/key/revoke",

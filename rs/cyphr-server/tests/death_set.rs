@@ -22,7 +22,10 @@ use test_fixtures::{Pool, PoolKey};
 
 mod common;
 
-const NOW: i64 = 1_700_000_000;
+/// Every coz here is dated now: the revoke is pushed over `/revoke`, held
+/// to the receipt window (SPEC 15.9), and the introductions are dated at
+/// its `now`, from which it takes effect.
+static NOW: std::sync::LazyLock<i64> = std::sync::LazyLock::new(common::wall_clock);
 const CREATE: &str = "cyphr.me/cyphr/key/create";
 const REPLACE: &str = "cyphr.me/cyphr/key/replace";
 
@@ -35,7 +38,7 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
     let state = Arc::new(common::keyed_appstate(&dir.path().join("data"), &key));
 
     let pid = common::golden_principal_id(pool).await;
-    let body = common::build_genesis_push_body(pool, &pid, NOW).await;
+    let body = common::build_genesis_push_body(pool, &pid, *NOW).await;
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
@@ -46,7 +49,7 @@ async fn server_with_key_a_dead(pool: &Pool) -> (Arc<AppState>, tempfile::TempDi
     let k = pool.get("key_a").expect("key_a");
     let tmb = k.compute_tmb_b64().expect("tmb");
     let pay = serde_json::json!({
-        "alg": k.alg, "now": NOW, "rvk": NOW, "tmb": tmb,
+        "alg": k.alg, "now": *NOW, "rvk": *NOW, "tmb": tmb,
         "typ": "cyphr.me/cyphr/key/revoke",
     });
     let (sig, _) = coz::sign_json(
@@ -96,7 +99,7 @@ async fn intro_commit(
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": signer.alg,
         "id": target.compute_tmb_b64().expect("target tmb"),
-        "now": NOW,
+        "now": *NOW,
         "tmb": signer_tmb,
         "typ": typ,
     }))
@@ -106,7 +109,7 @@ async fn intro_commit(
 
     let mut scope = principal.begin_commit();
     scope
-        .verify_and_apply(&pay, &sig, czd, Some(key_of(target).with_first_seen(NOW)))
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(target).with_first_seen(*NOW)))
         .expect("the introduction is valid against the starting principal");
     scope
         .finalize_with_software(
@@ -116,7 +119,7 @@ async fn intro_commit(
                 &pubk(signer),
                 &signer.compute_tmb().expect("tmb"),
             ),
-            NOW,
+            *NOW,
             "cyphr.me",
         )
         .await
@@ -179,7 +182,7 @@ async fn genesis_push(
         let mut p = cyphr::Principal::implicit(key_of(g))
             .await
             .expect("genesis");
-        p.commit_genesis(&signer_of(g), &[key_of(t)], NOW, "cyphr.me")
+        p.commit_genesis(&signer_of(g), &[key_of(t)], *NOW, "cyphr.me")
             .await
             .expect("genesis commit");
         let bundle = cyphr::replay::WireBundle::of_commit(p.commits().last().expect("genesis"))
@@ -194,7 +197,7 @@ async fn genesis_push(
         .expect("genesis");
     let mut scope = p.begin_commit();
     let mut cozies = scope
-        .create_genesis_keys(&signer_of(g), &[key_of(r)], NOW, "cyphr.me")
+        .create_genesis_keys(&signer_of(g), &[key_of(r)], *NOW, "cyphr.me")
         .await
         .expect("genesis key/creates");
     // Each key/create carries the key it creates for `push_blobs` to move
@@ -205,7 +208,7 @@ async fn genesis_push(
     let pay = serde_json::to_vec(&serde_json::json!({
         "alg": r.alg,
         "id": t.compute_tmb_b64().expect("target tmb"),
-        "now": NOW,
+        "now": *NOW,
         "tmb": r.compute_tmb_b64().expect("replacer tmb"),
         "typ": typ,
     }))
@@ -213,7 +216,7 @@ async fn genesis_push(
     let (sig, cad) = coz::sign_json(&pay, &r.alg, &prv(r), &pubk(r)).expect("sign");
     let czd = coz::czd_for_alg(&cad, &sig, &r.alg).expect("czd");
     scope
-        .verify_and_apply(&pay, &sig, czd, Some(key_of(t).with_first_seen(NOW)))
+        .verify_and_apply(&pay, &sig, czd, Some(key_of(t).with_first_seen(*NOW)))
         .expect("the replace is valid in the genesis commit");
     cozies.push(serde_json::json!({
         "pay": serde_json::from_slice::<serde_json::Value>(&pay).unwrap(),
@@ -223,12 +226,12 @@ async fn genesis_push(
     let pid = scope.genesis_id().expect("PG");
     cozies.push(
         scope
-            .create_principal(&signer_of(g), NOW, "cyphr.me")
+            .create_principal(&signer_of(g), *NOW, "cyphr.me")
             .await
             .expect("principal/create"),
     );
     let commit = scope
-        .finalize_with_software(&signer_of(g), NOW, "cyphr.me")
+        .finalize_with_software(&signer_of(g), *NOW, "cyphr.me")
         .await
         .expect("finalize");
     cozies.push(

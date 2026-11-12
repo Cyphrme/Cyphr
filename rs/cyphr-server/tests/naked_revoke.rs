@@ -183,7 +183,7 @@ fn revoke_body(
     let signer = pool.get(signer_name).expect("signer in pool");
     let pay = serde_json::json!({
         "alg": signer.alg,
-        "now": rvk,
+        "now": wall_clock(),
         "rvk": rvk,
         "tmb": named_tmb_b64,
         "typ": "cyphr.me/cyphr/key/revoke",
@@ -877,7 +877,8 @@ async fn revoked_key_refused_at_push() {
          {rjson:?}"
     );
 
-    // A follow-up commit signed by the now-dead key_a.
+    // A follow-up commit signed by the now-dead key_a, dated at or after
+    // the revoke's own `now`, from which the revoke takes effect.
     let body = followup_push_body(
         &pool,
         pid,
@@ -886,7 +887,7 @@ async fn revoked_key_refused_at_push() {
         RVK,
         "key_a",
         "carol",
-        RVK + 100,
+        wall_clock(),
     )
     .await;
     let (status, json) = post_push(&state, body).await;
@@ -1127,11 +1128,16 @@ async fn golden_naked_revoke_vector_is_accepted() {
         "the golden fixture must disclose key_a's real public key"
     );
 
+    // A relayed revoke (gossip, a witness's sync) is verified and kept with
+    // no receipt check; a push of the same vector is held to one (SPEC
+    // 15.9), which its fixed past `now` fails.
+    state
+        .engine
+        .record_revoke(&coz)
+        .await
+        .expect("the golden naked-revoke vector verifies and is kept");
     let (status, json) = post_revoke(&state, coz).await;
-    assert!(
-        status.is_success(),
-        "the golden naked-revoke vector must round-trip through ingest, got {status}: {json:?}"
-    );
+    assert_rejected(status, &json, "the golden vector pushed long after its now");
 }
 
 /// Read a committed golden vector, flat and crate-local (mirrors
@@ -1401,3 +1407,39 @@ async fn oversize_naked_revoke_is_rejected() {
 // ========================================================================
 // 14 -- HARDENING R2: the death record is durable across a store reopen
 // ========================================================================
+
+/// The wall clock, Unix seconds.
+fn wall_clock() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+}
+
+/// Backs the receipt check on a pushed naked revoke (SPEC 15.9: compare
+/// `now` to the witness's time on receipt, ±360 s): a revoke takes effect
+/// from its own `now` (SPEC 14.12), so a pushed revoke dated outside the
+/// window is refused and recorded nowhere, and one inside it is accepted.
+/// Turns red if a backdated or future-dated revoke is recorded, or one
+/// dated now is refused. End to end over `/revoke`.
+#[tokio::test]
+async fn a_revoke_outside_the_receipt_window_is_refused() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+    let tmb = tmb_b64(&pool, "key_a");
+    let dated = |now: i64| {
+        let signer = pool.get("key_a").expect("key_a");
+        let pay = serde_json::json!({
+            "alg": signer.alg, "now": now, "rvk": 1, "tmb": tmb,
+            "typ": "cyphr.me/cyphr/key/revoke",
+        });
+        sign_coz_disclosed(&pool, "key_a", pay, "key_a")
+    };
+    for off in [-361, 361, -100_000] {
+        let (status, json) = post_revoke(&state, dated(wall_clock() + off)).await;
+        assert_rejected(status, &json, &format!("revoke dated {off} s from receipt"));
+    }
+    let (status, json) = post_revoke(&state, dated(wall_clock())).await;
+    assert!(status.is_success(), "{status}: {json:?}");
+}
