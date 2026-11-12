@@ -586,12 +586,9 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .map(crate::semantic_tree::key_leaf)
             .collect();
 
-        // Refresh DR to the current active_algs rather than trusting the
-        // cached value, which may predate a key of a new algorithm (see
-        // stage_commit's identical refresh for the full rationale).
-        let Ok(dr) = self.projected.data.included_root(&active_algs) else {
-            return false;
-        };
+        // DR is the `id` its `ds/create` signed (SPEC 4.8.2); a variant it
+        // does not carry stays null (12.2).
+        let dr = self.projected.dr.clone();
 
         let Ok((_kr, _ar, sr)) = derive_state_roots_with_nonces(
             &leaves,
@@ -686,10 +683,9 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .map(crate::semantic_tree::key_leaf)
             .collect();
 
-        // Refresh DR to the current active_algs rather than trusting the
-        // cached value, which may predate a key of a new algorithm (see
-        // stage_commit's identical refresh for the full rationale).
-        let dr = self.projected.data.included_root(&active_algs)?;
+        // DR is the `id` its `ds/create` signed (SPEC 4.8.2); a variant it
+        // does not carry stays null (12.2).
+        let dr = self.projected.dr.clone();
 
         let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots_with_nonces(
             &leaves,

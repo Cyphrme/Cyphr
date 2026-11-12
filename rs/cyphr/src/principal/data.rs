@@ -8,9 +8,8 @@ use crate::state::PrincipalRoot;
 impl PrincipalState {
     /// Record an action in the Data Tree (Level 4+).
     ///
-    /// The action enters DT only: DR, and so SR and PR, change when a
-    /// `ds/create` includes it (SPEC 4.8.2), and only then does its `now`
-    /// become the principal's latest timestamp.
+    /// The action enters DT only: DR, and so SR and PR, change only by a
+    /// `ds/create` (SPEC 4.8.2), and the action is no part of the chain.
     ///
     /// This is internal-only. External code must use `verify_and_record_action`
     /// which enforces signature verification.
@@ -22,7 +21,7 @@ impl PrincipalState {
     /// - `UnknownKey`: Signer's key not in current KS
     pub(crate) fn record_action(&mut self, mut action: Action) -> Result<&PrincipalRoot> {
         // Validate timestamp is not in the past (SPEC §14.1)
-        if action.now < self.latest_now() {
+        if action.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
         }
 
@@ -34,14 +33,9 @@ impl PrincipalState {
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
 
-        // A pending action raises only the pending bound: once a
-        // `ds/create` settles it, only an included one bounds the chain,
-        // so a bundle the chain leaves out never blocks it.
         let core = self.core_mut();
-        core.data.pending_latest = core.data.pending_latest.max(Some(action.now));
         core.included_czds.insert(action.czd.as_bytes().to_vec());
         action.recorded_after = core.auth.commits.len();
-        action.bundle = core.data.bundle_for_next();
         core.data.actions.push(action);
 
         Ok(&self.pr)
@@ -158,23 +152,10 @@ impl PrincipalState {
 }
 
 impl<S: eml::Storage> Principal<S> {
-    /// Record the actions of one accepted bundle: those recorded until
-    /// [`Self::close_action_bundle`] are one bundle, which a `ds/create`
-    /// includes or leaves out whole (SPEC 4.8.2).
-    pub(crate) fn open_action_bundle(&mut self) {
-        self.state.core_mut().data.open_bundle();
-    }
-
-    /// End the bundle [`Self::open_action_bundle`] opened.
-    pub(crate) fn close_action_bundle(&mut self) {
-        self.state.core_mut().data.close_bundle();
-    }
-
     /// Verify signature and record an action in one step.
     ///
     /// This is the primary method for processing incoming actions. An
     /// action enters DT only, in memory: nothing reaches the commit log.
-    /// Each call records its own bundle (SPEC 4.8.2).
     ///
     /// # Errors
     ///

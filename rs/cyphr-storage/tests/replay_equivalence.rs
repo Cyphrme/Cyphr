@@ -979,18 +979,16 @@ async fn push(engine: &Engine, id: &str, genesis: &Genesis, bundle: &WireBundle)
 /// Claim (SPEC 4.8.1: data actions "are not chained, and are recorded in
 /// DT", "Ordered by `now`"; 4.8.2: a `ds/create` names MR(DT)): data
 /// actions pushed on their own, in any order within their bundle, are
-/// recorded in DT on every path. Engine ingest accepts a `ds/create` over
-/// them; the principal the engine replays from its store, the one a scratch
+/// recorded in DT on every path. Engine ingest accepts a `ds/create`; the
+/// principal the engine replays from its store, the one a scratch
 /// rebuild replays, the one a restarted engine (a fresh index healed from
 /// the blobs) replays, and the one imported from the client's export all
 /// hold the client's PR and the same actions at the same places, so a
 /// second `ds/create` over a later action is accepted after the restart.
 ///
 /// Turns red if: the engine stores an action-only bundle without listing
-/// it for replay (the `ds/create` is refused as `StateMismatch`); a bundle
-/// out of `now` order is replayed in carriage order (`TimestampPast`);
-/// rebuild or restart drops the action manifests; or the export leaves the
-/// actions out (the import's `ds/create` fails).
+/// it for replay (the replayed actions differ); rebuild or restart drops the action manifests; or
+/// the export leaves the actions out (the import's `ds/create` fails).
 /// End-to-end scenario: yes (client, engine ingest, scratch rebuild,
 /// restart, export and import).
 #[tokio::test]

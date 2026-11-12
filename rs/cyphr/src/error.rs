@@ -74,17 +74,6 @@ pub enum Error {
     #[error("state mismatch")]
     StateMismatch,
 
-    /// A `ds/create` met more pending action bundles than the inclusion
-    /// search tries ([`crate::principal::MAX_PENDING_BUNDLES`]): which of
-    /// them it signed for is not searched.
-    #[error("{pending} pending action bundles; a ds/create chooses among at most {cap}")]
-    TooManyPendingBundles {
-        /// The pending bundles the `ds/create` met.
-        pending: usize,
-        /// The most it chooses among.
-        cap: usize,
-    },
-
     /// MultihashDigest contains no variants (internal invariant violation).
     #[error("empty multihash digest")]
     EmptyMultihash,

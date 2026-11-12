@@ -32,23 +32,6 @@ pub struct Action {
     pub(crate) raw: coz::CozJson,
     /// How many commits the principal held when it recorded the action.
     pub(crate) recorded_after: usize,
-    /// The action bundle it was recorded in: a `ds/create` includes or
-    /// leaves out whole bundles (SPEC 4.8.2).
-    pub(crate) bundle: usize,
-    /// Whether a `ds/create` has included it yet.
-    pub(crate) inclusion: Inclusion,
-}
-
-/// Where a recorded action stands in DR (SPEC 4.8.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Inclusion {
-    /// Recorded since the last `ds/create`: the next one may include it.
-    Pending,
-    /// A `ds/create` included it in DR.
-    Included,
-    /// A `ds/create` was signed while it was pending and left it out: it
-    /// is not part of this chain's DR, and never becomes part of it.
-    NotIncluded,
 }
 
 impl Action {
@@ -73,8 +56,6 @@ impl Action {
             hash_alg,
             raw,
             recorded_after: 0,
-            bundle: 0,
-            inclusion: Inclusion::Pending,
         }
     }
 
@@ -94,8 +75,6 @@ impl Action {
             hash_alg,
             raw,
             recorded_after: 0,
-            bundle: 0,
-            inclusion: Inclusion::Pending,
         })
     }
 
@@ -130,12 +109,6 @@ impl Action {
     /// before it, SPEC 4.8.2).
     pub fn recorded_after(&self) -> usize {
         self.recorded_after
-    }
-
-    /// Whether a `ds/create` signed while this action was pending left it
-    /// out of DR (SPEC 4.8.2): it stays recorded, never included.
-    pub fn is_not_included(&self) -> bool {
-        self.inclusion == Inclusion::NotIncluded
     }
 
     /// Get the raw Coz message for storage/export.

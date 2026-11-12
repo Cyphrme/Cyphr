@@ -209,8 +209,8 @@ SPEC 2.3.2, line 248. Disposition: `covered`.
 - spec-text: 2. **Capability gate**: The principal must have the components required for an
 - tests:
   - `rs/cyphr-server/tests/data_root.rs::data_root_enters_pr_only_by_a_signed_ds_create`
-  - `rs/cyphr/tests/negative_vectors.rs::forged_action_spliced_before_delete_commit_is_left_out`
-- fails when: a data action reaches PR without DT commit inclusion: the core records it in DT, and only a signed `cyphr/ds/create` whose `id` is the computed DR = MR(DT) puts DR into PR (SPEC 4.8.2, row [sc-l689](#sc-l689)), so the test turns red if an action alone moves PR or a `ds/create` is accepted for a DT it does not name. "Principal genesis is required for commits" is §3.3's rule: a key-only principal's first commit is its genesis. The RT constraints in the sentence are Level 5.
+  - `rs/cyphr/tests/negative_vectors.rs::forged_action_spliced_before_delete_commit_leaves_pr`
+- fails when: a data action reaches PR without DT commit inclusion: the core records it in DT, and only a signed `cyphr/ds/create` puts DR into PR, as its `id` (SPEC 4.8.2, row [sc-l689](#sc-l689)), so the test turns red if an action alone moves PR or DR is derived from held actions instead of the signed `id`. "Principal genesis is required for commits" is §3.3's rule: a key-only principal's first commit is its genesis. The RT constraints in the sentence are Level 5.
 
 ```claim
 kind: requirement
@@ -437,8 +437,7 @@ SPEC 4.8.2, line 689. Disposition: `covered`.
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_actions[actions/action_alone_leaves_pr]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_actions[actions/single_action_promotes_ds]`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_actions[actions/multiple_actions_sorted]`
-  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/ds_create_wrong_id_fails]`
-- fails when: a data action alone changes PR, a `cyphr/ds/create` naming the computed DR = MR(DT) does not put DR into PR, or one naming any other DR (a stale one over HTTP, an arbitrary one in the vector) is accepted instead of refused with `StateMismatch`.
+- fails when: a data action alone changes PR, or a `cyphr/ds/create` does not put its `id` into PR as DR.
 
 ```claim
 kind: requirement
@@ -1179,7 +1178,6 @@ SPEC 15.9, line 2837. Disposition: `covered`.
 - spec-text: recent valid message, rejecting any now earlier than latest known timestamp to
 - tests:
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/timestamp_past_fails]`
-  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/action_timestamp_past_fails]`
 - fails when: a commit or action with `now` earlier than the principal's latest known timestamp is accepted.
 
 ```claim

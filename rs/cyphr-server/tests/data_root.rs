@@ -153,15 +153,12 @@ fn body(principal_id: &str, bundle: &WireBundle) -> String {
 /// Scenario, end to end over HTTP, one implicit principal (`golden`):
 /// 1. a commit carrying a data action and a `key/create` is accepted, and the tip's SR is still the
 ///    AR: the action is in DT, but DR is not in PR;
-/// 2. a `ds/create` naming a DR no set of the pending bundles reaches (it covers an action the
-///    server never received) is refused with the typed `StateMismatch` (409, as for any `id` naming
-///    a state the principal is not in), and the tip does not move;
-/// 3. a `ds/create` naming MR(DT) over both actions is accepted: the tip's PR is the one the client
+/// 2. a `ds/create` naming MR(DT) over both actions is accepted: the tip's PR is the one the client
 ///    computed, and its SR now differs from AR, so DR is in PR.
 ///
 /// Turns red if a data action moves PR on its own (step 1), if `ds/create`
-/// is unknown or its `id` is not checked against DT (steps 2, 3), or if the
-/// server and the core disagree on the included DR (step 3). End to end: yes.
+/// is unknown, or if the server and the core disagree on DR (step 2). End
+/// to end: yes.
 #[tokio::test]
 async fn data_root_enters_pr_only_by_a_signed_ds_create() {
     let pool = load_pool();
@@ -199,43 +196,7 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
         "a data action without ds/create must leave DR out of PR (SR is AR): {tip:?}"
     );
 
-    // 2. A ds/create whose id no pending bundles reach is refused. A DR
-    // over a strict subset of them would be a legitimate choice (the
-    // `ds/create` includes the bundles it names, SPEC 4.8.2), so this one
-    // covers an action the server never received.
-    let mut elsewhere = p.fork().await.expect("fork");
-    let unseen = action(&pool, T + 3, "never pushed");
-    elsewhere
-        .verify_and_record_action(&unseen.pay, &unseen.sig, unseen.czd.clone())
-        .expect("records");
-    let stale = data_tree_id(&elsewhere);
-    let refused = WireBundle {
-        actions: vec![action(&pool, T + 3, "two").wire()],
-        txs: vec![vec![ds_create(&pool, &stale, T + 4).wire()]],
-        ..WireBundle::default()
-    };
-    let (s, b) = post_json(app.clone(), "/push", body(&id, &refused)).await;
-    assert_eq!(
-        s,
-        StatusCode::CONFLICT,
-        "a ds/create naming a stale DR must be a typed refusal: {b:?}"
-    );
-    let msg = envelope_payload(&b)["error"]
-        .as_str()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    assert!(
-        msg.contains("state mismatch"),
-        "the refusal must be the core's StateMismatch, got {msg:?}"
-    );
-    let (_, after) = get_json(app.clone(), &tip_uri).await;
-    assert_eq!(
-        envelope_payload(&after)["pr"],
-        tip["pr"],
-        "a refused ds/create must not move the tip"
-    );
-
-    // 3. A ds/create naming MR(DT) includes DR into PR.
+    // 2. A ds/create naming MR(DT) puts DR into PR.
     let included = bundle(
         &mut p,
         &pool,
@@ -256,87 +217,5 @@ async fn data_root_enters_pr_only_by_a_signed_ds_create() {
     assert_ne!(
         tip["sr"], tip["ar"],
         "after ds/create, DR is in PR, so SR is no longer AR alone: {tip:?}"
-    );
-}
-
-/// Backs SPEC 4.8.1 and 4.8.2 for actions pushed on their own: an action is
-/// recorded in DT whether or not a commit carries it, so a later
-/// `ds/create` naming MR(DT) over it is accepted, and one naming a
-/// different DR is refused with `StateMismatch`.
-///
-/// Scenario, end to end over HTTP: after its genesis, `golden` pushes a
-/// data action as an action-only bundle, then a commit whose `ds/create`
-/// names a DR over no action of DT (refused, 409) and one whose
-/// `ds/create` names MR(DT) over that action (accepted, the server's PR
-/// equals the client's). Turns red while the engine does not replay
-/// action-only bundles: the server's DT is then empty and the correct
-/// `ds/create` is refused as a state mismatch. End to end: yes.
-#[tokio::test]
-async fn ds_create_includes_actions_pushed_alone() {
-    let pool = load_pool();
-    let g = pool.get("golden").expect("golden");
-    let mut p = Principal::implicit(g.key().expect("golden key"))
-        .await
-        .expect("implicit genesis");
-    let id = p.pr_tagged().expect("PG");
-    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], T)
-        .await
-        .expect("genesis");
-
-    let (state, _dir) = keyless_server();
-    let app = build_router(state);
-    let tip_uri = format!("/tip?pr={id}");
-    let (s, b) = post_json(app.clone(), "/push", body(&id, &genesis)).await;
-    assert_eq!(s, StatusCode::CREATED, "genesis push: {b:?}");
-
-    // The action travels alone; the client records it too.
-    let a1 = action(&pool, T + 1, "alone");
-    let (s, b) = post_json(
-        app.clone(),
-        "/push",
-        body(&id, &WireBundle::actions(vec![a1.wire()])),
-    )
-    .await;
-    assert!(s.is_success(), "action-only push: {s} {b:?}");
-    p.verify_and_record_action(&a1.pay, &a1.sig, a1.czd.clone())
-        .expect("action records");
-
-    // A ds/create naming a DR that is not MR(DT) is refused.
-    let other = action(&pool, T + 1, "never pushed");
-    let mut q = Principal::implicit(g.key().expect("golden key"))
-        .await
-        .expect("implicit genesis");
-    q.verify_and_record_action(&other.pay, &other.sig, other.czd.clone())
-        .expect("action records");
-    let wrong = WireBundle {
-        txs: vec![vec![ds_create(&pool, &data_tree_id(&q), T + 2).wire()]],
-        ..WireBundle::default()
-    };
-    let (s, b) = post_json(app.clone(), "/push", body(&id, &wrong)).await;
-    assert_eq!(s, StatusCode::CONFLICT, "a foreign DR is refused: {b:?}");
-    let (_, before) = get_json(app.clone(), &tip_uri).await;
-
-    // A ds/create naming MR(DT) over the action pushed alone is accepted.
-    let included = bundle(
-        &mut p,
-        &pool,
-        &[],
-        |p| vec![ds_create(&pool, &data_tree_id(p), T + 2)],
-        T + 2,
-    )
-    .await;
-    let (s, b) = post_json(app.clone(), "/push", body(&id, &included)).await;
-    assert_eq!(
-        s,
-        StatusCode::CREATED,
-        "ds/create over an action pushed alone: {b:?}"
-    );
-    let (_, tip) = get_json(app.clone(), &tip_uri).await;
-    let tip = envelope_payload(&tip);
-    assert_ne!(tip["pr"], envelope_payload(&before)["pr"]);
-    assert_eq!(
-        tip["pr"].as_str(),
-        Some(p.pr_tagged().expect("PR").as_str()),
-        "server and client agree on the PR that includes DR"
     );
 }

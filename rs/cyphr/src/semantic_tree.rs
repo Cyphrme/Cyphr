@@ -149,6 +149,19 @@ fn serialize_digest(md: &MultihashDigest, algs: &[HashAlg]) -> Result<Vec<u8>> {
     serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)
 }
 
+/// [`serialize_digest`] for a DR, which carries only the variants its
+/// `ds/create` signed: an absent variant is left out of the payload, and
+/// that algorithm's tree reads the node as null (SPEC 12.2).
+fn serialize_present(md: &MultihashDigest, algs: &[HashAlg]) -> Result<Vec<u8>> {
+    let mut mapped = BTreeMap::new();
+    for &alg in algs {
+        if let Some(bytes) = md.get(alg) {
+            mapped.insert(hash_alg_to_u64(alg), bytes.to_vec().into_boxed_slice());
+        }
+    }
+    serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)
+}
+
 fn new_tree(arity: u64) -> polydigest::EpochTree {
     polydigest::EpochTree::new(polydigest::CmtConfig { arity })
         .expect("arity is a fixed in-range constant (2 or 256)")
@@ -416,7 +429,7 @@ impl StateTree {
             .set(PRIMARY_CELL, ar_payload, Vec::new())
             .map_err(|e| Error::Storage(e.to_string()))?;
         if let Some(dr) = dr {
-            let dr_payload = serialize_digest(&dr.0, algs)?;
+            let dr_payload = serialize_present(&dr.0, algs)?;
             node.inner
                 .set(OPTIONAL_CELL, dr_payload, Vec::new())
                 .map_err(|e| Error::Storage(e.to_string()))?;
@@ -431,7 +444,7 @@ impl StateTree {
         let mut node = Self::new();
         register_algs(&mut node.inner, algs)?;
         node.inner
-            .set(PRIMARY_CELL, serialize_digest(&dr.0, algs)?, Vec::new())
+            .set(PRIMARY_CELL, serialize_present(&dr.0, algs)?, Vec::new())
             .map_err(|e| Error::Storage(e.to_string()))?;
         node.root(algs)
     }
