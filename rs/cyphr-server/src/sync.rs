@@ -278,14 +278,18 @@ async fn sync_locked(
 
     let mut applied = 0usize;
     let mut rejected = 0usize;
+    let mut bundles = Vec::new();
+    let mut seqs = Vec::new();
     for entry in &patch.entries {
         let seq = entry.sequence;
         if seq < from_seq {
             continue;
         }
-
-        let bundle = match &entry.bundle {
-            Ok(bundle) => bundle,
+        match &entry.bundle {
+            Ok(bundle) => {
+                bundles.push(bundle.clone());
+                seqs.push(seq);
+            },
             Err(defect) => {
                 // Wedge fix, site 1 (decode failure): a malformed entry
                 // must never make a later, genuine entry unreachable --
@@ -300,26 +304,40 @@ async fn sync_locked(
                     "patch entry undecodable; skipping"
                 );
                 rejected += 1;
-                continue;
             },
-        };
-
-        // Submit commit to storage engine which verifies commit signatures & roots in memory
-        // before persisting. If validation fails, skip this entry and continue: an
-        // unverifiable entry (wedge fix, site 2) must not block a later genuine one, for
-        // the identical reason as the decode failure above.
-        if let Err(err) = state.engine.submit_commit(principal_id, None, bundle).await {
-            warn!(
-                principal_id = %principal_id,
-                sequence = seq,
-                error = %err,
-                "witness node rejected unverifiable delta from authority; skipping"
-            );
-            rejected += 1;
-            continue;
         }
+    }
 
-        applied += 1;
+    // The authority's verified revokes of the keys these commits name go to
+    // the engine first, as gossip's do, so its admission refuses a dead
+    // key's unburied commit (SPEC 6.4).
+    let keys = named_keys(&bundles);
+    match cyphr_client::verified_revokes(&connector, "authority", &keys).await {
+        Ok((found, _)) => crate::gossip::record_revokes(state, &found).await,
+        Err(err) => warn!(principal = %principal_id, %err, "witness sync: revokes not fetched"),
+    }
+
+    // The engine verifies each commit in memory before persisting it, and
+    // takes the delta as one submission, so a commit the authority's later
+    // commits bury is admitted (`submit_commits`). An entry it refuses is
+    // skipped (wedge fix, site 2): it must not block a later genuine one.
+    let outcomes = state
+        .engine
+        .submit_commits(principal_id, None, &bundles)
+        .await;
+    for (seq, outcome) in seqs.iter().zip(outcomes) {
+        match outcome {
+            Ok(_) => applied += 1,
+            Err(err) => {
+                warn!(
+                    principal_id = %principal_id,
+                    sequence = seq,
+                    error = %err,
+                    "witness node rejected unverifiable delta from authority; skipping"
+                );
+                rejected += 1;
+            },
+        }
     }
 
     // Authenticated channel (K10), part 2: the post-apply reconciliation.
@@ -517,4 +535,30 @@ mod tests {
             "a binding refusal must not be reported as an unreachable upstream"
         );
     }
+}
+
+/// Every key `bundles` name, as signer (`pay.tmb`) or as introduced
+/// (`pay.id` of a key-introducing coz): what a revoke could bear on.
+fn named_keys(bundles: &[cyphr::replay::WireBundle]) -> Vec<coz::Thumbprint> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let mut keys: Vec<coz::Thumbprint> = Vec::new();
+    for raw in bundles.iter().flat_map(cyphr::replay::WireBundle::cozies) {
+        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
+            continue;
+        };
+        let pay = &coz["pay"];
+        let introduced = cyphr::parsed_coz::typ::is_key_introducing(pay["typ"].as_str().unwrap_or(""))
+            .then(|| pay["id"].as_str())
+            .flatten();
+        for named in [pay["tmb"].as_str(), introduced].into_iter().flatten() {
+            if let Ok(bytes) = Base64UrlUnpadded::decode_vec(named) {
+                let tmb = coz::Thumbprint::from_bytes(bytes);
+                if !keys.contains(&tmb) {
+                    keys.push(tmb);
+                }
+            }
+        }
+    }
+    keys
 }

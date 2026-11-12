@@ -2349,3 +2349,58 @@ async fn sync_locks_bounded() {
         "{PROBES} finished syncs for distinct unknown ids left {retained} lock entries"
     );
 }
+
+/// Backs key death at admission on the witness path (SPEC 6.4): the
+/// authority holds a principal whose genesis keys are `golden` and `eve`,
+/// a `golden` commit, then `eve`'s commit at the tip, then `eve`'s naked
+/// revoke. A witness syncing from it learns the authority's revokes before
+/// it submits the delta: the genesis, buried by `golden`'s commit, is
+/// admitted, and `eve`'s commit, with no live-key commit after it, is
+/// refused. Turns red if the witness admits a
+/// dead key's tip commit its authority served beside the revoke.
+#[tokio::test]
+async fn witness_refuses_a_dead_keys_tip_commit() {
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let eve = pool.get("eve_ed25519").expect("eve");
+    let t = 1_700_000_000;
+    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[eve.key().expect("eve")], t)
+        .await
+        .expect("genesis");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
+    let live = common::key_commit_by(&mut p, "golden", "key_a", t + 1).await;
+    let dead = common::key_commit_by(&mut p, "eve_ed25519", "key_b", t + 2).await;
+
+    let (state, identity, dir) = attestor_server().await;
+    let app = build_app_router(state.clone()).expect("authority router");
+    let mut authority = common::multi::Instance {
+        name: "authority".to_string(),
+        state,
+        identity: Some(identity),
+        dir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    authority.bind_tcp().await.expect("bind authority TCP");
+    let url = authority.url().expect("authority TCP URL");
+    for bundle in [&genesis, &live, &dead] {
+        let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, bundle)).await;
+        assert_eq!(status, StatusCode::CREATED, "authority push: {body:?}");
+    }
+    let (status, body) = post_json(app.clone(), "/revoke", common::eve_revoke(t + 5).to_string()).await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
+
+    let (witness, _) = witness_for(&url, None).await;
+    let _ = sync_from_authority(&witness, &id).await;
+    let tip = witness
+        .engine
+        .get_tip(&id)
+        .await
+        .expect("tip")
+        .expect("the witness holds the live history");
+    assert_eq!(tip.commit_count, 2, "the witness admitted eve's commit after its death");
+}

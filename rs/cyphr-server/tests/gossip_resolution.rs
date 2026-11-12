@@ -196,56 +196,9 @@ async fn one_round_takes_a_peers_resolution() {
     assert_eq!(branches.len(), 2, "A is kept: {branches:?}");
 }
 
-/// One commit on `p` in which pool key `signer` creates pool key `name`,
-/// finalized by `signer` at `now`; its bundle.
-async fn key_commit_by(p: &mut cyphr::Principal, signer: &str, name: &str, now: i64) -> WireBundle {
-    let pool = load_pool();
-    let s = pool.get(signer).expect("signer");
-    let key = pool.get(name).expect("pool key").key().expect("key");
-    let mut pay = serde_json::json!({
-        "alg": s.alg, "id": key.tmb().to_b64(), "now": now,
-        "tmb": s.compute_tmb_b64().expect("tmb"), "typ": "cyphr.me/cyphr/key/create"
-    });
-    if let Some(obj) = pay.as_object_mut() {
-        obj.sort_keys();
-    }
-    let pay = serde_json::to_vec(&pay).expect("pay");
-    let prv = Base64UrlUnpadded::decode_vec(s.prv.as_ref().expect("prv")).expect("prv b64");
-    let pubb = Base64UrlUnpadded::decode_vec(&s.pub_key).expect("pub b64");
-    let (sig, cad) = coz::sign_json(&pay, &s.alg, &prv, &pubb).expect("sign");
-    let czd = coz::czd_for_alg(&cad, &sig, &s.alg).expect("czd");
-    let mut scope = p.begin_commit();
-    scope
-        .verify_and_apply(&pay, &sig, czd, Some(key))
-        .expect("applies");
-    scope
-        .finalize_with_software(&s.software_signer().expect("signer"), now, "cyphr.me")
-        .await
-        .expect("finalizes");
-    WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle")
-}
-
-/// `eve`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, key}`.
-fn eve_revoke(rvk: i64) -> serde_json::Value {
-    let pool = load_pool();
-    let e = pool.get("eve_ed25519").expect("eve");
-    let pay = serde_json::to_vec(&serde_json::json!({
-        "alg": e.alg, "now": rvk, "rvk": rvk, "tmb": e.compute_tmb_b64().expect("tmb"),
-        "typ": "cyphr.me/cyphr/key/revoke"
-    }))
-    .expect("pay");
-    let prv = Base64UrlUnpadded::decode_vec(e.prv.as_ref().expect("prv")).expect("prv b64");
-    let pubb = Base64UrlUnpadded::decode_vec(&e.pub_key).expect("pub b64");
-    let (sig, _) = coz::sign_json(&pay, &e.alg, &prv, &pubb).expect("sign");
-    serde_json::json!({
-        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
-        "sig": Base64UrlUnpadded::encode_string(&sig),
-        "key": {"alg": e.alg, "pub": e.pub_key},
-    })
-}
-
 /// A shared genesis (`golden`, `eve`), the owner's X at 1 (`golden`), and
-/// `eve`'s line R at 1, B at 2: `(genesis, id, owner after X, X, R, B)`.
+/// `eve`'s line R at 1, B at 2: `(genesis, id, owner after X, X, R, B,
+/// thief after B)`.
 async fn dead_key_fixture() -> (
     WireBundle,
     String,
@@ -253,6 +206,7 @@ async fn dead_key_fixture() -> (
     WireBundle,
     WireBundle,
     WireBundle,
+    cyphr::Principal,
 ) {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
@@ -266,11 +220,11 @@ async fn dead_key_fixture() -> (
             .expect("genesis");
     let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
     let mut owner = shared.fork().await.expect("fork");
-    let x = key_commit_by(&mut owner, "golden", "key_a", T + 1).await;
+    let x = common::key_commit_by(&mut owner, "golden", "key_a", T + 1).await;
     let mut thief = shared.fork().await.expect("fork");
-    let r = key_commit_by(&mut thief, "eve_ed25519", "key_b", T + 1).await;
-    let b = key_commit_by(&mut thief, "eve_ed25519", "carol", T + 2).await;
-    (genesis, id, owner, x, r, b)
+    let r = common::key_commit_by(&mut thief, "eve_ed25519", "key_b", T + 1).await;
+    let b = common::key_commit_by(&mut thief, "eve_ed25519", "carol", T + 2).await;
+    (genesis, id, owner, x, r, b, thief)
 }
 
 async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
@@ -291,7 +245,7 @@ async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
 #[tokio::test(flavor = "multi_thread")]
 async fn gossip_never_promotes_a_dead_keys_rival() {
     for on_p1 in [true, false] {
-        let (genesis, id, owner, x, r, b) = dead_key_fixture().await;
+        let (genesis, id, owner, x, r, b, _) = dead_key_fixture().await;
         let (p1, _d1) = keyless_server();
         let (p2, _d2) = keyless_server();
         let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
@@ -302,7 +256,7 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
         assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
         assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
         let to = if on_p1 { &app1 } else { &app2 };
-        let (status, body) = post_json(to.clone(), "/revoke", eve_revoke(T + 1).to_string()).await;
+        let (status, body) = post_json(to.clone(), "/revoke", common::eve_revoke(T + 1).to_string()).await;
         assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
         let want = owner.pr_tagged().expect("pr");
 
@@ -328,7 +282,7 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
 /// gossip leaves P1 in Error.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_revoke_learned_by_gossip_settles_the_fork() {
-    let (genesis, id, owner, x, r, _) = dead_key_fixture().await;
+    let (genesis, id, owner, x, r, ..) = dead_key_fixture().await;
     let (p1, _d1) = keyless_server();
     let (p2, _d2) = keyless_server();
     let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
@@ -341,7 +295,7 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
         p1.engine.is_errored(&id).await.expect("verdict"),
         "a plain fork"
     );
-    let (status, body) = post_json(app2.clone(), "/revoke", eve_revoke(T + 1).to_string()).await;
+    let (status, body) = post_json(app2.clone(), "/revoke", common::eve_revoke(T + 1).to_string()).await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;
@@ -355,13 +309,15 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
 
 /// Backs the rule that key death is not retroactive (SPEC 6.4; nrd: "You
 /// cant make all sigs retroactively invalid"): P1 holds only the genesis
-/// and already knows `eve` is revoked as of T+5; P2 serves the chain, in
-/// which `eve` signed R at T+1 and B at T+2, before its death. One round
-/// of P1's gossip catches P1 up through those commits to P2's tip. Turns
-/// red if a node that knows a revoke refuses the key's earlier commits.
+/// and already knows `eve` is revoked; P2 serves the chain, in which `eve`
+/// signed R and B and `golden` then signed C over them. C buries R and B,
+/// so one round of P1's gossip catches P1 up through them to P2's tip.
+/// Turns red if a node that knows a revoke refuses the key's commits that
+/// a live key's later commit endorses.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
-    let (genesis, id, _, _, r, b) = dead_key_fixture().await;
+    let (genesis, id, _, _, r, b, mut thief) = dead_key_fixture().await;
+    let c = common::key_commit_by(&mut thief, "golden", "key_a", T + 3).await;
     let (p1, _d1) = keyless_server();
     let (p2, _d2) = keyless_server();
     let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
@@ -370,7 +326,8 @@ async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
     }
     assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
     assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
-    let (status, body) = post_json(app1.clone(), "/revoke", eve_revoke(T + 5).to_string()).await;
+    assert_eq!(push(&app2, &id, &c).await, StatusCode::CREATED, "C on P2");
+    let (status, body) = post_json(app1.clone(), "/revoke", common::eve_revoke(T + 5).to_string()).await;
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;

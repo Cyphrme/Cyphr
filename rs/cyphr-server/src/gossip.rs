@@ -142,22 +142,16 @@ async fn round_principal(
 
     // Verified revokes first, where the engine judges admission and forks
     // by them (SPEC 6.4, 15.7.1), so a dead key's commits served in this
-    // same round are refused.
-    for revoked in &report.revoked {
-        if let Err(err) = state
-            .observations
-            .record_seen(&revoked.tmb, revoked.envelope.clone())
-            .await
-        {
-            warn!(tmb = %revoked.tmb.to_b64(), %err, "gossip: naked revoke not recorded");
-        }
-        if let Err(err) = state.engine.record_revoke(&revoked.envelope).await {
-            warn!(tmb = %revoked.tmb.to_b64(), %err, "gossip: naked revoke not kept by the engine");
-        }
-    }
+    // same round are refused unless the round's later commits bury them.
+    record_revokes(state, &report.revoked).await;
 
-    for bundle in record.bundles_since(mark) {
-        match state.engine.submit_commit(principal_id, None, bundle).await {
+    // One submission, so a commit its successors bury is admitted.
+    let caught_up = state
+        .engine
+        .submit_commits(principal_id, None, record.bundles_since(mark))
+        .await;
+    for outcome in caught_up {
+        match outcome {
             Ok(_) => info!(principal = %principal_id, "gossip: stored a verified commit"),
             // The principal may have advanced here since the round began
             // (a client's push): the engine refuses what it already holds.
@@ -170,15 +164,35 @@ async fn round_principal(
     // The engine refuses a rival as a tip but retains it as a branch (I2: a
     // fork is evidence, never merged), and accepts a forked peer's later
     // commits only if they verify (SPEC 15.8).
-    for bundle in branch_bundles(&record, &report, &dialled).await {
-        match state
-            .engine
-            .submit_commit(principal_id, None, &bundle)
-            .await
-        {
+    let branch = branch_bundles(&record, &report, &dialled).await;
+    for outcome in state
+        .engine
+        .submit_commits(principal_id, None, &branch)
+        .await
+    {
+        match outcome {
             Ok(_) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
             Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
         }
     }
     Ok(())
+}
+
+/// Record each verified naked revoke where the server keeps deaths (SPEC
+/// 6.4): the observations every capability consults, and the engine, which
+/// refuses a dead key's commits at admission and judges forks by them.
+/// Gossip and a witness's sync both record through this.
+pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_client::RevokedKey]) {
+    for revoked in revoked {
+        if let Err(err) = state
+            .observations
+            .record_seen(&revoked.tmb, revoked.envelope.clone())
+            .await
+        {
+            warn!(tmb = %revoked.tmb.to_b64(), %err, "naked revoke not recorded");
+        }
+        if let Err(err) = state.engine.record_revoke(&revoked.envelope).await {
+            warn!(tmb = %revoked.tmb.to_b64(), %err, "naked revoke not kept by the engine");
+        }
+    }
 }
