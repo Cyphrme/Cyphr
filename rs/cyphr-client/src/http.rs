@@ -169,8 +169,8 @@ impl Connector for HttpConnector {
             .map_err(unreachable)?;
         let status = res.status();
         if matches!(status.as_u16(), 401 | 403 | 422) {
-            // A refusal (422, or 401/403 for a key the peer will not take) says why in its envelope; the reason is
-            // read bounded, and a body that is not an envelope leaves the
+            // A refusal (422, or 401/403 for a key the peer will not take) says why in its
+            // envelope; the reason is read bounded, and a body that is not an envelope leaves the
             // bare status.
             let mut body = Vec::new();
             while let Some(chunk) = res.chunk().await.ok().flatten() {
