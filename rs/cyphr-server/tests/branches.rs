@@ -1093,7 +1093,11 @@ async fn branch_commits_obey_timestamps() {
         "a future-dated rival is refused: {body:?}"
     );
 
-    assert_eq!(tip_payload(app.clone(), &t.id).await, tip, "the tip did not move");
+    assert_eq!(
+        tip_payload(app.clone(), &t.id).await,
+        tip,
+        "the tip did not move"
+    );
     let list = heads(&app, &t.id).await;
     let kept: Vec<_> = list.iter().filter(|h| !h.1).collect();
     assert_eq!(kept.len(), 1, "only B is kept: {list:?}");
