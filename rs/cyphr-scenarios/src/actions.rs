@@ -200,6 +200,9 @@ pub struct Verdict {
     pub evidence: Vec<Evidence>,
     /// The key that resolved a fork, when one did.
     pub resolved_by: Option<KeyRef>,
+    /// The asked peers that did not answer, each with the unix time it last
+    /// answered this client (`None`: never), so "unreachable since t".
+    pub unreachable: Vec<(String, Option<i64>)>,
     /// When the CLI that computed the verdict was started, so an oracle can
     /// bound the time between the CLI's reading of the peer and its own.
     pub observed_at: std::time::Instant,
@@ -1246,6 +1249,20 @@ fn parse_verdict(
         .filter(|(_, url)| !failed.contains(&url.as_str()))
         .map(|(name, _)| name.clone())
         .collect();
+    let last_answered = |url: &str| {
+        v["peers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["peer"] == url)
+            .and_then(|e| e["answered_at"].as_i64())
+    };
+    let unreachable = names
+        .iter()
+        .zip(urls)
+        .filter(|(_, url)| failed.contains(&url.as_str()))
+        .map(|(name, url)| (name.clone(), last_answered(url)))
+        .collect();
     let anchor = Anchor {
         source: match v["anchor"]["source"].as_str() {
             Some("pinned") => AnchorSource::Pinned,
@@ -1293,6 +1310,7 @@ fn parse_verdict(
             Vec::new()
         },
         resolved_by: v["resolved_by"].as_str().map(|k| KeyRef(k.to_owned())),
+        unreachable,
         abandoned: v["resolved_forks"]
             .as_array()
             .into_iter()

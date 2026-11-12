@@ -284,6 +284,7 @@ fn oracle_verdict(
         abandoned: vec![],
         evidence: vec![],
         resolved_by: None,
+        unreachable: vec![],
     }
 }
 
