@@ -93,6 +93,12 @@ fn run(cli: Cli) -> cyphr_cli::Result<()> {
                 freshness: *freshness_secs,
             },
         ),
+        Commands::Recover {
+            identity,
+            head,
+            reason,
+            clear: _,
+        } => verifier::recover(&cli, identity, head.as_deref(), reason.as_deref()),
         Commands::Gossip { command } => match command {
             GossipCommands::Export { identity, file } => verifier::export(&cli, identity, file),
             GossipCommands::Import {

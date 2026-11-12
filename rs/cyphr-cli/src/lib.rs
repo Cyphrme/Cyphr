@@ -474,6 +474,30 @@ pub enum Commands {
         freshness_secs: Option<u64>,
     },
 
+    /// Choose which branch head to trust for a principal in Error (human
+    /// recovery, a last resort)
+    ///
+    /// The choice is local and revisable: a new one replaces the old,
+    /// `--clear` returns to no branch chosen. It is never stored with
+    /// commits or sent to a peer, and `verify` still reports Error.
+    Recover {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// The branch head to trust, as `verify` lists it
+        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
+        head: Option<String>,
+
+        /// Why, recorded beside the choice
+        #[arg(long, conflicts_with = "clear")]
+        reason: Option<String>,
+
+        /// Drop the choice
+        #[arg(long)]
+        clear: bool,
+    },
+
     /// Carry what this client verified to another, with no peer
     Gossip {
         /// Gossip subcommand to execute

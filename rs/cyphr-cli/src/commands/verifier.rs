@@ -34,7 +34,8 @@ use crate::choices::Choices;
 use crate::keystore::KeyBackend;
 use crate::net::PeerError;
 use crate::state::{
-    HeldFork, HeldRevoke, PeerSeen, PrincipalState, Resolution, VerifierState, path_for,
+    HeldFork, HeldRevoke, PeerSeen, PrincipalState, RecoveryChoice, Resolution, VerifierState,
+    path_for,
 };
 use crate::{Cli, Error, OutputFormat};
 
@@ -571,11 +572,38 @@ async fn run_round<C: Connector>(
         "resolved_forks": resolved.iter().filter_map(|f| f.resolution.as_ref().map(|r| json!({"height": f.height, "kept": r.kept, "abandoned": r.abandoned, "by": r.by}))).collect::<Vec<_>>(),
     });
     let mut out = out;
+    if !unresolved.is_empty() {
+        out["recovery"] = recovery_note(entry.recovery.as_ref(), &branches);
+    }
     if !evidence.is_empty() {
         out["evidence"] = Value::Array(evidence);
     }
     state.save(&state_path)?;
     Ok(out)
+}
+
+/// What human recovery says of a principal in Error: the viewer's chosen
+/// head when it is still a live branch, else that none is chosen. A report
+/// beside the verdict, never a change to it.
+///
+/// This is the client-side shape of the engine's `Recovery` seam
+/// (`cyphr_storage::engine::Recovery`): it reviews held branches and adopts
+/// a head. The trait is not implemented here because its `review` returns
+/// only a `Consensus`, which cannot carry the "trusting <head>" note, and
+/// because the verifier holds forks in its own state, not the engine's
+/// `BranchTip`s.
+fn recovery_note(choice: Option<&RecoveryChoice>, branches: &[&str]) -> Value {
+    match choice.filter(|c| branches.contains(&c.head.as_str())) {
+        Some(c) => {
+            let why = c
+                .reason
+                .as_deref()
+                .map_or_else(String::new, |r| format!(" ({r})"));
+            json!({"note": format!("human recovery: trusting {} by local choice{why}", c.head),
+                "head": c.head, "reason": c.reason, "chosen_at": c.chosen_at})
+        },
+        None => json!({"note": "no branch chosen"}),
+    }
 }
 
 /// Why a round with no answering peer failed: an unknown envelope version
@@ -642,6 +670,9 @@ fn print_table(v: &Value) {
     println!("  branches: {}", v["branches"]);
     if let Some(by) = v["resolved_by"].as_str() {
         println!("  resolved by key: {by}");
+    }
+    if let Some(note) = v["recovery"]["note"].as_str() {
+        println!("  {note}");
     }
     if let Some(e) = v.get("evidence") {
         println!("  evidence: {e}");
@@ -782,6 +813,48 @@ pub fn audit(cli: &Cli, inputs: &Inputs<'_>) -> crate::Result<()> {
     emit(cli, &out, || {
         print_table(&out);
         println!("  held: {}", out["held"]);
+    })
+}
+
+/// `cyphr recover`: set, replace or clear the local branch-head choice for
+/// a principal in Error. Local only: it touches the verifier state file and
+/// nothing a server or a commit sees.
+pub fn recover(
+    cli: &Cli,
+    identity: &str,
+    head: Option<&str>,
+    reason: Option<&str>,
+) -> crate::Result<()> {
+    let path = path_for(store_path(cli)?);
+    let mut state = VerifierState::load(&path)?;
+    let wire = bare_digest(&get_principal_id(&parse_principal_genesis(identity)?)?).to_owned();
+    let entry = state.principals.entry(wire).or_default();
+    entry.recovery = match head {
+        None => None,
+        Some(head) => {
+            let live = entry
+                .forks
+                .iter()
+                .filter(|f| f.resolution.is_none())
+                .any(|f| f.commits.iter().any(|c| c == head));
+            if !live {
+                return Err(Error::InvalidArgument(format!(
+                    "{head} is not a head of an unresolved fork held for {identity}: run `verify` \
+                     first, and choose one of the branches it lists"
+                )));
+            }
+            Some(RecoveryChoice {
+                head: head.to_owned(),
+                reason: reason.map(str::to_owned),
+                chosen_at: current_timestamp(),
+            })
+        },
+    };
+    let out = json!({"identity": identity, "recovery": entry.recovery});
+    state.save(&path)?;
+    emit(cli, &out, || match &out["recovery"] {
+        Value::Null => println!("recovery choice cleared: no branch chosen"),
+        c => println!("recovery choice: trusting {}", c["head"]),
     })
 }
 
