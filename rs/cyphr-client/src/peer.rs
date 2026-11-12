@@ -406,8 +406,7 @@ impl PeerChain {
         candidate.set_clock(self.clock);
         let mut offered = Vec::with_capacity(patch.entries.len());
         // A server serves data actions as action-only bundles beside the
-        // commits, each before the commit at its `after`; replay in that
-        // order or a data commit has no actions to include.
+        // commits; each is judged at its own `now` once the commits are in.
         for step in replay_order(0, &patch.entries, &patch.actions) {
             let (index, bundle) = match step {
                 Step::Commit(index, entry) => (
@@ -418,7 +417,7 @@ impl PeerChain {
                         .map_err(|defect| PeerFailure::Entry { index, defect })?,
                 ),
                 Step::Actions(a) => {
-                    let index = usize::try_from(a.after).unwrap_or(usize::MAX);
+                    let index = patch.entries.len();
                     let blobs = a
                         .blobs
                         .clone()

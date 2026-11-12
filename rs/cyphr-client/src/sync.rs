@@ -36,9 +36,7 @@ use cyphr::{Key, Principal, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
-use crate::evidence::{
-    EvidenceFailure, EvidenceItem, names_pg, pg_names, verify_principal_fork_with_actions,
-};
+use crate::evidence::{EvidenceFailure, EvidenceItem, names_pg, pg_names, verify_principal_fork};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,
@@ -362,7 +360,7 @@ impl Held {
                     self.log.push(bundle.clone());
                 },
                 Step::Actions(bundle) => {
-                    let index = usize::try_from(bundle.after).unwrap_or(usize::MAX);
+                    let index = self.ids.len();
                     let blobs = bundle.blobs.as_ref().map_err(|defect| PeerFailure::Entry {
                         index,
                         defect: *defect,
@@ -825,20 +823,10 @@ async fn compare_whole_chain<C: Connector>(
             if ours == rival {
                 return Err(PeerFailure::Fork { index: at });
             }
-            let mut bundle = theirs.entries[at]
+            let bundle = theirs.entries[at]
                 .bundle
                 .clone()
                 .map_err(|defect| PeerFailure::Entry { index: at, defect })?;
-            // The actions that precede the rival go with it, so a holder
-            // that keeps the branch can replay it.
-            let leading: Vec<Vec<u8>> = theirs
-                .actions
-                .iter()
-                .filter(|a| a.after == at as u64)
-                .filter_map(|a| a.blobs.clone().ok())
-                .flatten()
-                .collect();
-            bundle.actions.splice(0..0, leading);
             let finding = ForkFinding {
                 height: at,
                 pre: at.checked_sub(1).and_then(|i| pr_id(&mine.ids[i])),
@@ -878,14 +866,7 @@ async fn evidence<C: Connector>(
                 .await
                 .map_err(|source| EvidenceFailure::Replay { commit: 0, source })?;
             base.set_clock(record.clock);
-            let proof = verify_principal_fork_with_actions(
-                item,
-                record.bare_id(),
-                base,
-                &held.entries,
-                &held.actions,
-            )
-            .await?;
+            let proof = verify_principal_fork(item, record.bare_id(), base, &held.entries).await?;
             let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
             let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
             let mine = held.ids.get(height).and_then(commit_id);

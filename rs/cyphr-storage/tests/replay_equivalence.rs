@@ -301,18 +301,15 @@ async fn check_chain(chain: &Chain) {
     }
 }
 
-/// What a replay must agree on: the PR, every commit's TR, and each data
-/// action with the number of commits recorded before it (so DT, and the DR
-/// a `ds/create` includes, at every point of the history).
-fn history(p: &cyphr::Principal) -> (String, Vec<String>, Vec<(String, usize)>) {
+/// What a replay must agree on: the PR, every commit's TR, and the data
+/// actions DT holds.
+fn history(p: &cyphr::Principal) -> (String, Vec<String>, Vec<String>) {
     (
         p.pr_tagged().expect("pr"),
         p.commits()
             .map(|c| c.tr().0.tagged_first().expect("tr").to_string())
             .collect(),
-        p.actions()
-            .map(|a| (a.czd().to_b64(), a.recorded_after()))
-            .collect(),
+        p.actions().map(|a| a.czd().to_b64()).collect(),
     )
 }
 
@@ -1438,4 +1435,124 @@ async fn actions_before_the_genesis_commit_are_refused() {
         ),
         "a pre-genesis action is refused, got {refused:?}"
     );
+}
+
+/// Backs SPEC 6.2, 6.4 and 6.5 at the engine: a stored data action holds no
+/// chain position and is judged at its own `now` by the principal's key
+/// history and the naked revokes the engine holds. `key_a` is added at
+/// t=100 and deleted at t=300; `golden` is naked-revoked at t=500. Actions
+/// by `key_a` dated t=200 and by `golden` dated t=450 are accepted and
+/// survive a scratch rebuild; `key_a` at t=400 and `golden` at t=600 are
+/// refused. Turns red if the engine judges an action at the tip (the t=200
+/// action is refused) or ignores a naked revoke (the t=600 action is
+/// accepted). End to end: engine ingest, revoke record, scratch rebuild.
+#[tokio::test]
+async fn stored_actions_are_judged_at_their_own_now() {
+    let golden = signer("golden");
+    let key_a = signer("key_a");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        &[],
+        1_700_000_050,
+    )
+    .await
+    .expect("genesis commit");
+    let add = golden
+        .key_create(&mut writer, &key_a.key, 1_700_000_100)
+        .await;
+    let delete = {
+        let pay = serde_json::json!({
+            "alg": golden.alg, "id": key_a.key.tmb().to_b64(), "now": 1_700_000_300,
+            "tmb": golden.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/delete",
+        });
+        let (bytes, sig, czd) = golden.sign(&pay);
+        let mut scope = writer.begin_commit();
+        scope
+            .verify_and_apply(&bytes, &sig, czd, None)
+            .expect("key/delete applies");
+        let signer = cyphr::signer::SoftwareSigner::new(
+            &golden.alg,
+            &golden.prv,
+            &golden.pub_key,
+            golden.key.tmb(),
+        );
+        let commit = scope
+            .finalize_with_software(&signer, 1_700_000_300, "cyphr.me")
+            .await
+            .expect("finalizes");
+        WireBundle::of_commit(commit).expect("bundle")
+    };
+
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for bundle in [genesis_commit, add, delete] {
+        push(&engine, &id, &genesis, &bundle).await;
+    }
+    let revoke_pay = serde_json::json!({
+        "alg": golden.alg, "now": 1_700_000_500, "rvk": 1_700_000_500,
+        "tmb": golden.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let (_, sig, _) = golden.sign(&revoke_pay);
+    engine
+        .record_revoke(&serde_json::json!({
+            "pay": revoke_pay,
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+            "key": {"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key),
+                    "tmb": golden.key.tmb().to_b64()},
+        }))
+        .await
+        .expect("the naked revoke is recorded");
+
+    let submit = async |blob: Vec<u8>| {
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &WireBundle::actions(vec![blob]))
+            .await
+    };
+    let inside = key_a.unrecorded_action(1_700_000_200, "while key_a was active");
+    let before_revoke = golden.unrecorded_action(1_700_000_450, "before the revoke");
+    submit(inside.clone())
+        .await
+        .expect("an action dated inside key_a's active period is accepted");
+    submit(before_revoke.clone())
+        .await
+        .expect("an action dated before the naked revoke is accepted");
+    let after_delete = submit(key_a.unrecorded_action(1_700_000_400, "after the delete")).await;
+    assert!(
+        matches!(
+            after_delete,
+            Err(cyphr_storage::engine::EngineError::Protocol(
+                cyphr::Error::UnknownKey
+            ))
+        ),
+        "{after_delete:?}"
+    );
+    let after_revoke = submit(golden.unrecorded_action(1_700_000_600, "after the revoke")).await;
+    assert!(
+        matches!(
+            after_revoke,
+            Err(cyphr_storage::engine::EngineError::Protocol(
+                cyphr::Error::KeyRevoked
+            ))
+        ),
+        "{after_revoke:?}"
+    );
+
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild");
+    assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
+    let loaded = engine
+        .load_principal(&id, genesis.clone())
+        .await
+        .expect("replays");
+    let czd = |blob: &[u8]| StoredCoz::from_wire(blob).expect("wire coz").czd().to_b64();
+    let held: Vec<String> = loaded.actions().map(|a| a.czd().to_b64()).collect();
+    assert_eq!(held, vec![czd(&inside), czd(&before_revoke)]);
 }

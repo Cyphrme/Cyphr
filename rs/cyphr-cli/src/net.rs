@@ -115,15 +115,14 @@ impl PeerError {
     }
 }
 
-/// A peer's history: its commits' bundles, and its action-only bundles each
-/// with the number of commits the peer held when it accepted the bundle (the
-/// bundle precedes the commit at that position, SPEC 4.8.2).
+/// A peer's history: its commits' bundles, and its action-only bundles,
+/// which hold no chain position (SPEC 4.8.1).
 #[derive(Debug, Default)]
 pub struct PeerHistory {
     /// One bundle per commit, oldest first.
     pub commits: Vec<WireBundle>,
-    /// `(after, blobs)` per action-only bundle, in accepted order.
-    pub actions: Vec<(usize, Vec<Vec<u8>>)>,
+    /// The blobs of each action-only bundle, as served.
+    pub actions: Vec<Vec<Vec<u8>>>,
 }
 
 /// One peer reached over HTTP(S). The carrier bounds every request (total
@@ -216,13 +215,10 @@ impl Peer {
         let actions = patch
             .actions
             .into_iter()
-            .map(|a| {
-                let after = usize::try_from(a.after)
-                    .map_err(|_| self.malformed(format!("actions after {}", a.after)))?;
-                let blobs = a.blobs.map_err(|defect| {
-                    self.malformed(format!("actions after {after}: {defect:?}"))
-                })?;
-                Ok((after, blobs))
+            .enumerate()
+            .map(|(i, a)| {
+                a.blobs
+                    .map_err(|defect| self.malformed(format!("action bundle {i}: {defect:?}")))
             })
             .collect::<Result<_, PeerError>>()?;
         Ok(PeerHistory { commits, actions })

@@ -67,27 +67,6 @@
     },
     {
       "v": 2,
-      "actions": [
-        {
-          "pay": {
-            "alg": "ES256",
-            "msg": "Data recorded before death",
-            "now": 1700000001,
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "typ": "cyphr.me/action"
-          },
-          "sig": "edYpssJ3lU2wfIS4TDFHN5yjxKLfIB9wO8K3GywSeftB5oaLzj5WUWUTQyZS7UYySGJQcv-7AWagb1fw5TsD_A"
-        }
-      ],
-      "txs": [],
-      "keys": [],
-      "commit_id": "",
-      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "pr": "SHA-256:G7g8gR9iLRvIoHxa9RUeHX4opRF5yk_Aph7rQg2y8S4"
-    },
-    {
-      "v": 2,
       "txs": [
         [
           {
@@ -150,6 +129,27 @@
       ],
       "keys": [],
       "commit_id": "SHA-256:XpKcSwtmmwN-FSL7IbI_5Q8DwUWjv56nAzjwZdyLphM",
+      "ar": null,
+      "sr": "SHA-256:d_KJSrbod0m2AxSFIdMpOtK-KN4I6B58BnYTZ_8hQJ0",
+      "pr": "SHA-256:hDx1g4KgzU1Ze2C_ZtYTwVBn6eIa8myRZ-apSHteaog"
+    },
+    {
+      "v": 2,
+      "actions": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Data recorded before death",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "edYpssJ3lU2wfIS4TDFHN5yjxKLfIB9wO8K3GywSeftB5oaLzj5WUWUTQyZS7UYySGJQcv-7AWagb1fw5TsD_A"
+        }
+      ],
+      "txs": [],
+      "keys": [],
+      "commit_id": "",
       "ar": null,
       "sr": "SHA-256:d_KJSrbod0m2AxSFIdMpOtK-KN4I6B58BnYTZ_8hQJ0",
       "pr": "SHA-256:hDx1g4KgzU1Ze2C_ZtYTwVBn6eIa8myRZ-apSHteaog"

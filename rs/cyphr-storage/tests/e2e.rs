@@ -83,26 +83,42 @@ fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
 }
 
 /// Compare an export with the lines it was imported from. The export
-/// carries every line, commits and the data actions between them, so the
-/// round trip must give back the same lines in the same order.
+/// carries every commit line, in order, then one line per data action:
+/// actions hold no chain position (SPEC 4.8.1), so the round trip must give
+/// back the same commit lines in the same order and the same actions in
+/// the order they were recorded, whatever lines carried them in.
 fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
-    if exported.len() != expected.len() {
+    let split = |lines: &[CommitEntry]| -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), String> {
+        let (mut commits, mut actions) = (Vec::new(), Vec::new());
+        for line in lines {
+            if line.txs.is_empty() {
+                actions.extend(line.actions.iter().cloned());
+            } else {
+                commits.push(serde_json::to_value(line).map_err(|e| e.to_string())?);
+            }
+        }
+        Ok((commits, actions))
+    };
+    let (exp_commits, exp_actions) = split(exported)?;
+    let (want_commits, want_actions) = split(expected)?;
+    if exp_commits.len() != want_commits.len() {
         return Err(format!(
-            "line count mismatch: exported {} vs expected {}",
-            exported.len(),
-            expected.len()
+            "commit line count mismatch: exported {} vs expected {}",
+            exp_commits.len(),
+            want_commits.len()
         ));
     }
-    for (i, (exp, want)) in exported.iter().zip(expected).enumerate() {
-        let (exp, want) = (
-            serde_json::to_value(exp).map_err(|e| e.to_string())?,
-            serde_json::to_value(want).map_err(|e| e.to_string())?,
-        );
+    for (i, (exp, want)) in exp_commits.iter().zip(&want_commits).enumerate() {
         if exp != want {
             return Err(format!(
-                "line {i} mismatch\n  exported: {exp}\n  expected: {want}"
+                "commit line {i} mismatch\n  exported: {exp}\n  expected: {want}"
             ));
         }
+    }
+    if exp_actions != want_actions {
+        return Err(format!(
+            "actions mismatch\n  exported: {exp_actions:?}\n  expected: {want_actions:?}"
+        ));
     }
     Ok(())
 }
@@ -259,7 +275,6 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         // Transactions
         "[commit-one-or-more]" => "EmptyCommit",
         "[no-empty-mr]" => "NoGenesisKeys",
-        "[data-action-no-pre]" => "MalformedPayload",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",

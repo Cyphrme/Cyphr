@@ -1363,18 +1363,9 @@ impl<'a> Generator<'a> {
             commits.push(Self::cozies_to_commit_entry(&failing)?);
         }
 
-        // Sort chronologically by first cozy's timestamp
-        commits.sort_by_key(|entry| {
-            entry
-                .actions
-                .iter()
-                .chain(entry.txs.iter().flatten())
-                .next()
-                .and_then(|coz| coz.get("pay"))
-                .and_then(|pay| pay.get("now"))
-                .and_then(|now| now.as_i64())
-                .unwrap_or(0)
-        });
+        // The export's order: every commit, then the actions, which hold
+        // no chain position (SPEC 4.8.1); the refused event of an error
+        // test last.
 
         Ok(Golden {
             name: test.name.clone(),

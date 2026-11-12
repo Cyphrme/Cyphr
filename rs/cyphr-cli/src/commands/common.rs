@@ -515,58 +515,33 @@ pub fn sign_pay(
     Ok((sig, czd))
 }
 
-/// One step of a replayable history, in order.
-pub enum Placed<C, A> {
-    /// The commit at this position.
-    Commit(usize, C),
-    /// An action-only bundle accepted when this many commits existed.
-    Actions(usize, A),
-}
-
-/// Order a history for replay: a bundle accepted when `n` commits existed
-/// precedes commit `n`, and later ones come last, so a `ds/create` finds
-/// the actions it includes (SPEC 4.8.2). The one placement rule fetch,
-/// rebase, verify and export share, matching `cyphr_storage::export_commits`.
-pub fn place<C, A>(
-    commits: impl IntoIterator<Item = C>,
-    actions: impl IntoIterator<Item = (usize, A)>,
-) -> Vec<Placed<C, A>> {
-    let mut out = Vec::new();
-    let mut bundles = actions.into_iter().peekable();
-    for (i, commit) in commits.into_iter().enumerate() {
-        while let Some((after, held)) = bundles.next_if(|(after, _)| *after <= i) {
-            out.push(Placed::Actions(after, held));
-        }
-        out.push(Placed::Commit(i, commit));
-    }
-    out.extend(bundles.map(|(after, held)| Placed::Actions(after, held)));
-    out
-}
-
-/// Submit a peer's or a store's history to `engine` in replay order, from
-/// the commit at `from` on (and the bundles that precede it). A bundle the
-/// engine already holds is a no-op (SPEC 7.6). Returns the commits applied.
+/// Submit a peer's or a store's history to `engine`: the commits from the
+/// one at `from` on, then every action-only bundle (actions hold no chain
+/// position, SPEC 4.8.1). A bundle the engine already holds is a no-op
+/// (SPEC 7.6). Returns the commits applied.
 pub async fn submit_history(
     engine: &CliStorageEngine,
     principal_id: &str,
     genesis: Option<Genesis>,
     commits: &[WireBundle],
-    actions: &[(usize, Vec<Vec<u8>>)],
+    actions: &[Vec<Vec<u8>>],
     from: usize,
 ) -> crate::Result<usize> {
     let mut applied = 0;
-    for step in place(commits, actions.iter().map(|(a, b)| (*a, b))) {
-        let (index, bundle, is_commit) = match step {
-            Placed::Commit(i, bundle) => (i, bundle.clone(), true),
-            Placed::Actions(after, blobs) => (after, WireBundle::actions(blobs.clone()), false),
-        };
-        if index < from {
-            continue;
-        }
+    for bundle in commits.iter().skip(from) {
         engine
-            .submit_commit(principal_id, genesis.clone(), &bundle)
+            .submit_commit(principal_id, genesis.clone(), bundle)
             .await?;
-        applied += usize::from(is_commit);
+        applied += 1;
+    }
+    for blobs in actions {
+        engine
+            .submit_commit(
+                principal_id,
+                genesis.clone(),
+                &WireBundle::actions(blobs.clone()),
+            )
+            .await?;
     }
     Ok(applied)
 }

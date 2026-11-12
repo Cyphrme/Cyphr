@@ -11,8 +11,8 @@ use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 use serde_json::{Value, json};
 
 use super::common::{
-    Placed, RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
-    local_genesis, open_store, parse_principal_genesis, parse_store, place, raw_chain, store_path,
+    RawCommit, block_on, current_timestamp, get_principal_id, load_principal_from_engine,
+    local_genesis, open_store, parse_principal_genesis, parse_store, raw_chain, store_path,
     submit_history,
 };
 use crate::keystore::KeyBackend;
@@ -74,23 +74,15 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 },
             },
         };
-        // Actions recorded when `n` commits existed precede commit `n`.
-        let mut actions = principal
+        // Actions hold no chain position (SPEC 4.8.1): every one is sent
+        // after the commits, and the peer ignores those it holds (7.6).
+        let actions = principal
             .actions()
-            .filter(|a| a.recorded_after() >= start)
-            .map(|a| Ok((a.recorded_after(), serde_json::to_vec(a.raw())?)))
-            .collect::<crate::Result<Vec<_>>>()?
-            .into_iter()
-            .peekable();
+            .map(|a| Ok(serde_json::to_vec(a.raw())?))
+            .collect::<crate::Result<Vec<_>>>()?;
         let mut sent_actions = 0usize;
         for (i, commit) in local.iter().enumerate().skip(start) {
-            // The actions a commit includes travel inside its bundle.
-            let mut bundle = commit.bundle.clone();
-            while let Some((_, blob)) = actions.next_if(|(after, _)| *after <= i) {
-                bundle.actions.push(blob);
-                sent_actions += 1;
-            }
-            match peer.push_commit(&wire, &bundle).await {
+            match peer.push_commit(&wire, &commit.bundle).await {
                 Ok(()) => {},
                 // The peer took this commit from another peer (gossip) between
                 // the tip read and the send, so it already holds it: the
@@ -106,7 +98,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Err(e) => return Err(e.into()),
             }
         }
-        for (_, blob) in actions {
+        for blob in actions {
             peer.push_commit(&wire, &WireBundle::actions(vec![blob]))
                 .await?;
             sent_actions += 1;
@@ -430,12 +422,12 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                     .into_iter()
                     .map(|c| c.bundle)
                     .collect();
-                let actions: Vec<(usize, Vec<Vec<u8>>)> = old
+                let actions: Vec<Vec<Vec<u8>>> = old
                     .get_patch(&summary.principal_id, None, None)
                     .await?
                     .actions
                     .into_iter()
-                    .map(|a| (a.after as usize, a.blobs))
+                    .map(|a| a.blobs)
                     .collect();
                 submit_history(&new, &summary.principal_id, Some(g), &commits, &actions, 0).await?;
             }
@@ -458,9 +450,10 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             .actions()
             .map(|a| a.czd().as_bytes().to_vec())
             .collect();
-        // An action older than the peer's latest commit is refused as past
-        // (SPEC 14.1), so each is re-signed with the current `now`, as the
-        // rebase re-signs the local commits it replays.
+        // Each is re-signed with the current `now`, as the rebase re-signs
+        // the local commits it replays: the rebased history then judges it
+        // by the keys active now (SPEC 6.5), not at a time its own history
+        // no longer describes.
         let now = current_timestamp();
         let missing = local_actions
             .iter()
@@ -587,14 +580,15 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 async fn replays(
     genesis: &Genesis,
     chain: &[WireBundle],
-    actions: &[(usize, Vec<Vec<u8>>)],
+    actions: &[Vec<Vec<u8>>],
 ) -> Result<(), String> {
     let mut entries = Vec::with_capacity(chain.len() + actions.len());
-    for step in place(chain, actions.iter().map(|(a, b)| (*a, b))) {
-        let bundle = match step {
-            Placed::Commit(_, bundle) => bundle.clone(),
-            Placed::Actions(_, blobs) => WireBundle::actions(blobs.clone()),
-        };
+    let bundles = chain.iter().cloned().chain(
+        actions
+            .iter()
+            .map(|blobs| WireBundle::actions(blobs.clone())),
+    );
+    for bundle in bundles {
         entries.push(CommitEntry::from_bundle(&bundle).map_err(|e| e.to_string())?);
     }
     load_principal_from_commits(genesis.clone(), &entries)

@@ -9,7 +9,7 @@ use cyphr::eml::MemoryStorage;
 use cyphr::state::{HashAlg, TaggedDigest};
 use cyphr::{Key, Principal};
 use cyphr_client::PatchEntry;
-use cyphr_client::evidence::{replay_chain, verify_principal_fork_with_actions};
+use cyphr_client::evidence::{replay_chain, verify_principal_fork};
 use serde_json::Value;
 
 /// Keys known to the verifier, by thumbprint: `tmb -> (alg, public key)`
@@ -77,12 +77,8 @@ pub struct ChainView {
     pub genesis: Option<Principal<MemoryStorage>>,
     /// The genesis key the replay started from.
     pub genesis_key: Option<Key>,
-    /// The fetched commits, each with the actions that precede it folded in.
+    /// The fetched commits.
     pub entries: Vec<PatchEntry>,
-    /// The fetched commits as served, and the action-only bundles apart from
-    /// them: what a fork's own commit, which carries no actions, needs to
-    /// verify at its `pre` (SPEC 4.8.2).
-    pub served: (Vec<PatchEntry>, Vec<cyphr_client::ActionBundle>),
     /// The Principal Root after each commit, tagged.
     pub prs: Vec<String>,
     /// The commit id of each commit, tagged.
@@ -159,8 +155,9 @@ impl ChainView {
         genesis: Principal,
         patch: cyphr_client::VerifiedPatch,
     ) -> Result<Self, String> {
-        let served = (patch.entries.clone(), patch.actions.clone());
-        let entries = fold_actions(patch);
+        let cyphr_client::VerifiedPatch {
+            entries, actions, ..
+        } = patch;
         let stated: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
         // The genesis key: the one whose `key/create` opens the genesis
         // commit (SPEC 5.1).
@@ -172,9 +169,22 @@ impl ChainView {
             .fork()
             .await
             .map_err(|e| format!("genesis does not fork: {e}"))?;
-        let chain = replay_chain(base, &entries)
+        let mut chain = replay_chain(base, &entries)
             .await
             .map_err(|e| format!("the patch does not replay from its genesis: {e}"))?;
+        // The served actions hold no chain position: each is verified
+        // once the commits are in, at its own `now` (SPEC 4.8.1, 6.5).
+        for held in actions {
+            let blobs = held
+                .blobs
+                .map_err(|defect| format!("a served action bundle is undecodable: {defect:?}"))?;
+            let bundle = cyphr::replay::WireBundle::actions(blobs)
+                .decode()
+                .map_err(|e| format!("a served action bundle is malformed: {e}"))?;
+            cyphr::replay::replay_bundle(&mut chain, &bundle)
+                .await
+                .map_err(|e| format!("a served action does not verify: {e}"))?;
+        }
         // A genesis commit names the principal by its PG; a chain with none
         // by its genesis key's PR (SPEC 5.1).
         let derived = match chain.pg() {
@@ -241,7 +251,6 @@ impl ChainView {
             genesis: Some(genesis),
             genesis_key: Some(key),
             entries,
-            served,
             prs,
             commit_ids,
             last_signer,
@@ -320,7 +329,7 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
 /// asked about (bare) and `chain` the verifier's own read of its chain.
 ///
 /// A `principal-fork` item (`{pg, height, pre, a, b}`, `a` and `b` each
-/// a commit bundle) is checked by [`verify_principal_fork_with_actions`] against the replayed
+/// a commit bundle) is checked by [`verify_principal_fork`] against the replayed
 /// `chain`: both commits must replay from the chain's state at `pre`, so
 /// only keys the principal held there vouch (a serving peer's key never
 /// does) and two copies of one commit are not a fork.
@@ -360,15 +369,9 @@ pub async fn verify_evidence(
                 .fork()
                 .await
                 .map_err(|e| e.to_string())?;
-            let proof = verify_principal_fork_with_actions(
-                item,
-                requested,
-                genesis,
-                &chain.served.0,
-                &chain.served.1,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            let proof = verify_principal_fork(item, requested, genesis, &chain.entries)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(Proven::PrincipalFork { pg: proof.pg })
         },
         Some("peer-equivocation") => {
@@ -421,23 +424,4 @@ pub fn evidence_items(status: u16, body: &[u8]) -> Result<Vec<Value>, String> {
         .as_array()
         .cloned()
         .ok_or_else(|| "evidence has no payload.items array".to_owned())
-}
-
-/// A patch's entries with the action-only bundles it serves folded into the
-/// commit each precedes (SPEC 4.8.1, 4.8.2): a `ds/create` includes exactly
-/// the actions recorded before it, so a replay that drops the patch's
-/// `actions` member fails any data commit as a state mismatch.
-fn fold_actions(patch: cyphr_client::VerifiedPatch) -> Vec<PatchEntry> {
-    let mut entries = patch.entries;
-    for held in patch.actions {
-        let Ok(blobs) = held.blobs else { continue };
-        let slot = usize::try_from(held.after)
-            .ok()
-            .and_then(|i| entries.get_mut(i))
-            .and_then(|e| e.bundle.as_mut().ok());
-        if let Some(bundle) = slot {
-            bundle.actions.splice(0..0, blobs);
-        }
-    }
-    entries
 }

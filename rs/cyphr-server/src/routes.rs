@@ -135,15 +135,14 @@ pub struct PatchEntryResponse {
 pub struct PatchResponseBody {
     pub principal_id: String,
     pub entries: Vec<PatchEntryResponse>,
-    /// Action-only bundles (SPEC 4.8.1), each preceding the commit at
-    /// `after`.
+    /// Every action-only bundle held (SPEC 4.8.1): actions hold no chain
+    /// position, so they are served whatever range the commits cover.
     pub actions: Vec<PatchActionsResponse>,
 }
 
 /// One action-only bundle in a patch response.
 #[derive(Debug, Serialize)]
 pub struct PatchActionsResponse {
-    pub after: u64,
     /// Raw coz blobs as base64url strings.
     pub blobs: Vec<String>,
 }
@@ -152,7 +151,6 @@ impl PatchActionsResponse {
     fn of(a: cyphr_storage::engine::PatchActions) -> Self {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         Self {
-            after: a.after,
             blobs: a
                 .blobs
                 .iter()

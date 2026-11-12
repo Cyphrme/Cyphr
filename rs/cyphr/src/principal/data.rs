@@ -48,7 +48,7 @@ impl PrincipalState {
     ///
     /// - `TimestampFuture`: Action timestamp is too far in the future
     /// - as [`Self::action_signer`]
-    pub(crate) fn record_action(&mut self, mut action: Action) -> Result<&PrincipalRoot> {
+    pub(crate) fn record_action(&mut self, action: Action) -> Result<&PrincipalRoot> {
         self.check_now(action.now)?;
         self.action_signer(&action.signer, action.now)?;
 
@@ -57,7 +57,6 @@ impl PrincipalState {
 
         let core = self.core_mut();
         core.included_czds.insert(action.czd.as_bytes().to_vec());
-        action.recorded_after = core.auth.commits.len();
         core.data.actions.push(action);
 
         Ok(&self.pr)
