@@ -156,7 +156,7 @@ pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 Some(g) => g.clone(),
                 None => store.resolve_genesis(&principal_id, &[]).await?,
             };
-            if let Err(reason) = replays(&replay_from, &theirs, &actions) {
+            if let Err(reason) = replays(&replay_from, &theirs, &actions).await {
                 return Err(PeerError::Malformed {
                     peer: peer.url().to_owned(),
                     reason,
@@ -591,7 +591,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
 
 /// Replay a peer's history from `genesis`; a history that does not replay
 /// is not an answer about the principal.
-fn replays(
+async fn replays(
     genesis: &Genesis,
     chain: &[WireBundle],
     actions: &[(usize, Vec<Vec<u8>>)],
@@ -604,8 +604,8 @@ fn replays(
         };
         entries.push(CommitEntry::from_bundle(&bundle).map_err(|e| e.to_string())?);
     }
-    block_on(load_principal_from_commits(genesis.clone(), &entries))
-        .map_err(|e| e.to_string())?
+    load_principal_from_commits(genesis.clone(), &entries)
+        .await
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
