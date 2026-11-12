@@ -146,13 +146,19 @@ async fn s03_offline() {
     .await;
     h.proxy.heal("p1", "p2");
 
+    // The observer finds the fork by comparing the two peers' chains as soon
+    // as the link heals; each peer retains the other's branch, and serves it
+    // as evidence, only after its next gossip round. The oracle checks the
+    // verdict against what the peers serve, so wait for both.
     h.eventually(
-        "the fork to surface as Error plus evidence",
+        "the fork to surface as Error plus evidence the peers serve",
         CONVERGE,
         || async {
             let v = observer.verdict(&pr, &both).await?;
             Ok(v.standing == Standing::Error
-                && v.evidence.contains(&Evidence::PrincipalFork(pr.clone())))
+                && v.evidence.contains(&Evidence::PrincipalFork(pr.clone()))
+                && evidence(&h, "p1", &pr).await >= 1
+                && evidence(&h, "p2", &pr).await >= 1)
         },
     )
     .await;
@@ -194,4 +200,21 @@ async fn s03_offline() {
         "the abandoned branch is kept"
     );
     assert!(healed.resolved_by.is_some());
+}
+
+/// How many principal-fork items `peer` serves for `p`, read from the peer
+/// itself and independent of any action under test.
+async fn evidence(h: &Harness, peer: &str, p: &Principal) -> usize {
+    let addr = h.peer(peer).addr;
+    let body: serde_json::Value = h
+        .http
+        .get(format!("http://{addr}/evidence"))
+        .query(&[("pr", p.0.as_str())])
+        .send()
+        .await
+        .expect("evidence request")
+        .json()
+        .await
+        .expect("evidence json");
+    body["payload"]["items"].as_array().map_or(0, Vec::len)
 }
