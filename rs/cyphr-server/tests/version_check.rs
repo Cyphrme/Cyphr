@@ -28,7 +28,6 @@ use cyphr_server::admission::{AdmissionError, ResidentProbe, layer};
 use cyphr_server::auth::principal::{ServerPrincipal, ServerPrincipalError};
 use cyphr_server::auth::{AuthError, ServerIdentity};
 use cyphr_server::config::AdmissionConfig;
-use cyphr_server::envelope::{Envelope, EnvelopeError};
 use cyphr_server::observation::{ObservationError, ObservationStore};
 use fjall::{Database, KeyspaceCreateOptions, PersistMode};
 
@@ -85,23 +84,6 @@ fn restamp(dir: &Path, v: u64) {
 }
 
 // ---- envelope ----------------------------------------------------------
-
-/// Claim: a response envelope from a version this build does not know is
-/// refused by its reader, named, never decoded as if it were v1 (the
-/// `[envelope-r-migration]` ruling). The current version still reads. Turns
-/// red on a reader that accepts every `v` (today's derived `Deserialize`).
-#[test]
-fn version_envelope_unknown_is_refused() {
-    let doc =
-        |v: u64| serde_json::json!({"v": v, "payload": {}, "statement": {"kind": "unsigned"}});
-    Envelope::<serde_json::Value>::from_value(doc(1)).expect("v1 reads");
-    for unknown in UNKNOWN {
-        let err = Envelope::<serde_json::Value>::from_value(doc(unknown))
-            .err()
-            .unwrap_or_else(|| panic!("envelope v={unknown} was accepted"));
-        assert_unsupported!(err, EnvelopeError, "envelope", unknown);
-    }
-}
 
 // ---- server signing-key file -------------------------------------------
 

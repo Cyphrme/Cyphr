@@ -454,7 +454,7 @@ SPEC 5.1, line 860. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: order is not provided, clients should throw error `TRANSACTION_ORDER_UNKNOWN`.
 - tests: none
-- reason: `TRANSACTION_ORDER_UNKNOWN` is a 'should throw' for a wire format that omits order; the core wire format always carries order and no error variant of that name exists. The storage engine's order retention (forge U1) is pinned by `manifest_retains_ingest_order_without_search`, a different sentence. Open point O3.
+- reason: `TRANSACTION_ORDER_UNKNOWN` is a 'should throw' for a wire format that omits order; the core wire format always carries order and no error variant of that name exists. The storage engine's order retention (forge U1) is pinned by arrow verification on replay (`corpus_chains_agree_across_core_ingest_and_rebuild`), a different sentence. Open point O3.
 
 ```claim
 kind: requirement

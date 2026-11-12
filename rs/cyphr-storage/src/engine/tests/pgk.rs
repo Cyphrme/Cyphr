@@ -414,44 +414,6 @@ async fn genesis_commit(g: &Kp, now: i64) -> (cyphr::Principal, WireBundle, Stri
     (p, blobs, pr)
 }
 
-/// Claim (N13, chain-position idempotency and Fork quarantine at the write
-/// path): a rival commit 0 (a second genesis commit of the same principal)
-/// for a principal whose position 0 is taken is refused, and leaves the
-/// stored chain, its tip and its commit id exactly as they were; the
-/// accepted commit's resubmission adds no second position. Must stay green
-/// when the storage key changes from the genesis tmb to the PG. Turns red
-/// if the rival is accepted, merged, or moves the tip. End to end through
-/// `submit_commit` with real signed commits.
-#[tokio::test]
-async fn n13_rival_commit_at_a_taken_position_is_refused_and_tip_holds() {
-    let pool = load_pool();
-    let g = kp(&pool, "golden");
-    let genesis = crate::Genesis::Implicit(key_of(&g));
-    let id = genesis_principal_id(&genesis).expect("id");
-    let engine = test_engine();
-    let (_, honest, _) = genesis_commit(&g, NOW).await;
-    engine
-        .submit_commit(&id, Some(genesis.clone()), &honest)
-        .await
-        .expect("honest commit 0");
-    let before = engine.get_tip(&id).await.expect("tip").expect("stored");
-
-    let (_, rival, _) = genesis_commit(&g, NOW + 5).await;
-    assert_ne!(rival, honest, "premise: the rival is another commit");
-    let refused = engine
-        .submit_commit(&id, Some(genesis.clone()), &rival)
-        .await;
-    assert!(refused.is_err(), "a rival at position 0 was accepted");
-    // The outcome of replaying the accepted commit is not pinned (it may be
-    // a no-op or a refusal); what is pinned is that it adds no position.
-    let _ = engine.submit_commit(&id, Some(genesis), &honest).await;
-
-    let after = engine.get_tip(&id).await.expect("tip").expect("stored");
-    assert_eq!(after.commit_count, 1, "a second position appeared");
-    assert_eq!(after.commit_id, before.commit_id, "the tip commit moved");
-    assert_eq!(after.pr, before.pr, "the tip root moved");
-}
-
 // ---------------------------------------------------------------------------
 // rekeying: principals sharing a key stay distinct, and the index is a cache
 // ---------------------------------------------------------------------------

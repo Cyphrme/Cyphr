@@ -1,8 +1,6 @@
 //! c4 — proves `Principal`'s Commit Tree is genuinely disk-backed end to
 //! end, through the `cyphr`/`cyphr-storage`/`cyphr-blob-fjall` layers
-//! together, one level above what `cyphr-blob-fjall`'s own
-//! `eml_log_survives_disk_reload_sharing_blob_database` test already
-//! proves at the raw `eml::Storage` layer alone.
+//! together.
 //!
 //! # Why this test does not route commits through
 //! `StorageEngine::submit_commit`/`load_principal` twice

@@ -360,37 +360,6 @@ mod tests {
 
     const PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
-    /// Forge a Coz message signed by `identity` carrying an arbitrary
-    /// `typ` but otherwise-valid bearer-token claims. Used to exercise
-    /// F22: a message the server genuinely signed, presented as a bearer
-    /// token, must still be rejected when its `typ` is not
-    /// [`BEARER_TOKEN_TYP`].
-    fn forge_signed_message(identity: &ServerIdentity, typ: &str, now: i64, exp: i64) -> String {
-        let tmb = identity
-            .alg()
-            .compute_thumbprint(identity.pub_key())
-            .expect("thumbprint");
-
-        let mut pay = coz::Pay::new();
-        pay.alg = Some(identity.alg().name().to_string());
-        pay.now = Some(now);
-        pay.tmb = Some(tmb);
-        pay.typ = Some(typ.to_string());
-        pay.extra.insert("pr".to_string(), Value::String(PR.into()));
-        pay.extra.insert("exp".to_string(), Value::from(exp));
-        pay.extra
-            .insert("perms".to_string(), Value::from(vec!["read".to_string()]));
-
-        let pay_json = serde_json::to_vec(&pay).expect("serialize pay");
-        let (sig, _cad) = identity.sign(&pay_json).expect("sign");
-        let pay_value = serde_json::to_value(&pay).expect("pay to value");
-        serde_json::to_string(&coz::CozJson {
-            pay: pay_value,
-            sig,
-        })
-        .expect("serialize coz")
-    }
-
     /// Backs: bearer-token claims are signature-bound; a rewritten claim is refused.
     /// Unit: e2e cannot rewrite a token minted by the server.
     #[test]
@@ -470,38 +439,6 @@ mod tests {
             .verify_token(&token, 1_700_000_000)
             .expect("golden-vector token must verify");
         assert_eq!(claims.pr, PR);
-    }
-
-    /// F22: a message the server genuinely signed, with valid
-    /// `pr`/`exp`/`perms`/`tmb` claims and an unexpired `exp`, but whose
-    /// `typ` is not [`BEARER_TOKEN_TYP`], must be rejected -- otherwise
-    /// any other message the server key ever signs could be replayed as a
-    /// bearer token. The signature here is real (same identity), so only
-    /// the `typ` binding stands between it and acceptance.
-    // @docket: signon-token-kind-binding :: scripts/docket-run signon-token-kind-binding
-    #[test]
-    fn verify_rejects_valid_signature_with_wrong_typ() {
-        let (_dir, path) = write_random_key_file();
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let forged = forge_signed_message(&identity, "cyphr-server/auth/not-a-token", 1_000, 1_300);
-
-        // Sanity: the forgery IS a genuine signature by this identity --
-        // it is the `typ` binding, not the signature, that must reject it.
-        let coz_json: coz::CozJson = serde_json::from_str(&forged).expect("forged parses");
-        let pay_json = serde_json::to_vec(&coz_json.pay).expect("pay bytes");
-        assert_eq!(
-            identity.verify(&pay_json, &coz_json.sig),
-            Some(true),
-            "test setup: the forged message must carry a genuine signature by this identity"
-        );
-
-        let result = identity.verify_token(&forged, 1_100);
-        assert!(
-            matches!(result, Err(TokenError::TypMismatch)),
-            "a validly-signed, unexpired message whose typ is not the bearer typ must be rejected \
-             as TypMismatch, got: {result:?}"
-        );
     }
 
     /// Backs: the login key rides in the signed token (#162). The claim

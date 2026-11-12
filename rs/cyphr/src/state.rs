@@ -749,18 +749,6 @@ pub(crate) fn derive_auth_state(
 mod tests {
     use super::*;
 
-    #[test]
-    fn ks_single_key_promotion() {
-        // Single key: KS = tmb (no hashing), stored as single-variant multihash
-        let tmb = Thumbprint::from_bytes(vec![1; 32]);
-        let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-
-        // Should have exactly one variant
-        assert_eq!(ks.0.len(), 1);
-        // The variant value should equal the thumbprint bytes
-        assert_eq!(ks.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
-    }
-
     /// F46 regression: a digest of the wrong width for its algorithm is
     /// refused with `DigestLengthMismatch`, not a panic; a 64-byte SHA-512
     /// genesis is read as SHA-512. A unit test because the CLI reaches

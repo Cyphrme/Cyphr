@@ -123,9 +123,7 @@ the whole signal.
 Covered by `rs/cyphr-server/tests/identity_publication.rs`'s
 `keyless_server_declares_repository_with_no_identity_fields` and
 `keyed_but_unbootstrapped_principal_declares_repository`
-(`payload.get("pg").is_none()`, etc.), and by
-`rs/cyphr-server/tests/keyless_matrix.rs`'s
-`keyless_discovery_declares_repository_tier`.
+(`payload.get("pg").is_none()`, etc.).
 
 ### `[identity-r-both-options]` Attestor requires both AppState options
 
