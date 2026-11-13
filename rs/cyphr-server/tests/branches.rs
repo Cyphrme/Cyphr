@@ -2606,3 +2606,40 @@ async fn witness_ahead_of_an_error_authority_holds_its_heads() {
     );
     assert!(!errored(&wstate, &t.id).await, "still Active on E");
 }
+
+/// Backs SPEC 15.8 and 6.1 ("create rejects duplicates", judged at the
+/// commit's own `pre`): two siblings at one position that both `key/create`
+/// the same key are one fork, not a duplicate. The second sibling is
+/// refused as a tip (409, never DuplicateKey/422), retained beside the
+/// first, and the principal reads Error with both as tied heads. Turns red
+/// if a rival is judged against the canonical tip's state, where the key
+/// already exists, so it is refused and kept nowhere. End to end over
+/// `/push`, `/tip` and `/branches`: yes.
+#[tokio::test]
+async fn fork_siblings_creating_the_same_key_are_held_as_a_fork() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (shared, id) = genesis(&[&g], NOW + 2).await;
+    let new = kp(&pool, "key_a");
+
+    // Same key, different `now`: distinct commits at one position.
+    let mut first = shared.fork().await.expect("fork");
+    create_key(&mut first, &g, &new, NOW + 3).await;
+    let mut second = shared.fork().await.expect("fork");
+    create_key(&mut second, &g, &new, NOW + 4).await;
+
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    let (status, body) = post_json(app.clone(), "/push", wire(&shared, 0, &id)).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", wire(&first, 1, &id)).await;
+    assert_eq!(status, StatusCode::CREATED, "first sibling: {body:?}");
+
+    let (status, body) = post_json(app.clone(), "/push", wire(&second, 1, &id)).await;
+    assert!(status.is_client_error(), "refused as a tip: {status} {body:?}");
+
+    let heads = error_heads(&tip_payload(app.clone(), &id).await);
+    assert_eq!(heads.len(), 2, "both siblings are held: {heads:?}");
+    let (status, listed) = branches(app, &id).await;
+    assert_eq!(status, StatusCode::OK, "{listed:?}");
+}
