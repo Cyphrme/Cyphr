@@ -38,6 +38,14 @@ pub fn open_backend(cli: &crate::Cli) -> crate::Result<JsonKeyStore> {
             t.to
         );
     }
+    if let Some(d) = keystore.exposed_dir() {
+        eprintln!(
+            "warning: key directory {} is accessible to other users (mode {:04o}); not changed. \
+             Keep the key file in a directory only you can reach",
+            d.path.display(),
+            d.mode
+        );
+    }
     Ok(keystore)
 }
 
