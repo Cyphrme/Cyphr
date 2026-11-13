@@ -194,8 +194,6 @@ impl AppError {
     ///   invalid protocol)
     /// - `Errored` → 423 Locked (the principal is in Error, SPEC 15.5: nothing but a fork
     ///   resolution is processed until it is resolved)
-    /// - `EmbeddedUnsupported` → 501 Not Implemented (the server resolves no embedded principal, so
-    ///   it cannot judge a coz an embedded member may have signed)
     /// - `BlobStore`, `Indexer`, `Load`, `LegacyManifest`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
@@ -226,7 +224,6 @@ impl AppError {
                 message: err.to_string(),
                 kind: None,
             },
-            EngineError::EmbeddedUnsupported { .. } => Self::not_implemented(err.to_string()),
             EngineError::Protocol(_) => Self {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
@@ -257,7 +254,6 @@ impl AppError {
             EngineError::MalformedBlob(_) => Some("malformed_blob"),
             EngineError::BranchLimit { .. } => Some("branch_limit"),
             EngineError::Errored { .. } => Some("errored"),
-            EngineError::EmbeddedUnsupported { .. } => Some("embedded_unsupported"),
             EngineError::Protocol(cyphr::Error::Storage(_)) => None,
             EngineError::Protocol(cyphr::Error::StateMismatch) => Some("state_mismatch"),
             EngineError::Protocol(cyphr::Error::CommitMismatch) => Some("commit_mismatch"),
