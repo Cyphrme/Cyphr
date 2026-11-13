@@ -9,6 +9,7 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use common::*;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -26,6 +27,14 @@ fn clock() -> i64 {
     T0 + 10_000
 }
 const CLOCK: Clock = clock;
+
+/// A clock the test sets, for scenarios where the receipt time of a revoke
+/// is the point. Tests that use it must not run beside each other.
+static RECEIPT: AtomicI64 = AtomicI64::new(0);
+fn receipt_clock() -> i64 {
+    RECEIPT.load(Ordering::SeqCst)
+}
+static RECEIPT_CLOCK_USERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// One branch of a principal as a peer would hold it: each commit's blobs,
 /// and the PR and commit id the chain reaches after it.
@@ -391,6 +400,37 @@ async fn pull_marks_a_key_inactive_from_a_verified_naked_revoke() {
     assert!(rec.is_key_active(&g.tmb), "and only it");
 }
 
+/// Claim: a record's cutoff for a revoked key is its own clock at the first
+/// revoke it accepted, one revoke per key however often a peer repeats it:
+/// a peer serving two revokes of the key (the second with `rvk` 1), and
+/// again on the next pull, adds neither a report entry nor a lower cutoff.
+///
+/// Turns red if: the cutoff is the revoke's `rvk`; a repeated revoke is
+/// reported again; or a later revoke lowers the cutoff.
+/// End-to-end scenario: yes (two pulls over a carrier).
+#[tokio::test]
+async fn record_cutoff_is_its_receipt_and_one_revoke_stands() {
+    let (g, k1) = (kp(), kp());
+    let pg = g.tmb.to_b64();
+    let main = line(&g, &[(&k1, T0 + 100)]).await;
+    let mut rec = record(&pg, &g);
+
+    let mut relay = Fake::new(&pg, &main);
+    relay.revoked = vec![
+        naked_revoke(&k1, &k1, T0 + 1_000_000_000),
+        naked_revoke(&k1, &k1, 1),
+    ];
+    let first = pull(&mut rec, &[peer("relay", &relay)]).await;
+    assert_eq!(first.revoked.len(), 1, "one record per key");
+    let again = pull(&mut rec, &[peer("relay", &relay)]).await;
+    assert!(again.revoked.is_empty(), "a repeat adds nothing");
+    assert_eq!(
+        rec.dead_keys().collect::<Vec<_>>(),
+        vec![(k1.tmb.to_b64().as_str(), clock())],
+        "the cutoff is the record's clock, not an rvk"
+    );
+}
+
 /// A genesis commit opened by `opener` over the key set `{opener} + others`:
 /// its line and bare PG.
 async fn genesis_over(opener: &Kp, others: &[&Kp]) -> (Line, String) {
@@ -460,24 +500,30 @@ async fn anchor_accepts_the_anchored_opener_and_refuses_the_other() {
     }
 }
 
-/// Claim: a revoked peer key cannot keep speaking. A peer key whose naked
-/// revoke the client fetched and verified is refused for a tip statement
-/// and for the transport's key lookup; a revoke signed by another key
-/// changes nothing; the peer's other keys still speak.
+/// Claim: a revoked peer key cannot keep speaking, from the time the
+/// verifier received the revoke. A peer key whose naked revoke the client
+/// fetched and verified is refused for a tip statement dated at or after
+/// the receipt and for the transport's key lookup, whatever `now` and `rvk`
+/// the revoke declared (here a far-future one, which is Coz-valid); a
+/// revoke signed by another key changes nothing; the peer's other keys
+/// still speak.
 ///
-/// Turns red if: the revoked key's tip is accepted; `active_key` still
-/// returns it; a forged revoke is recorded.
+/// Turns red if: the revoke's own `rvk` decides the cutoff (the far-future
+/// `rvk` would then keep the key speaking); `active_key` still returns it;
+/// a forged revoke is recorded.
 /// End-to-end scenario: yes (revokes fetched over a carrier, then a tip
 /// judged against the held peer chain).
 #[tokio::test]
-async fn naked_revoked_peer_key_is_refused() {
+async fn naked_revoked_peer_key_is_refused_from_receipt() {
+    let _clock = RECEIPT_CLOCK_USERS.lock().await;
+    RECEIPT.store(T0 + 400, Ordering::SeqCst);
     let (g, k1) = (kp(), kp());
     let mut peer_chain = Chain::new(&g).await;
     let c1 = peer_chain.commit(&k1, T0 + 100).await;
     let pipe = Pipe::new(peer_chain.patch(std::slice::from_ref(&c1)));
     let mut held = PeerChain::pin(&peer_chain.pg(), g.domain_key(T0))
         .await
-        .with_clock(CLOCK);
+        .with_clock(receipt_clock);
     held.follow(&pipe).await.expect("follow");
     let (pr, _) = subject();
     assert!(held.verify_tip(&tip_envelope(&k1), &pr).is_ok());
@@ -486,7 +532,7 @@ async fn naked_revoked_peer_key_is_refused() {
     let mut serving = Fake::new("-", &main);
     serving.revoked = vec![
         naked_revoke(&k1, &g, T0 + 500),
-        naked_revoke(&k1, &k1, T0 + 400),
+        naked_revoke(&k1, &k1, T0 + 1_000_000_000),
     ];
     let served = fetch_revoked(&serving, std::slice::from_ref(&k1.tmb))
         .await
@@ -499,8 +545,8 @@ async fn naked_revoked_peer_key_is_refused() {
     assert!(outcomes[0].is_err(), "a revoke signed by another key");
     assert!(outcomes[1].is_ok());
 
-    // The fixture's tip statement is at `now` 1_700_000_500, after the
-    // revoke's `rvk` of 1_700_000_400.
+    // The fixture's tip statement is dated 1_700_000_500, after the receipt
+    // at 1_700_000_400.
     assert!(matches!(
         held.verify_tip(&tip_envelope(&k1), &pr),
         Err(PeerFailure::KeyRevoked { .. })
@@ -510,6 +556,55 @@ async fn naked_revoked_peer_key_is_refused() {
         Err(PeerFailure::KeyRevoked { .. })
     ));
     assert!(held.verify_tip(&tip_envelope(&g), &pr).is_ok());
+}
+
+/// Claim: the first accepted revoke of a key sets its cutoff, and a later
+/// revoke of the same key (here with `rvk` 1, best practice for a
+/// pre-signed one, received later) does not move it. The key is refused
+/// for a statement dated after the first receipt, and stays refused once
+/// the second revoke is received.
+///
+/// Turns red if: a later revoke replaces the first, which would move the
+/// cutoff past the statement and let it stand. (It does not close the
+/// least-`rvk` rule or the history side; the other tests do.)
+/// End-to-end scenario: yes (revokes fetched over a carrier).
+#[tokio::test]
+async fn first_accepted_revoke_sets_the_cutoff() {
+    let _clock = RECEIPT_CLOCK_USERS.lock().await;
+    RECEIPT.store(T0 + 300, Ordering::SeqCst);
+    let (g, k1) = (kp(), kp());
+    let mut peer_chain = Chain::new(&g).await;
+    let c1 = peer_chain.commit(&k1, T0 + 100).await;
+    let pipe = Pipe::new(peer_chain.patch(std::slice::from_ref(&c1)));
+    let mut held = PeerChain::pin(&peer_chain.pg(), g.domain_key(T0))
+        .await
+        .with_clock(receipt_clock);
+    held.follow(&pipe).await.expect("follow");
+    let (pr, _) = subject();
+
+    let main = line(&g, &[(&k1, T0 + 100)]).await;
+    let mut serving = Fake::new("-", &main);
+    serving.revoked = vec![naked_revoke(&k1, &k1, T0 + 50), naked_revoke(&k1, &k1, 1)];
+    let served = fetch_revoked(&serving, std::slice::from_ref(&k1.tmb))
+        .await
+        .expect("served revokes");
+
+    // The tip statement is dated 1_700_000_500: after the first receipt.
+    RECEIPT.store(T0 + 400, Ordering::SeqCst);
+    held.observe_naked_revoke(&served[0]).expect("first");
+    assert!(matches!(
+        held.verify_tip(&tip_envelope(&k1), &pr),
+        Err(PeerFailure::KeyRevoked { .. })
+    ));
+    RECEIPT.store(T0 + 700, Ordering::SeqCst);
+    held.observe_naked_revoke(&served[1]).expect("second");
+    assert!(
+        matches!(
+            held.verify_tip(&tip_envelope(&k1), &pr),
+            Err(PeerFailure::KeyRevoked { .. })
+        ),
+        "a later revoke does not move the cutoff past the statement"
+    );
 }
 
 /// Claim: a genesis-key anchor does not let a peer swap in another principal.

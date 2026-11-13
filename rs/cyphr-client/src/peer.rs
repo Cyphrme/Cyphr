@@ -217,9 +217,10 @@ pub struct PeerChain {
     limits: PeerLimits,
     /// The clock reading at the latest fetch, for the follow interval.
     last_fetch: Option<i64>,
-    /// Keys with a verified naked revoke, by thumbprint, and when each
-    /// declared the revocation. A naked revoke mutates no chain (SPEC
-    /// 6.4), so it is held beside the chain and outlives every follow.
+    /// Keys with a verified naked revoke, by thumbprint, and each key's
+    /// cutoff: this verifier's clock when it accepted the first revoke of
+    /// the key. A naked revoke mutates no chain (SPEC 6.4), so it is held
+    /// beside the chain and outlives every follow.
     dead: BTreeMap<String, i64>,
 }
 
@@ -285,10 +286,15 @@ impl PeerChain {
     }
 
     /// Record a naked revoke served by anyone, after verifying that the key
-    /// it names signed it. From then on a statement by that key at or after
-    /// the revoke's `rvk` is refused ([`PeerFailure::KeyRevoked`]), as is
-    /// the key for [`active_key`](Self::active_key), which carries no
-    /// statement time.
+    /// it names signed it. Every Coz-valid revoke is accepted, whatever its
+    /// `now` or `rvk`: the key's cutoff is this verifier's own clock at the
+    /// first revoke of it accepted (SPEC 14.12: a statement is judged by
+    /// the current `now`, not `rvk`; the spec author on #203: the key
+    /// stops at the witness's receipt time), and a later revoke of the key
+    /// changes nothing. From then on a statement by that key dated at or
+    /// after the cutoff is refused ([`PeerFailure::KeyRevoked`]), as is the
+    /// key for [`active_key`](Self::active_key), which carries no statement
+    /// time. A statement dated before the cutoff is history and stands.
     ///
     /// # Errors
     ///
@@ -297,16 +303,15 @@ impl PeerChain {
         let revoke = verify_naked_revoke(envelope)?;
         self.dead
             .entry(revoke.tmb.to_b64())
-            .and_modify(|rvk| *rvk = (*rvk).min(revoke.rvk))
-            .or_insert(revoke.rvk);
+            .or_insert_with(|| (self.clock)());
         Ok(revoke)
     }
 
     /// Refuse `tmb` when it has a verified naked revoke and the statement
-    /// (`now`, or unknown) is not before it.
+    /// (`now`, or unknown) is not before the key's cutoff.
     fn refuse_dead(&self, tmb: &coz::Thumbprint, now: Option<i64>) -> Result<(), PeerFailure> {
         match self.dead.get(&tmb.to_b64()) {
-            Some(rvk) if now.is_none_or(|n| n >= *rvk) => {
+            Some(cutoff) if now.is_none_or(|n| n >= *cutoff) => {
                 Err(PeerFailure::KeyRevoked { tmb: tmb.to_b64() })
             },
             _ => Ok(()),
@@ -472,7 +477,7 @@ impl PeerChain {
     ///
     /// [`PeerFailure::KeyNotActive`] when the signing key is not active in
     /// the held chain; [`PeerFailure::KeyRevoked`] when it has a verified
-    /// naked revoke at or before the statement's `now`;
+    /// naked revoke whose cutoff is at or before the statement's `now`;
     /// [`PeerFailure::Tip`] for any other refusal of the envelope;
     /// [`PeerFailure::PinMismatch`] for a refused pin.
     pub fn verify_tip(&self, body: &Value, principal_id: &str) -> Result<TipReport, PeerFailure> {
