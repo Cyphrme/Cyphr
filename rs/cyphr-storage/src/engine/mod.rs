@@ -271,6 +271,23 @@ impl Shape {
 struct StoredChain {
     entries: Vec<crate::CommitEntry>,
     pins: Vec<Vec<EmbeddedPin>>,
+    /// Each commit's PR, the first (primary) spelling.
+    prs: Vec<String>,
+}
+
+/// A commit B holds, canonical or retained: what walking a PR's ancestry by
+/// `pre` needs to know before loading it.
+struct HeldCommit<'m> {
+    sequence: u64,
+    pr: String,
+    pre: Option<String>,
+    origin: HeldOrigin<'m>,
+}
+
+enum HeldOrigin<'m> {
+    Canonical(crate::index::CommitRef),
+    Retained(Box<Retained>),
+    Manifest(&'m CommitManifest),
 }
 
 /// Where the principals a commit was admitted through are read from: the
@@ -280,9 +297,15 @@ struct StoredChain {
 /// many states of it the call pins. A fold of held blobs dropped with the
 /// call, never a cache that outlives it.
 struct PinSource<'m> {
-    manifests: Option<&'m [(Blake3Hash, CommitManifest)]>,
+    /// The canonical manifests and the rest (displaced and retained).
+    manifests: Option<ManifestLists<'m>>,
     memo: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<ChainMemo>>>>>,
 }
+
+type ManifestLists<'m> = (
+    &'m [(Blake3Hash, CommitManifest)],
+    &'m [(Blake3Hash, CommitManifest)],
+);
 
 /// An embedded principal's chain replayed as far as the call needed, with
 /// the state at each PR passed.
@@ -301,9 +324,12 @@ impl<'m> PinSource<'m> {
         }
     }
 
-    fn manifests(manifests: &'m [(Blake3Hash, CommitManifest)]) -> Self {
+    fn manifests(
+        canonical: &'m [(Blake3Hash, CommitManifest)],
+        rest: &'m [(Blake3Hash, CommitManifest)],
+    ) -> Self {
         Self {
-            manifests: Some(manifests),
+            manifests: Some((canonical, rest)),
             memo: std::sync::Mutex::default(),
         }
     }
@@ -423,6 +449,12 @@ const BRANCH_MANIFEST_KIND: &str = "cyphr-storage/branch-manifest/v1";
 /// same scan, never into the [`Indexer`].
 pub const BRANCH_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/branch-manifest/v1\0";
 
+/// A commit that was ever canonical is never removed, by a cap or
+/// otherwise: promotion retains each commit it displaces one for one and
+/// without quota, and the caps below refuse a new rival at admission and
+/// evict nothing. An embedding principal's pin names a state of this one
+/// (SPEC 14.12), and finds it again only because nothing held is deleted.
+///
 /// Retained non-canonical branches kept per principal. A key holder can
 /// mint any number of rivals at one position; the bound caps what one
 /// principal can make the store keep, and the next rival is refused as
@@ -1951,7 +1983,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut indexed = 0;
         // One memo for the whole rebuild: each embedded principal is replayed
         // once, whatever number of commits and actions pin it.
-        let pins = PinSource::manifests(&manifests);
+        let pins = PinSource::manifests(&manifests, &branch_manifests);
         let mut replays: HashMap<String, cyphr::Principal<cyphr::eml::MemoryStorage>> =
             HashMap::new();
         // What the last replaying rebuild quarantined: a pass that does
@@ -2726,6 +2758,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 &commit_ref.commit_id,
                 &commit_ref.pr,
             )?);
+            stored.prs.push(commit_ref.pr.clone());
             stored.pins.push(
                 self.frame(principal_id, commit_ref)
                     .map(|f| f.embedded)
@@ -2779,8 +2812,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// The state of the principal `member` names at the commit that left it
     /// at PR `b`, each of its own commits replayed against the embedded
-    /// states it was admitted through. The chain is replayed once per call,
-    /// forward, and resumed for a later `b` ([`PinSource`]). Boxed: it
+    /// states it was admitted through. A `b` on B's canonical chain is read
+    /// from one forward pass over it per call, resumed for a later `b`
+    /// ([`PinSource`]). A `b` B has since reorganized away from is read from
+    /// the ancestry of that commit alone ([`Self::ancestry`]). Boxed: it
     /// recurses through [`Self::apply_pins`].
     fn state_at<'a>(
         &'a self,
@@ -2801,50 +2836,86 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     "embedded principals nest deeper than {EMBED_DEPTH} replaying {member}"
                 )));
             };
-            let slot = source.slot(member);
             // A chain that pins itself (only a forged store can) finds its
             // own slot held: refused, not waited on.
-            let mut slot = slot.try_lock().map_err(|_| {
-                EngineError::MalformedBlob(format!("embedded principal {member} pins itself"))
-            })?;
-            let memo = match slot.as_mut() {
-                Some(memo) => memo,
-                None => slot.insert(self.open_chain(source, member).await?),
-            };
-            if let Some(state) = memo.at.get(b) {
-                return Ok(state.clone());
-            }
-            while let (Some(entry), Some(pins)) = (
-                memo.chain.entries.get(memo.next),
-                memo.chain.pins.get(memo.next),
-            ) {
-                self.replay_pinned(&mut memo.principal, source, entry, pins, memo.next, depth)
-                    .await?;
-                memo.next += 1;
-                let pr = memo.principal.pr_tagged().map_err(EngineError::Protocol)?;
-                let state = (*memo.principal).clone();
-                if pr == b {
-                    memo.at.insert(pr, state.clone());
-                    return Ok(state);
+            let cycle =
+                || EngineError::MalformedBlob(format!("embedded principal {member} pins itself"));
+            let canonical = source.slot(member);
+            let mut canonical = canonical.try_lock().map_err(|_| cycle())?;
+            if canonical.is_none() {
+                if let Some(chain) = self.embedded_chain(source, member).await? {
+                    *canonical = Some(Self::chain_memo(chain, member).await?);
                 }
-                memo.at.insert(pr, state);
             }
-            Err(EngineError::NotFound(format!(
-                "embedded principal {member} never held PR {b}"
-            )))
+            if let Some(memo) = canonical.as_mut() {
+                match self.advance(memo, source, b, depth).await {
+                    Ok(Some(state)) => return Ok(state),
+                    Ok(None) => {},
+                    Err(e) => {
+                        *canonical = None;
+                        return Err(e);
+                    },
+                }
+            }
+            drop(canonical);
+            let line = source.slot(&format!("{member}\0{b}"));
+            let mut line = line.try_lock().map_err(|_| cycle())?;
+            if line.is_none() {
+                let chain = self.ancestry(source, member, b).await?;
+                *line = Some(Self::chain_memo(chain, member).await?);
+            }
+            let Some(memo) = line.as_mut() else {
+                return Err(EngineError::EmbeddedPinLost {
+                    member: member.to_string(),
+                    b: b.to_string(),
+                });
+            };
+            let found = self.advance(memo, source, b, depth).await;
+            if found.is_err() {
+                *line = None;
+            }
+            found?.ok_or_else(|| EngineError::EmbeddedPinLost {
+                member: member.to_string(),
+                b: b.to_string(),
+            })
         })
     }
 
-    /// The chain of the principal `member` names, and a principal at its
-    /// genesis to replay it onto.
-    async fn open_chain(
+    /// Replay `memo`'s chain forward until it stands at PR `b`, taking the
+    /// state at every PR passed; `None` when `b` is not on this chain.
+    async fn advance(
         &self,
+        memo: &mut ChainMemo,
         source: &PinSource<'_>,
-        member: &str,
-    ) -> Result<ChainMemo, EngineError> {
-        let chain = self.embedded_chain(source, member).await?.ok_or_else(|| {
-            EngineError::NotFound(format!("embedded principal {member} is not held"))
-        })?;
+        b: &str,
+        depth: u8,
+    ) -> Result<Option<cyphr::PrincipalState>, EngineError> {
+        if let Some(state) = memo.at.get(b) {
+            return Ok(Some(state.clone()));
+        }
+        if !memo.chain.prs.iter().any(|pr| pr == b) {
+            return Ok(None);
+        }
+        while let (Some(entry), Some(pins)) = (
+            memo.chain.entries.get(memo.next),
+            memo.chain.pins.get(memo.next),
+        ) {
+            self.replay_pinned(&mut memo.principal, source, entry, pins, memo.next, depth)
+                .await?;
+            memo.next += 1;
+            let pr = memo.principal.pr_tagged().map_err(EngineError::Protocol)?;
+            let state = (*memo.principal).clone();
+            let done = pr == b;
+            memo.at.insert(pr, state.clone());
+            if done {
+                return Ok(Some(state));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A principal at the genesis `chain` begins with, to replay it onto.
+    async fn chain_memo(chain: StoredChain, member: &str) -> Result<ChainMemo, EngineError> {
         let first = chain.entries.first().ok_or_else(|| {
             EngineError::NotFound(format!("embedded principal {member} has no commits"))
         })?;
@@ -2897,44 +2968,162 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         source: &PinSource<'_>,
         member: &str,
     ) -> Result<Option<StoredChain>, EngineError> {
-        let Some(manifests) = source.manifests else {
+        let Some((manifests, _)) = source.manifests else {
             let Some(id) = self.principal_named(member).await? else {
                 return Ok(None);
             };
             return self.stored_entries(&id, None).await.map(Some);
         };
-        let names = |m: &CommitManifest| {
-            m.commit.principal_id == member
-                || m.commit.prs.iter().chain(&m.commit.pg).any(|d| d == member)
-        };
-        let mut named = manifests
-            .iter()
-            .filter(|(_, m)| names(m))
-            .map(|(_, m)| m.commit.principal_id.as_str())
-            .collect::<Vec<_>>();
-        named.sort_unstable();
-        named.dedup();
-        let [named] = named.as_slice() else {
+        let Some(named) = manifest_principal(source, member) else {
             return Ok(None);
         };
         let mut chain = StoredChain::default();
         for (_, manifest) in manifests
             .iter()
-            .filter(|(_, m)| m.commit.principal_id == *named)
+            .filter(|(_, m)| m.commit.principal_id == named)
         {
-            let bundle = self.manifest_bundle(manifest).await?;
-            chain.entries.push(replay_entry(
-                &bundle,
-                manifest
-                    .commit
-                    .commit_ids
-                    .first()
-                    .map_or("", String::as_str),
-                manifest.commit.prs.first().map_or("", String::as_str),
-            )?);
-            chain.pins.push(manifest.embedded.clone());
+            let (entry, pins) = self.manifest_entry(manifest).await?;
+            chain.prs.push(entry.pr.clone());
+            chain.entries.push(entry);
+            chain.pins.push(pins);
         }
         Ok(Some(chain))
+    }
+
+    async fn manifest_entry(
+        &self,
+        manifest: &CommitManifest,
+    ) -> Result<(crate::CommitEntry, Vec<EmbeddedPin>), EngineError> {
+        let bundle = self.manifest_bundle(manifest).await?;
+        let entry = replay_entry(
+            &bundle,
+            manifest
+                .commit
+                .commit_ids
+                .first()
+                .map_or("", String::as_str),
+            manifest.commit.prs.first().map_or("", String::as_str),
+        )?;
+        Ok((entry, manifest.embedded.clone()))
+    }
+
+    /// The commits of B's that lead to the one at PR `b`, oldest first,
+    /// walked back by `pre` over every commit B holds, canonical and
+    /// retained alike (SPEC 2.3.2, 14.12: B choosing another branch undoes
+    /// nothing A did through it). The commit at `b` is the last.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::EmbeddedPinLost`] when the ancestry has a gap: held
+    /// blobs were lost, and a pin never degrades to an opaque digest.
+    async fn ancestry(
+        &self,
+        source: &PinSource<'_>,
+        member: &str,
+        b: &str,
+    ) -> Result<StoredChain, EngineError> {
+        let lost = || EngineError::EmbeddedPinLost {
+            member: member.to_string(),
+            b: b.to_string(),
+        };
+        let (id, held) = match source.manifests {
+            Some((canonical, rest)) => {
+                let id = manifest_principal(source, member)
+                    .or_else(|| manifest_principal(source, b))
+                    .ok_or_else(lost)?;
+                let held = canonical
+                    .iter()
+                    .chain(rest)
+                    .filter(|(_, m)| m.commit.principal_id == id)
+                    .map(|(_, m)| HeldCommit {
+                        sequence: m.commit.sequence,
+                        pr: m.commit.prs.first().cloned().unwrap_or_default(),
+                        pre: m.commit.pre.clone(),
+                        origin: HeldOrigin::Manifest(m),
+                    })
+                    .collect::<Vec<_>>();
+                (id, held)
+            },
+            None => {
+                let retained_of = |pr: &str| {
+                    self.branches
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .iter()
+                        .find(|(_, rs)| rs.iter().any(|r| r.pr == pr))
+                        .map(|(id, _)| id.clone())
+                };
+                let id = match self.principal_named(member).await? {
+                    Some(id) => id,
+                    None => retained_of(member)
+                        .or_else(|| retained_of(b))
+                        .ok_or_else(lost)?,
+                };
+                let mut held: Vec<HeldCommit<'_>> = self
+                    .indexer
+                    .get_commit_chain(&id, None, None)
+                    .await?
+                    .into_iter()
+                    .map(|c| HeldCommit {
+                        sequence: c.sequence,
+                        pr: c.pr.clone(),
+                        pre: c.pre.clone(),
+                        origin: HeldOrigin::Canonical(c),
+                    })
+                    .collect();
+                let retained = self
+                    .branches
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                held.extend(retained.into_iter().map(|r| HeldCommit {
+                    sequence: r.tip.sequence,
+                    pr: r.pr.clone(),
+                    pre: r.tip.pre.clone(),
+                    origin: HeldOrigin::Retained(Box::new(r)),
+                }));
+                (id, held)
+            },
+        };
+        let mut at = held.iter().find(|h| h.pr == b).ok_or_else(lost)?;
+        let mut line = vec![at];
+        while let Some(pre) = &at.pre {
+            at = held
+                .iter()
+                .find(|h| h.pr == *pre && h.sequence + 1 == at.sequence)
+                .ok_or_else(lost)?;
+            line.push(at);
+        }
+        let mut chain = StoredChain::default();
+        for h in line.into_iter().rev() {
+            let (entry, pins) = match &h.origin {
+                HeldOrigin::Canonical(c) => {
+                    let bundle = self.commit_bundle(&id, c).await?;
+                    let pins = self.frame(&id, c).map(|f| f.embedded).unwrap_or_default();
+                    (replay_entry(&bundle, &c.commit_id, &c.pr)?, pins)
+                },
+                HeldOrigin::Retained(r) => {
+                    let blobs = self.read_blobs(&r.blobs).await?;
+                    let bundle = r.shape.group(blobs, r.keys.clone()).ok_or_else(|| {
+                        EngineError::MalformedBlob(format!(
+                            "retained commit {}: its shape groups a different number of blobs",
+                            r.tip.tip
+                        ))
+                    })?;
+                    (
+                        replay_entry(&bundle, &r.tip.tip, &r.pr)?,
+                        r.embedded.clone(),
+                    )
+                },
+                HeldOrigin::Manifest(m) => self.manifest_entry(m).await?,
+            };
+            chain.prs.push(h.pr.clone());
+            chain.entries.push(entry);
+            chain.pins.push(pins);
+        }
+        Ok(chain)
     }
 
     /// Submit a commit for protocol validation and persistence.
@@ -5009,6 +5198,27 @@ fn walk_chains(
         ))
     });
     walk
+}
+
+/// The principal the manifests name `member` as (its key, its PG or a PR
+/// it held, in any manifest), if exactly one.
+fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
+    let (canonical, rest) = source.manifests?;
+    let mut named: Vec<&str> = canonical
+        .iter()
+        .chain(rest)
+        .filter(|(_, m)| {
+            m.commit.principal_id == member
+                || m.commit.prs.iter().chain(&m.commit.pg).any(|d| d == member)
+        })
+        .map(|(_, m)| m.commit.principal_id.as_str())
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    match named.as_slice() {
+        [one] => Some((*one).to_string()),
+        _ => None,
+    }
 }
 
 /// The thumbprints that sign the transactions of `bundle`, if every coz

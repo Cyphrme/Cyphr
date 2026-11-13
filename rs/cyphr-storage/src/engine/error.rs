@@ -73,6 +73,17 @@ pub enum EngineError {
         key: String,
     },
 
+    /// A commit was admitted through the embedded principal `member` at its
+    /// PR `b`, and the commits `b` descends from are not all held: blobs were
+    /// lost. The commit is not replayable; it is never read as opaque.
+    #[error("embedded principal {member} at PR {b} is not replayable: its ancestry is not held")]
+    EmbeddedPinLost {
+        /// The digest in the embedding principal's Key Tree.
+        member: String,
+        /// The PR the commit was admitted against.
+        b: String,
+    },
+
     /// The principal is in Error (SPEC 15.5: an unresolved fork) and the
     /// bundle does not resolve it, so it is refused. A refused commit that
     /// verifies on a held branch is kept as evidence.

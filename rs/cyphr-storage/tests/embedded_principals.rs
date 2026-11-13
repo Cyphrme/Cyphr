@@ -885,3 +885,93 @@ async fn load_reads_b_once_for_every_pinned_state() {
         "{read} reads for A's {a_blobs} blobs and one pass over B's {b_blobs}"
     );
 }
+
+/// B reorganizes by fork promotion after A was admitted through B at the
+/// tip of B's line X: `depth` commits X past the one that creates carol. A
+/// rival line Y (signed by `signer`, one commit longer) is pushed to B, kept
+/// as evidence and then promoted, so B's canonical chain is Y and A's pin
+/// names a displaced state of B. Returns the engine and A's roots before.
+async fn b_reorganizes(depth: i64, thief: bool) -> (Engine, MemoryBlobStore, Line, DerivedRoots) {
+    let (alice, bob, carol, dave) = (kp(), kp(), kp(), kp());
+    let (mut b, b_pr) = b_with_carol(&bob, &carol).await;
+    let base = b.state.fork().await.expect("fork");
+    for i in 0..depth {
+        let k = kp();
+        b.commit(&bob, "key/create", &k.tmb.to_b64(), Some(&k), T0 + 20 + i)
+            .await
+            .expect("B's line X");
+    }
+    let mut a = a_embedding(&alice, &b_pr, &b.state).await;
+    a.commit(
+        &carol,
+        "key/create",
+        &dave.tmb.to_b64(),
+        Some(&dave),
+        T0 + 60,
+    )
+    .await
+    .expect("carol signs for A at the tip of X");
+
+    let blobs = MemoryBlobStore::new();
+    let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    b.push_all(&engine).await;
+    a.push_all(&engine).await;
+    let before = a.roots(&engine).await;
+
+    let signer = if thief { &carol } else { &bob };
+    let mut y = base;
+    for i in 0..=depth {
+        let k = kp();
+        let rival = commit_on(
+            &mut y,
+            signer,
+            "key/create",
+            &k.tmb.to_b64(),
+            Some(&k),
+            T0 + 70 + i,
+        )
+        .await
+        .expect("B's rival line Y");
+        let pushed = b.push(&engine, &rival).await;
+        assert_eq!(
+            pushed.is_ok(),
+            i == depth,
+            "only the last of Y promotes: {pushed:?}"
+        );
+    }
+    assert!(!in_error(&engine, &b.id).await, "B resolved onto Y");
+    (engine, blobs, a, before)
+}
+
+/// Claim (SPEC 14.12 "Cyphr does not use reversion", 2.3.2): B choosing
+/// another branch undoes nothing A did through B. A, admitted through B at
+/// the tip of line X, loads with the same roots after B's fork promotes line
+/// Y, live and after a rebuild from blobs alone.
+///
+/// Turns red if a pin is resolved only along B's canonical chain: the
+/// displaced state is then never found and A fails to load.
+/// End to end: yes.
+#[tokio::test]
+async fn pin_survives_b_promoting_a_rival_line() {
+    let (engine, blobs, a, before) = b_reorganizes(1, false).await;
+    assert_eq!(a.roots(&engine).await, before, "live");
+    assert_eq!(a.roots(&restart(&blobs).await).await, before, "rebuilt");
+}
+
+/// As above with the rival line signed by `carol`, a thief holding one key
+/// of B, whose branch is the one promoted.
+#[tokio::test]
+async fn pin_survives_a_thiefs_branch_of_b_being_promoted() {
+    let (engine, blobs, a, before) = b_reorganizes(1, true).await;
+    assert_eq!(a.roots(&engine).await, before, "live");
+    assert_eq!(a.roots(&restart(&blobs).await).await, before, "rebuilt");
+}
+
+/// As above with the pin two commits deep on the displaced line, so the
+/// walk by `pre` crosses a displaced commit that is not the pinned one.
+#[tokio::test]
+async fn pin_deep_on_a_displaced_line_survives() {
+    let (engine, blobs, a, before) = b_reorganizes(2, false).await;
+    assert_eq!(a.roots(&engine).await, before, "live");
+    assert_eq!(a.roots(&restart(&blobs).await).await, before, "rebuilt");
+}
