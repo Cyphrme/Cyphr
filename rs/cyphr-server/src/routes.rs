@@ -106,6 +106,28 @@ pub struct TipResponse {
     pub now: i64,
 }
 
+/// Response for `GET /tip` while the principal is in Error (SPEC 15.5):
+/// no single tip, but the fork point and each tied head (SPEC 15.7.1).
+/// The Active answer is [`TipResponse`], which has no `state`.
+#[derive(Debug, Serialize)]
+pub struct ErrorTipResponse {
+    /// Always `"error"`.
+    pub state: &'static str,
+    pub principal_id: String,
+    pub fork_point: cyphr_storage::engine::ForkPoint,
+    pub heads: Vec<HeldHeadResponse>,
+    pub now: i64,
+}
+
+/// One tied head of [`ErrorTipResponse`].
+#[derive(Debug, Serialize)]
+pub struct HeldHeadResponse {
+    pub commit_id: String,
+    pub sequence: u64,
+    /// When this server first stored the commit (Unix seconds).
+    pub held_since: Option<i64>,
+}
+
 /// Response for `GET /branches`.
 #[derive(Debug, Serialize)]
 pub struct BranchesResponse {
@@ -138,6 +160,23 @@ pub struct PatchResponseBody {
     /// Every action-only bundle held (SPEC 4.8.1): actions hold no chain
     /// position, so they are served whatever range the commits cover.
     pub actions: Vec<PatchActionsResponse>,
+    /// While the principal is in Error: where the branches part. `entries`
+    /// then end below it. Absent while Active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fork_point: Option<cyphr_storage::engine::ForkPoint>,
+    /// While in Error: each tied branch from the fork point to its head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branches: Option<Vec<PatchBranchResponse>>,
+}
+
+/// One tied branch in a patch response.
+#[derive(Debug, Serialize)]
+pub struct PatchBranchResponse {
+    pub head: String,
+    /// Whether this is the head of the chain the server's index serves, as
+    /// `/branches` marks it: the chain `/evidence` items are stated against.
+    pub canonical: bool,
+    pub entries: Vec<PatchEntryResponse>,
 }
 
 /// One action-only bundle in a patch response.
@@ -302,6 +341,22 @@ pub async fn tip(
 
     let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
 
+    // In Error no commit is the tip (SPEC 15.5): the answer is the fork and
+    // its tied heads, and nothing canonical is attested.
+    //
+    // An index that cannot say is a failure to answer, never a fall back
+    // to the tip it may have corrupted.
+    if let Some(error) = state
+        .engine
+        .error_state(&query.pr)
+        .await
+        .map_err(|e| AppError::internal(format!("fork state unreadable from the index: {e}")))?
+    {
+        return Ok(error_tip(&state, &t.principal_id, error)
+            .await
+            .into_response());
+    }
+
     // The reported tip is the one attested: a commit that landed since the
     // read above moves both together rather than failing the request.
     let (t, coz) = match sign_tip_attestation(&state, &t).await? {
@@ -322,8 +377,81 @@ pub async fn tip(
     };
 
     match coz {
-        Some(coz) => Ok(Json(Envelope::signed(payload, coz))),
-        None => Ok(Json(Envelope::unsigned(payload))),
+        Some(coz) => Ok(Json(Envelope::signed(payload, coz)).into_response()),
+        None => Ok(Json(Envelope::unsigned(payload)).into_response()),
+    }
+}
+
+/// The `/tip` answer for a principal in Error: the engine's fork point and
+/// tied heads, with the attestor's `held` statement over them. A statement
+/// that cannot be signed degrades the answer to unsigned, as a tip report
+/// does.
+async fn error_tip(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    error: cyphr_storage::engine::ErrorState,
+) -> Json<Envelope<ErrorTipResponse>> {
+    let now = crate::auth::server_now();
+    let pg = cyphr_storage::engine::bare_digest(principal_id).to_string();
+    let coz = held_statement(state, principal_id, &error).await;
+    let payload = ErrorTipResponse {
+        state: "error",
+        principal_id: pg,
+        fork_point: error.fork_point,
+        heads: error
+            .heads
+            .into_iter()
+            .map(|h| HeldHeadResponse {
+                commit_id: h.commit_id,
+                sequence: h.sequence,
+                held_since: h.held_since,
+            })
+            .collect(),
+        now,
+    };
+    match coz {
+        Some(coz) => Json(Envelope::signed(payload, coz)),
+        None => Json(Envelope::unsigned(payload)),
+    }
+}
+
+/// The attestor's signed held statement over `error`, `None` without a
+/// signer or when it cannot be signed (logged).
+async fn held_statement(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    error: &cyphr_storage::engine::ErrorState,
+) -> Option<coz::CozJson> {
+    let signer = state.attestor_signer()?;
+    let pg = cyphr_storage::engine::bare_digest(principal_id).to_string();
+    let claims: Vec<receipt::HeldClaim> = error
+        .heads
+        .iter()
+        .map(|h| receipt::HeldClaim {
+            commit_id: h.commit_id.clone(),
+            sequence: h.sequence,
+            held_since: h.held_since,
+        })
+        .collect();
+    match receipt::held_report(
+        signer.as_ref(),
+        crate::auth::server_now(),
+        pg,
+        error.fork_point.height,
+        error.fork_point.pre.as_deref(),
+        &claims,
+    )
+    .await
+    {
+        Ok(coz) => Some(coz),
+        Err(reason) => {
+            tracing::warn!(
+                principal = %principal_id,
+                %reason,
+                "held statement could not be signed; answering unsigned"
+            );
+            None
+        },
     }
 }
 
@@ -603,6 +731,21 @@ async fn sign_tip_attestation(
     }
 }
 
+/// The held statement an Error `/patch` carries, or `None` to serve it
+/// unsigned (bounded range, no attestor, or a failure to sign).
+async fn held_patch_statement(
+    state: &Arc<AppState>,
+    pr: &str,
+    bounded: bool,
+) -> Option<coz::CozJson> {
+    if bounded {
+        return None;
+    }
+    let error = state.engine.error_state(pr).await.ok().flatten()?;
+    let principal_id = state.engine.get_tip(pr).await.ok().flatten()?.principal_id;
+    held_statement(state, &principal_id, &error).await
+}
+
 /// The attestation `/patch` attaches to a served range, or `None` to serve
 /// it unsigned.
 ///
@@ -681,7 +824,7 @@ pub async fn patch(
 
     let response = state
         .engine
-        .get_patch(&query.pr, anchor.as_ref(), query.to)
+        .get_served_patch(&query.pr, anchor.as_ref(), query.to)
         .await
         .map_err(AppError::engine)?;
 
@@ -717,6 +860,32 @@ pub async fn patch(
             bundle: entry.bundle,
         })
         .collect();
+    let in_error = response.fork.is_some();
+    let (fork_point, branches) = match response.fork {
+        Some(fork) => (
+            Some(fork.fork_point),
+            Some(
+                fork.branches
+                    .into_iter()
+                    .map(|b| PatchBranchResponse {
+                        head: b.head,
+                        canonical: b.canonical,
+                        entries: b
+                            .entries
+                            .into_iter()
+                            .map(|e| PatchEntryResponse {
+                                commit_id: e.commit_id,
+                                sequence: e.sequence,
+                                pr: e.pr,
+                                bundle: e.bundle,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            ),
+        ),
+        None => (None, None),
+    };
 
     let actions = response
         .actions
@@ -728,6 +897,8 @@ pub async fn patch(
         principal_id: cyphr_storage::engine::bare_digest(&response.principal_id).to_string(),
         entries,
         actions,
+        fork_point,
+        branches,
     };
 
     // Signed via the same tip-attestation path `/tip` uses (K10): the
@@ -749,7 +920,12 @@ pub async fn patch(
     // own re-derived roots momentarily disagree with its index (the same
     // desync guard `/tip` enforces strictly) is safer serving them
     // unsigned than refusing to serve at all.
+    //
+    // In Error no tip exists to attest (SPEC 15.5): the statement is the
+    // held one `/tip` signs, naming the tied heads, and a bounded `to`
+    // (which could stop short of them) is served unsigned as above.
     let coz = match tip {
+        Some(_) if in_error => held_patch_statement(&state, &query.pr, query.to.is_some()).await,
         Some(t) => {
             sign_patch_envelope(
                 &state,
@@ -761,7 +937,7 @@ pub async fn patch(
             )
             .await
         },
-        None => None,
+        _ => None,
     };
 
     match coz {

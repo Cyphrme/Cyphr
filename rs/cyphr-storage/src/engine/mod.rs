@@ -55,6 +55,19 @@ pub struct PatchResponse {
     /// `now` (SPEC 4.8.1): actions hold no chain position, so a range
     /// bounds the commits only.
     pub actions: Vec<PatchActions>,
+    /// In Error, for [`StorageEngine::get_served_patch`]: the fork point and
+    /// each tied branch from it; `entries` then end below the fork point.
+    /// `None` while Active, and always for `get_patch`.
+    pub fork: Option<PatchFork>,
+}
+
+/// An Error principal's patch beyond the common chain.
+#[derive(Debug, Clone)]
+pub struct PatchFork {
+    /// Where the branches part.
+    pub fork_point: ForkPoint,
+    /// Each tied branch, ordered by head commit id.
+    pub branches: Vec<PatchBranch>,
 }
 
 /// One accepted action-only bundle (SPEC 4.8.1): its actions are recorded
@@ -563,6 +576,69 @@ pub struct Assessment {
     /// Every position where two or more held commits share a `pre`, in
     /// position order.
     pub forks: Vec<Contest>,
+    /// Where the tied heads part: `Some` exactly in Error.
+    pub fork_point: Option<ForkPoint>,
+}
+
+/// Where tied branches part: the first position the walk cannot choose a
+/// commit at, and the Principal Root every branch shares there (SPEC
+/// 15.7.1: commits over the same `pre`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForkPoint {
+    /// The commit position the branches first differ at; the common chain
+    /// is the commits below it.
+    pub height: u64,
+    /// The common chain's Principal Root; `None` at position 0.
+    pub pre: Option<String>,
+}
+
+/// A tied head and when this engine first stored it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldHead {
+    /// The head's commit id.
+    pub commit_id: String,
+    /// The head's commit position.
+    pub sequence: u64,
+    /// When this engine first stored the commit (Unix seconds), if
+    /// recorded: kept across a rebuild (I1). SPEC 13.6 "first seen".
+    pub held_since: Option<i64>,
+}
+
+/// A principal in Error as a reader is told of it: the fork point and
+/// every tied head, in place of a tip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorState {
+    /// Where the heads part.
+    pub fork_point: ForkPoint,
+    /// The tied heads, sorted by commit id.
+    pub heads: Vec<HeldHead>,
+}
+
+/// One commit of a tied branch, as served.
+#[derive(Debug, Clone)]
+pub struct BranchEntry {
+    /// The commit id.
+    pub commit_id: String,
+    /// The commit position.
+    pub sequence: u64,
+    /// The commit's Principal Root.
+    pub pr: String,
+    /// The commit's bundle, grouped as accepted.
+    pub bundle: WireBundle,
+}
+
+/// One tied branch of an Error principal: the commits from the fork point
+/// to its head, in order.
+#[derive(Debug, Clone)]
+pub struct PatchBranch {
+    /// The branch's head commit id.
+    pub head: String,
+    /// Whether this is the head of the chain the engine's index serves
+    /// (what `/branches` marks canonical): the chain `/evidence` items are
+    /// stated against. Exactly one branch is.
+    pub canonical: bool,
+    /// The branch's commits, lowest first.
+    pub entries: Vec<BranchEntry>,
 }
 
 /// Two or more held commits over one `pre`, and how the protocol reads
@@ -995,6 +1071,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         from: Option<&TaggedDigest>,
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
+        self.patch(principal_id, from, to, false).await
+    }
+
+    /// [`Self::get_patch`] as a peer is served it (SPEC 15.7.1): while the
+    /// principal is in Error, `entries` are the chain up to the fork point
+    /// and [`PatchResponse::fork`] carries each tied branch, so no one
+    /// branch is passed off as the chain. Active, it is `get_patch`.
+    /// Callers that want the engine's canonical chain regardless use
+    /// `get_patch`.
+    #[tracing::instrument(skip(self))]
+    pub async fn get_served_patch(
+        &self,
+        principal_id: &str,
+        from: Option<&TaggedDigest>,
+        to: Option<u64>,
+    ) -> Result<PatchResponse, EngineError> {
+        self.patch(principal_id, from, to, true).await
+    }
+
+    async fn patch(
+        &self,
+        principal_id: &str,
+        from: Option<&TaggedDigest>,
+        to: Option<u64>,
+        fork_aware: bool,
+    ) -> Result<PatchResponse, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
         let principal_id = key.as_deref().unwrap_or(principal_id);
@@ -1002,10 +1104,27 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             Some(anchor) => Some(self.resolve_anchor_position(principal_id, anchor).await?),
             None => None,
         };
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, from_seq, to)
-            .await?;
+        let error = if fork_aware {
+            self.error_state_of(principal_id).await?
+        } else {
+            None
+        };
+        // In Error the common chain ends below the fork point: the chain
+        // the index serves past it is one branch among the tied ones.
+        let to = match &error {
+            Some((point, _)) => point
+                .height
+                .checked_sub(1)
+                .map(|last| to.map_or(last, |t| t.min(last))),
+            None => to,
+        };
+        let chain = if error.as_ref().is_some_and(|(p, _)| p.height == 0) {
+            Vec::new()
+        } else {
+            self.indexer
+                .get_commit_chain(principal_id, from_seq, to)
+                .await?
+        };
 
         let mut entries = Vec::with_capacity(chain.len());
         for commit_ref in chain {
@@ -1015,6 +1134,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 bundle,
             });
         }
+
+        let fork = match error {
+            Some((fork_point, heads)) => Some(PatchFork {
+                branches: self.branches_of(principal_id, &fork_point, &heads).await?,
+                fork_point,
+            }),
+            None => None,
+        };
 
         let mut actions = Vec::new();
         for held in self.action_history(principal_id).await? {
@@ -1027,6 +1154,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             principal_id: principal_id.to_string(),
             entries,
             actions,
+            fork,
         })
     }
 
@@ -3466,6 +3594,163 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(assessment(&held))
     }
 
+    /// The principal's fork point and tied heads while it is in Error, `None`
+    /// while Active or not stored: what a reader is told in place of a tip.
+    /// From the held commits alone, so a live engine and one rebuilt from
+    /// the blobs answer alike (I1).
+    pub async fn error_state(&self, principal_id: &str) -> Result<Option<ErrorState>, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self
+            .error_state_of(&principal_id)
+            .await?
+            .map(|(fork_point, heads)| ErrorState { fork_point, heads }))
+    }
+
+    /// Whether the engine holds the commit `commit_id` of `principal_id`,
+    /// on its canonical chain or as a retained branch. `false` for a
+    /// principal that is not stored.
+    pub async fn holds_commit(
+        &self,
+        principal_id: &str,
+        commit_id: &str,
+    ) -> Result<bool, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self
+            .held(&principal_id)
+            .await?
+            .iter()
+            .any(|h| h.id == commit_id))
+    }
+
+    async fn error_state_of(
+        &self,
+        principal_id: &str,
+    ) -> Result<Option<(ForkPoint, Vec<HeldHead>)>, EngineError> {
+        let held = self.held(principal_id).await?;
+        let assessed = assessment(&held);
+        let Some(fork_point) = assessed.fork_point else {
+            return Ok(None);
+        };
+        let by_id: HashMap<&str, &Held> = held.iter().map(|h| (h.id.as_str(), h)).collect();
+        let retained = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .cloned()
+            .unwrap_or_default();
+        let mut heads = Vec::with_capacity(assessed.heads.len());
+        for id in &assessed.heads {
+            // Heads are drawn from `held` by `assessment`, so each is in
+            // `by_id`; a miss is an inconsistency, reported, not a panic.
+            let head = by_id.get(id.as_str()).ok_or_else(|| {
+                EngineError::NotFound(format!("tied head {id} of {principal_id} is not held"))
+            })?;
+            let held_since = match retained.iter().find(|r| &r.tip.tip == id) {
+                Some(r) => r.tip.seen,
+                None => {
+                    let at = head.sequence;
+                    self.indexer
+                        .get_commit_chain(principal_id, Some(at), Some(at))
+                        .await?
+                        .first()
+                        .and_then(|c| self.frame(principal_id, c))
+                        .and_then(|f| f.seen)
+                },
+            };
+            heads.push(HeldHead {
+                commit_id: id.clone(),
+                sequence: head.sequence,
+                held_since,
+            });
+        }
+        Ok(Some((fork_point, heads)))
+    }
+
+    /// Each tied branch from the fork point to its head: a commit is read
+    /// from the canonical chain when the index holds it, else from the
+    /// retained rival of that id.
+    async fn branches_of(
+        &self,
+        principal_id: &str,
+        fork_point: &ForkPoint,
+        heads: &[HeldHead],
+    ) -> Result<Vec<PatchBranch>, EngineError> {
+        let held = self.held(principal_id).await?;
+        let by_pr: HashMap<(u64, &str), &Held> = held
+            .iter()
+            .map(|h| ((h.sequence, h.pr.as_str()), h))
+            .collect();
+        let chain = self
+            .indexer
+            .get_commit_chain(principal_id, Some(fork_point.height), None)
+            .await?;
+        let retained = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .cloned()
+            .unwrap_or_default();
+        let indexed_head = self
+            .indexer
+            .get_tip(principal_id)
+            .await?
+            .map(|tip| tip.commit_id);
+        let mut branches = Vec::with_capacity(heads.len());
+        for head in heads {
+            // The line from the head down to the fork point, then flipped.
+            let mut line: Vec<&Held> = Vec::new();
+            let mut at = held.iter().find(|h| h.id == head.commit_id);
+            while let Some(h) = at.filter(|h| h.sequence >= fork_point.height) {
+                line.push(h);
+                at = h
+                    .pre
+                    .as_deref()
+                    .zip(h.sequence.checked_sub(1))
+                    .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+            }
+            line.reverse();
+            let mut entries = Vec::with_capacity(line.len());
+            for h in line {
+                let bundle = match chain.iter().find(|c| c.commit_id == h.id) {
+                    Some(c) => self.commit_bundle(principal_id, c).await?,
+                    None => {
+                        let r = retained.iter().find(|r| r.tip.tip == h.id).ok_or_else(|| {
+                            EngineError::NotFound(format!(
+                                "branch commit {} of {principal_id} is neither indexed nor \
+                                 retained",
+                                h.id
+                            ))
+                        })?;
+                        r.shape
+                            .group(self.read_blobs(&r.blobs).await?, r.keys.clone())
+                            .ok_or_else(|| {
+                                EngineError::MalformedBlob(
+                                    "a retained branch's shape groups a different number of blobs"
+                                        .into(),
+                                )
+                            })?
+                    },
+                };
+                entries.push(BranchEntry {
+                    commit_id: h.id.clone(),
+                    sequence: h.sequence,
+                    pr: h.pr.clone(),
+                    bundle,
+                });
+            }
+            branches.push(PatchBranch {
+                head: head.commit_id.clone(),
+                canonical: indexed_head.as_deref() == Some(head.commit_id.as_str()),
+                entries,
+            });
+        }
+        Ok(branches)
+    }
+
     /// The revocations in force (a cache of the revoke records, I1).
     fn revoked(&self) -> Revoked {
         self.revoked
@@ -3962,6 +4247,17 @@ fn assessment(held: &[Held]) -> Assessment {
         })
         .collect();
     let heads: BTreeSet<String> = heads.iter().map(|h| h.id.clone()).collect();
+    let fork_point = (heads.len() > 1).then(|| {
+        // The common chain's last commit; the branches part just above it.
+        let last = held
+            .iter()
+            .filter(|h| walked.contains(h.id.as_str()))
+            .max_by_key(|h| h.sequence);
+        ForkPoint {
+            height: last.map_or(0, |h| h.sequence + 1),
+            pre: last.map(|h| h.pr.clone()),
+        }
+    });
     Assessment {
         consensus: if heads.len() > 1 {
             Consensus::Error
@@ -3970,6 +4266,7 @@ fn assessment(held: &[Held]) -> Assessment {
         },
         heads: heads.into_iter().collect(),
         forks,
+        fork_point,
     }
 }
 

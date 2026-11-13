@@ -115,6 +115,21 @@ async fn tip_payload(app: axum::Router, id: &str) -> serde_json::Value {
     payload
 }
 
+/// The commit ids `/tip` names as tied heads while the principal is in
+/// Error; panics on any other answer, which would name a single tip.
+fn error_heads(payload: &serde_json::Value) -> Vec<String> {
+    assert_eq!(
+        payload["state"], "error",
+        "not an Error answer: {payload:?}"
+    );
+    payload["heads"]
+        .as_array()
+        .expect("heads")
+        .iter()
+        .map(|h| h["commit_id"].as_str().expect("commit_id").to_owned())
+        .collect()
+}
+
 /// One principal with a PG, three PG hash variants (ES256, ES384, Ed25519
 /// genesis keys), and a fork at its last position: two rival commits that
 /// both verify at the same `pre`.
@@ -199,10 +214,10 @@ async fn fork_is_listed_under_every_pg_spelling() {
         StatusCode::CONFLICT,
         "the fork must still be refused: {body:?}"
     );
-    assert_eq!(
-        tip_payload(app.clone(), &f.id).await,
-        tip_before,
-        "the fork moved the tip"
+    let after = tip_payload(app.clone(), &f.id).await;
+    assert!(
+        error_heads(&after).contains(&tip_before["commit_id"].as_str().expect("id").to_owned()),
+        "the refused fork dropped the canonical head: {after:?}"
     );
 
     let pre_expected = f.shared.pr_tagged().expect("pr at the fork's parent");
@@ -598,7 +613,11 @@ async fn second_resolution_then_extension() {
         StatusCode::CONFLICT,
         "D is a fork, not a tip: {body:?}"
     );
-    assert_eq!(tip_payload(app.clone(), id).await, tip, "C stays the tip");
+    let errored_tip = tip_payload(app.clone(), id).await;
+    assert!(
+        error_heads(&errored_tip).contains(&tip["commit_id"].as_str().expect("id").to_owned()),
+        "C stays held as a tied head"
+    );
     let list = heads(&app, id).await;
     assert_eq!(
         list.iter().filter(|h| h.0 == n as u64 + 1).count(),
@@ -613,7 +632,7 @@ async fn second_resolution_then_extension() {
     // A restart rebuilds the verdict from the blobs alone (I1).
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
-    assert_eq!(tip_payload(app.clone(), id).await, tip);
+    assert_eq!(tip_payload(app.clone(), id).await, errored_tip);
     assert_eq!(heads(&app, id).await, list);
     assert!(
         state.engine.is_errored(id).await.expect("verdict"),
@@ -947,10 +966,14 @@ async fn errored_refuses_and_retains() {
         status, ERRORED,
         "an action-only bundle is refused: {body:?}"
     );
-    assert_eq!(
-        tip_payload(app.clone(), &t.id).await,
-        tip,
-        "nothing moved the tip"
+    // E is held as evidence and ties the greatest height too, so it joins
+    // the tied heads; nothing else moved.
+    let after = tip_payload(app.clone(), &t.id).await;
+    assert_eq!(after["fork_point"], tip["fork_point"], "the fork point");
+    let (before, now) = (error_heads(&tip), error_heads(&after));
+    assert!(
+        before.iter().all(|h| now.contains(h)) && now.len() == before.len() + 1,
+        "C and D stay heads and E joins them: {before:?} -> {now:?}"
     );
     let list = heads(&app, &t.id).await;
     assert_eq!(
@@ -963,7 +986,7 @@ async fn errored_refuses_and_retains() {
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
     assert!(errored(&state, &t.id).await, "Error survives a rebuild");
-    assert_eq!(tip_payload(app.clone(), &t.id).await, tip);
+    assert_eq!(tip_payload(app.clone(), &t.id).await, after);
     assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
 }
 
@@ -1521,10 +1544,10 @@ async fn a_deleted_keys_line_counts_and_can_out_extend() {
         assert!(status.is_client_error(), "R at {i}: {body:?}");
     }
     assert!(errored(&state, &id).await, "R_d ties the deletion: Error");
-    assert_eq!(
-        tip_payload(app.clone(), &id).await,
-        tip,
-        "nothing moved yet"
+    assert!(
+        error_heads(&tip_payload(app.clone(), &id).await)
+            .contains(&tip["commit_id"].as_str().expect("id").to_owned()),
+        "the chain stays held as a tied head"
     );
     let (status, body) = post_json(app.clone(), "/push", wire(&r, n + 2, &id)).await;
     assert_eq!(status, StatusCode::CREATED, "R_(d+1): {body:?}");
@@ -1973,7 +1996,8 @@ type Row<'a> = (
     Vec<serde_json::Value>,
 );
 
-/// The verdict a peer holds: (Error?, `/tip` commit id, the heads).
+/// The verdict a peer holds: (Error?, `/tip` commit id, the heads). In Error
+/// `/tip` names no single tip, so the commit id is null.
 async fn verdict(
     app: &axum::Router,
     state: &cyphr_server::AppState,
@@ -2079,6 +2103,7 @@ async fn fork_table_tallest_subtree_wins_and_a_tie_is_error() {
             .map(|h| h.as_str().expect("id").to_owned())
             .collect();
         heads.sort();
+        let tip = if error { serde_json::Value::Null } else { tip };
         let expected = (error, tip, heads);
         assert_eq!(
             verdict(&app, &state, &t.id).await,
@@ -2171,4 +2196,413 @@ async fn a_refused_action_lands_after_resolution() {
         tip,
         "an action-only bundle moves no tip"
     );
+}
+
+// ========================================================================
+// ERRSERVE: the read surface says what the engine decided (SPEC 15.5-15.8,
+// 13.6): in Error `/tip` reports the fork and its tied heads, never one
+// tip; `/patch` serves the common chain, then each branch; a signed
+// statement claims only what the server has held since.
+// ========================================================================
+
+/// The tied heads of `t`, C and D, as `(commit_id, sequence)`, sorted.
+fn tied_heads(t: &Theft) -> Vec<(serde_json::Value, u64)> {
+    let at = t.n + 1;
+    let mut heads = vec![
+        (commit_id_at(&t.c, at), at as u64),
+        (commit_id_at(&t.d, at), at as u64),
+    ];
+    heads.sort_by_key(|h| h.0.to_string());
+    heads
+}
+
+/// `GET /tip` as the served envelope body, minus the response's own clock.
+async fn tip_body(app: &axum::Router, id: &str) -> serde_json::Value {
+    let (status, mut body) = get_json(app.clone(), &format!("/tip?pr={}", enc(id))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    body["payload"]
+        .as_object_mut()
+        .expect("payload object")
+        .remove("now");
+    body
+}
+
+async fn patch_body(app: &axum::Router, id: &str) -> serde_json::Value {
+    let (status, body) = get_json(app.clone(), &format!("/patch?pr={}", enc(id))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    body
+}
+
+/// Backs SPEC 15.5 (Error: no single tip) and 15.7.1 (both branches held)
+/// on `GET /tip`: with C and D tied, the answer states Error, the fork
+/// point (the position and the `pre` the branches share) and each tied
+/// head with its position, and carries no single tip (`commit_id`, `pr`,
+/// `commit_count`); a resolution restores the Active shape, which has no
+/// `state`. Turns red if Error answers with one tip, omits a tied head or
+/// the fork point, or the Active shape changes. End to end over `/push`
+/// and `/tip`.
+#[tokio::test]
+async fn tip_in_error_reports_the_fork_and_the_tied_heads() {
+    let t = theft(false).await;
+    let (app, state, _dir) = both_extended(&t, false).await;
+    let shared_tip = state
+        .engine
+        .assess(&t.id)
+        .await
+        .expect("assess")
+        .fork_point
+        .expect("Error has a fork point");
+    let body = tip_body(&app, &t.id).await;
+    let payload = &body["payload"];
+    assert_eq!(payload["state"], "error", "{body:?}");
+    for single in ["commit_id", "pr", "sr", "ar", "cr", "commit_count"] {
+        assert!(
+            payload.get(single).is_none(),
+            "Error names no single tip, found `{single}`: {body:?}"
+        );
+    }
+    assert_eq!(payload["fork_point"]["height"], t.n as u64, "{body:?}");
+    assert_eq!(
+        payload["fork_point"]["pre"],
+        serde_json::json!(shared_tip.pre),
+        "{body:?}"
+    );
+    let got: Vec<_> = payload["heads"]
+        .as_array()
+        .expect("heads")
+        .iter()
+        .map(|h| (h["commit_id"].clone(), h["sequence"].as_u64().expect("seq")))
+        .collect();
+    assert_eq!(got, tied_heads(&t), "{body:?}");
+}
+
+/// Backs the Active shape staying as it was: a resolved fork answers `/tip`
+/// with a single tip and no `state`. Turns red if the Active answer gains
+/// the Error vocabulary or loses a field. End to end.
+#[tokio::test]
+async fn tip_after_resolution_keeps_the_active_shape() {
+    let t = theft(true).await;
+    let (app, _state, _dir) = theft_server(&t).await;
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    let body = tip_body(&app, &t.id).await;
+    let payload = body["payload"].as_object().expect("payload");
+    assert!(!payload.contains_key("state"), "{body:?}");
+    assert!(!payload.contains_key("heads"), "{body:?}");
+    for field in [
+        "principal_id",
+        "pr",
+        "sr",
+        "ar",
+        "cr",
+        "commit_id",
+        "commit_count",
+        "last_updated",
+    ] {
+        assert!(payload.contains_key(field), "missing {field}: {body:?}");
+    }
+}
+
+/// Backs the patch rule for Error: `/patch` serves the chain up to the
+/// fork point (positions below the fork), then each tied branch from the
+/// fork to its head, as `fork_point` and `branches`; every branch commit is
+/// a bundle a client replays from the common chain. Turns red if a branch
+/// is dropped, a branch repeats the common chain, or the common chain
+/// reaches into either branch. End to end.
+#[tokio::test]
+async fn patch_in_error_serves_the_common_chain_then_each_branch() {
+    let t = theft(false).await;
+    let (app, _state, _dir) = both_extended(&t, false).await;
+    let body = patch_body(&app, &t.id).await;
+    let payload = &body["payload"];
+    let seqs: Vec<u64> = payload["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| e["sequence"].as_u64().expect("sequence"))
+        .collect();
+    assert_eq!(
+        seqs,
+        (0..t.n as u64).collect::<Vec<_>>(),
+        "the common chain ends below the fork: {body:?}"
+    );
+    assert_eq!(payload["fork_point"]["height"], t.n as u64, "{body:?}");
+    let branches = payload["branches"].as_array().expect("branches");
+    let mut served: Vec<(serde_json::Value, Vec<u64>)> = branches
+        .iter()
+        .map(|b| {
+            (
+                b["head"].clone(),
+                b["entries"]
+                    .as_array()
+                    .expect("branch entries")
+                    .iter()
+                    .map(|e| e["sequence"].as_u64().expect("sequence"))
+                    .collect(),
+            )
+        })
+        .collect();
+    served.sort_by_key(|b| b.0.to_string());
+    let want: Vec<_> = tied_heads(&t)
+        .into_iter()
+        .map(|(id, _)| (id, vec![t.n as u64, t.n as u64 + 1]))
+        .collect();
+    assert_eq!(served, want, "{body:?}");
+    assert_eq!(
+        branches.iter().filter(|b| b["canonical"] == true).count(),
+        1,
+        "exactly one branch is the indexed chain: {body:?}"
+    );
+    // Each branch's last entry is its head, with the bundle served whole.
+    for b in branches {
+        let last = b["entries"]
+            .as_array()
+            .and_then(|e| e.last())
+            .expect("entry");
+        assert_eq!(last["commit_id"], b["head"], "{body:?}");
+        assert!(last["txs"].is_array(), "a bundle, not a bare id: {body:?}");
+    }
+    // The Active shape has neither member.
+    let (app2, _s2, _d2) = theft_server(&t).await;
+    let active = patch_body(&app2, &t.id).await;
+    assert!(active["payload"].get("branches").is_none(), "{active:?}");
+    assert!(active["payload"].get("fork_point").is_none(), "{active:?}");
+}
+
+/// Backs I1 for the new answers: a restarted server rebuilt from the
+/// blobs gives the same `/tip` and `/patch` bytes in Error as the live
+/// one. Turns red if either answer depends on state a rebuild loses.
+/// End to end.
+#[tokio::test]
+async fn error_reads_are_identical_after_a_rebuild() {
+    let t = theft(true).await;
+    let (app, state, dir) = both_extended(&t, true).await;
+    let (tip, patch) = (tip_body(&app, &t.id).await, patch_body(&app, &t.id).await);
+    assert_eq!(tip["payload"]["state"], "error", "{tip:?}");
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    assert_eq!(tip_body(&app, &t.id).await, tip, "/tip");
+    assert_eq!(patch_body(&app, &t.id).await, patch, "/patch");
+}
+
+/// Backs SPEC 13.6 (a witness records what it has seen, since when): an
+/// attestor in Error signs a `held` statement that names the fork point
+/// and each tied head with `held_since`, and no canonical claim (`roots`,
+/// `commit_id`, `commit_count`); `held_since` is when this server first
+/// stored the head and survives a rebuild. Turns red if the statement is
+/// a tip report, claims a canonical tip or roots, or `held_since` differs
+/// after a rebuild. End to end through a keyed, bootstrapped server.
+#[tokio::test]
+async fn signed_statement_in_error_claims_only_held_since() {
+    let t = theft(false).await;
+    let (state, identity, dir) = common::attestor_server().await;
+    let app = build_router(state);
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.a, t.n, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
+
+    let (status, body) = get_json(app.clone(), &format!("/tip?pr={}", enc(&t.id))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["statement"]["kind"], "signed", "{body:?}");
+    let pay = &body["statement"]["coz"]["pay"];
+    assert_eq!(pay["typ"], "cyphr-server/receipt/held", "{body:?}");
+    let sig = Base64UrlUnpadded::decode_vec(body["statement"]["coz"]["sig"].as_str().expect("sig"))
+        .expect("sig b64");
+    assert_eq!(
+        identity.verify(&serde_json::to_vec(pay).expect("pay"), &sig),
+        Some(true),
+        "signed by the server key"
+    );
+    for canonical in ["roots", "commit_id", "commit_count", "sequence"] {
+        assert!(
+            pay.get(canonical).is_none(),
+            "`{canonical}` is canonical: {body:?}"
+        );
+    }
+    assert_eq!(pay["fork_point"], body["payload"]["fork_point"], "{body:?}");
+    let heads = pay["heads"].as_array().expect("heads");
+    assert_eq!(heads.len(), 2, "{body:?}");
+    for (signed, plain) in heads
+        .iter()
+        .zip(body["payload"]["heads"].as_array().unwrap())
+    {
+        assert_eq!(signed["commit_id"], plain["commit_id"]);
+        assert_eq!(signed["sequence"], plain["sequence"]);
+        assert!(signed["held_since"].is_i64(), "{signed:?}");
+        assert_eq!(signed["held_since"], plain["held_since"]);
+    }
+    let since: Vec<_> = heads.iter().map(|h| h["held_since"].clone()).collect();
+
+    drop(app);
+    let (app, _state) = reopen(&dir.path().join("data")).await;
+    let (_, again) = get_json(app, &format!("/tip?pr={}", enc(&t.id))).await;
+    let again_since: Vec<_> = again["payload"]["heads"]
+        .as_array()
+        .expect("heads")
+        .iter()
+        .map(|h| h["held_since"].clone())
+        .collect();
+    assert_eq!(again_since, since, "held_since survives a rebuild");
+}
+
+/// Backs SPEC 15.8 (the abandoned branch stays served as proof of error)
+/// for a witness: an authority in Error serves a signed `held` /patch, and
+/// a witness configured with the authority's identity syncs the common
+/// chain and every branch, ends in Error with both tied heads, and a second
+/// poll of the still-Error authority is up to date, not a rejection. Turns
+/// red if sync refuses the Error patch, skips the other branch, or reads
+/// the held statement as a tip report. End to end: two servers over TCP.
+#[tokio::test]
+async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+
+    let t = theft(false).await;
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.a, t.n, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let witness = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    let outcome = sync_from_authority(&witness, &t.id).await;
+    assert!(
+        matches!(outcome, SyncOutcome::Synced { .. }),
+        "witness sync from an Error authority: {outcome:?}"
+    );
+    assert!(
+        errored(&witness, &t.id).await,
+        "the fork reached the witness"
+    );
+    let mut mine = witness.engine.assess(&t.id).await.expect("assess").heads;
+    let mut theirs = astate.engine.assess(&t.id).await.expect("assess").heads;
+    mine.sort();
+    theirs.sort();
+    assert_eq!(mine, theirs, "both tied heads are held");
+    assert_eq!(mine.len(), 2);
+
+    let again = sync_from_authority(&witness, &t.id).await;
+    assert!(
+        !matches!(again, SyncOutcome::Failed { .. }),
+        "polling a still-Error authority is not a failure: {again:?}"
+    );
+}
+
+/// Backs a witness that already moved past the fork: it holds a commit E
+/// resolving over one tied head (so it is Active, ahead), and polls an
+/// authority still in Error with heads C and D. Holding each attested
+/// head, not merely having it as a current head, is what sync requires:
+/// the poll is not a failure and the witness gains the branch it lacked
+/// while staying Active on E. Turns red if sync demands the attested heads
+/// be the witness's current heads (EntryCommitmentMismatch), or the seq
+/// guard drops the branch the witness lacks. End to end over TCP.
+#[tokio::test]
+async fn witness_ahead_of_an_error_authority_holds_its_heads() {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+
+    let t = theft(false).await;
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.a, t.n, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    // The witness holds the owner's line and a resolving commit E over D.
+    let pool = load_pool();
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let wstate = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    let hold = |p: &cyphr::Principal, i: usize| {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[i]
+            .bundle()
+            .expect("bundle");
+        let (state, id) = (wstate.clone(), t.id.clone());
+        async move { state.engine.submit_commit(&id, None, &bundle).await }
+    };
+    for i in 0..t.n {
+        hold(&t.shared, i).await.expect("shared");
+    }
+    hold(&t.a, t.n).await.expect("A");
+    hold(&t.d, t.n + 1).await.expect("D");
+    hold(&e, t.n + 2).await.expect("E");
+    assert!(!errored(&wstate, &t.id).await, "the witness is Active on E");
+
+    let outcome = sync_from_authority(&wstate, &t.id).await;
+    assert!(
+        !matches!(outcome, SyncOutcome::Failed { .. }),
+        "an Active witness ahead of the fork polls an Error authority: {outcome:?}"
+    );
+    let c_id = commit_id_at(&t.c, t.n + 1).as_str().expect("id").to_owned();
+    assert!(
+        wstate
+            .engine
+            .holds_commit(&t.id, &c_id)
+            .await
+            .expect("holds"),
+        "the witness gained the branch it lacked"
+    );
+    assert!(!errored(&wstate, &t.id).await, "still Active on E");
 }

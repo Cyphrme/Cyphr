@@ -8,6 +8,7 @@
 //! with the spec author; actions travel as action-only bundles.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_client::TipAnswer;
 use serde_json::{Value, json};
 
 use super::common::{
@@ -187,8 +188,13 @@ fn submit(cli: &Cli, identity: &str, peer_url: &str, file: &std::path::Path) -> 
     let tip = block_on(async {
         peer.push_commit(&wire, &cyphr::replay::WireBundle::actions(vec![blob]))
             .await?;
-        peer.tip_commit_id(&wire).await
+        peer.tip(&wire).await
     })??;
+    // Only an Active peer has one tip to report.
+    let tip = match tip {
+        Some(TipAnswer::Active { commit_id }) => Some(commit_id.to_string()),
+        Some(TipAnswer::Error { .. }) | None => None,
+    };
     let out = json!({"identity": identity, "peer": peer_url, "status": "accepted", "tip": tip});
     emit(cli, &out, || println!("Action accepted by {peer_url}"))
 }

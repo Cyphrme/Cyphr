@@ -106,10 +106,14 @@ async fn gossip_timer_converges_peers_and_keeps_both_branches_of_a_fork() {
     for peer in both {
         assert_eq!(heads(&h, peer, &pr).await, 2, "{peer}: both branch heads");
     }
-    // Neither peer merged: each still serves the chain it was pushed.
-    let settled = |peer: &'static str| h.settled_view(peer, &pr);
-    assert_eq!(settled("p1").await.map(|v| v.tip), Some(at));
-    assert_eq!(settled("p2").await.map(|v| v.tip), Some(pt));
+    // Neither peer merged: each is in Error (SPEC 15.5), so it names no one
+    // tip but both tied heads, the two branches it holds.
+    let want: std::collections::BTreeSet<Tip> = [at, pt].into_iter().collect();
+    for peer in both {
+        let view = h.settled_view(peer, &pr).await.expect("view");
+        let got: std::collections::BTreeSet<Tip> = view.heads.iter().cloned().collect();
+        assert_eq!(got, want, "{peer}: both tied heads");
+    }
 }
 
 /// How many principal-fork items `peer` serves for `p`, read from the peer

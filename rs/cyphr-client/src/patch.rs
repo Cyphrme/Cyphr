@@ -26,7 +26,7 @@ use serde_json::Value;
 use crate::connector::{
     BindingError, BindingPolicy, ChannelBinding, ConnectError, Connector, Request,
 };
-use crate::report::TipReport;
+use crate::report::{ForkPoint, HeldReport, TipReport};
 
 /// The response envelope wire version this client reads
 /// (`docs/specs/http-envelope.md`).
@@ -126,16 +126,55 @@ pub(crate) fn replay_order<'a>(
 /// A patch response that passed every carrier-independent check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPatch {
-    /// The entries, in wire order, still to be applied by the caller.
+    /// The entries, in wire order, still to be applied by the caller: the
+    /// chain the peer serves. While the peer is in Error (SPEC 15.5) it
+    /// serves the common chain and then each tied branch; this is the
+    /// common chain followed by the branch the peer marks canonical, so a
+    /// consumer reads one chain exactly as it would an Active peer's, and
+    /// [`fork`](Self::fork) holds every branch.
     pub entries: Vec<PatchEntry>,
+    /// The fork point and each tied branch, present exactly when the peer
+    /// reports Error.
+    pub fork: Option<ForkPatch>,
     /// The action-only bundles, in wire order; empty from a peer that
     /// serves none.
     pub actions: Vec<ActionBundle>,
     /// The authenticated tip report; `Some` exactly when an
     /// [`AuthorityKey`] was supplied.
     pub report: Option<TipReport>,
+    /// The authenticated held statement; `Some` exactly when an
+    /// [`AuthorityKey`] was supplied and the peer is in Error, where it
+    /// attests the tied heads instead of a tip.
+    pub held: Option<HeldReport>,
     /// The carrier's channel binding, passed through for the caller.
     pub binding: Option<ChannelBinding>,
+}
+
+/// Whether a patch body is an Error peer's (it names its branches).
+fn entries_fork_marker(body: &Value) -> bool {
+    body.get("payload")
+        .is_some_and(|p| p.get("branches").is_some())
+}
+
+/// An Error peer's patch beyond the common chain (SPEC 15.7.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkPatch {
+    /// Where the branches part.
+    pub fork_point: ForkPoint,
+    /// Each tied branch, from the fork point to its head.
+    pub branches: Vec<BranchPatch>,
+}
+
+/// One tied branch of a [`ForkPatch`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchPatch {
+    /// The branch's head commit id, as the peer states it.
+    pub head: String,
+    /// Whether the peer marks this the chain its index serves, the one
+    /// `/evidence` items are stated against.
+    pub canonical: bool,
+    /// The branch's commits, lowest first.
+    pub entries: Vec<PatchEntry>,
 }
 
 /// Why a patch response was refused.
@@ -266,12 +305,28 @@ pub fn verify_patch_body(
             PatchFailure::MalformedResponse("payload.entries missing or not an array".to_string())
         })?;
 
-    let report = expected
-        .map(|key| verify_authenticated_envelope(&body, key, principal_id))
-        .transpose()?;
+    let in_error = entries_fork_marker(&body);
+    let (report, held) = match expected {
+        None => (None, None),
+        Some(key) if in_error => (None, Some(verify_held_envelope(&body, key, principal_id)?)),
+        Some(key) => (
+            Some(verify_authenticated_envelope(&body, key, principal_id)?),
+            None,
+        ),
+    };
+
+    let mut entries: Vec<PatchEntry> = entries.iter().map(decode_entry).collect();
+    let fork = decode_fork(body.get("payload"))?;
+    if let Some(fork) = &fork {
+        let canonical = fork.branches.iter().find(|b| b.canonical).ok_or_else(|| {
+            PatchFailure::MalformedResponse("an Error patch marks no canonical branch".into())
+        })?;
+        entries.extend(canonical.entries.iter().cloned());
+    }
 
     Ok(VerifiedPatch {
-        entries: entries.iter().map(decode_entry).collect(),
+        entries,
+        fork,
         actions: body
             .get("payload")
             .and_then(|p| p.get("actions"))
@@ -283,8 +338,45 @@ pub fn verify_patch_body(
             })
             .collect(),
         report,
+        held,
         binding: None,
     })
+}
+
+/// The `fork_point` and `branches` of an Error patch; `None` when the
+/// payload names neither (an Active peer).
+fn decode_fork(payload: Option<&Value>) -> Result<Option<ForkPatch>, PatchFailure> {
+    let Some(payload) = payload.filter(|p| p.get("branches").is_some()) else {
+        return Ok(None);
+    };
+    let malformed = |what: String| PatchFailure::MalformedResponse(what);
+    let (fork_point, _) = crate::report::parse_fork_point(payload)
+        .map_err(|e| malformed(format!("fork_point: {e}")))?;
+    let branches = payload["branches"]
+        .as_array()
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| malformed("branches is not a non-empty array".into()))?
+        .iter()
+        .map(|b| {
+            Ok(BranchPatch {
+                head: b["head"]
+                    .as_str()
+                    .ok_or_else(|| malformed("a branch has no head".into()))?
+                    .to_owned(),
+                canonical: b["canonical"].as_bool().unwrap_or(false),
+                entries: b["entries"]
+                    .as_array()
+                    .ok_or_else(|| malformed("a branch has no entries".into()))?
+                    .iter()
+                    .map(decode_entry)
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, PatchFailure>>()?;
+    Ok(Some(ForkPatch {
+        fork_point,
+        branches,
+    }))
 }
 
 fn decode_entry(entry: &Value) -> PatchEntry {
@@ -363,20 +455,7 @@ pub fn verify_authenticated_envelope(
     expected: &AuthorityKey,
     principal_id: &str,
 ) -> Result<TipReport, PatchFailure> {
-    let statement: Option<Statement> = body
-        .get("statement")
-        .and_then(|s| Statement::deserialize(s).ok());
-
-    let Some(Statement::Signed(coz)) = statement else {
-        return Err(PatchFailure::EnvelopeUnsignedOrMisSigned);
-    };
-
-    if coz.pay["alg"].as_str() != Some(expected.alg.as_str())
-        || !signature_verifies(&coz, &expected.pub_key)
-    {
-        return Err(PatchFailure::EnvelopeUnsignedOrMisSigned);
-    }
-
+    let coz = signed_by(body, expected)?;
     let report = TipReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
 
     // `report.pr` (a bare b64ut genesis identifier, SPEC section 2.2.3's
@@ -387,6 +466,45 @@ pub fn verify_authenticated_envelope(
     }
 
     Ok(report)
+}
+
+/// Verify the signed `held` statement of a `/tip` answer given while the
+/// principal is in Error: a signature by `expected`, a canonical parse
+/// ([`HeldReport::parse`]) and the principal actually asked about. The
+/// statement names heads the server held and since when; it names no tip.
+///
+/// # Errors
+///
+/// As [`verify_authenticated_envelope`]; [`PatchFailure::MalformedReport`]
+/// also for a statement that is not a held report.
+pub fn verify_held_envelope(
+    body: &Value,
+    expected: &AuthorityKey,
+    principal_id: &str,
+) -> Result<HeldReport, PatchFailure> {
+    let coz = signed_by(body, expected)?;
+    let report = HeldReport::parse(&coz).map_err(|_| PatchFailure::MalformedReport)?;
+    if report.pr.to_string() != bare_digest(principal_id) {
+        return Err(PatchFailure::PrincipalMismatch);
+    }
+    Ok(report)
+}
+
+/// The envelope's signed statement, once its signature verifies under
+/// `expected`.
+fn signed_by(body: &Value, expected: &AuthorityKey) -> Result<coz::CozJson, PatchFailure> {
+    let statement: Option<Statement> = body
+        .get("statement")
+        .and_then(|s| Statement::deserialize(s).ok());
+    let Some(Statement::Signed(coz)) = statement else {
+        return Err(PatchFailure::EnvelopeUnsignedOrMisSigned);
+    };
+    if coz.pay["alg"].as_str() != Some(expected.alg.as_str())
+        || !signature_verifies(&coz, &expected.pub_key)
+    {
+        return Err(PatchFailure::EnvelopeUnsignedOrMisSigned);
+    }
+    Ok(coz)
 }
 
 fn signature_verifies(coz: &coz::CozJson, pub_key: &[u8]) -> bool {

@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use cyphr::replay::WireBundle;
 use cyphr_client::{
-    ConnectError, Connector, HttpConnector, HttpOptions, PatchFailure, Request, verify_patch_body,
+    ConnectError, Connector, HttpConnector, HttpOptions, PatchFailure, Request, TipAnswer,
+    verify_patch_body,
 };
 use serde_json::Value;
 
@@ -158,15 +159,16 @@ impl Peer {
         &self.url
     }
 
-    /// The tip commit id the peer holds for `principal`, `None` when the
-    /// peer holds nothing for it.
+    /// What the peer says its tip is for `principal`: one commit while the
+    /// principal is Active, the fork point and tied heads in Error (SPEC
+    /// 15.5); `None` when the peer holds nothing for it.
     ///
     /// # Errors
     ///
     /// [`PeerError`] when the peer is unreachable or answers outside the
     /// contract. The answer is the peer's claim: the server validates any
     /// commit it is later sent, so this is only used to choose what to send.
-    pub async fn tip_commit_id(&self, principal: &str) -> Result<Option<String>, PeerError> {
+    pub async fn tip(&self, principal: &str) -> Result<Option<TipAnswer>, PeerError> {
         match self
             .send(&Request::get(format!("/tip?pr={principal}")))
             .await
@@ -174,10 +176,9 @@ impl Peer {
             Ok(body) => {
                 let doc: Value =
                     serde_json::from_slice(&body).map_err(|e| self.malformed(e.to_string()))?;
-                doc["payload"]["commit_id"]
-                    .as_str()
-                    .map(|s| Some(s.to_owned()))
-                    .ok_or_else(|| self.malformed("payload.commit_id missing".into()))
+                TipAnswer::parse(&doc)
+                    .map(Some)
+                    .map_err(|e| self.malformed(e.to_string()))
             },
             Err(PeerError::Status { status: 404, .. }) => Ok(None),
             Err(e) => Err(e),

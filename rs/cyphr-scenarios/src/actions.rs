@@ -114,7 +114,12 @@ pub struct Tip(pub String);
 pub struct PeerTip {
     /// The principal as the peer reports it (a bare digest).
     pub principal_id: String,
+    /// The peer's one tip while Active; while it reports Error (no single
+    /// tip, SPEC 15.5) its first tied head, with `pr` and `ar` empty.
     pub tip: Tip,
+    /// Every head the peer reports: `tip` alone while Active, each tied
+    /// head in Error.
+    pub heads: Vec<Tip>,
     pub height: u64,
     pub pr: String,
     pub ar: String,
@@ -124,9 +129,26 @@ impl PeerTip {
     /// Parse a `GET /tip` response envelope.
     pub fn parse(envelope: &serde_json::Value) -> Option<PeerTip> {
         let t = &envelope["payload"];
+        if t["state"] == "error" {
+            let heads: Vec<Tip> = t["heads"]
+                .as_array()?
+                .iter()
+                .map(|h| Some(Tip(h["commit_id"].as_str()?.to_owned())))
+                .collect::<Option<_>>()?;
+            return Some(PeerTip {
+                principal_id: t["principal_id"].as_str()?.to_owned(),
+                tip: heads.first()?.clone(),
+                height: t["heads"][0]["sequence"].as_u64()? + 1,
+                heads,
+                pr: String::new(),
+                ar: String::new(),
+            });
+        }
+        let tip = Tip(t["commit_id"].as_str()?.to_owned());
         Some(PeerTip {
             principal_id: t["principal_id"].as_str()?.to_owned(),
-            tip: Tip(t["commit_id"].as_str()?.to_owned()),
+            heads: vec![tip.clone()],
+            tip,
             height: t["commit_count"].as_u64()?,
             pr: t["pr"].as_str()?.to_owned(),
             ar: t["ar"].as_str()?.to_owned(),

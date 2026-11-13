@@ -39,9 +39,13 @@ async fn second_commit_push_adding(
 async fn commit_count(app: &axum::Router, id: &str) -> u64 {
     let (status, env) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
     assert_eq!(status, StatusCode::OK, "tip of {id}: {env:?}");
-    envelope_payload(&env)["commit_count"]
-        .as_u64()
-        .expect("commit_count")
+    let payload = envelope_payload(&env);
+    // In Error there is no single tip and so no count: the tied heads share
+    // one position, which is the chain's length.
+    if payload["state"] == "error" {
+        return payload["heads"][0]["sequence"].as_u64().expect("sequence") + 1;
+    }
+    payload["commit_count"].as_u64().expect("commit_count")
 }
 
 /// Backs SPEC 2.3.2: "Commits are never removed from the chain and implicit

@@ -105,6 +105,22 @@ async fn tip_pr(app: &axum::Router, id: &str) -> String {
         .to_owned()
 }
 
+/// The tied heads `/tip` names while the principal is in Error (it has no
+/// single tip then), by commit id.
+async fn error_heads(app: &axum::Router, id: &str) -> Vec<String> {
+    let (status, body) =
+        get_json(app.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let payload = envelope_payload(&body);
+    assert_eq!(payload["state"], "error", "{body:?}");
+    payload["heads"]
+        .as_array()
+        .expect("heads")
+        .iter()
+        .map(|h| h["commit_id"].as_str().expect("commit_id").to_owned())
+        .collect()
+}
+
 /// Serve `state` on an ephemeral local port; its base URL.
 async fn serve(state: &Arc<AppState>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -348,7 +364,19 @@ async fn a_revoke_learned_by_gossip_rejudges_no_held_rival() {
         p1.engine.is_errored(&id).await.expect("verdict"),
         "the held R still ties X"
     );
-    assert_eq!(tip_pr(&app1, &id).await, owner.pr_tagged().expect("pr"));
+    let x_id = owner
+        .commits()
+        .last()
+        .expect("X")
+        .tr()
+        .0
+        .tagged_first()
+        .expect("commit id")
+        .to_string();
+    assert!(
+        error_heads(&app1, &id).await.contains(&x_id),
+        "X stays held as a tied head"
+    );
 }
 
 /// Backs the rule that key death is not retroactive (SPEC 6.4; nrd: "You

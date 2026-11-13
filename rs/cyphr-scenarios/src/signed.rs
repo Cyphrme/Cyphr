@@ -87,6 +87,32 @@ pub struct ChainView {
     pub last_signer: Option<String>,
 }
 
+/// The chain a `GET /patch` body serves: the body itself while Active; in
+/// Error the common `entries` then the branch the peer marks `canonical`,
+/// the chain `/evidence` items are stated against.
+fn canonical_line(body: &[u8]) -> Result<Vec<u8>, String> {
+    let mut doc: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    let Some(branches) = doc["payload"]["branches"].as_array().cloned() else {
+        return Ok(body.to_vec());
+    };
+    let canonical = branches
+        .iter()
+        .find(|b| b["canonical"] == true)
+        .ok_or("an Error patch marks no canonical branch")?;
+    let mut entries = doc["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    entries.extend(canonical["entries"].as_array().cloned().unwrap_or_default());
+    let payload = doc["payload"]
+        .as_object_mut()
+        .ok_or("payload is not an object")?;
+    payload.remove("branches");
+    payload.remove("fork_point");
+    payload.insert("entries".into(), Value::Array(entries));
+    serde_json::to_vec(&doc).map_err(|e| e.to_string())
+}
+
 impl ChainView {
     /// Replay the chain of a `GET /patch` body for principal `pg` (bare).
     ///
@@ -97,6 +123,8 @@ impl ChainView {
     /// `pg`. A patch that does not replay, or whose stated roots or
     /// commit ids disagree with the replay, is an error.
     pub async fn from_patch(body: &[u8], pg: &str) -> Result<Self, String> {
+        let body = canonical_line(body)?;
+        let body = body.as_slice();
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
         let first = patch
@@ -141,6 +169,8 @@ impl ChainView {
     /// whose genesis its `GET /server` states), with the same checks as
     /// [`ChainView::from_patch`].
     pub async fn from_patch_with_genesis(body: &[u8], pg: &str, key: Key) -> Result<Self, String> {
+        let body = canonical_line(body)?;
+        let body = body.as_slice();
         let patch = cyphr_client::verify_patch_body(body, pg, None)
             .map_err(|e| format!("patch is not a patch: {e}"))?;
         let genesis = Principal::implicit(key)

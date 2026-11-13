@@ -471,8 +471,15 @@ async fn signing_is_unchanged_by_held_evidence() {
         StatusCode::CREATED
     );
 
+    // The chain is a commit taller than the rival will be, so the principal
+    // stays Active: a tie would be Error, whose statement is a held one
+    // (SPEC 15.5, 13.6) and not this tip report.
+    let mut longer = canonical.fork().await.expect("fork");
+    create_key(&mut longer, &pr.g, &kp(&load_pool(), "carol"), NOW + 2).await;
+    assert_eq!(pr.push_commit(&app, &longer, 2).await, StatusCode::CREATED);
+
     let before = tip_of(&app, &pr.id).await;
-    let rival = pr.extend(&pr.g, "alice", NOW + 2).await;
+    let rival = pr.extend(&pr.g, "alice", NOW + 3).await;
     assert_eq!(pr.push_commit(&app, &rival, 1).await, StatusCode::CONFLICT);
     assert_eq!(
         evidence_items(&app, &pr.id).await.len(),
