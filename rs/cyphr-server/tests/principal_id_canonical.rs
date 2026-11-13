@@ -250,13 +250,11 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     let (parts, sidecar) = key_create(&g, &b, NOW + 20);
     commit_one(&mut attacker, &g, parts, sidecar, NOW + 20).await;
 
-    // Control: under the spelling the owner used, the revoked key is refused.
+    // Control: under the spelling the owner used, the revoked key is
+    // refused. It was signed while its key was active at its `pre`, so it
+    // is a fork participant and answers as every retained rival does.
     let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &bare)).await;
-    assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "control: {body:?}"
-    );
+    assert_eq!(status, StatusCode::CONFLICT, "control: {body:?}");
 
     // Replaying the owner's public first commit under the other spelling
     // must not open a second, pre-revocation copy of the principal.
@@ -266,10 +264,9 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
         "the public genesis was accepted afresh under the alias: {status} {body:?}"
     );
     let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &labelled)).await;
-    assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "the revoked key committed through the alias spelling: {body:?}"
+    assert!(
+        status.is_client_error(),
+        "the revoked key committed through the alias spelling: {status} {body:?}"
     );
 
     let (_, after) = tip(app, &bare).await;

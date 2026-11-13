@@ -2785,7 +2785,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         ),
                     }
                     match self.retain_rival(principal_id, genesis, bundle).await {
-                        Ok(()) => {},
+                        // Held as a fork participant: the answer says so
+                        // (the arrow does not fit the tip), whichever
+                        // tip-state refusal the replay hit first, a
+                        // duplicate key among them.
+                        Ok(true) => {
+                            return Err(EngineError::Protocol(cyphr::Error::CommitMismatch));
+                        },
+                        Ok(false) => {},
                         // The one retention outcome that is a refusal in
                         // its own right: no slot left for this key.
                         Err(full @ EngineError::BranchLimit { .. }) => return Err(full),
@@ -3000,21 +3007,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// tree matters: replaying a rival over the principal's durable log
     /// would hit `DurableLeafMismatch`.
     ///
+    /// Returns whether the bundle verified at a position and is now held
+    /// as a rival (a no-op for one already held counts), so the caller
+    /// answers the retained-rival refusal; `false` keeps nothing.
+    ///
     /// Caller holds the principal's write lock.
     async fn retain_rival(
         &self,
         principal_id: &str,
         genesis: crate::Genesis,
         bundle: &WireBundle,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         use crate::import::replay_commits;
 
         if self.is_already_stored(principal_id, bundle).await? {
-            return Ok(());
+            return Ok(false);
         }
         let entries = self.stored_entries(principal_id, None).await?;
         let Some(signers) = authenticated_signers(bundle, &genesis, &entries) else {
-            return Ok(());
+            return Ok(false);
         };
         let mut principal =
             Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
@@ -3032,7 +3043,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 if let Ok(Some(build)) =
                     Self::build_commit(&mut candidate, bundle, principal_id, position as u64).await
                 {
-                    return self.keep_branch(bundle, build.commit).await;
+                    return self.keep_branch(bundle, build.commit).await.map(|()| true);
                 }
             }
             // The last commit's own state is never a `pre` of a rival.
@@ -3042,7 +3053,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 replay_commits(&mut principal, std::slice::from_ref(entry)).await?;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Test a refused `bundle` as the extension of a retained rival, the

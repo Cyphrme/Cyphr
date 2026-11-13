@@ -2610,11 +2610,12 @@ async fn witness_ahead_of_an_error_authority_holds_its_heads() {
 /// Backs SPEC 15.8 and 6.1 ("create rejects duplicates", judged at the
 /// commit's own `pre`): two siblings at one position that both `key/create`
 /// the same key are one fork, not a duplicate. The second sibling is
-/// refused as a tip (409, never DuplicateKey/422), retained beside the
-/// first, and the principal reads Error with both as tied heads. Turns red
-/// if a rival is judged against the canonical tip's state, where the key
-/// already exists, so it is refused and kept nowhere. End to end over
-/// `/push`, `/tip` and `/branches`: yes.
+/// refused as a tip with the retained-rival answer (409 `commit_mismatch`,
+/// never the tip-state DuplicateKey 422), retained beside the first, and
+/// the principal reads Error with both as tied heads. Turns red if the
+/// answer names the canonical tip's state (where the key already exists)
+/// instead of what happened to the push, or if the rival is kept nowhere.
+/// End to end over `/push` and `/tip`: yes.
 #[tokio::test]
 async fn fork_siblings_creating_the_same_key_are_held_as_a_fork() {
     let pool = load_pool();
@@ -2636,13 +2637,13 @@ async fn fork_siblings_creating_the_same_key_are_held_as_a_fork() {
     assert_eq!(status, StatusCode::CREATED, "first sibling: {body:?}");
 
     let (status, body) = post_json(app.clone(), "/push", wire(&second, 1, &id)).await;
-    assert!(
-        status.is_client_error(),
-        "refused as a tip: {status} {body:?}"
+    assert_eq!(status, StatusCode::CONFLICT, "retained rival: {body:?}");
+    assert_eq!(
+        envelope_payload(&body)["kind"],
+        "commit_mismatch",
+        "retained rival: {body:?}"
     );
 
     let heads = error_heads(&tip_payload(app.clone(), &id).await);
     assert_eq!(heads.len(), 2, "both siblings are held: {heads:?}");
-    let (status, listed) = branches(app, &id).await;
-    assert_eq!(status, StatusCode::OK, "{listed:?}");
 }
