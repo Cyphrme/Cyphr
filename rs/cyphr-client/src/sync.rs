@@ -77,7 +77,8 @@ pub struct Record {
     clock: Clock,
     patch_cap: usize,
     held: Option<Held>,
-    /// Naked-revoked keys, by thumbprint, with their declared `rvk`.
+    /// Naked-revoked keys, by thumbprint, each with its cutoff: the record's
+    /// clock when it accepted the first revoke of the key.
     dead: BTreeMap<String, i64>,
 }
 
@@ -287,9 +288,13 @@ impl Record {
         self.held.as_ref().map(|h| &h.principal)
     }
 
-    /// The keys with a verified naked revoke, and each `rvk`.
+    /// The keys with a verified naked revoke, and each key's cutoff: the
+    /// record's own clock at the first revoke of it accepted, never the
+    /// revoke's `rvk` (SPEC 14.12).
     pub fn dead_keys(&self) -> impl Iterator<Item = (&str, i64)> {
-        self.dead.iter().map(|(tmb, rvk)| (tmb.as_str(), *rvk))
+        self.dead
+            .iter()
+            .map(|(tmb, cutoff)| (tmb.as_str(), *cutoff))
     }
 
     fn bare_id(&self) -> &str {
@@ -538,7 +543,8 @@ pub struct ForkFinding {
 pub struct RevokedKey {
     /// The revoked key.
     pub tmb: Thumbprint,
-    /// The revocation time the revoke declared.
+    /// The revocation time the revoke declared. Informational: the key's
+    /// cutoff is the receiver's own clock, not this (SPEC 14.12).
     pub rvk: i64,
     /// The first peer that served the revoke.
     pub peer: String,
@@ -983,11 +989,12 @@ async fn pull_revokes<C: Connector>(
         },
     };
     for revoke in found {
-        let known = record.dead.get(&revoke.tmb.to_b64()).copied();
-        if known.is_none_or(|rvk| revoke.rvk < rvk) {
-            record.dead.insert(revoke.tmb.to_b64(), revoke.rvk);
-        }
-        if known.is_none() {
+        // Every Coz-valid revoke is accepted; the first of a key sets its
+        // cutoff at our own receipt time, and later ones change nothing.
+        if let std::collections::btree_map::Entry::Vacant(slot) =
+            record.dead.entry(revoke.tmb.to_b64())
+        {
+            slot.insert((record.clock)());
             revoked.push(revoke);
         }
     }
@@ -1007,17 +1014,24 @@ pub async fn verified_revokes<C: Connector>(
     peer: &str,
     keys: &[Thumbprint],
 ) -> Result<(Vec<RevokedKey>, Vec<RevokeFailure>), PatchFailure> {
-    let mut found = Vec::new();
+    let mut found: Vec<RevokedKey> = Vec::new();
     let mut rejected = Vec::new();
     for batch in keys.chunks(REVOKE_BATCH) {
         for envelope in &fetch_revoked(connector, batch).await? {
             match verify_naked_revoke(envelope) {
-                Ok(revoke) if batch.contains(&revoke.tmb) => found.push(RevokedKey {
-                    tmb: revoke.tmb,
-                    rvk: revoke.rvk,
-                    peer: peer.to_owned(),
-                    envelope: envelope.clone(),
-                }),
+                // One revoke per key, the first served: a peer that repeats
+                // a key's revoke adds nothing.
+                Ok(revoke)
+                    if batch.contains(&revoke.tmb)
+                        && !found.iter().any(|f| f.tmb == revoke.tmb) =>
+                {
+                    found.push(RevokedKey {
+                        tmb: revoke.tmb,
+                        rvk: revoke.rvk,
+                        peer: peer.to_owned(),
+                        envelope: envelope.clone(),
+                    });
+                },
                 Ok(_) => {},
                 Err(failure) => rejected.push(failure),
             }

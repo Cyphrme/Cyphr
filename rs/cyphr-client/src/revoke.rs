@@ -16,8 +16,9 @@ use serde_json::Value;
 pub struct NakedRevoke {
     /// The revoked key.
     pub tmb: Thumbprint,
-    /// The revocation time the coz declared. Statements the key signs at
-    /// or after it are refused.
+    /// The revocation time the coz declared. It decides nothing: a key's
+    /// cutoff is the receiver's own clock when it accepts the revoke
+    /// (SPEC 14.12).
     pub rvk: i64,
 }
 
