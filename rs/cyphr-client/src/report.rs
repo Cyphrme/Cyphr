@@ -229,3 +229,156 @@ fn parse_sequence(value: &Value) -> Result<u64, TipReportParseError> {
         _ => Err(TipReportParseError::Sequence(value.clone())),
     }
 }
+
+/// The `typ` of the statement a server signs over `/tip` while the
+/// principal is in Error: what it has held since when, never a canonical
+/// tip (SPEC 15.5, 13.6).
+pub const HELD_REPORT_TYP: &str = "cyphr-server/receipt/held";
+
+/// Where tied branches part: the commits below `height` are common, and
+/// `pre` is their Principal Root (`None` at position 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkPoint {
+    pub height: u64,
+    pub pre: Option<TaggedDigest>,
+}
+
+/// One tied head a held statement or an Error `/tip` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldHead {
+    pub commit_id: TaggedDigest,
+    pub sequence: u64,
+    /// When the server first stored the commit (Unix seconds), as it
+    /// states.
+    pub held_since: Option<i64>,
+}
+
+/// A held statement's claims, canonically parsed: the fork point and every
+/// tied head. It carries no tip and no roots; a verifier that wants one
+/// has none to take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldReport {
+    pub pr: coz::Thumbprint,
+    pub fork_point: ForkPoint,
+    pub heads: Vec<HeldHead>,
+}
+
+/// Why a held statement or an Error `/tip` payload did not parse.
+#[derive(Debug, thiserror::Error)]
+pub enum HeldReportParseError {
+    /// The statement's `typ` is not [`HELD_REPORT_TYP`].
+    #[error("statement is not a held report")]
+    WrongTyp,
+    /// `pr` is not a bare canonical genesis identifier.
+    #[error("pr: {0}")]
+    Pr(cyphr::error::Error),
+    /// `fork_point` is missing or malformed.
+    #[error("fork_point: {0}")]
+    ForkPoint(String),
+    /// `heads` is missing, empty, or holds a malformed head.
+    #[error("heads: {0}")]
+    Heads(String),
+}
+
+impl HeldReport {
+    /// Parse a signed held statement's `pay`.
+    ///
+    /// # Errors
+    ///
+    /// [`HeldReportParseError`] for a statement of another `typ` or with a
+    /// malformed claim.
+    pub fn parse(coz: &coz::CozJson) -> Result<Self, HeldReportParseError> {
+        if coz.pay["typ"].as_str() != Some(HELD_REPORT_TYP) {
+            return Err(HeldReportParseError::WrongTyp);
+        }
+        let pr = parse_genesis_id(&coz.pay["pr"]).map_err(HeldReportParseError::Pr)?;
+        let (fork_point, heads) = parse_fork(&coz.pay)?;
+        Ok(Self {
+            pr,
+            fork_point,
+            heads,
+        })
+    }
+}
+
+/// The `fork_point` of `v`, and the tied `heads` it names, if any: a
+/// patch's branches name their heads themselves.
+pub(crate) fn parse_fork_point(
+    v: &Value,
+) -> Result<(ForkPoint, Vec<HeldHead>), HeldReportParseError> {
+    parse_fork_with(v, false)
+}
+
+fn parse_fork(v: &Value) -> Result<(ForkPoint, Vec<HeldHead>), HeldReportParseError> {
+    parse_fork_with(v, true)
+}
+
+fn parse_fork_with(
+    v: &Value,
+    heads_required: bool,
+) -> Result<(ForkPoint, Vec<HeldHead>), HeldReportParseError> {
+    let point = &v["fork_point"];
+    let height = point["height"]
+        .as_u64()
+        .ok_or_else(|| HeldReportParseError::ForkPoint("height is not a u64".into()))?;
+    let pre = parse_optional_digest_field(&point["pre"])
+        .map_err(|e| HeldReportParseError::ForkPoint(e.to_string()))?;
+    if !heads_required {
+        return Ok((ForkPoint { height, pre }, Vec::new()));
+    }
+    let heads = v["heads"]
+        .as_array()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| HeldReportParseError::Heads("not a non-empty array".into()))?
+        .iter()
+        .map(|h| {
+            Ok(HeldHead {
+                commit_id: parse_digest_field(&h["commit_id"])
+                    .map_err(|e| HeldReportParseError::Heads(format!("commit_id: {e}")))?,
+                sequence: h["sequence"]
+                    .as_u64()
+                    .ok_or_else(|| HeldReportParseError::Heads("sequence is not a u64".into()))?,
+                held_since: match &h["held_since"] {
+                    Value::Null => None,
+                    n => Some(n.as_i64().ok_or_else(|| {
+                        HeldReportParseError::Heads("held_since is not an integer".into())
+                    })?),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((ForkPoint { height, pre }, heads))
+}
+
+/// What a `/tip` answer says, whichever shape: one tip while the principal
+/// is Active, or the fork point and the tied heads in Error. The answer is
+/// the peer's claim; nothing here verifies it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TipAnswer {
+    /// Active: the principal's one tip.
+    Active { commit_id: TaggedDigest },
+    /// Error (SPEC 15.5): no single tip.
+    Error {
+        fork_point: ForkPoint,
+        heads: Vec<HeldHead>,
+    },
+}
+
+impl TipAnswer {
+    /// Parse the `payload` of a `/tip` envelope. Error is told by
+    /// `state == "error"`; any other payload is read as the Active shape.
+    ///
+    /// # Errors
+    ///
+    /// [`HeldReportParseError`] for a payload of neither shape.
+    pub fn parse(envelope: &Value) -> Result<Self, HeldReportParseError> {
+        let payload = &envelope["payload"];
+        if payload["state"].as_str() == Some("error") {
+            let (fork_point, heads) = parse_fork(payload)?;
+            return Ok(Self::Error { fork_point, heads });
+        }
+        let commit_id = parse_digest_field(&payload["commit_id"])
+            .map_err(|e| HeldReportParseError::Heads(format!("commit_id: {e}")))?;
+        Ok(Self::Active { commit_id })
+    }
+}

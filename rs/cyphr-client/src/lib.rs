@@ -44,8 +44,12 @@ pub use connector::{
 #[cfg(feature = "http")]
 pub use http::{HttpConnector, HttpOptions, MAX_RESPONSE_BYTES};
 pub use patch::{
-    ActionBundle, AuthorityKey, EntryDefect, PatchEntry, PatchFailure, PatchRequest, Statement,
-    VerifiedPatch, fetch_patch, verify_authenticated_envelope, verify_patch_body,
+    ActionBundle, AuthorityKey, BranchPatch, EntryDefect, ForkPatch, PatchEntry, PatchFailure,
+    PatchRequest, Statement, VerifiedPatch, fetch_patch, verify_authenticated_envelope,
+    verify_held_envelope, verify_patch_body,
 };
 pub use peer::{HeldTip, PeerChain, PeerFailure, PeerLimits};
-pub use report::{TipReport, TipReportParseError, TipReportRoots};
+pub use report::{
+    ForkPoint, HELD_REPORT_TYP, HeldHead, HeldReport, HeldReportParseError, TipAnswer, TipReport,
+    TipReportParseError, TipReportRoots,
+};
