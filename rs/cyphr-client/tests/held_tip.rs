@@ -195,6 +195,11 @@ fn error_patch_reads_as_the_canonical_chain_and_keeps_every_branch() {
     assert_eq!(fork.fork_point.height, 2);
     assert_eq!(fork.branches.len(), 2, "every branch is kept");
 
+    assert!(
+        patch.held.is_none(),
+        "unauthenticated reads carry no statement"
+    );
+
     let none = serde_json::to_vec(&body([false, false])).expect("body");
     verify_patch_body(&none, &id, None).expect_err("no canonical branch is refused");
 

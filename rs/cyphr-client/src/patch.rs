@@ -142,8 +142,18 @@ pub struct VerifiedPatch {
     /// The authenticated tip report; `Some` exactly when an
     /// [`AuthorityKey`] was supplied.
     pub report: Option<TipReport>,
+    /// The authenticated held statement; `Some` exactly when an
+    /// [`AuthorityKey`] was supplied and the peer is in Error, where it
+    /// attests the tied heads instead of a tip.
+    pub held: Option<HeldReport>,
     /// The carrier's channel binding, passed through for the caller.
     pub binding: Option<ChannelBinding>,
+}
+
+/// Whether a patch body is an Error peer's (it names its branches).
+fn entries_fork_marker(body: &Value) -> bool {
+    body.get("payload")
+        .is_some_and(|p| p.get("branches").is_some())
 }
 
 /// An Error peer's patch beyond the common chain (SPEC 15.7.1).
@@ -295,9 +305,15 @@ pub fn verify_patch_body(
             PatchFailure::MalformedResponse("payload.entries missing or not an array".to_string())
         })?;
 
-    let report = expected
-        .map(|key| verify_authenticated_envelope(&body, key, principal_id))
-        .transpose()?;
+    let in_error = entries_fork_marker(&body);
+    let (report, held) = match expected {
+        None => (None, None),
+        Some(key) if in_error => (None, Some(verify_held_envelope(&body, key, principal_id)?)),
+        Some(key) => (
+            Some(verify_authenticated_envelope(&body, key, principal_id)?),
+            None,
+        ),
+    };
 
     let mut entries: Vec<PatchEntry> = entries.iter().map(decode_entry).collect();
     let fork = decode_fork(body.get("payload"))?;
@@ -322,6 +338,7 @@ pub fn verify_patch_body(
             })
             .collect(),
         report,
+        held,
         binding: None,
     })
 }
