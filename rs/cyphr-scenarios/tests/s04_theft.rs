@@ -173,6 +173,12 @@ async fn s04_theft() {
         v.resolved_by.is_none(),
         "no branch is ever picked for Alice"
     );
-    assert_eq!(h.peer_view("p3", &pr2).await.map(|v| v.tip), Some(tt2));
-    assert_eq!(h.peer_view("p1", &pr2).await.map(|v| v.tip), Some(at2));
+    // Both rotations are held and neither is a tip: each peer reports
+    // Error with the two tied heads (SPEC 15.5).
+    let want: std::collections::BTreeSet<Tip> = [at2, tt2].into_iter().collect();
+    for peer in ["p1", "p3"] {
+        let view = h.peer_view(peer, &pr2).await.expect("view");
+        let got: std::collections::BTreeSet<Tip> = view.heads.iter().cloned().collect();
+        assert_eq!(got, want, "{peer}: both tied heads");
+    }
 }

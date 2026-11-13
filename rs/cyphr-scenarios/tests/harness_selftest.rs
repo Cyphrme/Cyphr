@@ -200,9 +200,30 @@ async fn harness_peer_view_reads_the_peer_itself() {
         Some(PeerTip {
             principal_id: "x".into(),
             tip: Tip("C2".into()),
+            heads: vec![Tip("C2".into())],
             height: 2,
             pr: "PR".into(),
             ar: "AR".into()
+        })
+    );
+
+    // An Error answer names no single tip: every tied head is a head, and
+    // there is no root to read.
+    let error = serde_json::json!({"v": 1, "payload": {
+        "state": "error", "principal_id": "x", "now": 9,
+        "fork_point": {"height": 1, "pre": "PRE"},
+        "heads": [
+            {"commit_id": "C3", "sequence": 2, "held_since": 5},
+            {"commit_id": "D3", "sequence": 2, "held_since": 6}]}});
+    assert_eq!(
+        PeerTip::parse(&error),
+        Some(PeerTip {
+            principal_id: "x".into(),
+            tip: Tip("C3".into()),
+            heads: vec![Tip("C3".into()), Tip("D3".into())],
+            height: 3,
+            pr: String::new(),
+            ar: String::new()
         })
     );
 }
@@ -635,10 +656,10 @@ async fn harness_oracle_verifies_a_served_fork_end_to_end() {
 
     let pr = Principal(id);
     let view = h.peer_view("p1", &pr).await.expect("held");
-    let age = h.peer_age("p1", &pr).await.expect("age");
+    assert_eq!(view.heads.len(), 2, "the tied heads, not one tip");
     let mut v = oracle_verdict(&view.tip.0, Standing::Error);
+    v.branches = view.heads.clone();
     v.anchor.id = pr.0.clone();
-    v.freshness.age = Duration::from_secs(age.max(0) as u64);
     v.evidence = vec![Evidence::PrincipalFork(pr.clone())];
     h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
 }

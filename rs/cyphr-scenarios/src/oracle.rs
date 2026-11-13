@@ -81,7 +81,10 @@ impl Harness {
         // different heads could be a fork or only one peer lagging; only the
         // peers' stored branches (with `pre`) can tell, so such a verdict is
         // held to what the peers' `/branches` route lists, exactly.
-        let heads: BTreeSet<_> = held.iter().map(|(_, t)| t.tip.clone()).collect();
+        let heads: BTreeSet<_> = held
+            .iter()
+            .flat_map(|(_, t)| t.heads.iter().cloned())
+            .collect();
         let claimed_branches: BTreeSet<_> = v.branches.iter().cloned().collect();
         assert!(v.branches.contains(&v.tip), "tip is not among its branches");
         if heads.len() == 1 {
@@ -150,7 +153,7 @@ impl Harness {
         // chosen peer than the verdict's tip means a peer reported newer.
         let verdict_height = held
             .iter()
-            .find(|(_, t)| t.tip == v.tip)
+            .find(|(_, t)| t.heads.contains(&v.tip))
             .map(|(_, t)| t.height);
         let newer = held
             .iter()
@@ -159,7 +162,12 @@ impl Harness {
             v.freshness.peer_reported_newer, newer,
             "freshness.peer_reported_newer disagrees with the peers' heights"
         );
-        if let Some((name, _)) = held.iter().find(|(_, t)| t.tip == v.tip) {
+        // A peer in Error reports no single tip (SPEC 15.5) and so no age
+        // of one: only a peer with exactly one head has an age to compare.
+        if let Some((name, _)) = held
+            .iter()
+            .find(|(_, t)| t.heads.len() == 1 && t.tip == v.tip)
+        {
             // The peer's age is whole seconds (truncated, so up to 1s low)
             // and is read after the verdict: it can exceed the verdict's age
             // by at most the time that really passed between the two reads,
