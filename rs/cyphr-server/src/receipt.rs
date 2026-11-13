@@ -22,7 +22,7 @@ use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
 // The canonical report parse lives in the client crate; `check_equivocation`
 // consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
-pub use cyphr_client::TipReport;
+pub use cyphr_client::{HELD_REPORT_TYP, TipReport};
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -214,6 +214,79 @@ pub async fn tip_report(
             ("roots", roots.to_value()),
             ("commit_count", Value::from(commit_count)),
             ("last_updated", Value::from(last_updated)),
+        ],
+    )
+    .await
+}
+
+/// One tied head a held statement names, as the engine reports it.
+#[derive(Debug, Clone)]
+pub struct HeldClaim {
+    pub commit_id: String,
+    pub sequence: u64,
+    pub held_since: Option<i64>,
+}
+
+/// Compose and sign the statement `/tip` carries while the principal is in
+/// Error (SPEC 15.5): the fork point and each tied head with the time this
+/// server first stored it (SPEC 13.6 "first_seen"). It claims nothing
+/// canonical: no `roots`, no `commit_id`, no `sequence`, because in Error
+/// no commit is the principal's tip.
+///
+/// # Errors
+///
+/// As [`commit_receipt`].
+pub async fn held_report(
+    signer: &dyn ReceiptSigner,
+    now: i64,
+    pr: impl Into<String>,
+    fork_height: u64,
+    fork_pre: Option<&str>,
+    heads: &[HeldClaim],
+) -> Result<coz::CozJson, ReceiptError> {
+    let pr = pr.into();
+    parse_genesis_id_str(&pr)
+        .map(drop)
+        .map_err(|source| ReceiptError::Field {
+            field: "pr",
+            source,
+        })?;
+    let digest = |field: &'static str, s: &str| {
+        s.parse::<TaggedDigest>()
+            .map(drop)
+            .map_err(|source| ReceiptError::Field { field, source })
+    };
+    if let Some(pre) = fork_pre {
+        digest("fork_point.pre", pre)?;
+    }
+    for head in heads {
+        digest("heads.commit_id", &head.commit_id)?;
+    }
+    sign_statement(
+        signer,
+        now,
+        HELD_REPORT_TYP,
+        [
+            ("pr", Value::String(pr)),
+            (
+                "fork_point",
+                serde_json::json!({"height": fork_height, "pre": fork_pre}),
+            ),
+            (
+                "heads",
+                Value::Array(
+                    heads
+                        .iter()
+                        .map(|h| {
+                            serde_json::json!({
+                                "commit_id": h.commit_id,
+                                "sequence": h.sequence,
+                                "held_since": h.held_since,
+                            })
+                        })
+                        .collect(),
+                ),
+            ),
         ],
     )
     .await
