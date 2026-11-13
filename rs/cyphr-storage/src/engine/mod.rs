@@ -2763,8 +2763,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     refused
                 };
                 // Only a verification failure can be a fork; a malformed
-                // or unreadable bundle is nothing to keep.
-                if matches!(refused, EngineError::Protocol(_)) {
+                // or unreadable bundle is nothing to keep. Nor is a
+                // signature by a key the principal has revoked: further
+                // use of a revoked key is rejected (SPEC 6.4), and the
+                // refusal keeps nothing and changes no assessment. Were it
+                // retained as a sibling of the commit that revokes the
+                // key, a thief holding the key could tie the owner's
+                // position and put the principal in Error at will.
+                let revoked_signer =
+                    matches!(refused, EngineError::Protocol(cyphr::Error::KeyRevoked));
+                if matches!(refused, EngineError::Protocol(_)) && !revoked_signer {
                     // A bundle that extends a retained rival resolves the
                     // fork (SPEC 15.8) or, below the head, forks anew.
                     let canonical_len = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
