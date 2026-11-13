@@ -2612,7 +2612,8 @@ async fn witness_ahead_of_an_error_authority_holds_its_heads() {
 /// the same key are one fork, not a duplicate. The second sibling is
 /// refused as a tip with the retained-rival answer (409 `commit_mismatch`,
 /// never the tip-state DuplicateKey 422), retained beside the first, and
-/// the principal reads Error with both as tied heads. Turns red if the
+/// the principal reads Error with both as tied heads; pushing it again
+/// answers the same. Turns red if the
 /// answer names the canonical tip's state (where the key already exists)
 /// instead of what happened to the push, or if the rival is kept nowhere.
 /// End to end over `/push` and `/tip`: yes.
@@ -2642,6 +2643,16 @@ async fn fork_siblings_creating_the_same_key_are_held_as_a_fork() {
         envelope_payload(&body)["kind"],
         "commit_mismatch",
         "retained rival: {body:?}"
+    );
+
+    // The same push again answers the same: the rival is held, so the
+    // answer is the fork's, not the tip-state error.
+    let (status, body) = post_json(app.clone(), "/push", wire(&second, 1, &id)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "re-push: {body:?}");
+    assert_eq!(
+        envelope_payload(&body)["kind"],
+        "commit_mismatch",
+        "re-push: {body:?}"
     );
 
     let heads = error_heads(&tip_payload(app.clone(), &id).await);

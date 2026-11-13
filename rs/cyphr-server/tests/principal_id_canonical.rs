@@ -264,9 +264,10 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
         "the public genesis was accepted afresh under the alias: {status} {body:?}"
     );
     let (status, body) = post_json(app.clone(), "/push", wire(&attacker, 1, &labelled)).await;
-    assert!(
-        status.is_client_error(),
-        "the revoked key committed through the alias spelling: {status} {body:?}"
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the revoked key committed through the alias spelling: {body:?}"
     );
 
     let (_, after) = tip(app, &bare).await;

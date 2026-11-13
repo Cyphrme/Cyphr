@@ -3020,6 +3020,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<bool, EngineError> {
         use crate::import::replay_commits;
 
+        // Pushed again, a held rival is answered as the fork it is; the
+        // canonical commit pushed again is no rival.
+        let hashes: Vec<Blake3Hash> = bundle
+            .cozies()
+            .map(|b| Blake3Hash::from_bytes(*blake3::hash(b).as_bytes()))
+            .collect();
+        if self.is_retained(principal_id, &hashes, &Shape::of(bundle)) {
+            return Ok(true);
+        }
         if self.is_already_stored(principal_id, bundle).await? {
             return Ok(false);
         }
@@ -3400,6 +3409,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         aliases.iter().map(|a| self.principal_lock(a)).collect()
     }
 
+    /// Whether a rival with these blobs and grouping is retained.
+    fn is_retained(&self, principal_id: &str, hashes: &[Blake3Hash], shape: &Shape) -> bool {
+        self.branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .is_some_and(|rs| rs.iter().any(|r| r.blobs == hashes && r.shape == *shape))
+    }
+
     /// Whether `bundle` is, byte for byte and in its grouping, a commit this engine already
     /// holds: on the canonical chain or retained as a rival. Such a bundle
     /// is nobody's rival at any other position, since its arrow binds
@@ -3420,13 +3438,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // The same cozies grouped otherwise are another commit (its arrow
         // binds another TMR), so the grouping is part of the identity.
         let shape = Shape::of(bundle);
-        let kept = self
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .is_some_and(|rs| rs.iter().any(|r| r.blobs == hashes && r.shape == shape));
-        if kept {
+        if self.is_retained(principal_id, &hashes, &shape) {
             return Ok(true);
         }
         let chain = self
