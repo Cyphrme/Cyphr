@@ -29,6 +29,9 @@ struct Chain {
     genesis: Genesis,
     bundles: Vec<WireBundle>,
     expected_pr: String,
+    /// The embedded principal the chain's Key Tree names (SPEC 10.3), whose
+    /// own chain is pushed first and whose tip the core path pins.
+    peer: Option<Box<Chain>>,
 }
 
 fn golden_dir() -> PathBuf {
@@ -48,8 +51,8 @@ fn domain_key(gk: &serde_json::Value) -> cyphr::Key {
 }
 
 /// Every corpus chain a fresh principal can replay: vectors that expect an
-/// error, or need a setup step or an embedded principal's tip no stored
-/// chain carries, are left out.
+/// error or need a setup step are left out. An embedded-member vector
+/// carries its peer's chain, pushed before it.
 fn corpus() -> Vec<Chain> {
     let mut chains = Vec::new();
     let mut categories: Vec<_> = std::fs::read_dir(golden_dir())
@@ -74,13 +77,7 @@ fn corpus() -> Vec<Chain> {
             ) else {
                 continue;
             };
-            // QUARANTINE(#200): an embedded-member vector needs the
-            // embedded principal's tip, which no stored chain carries, and
-            // the engine refuses such a commit as `EmbeddedUnsupported`
-            // until replay can resolve embedded principals (GitHub #200).
-            let embedded = golden["peer"]["embedded"].as_bool() == Some(true);
             if golden.get("setup").is_some()
-                || embedded
                 || golden["expected"].get("error").is_some()
                 || commits.is_empty()
             {
@@ -96,15 +93,48 @@ fn corpus() -> Vec<Chain> {
             // Each line is pushed as the bundle it is: a commit, or one data
             // action on its own (SPEC 4.8.1: actions are not chained).
             let bundles = commits.iter().map(wire_blobs).collect();
+            let peer = golden["peer"]["embedded"]
+                .as_bool()
+                .filter(|embedded| *embedded)
+                .map(|_| Box::new(peer_chain(&golden)));
             chains.push(Chain {
                 name: path.display().to_string(),
                 genesis,
                 bundles,
                 expected_pr: pr.to_string(),
+                peer,
             });
         }
     }
     chains
+}
+
+/// The chain of a vector's embedded peer: its first key is its genesis, and
+/// its lines are pushed as they are.
+fn peer_chain(golden: &serde_json::Value) -> Chain {
+    let peer = &golden["peer"];
+    let pool = test_fixtures::Pool::load(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml"),
+    )
+    .expect("pool.toml");
+    let first = peer["principal"][0].as_str().expect("peer genesis key");
+    let key = pool
+        .get(first)
+        .expect("peer key in pool")
+        .key()
+        .expect("key");
+    Chain {
+        name: format!("{} (peer)", golden["name"]),
+        genesis: Genesis::Implicit(key),
+        bundles: peer["commits"]
+            .as_array()
+            .expect("peer commits")
+            .iter()
+            .map(wire_blobs)
+            .collect(),
+        expected_pr: String::new(),
+        peer: None,
+    }
 }
 
 /// A golden commit line as the wire carries it (SPEC 4.6.2): `txs` by
@@ -193,6 +223,11 @@ async fn ingest(engine: &Engine, chain: &Chain) -> String {
 fn corpus_chains_agree_across_core_ingest_and_rebuild() {
     let chains = corpus();
     assert!(chains.len() > 30, "the corpus was found ({})", chains.len());
+    assert_eq!(
+        chains.iter().filter(|c| c.peer.is_some()).count(),
+        2,
+        "both embedded-member vectors are replayed, none quarantined"
+    );
     // Each chain has its own store, so they are checked on parallel
     // threads: the 256-item arity vectors would otherwise serialize the
     // run (minutes in a debug build).
@@ -212,6 +247,22 @@ fn corpus_chains_agree_across_core_ingest_and_rebuild() {
 async fn check_chain(chain: &Chain) {
     {
         let mut core = principal(&chain.genesis).await;
+        if let Some(peer) = &chain.peer {
+            // As the corpus runner does: every PR the peer held is pinned
+            // to its tip.
+            let mut other = principal(&peer.genesis).await;
+            for bundle in &peer.bundles {
+                core_replay(&mut other, bundle).await.expect("peer replays");
+            }
+            for commit in other.commits() {
+                let pr = commit.pr().as_multihash().tagged_first().expect("pr");
+                core.reveal_embedded(
+                    &pr.to_string(),
+                    cyphr::Tracking::Pin(Box::new(cyphr::Tip::new(&other, 0))),
+                )
+                .expect("pin peer");
+            }
+        }
         for (i, bundle) in chain.bundles.iter().enumerate() {
             core_replay(&mut core, bundle)
                 .await
@@ -253,6 +304,9 @@ async fn check_chain(chain: &Chain) {
                 chain.name
             );
             return;
+        }
+        if let Some(peer) = &chain.peer {
+            ingest(&engine, peer).await;
         }
         let id = ingest(&engine, chain).await;
         same_history(&engine, &id, chain, &core, "ingest").await;

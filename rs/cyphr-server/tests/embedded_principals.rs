@@ -1,7 +1,7 @@
 //! A push whose commit is signed by a key of an embedded principal (SPEC
-//! be0663f 10.3, 10.5) is refused as unsupported: the server resolves no
-//! embedded principal's tip, so it cannot judge such a coz, and says so
-//! rather than calling the key unknown.
+//! be0663f 10.3, 10.5) is judged against the tip the server holds of that
+//! principal: accepted when it is held and the key is active there, an
+//! unknown key when the principal is not held.
 
 use axum::http::StatusCode;
 use cyphr_server::build_router;
@@ -23,17 +23,57 @@ async fn tip(app: &axum::Router, id: &str) -> serde_json::Value {
     payload
 }
 
-/// Backs the server's typed refusal of embedded authorization (the
-/// architect's ruling for EP1): principal A embeds B's PR in its KT and a
-/// key of B signs A's next commit (golden vector
-/// `embedding/embedded_member_signs_for_principal`). A's genesis and its
-/// embedding commit are stored (201); the B-signed commit is refused with
-/// 501 and a message naming the embedded limitation and the signer, and
-/// A's chain is left as it was. Turns red if the server stores the commit,
-/// or refuses it as a plain unknown key (422) instead of the limitation.
+/// The embedded principal B of the golden vector: its id (the PG its genesis
+/// commit names) and its commit lines, which a client pushes first.
+fn peer_of(fixture: &serde_json::Value) -> (String, Vec<serde_json::Value>) {
+    let lines = fixture["peer"]["commits"].as_array().expect("peer").clone();
+    let id = test_fixtures::bundle::genesis_id(&build_bundle(&lines[0])).expect("peer pg");
+    (id, lines)
+}
+
+/// Backs SPEC 10.3/10.5/10.7 over HTTP (golden vector
+/// `embedding/embedded_member_signs_for_principal`): principal A embeds B's
+/// PR in its Key Tree and a key of B signs A's next commit. With B's chain
+/// pushed first, A's genesis, its embedding commit and the B-signed commit
+/// are all stored (201) and A's tip advances to the vector's PR. Turns red
+/// if the server refuses the B-signed commit (as unsupported or as an
+/// unknown key) though B is held, or stores a different chain.
+/// End to end: yes (HTTP pushes of real signed chains).
+#[tokio::test]
+async fn embedded_signed_commit_is_accepted_when_b_is_held() {
+    let fixture = load_golden("embedding", "embedded_member_signs_for_principal");
+    let id = fixture_principal_id(&fixture);
+    let (peer_id, peer_lines) = peer_of(&fixture);
+    let commits = fixture["commits"].as_array().expect("commits");
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+
+    for line in &peer_lines {
+        let (status, body) = post_json(
+            app.clone(),
+            "/push",
+            push_body(&peer_id, &build_bundle(line)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "peer: {body:?}");
+    }
+    for (i, commit) in commits.iter().enumerate() {
+        let (status, body) =
+            post_json(app.clone(), "/push", push_body(&id, &build_bundle(commit))).await;
+        assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
+    }
+    let tip = tip(&app, &id).await;
+    assert_eq!(tip["pr"], fixture["expected"]["pr"], "{tip}");
+}
+
+/// Backs SPEC 10.3 "opaque nodes do not trigger state synchronization": the
+/// same pushes without B's chain leave the digest in A's Key Tree opaque, so
+/// the B-signed commit is the plain protocol refusal (422 `unknown key`)
+/// and A's chain is as it was. Turns red if the server stores the commit or
+/// reports a limitation instead of the unknown key.
 /// End to end: yes (HTTP pushes of a real signed chain).
 #[tokio::test]
-async fn embedded_signed_commit_is_refused_as_unsupported() {
+async fn embedded_signed_commit_is_unknown_key_when_b_is_not_held() {
     let fixture = load_golden("embedding", "embedded_member_signs_for_principal");
     let id = fixture_principal_id(&fixture);
     let commits = fixture["commits"].as_array().expect("commits");
@@ -53,18 +93,11 @@ async fn embedded_signed_commit_is_refused_as_unsupported() {
         push_body(&id, &build_bundle(&commits[2])),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body:?}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body:?}");
     let message = envelope_payload(&body)["error"]
         .as_str()
         .expect("error message");
-    assert!(message.contains("embedded unsupported"), "{message}");
-    let carol = load_pool()
-        .get("carol")
-        .expect("carol")
-        .compute_tmb()
-        .expect("tmb")
-        .to_b64();
-    assert!(message.contains(&carol), "names the signer: {message}");
+    assert!(message.contains("unknown key"), "{message}");
 
     assert_eq!(
         tip(&app, &id).await,
@@ -73,12 +106,12 @@ async fn embedded_signed_commit_is_refused_as_unsupported() {
     );
 }
 
-/// Backs the narrowness of that refusal: on a principal whose KT holds a
-/// digest, a `key/delete` of a key it does not hold, signed by its own
-/// active key, is the plain protocol refusal (422 `unknown key`), not the
-/// embedded limitation, because the signer resolves. Turns red if every
-/// core `UnknownKey` on such a principal is reported as an unresolved
-/// embedded signer. End to end: yes (HTTP push of a signed coz).
+/// Backs the plain unknown-key refusal on a principal whose KT holds a
+/// digest: a `key/delete` of a key it does not hold, signed by its own
+/// active key, is 422 `unknown key`, as it is on any principal, though an
+/// embedded digest is in play (the signer resolves, so nothing is followed).
+/// Turns red if such a refusal is reported as anything else. End to end: yes
+/// (HTTP push of a signed coz).
 #[tokio::test]
 async fn unknown_key_delete_by_a_known_signer_stays_unknown_key() {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};

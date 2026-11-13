@@ -73,18 +73,15 @@ pub enum EngineError {
         key: String,
     },
 
-    /// A coz is signed by no key of the principal, and the principal's Key
-    /// Tree holds digests that may be embedded principals (SPEC 10.3). The
-    /// engine resolves no embedded principal's tip, so it cannot tell an
-    /// embedded member's key from an unknown one and refuses the bundle as
-    /// unsupported rather than as an unknown key.
-    #[error(
-        "embedded unsupported: signer {signer} is no key of this principal, whose Key Tree may \
-         embed principals; this engine resolves no embedded principal"
-    )]
-    EmbeddedUnsupported {
-        /// Thumbprint of the coz's signer.
-        signer: String,
+    /// A commit was admitted through the embedded principal `member` at its
+    /// PR `b`, and the commits `b` descends from are not all held: blobs were
+    /// lost. The commit is not replayable; it is never read as opaque.
+    #[error("embedded principal {member} at PR {b} is not replayable: its ancestry is not held")]
+    EmbeddedPinLost {
+        /// The digest in the embedding principal's Key Tree.
+        member: String,
+        /// The PR the commit was admitted against.
+        b: String,
     },
 
     /// The principal is in Error (SPEC 15.5: an unresolved fork) and the
