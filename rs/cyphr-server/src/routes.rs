@@ -343,11 +343,14 @@ pub async fn tip(
 
     // In Error no commit is the tip (SPEC 15.5): the answer is the fork and
     // its tied heads, and nothing canonical is attested.
+    //
+    // An index that cannot say is a failure to answer, never a fall back
+    // to the tip it may have corrupted.
     if let Some(error) = state
         .engine
         .error_state(&query.pr)
         .await
-        .map_err(AppError::engine)?
+        .map_err(|e| AppError::internal(format!("fork state unreadable from the index: {e}")))?
     {
         return Ok(error_tip(&state, &t.principal_id, error)
             .await
