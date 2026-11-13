@@ -1252,3 +1252,39 @@ proptest::proptest! {
         });
     }
 }
+
+/// Backs I1 for revoke records written before the receipt time was kept:
+/// a v1 record holds the bare revoke and no receipt time, so a rebuild
+/// cannot know the key's cutoff (#203: the witness's own receipt time). It
+/// is quarantined and reported, never silently dropped or given a guessed
+/// cutoff: the key is not dead after the rebuild. Turns red if a v1 record
+/// is read as a death or left out of the report.
+#[tokio::test]
+async fn a_v1_revoke_record_is_quarantined_and_reported() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    f.submit(&e, &f.first).await.expect("commit 0");
+    let mut v1 = b"\0cyphr-storage/revoke-record/v1\0".to_vec();
+    serde_json::to_writer(&mut v1, &naked_revoke(&key_a, 1)).expect("record");
+    let hash = e.blob_store().put(&v1).await.expect("put");
+    let report = e.rebuild_index_with_report().await.expect("rebuild");
+    let quarantined = report
+        .quarantined
+        .iter()
+        .find(|q| q.manifest == hash)
+        .expect("the v1 record is reported");
+    assert!(
+        matches!(
+            &quarantined.reason,
+            cyphr_storage::engine::QuarantineReason::Malformed(why) if why.contains("v1")
+        ),
+        "{quarantined:?}"
+    );
+    let mut p = f.base.fork().await.expect("fork");
+    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 6).await;
+    f.submit(&e, &blobs(&p, 1))
+        .await
+        .expect("no cutoff is guessed: key_a is not dead");
+}
