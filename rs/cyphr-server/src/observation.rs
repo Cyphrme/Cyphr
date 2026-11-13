@@ -178,10 +178,16 @@ impl ObservationStore {
     /// acknowledgement honest under a power loss, at the cost of one fsync per
     /// *first* revoke of a key -- acceptable for a rare security event.
     ///
-    /// One revoke stands per key, the first accepted, as in the engine (the
-    /// spec author on #203: the cutoff is the witness's receipt time of
-    /// it): a revoke of a key already dead short-circuits before the write
-    /// path, so a repeated POST forces no fsync and never grows the set.
+    /// One revoke stands per key, the first this store accepted: a revoke
+    /// of a key already dead short-circuits before the write path, so a
+    /// repeated POST forces no fsync and never grows the set. The engine
+    /// keeps its own first revoke, and only the engine's receipt time is a
+    /// key's cutoff (#203). The two stores are written in different orders
+    /// (`POST /revoke` here first, gossip and witness sync the engine
+    /// first), so two revokes of one key arriving concurrently can leave
+    /// each store holding a different one: both are verified revokes of
+    /// the key, and the one served here need not be the one whose receipt
+    /// set the engine's cutoff.
     ///
     /// Past the ceiling ([`Self::with_ceiling`]) a new key is refused
     /// [`ObservationError::Full`]; [`Self::record_seen`] records past it.
