@@ -1288,3 +1288,146 @@ async fn a_v1_revoke_record_is_quarantined_and_reported() {
         .await
         .expect("no cutoff is guessed: key_a is not dead");
 }
+
+// ------------------------------------------------------------------------
+// Finding F1 (VFY attack review): once the canonical head is uncounted (a
+// revoked key signed it at or after the key's cutoff), the served chain and
+// admission must still be the fork rule's answer over counted commits, a
+// function of the blob set (I1). Red until the engine can move its served
+// chain to that answer; see each test.
+// ------------------------------------------------------------------------
+
+/// The served tip's commit id after `bundle`, or why it was refused.
+async fn pushed_tip(e: &Engine, f: &Fork, bundle: &WireBundle) -> Result<String, String> {
+    e.submit_commit(&f.id, Some(f.genesis.clone()), bundle)
+        .await
+        .map(|r| r.tip.expect("tip").commit_id)
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// The served tip's commit id and the fork rule's verdict.
+async fn served(e: &Engine, f: &Fork) -> (String, cyphr_storage::engine::Assessment) {
+    let tip = e
+        .get_tip(&f.id)
+        .await
+        .expect("tip")
+        .expect("held")
+        .commit_id;
+    (tip, e.assess(&f.id).await.expect("assess"))
+}
+
+/// Backs F1(a): `key_a` (stolen) signs X dated after the cutoff its naked
+/// revoke later gets, so X is not counted and the fork rule's head is the
+/// genesis G. The owner's `golden` commit extending the served X would be
+/// uncounted too: it is refused, not answered Ok and silently uncounted,
+/// and the served tip is the fork rule's head G, live and after a rebuild.
+/// Turns red while the engine admits a commit over an uncounted tip or
+/// serves an uncounted head.
+#[tokio::test]
+#[ignore = "RED(VFY-F1): the served chain does not follow the fork rule once its head is uncounted"]
+async fn a_commit_over_an_uncounted_tip_is_refused() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let g = pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut p = f.base.fork().await.expect("fork");
+    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 300).await;
+    pushed_tip(&e, &f, &blobs(&p, 1))
+        .await
+        .expect("X, before the revoke");
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
+        .await
+        .expect("revoke");
+    create_key(&mut p, &f.golden, &kp(&pool, "carol"), NOW + 400).await;
+    assert!(
+        pushed_tip(&e, &f, &blobs(&p, 2)).await.is_err(),
+        "a commit over the uncounted X is refused"
+    );
+    for when in ["live", "after a rebuild"] {
+        let (tip, assessed) = served(&e, &f).await;
+        assert_eq!(assessed.heads, vec![g.clone()], "{when}: the head is G");
+        assert_eq!(tip, g, "{when}: the served tip is the fork rule's head");
+        e.rebuild_index_from_scratch().await.expect("rebuild");
+    }
+}
+
+/// Backs F1(b) and (c): the thief's `key_a` chain X1..X3 is served, then
+/// `key_a` is revoked with a cutoff before all three, so none counts. The
+/// owner recovers off G with `golden` alone: R1..R4 are each the fork
+/// rule's sole Active head when pushed, so each is admitted and served at
+/// once, never held back by the canonical length the dead chain sets or
+/// by the per-key quota on retained rivals; live and after a rebuild.
+/// Turns red while promotion counts uncounted commits, or an extension of
+/// the sole head is retained or quota-refused.
+#[tokio::test]
+#[ignore = "RED(VFY-F1): promotion measures the uncounted canonical length"]
+async fn the_owner_recovers_over_an_uncounted_chain() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut x = f.base.fork().await.expect("fork");
+    for (i, n) in ["bob", "carol", "alice"].iter().enumerate() {
+        create_key(&mut x, &key_a, &kp(&pool, n), NOW + 300 + i as i64).await;
+        pushed_tip(&e, &f, &blobs(&x, i + 1))
+            .await
+            .expect("thief commit, before the revoke");
+    }
+    e.record_revoke(&naked_revoke(&key_a, NOW + 100), NOW + 100)
+        .await
+        .expect("revoke");
+    let mut r = f.base.fork().await.expect("fork");
+    for (i, n) in ["carol", "alice", "bob", "key_b"].iter().enumerate() {
+        create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
+        let pushed = pushed_tip(&e, &f, &blobs(&r, i + 1)).await;
+        let (tip, assessed) = served(&e, &f).await;
+        assert_eq!(
+            pushed.as_ref(),
+            Ok(&tip),
+            "R{} is admitted and served",
+            i + 1
+        );
+        assert_eq!(assessed.heads, vec![tip.clone()], "R{} is the head", i + 1);
+    }
+    let live = served(&e, &f).await;
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert_eq!(served(&e, &f).await, live, "a rebuild agrees");
+}
+
+/// Backs F1 after the owner's commits over the uncounted tip (the case
+/// [`a_commit_over_an_uncounted_tip_is_refused`] shows refused): the
+/// owner's recovery off G with `golden` alone lands commit by commit, each
+/// the sole head and served, as in [`the_owner_recovers_over_an_uncounted_chain`].
+#[tokio::test]
+#[ignore = "RED(VFY-F1): recovery is held back by the uncounted canonical head"]
+async fn the_owner_recovers_over_an_uncounted_tip() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut p = f.base.fork().await.expect("fork");
+    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 300).await;
+    pushed_tip(&e, &f, &blobs(&p, 1)).await.expect("X");
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
+        .await
+        .expect("revoke");
+    let mut r = f.base.fork().await.expect("fork");
+    for (i, n) in ["carol", "alice", "bob", "key_b"].iter().enumerate() {
+        create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
+        let pushed = pushed_tip(&e, &f, &blobs(&r, i + 1)).await;
+        let (tip, assessed) = served(&e, &f).await;
+        assert_eq!(
+            pushed.as_ref(),
+            Ok(&tip),
+            "R{} is admitted and served",
+            i + 1
+        );
+        assert_eq!(assessed.heads, vec![tip.clone()], "R{} is the head", i + 1);
+    }
+    let live = served(&e, &f).await;
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert_eq!(served(&e, &f).await, live, "a rebuild agrees");
+}
