@@ -601,28 +601,38 @@ impl Client<'_> {
         field(&v, "added_key").map(KeyRef)
     }
 
-    /// Pair another device of the same person into the principal, by key
-    /// create: `other` generates its own key (`cyphr key generate`; its
-    /// private half never leaves it), this device commits a `key/create`
-    /// naming it (`cyphr key add --key`), and `other` takes the history
-    /// (`cyphr export` here, `cyphr import` there). Only public keys cross
-    /// between the devices, as a pairing channel carries them; the
-    /// proof-of-possession pairing request is N22's, not this.
+    /// Pair another device of the same person into the principal: `other`
+    /// enrolls its own key and signs a pairing request with it
+    /// (`cyphr key request`; its private half never leaves it), the request
+    /// file crosses to this device as a pairing channel carries it, this
+    /// device verifies it and commits the key (`cyphr key accept`), and
+    /// `other` takes the history (`cyphr export` here, `cyphr import` there).
     pub async fn pair_device(&self, p: &Principal, other: &Client<'_>) -> ActionResult<KeyRef> {
         let s = self.signer(p)?;
-        let v = other.cyphr(&["key", "generate", "--algo", "ES256"]).await?;
+        let request = other.dev.scratch("pairing-request.json");
+        let request = request.to_string_lossy();
+        let v = other
+            .cyphr(&[
+                "key",
+                "request",
+                "--identity",
+                &p.0,
+                "--algo",
+                "ES256",
+                "--file",
+                &request,
+            ])
+            .await?;
         let tmb = field(&v, "tmb")?;
-        let public = cli::public_half(cli::key_entry(&other.dev.keystore, &tmb)?);
-        cli::put_key(&self.dev.keystore, &tmb, public)?;
         self.cyphr(&[
             "key",
-            "add",
+            "accept",
             "--identity",
             &p.0,
-            "--key",
-            &tmb,
             "--signer",
             &s,
+            "--file",
+            &request,
         ])
         .await?;
 
