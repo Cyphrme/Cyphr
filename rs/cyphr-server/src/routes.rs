@@ -960,12 +960,12 @@ pub async fn revoke(
     }
 
     // The engine keeps the revoke too, as a record a rebuild re-verifies:
-    // it judges forks by it (SPEC 15.7.1, a revocation resolves one). Its
-    // future bound cannot refuse what the receipt window above admitted,
-    // so the observation recorded first never outlives a refusal here.
+    // it judges forks by it (SPEC 15.7.1, a revocation resolves one), with
+    // this server's receipt time as the key's cutoff (#203). `interpret`
+    // above already refused anything the engine would.
     state
         .engine
-        .record_revoke(&verified.evidence)
+        .record_revoke(&verified.evidence, crate::auth::server_now())
         .await
         .map_err(AppError::engine)?;
 

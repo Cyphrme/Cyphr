@@ -1511,13 +1511,17 @@ async fn stored_actions_are_judged_at_their_own_now() {
         "tmb": golden.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/revoke",
     });
     let (_, sig, _) = golden.sign(&revoke_pay);
+    // Received at its own `now`: the cutoff is the receipt time.
     engine
-        .record_revoke(&serde_json::json!({
+        .record_revoke(
+            &serde_json::json!({
             "pay": revoke_pay,
             "sig": Base64UrlUnpadded::encode_string(&sig),
             "key": {"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key),
                     "tmb": golden.key.tmb().to_b64()},
-        }))
+            }),
+            1_700_000_500,
+        )
         .await
         .expect("the naked revoke is recorded");
 

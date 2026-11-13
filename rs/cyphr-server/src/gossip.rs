@@ -174,12 +174,17 @@ async fn round_principal(
 /// Record each verified naked revoke where the server keeps deaths (SPEC
 /// 6.4): the engine, which refuses a dead key's commits at admission and
 /// judges forks by them, then the observations every capability consults.
-/// A revoke the engine refuses (one dated in the future, SPEC 15.9) is
-/// refused, not kept: it reaches neither. Gossip and a witness's sync both
-/// record through this.
+/// The engine judges first: a revoke it refuses (one that is not
+/// Coz-valid) reaches neither store. Each is recorded at this node's own
+/// receipt time, never the relayer's (#203). Gossip and a witness's sync
+/// both record through this.
 pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_client::RevokedKey]) {
     for revoked in revoked {
-        if let Err(err) = state.engine.record_revoke(&revoked.envelope).await {
+        if let Err(err) = state
+            .engine
+            .record_revoke(&revoked.envelope, crate::auth::server_now())
+            .await
+        {
             warn!(tmb = %revoked.tmb.to_b64(), %err, "naked revoke refused");
             continue;
         }

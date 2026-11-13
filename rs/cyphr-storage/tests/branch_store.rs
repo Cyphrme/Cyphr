@@ -471,36 +471,62 @@ fn naked_revoke(k: &Kp, rvk: i64) -> serde_json::Value {
 }
 
 /// Backs key death at admission (SPEC 6.4), at the engine seam every path
-/// ingests through (`/push`, gossip, witness sync, a verifier's store):
-/// once the engine holds `key_a`'s naked revoke as of NOW+5, a commit
-/// `key_a` signs dated at or after NOW+5 is refused at the tip. Pinned
-/// with the thief's revoke at a far-future `rvk` recorded first too: the
-/// owner's earlier revoke still stands. Turns red if a dead key's commit
-/// dated after its death is admitted, or a far-future revoke shadows the
-/// owner's.
+/// ingests through (`/push`, gossip, witness sync, a verifier's store),
+/// with the cutoff where the spec author puts it (#203): this node's
+/// receipt time of the first revoke of `key_a` it accepts, NOW+5. The
+/// revoke is a thief's, dated 2^53-1: Coz-valid, so accepted ("Coz valid
+/// revokes are always accepted"), and its own `now` decides nothing. A
+/// `key_a` commit dated NOW+6 is refused. Turns red if a revoke's own
+/// `now` sets the cutoff, or a far-future revoke is refused.
 #[tokio::test]
 async fn a_dead_keys_commit_after_its_death_is_refused() {
     let f = Fork::new(0).await;
     let pool = load_pool();
     let key_a = kp(&pool, "key_a");
-    for thief_first in [false, true] {
-        let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-        f.submit(&e, &f.first).await.expect("commit 0");
-        if thief_first {
-            e.record_revoke(&naked_revoke(&key_a, (1 << 53) - 1))
-                .await
-                .expect("the thief's revoke");
-        }
-        e.record_revoke(&naked_revoke(&key_a, NOW + 5))
-            .await
-            .expect("the owner's revoke");
-        let mut p = f.base.fork().await.expect("fork");
-        create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 6).await;
-        assert!(
-            f.submit(&e, &blobs(&p, 1)).await.is_err(),
-            "thief_first={thief_first}: key_a's commit after its death was admitted"
-        );
-    }
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    f.submit(&e, &f.first).await.expect("commit 0");
+    e.record_revoke(&naked_revoke(&key_a, (1 << 53) - 1), NOW + 5)
+        .await
+        .expect("the thief's far-future revoke is accepted");
+    let mut p = f.base.fork().await.expect("fork");
+    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 6).await;
+    assert!(
+        f.submit(&e, &blobs(&p, 1)).await.is_err(),
+        "key_a's commit dated after the receipt of its revoke was admitted"
+    );
+}
+
+/// Backs the cutoff as this node's receipt time (#203: "honor it from the
+/// witness's own receipt time"; SPEC 14.12): `key_a`'s revoke is dated 1,
+/// far back, and received at NOW+5. A backdated revoke gains nothing: a
+/// `key_a` commit dated NOW+4 is history and admitted, one dated NOW+5 is
+/// refused, live and after a rebuild from the blobs. Turns red if the
+/// revoke's own `now` sets the cutoff, or a rebuild loses the receipt time.
+#[tokio::test]
+async fn a_revoke_cuts_off_at_its_receipt_time() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    f.submit(&e, &f.first).await.expect("commit 0");
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 5)
+        .await
+        .expect("a backdated revoke is accepted");
+    let mut p = f.base.fork().await.expect("fork");
+    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 4).await;
+    create_key(&mut p, &key_a, &kp(&pool, "carol"), NOW + 5).await;
+    f.submit(&e, &blobs(&p, 1))
+        .await
+        .expect("dated before the receipt: history");
+    assert!(
+        f.submit(&e, &blobs(&p, 2)).await.is_err(),
+        "dated at the receipt: dead"
+    );
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert!(
+        f.submit(&e, &blobs(&p, 2)).await.is_err(),
+        "a rebuild keeps the receipt time"
+    );
 }
 
 /// Backs the owner's exit (SPEC 6.4): `golden` is already naked-revoked
@@ -513,7 +539,7 @@ async fn a_dead_keys_self_revoke_lands() {
     let r = revoked().await;
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     r.f.submit(&e, &r.f.first).await.expect("commit 0");
-    e.record_revoke(&naked_revoke(&r.f.golden, NOW + 5))
+    e.record_revoke(&naked_revoke(&r.f.golden, NOW + 5), NOW + 5)
         .await
         .expect("revoke");
     r.f.submit(&e, &blobs(&r.canonical, 1))
@@ -1158,5 +1184,71 @@ mod retained {
             listed,
             "an unverified bundle was listed"
         );
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(12))]
+
+    /// Backs I1 for the receipt-time cutoff (#203): a chain whose commits
+    /// `golden` or `key_a` signs at generated times, with `key_a`'s naked
+    /// revoke received at a generated time between two of them. What the
+    /// engine holds and how it reads it (tip, verdict, heads) is the same
+    /// live and after a rebuild from the blobs, and the cutoff survives the
+    /// rebuild: a `key_a` commit dated at the receipt time is refused
+    /// either way. Turns red if the record loses or changes its receipt
+    /// time, or a rebuild judges a held commit differently.
+    #[test]
+    fn rebuild_equals_live_under_a_receipt_time_revoke(
+        steps in proptest::collection::vec((proptest::bool::ANY, 1i64..4), 1..5),
+        revoke_at in 0usize..5,
+        wrt_offset in 0i64..12,
+    ) {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let f = Fork::new(0).await;
+            let pool = load_pool();
+            let key_a = kp(&pool, "key_a");
+            let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+            f.submit(&e, &f.first).await.expect("commit 0");
+            let wrt = NOW + wrt_offset;
+            let new_keys = ["key_b", "alice", "bob", "carol"];
+            let mut p = f.base.fork().await.expect("fork");
+            let mut now = NOW;
+            for (i, (by_a, gap)) in steps.iter().enumerate() {
+                if i == revoke_at {
+                    e.record_revoke(&naked_revoke(&key_a, 1), wrt).await.expect("revoke");
+                }
+                now += gap;
+                let signer = if *by_a { &key_a } else { &f.golden };
+                let mut next = p.fork().await.expect("fork");
+                create_key(&mut next, signer, &kp(&pool, new_keys[i]), now).await;
+                if f.submit(&e, &blobs(&next, i + 1)).await.is_ok() {
+                    p = next;
+                } else {
+                    break;
+                }
+            }
+            if revoke_at >= steps.len() {
+                e.record_revoke(&naked_revoke(&key_a, 1), wrt).await.expect("revoke");
+            }
+            let live = (
+                e.get_tip(&f.id).await.expect("tip"),
+                e.assess(&f.id).await.expect("assess"),
+            );
+            e.rebuild_index_from_scratch().await.expect("rebuild");
+            let rebuilt = (
+                e.get_tip(&f.id).await.expect("tip"),
+                e.assess(&f.id).await.expect("assess"),
+            );
+            assert_eq!(rebuilt, live, "rebuild equals live");
+            let mut dead = p.fork().await.expect("fork");
+            create_key(&mut dead, &key_a, &kp(&pool, "diana_es384"), wrt.max(now + 1)).await;
+            let at = p.commits().count();
+            assert!(
+                f.submit(&e, &blobs(&dead, at)).await.is_err(),
+                "a key_a commit dated at or after the receipt is refused after a rebuild"
+            );
+        });
     }
 }

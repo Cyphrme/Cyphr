@@ -196,10 +196,45 @@ async fn one_round_takes_a_peers_resolution() {
     assert_eq!(branches.len(), 2, "A is kept: {branches:?}");
 }
 
-/// A shared genesis (`golden`, `eve`), the owner's X at 1 (`golden`), and
-/// `eve`'s line R at 1, B at 2: `(genesis, id, owner after X, X, R, B,
-/// thief after B)`.
+/// [`dead_key_fixture_at`] dated from `T`, long before any receipt clock:
+/// a revoke received now leaves its commits as history.
 async fn dead_key_fixture() -> (
+    WireBundle,
+    String,
+    cyphr::Principal,
+    WireBundle,
+    WireBundle,
+    WireBundle,
+    cyphr::Principal,
+) {
+    dead_key_fixture_at(T).await
+}
+
+/// [`dead_key_fixture_at`] dated a minute ahead of the wall clock (inside
+/// the push window, SPEC 15.9): a revoke this node receives now, its
+/// cutoff, kills `eve`'s commits.
+async fn dead_key_fixture_ahead() -> (
+    WireBundle,
+    String,
+    cyphr::Principal,
+    WireBundle,
+    WireBundle,
+    WireBundle,
+    cyphr::Principal,
+) {
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    dead_key_fixture_at(clock + 60).await
+}
+
+/// A shared genesis (`golden`, `eve`) at `t0`, the owner's X at 1
+/// (`golden`), and `eve`'s line R at 1, B at 2: `(genesis, id, owner after
+/// X, X, R, B, thief after B)`.
+async fn dead_key_fixture_at(
+    t0: i64,
+) -> (
     WireBundle,
     String,
     cyphr::Principal,
@@ -215,15 +250,15 @@ async fn dead_key_fixture() -> (
         .await
         .expect("implicit");
     let genesis =
-        test_fixtures::bundle::genesis_bundle(&mut shared, g, &[eve.key().expect("eve")], T)
+        test_fixtures::bundle::genesis_bundle(&mut shared, g, &[eve.key().expect("eve")], t0)
             .await
             .expect("genesis");
     let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
     let mut owner = shared.fork().await.expect("fork");
-    let x = common::key_commit_by(&mut owner, "golden", "key_a", T + 1).await;
+    let x = common::key_commit_by(&mut owner, "golden", "key_a", t0 + 1).await;
     let mut thief = shared.fork().await.expect("fork");
-    let r = common::key_commit_by(&mut thief, "eve_ed25519", "key_b", T + 1).await;
-    let b = common::key_commit_by(&mut thief, "eve_ed25519", "carol", T + 2).await;
+    let r = common::key_commit_by(&mut thief, "eve_ed25519", "key_b", t0 + 1).await;
+    let b = common::key_commit_by(&mut thief, "eve_ed25519", "carol", t0 + 2).await;
     (genesis, id, owner, x, r, b, thief)
 }
 
@@ -235,8 +270,9 @@ async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
 }
 
 /// Backs key death at admission (SPEC 6.4) on the gossip path: P1 holds X
-/// canonical, P2 serves `eve`'s line R, B over X's position, and `eve` is
-/// naked-revoked as of a time after both. One round of P1's gossip must
+/// canonical, P2 serves `eve`'s line R, B over X's position, dated a
+/// minute ahead, and `eve` is naked-revoked now, so each receipt time
+/// precedes both (#203: the cutoff is the receipt). One round of P1's gossip must
 /// not promote R's line: X stays P1's tip and P1 stays Active. Pinned
 /// with the revoke posted to P1 beforehand, and with it posted only to P2,
 /// so P1 learns it in the very round that serves the line: verified
@@ -245,7 +281,7 @@ async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
 #[tokio::test(flavor = "multi_thread")]
 async fn gossip_never_promotes_a_dead_keys_rival() {
     for on_p1 in [true, false] {
-        let (genesis, id, owner, x, r, b, _) = dead_key_fixture().await;
+        let (genesis, id, owner, x, r, b, _) = dead_key_fixture_ahead().await;
         let (p1, _d1) = keyless_server();
         let (p2, _d2) = keyless_server();
         let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));
@@ -277,13 +313,14 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
 
 /// Backs gossip feeding the engine's revocations (SPEC 6.4, 15.7.1): P1
 /// holds X canonical and `eve`'s rival R at X's position, a plain fork in
-/// Error. P2 holds X and `eve`'s naked revoke. One round of P1's gossip
-/// records the revoke where the engine judges forks, so R leaves the fork
+/// Error, R dated a minute ahead. P2 holds X and `eve`'s naked revoke.
+/// One round of P1's gossip records the revoke, received now and so
+/// before R's `now`, where the engine judges forks, so R leaves the fork
 /// and P1 is Active, as P2 would be. Turns red if a revoke learned by
 /// gossip leaves P1 in Error.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_revoke_learned_by_gossip_settles_the_fork() {
-    let (genesis, id, owner, x, r, ..) = dead_key_fixture().await;
+    let (genesis, id, owner, x, r, ..) = dead_key_fixture_ahead().await;
     let (p1, _d1) = keyless_server();
     let (p2, _d2) = keyless_server();
     let (app1, app2) = (build_router(p1.clone()), build_router(p2.clone()));

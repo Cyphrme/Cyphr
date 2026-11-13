@@ -330,17 +330,32 @@ pub const BRANCH_LIMIT: usize = 16;
 pub const BRANCH_PER_KEY: usize = 2;
 
 /// Marks a blob as a revoke record: these bytes followed by the JSON of a
-/// verified naked revoke's `{pay, sig, key}` envelope (SPEC 6.4). A
-/// keyspace of its own, as [`COMMIT_MANIFEST_PREFIX`] is. The record is the
-/// revoke itself, so a rebuild re-verifies it rather than trusting it.
-pub const REVOKE_RECORD_PREFIX: &[u8] = b"\0cyphr-storage/revoke-record/v1\0";
+/// [`RevokeRecord`]. A keyspace of its own, as [`COMMIT_MANIFEST_PREFIX`]
+/// is. A rebuild re-verifies the revoke it carries rather than trusting it.
+pub const REVOKE_RECORD_PREFIX: &[u8] = b"\0cyphr-storage/revoke-record/v2\0";
+
+/// The first revoke record version, the bare envelope with no receipt
+/// time; a rebuild quarantines one rather than guess its cutoff.
+const REVOKE_RECORD_V1_PREFIX: &[u8] = b"\0cyphr-storage/revoke-record/v1\0";
+
+/// A naked revoke this node accepted, and when: the record of a key's
+/// death (SPEC 6.4).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RevokeRecord {
+    /// This node's Witness Receipt Timestamp of the revoke, Unix seconds:
+    /// the key's cutoff (the spec author on #203: "honor it from the
+    /// witness's own receipt time"). The node's own statement in its own
+    /// store, not something the revoke's signature proves.
+    wrt: i64,
+    /// The verified `{pay, sig, key}` envelope as received.
+    evidence: serde_json::Value,
+}
 
 /// Verify a naked revoke's `{pay, sig, key}` envelope: `pay` is a
 /// `key/revoke` with a valid `rvk` naming `tmb`, the disclosed key hashes
 /// to `tmb`, and the signature verifies under it (self-signed only).
-/// Returns the revoked thumbprint (base64url) and the revoke's own `now`,
-/// from which it takes effect.
-fn verify_revoke(evidence: &serde_json::Value) -> Result<(String, i64), String> {
+/// Returns the revoked thumbprint (base64url).
+fn verify_revoke(evidence: &serde_json::Value) -> Result<String, String> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let pay = &evidence["pay"];
@@ -352,7 +367,12 @@ fn verify_revoke(evidence: &serde_json::Value) -> Result<(String, i64), String> 
         .as_i64()
         .filter(|rvk| coz::is_valid_rvk(*rvk))
         .ok_or("revoke has no valid rvk")?;
-    let now = pay["now"].as_i64().ok_or("revoke has no now")?;
+    // Coz validity (SPEC 6.4): `now`, like `rvk`, an integer in 1..2^53-1.
+    // Its value decides nothing: the cutoff is the receipt time.
+    pay["now"]
+        .as_i64()
+        .filter(|now| coz::is_valid_rvk(*now))
+        .ok_or("revoke has no valid now")?;
     let tmb = pay["tmb"].as_str().ok_or("revoke names no tmb")?;
     let alg = evidence["key"]["alg"]
         .as_str()
@@ -373,7 +393,7 @@ fn verify_revoke(evidence: &serde_json::Value) -> Result<(String, i64), String> 
     if coz::verify_json(&pay_bytes, &sig, alg, &pub_key) != Some(true) {
         return Err("revoke signature does not verify".into());
     }
-    Ok((tmb.to_string(), now))
+    Ok(tmb.to_string())
 }
 
 /// Discriminator of an [`ActionManifest`].
@@ -1510,17 +1530,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Some(data) = self.blob_store.get(&hash).await? else {
                 continue;
             };
+            if data.starts_with(REVOKE_RECORD_V1_PREFIX) {
+                quarantined.push(QuarantinedManifest {
+                    manifest: hash,
+                    principal_id: None,
+                    reason: QuarantineReason::Malformed(
+                        "a v1 revoke record carries no receipt time".into(),
+                    ),
+                });
+                continue;
+            }
             if let Some(json) = data.strip_prefix(REVOKE_RECORD_PREFIX) {
-                // A revoke record is the revoke itself: re-verified, never
-                // trusted. One that fails costs only itself.
-                let verified = serde_json::from_slice::<serde_json::Value>(json)
+                // The revoke a record carries is re-verified, never
+                // trusted; its receipt time is this node's own statement.
+                // One that fails costs only itself.
+                let verified = serde_json::from_slice::<RevokeRecord>(json)
                     .map_err(|e| e.to_string())
-                    .and_then(|evidence| verify_revoke(&evidence));
+                    .and_then(|r| Ok((verify_revoke(&r.evidence)?, r.wrt)));
                 match verified {
-                    // The least (now, record hash) stands, as when live.
-                    Ok((tmb, now)) => {
+                    // Live keeps one record per key, the first accepted;
+                    // were there two, the earliest receipt stands.
+                    Ok((tmb, wrt)) => {
                         let death = Death {
-                            now,
+                            wrt,
                             record: *hash.as_bytes(),
                         };
                         let at = revoked.entry(tmb).or_insert(death);
@@ -3156,51 +3188,62 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         })
     }
 
-    /// Record a self-signed naked revoke (SPEC 6.4) as a revoke record in
-    /// the blob store. `evidence` is the `{pay, sig, key}` envelope the
-    /// revoke arrived in; it is verified here, since a rebuild trusts only
-    /// what the blobs prove.
+    /// Record a self-signed naked revoke (SPEC 6.4), received by this node
+    /// at `wrt` (its Witness Receipt Timestamp, Unix seconds), as a revoke
+    /// record in the blob store. `evidence` is the `{pay, sig, key}`
+    /// envelope the revoke arrived in; it is verified here, since a
+    /// rebuild re-verifies it. A Coz-valid revoke is always accepted,
+    /// pushed or relayed, whatever its `now` or `rvk` (the spec author on
+    /// #203: "Coz valid revokes are always accepted").
     ///
-    /// A revoke takes effect from its own `now`; its `rvk` decides nothing
-    /// (SPEC 14.12). It never changes a served chain: the fork rule stops
-    /// counting the key's commits dated at or after that `now`
-    /// ([`counted`]), and the key's later commits are refused at admission
-    /// ([`dead_key_in`]). Key death is global by thumbprint, so the record
-    /// names no principal.
+    /// The key's cutoff is `wrt`, never the revoke's own `now` or `rvk`
+    /// (#203: "honor it from the witness's own receipt time"; SPEC 14.12).
+    /// A message the key signs is dead iff its own `now` is at or after
+    /// the cutoff: refused at admission ([`dead_key_in`]), not counted by
+    /// the fork rule ([`counted`]), live and on rebuild alike. A relayed
+    /// revoke gets this node's receipt time, never the relayer's. The
+    /// caller supplies `wrt` from its clock.
     ///
-    /// One revoke stands per thumbprint, the one with the least `(now,
-    /// record hash)`. A revoke whose `now` is not strictly earlier than the
-    /// one held stores nothing, so re-signing it cannot grow the store, and
-    /// a far-future revoke recorded first (by a key's thief, say) gives way
-    /// to the owner's earlier one. Each strictly earlier revoke stores one
-    /// record, ending the key sooner. The record hash only orders records
-    /// a rebuild finds at one `now`.
+    /// The first revoke of a key accepted stands and is never replaced: a
+    /// later one stores nothing, so re-signing cannot grow the store and a
+    /// clock stepping back cannot lower the cutoff. Key death is global by
+    /// thumbprint, so the record names no principal.
     ///
-    /// No receipt check here: a revoke relayed by gossip or a witness's
-    /// sync was received elsewhere. A server holds a pushed revoke to SPEC
-    /// 15.9's receipt window before it calls this.
-    pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
+    /// # Errors
+    ///
+    /// [`EngineError::InvalidInput`] for a revoke that is not Coz-valid or
+    /// not self-signed; a storage error if the record cannot be written.
+    pub async fn record_revoke(
+        &self,
+        evidence: &serde_json::Value,
+        wrt: i64,
+    ) -> Result<(), EngineError> {
         self.ensure_healed().await?;
-        let (tmb, now) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
+        let tmb = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         // Held across the write, so two revokes of one key store one record.
         let lock = self.principal_lock(&format!("revoke\0{tmb}"));
         let _one_record = lock.lock().await;
-        let mut bytes = REVOKE_RECORD_PREFIX.to_vec();
-        serde_json::to_writer(&mut bytes, evidence)
-            .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
-        let death = Death {
-            now,
-            record: *blake3::hash(&bytes).as_bytes(),
-        };
-        let held = self
+        if self
             .revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&tmb)
-            .copied();
-        if held.is_some_and(|held| held.now <= death.now) {
+            .contains_key(&tmb)
+        {
             return Ok(());
         }
+        let mut bytes = REVOKE_RECORD_PREFIX.to_vec();
+        serde_json::to_writer(
+            &mut bytes,
+            &RevokeRecord {
+                wrt,
+                evidence: evidence.clone(),
+            },
+        )
+        .map_err(|e| EngineError::MalformedBlob(format!("revoke record serialize: {e}")))?;
+        let death = Death {
+            wrt,
+            record: *blake3::hash(&bytes).as_bytes(),
+        };
         self.blob_store.put(&bytes).await?;
         self.revoked
             .lock()
@@ -3782,32 +3825,32 @@ impl Held {
     }
 }
 
-/// A naked revoke the engine keeps for one key: its own `now`, from which
-/// it takes effect, and the hash of its revoke record.
+/// A naked revoke the engine keeps for one key: this node's receipt time
+/// of it, the key's cutoff, and the hash of its revoke record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Death {
-    now: i64,
+    wrt: i64,
     record: [u8; 32],
 }
 
 /// The naked-revoked thumbprints (base64url), each with the revoke the
-/// engine keeps for it, the one with the least `(now, record hash)`: a
-/// cache of the revoke records (I1).
+/// engine keeps for it, the first it accepted: a cache of the revoke
+/// records (I1).
 type Revoked = HashMap<String, Death>;
 
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
 /// store): the refusal for `bundle` if a transaction coz in it is signed by
-/// a revoked key, or introduces one, and is dated at or after the revoke's
-/// own `now` (SPEC 14.12: by `now`, never `rvk`; a coz with no readable
-/// `now` is judged dated after it). Not retroactive: history a key signed
-/// before its revoke stands everywhere, so a node that learned the revoke
-/// first still syncs it. A coz that revokes its own signer is never
-/// refused: it can only end the key (SPEC 6.4: "sign a standard revoke, a
-/// subsequent `key/delete` ... and commit").
+/// a revoked key, or introduces one, and is dated at or after the key's
+/// cutoff, this node's receipt time of its revoke ([`Death::wrt`]; a coz
+/// with no readable `now` is judged dated after it). Not retroactive:
+/// history a key signed before the cutoff stands, so a node that learned
+/// the revoke first still syncs it. A coz that revokes its own signer is
+/// never refused: it can only end the key (SPEC 6.4: "sign a standard
+/// revoke, a subsequent `key/delete` ... and commit").
 ///
 /// The key's holder chooses `now`, so a holder of a compromised key can
-/// date a commit below the revoke's. That is not prevented here: the owner
+/// date a commit below the cutoff. That is not prevented here: the owner
 /// recovers by mutating the principal forward (SPEC 14.12), since Cyphr
 /// does not use reversion.
 ///
@@ -3830,7 +3873,7 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         let dead_at = |tmb: &str| {
             revoked
                 .get(tmb)
-                .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.now))
+                .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.wrt))
         };
         let typ = pay["typ"].as_str().unwrap_or_default();
         if cyphr::parsed_coz::typ::is_key_introducing(typ)
@@ -3858,8 +3901,8 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
 /// The ids of the held commits the fork rule counts ([`assessment`]):
 /// each held commit, canonical or retained, whose parent is counted (a
 /// genesis commit has none), unless a coz of it is signed by a
-/// naked-revoked key at or after the revoke's own `now` (SPEC 6.4, 14.12:
-/// a revoke takes effect from its `now`, and `rvk` decides nothing). A
+/// naked-revoked key and dated at or after the key's cutoff, this node's
+/// receipt time of the revoke (SPEC 6.4; the spec author on #203). A
 /// revoke inside a commit is no naked revoke (SPEC 6.4: one is "signed
 /// outside of a commit"): it is state of its own branch, where it removes
 /// the key, and stops nothing on a rival branch (SPEC 15.8).
@@ -3875,7 +3918,7 @@ fn counted(held: &[Held], revoked: &Revoked) -> HashSet<String> {
             !c.revokes_signer
                 && revoked
                     .get(c.tmb.as_str())
-                    .is_some_and(|death| c.now >= death.now)
+                    .is_some_and(|death| c.now >= death.wrt)
         })
     };
     let mut order: Vec<&Held> = held.iter().collect();
@@ -4305,8 +4348,8 @@ fn is_commit_create_typ(typ: &str) -> bool {
 }
 
 /// Take the naked revokes the engine holds into `principal`'s key
-/// history: each takes effect from its own `now` (SPEC 6.4). A revoke of a
-/// key the principal never held changes nothing.
+/// history: each takes effect from this node's receipt time of it (SPEC
+/// 6.4; #203). A revoke of a key the principal never held changes nothing.
 fn note_revokes<T: cyphr::eml::Storage>(principal: &mut cyphr::Principal<T>, revoked: &Revoked) {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -4314,7 +4357,7 @@ fn note_revokes<T: cyphr::eml::Storage>(principal: &mut cyphr::Principal<T>, rev
     // they decode.
     for (tmb, death) in revoked {
         if let Ok(bytes) = Base64UrlUnpadded::decode_vec(tmb) {
-            principal.note_naked_revoke(&coz::Thumbprint::from_bytes(bytes), death.now);
+            principal.note_naked_revoke(&coz::Thumbprint::from_bytes(bytes), death.wrt);
         }
     }
 }

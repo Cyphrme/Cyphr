@@ -929,7 +929,7 @@ fn children_of_a_disqualified_rival_are_not_a_fork() {
     let revoked: Revoked = [(
         "revoked".to_string(),
         Death {
-            now: 0,
+            wrt: 0,
             record: [0; 32],
         },
     )]
@@ -942,4 +942,71 @@ fn children_of_a_disqualified_rival_are_not_a_fork() {
     // Control: with the key not revoked, r1 counts and so do its
     // children, which fork over one pre.
     assert!(in_error(&commits, &Revoked::new()));
+}
+
+/// A held tree from a generated plan: commit `i` (for `i` >= 1) extends
+/// commit `parent % i`, is signed by `K` when `by_k` and by another key
+/// otherwise, and is dated `now`. Commit 0 is the genesis, by the other key.
+fn held_tree(plan: &[(usize, bool, i64)]) -> Vec<Held> {
+    let mut held: Vec<Held> = vec![Held {
+        sequence: 0,
+        id: "c0".into(),
+        pre: None,
+        pr: "pr-c0".into(),
+        signed: vec![SignedCoz {
+            tmb: "other".into(),
+            now: 0,
+            revokes_signer: false,
+        }],
+    }];
+    for (i, &(parent, by_k, now)) in plan.iter().enumerate() {
+        let i = i + 1;
+        let parent = held[parent % i].clone();
+        held.push(Held {
+            sequence: parent.sequence + 1,
+            id: format!("c{i}"),
+            pre: Some(parent.pr.clone()),
+            pr: format!("pr-c{i}"),
+            signed: vec![SignedCoz {
+                tmb: if by_k { "K" } else { "other" }.into(),
+                now,
+                revokes_signer: false,
+            }],
+        });
+    }
+    held
+}
+
+proptest::proptest! {
+    /// Backs W3/W4 (#203: "Retrospection isn't supported"): admitting a
+    /// naked revoke of K received at `wrt` uncounts exactly the held
+    /// commits whose line carries a K signature dated at or after `wrt`.
+    /// Every commit counted before whose line K signed only before `wrt`
+    /// stays counted, and nothing new is counted. Over generated held
+    /// trees; a pure function of the blobs, so it holds on rebuild too.
+    /// Turns red if the cutoff is the revoke's own `now` or `rvk`, is
+    /// exclusive of `wrt`, or uncounts history dated before it.
+    #[test]
+    fn a_revoke_never_uncounts_history_dated_before_its_receipt(
+        plan in proptest::collection::vec((0usize..64, proptest::bool::ANY, 0i64..20), 1..24),
+        wrt in 0i64..22,
+    ) {
+        let held = held_tree(&plan);
+        let before = counted(&held, &Revoked::new());
+        let revoked: Revoked = [("K".to_string(), Death { wrt, record: [0; 32] })]
+            .into_iter()
+            .collect();
+        let after = counted(&held, &revoked);
+        let by_pr: HashMap<&str, &Held> = held.iter().map(|h| (h.pr.as_str(), h)).collect();
+        for h in &held {
+            let mut line_dead = false;
+            let mut at = Some(h);
+            while let Some(c) = at {
+                line_dead |= c.signed.iter().any(|s| s.tmb == "K" && s.now >= wrt);
+                at = c.pre.as_deref().and_then(|pre| by_pr.get(pre).copied());
+            }
+            let expected = before.contains(&h.id) && !line_dead;
+            proptest::prop_assert_eq!(after.contains(&h.id), expected, "{}", h.id);
+        }
+    }
 }

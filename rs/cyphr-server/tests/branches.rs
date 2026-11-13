@@ -810,9 +810,9 @@ async fn theft_server(
     (app, state, dir)
 }
 
-/// `eve` self-revokes (SPEC 6.4) dated `now`, recorded as a relayed
-/// revoke is (gossip, a witness's sync): a revoke pushed over `/revoke` is
-/// held to the receipt check (SPEC 15.9), which one dated in the past fails.
+/// `eve` self-revokes (SPEC 6.4), dated `now` and received by this node
+/// at `now`: the engine's cutoff for `eve` is that receipt time, as if the
+/// server's clock read `now` when the revoke arrived.
 async fn revoke_eve(state: &cyphr_server::AppState, now: i64) {
     let pool = load_pool();
     let e = kp(&pool, "eve_ed25519");
@@ -834,7 +834,7 @@ async fn revoke_eve(state: &cyphr_server::AppState, now: i64) {
         .expect("observed");
     state
         .engine
-        .record_revoke(&envelope)
+        .record_revoke(&envelope, now)
         .await
         .expect("the engine keeps the revoke");
 }
@@ -967,48 +967,53 @@ async fn errored_refuses_and_retains() {
     assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
 }
 
-/// Backs a revoke taking effect from its own `now` (SPEC 6.4, 14.12; the
-/// fork rule counts no commit a revoked key signed at or after it), in
-/// either arrival order:
+/// Backs a revoke's cutoff as this node's receipt time of the first revoke
+/// of the key it accepts (SPEC 6.4, 14.12; the spec author on #203), in
+/// either arrival order of the branches:
 ///
-/// * a revoke dated after every thief commit (NOW+100) changes nothing: B and C stand, C still ties
-///   D, Error;
-/// * one dated at B's `now` (NOW+4) leaves B and C uncounted: the owner's D is the one head,
-///   Active.
+/// * received at NOW+100, after every thief commit: B and C stand, C still ties D, Error; a second
+///   revoke of `eve`, received at NOW+4, stores nothing and moves nothing;
+/// * received at NOW+4, B's `now`: B and C are uncounted, the owner's D is the one head, Active.
 ///
 /// Neither moves the served chain, and a rebuild agrees. Turns red if a
-/// revoke's `rvk` or a later `now` takes a commit out, an earlier one
-/// leaves the thief's line counted, or a rebuild disagrees. End to end
-/// over `/push`, the engine's revoke record, `/tip`, `/branches`.
+/// later revoke replaces the first, an early receipt leaves the thief's
+/// line counted, or a rebuild disagrees. End to end over `/push`, the
+/// engine's revoke record, `/tip`, `/branches`.
 #[tokio::test]
 async fn revoke_resolves_both_extended() {
     for thief_first in [true, false] {
-        let t = theft(thief_first).await;
-        let (app, state, dir) = both_extended(&t, thief_first).await;
-        let d_id = d_commit_id(&t).await;
-        let tip = tip_payload(app.clone(), &t.id).await["commit_id"].clone();
-        let list = heads(&app, &t.id).await;
-        revoke_eve(&state, NOW + 100).await;
-        assert!(
-            errored(&state, &t.id).await,
-            "thief_first={thief_first}: commits dated before the revoke stand"
-        );
-        revoke_eve(&state, NOW + 4).await;
-        let expected = (false, tip.clone(), vec![d_id.clone()]);
-        assert_eq!(
-            verdict(&app, &state, &t.id).await,
-            expected,
-            "thief_first={thief_first}: live"
-        );
-        assert_eq!(heads(&app, &t.id).await, list, "nothing is dropped");
-        drop((app, state));
-        let (app, state) = reopen(dir.path()).await;
-        assert_eq!(
-            verdict(&app, &state, &t.id).await,
-            expected,
-            "thief_first={thief_first}: a rebuild agrees"
-        );
-        assert_eq!(heads(&app, &t.id).await, list);
+        for (received, then, error) in [(NOW + 100, Some(NOW + 4), true), (NOW + 4, None, false)] {
+            let t = theft(thief_first).await;
+            let (app, state, dir) = both_extended(&t, thief_first).await;
+            let d_id = d_commit_id(&t).await;
+            let tip = tip_payload(app.clone(), &t.id).await["commit_id"].clone();
+            let list = heads(&app, &t.id).await;
+            revoke_eve(&state, received).await;
+            if let Some(then) = then {
+                revoke_eve(&state, then).await;
+            }
+            let assessed = state.engine.assess(&t.id).await.expect("assess");
+            let case = format!("thief_first={thief_first}, received {received}");
+            assert_eq!(
+                assessed.consensus == cyphr_storage::engine::Consensus::Error,
+                error,
+                "{case}"
+            );
+            if !error {
+                assert_eq!(assessed.heads, vec![d_id.clone()], "{case}: D");
+            }
+            let live = verdict(&app, &state, &t.id).await;
+            assert_eq!(live.1, tip, "{case}: a revoke moves no chain");
+            assert_eq!(heads(&app, &t.id).await, list, "{case}: nothing is dropped");
+            drop((app, state));
+            let (app, state) = reopen(dir.path()).await;
+            assert_eq!(
+                verdict(&app, &state, &t.id).await,
+                live,
+                "{case}: a rebuild agrees"
+            );
+            assert_eq!(heads(&app, &t.id).await, list);
+        }
     }
 }
 
@@ -1370,13 +1375,11 @@ async fn a3_live_and_rebuild_disagree() {
     );
 }
 
-/// A4: re-signed revokes store nothing. One revoke record stands per
-/// thumbprint, the one with the least `(now, digest)`: a revoke of a key
-/// already revoked at the same or an earlier `now`, whatever else it
-/// carries, adds no blob; only a strictly earlier `now`, which ends the
-/// key sooner, adds one. Recorded as relayed revokes are, since a pushed
-/// revoke is held to the receipt window. Turns red if a re-signed revoke
-/// that ends the key no sooner stores a record.
+/// A4: re-signed revokes store nothing. The first revoke of a key this
+/// node accepts stands (SPEC 6.4; the spec author on #203: the cutoff is
+/// the witness's receipt time of it), so a later revoke of the key, whatever
+/// its `now`, `rvk` or `msg`, and whenever it arrives, adds no blob. Turns
+/// red if a revoke of a key already dead stores a record.
 #[tokio::test]
 async fn a4_resigned_revokes_store_nothing() {
     use cyphr_storage::blob::BlobStore;
@@ -1409,27 +1412,28 @@ async fn a4_resigned_revokes_store_nothing() {
     };
     state
         .engine
-        .record_revoke(&revoke("first", NOW + 5))
+        .record_revoke(&revoke("first", NOW + 5), NOW + 5)
         .await
         .expect("first");
-    for (msg, now, grows) in [
-        ("first", NOW + 5, 0),
-        ("second", NOW + 5, 0),
-        ("third", NOW + 5, 0),
-        ("later", NOW + 50, 0),
-        ("earlier", NOW + 1, 1),
-        ("earlier again", NOW + 1, 0),
+    // (msg, its own now, when this node receives it): whatever either says,
+    // a key already dead stores nothing more.
+    for (msg, now, wrt) in [
+        ("first", NOW + 5, NOW + 6),
+        ("second", NOW + 5, NOW + 6),
+        ("later", NOW + 50, NOW + 50),
+        ("earlier", NOW + 1, NOW + 7),
+        ("received earlier", NOW + 1, NOW + 1),
     ] {
         let before = blobs().await;
         state
             .engine
-            .record_revoke(&revoke(msg, now))
+            .record_revoke(&revoke(msg, now), wrt)
             .await
-            .expect("verifies");
+            .expect("a Coz-valid revoke is accepted");
         assert_eq!(
             blobs().await,
-            before + grows,
-            "revoke `{msg}` at now {now} grew the store by other than {grows}"
+            before,
+            "revoke `{msg}` (now {now}, received {wrt}) grew the store"
         );
     }
 }

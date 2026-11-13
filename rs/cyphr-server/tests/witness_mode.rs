@@ -2352,18 +2352,24 @@ async fn sync_locks_bounded() {
 
 /// Backs key death at admission on the witness path (SPEC 6.4): the
 /// authority holds a principal whose genesis keys are `golden` and `eve`,
-/// a `golden` commit, then `eve`'s commit at the tip, then `eve`'s naked
-/// revoke dated no later than that commit. A witness syncing from it
-/// learns the authority's revokes before it submits the delta, so it
-/// admits the history signed before the revoke and refuses `eve`'s commit
-/// dated at its death. Turns red if the witness admits a dead key's commit
-/// dated after its revoke.
+/// a `golden` commit, then `eve`'s commit at the tip dated a minute ahead
+/// of the wall clock, then `eve`'s naked revoke. A witness syncing from it
+/// learns the authority's revokes before it submits the delta; the
+/// witness's own receipt time, now, is `eve`'s cutoff (#203), so it admits
+/// the history dated before it and refuses `eve`'s commit dated after it.
+/// Turns red if the witness admits a dead key's commit dated after its
+/// cutoff.
 #[tokio::test]
 async fn witness_refuses_a_dead_keys_tip_commit() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
     let eve = pool.get("eve_ed25519").expect("eve");
     let t = 1_700_000_000;
+    let ahead = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 60;
     let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
         .await
         .expect("implicit");
@@ -2372,7 +2378,7 @@ async fn witness_refuses_a_dead_keys_tip_commit() {
         .expect("genesis");
     let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
     let live = common::key_commit_by(&mut p, "golden", "key_a", t + 1).await;
-    let dead = common::key_commit_by(&mut p, "eve_ed25519", "key_b", t + 2).await;
+    let dead = common::key_commit_by(&mut p, "eve_ed25519", "key_b", ahead).await;
 
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");

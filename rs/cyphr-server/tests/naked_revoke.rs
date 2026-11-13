@@ -877,7 +877,13 @@ async fn revoked_key_refused_at_push() {
          {rjson:?}"
     );
 
-    // A follow-up commit signed by the now-dead key_a.
+    // A follow-up commit signed by the now-dead key_a, dated after this
+    // server received the revoke: the receipt time is the cutoff (#203).
+    let after_receipt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 60;
     let body = followup_push_body(
         &pool,
         pid,
@@ -886,7 +892,7 @@ async fn revoked_key_refused_at_push() {
         RVK,
         "key_a",
         "carol",
-        RVK + 100,
+        after_receipt,
     )
     .await;
     let (status, json) = post_push(&state, body).await;

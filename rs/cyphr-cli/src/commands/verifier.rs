@@ -323,7 +323,10 @@ async fn run_round<C: Connector>(
     // Verified revokes first: the store refuses a dead key's commits at
     // admission and judges forks by them.
     for found in &report.revoked {
-        round.store.record_revoke(&found.envelope).await?;
+        round
+            .store
+            .record_revoke(&found.envelope, system_clock())
+            .await?;
     }
     let mut handed = pulled.bundles_since(mark).to_vec();
     handed.extend(branch_bundles(&pulled, &report, peers).await);
