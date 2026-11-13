@@ -255,8 +255,10 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
         assert_eq!(push(&app1, &id, &x).await, StatusCode::CREATED, "X on P1");
         assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
         assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
-        let to = if on_p1 { &p1 } else { &p2 };
-        common::relay_revoke(to, &common::eve_revoke(T + 1)).await;
+        let to = if on_p1 { &app1 } else { &app2 };
+        let (status, body) =
+            post_json(to.clone(), "/revoke", common::eve_revoke(T + 1).to_string()).await;
+        assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
         let want = owner.pr_tagged().expect("pr");
 
         one_round(&p1, &p2).await;
@@ -294,7 +296,13 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
         p1.engine.is_errored(&id).await.expect("verdict"),
         "a plain fork"
     );
-    common::relay_revoke(&p2, &common::eve_revoke(T + 1)).await;
+    let (status, body) = post_json(
+        app2.clone(),
+        "/revoke",
+        common::eve_revoke(T + 1).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;
 
@@ -324,7 +332,13 @@ async fn a_lagging_peer_catches_up_through_pre_revoke_commits() {
     assert_eq!(push(&app2, &id, &r).await, StatusCode::CREATED, "R on P2");
     assert_eq!(push(&app2, &id, &b).await, StatusCode::CREATED, "B on P2");
     assert_eq!(push(&app2, &id, &c).await, StatusCode::CREATED, "C on P2");
-    common::relay_revoke(&p1, &common::eve_revoke(T + 5)).await;
+    let (status, body) = post_json(
+        app1.clone(),
+        "/revoke",
+        common::eve_revoke(T + 5).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;
 
@@ -373,7 +387,13 @@ async fn honest_rotation_syncs_after_a_later_revoke() {
         StatusCode::CREATED,
         "alice commits"
     );
-    common::relay_revoke(&p1, &common::eve_revoke(T + 5)).await;
+    let (status, body) = post_json(
+        app1.clone(),
+        "/revoke",
+        common::eve_revoke(T + 5).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
 
     one_round(&p1, &p2).await;
 
@@ -384,13 +404,14 @@ async fn honest_rotation_syncs_after_a_later_revoke() {
     );
 }
 
-/// Backs SPEC 15.9 ("rejecting future-dated messages") for a relayed
-/// revoke: P2 serves `eve`'s naked revoke dated an hour ahead (an older
-/// peer kept it). One round of P1's gossip refuses it, and a refused revoke
-/// is refused, not kept: P1 records it nowhere, so `/revoked` serves no
-/// revoke of `eve`. Turns red if P1 keeps or serves the refused revoke.
+/// Backs "Coz valid revokes are always accepted" (spec author, #203) for
+/// a relayed revoke: P2 serves `eve`'s naked revoke dated an hour ahead.
+/// It is Coz-valid, so one round of P1's gossip accepts and keeps it, and
+/// P1 serves it at `/revoked`. A far-future `now` is harmless: the key's
+/// cutoff is P1's own receipt time. Turns red if a Coz-valid relayed
+/// revoke is refused or not served on.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_relayed_future_revoke_is_refused_and_not_kept() {
+async fn a_relayed_future_revoke_is_accepted_and_kept() {
     let (genesis, id, ..) = dead_key_fixture().await;
     let (p1, _d1) = keyless_server();
     let (p2, _d2) = keyless_server();
@@ -398,14 +419,18 @@ async fn a_relayed_future_revoke_is_refused_and_not_kept() {
     for app in [&app1, &app2] {
         assert_eq!(push(app, &id, &genesis).await, StatusCode::CREATED);
     }
-    let future = common::eve_revoke(common::wall_clock() + 3600);
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    let future = common::eve_revoke(clock + 3600);
     let eve = load_pool()
         .get("eve_ed25519")
         .expect("eve")
         .compute_tmb()
         .expect("tmb");
     p2.observations
-        .record_seen(&eve, future)
+        .record_seen(&eve, future.clone())
         .await
         .expect("P2 serves it");
 
@@ -415,7 +440,7 @@ async fn a_relayed_future_revoke_is_refused_and_not_kept() {
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(
         envelope_payload(&body)["revoked"],
-        serde_json::json!([]),
-        "P1 kept a refused revoke"
+        serde_json::json!([future]),
+        "P1 serves the relayed revoke on"
     );
 }

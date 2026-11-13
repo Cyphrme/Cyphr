@@ -3176,22 +3176,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// record, ending the key sooner. The record hash only orders records
     /// a rebuild finds at one `now`.
     ///
-    /// A revoke dated past this engine's clock plus the tolerance is
-    /// refused, on every path. No past bound here: a revoke relayed by
-    /// gossip or a witness's sync was received elsewhere. A server holds a
-    /// pushed revoke to SPEC 15.9's receipt window before it calls this.
+    /// No receipt check here: a revoke relayed by gossip or a witness's
+    /// sync was received elsewhere. A server holds a pushed revoke to SPEC
+    /// 15.9's receipt window before it calls this.
     pub async fn record_revoke(&self, evidence: &serde_json::Value) -> Result<(), EngineError> {
         self.ensure_healed().await?;
         let (tmb, now) = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
-        // A future-dated revoke stops nothing until its `now`, so it is
-        // refused on every path, a relay's included (SPEC 15.9: "rejecting
-        // future-dated messages").
-        let ceiling = unix_now()
-            .unwrap_or(0)
-            .saturating_add_unsigned(cyphr::principal::DEFAULT_MAX_CLOCK_SKEW);
-        if now > ceiling {
-            return Err(EngineError::Protocol(cyphr::Error::TimestampFuture));
-        }
         // Held across the write, so two revokes of one key store one record.
         let lock = self.principal_lock(&format!("revoke\0{tmb}"));
         let _one_record = lock.lock().await;

@@ -808,7 +808,7 @@ async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &
     let key = pool.get(name).expect("key in pool");
     let pay = serde_json::json!({
         "alg": key.alg,
-        "now": common::wall_clock(),
+        "now": 1_700_000_300,
         "rvk": 1_700_000_300,
         "tmb": key.compute_tmb_b64().expect("tmb"),
         "typ": "cyphr.me/cyphr/key/revoke",

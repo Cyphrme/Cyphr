@@ -900,10 +900,6 @@ async fn push_response(
     }
 }
 
-/// How far a pushed naked revoke's `now` may be from this server's time on
-/// receipt, seconds: SPEC 15.9's default tolerance.
-const REVOKE_RECEIPT_TOLERANCE: u64 = 360;
-
 /// `POST /revoke` — accept, verify, and record a self-signed naked revoke
 /// (SPEC §6.4).
 ///
@@ -926,21 +922,6 @@ pub async fn revoke(
     use cyphr_storage::index::Indexer;
 
     let verified = crate::revoke::interpret(&envelope).await?;
-
-    // A revoke takes effect from its own `now` (SPEC 14.12), so a pushed
-    // one is held to the receipt check (SPEC 15.9: `now` within the
-    // tolerance of this server's time on receipt). A revoke relayed by
-    // gossip or a witness's sync is not: its receipt was elsewhere.
-    let now = verified.evidence["pay"]["now"]
-        .as_i64()
-        .ok_or_else(|| AppError::bad_request("revoke has no now"))?;
-    let clock = crate::auth::server_now();
-    if now.abs_diff(clock) > REVOKE_RECEIPT_TOLERANCE {
-        return Err(AppError::bad_request(format!(
-            "revoke now {now} is outside ±{REVOKE_RECEIPT_TOLERANCE} s of receipt at {clock} \
-             (SPEC 15.9)"
-        )));
-    }
 
     // Store the full `{pay, sig, key}` envelope: self-contained evidence any
     // later reader can re-verify with no index. Once the death set is at its

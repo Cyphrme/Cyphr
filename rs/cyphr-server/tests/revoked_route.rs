@@ -7,7 +7,7 @@ use cyphr_server::build_app_router;
 
 mod common;
 
-use common::{envelope_payload, get_json, keyless_server};
+use common::{envelope_payload, get_json, keyless_server, post_json};
 
 /// Claim: a naked revoke the peer accepted is served back, whole, to a
 /// reader that asks for the key; what comes back verifies with the
@@ -18,20 +18,19 @@ use common::{envelope_payload, get_json, keyless_server};
 /// Turns red if: the route is absent; the served envelope is altered so the
 /// client's verification fails; an unknown key is reported dead; or a
 /// request naming 200 keys is answered.
-/// End-to-end scenario: yes (a relayed revoke, then the pull-side read
-/// and verify).
+/// End-to-end scenario: yes (POST /revoke, then the pull-side read and
+/// verify).
 #[tokio::test]
 async fn revoked_serves_the_accepted_naked_revoke_verifiably() {
     let (state, _dir) = keyless_server();
-    let app = build_app_router(state.clone()).expect("router");
+    let app = build_app_router(state).expect("router");
     let golden: serde_json::Value =
         serde_json::from_str(include_str!("golden/naked_revoke_valid.json"))
             .expect("golden vector");
     let tmb = golden["pay"]["tmb"].as_str().expect("tmb").to_owned();
 
-    // Relayed, as gossip records one: pushed over `/revoke`, the vector's
-    // fixed past `now` fails the receipt window (SPEC 15.9).
-    common::relay_revoke(&state, &golden).await;
+    let (status, body) = post_json(app.clone(), "/revoke", golden.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
 
     let unknown = "A".repeat(43);
     let (status, body) = get_json(app.clone(), &format!("/revoked?tmbs={tmb},{unknown}")).await;
