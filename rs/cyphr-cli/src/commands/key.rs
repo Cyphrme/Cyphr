@@ -478,6 +478,7 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
                         "tmb": key.tmb,
                         "alg": key.alg,
                         "tag": key.tag,
+                        "custody": crate::keystore::SOFTWARE_CUSTODY,
                     })
                 })
                 .collect();
@@ -487,7 +488,13 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
             println!("Keys in keystore:");
             for key in keys {
                 let tag_str = key.tag.as_deref().unwrap_or("-");
-                println!("  {} ({}) [{}]", key.tmb, key.alg, tag_str);
+                println!(
+                    "  {} ({}) [{}] {}",
+                    key.tmb,
+                    key.alg,
+                    tag_str,
+                    crate::keystore::SOFTWARE_CUSTODY
+                );
             }
         },
     }

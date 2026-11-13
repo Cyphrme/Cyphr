@@ -29,7 +29,24 @@ use crate::keystore::{Error as KeystoreError, JsonKeyStore, KeyBackend};
 /// runtime (an OS keychain, a hardware token) changes this function and
 /// nothing else: commands see only the [`KeyBackend`] trait.
 pub fn open_backend(cli: &crate::Cli) -> crate::Result<JsonKeyStore> {
-    Ok(JsonKeyStore::open(&cli.keystore)?)
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    for t in keystore.tightened() {
+        eprintln!(
+            "tightened permissions on {}: {:04o} -> {:04o}",
+            t.path.display(),
+            t.from,
+            t.to
+        );
+    }
+    if let Some(d) = keystore.exposed_dir() {
+        eprintln!(
+            "warning: key directory {} is accessible to other users (mode {:04o}); not changed. \
+             Keep the key file in a directory only you can reach",
+            d.path.display(),
+            d.mode
+        );
+    }
+    Ok(keystore)
 }
 
 /// Build a fresh single-threaded tokio runtime and drive `fut` to

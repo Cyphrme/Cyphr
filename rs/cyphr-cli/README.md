@@ -18,6 +18,10 @@ cargo install cyphr-cli
 cyphr key generate --algo ES256 --tag my-key
 ```
 
+Keys are stored unencrypted at rest, in a file only you can read. See
+[Key storage](../../docs/guides/key-storage.md) for what that means and what
+the CLI does to protect the file.
+
 ### Initialize a new Principal
 
 ```bash

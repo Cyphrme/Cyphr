@@ -7,7 +7,12 @@
 mod json;
 
 use cyphr::signer::Signer;
-pub use json::JsonKeyStore;
+pub use json::{ExposedDir, JsonKeyStore, Tightened};
+
+/// What `key list` says about every key the [`JsonKeyStore`] holds: the
+/// private key is in the file as plain bytes. No encryption exists yet, and
+/// custody cannot be recorded.
+pub const SOFTWARE_CUSTODY: &str = "software-held, unencrypted";
 
 /// Error type for key backend operations.
 #[derive(Debug, thiserror::Error)]
@@ -15,6 +20,18 @@ pub enum Error {
     /// I/O error reading or writing keystore file.
     #[error("keystore I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A filesystem operation on a named path failed.
+    #[error("keystore: {op} {path}: {source}")]
+    IoAt {
+        /// What was being done.
+        op: &'static str,
+        /// The file or directory involved.
+        path: std::path::PathBuf,
+        /// The underlying error.
+        #[source]
+        source: std::io::Error,
+    },
 
     /// JSON serialization/deserialization error.
     #[error("keystore JSON error: {0}")]
