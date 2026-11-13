@@ -6,6 +6,8 @@
 
 use base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
+use cyphr::state::TaggedDigest;
+use cyphr_client::TipAnswer;
 use cyphr_storage::engine::bare_digest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 use serde_json::{Value, json};
@@ -31,6 +33,33 @@ fn emit(cli: &Cli, value: &Value, table: impl FnOnce()) -> crate::Result<()> {
 fn wire_id(identity: &str) -> crate::Result<String> {
     let pg = parse_principal_genesis(identity)?;
     Ok(bare_digest(&get_principal_id(&pg)?).to_owned())
+}
+
+/// The position in `local` of the commit the peer's answer says it holds:
+/// its tip, or while it is in Error (SPEC 15.5) the highest of its tied
+/// heads that `local` holds. A commit extending any tied head is admitted
+/// (SPEC 15.8), so one such head is enough to push from.
+fn held_position(tip: &TipAnswer, local: &[RawCommit]) -> Option<usize> {
+    let at = |id: &TaggedDigest| local.iter().position(|c| c.commit_id == id.to_string());
+    match tip {
+        TipAnswer::Active { commit_id } => at(commit_id),
+        TipAnswer::Error { heads, .. } => heads.iter().filter_map(|h| at(&h.commit_id)).max(),
+    }
+}
+
+/// The peer's answer in words, for a refusal.
+fn describe(tip: &TipAnswer) -> String {
+    match tip {
+        TipAnswer::Active { commit_id } => format!("peer tip {commit_id}"),
+        TipAnswer::Error { heads, .. } => format!(
+            "peer is in Error with tied heads {}; none of them",
+            heads
+                .iter()
+                .map(|h| h.commit_id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// `cyphr push`: send the commits the peer lacks, each preceded by the data
@@ -61,14 +90,14 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         // What the peer holds decides what to send; a tip the local
         // history does not contain means the peer is ahead of, or on a
         // different branch from, this sender: refuse, never overwrite.
-        let start = match peer.tip_commit_id(&wire).await? {
+        let start = match peer.tip(&wire).await? {
             None => 0,
-            Some(tip) => match local.iter().position(|c| c.commit_id == tip) {
+            Some(tip) => match held_position(&tip, &local) {
                 Some(i) => i + 1,
                 None => {
                     return Err(PeerError::Stale {
                         peer: peer.url().to_owned(),
-                        detail: format!("peer tip {tip} is not in the local history"),
+                        detail: format!("{} is not in the local history", describe(&tip)),
                     }
                     .into());
                 },
@@ -89,12 +118,11 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 // push's goal is met, and the next commits still go.
                 Err(PeerError::Refused { message, .. })
                     if message.contains("COZ_REUSE")
-                        && peer.tip_commit_id(&wire).await?.is_some_and(|tip| {
-                            local
-                                .iter()
-                                .position(|c| c.commit_id == tip)
-                                .is_some_and(|held| held >= i)
-                        }) => {},
+                        && peer
+                            .tip(&wire)
+                            .await?
+                            .and_then(|tip| held_position(&tip, &local))
+                            .is_some_and(|held| held >= i) => {},
                 Err(e) => return Err(e.into()),
             }
         }
@@ -609,4 +637,66 @@ async fn replays(
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use cyphr_client::{ForkPoint, HeldHead};
+
+    use super::*;
+
+    fn digest(b: u8) -> TaggedDigest {
+        format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[b; 32]))
+            .parse()
+            .expect("digest")
+    }
+
+    fn local(ids: &[u8]) -> Vec<RawCommit> {
+        ids.iter()
+            .map(|b| RawCommit {
+                commit_id: digest(*b).to_string(),
+                bundle: WireBundle::default(),
+            })
+            .collect()
+    }
+
+    fn error(heads: &[u8]) -> TipAnswer {
+        TipAnswer::Error {
+            fork_point: ForkPoint {
+                height: 1,
+                pre: None,
+            },
+            heads: heads
+                .iter()
+                .map(|b| HeldHead {
+                    commit_id: digest(*b),
+                    sequence: 2,
+                    held_since: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Backs `push` choosing where to send from: an Active peer's tip is
+    /// found by id; for an Error peer (SPEC 15.5), the highest-positioned
+    /// tied head the local history holds, since extending any tied head is
+    /// admitted (SPEC 15.8); and a peer none of whose heads is held gives
+    /// nothing to extend. Red if Error's heads are ignored, the lowest is
+    /// taken, or an unheld head is found.
+    #[test]
+    fn push_start_follows_the_peer_tip_or_a_tied_head() {
+        let chain = local(&[1, 2, 3, 4]);
+        assert_eq!(
+            held_position(
+                &TipAnswer::Active {
+                    commit_id: digest(3)
+                },
+                &chain
+            ),
+            Some(2)
+        );
+        assert_eq!(held_position(&error(&[2, 9, 4]), &chain), Some(3));
+        assert_eq!(held_position(&error(&[8, 9]), &chain), None);
+        assert!(describe(&error(&[8, 9])).contains("Error"));
+    }
 }
