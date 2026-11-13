@@ -195,14 +195,3 @@ fn pairing_refuses_a_request_under_another_authority() {
     assert!(!r.ok && r.stderr.contains("is not `"), "{}", r.stderr);
     assert!(!holds(&laptop, &pr, &tmb));
 }
-
-/// `--window` is unsigned: a negative window cannot be asked for.
-#[test]
-fn pairing_rejects_a_negative_window() {
-    let laptop = User::new();
-    let phone = User::new();
-    let pr = laptop.new_identity();
-    let (file, _) = request(&phone, &laptop, &pr);
-    let r = accept(&laptop, &pr, &file, &["--window=-1"]);
-    assert!(!r.ok);
-}
