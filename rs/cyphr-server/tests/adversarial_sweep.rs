@@ -64,12 +64,13 @@ async fn push(app: &axum::Router, id: &str, bundle: &WireBundle) -> axum::http::
 /// `UpToDate` while the authority holds a commit it lacks.
 ///
 /// Here the authority signed the replayed report an hour before the sync.
+/// Reproduces #152, gated on the attestation-currency spec question.
 /// Turns red while the witness accepts it as current (anything but
 /// `Failed`).
 /// End to end: yes (an attestor over TCP, the witness's real sync, a relay
 /// replaying the authority's genuine signed body).
 #[tokio::test]
-#[ignore = "RED(DEBT3)"]
+#[ignore = "RED(#152): a witness takes a stale signed tip report as current"]
 async fn witness_refuses_an_hour_old_tip_report() {
     let (astate, _identity, adir) = common::attestor_server().await;
     let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
