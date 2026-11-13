@@ -178,12 +178,10 @@ impl ObservationStore {
     /// acknowledgement honest under a power loss, at the cost of one fsync per
     /// *first* revoke of a key -- acceptable for a rare security event.
     ///
-    /// One revoke stands per key, the one with the least `(rvk, digest)`,
-    /// as in the engine: a revoke of a key already dead that is not less
-    /// than the one held short-circuits before the write path, so a repeated
-    /// or later-dated POST forces no fsync; an earlier one (the owner's,
-    /// after a thief's far-future revoke) replaces it in place, so it is what
-    /// this server serves on and never grows the set.
+    /// One revoke stands per key, the first accepted, as in the engine (the
+    /// spec author on #203: the cutoff is the witness's receipt time of
+    /// it): a revoke of a key already dead short-circuits before the write
+    /// path, so a repeated POST forces no fsync and never grows the set.
     ///
     /// Past the ceiling ([`Self::with_ceiling`]) a new key is refused
     /// [`ObservationError::Full`]; [`Self::record_seen`] records past it.
@@ -220,11 +218,7 @@ impl ObservationStore {
         let db = self.db.clone();
         let (dead_count, ceiling) = (self.dead_count.clone(), self.ceiling);
         tokio::task::spawn_blocking(move || {
-            if let Some(held) = dead_keys.get(&key).map_err(backend)? {
-                if revoke_order(&value) < revoke_order(&held) {
-                    dead_keys.insert(key, value).map_err(backend)?;
-                    db.persist(PersistMode::SyncAll).map_err(backend)?;
-                }
+            if dead_keys.contains_key(&key).map_err(backend)? {
                 return Ok(());
             }
             let mut count = dead_count.lock().unwrap_or_else(|p| p.into_inner());
@@ -293,15 +287,4 @@ impl ObservationStore {
             .await
             .map_err(|e| ObservationError::Join(e.to_string()))?
     }
-}
-
-/// A stored revoke's place in the order that decides which one stands:
-/// its declared `rvk`, then the digest of its bytes. A revoke with no
-/// readable `rvk` sorts last.
-fn revoke_order(raw: &[u8]) -> (i64, [u8; 32]) {
-    let rvk = serde_json::from_slice::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|coz| coz["pay"]["rvk"].as_i64())
-        .unwrap_or(i64::MAX);
-    (rvk, *blake3::hash(raw).as_bytes())
 }
