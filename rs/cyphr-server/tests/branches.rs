@@ -2520,3 +2520,89 @@ async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
         "polling a still-Error authority is not a failure: {again:?}"
     );
 }
+
+/// Backs a witness that already moved past the fork: it holds a commit E
+/// resolving over one tied head (so it is Active, ahead), and polls an
+/// authority still in Error with heads C and D. Holding each attested
+/// head, not merely having it as a current head, is what sync requires:
+/// the poll is not a failure and the witness gains the branch it lacked
+/// while staying Active on E. Turns red if sync demands the attested heads
+/// be the witness's current heads (EntryCommitmentMismatch), or the seq
+/// guard drops the branch the witness lacks. End to end over TCP.
+#[tokio::test]
+async fn witness_ahead_of_an_error_authority_holds_its_heads() {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+
+    let t = theft(false).await;
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.a, t.n, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    // The witness holds the owner's line and a resolving commit E over D.
+    let pool = load_pool();
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let wstate = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    let hold = |p: &cyphr::Principal, i: usize| {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[i]
+            .bundle()
+            .expect("bundle");
+        let (state, id) = (wstate.clone(), t.id.clone());
+        async move { state.engine.submit_commit(&id, None, &bundle).await }
+    };
+    for i in 0..t.n {
+        hold(&t.shared, i).await.expect("shared");
+    }
+    hold(&t.a, t.n).await.expect("A");
+    hold(&t.d, t.n + 1).await.expect("D");
+    hold(&e, t.n + 2).await.expect("E");
+    assert!(!errored(&wstate, &t.id).await, "the witness is Active on E");
+
+    let outcome = sync_from_authority(&wstate, &t.id).await;
+    assert!(
+        !matches!(outcome, SyncOutcome::Failed { .. }),
+        "an Active witness ahead of the fork polls an Error authority: {outcome:?}"
+    );
+    let c_id = commit_id_at(&t.c, t.n + 1).as_str().expect("id").to_owned();
+    assert!(
+        wstate
+            .engine
+            .holds_commit(&t.id, &c_id)
+            .await
+            .expect("holds"),
+        "the witness gained the branch it lacked"
+    );
+    assert!(!errored(&wstate, &t.id).await, "still Active on E");
+}
