@@ -275,6 +275,7 @@ async fn sync_locked(
         },
     };
     let authenticated_report: Option<TipReport> = patch.report;
+    let held_report = patch.held;
 
     let mut applied = 0usize;
     let mut rejected = 0usize;
@@ -308,6 +309,26 @@ async fn sync_locked(
         }
     }
 
+    // An authority in Error serves every tied branch (SPEC 15.7.1). The
+    // witness holds them all as evidence of the fork; the canonical branch
+    // is already in `entries`.
+    let mut branch_bundles = Vec::new();
+    for branch in patch.fork.iter().flat_map(|f| &f.branches) {
+        if branch.canonical {
+            continue;
+        }
+        for entry in &branch.entries {
+            match &entry.bundle {
+                Ok(bundle) => branch_bundles.push(bundle.clone()),
+                Err(defect) => {
+                    warn!(principal_id = %principal_id, ?defect, "branch entry undecodable; skipping");
+                    rejected += 1;
+                },
+            }
+        }
+    }
+    bundles.extend(branch_bundles.iter().cloned());
+
     // The authority's verified revokes of the keys these commits name go to
     // the engine first, as gossip's do, so its admission refuses what a dead
     // key signed after its death (SPEC 6.4).
@@ -320,9 +341,21 @@ async fn sync_locked(
     // The engine verifies each commit in memory before persisting it. An
     // entry it refuses is skipped (wedge fix, site 2): it must not block a
     // later genuine one.
-    for (seq, bundle) in seqs.iter().zip(&bundles) {
+    let main = seqs.len();
+    for (i, bundle) in bundles.iter().enumerate() {
+        let seq = seqs.get(i).copied().unwrap_or_default();
         match state.engine.submit_commit(principal_id, None, bundle).await {
             Ok(_) => applied += 1,
+            // A branch commit the witness already holds is the steady
+            // state of polling an authority that stays in Error.
+            // A branch commit that does not extend the witness's own head
+            // is refused as the tip and kept as evidence of the fork (the
+            // same answer a push gets, 409 or 422); whether the witness
+            // holds every tied head is checked after the loop.
+            Err(
+                cyphr_storage::engine::EngineError::Protocol(_)
+                | cyphr_storage::engine::EngineError::Errored { .. },
+            ) if i >= main => {},
             Err(err) => {
                 warn!(
                     principal_id = %principal_id,
@@ -367,6 +400,29 @@ async fn sync_locked(
                 "witness sync: resulting local state does not match the authority's signed \
                  attestation -- entries were withheld or substituted"
             );
+            return SyncOutcome::Failed {
+                reason: SyncFailure::EntryCommitmentMismatch,
+            };
+        }
+    }
+
+    // Part 2 for an authority in Error: its statement names tied heads, not
+    // a tip, so the witness must now hold every one of them.
+    if let Some(held) = &held_report {
+        let heads = match state.engine.assess(principal_id).await {
+            Ok(a) => a.heads,
+            Err(err) => {
+                return SyncOutcome::Failed {
+                    reason: SyncFailure::LocalStorageError(err.to_string()),
+                };
+            },
+        };
+        if !held
+            .heads
+            .iter()
+            .all(|h| heads.contains(&h.commit_id.to_string()))
+        {
+            warn!(principal = %principal_id, "witness sync: tied heads of the authority not held");
             return SyncOutcome::Failed {
                 reason: SyncFailure::EntryCommitmentMismatch,
             };

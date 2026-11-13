@@ -393,40 +393,7 @@ async fn error_tip(
 ) -> Json<Envelope<ErrorTipResponse>> {
     let now = crate::auth::server_now();
     let pg = cyphr_storage::engine::bare_digest(principal_id).to_string();
-    let coz = match state.attestor_signer() {
-        Some(signer) => {
-            let claims: Vec<receipt::HeldClaim> = error
-                .heads
-                .iter()
-                .map(|h| receipt::HeldClaim {
-                    commit_id: h.commit_id.clone(),
-                    sequence: h.sequence,
-                    held_since: h.held_since,
-                })
-                .collect();
-            match receipt::held_report(
-                signer.as_ref(),
-                now,
-                pg.clone(),
-                error.fork_point.height,
-                error.fork_point.pre.as_deref(),
-                &claims,
-            )
-            .await
-            {
-                Ok(coz) => Some(coz),
-                Err(reason) => {
-                    tracing::warn!(
-                        principal = %principal_id,
-                        %reason,
-                        "held statement could not be signed; answering unsigned"
-                    );
-                    None
-                },
-            }
-        },
-        None => None,
-    };
+    let coz = held_statement(state, principal_id, &error).await;
     let payload = ErrorTipResponse {
         state: "error",
         principal_id: pg,
@@ -445,6 +412,46 @@ async fn error_tip(
     match coz {
         Some(coz) => Json(Envelope::signed(payload, coz)),
         None => Json(Envelope::unsigned(payload)),
+    }
+}
+
+/// The attestor's signed held statement over `error`, `None` without a
+/// signer or when it cannot be signed (logged).
+async fn held_statement(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    error: &cyphr_storage::engine::ErrorState,
+) -> Option<coz::CozJson> {
+    let signer = state.attestor_signer()?;
+    let pg = cyphr_storage::engine::bare_digest(principal_id).to_string();
+    let claims: Vec<receipt::HeldClaim> = error
+        .heads
+        .iter()
+        .map(|h| receipt::HeldClaim {
+            commit_id: h.commit_id.clone(),
+            sequence: h.sequence,
+            held_since: h.held_since,
+        })
+        .collect();
+    match receipt::held_report(
+        signer.as_ref(),
+        crate::auth::server_now(),
+        pg,
+        error.fork_point.height,
+        error.fork_point.pre.as_deref(),
+        &claims,
+    )
+    .await
+    {
+        Ok(coz) => Some(coz),
+        Err(reason) => {
+            tracing::warn!(
+                principal = %principal_id,
+                %reason,
+                "held statement could not be signed; answering unsigned"
+            );
+            None
+        },
     }
 }
 
@@ -724,6 +731,21 @@ async fn sign_tip_attestation(
     }
 }
 
+/// The held statement an Error `/patch` carries, or `None` to serve it
+/// unsigned (bounded range, no attestor, or a failure to sign).
+async fn held_patch_statement(
+    state: &Arc<AppState>,
+    pr: &str,
+    bounded: bool,
+) -> Option<coz::CozJson> {
+    if bounded {
+        return None;
+    }
+    let error = state.engine.error_state(pr).await.ok().flatten()?;
+    let principal_id = state.engine.get_tip(pr).await.ok().flatten()?.principal_id;
+    held_statement(state, &principal_id, &error).await
+}
+
 /// The attestation `/patch` attaches to a served range, or `None` to serve
 /// it unsigned.
 ///
@@ -899,10 +921,12 @@ pub async fn patch(
     // desync guard `/tip` enforces strictly) is safer serving them
     // unsigned than refusing to serve at all.
     //
-    // In Error no tip exists to attest (SPEC 15.5), so the response is
-    // served unsigned: its commits are re-verified by whoever applies them.
+    // In Error no tip exists to attest (SPEC 15.5): the statement is the
+    // held one `/tip` signs, naming the tied heads, and a bounded `to`
+    // (which could stop short of them) is served unsigned as above.
     let coz = match tip {
-        Some(t) if !in_error => {
+        Some(_) if in_error => held_patch_statement(&state, &query.pr, query.to.is_some()).await,
+        Some(t) => {
             sign_patch_envelope(
                 &state,
                 &t,

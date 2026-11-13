@@ -2448,3 +2448,75 @@ async fn signed_statement_in_error_claims_only_held_since() {
         .collect();
     assert_eq!(again_since, since, "held_since survives a rebuild");
 }
+
+/// Backs SPEC 15.8 (the abandoned branch stays served as proof of error)
+/// for a witness: an authority in Error serves a signed `held` /patch, and
+/// a witness configured with the authority's identity syncs the common
+/// chain and every branch, ends in Error with both tied heads, and a second
+/// poll of the still-Error authority is up to date, not a rejection. Turns
+/// red if sync refuses the Error patch, skips the other branch, or reads
+/// the held statement as a tip report. End to end: two servers over TCP.
+#[tokio::test]
+async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+
+    let t = theft(false).await;
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.a, t.n, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &t.c, t.n + 1, &t.id).await, StatusCode::CONFLICT);
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let witness = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    let outcome = sync_from_authority(&witness, &t.id).await;
+    assert!(
+        matches!(outcome, SyncOutcome::Synced { .. }),
+        "witness sync from an Error authority: {outcome:?}"
+    );
+    assert!(
+        errored(&witness, &t.id).await,
+        "the fork reached the witness"
+    );
+    let mut mine = witness.engine.assess(&t.id).await.expect("assess").heads;
+    let mut theirs = astate.engine.assess(&t.id).await.expect("assess").heads;
+    mine.sort();
+    theirs.sort();
+    assert_eq!(mine, theirs, "both tied heads are held");
+    assert_eq!(mine.len(), 2);
+
+    let again = sync_from_authority(&witness, &t.id).await;
+    assert!(
+        !matches!(again, SyncOutcome::Failed { .. }),
+        "polling a still-Error authority is not a failure: {again:?}"
+    );
+}
