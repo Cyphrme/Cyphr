@@ -240,7 +240,6 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
         assert_eq!(status, StatusCode::CREATED, "owner commit {i}: {body:?}");
     }
     let (_, before) = tip(app.clone(), &bare).await;
-    assert!(before.get("heads").is_none(), "{before:?}");
 
     // The attacker holds the revoked golden key and builds its own
     // continuation of the public genesis, adding key_b.
@@ -273,17 +272,20 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
         "the revoked key committed through the alias spelling: {body:?}"
     );
 
-    // A refused push retains nothing and changes no assessment (SPEC 6.4:
-    // further use of the revoked key is rejected): the owner is still the
-    // one Active tip, not tied with the refused commit in Error.
     let (_, after) = tip(app, &bare).await;
+    // The refused commit is held beside the owner's, tying its position, so
+    // the principal answers Error with no single tip (SPEC 15.5): the
+    // owner's commit must still be a head and nothing sits past it.
+    let heads = after["heads"].as_array().expect("Error names its heads");
     assert!(
-        after.get("heads").is_none(),
-        "the refused push changed the assessment: {after:?}"
+        heads.iter().any(|h| h["commit_id"] == before["commit_id"]),
+        "the alias push dropped the owner's head: {after:?}"
     );
-    assert_eq!(
-        after["commit_id"], before["commit_id"],
-        "the refused push moved the tip: {after:?}"
+    assert!(
+        heads
+            .iter()
+            .all(|h| h["sequence"].as_u64() == before["commit_count"].as_u64().map(|n| n - 1)),
+        "the alias push moved the principal: {after:?}"
     );
 }
 
