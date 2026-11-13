@@ -2636,7 +2636,10 @@ async fn fork_siblings_creating_the_same_key_are_held_as_a_fork() {
     assert_eq!(status, StatusCode::CREATED, "first sibling: {body:?}");
 
     let (status, body) = post_json(app.clone(), "/push", wire(&second, 1, &id)).await;
-    assert!(status.is_client_error(), "refused as a tip: {status} {body:?}");
+    assert!(
+        status.is_client_error(),
+        "refused as a tip: {status} {body:?}"
+    );
 
     let heads = error_heads(&tip_payload(app.clone(), &id).await);
     assert_eq!(heads.len(), 2, "both siblings are held: {heads:?}");
