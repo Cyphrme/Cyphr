@@ -558,14 +558,15 @@ async fn naked_revoked_peer_key_is_refused_from_receipt() {
     assert!(held.verify_tip(&tip_envelope(&g), &pr).is_ok());
 }
 
-/// Claim: a revoke gives the key a cutoff at the first receipt, and
-/// nothing after moves it. The key's statement dated before the receipt is
-/// history and stands; a later revoke of the same key (here with `rvk` 1,
-/// best practice for a pre-signed one) does not pull the cutoff back over
-/// it.
+/// Claim: the first accepted revoke of a key sets its cutoff, and a later
+/// revoke of the same key (here with `rvk` 1, best practice for a
+/// pre-signed one, received later) does not move it. The key is refused
+/// for a statement dated after the first receipt, and stays refused once
+/// the second revoke is received.
 ///
-/// Turns red if: the least `rvk` wins, or a later revoke replaces the
-/// first.
+/// Turns red if: a later revoke replaces the first, which would move the
+/// cutoff past the statement and let it stand. (It does not close the
+/// least-`rvk` rule or the history side; the other tests do.)
 /// End-to-end scenario: yes (revokes fetched over a carrier).
 #[tokio::test]
 async fn first_accepted_revoke_sets_the_cutoff() {
@@ -588,14 +589,21 @@ async fn first_accepted_revoke_sets_the_cutoff() {
         .await
         .expect("served revokes");
 
-    // Received at 1_700_000_600; the tip statement is dated ..._500.
-    RECEIPT.store(T0 + 600, Ordering::SeqCst);
+    // The tip statement is dated 1_700_000_500: after the first receipt.
+    RECEIPT.store(T0 + 400, Ordering::SeqCst);
     held.observe_naked_revoke(&served[0]).expect("first");
+    assert!(matches!(
+        held.verify_tip(&tip_envelope(&k1), &pr),
+        Err(PeerFailure::KeyRevoked { .. })
+    ));
     RECEIPT.store(T0 + 700, Ordering::SeqCst);
     held.observe_naked_revoke(&served[1]).expect("second");
     assert!(
-        held.verify_tip(&tip_envelope(&k1), &pr).is_ok(),
-        "dated before the first receipt: history"
+        matches!(
+            held.verify_tip(&tip_envelope(&k1), &pr),
+            Err(PeerFailure::KeyRevoked { .. })
+        ),
+        "a later revoke does not move the cutoff past the statement"
     );
 }
 
