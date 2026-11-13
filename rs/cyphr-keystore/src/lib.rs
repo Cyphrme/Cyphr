@@ -7,7 +7,12 @@
 mod json;
 
 use cyphr::signer::Signer;
-pub use json::JsonKeyStore;
+pub use json::{JsonKeyStore, Tightened};
+
+/// What `key list` says about every key the [`JsonKeyStore`] holds: the
+/// private key is in the file as plain bytes. No encryption exists yet, and
+/// custody cannot be recorded.
+pub const SOFTWARE_CUSTODY: &str = "software-held, unencrypted";
 
 /// Error type for key backend operations.
 #[derive(Debug, thiserror::Error)]

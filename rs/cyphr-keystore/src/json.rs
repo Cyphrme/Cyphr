@@ -76,12 +76,58 @@ impl StoredKey {
 
 /// Plaintext JSON keystore: the software [`KeyBackend`].
 ///
-/// Stores keys in a JSON file on disk. **NOT SECURE** for production use.
-/// Keys are stored in plaintext. Use only for development and testing. The
-/// file format is the stable surface: existing key files keep working.
+/// Stores keys in a JSON file on disk, created owner-only (0600 in a 0700
+/// directory) and written atomically. **Unencrypted at rest** until Coz
+/// encryption lands. The file format is the stable surface: existing key
+/// files keep working.
 pub struct JsonKeyStore {
     path: PathBuf,
     keys: HashMap<String, StoredKey>,
+    tightened: Vec<Tightened>,
+}
+
+/// A permission change `open` made to bring the key file or its directory
+/// down to owner-only access, so the caller can tell the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tightened {
+    /// The file or directory changed.
+    pub path: PathBuf,
+    /// Its mode before, permission bits only.
+    pub from: u32,
+    /// Its mode now.
+    pub to: u32,
+}
+
+/// Owner-only modes for the key directory and the key file.
+#[cfg(unix)]
+const DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
+const FILE_MODE: u32 = 0o600;
+
+/// Remove every group/other bit from an existing `path` that has any,
+/// recording the change. Only bits are removed, never added, so a stricter
+/// mode (0400) is left alone.
+#[cfg(unix)]
+fn tighten(path: &Path, limit: u32, out: &mut Vec<Tightened>) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let from = fs::metadata(path)?.permissions().mode() & 0o777;
+    let to = from & limit;
+    if to != from {
+        fs::set_permissions(path, fs::Permissions::from_mode(to))?;
+        out.push(Tightened {
+            path: path.to_path_buf(),
+            from,
+            to,
+        });
+    }
+    Ok(())
+}
+
+/// The directory holding `path`, or `None` when `path` is a bare file name:
+/// that directory is the caller's working directory, which is not ours to
+/// restrict.
+fn key_dir(path: &Path) -> Option<&Path> {
+    path.parent().filter(|d| !d.as_os_str().is_empty())
 }
 
 impl JsonKeyStore {
@@ -89,18 +135,77 @@ impl JsonKeyStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
 
+        let mut tightened = Vec::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            if let Some(dir) = key_dir(&path) {
+                if dir.exists() {
+                    tighten(dir, DIR_MODE, &mut tightened)?;
+                } else {
+                    fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(DIR_MODE)
+                        .create(dir)?;
+                }
+            }
+            if path.exists() {
+                tighten(&path, FILE_MODE, &mut tightened)?;
+            }
+        }
+
         let keys = if path.exists() {
             read_versioned(&path, "keystore")?
         } else {
             HashMap::new()
         };
 
-        Ok(Self { path, keys })
+        Ok(Self {
+            path,
+            keys,
+            tightened,
+        })
     }
 
+    /// Permission changes `open` made; empty when the store was already
+    /// private.
+    pub fn tightened(&self) -> &[Tightened] {
+        &self.tightened
+    }
+
+    /// Write atomically: a temp file beside the target (same filesystem),
+    /// created owner-only, fsynced, renamed over the target, then the
+    /// directory fsynced so the rename itself is durable. A crash leaves
+    /// the old file or the new one, never a torn one.
     fn save(&self) -> Result<(), Error> {
-        fs::write(&self.path, to_versioned(&self.keys)?)?;
-        Ok(())
+        use std::io::Write;
+        let body = to_versioned(&self.keys)?;
+        let dir = key_dir(&self.path).unwrap_or_else(|| Path::new("."));
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = dir.join(format!(".{name}.tmp{}", std::process::id()));
+
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(FILE_MODE);
+        }
+        let written = (|| -> std::io::Result<()> {
+            let mut f = opts.open(&tmp)?;
+            f.write_all(body.as_bytes())?;
+            f.sync_all()?;
+            fs::rename(&tmp, &self.path)?;
+            fs::File::open(dir)?.sync_all()
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        Ok(written?)
     }
 
     fn entry(&self, tmb: &str) -> Result<&StoredKey, Error> {

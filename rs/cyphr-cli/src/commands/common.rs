@@ -29,7 +29,16 @@ use crate::keystore::{Error as KeystoreError, JsonKeyStore, KeyBackend};
 /// runtime (an OS keychain, a hardware token) changes this function and
 /// nothing else: commands see only the [`KeyBackend`] trait.
 pub fn open_backend(cli: &crate::Cli) -> crate::Result<JsonKeyStore> {
-    Ok(JsonKeyStore::open(&cli.keystore)?)
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    for t in keystore.tightened() {
+        eprintln!(
+            "tightened permissions on {}: {:04o} -> {:04o}",
+            t.path.display(),
+            t.from,
+            t.to
+        );
+    }
+    Ok(keystore)
 }
 
 /// Build a fresh single-threaded tokio runtime and drive `fut` to
