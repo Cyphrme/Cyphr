@@ -1192,12 +1192,13 @@ proptest::proptest! {
 
     /// Backs I1 for the receipt-time cutoff (#203): a chain whose commits
     /// `golden` or `key_a` signs at generated times, with `key_a`'s naked
-    /// revoke received at a generated time between two of them. What the
-    /// engine holds and how it reads it (tip, verdict, heads) is the same
-    /// live and after a rebuild from the blobs, and the cutoff survives the
-    /// rebuild: a `key_a` commit dated at the receipt time is refused
-    /// either way. Turns red if the record loses or changes its receipt
-    /// time, or a rebuild judges a held commit differently.
+    /// revoke received at a generated time between two of them, so the
+    /// held commits fall on both sides of the cutoff. A revoke gates only
+    /// what arrives after it, so the engine's answers (tip, verdict, heads)
+    /// are the same live and after a rebuild from the blobs, and the cutoff
+    /// survives the rebuild: a `key_a` commit dated at or after the receipt
+    /// time is refused either way. Turns red if the record loses or changes
+    /// its receipt time, or a rebuild judges a held commit differently.
     #[test]
     fn rebuild_equals_live_under_a_receipt_time_revoke(
         steps in proptest::collection::vec((proptest::bool::ANY, 1i64..4), 1..5),
@@ -1290,11 +1291,11 @@ async fn a_v1_revoke_record_is_quarantined_and_reported() {
 }
 
 // ------------------------------------------------------------------------
-// Finding F1 (VFY attack review): once the canonical head is uncounted (a
-// revoked key signed it at or after the key's cutoff), the served chain and
-// admission must still be the fork rule's answer over counted commits, a
-// function of the blob set (I1). Red until the engine can move its served
-// chain to that answer; see each test.
+// A revoke is an admission gate and nothing else (SPEC 14.12: "Principals
+// must explicitly mutate their state forward"; the spec author on #203:
+// "Retrospection isn't supported"). It refuses a K-signed message arriving
+// after it and dated at or after the key's cutoff; a held message is never
+// judged again, and the owner answers a thief's held commits forward.
 // ------------------------------------------------------------------------
 
 /// The served tip's commit id after `bundle`, or why it was refused.
@@ -1305,129 +1306,115 @@ async fn pushed_tip(e: &Engine, f: &Fork, bundle: &WireBundle) -> Result<String,
         .map_err(|e| format!("{e:?}"))
 }
 
-/// The served tip's commit id and the fork rule's verdict.
-async fn served(e: &Engine, f: &Fork) -> (String, cyphr_storage::engine::Assessment) {
-    let tip = e
-        .get_tip(&f.id)
-        .await
-        .expect("tip")
-        .expect("held")
-        .commit_id;
-    (tip, e.assess(&f.id).await.expect("assess"))
+/// Everything the engine answers about `f`'s principal: its tip, its
+/// patch, the fork rule's verdict, and what gossip serves (its branches and
+/// fork evidence).
+async fn answers(e: &Engine, f: &Fork) -> String {
+    format!(
+        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
+        e.get_tip(&f.id).await.expect("tip"),
+        e.get_patch(&f.id, None, None).await.expect("patch"),
+        e.assess(&f.id).await.expect("assess"),
+        e.list_branches(&f.id).await.expect("branches"),
+        e.fork_evidence(&f.id).await.expect("evidence"),
+    )
 }
 
-/// Backs F1(a): `key_a` (stolen) signs X dated after the cutoff its naked
-/// revoke later gets, so X is not counted and the fork rule's head is the
-/// genesis G. The owner's `golden` commit extending the served X would be
-/// uncounted too: it is refused, not answered Ok and silently uncounted,
-/// and the served tip is the fork rule's head G, live and after a rebuild.
-/// Turns red while the engine admits a commit over an uncounted tip or
-/// serves an uncounted head.
+/// The thief's `key_a` line X1..X`n` over G, dated NOW+300 on, each pushed
+/// and admitted while no revoke of `key_a` is held.
+async fn thief_line(e: &Engine, f: &Fork, n: usize) -> cyphr::Principal {
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let mut x = f.base.fork().await.expect("fork");
+    for (i, name) in ["bob", "carol", "alice"].iter().take(n).enumerate() {
+        create_key(&mut x, &key_a, &kp(&pool, name), NOW + 300 + i as i64).await;
+        pushed_tip(e, f, &blobs(&x, i + 1))
+            .await
+            .expect("admitted: no revoke is held yet");
+    }
+    x
+}
+
+/// Backs F1-1: a revoke landing changes nothing a witness answers about a
+/// principal, even when the commits it holds signed by the revoked key are
+/// dated after the key's cutoff (the thief's X1..X3, dated NOW+300 on, the
+/// revoke received at NOW+100). Tip, patch, verdict, branches and fork
+/// evidence are the same before the revoke, after it and after a rebuild
+/// from the blobs. Turns red if a revoke re-judges a held commit.
 #[tokio::test]
-#[ignore = "RED(VFY-F1): the served chain does not follow the fork rule once its head is uncounted"]
-async fn a_commit_over_an_uncounted_tip_is_refused() {
+async fn a_revoke_changes_no_answer_about_held_commits() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    thief_line(&e, &f, 3).await;
+    let before = answers(&e, &f).await;
+    e.record_revoke(&naked_revoke(&kp(&pool, "key_a"), 1), NOW + 100)
+        .await
+        .expect("revoke");
+    assert_eq!(answers(&e, &f).await, before, "the revoke landing");
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert_eq!(answers(&e, &f).await, before, "after a rebuild");
+}
+
+/// Backs F1-1's gate: once `key_a`'s revoke is held (received at
+/// NOW+100), the thief's next commit X4, dated NOW+303 and so at or after
+/// the cutoff, is refused on arrival, and nothing it carried is kept.
+/// Turns red if a dead key's commit arriving after its revoke is admitted
+/// or retained.
+#[tokio::test]
+async fn a_dead_keys_commit_arriving_after_its_revoke_is_refused() {
     let f = Fork::new(0).await;
     let pool = load_pool();
     let key_a = kp(&pool, "key_a");
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    let g = pushed_tip(&e, &f, &f.first).await.expect("G");
-    let mut p = f.base.fork().await.expect("fork");
-    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 300).await;
-    pushed_tip(&e, &f, &blobs(&p, 1))
-        .await
-        .expect("X, before the revoke");
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut x = thief_line(&e, &f, 3).await;
     e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
         .await
         .expect("revoke");
-    create_key(&mut p, &f.golden, &kp(&pool, "carol"), NOW + 400).await;
+    let before = answers(&e, &f).await;
+    create_key(&mut x, &key_a, &kp(&pool, "key_b"), NOW + 303).await;
+    let refused = pushed_tip(&e, &f, &blobs(&x, 4)).await;
     assert!(
-        pushed_tip(&e, &f, &blobs(&p, 2)).await.is_err(),
-        "a commit over the uncounted X is refused"
+        refused.as_ref().is_err_and(|why| why.contains("DeadKey")),
+        "{refused:?}"
     );
+    assert_eq!(answers(&e, &f).await, before, "nothing of X4 is kept");
+}
+
+/// Backs F1's forward answer (SPEC 14.12, 15.8 item 1): the thief's
+/// `key_a` line X1, X2 is served and `key_a` is then revoked, so the thief
+/// can extend it no further. The owner out-extends on a rival line with
+/// `golden` alone, within the retention caps: R1 ties nothing (X2 is
+/// taller) and is retained, R2 ties X2 (Error) and is retained, R3 is the
+/// one tallest commit and is admitted and served, Active on the owner's
+/// line, live and after a rebuild. Turns red if the owner's line cannot
+/// out-extend a revoked key's line within two retained commits.
+#[tokio::test]
+async fn the_owner_out_extends_a_revoked_keys_line() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    thief_line(&e, &f, 2).await;
+    e.record_revoke(&naked_revoke(&kp(&pool, "key_a"), 1), NOW + 100)
+        .await
+        .expect("revoke");
+    let mut r = f.base.fork().await.expect("fork");
+    let mut pushed = Vec::new();
+    for (i, n) in ["key_b", "diana_es384", "eve_ed25519"].iter().enumerate() {
+        create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
+        pushed.push(pushed_tip(&e, &f, &blobs(&r, i + 1)).await);
+    }
+    assert!(pushed[0].is_err() && pushed[1].is_err(), "{pushed:?}");
+    assert!(!e.is_errored(&f.id).await.expect("verdict"));
+    let r3 = pushed[2].clone().expect("R3 out-extends the thief's line");
     for when in ["live", "after a rebuild"] {
-        let (tip, assessed) = served(&e, &f).await;
-        assert_eq!(assessed.heads, vec![g.clone()], "{when}: the head is G");
-        assert_eq!(tip, g, "{when}: the served tip is the fork rule's head");
+        let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
+        let assessed = e.assess(&f.id).await.expect("assess");
+        assert_eq!(tip.commit_id, r3, "{when}: R3 is served");
+        assert_eq!(assessed.heads, vec![r3.clone()], "{when}: R3 is the head");
         e.rebuild_index_from_scratch().await.expect("rebuild");
     }
-}
-
-/// Backs F1(b) and (c): the thief's `key_a` chain X1..X3 is served, then
-/// `key_a` is revoked with a cutoff before all three, so none counts. The
-/// owner recovers off G with `golden` alone: R1..R4 are each the fork
-/// rule's sole Active head when pushed, so each is admitted and served at
-/// once, never held back by the canonical length the dead chain sets or
-/// by the per-key quota on retained rivals; live and after a rebuild.
-/// Turns red while promotion counts uncounted commits, or an extension of
-/// the sole head is retained or quota-refused.
-#[tokio::test]
-#[ignore = "RED(VFY-F1): promotion measures the uncounted canonical length"]
-async fn the_owner_recovers_over_an_uncounted_chain() {
-    let f = Fork::new(0).await;
-    let pool = load_pool();
-    let key_a = kp(&pool, "key_a");
-    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    pushed_tip(&e, &f, &f.first).await.expect("G");
-    let mut x = f.base.fork().await.expect("fork");
-    for (i, n) in ["bob", "carol", "alice"].iter().enumerate() {
-        create_key(&mut x, &key_a, &kp(&pool, n), NOW + 300 + i as i64).await;
-        pushed_tip(&e, &f, &blobs(&x, i + 1))
-            .await
-            .expect("thief commit, before the revoke");
-    }
-    e.record_revoke(&naked_revoke(&key_a, NOW + 100), NOW + 100)
-        .await
-        .expect("revoke");
-    let mut r = f.base.fork().await.expect("fork");
-    for (i, n) in ["carol", "alice", "bob", "key_b"].iter().enumerate() {
-        create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
-        let pushed = pushed_tip(&e, &f, &blobs(&r, i + 1)).await;
-        let (tip, assessed) = served(&e, &f).await;
-        assert_eq!(
-            pushed.as_ref(),
-            Ok(&tip),
-            "R{} is admitted and served",
-            i + 1
-        );
-        assert_eq!(assessed.heads, vec![tip.clone()], "R{} is the head", i + 1);
-    }
-    let live = served(&e, &f).await;
-    e.rebuild_index_from_scratch().await.expect("rebuild");
-    assert_eq!(served(&e, &f).await, live, "a rebuild agrees");
-}
-
-/// Backs F1 after the owner's commits over the uncounted tip (the case
-/// [`a_commit_over_an_uncounted_tip_is_refused`] shows refused): the
-/// owner's recovery off G with `golden` alone lands commit by commit, each
-/// the sole head and served, as in [`the_owner_recovers_over_an_uncounted_chain`].
-#[tokio::test]
-#[ignore = "RED(VFY-F1): recovery is held back by the uncounted canonical head"]
-async fn the_owner_recovers_over_an_uncounted_tip() {
-    let f = Fork::new(0).await;
-    let pool = load_pool();
-    let key_a = kp(&pool, "key_a");
-    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-    pushed_tip(&e, &f, &f.first).await.expect("G");
-    let mut p = f.base.fork().await.expect("fork");
-    create_key(&mut p, &key_a, &kp(&pool, "bob"), NOW + 300).await;
-    pushed_tip(&e, &f, &blobs(&p, 1)).await.expect("X");
-    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
-        .await
-        .expect("revoke");
-    let mut r = f.base.fork().await.expect("fork");
-    for (i, n) in ["carol", "alice", "bob", "key_b"].iter().enumerate() {
-        create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
-        let pushed = pushed_tip(&e, &f, &blobs(&r, i + 1)).await;
-        let (tip, assessed) = served(&e, &f).await;
-        assert_eq!(
-            pushed.as_ref(),
-            Ok(&tip),
-            "R{} is admitted and served",
-            i + 1
-        );
-        assert_eq!(assessed.heads, vec![tip.clone()], "R{} is the head", i + 1);
-    }
-    let live = served(&e, &f).await;
-    e.rebuild_index_from_scratch().await.expect("rebuild");
-    assert_eq!(served(&e, &f).await, live, "a rebuild agrees");
 }

@@ -967,73 +967,35 @@ async fn errored_refuses_and_retains() {
     assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
 }
 
-/// Backs a revoke's cutoff as this node's receipt time of the first revoke
-/// of the key it accepts (SPEC 6.4, 14.12; the spec author on #203), in
-/// either arrival order of the branches:
-///
-/// * received at NOW+100, after every thief commit: B and C stand, C still ties D, Error; a second
-///   revoke of `eve`, received at NOW+4, stores nothing and moves nothing;
-/// * received at NOW+4, B's `now`: B and C are uncounted, the owner's D is the one head, Active.
-///
-/// Neither moves the served chain, and a rebuild agrees. Turns red if a
-/// later revoke replaces the first, an early receipt leaves the thief's
-/// line counted, or a rebuild disagrees. End to end over `/push`, the
-/// engine's revoke record, `/tip`, `/branches`.
+/// Backs a revoke as an admission gate only (SPEC 14.12; #203): with the
+/// owner's D and the thief's C tied, in either arrival order of the
+/// branches, a naked revoke of `eve` received before every thief commit
+/// (NOW+4) or after them (NOW+100) re-judges no held commit. Error stands
+/// with both heads, nothing moves or is dropped, and a rebuild agrees; the
+/// owner resolves forward. Turns red if a revoke takes a held commit out
+/// of the fork.
 #[tokio::test]
-async fn revoke_resolves_both_extended() {
+async fn a_revoke_does_not_resolve_both_extended() {
     for thief_first in [true, false] {
-        for (received, then, error) in [(NOW + 100, Some(NOW + 4), true), (NOW + 4, None, false)] {
+        for received in [NOW + 4, NOW + 100] {
             let t = theft(thief_first).await;
             let (app, state, dir) = both_extended(&t, thief_first).await;
-            let d_id = d_commit_id(&t).await;
-            let tip = tip_payload(app.clone(), &t.id).await["commit_id"].clone();
-            let list = heads(&app, &t.id).await;
-            revoke_eve(&state, received).await;
-            if let Some(then) = then {
-                revoke_eve(&state, then).await;
-            }
-            let assessed = state.engine.assess(&t.id).await.expect("assess");
             let case = format!("thief_first={thief_first}, received {received}");
-            assert_eq!(
-                assessed.consensus == cyphr_storage::engine::Consensus::Error,
-                error,
-                "{case}"
-            );
-            if !error {
-                assert_eq!(assessed.heads, vec![d_id.clone()], "{case}: D");
-            }
-            let live = verdict(&app, &state, &t.id).await;
-            assert_eq!(live.1, tip, "{case}: a revoke moves no chain");
+            let before = verdict(&app, &state, &t.id).await;
+            let list = heads(&app, &t.id).await;
+            assert!(before.0, "{case}: C and D tie");
+            revoke_eve(&state, received).await;
+            assert_eq!(verdict(&app, &state, &t.id).await, before, "{case}: live");
             assert_eq!(heads(&app, &t.id).await, list, "{case}: nothing is dropped");
             drop((app, state));
             let (app, state) = reopen(dir.path()).await;
             assert_eq!(
                 verdict(&app, &state, &t.id).await,
-                live,
+                before,
                 "{case}: a rebuild agrees"
             );
-            assert_eq!(heads(&app, &t.id).await, list);
         }
     }
-}
-
-/// D's commit id: listed at D's position, and not C's (which `eve` signed).
-async fn d_commit_id(t: &Theft) -> String {
-    // Read off a fresh server holding the shared prefix, A and D only.
-    let (state, _dir) = keyless_server();
-    let fresh = build_router(state);
-    for i in 0..t.n {
-        assert_eq!(push(&fresh, &t.shared, i, &t.id).await, StatusCode::CREATED);
-    }
-    assert_eq!(push(&fresh, &t.a, t.n, &t.id).await, StatusCode::CREATED);
-    assert_eq!(
-        push(&fresh, &t.d, t.n + 1, &t.id).await,
-        StatusCode::CREATED
-    );
-    tip_payload(fresh, &t.id).await["commit_id"]
-        .as_str()
-        .expect("commit_id")
-        .to_string()
 }
 
 /// Backs SPEC 15.9 for branch commits: a rival dated past the witness
@@ -1251,44 +1213,46 @@ async fn rewrite_server(
     (app, state, dir)
 }
 
-/// A1, the backdating limit (SPEC 14.12: a revoke takes effect from its
-/// own `now`, and Cyphr does not use reversion). The holder of K (`eve`,
-/// which signed canonical X at n+1, NOW+10) pushes B at n+1 dated A's
-/// `now`, then B' over B, and K is revoked as of NOW+4. X and Y over it
-/// are dated after the revoke and are no longer counted; B and B' are
-/// dated before it and stand, so the fork rule's head is B'. The revoke
-/// moves no served chain: `/tip` stays Y, live and after a rebuild. The
-/// owner recovers by mutating forward (SPEC 14.12), not by any rule here.
-/// Turns red if a revoke moves the served chain, or the rule counts a
-/// commit dated after the revoke.
+/// A1, a revoke after a backdated rival line (SPEC 14.12: a revoke gates
+/// arrivals and re-judges nothing held). The holder of K (`eve`, which
+/// signed canonical X at n+1, NOW+10) pushes B at n+1 dated A's `now`,
+/// then B' over B: B' ties Y, Error. K's revoke, received at NOW+4, takes
+/// nothing out: X, Y, B and B' are all held, Error stands with Y served,
+/// live and after a rebuild. The owner answers forward: a commit over Y
+/// out-extends B', Active. Turns red if a revoke moves or uncounts a held
+/// commit, or the owner's forward commit does not resolve the fork.
 #[tokio::test]
-async fn a1_backdating_below_a_revoke_stands() {
+async fn a1_a_revoke_rejudges_no_held_rival() {
     let r = rewrite().await;
     let (app, state, dir) = rewrite_server(&r).await;
-    let tip = tip_payload(app.clone(), &r.id).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&r.b, r.n + 1, &r.id)).await;
     assert!(status.is_client_error(), "B is refused: {body:?}");
     let (status, body) = post_json(app.clone(), "/push", wire(&r.b2, r.n + 2, &r.id)).await;
     assert!(status.is_client_error(), "B' is refused: {body:?}");
-    assert!(errored(&state, &r.id).await, "B' ties Y: Error");
+    let before = verdict(&app, &state, &r.id).await;
+    assert!(before.0, "B' ties Y: Error");
     revoke_eve(&state, NOW + 4).await;
-    let expected = (
-        false,
-        tip["commit_id"].clone(),
-        vec![
-            commit_id_at(&r.b2, r.n + 2)
-                .as_str()
-                .expect("id")
-                .to_owned(),
-        ],
-    );
-    assert_eq!(verdict(&app, &state, &r.id).await, expected, "live");
+    assert_eq!(verdict(&app, &state, &r.id).await, before, "live");
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
     assert_eq!(
         verdict(&app, &state, &r.id).await,
-        expected,
+        before,
         "after a restart"
+    );
+    let pool = load_pool();
+    let mut next = r.chain.fork().await.expect("fork");
+    create_key(
+        &mut next,
+        &kp(&pool, "golden"),
+        &kp(&pool, "carol"),
+        NOW + 12,
+    )
+    .await;
+    assert_eq!(push(&app, &next, r.n + 3, &r.id).await, StatusCode::CREATED);
+    assert!(
+        !errored(&state, &r.id).await,
+        "the owner's commit out-extends B'"
     );
 }
 
@@ -2165,18 +2129,17 @@ async fn a_revoke_takes_effect_from_its_own_now() {
     );
 }
 
-/// Backs what a revoke resolution lets land: with C (the thief's) and D
-/// tied, the Error gate refuses everything but an extension of a tied
-/// head (SPEC 15.5: "no new transactions or actions are processed until
-/// resolved"), so the owner's action-only bundle is refused (423). A
-/// naked revoke of `eve` dated NOW+5, after B and before C, leaves C
-/// uncounted: D is the one head, Active, and the same bundle lands. A
-/// commit cannot show this, since one extending a tied head is admitted in
-/// Error already and any other one still fails the fork rule after.
-/// Turns red if Error outlives the resolution or the bundle stays refused.
-/// End to end.
+/// Backs what lands after a fork is resolved forward: with C (the thief's)
+/// and D tied, the Error gate refuses everything but an extension of a
+/// tied head (SPEC 15.5: "no new transactions or actions are processed
+/// until resolved"), so the owner's action-only bundle is refused (423). A
+/// naked revoke of `eve` received at NOW+5, after C's `now`, re-judges no
+/// held commit (SPEC 14.12), so the bundle is still refused. The owner's
+/// next commit extends D and out-extends C (SPEC 15.8 item 1): Active, and
+/// the same bundle lands without moving the tip. Turns red if a revoke
+/// resolves the fork, or the bundle stays refused after the resolution.
 #[tokio::test]
-async fn refused_commit_lands_after_resolution() {
+async fn a_refused_action_lands_after_resolution() {
     let t = theft(false).await;
     let (app, state, _dir) = both_extended(&t, false).await;
     let pool = load_pool();
@@ -2192,9 +2155,15 @@ async fn refused_commit_lands_after_resolution() {
     let body = common::push_blobs(&t.id, &[action]);
     let (status, refused) = post_json(app.clone(), "/push", body.clone()).await;
     assert_eq!(status, ERRORED, "refused in Error: {refused:?}");
-    let tip = tip_payload(app.clone(), &t.id).await;
     revoke_eve(&state, NOW + 5).await;
-    assert!(!errored(&state, &t.id).await, "C leaves the fork: Active");
+    assert!(errored(&state, &t.id).await, "a revoke resolves nothing");
+    let (status, still) = post_json(app.clone(), "/push", body.clone()).await;
+    assert_eq!(status, ERRORED, "still refused: {still:?}");
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    assert_eq!(push(&app, &e, t.n + 2, &t.id).await, StatusCode::CREATED);
+    assert!(!errored(&state, &t.id).await, "E out-extends C: Active");
+    let tip = tip_payload(app.clone(), &t.id).await;
     let (status, landed) = post_json(app.clone(), "/push", body).await;
     assert!(status.is_success(), "the bundle lands: {status} {landed:?}");
     assert_eq!(

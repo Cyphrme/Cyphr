@@ -1656,3 +1656,82 @@ async fn an_action_whose_signer_a_later_commit_removed_is_ignored() {
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(tip.commit_count, 3, "the rebuilt chain is whole");
 }
+
+/// Backs a revoke as an admission gate only (SPEC 14.12; the spec author
+/// on #203: "Retrospection isn't supported") for data actions: `golden`'s
+/// action dated t=600 is admitted while no revoke is held; `golden` is then
+/// revoked with a cutoff of t=500. The held action stays in DT, live and
+/// after a replaying rebuild, while the same key's action dated t=650 that
+/// arrives after the revoke is refused. Turns red if a revoke re-judges a
+/// held action, or admits one arriving after it.
+#[tokio::test]
+async fn a_revoke_rejudges_no_held_action() {
+    let golden = signer("golden");
+    let mut writer = cyphr::Principal::implicit(golden.key.clone())
+        .await
+        .expect("genesis");
+    let pool = test_fixtures::Pool::load(&golden_dir().join("../keys/pool.toml")).expect("pool");
+    let genesis_commit = test_fixtures::bundle::genesis_bundle(
+        &mut writer,
+        pool.get("golden").expect("golden"),
+        &[],
+        1_700_000_050,
+    )
+    .await
+    .expect("genesis commit");
+    let genesis = Genesis::Implicit(golden.key.clone());
+    let id = genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    push(&engine, &id, &genesis, &genesis_commit).await;
+    let submit = async |blob: Vec<u8>| {
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &WireBundle::actions(vec![blob]))
+            .await
+    };
+    let held = golden.unrecorded_action(1_700_000_600, "held before the revoke");
+    submit(held.clone())
+        .await
+        .expect("admitted: no revoke is held yet");
+
+    let revoke_pay = serde_json::json!({
+        "alg": golden.alg, "now": 1_700_000_500, "rvk": 1,
+        "tmb": golden.key.tmb().to_b64(), "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let (_, sig, _) = golden.sign(&revoke_pay);
+    engine
+        .record_revoke(
+            &serde_json::json!({
+                "pay": revoke_pay,
+                "sig": Base64UrlUnpadded::encode_string(&sig),
+                "key": {"alg": golden.alg, "pub": Base64UrlUnpadded::encode_string(&golden.pub_key)},
+            }),
+            1_700_000_500,
+        )
+        .await
+        .expect("the naked revoke is recorded");
+    let late = submit(golden.unrecorded_action(1_700_000_650, "after the revoke")).await;
+    assert!(
+        matches!(
+            late,
+            Err(cyphr_storage::engine::EngineError::Protocol(
+                cyphr::Error::KeyRevoked
+            ))
+        ),
+        "{late:?}"
+    );
+
+    let czd = |blob: &[u8]| StoredCoz::from_wire(blob).expect("wire coz").czd().to_b64();
+    for when in ["live", "after a rebuild"] {
+        let loaded = engine
+            .load_principal(&id, genesis.clone())
+            .await
+            .expect("replays");
+        let in_dt: Vec<String> = loaded.actions().map(|a| a.czd().to_b64()).collect();
+        assert_eq!(in_dt, vec![czd(&held)], "{when}");
+        let report = engine
+            .rebuild_index_from_scratch_with_report()
+            .await
+            .expect("rebuild");
+        assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
+    }
+}

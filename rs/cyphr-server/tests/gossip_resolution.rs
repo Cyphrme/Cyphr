@@ -311,15 +311,16 @@ async fn gossip_never_promotes_a_dead_keys_rival() {
     }
 }
 
-/// Backs gossip feeding the engine's revocations (SPEC 6.4, 15.7.1): P1
-/// holds X canonical and `eve`'s rival R at X's position, a plain fork in
-/// Error, R dated a minute ahead. P2 holds X and `eve`'s naked revoke.
-/// One round of P1's gossip records the revoke, received now and so
-/// before R's `now`, where the engine judges forks, so R leaves the fork
-/// and P1 is Active, as P2 would be. Turns red if a revoke learned by
-/// gossip leaves P1 in Error.
+/// Backs a revoke as an admission gate only (SPEC 14.12; the spec author
+/// on #203: "Retrospection isn't supported"): P1 holds X canonical and
+/// `eve`'s rival R at X's position, dated a minute ahead, a plain fork in
+/// Error. P2 holds X and `eve`'s naked revoke. One round of P1's gossip
+/// records the revoke, received before R's `now`, but R is already held,
+/// so nothing is judged again: P1 stays in Error with X its tip, and the
+/// owner answers forward. Turns red if a revoke learned by gossip takes a
+/// held commit out of the fork.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_revoke_learned_by_gossip_settles_the_fork() {
+async fn a_revoke_learned_by_gossip_rejudges_no_held_rival() {
     let (genesis, id, owner, x, r, ..) = dead_key_fixture_ahead().await;
     let (p1, _d1) = keyless_server();
     let (p2, _d2) = keyless_server();
@@ -344,8 +345,8 @@ async fn a_revoke_learned_by_gossip_settles_the_fork() {
     one_round(&p1, &p2).await;
 
     assert!(
-        !p1.engine.is_errored(&id).await.expect("verdict"),
-        "a revoke learned by gossip takes R out of the fork"
+        p1.engine.is_errored(&id).await.expect("verdict"),
+        "the held R still ties X"
     );
     assert_eq!(tip_pr(&app1, &id).await, owner.pr_tagged().expect("pr"));
 }
