@@ -439,3 +439,449 @@ async fn embedded_principal_not_held_is_an_unknown_key() {
         "{refused:?}"
     );
 }
+
+/// A data action of `typ` signed by `signer`, as the wire carries it.
+fn action_by(signer: &Kp, typ: &str, now: i64) -> WireBundle {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    let alg = signer.kp.alg.name();
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": alg, "now": now, "tmb": signer.tmb.to_b64(), "typ": typ,
+    }))
+    .expect("pay");
+    let (sig, _) =
+        coz::sign_json(&pay, alg, &signer.kp.prv_bytes, &signer.kp.pub_bytes).expect("sign");
+    let coz = serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    });
+    WireBundle::actions(vec![serde_json::to_vec(&coz).expect("coz")])
+}
+
+/// The engine restarted over the same blobs: a rebuild from them alone.
+async fn restart(blobs: &MemoryBlobStore) -> Engine {
+    let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    let report = engine
+        .rebuild_index_from_scratch_with_report()
+        .await
+        .expect("rebuild from blobs");
+    assert!(
+        report.quarantined.is_empty(),
+        "an honest store rebuilds whole: {:?}",
+        report.quarantined
+    );
+    engine
+}
+
+async fn in_error(engine: &Engine, id: &str) -> bool {
+    engine
+        .assess(id)
+        .await
+        .expect("assess")
+        .fork_point
+        .is_some()
+}
+
+/// A admitted through B up to a commit by `carol`, with a rival to that
+/// commit also signed by `carol` (a holder of one of B's keys forking A),
+/// and a resolving commit extending the rival.
+struct Forked {
+    engine: Engine,
+    blobs: MemoryBlobStore,
+    a: Line,
+    rival: WireBundle,
+    resolving: WireBundle,
+    resolved: Principal,
+}
+
+async fn forked() -> Forked {
+    let (alice, bob, carol, dave, erin, frank) = (kp(), kp(), kp(), kp(), kp(), kp());
+    let (b, b_pr) = b_with_carol(&bob, &carol).await;
+    let mut a = a_embedding(&alice, &b_pr, &b.state).await;
+    let mut other = a.state.fork().await.expect("fork");
+    a.commit(
+        &carol,
+        "key/create",
+        &dave.tmb.to_b64(),
+        Some(&dave),
+        T0 + 20,
+    )
+    .await
+    .expect("carol signs for A");
+    let rival = commit_on(
+        &mut other,
+        &carol,
+        "key/create",
+        &erin.tmb.to_b64(),
+        Some(&erin),
+        T0 + 21,
+    )
+    .await
+    .expect("a rival, also through B");
+    let resolving = commit_on(
+        &mut other,
+        &carol,
+        "key/create",
+        &frank.tmb.to_b64(),
+        Some(&frank),
+        T0 + 22,
+    )
+    .await
+    .expect("a resolving commit through B");
+
+    let blobs = MemoryBlobStore::new();
+    let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    b.push_all(&engine).await;
+    a.push_all(&engine).await;
+    Forked {
+        engine,
+        blobs,
+        a,
+        rival,
+        resolving,
+        resolved: other,
+    }
+}
+
+/// Claim (SPEC 15.7.1, R4/R5): a rival signed through B is a fork
+/// participant. It is refused as the tip, kept as evidence, and A is in
+/// Error, on the live engine and after a rebuild from blobs alone.
+///
+/// Turns red if the rival is dropped unseen (A stays Active) or does not
+/// survive the restart.
+/// End to end: yes.
+#[tokio::test]
+async fn rival_signed_through_b_is_retained_and_a_is_in_error() {
+    let f = forked().await;
+    assert!(f.a.push(&f.engine, &f.rival).await.is_err(), "a rival");
+    assert!(in_error(&f.engine, &f.a.id).await, "live: A is in Error");
+    let restarted = restart(&f.blobs).await;
+    assert!(in_error(&restarted, &f.a.id).await, "restart: in Error");
+}
+
+/// Claim (SPEC 15.8 item 1): the owner's resolving commit through B,
+/// extending the retained rival, promotes it; A leaves Error with the
+/// resolved history, and so does a rebuild from blobs alone.
+///
+/// Turns red if the resolution is refused, or the rebuild does not replay
+/// the promoted commits against B as admitted.
+/// End to end: yes.
+#[tokio::test]
+async fn resolving_commit_through_b_promotes_the_rival() {
+    let f = forked().await;
+    let _ = f.a.push(&f.engine, &f.rival).await;
+    f.a.push(&f.engine, &f.resolving)
+        .await
+        .expect("the resolution through B is admitted");
+    assert!(!in_error(&f.engine, &f.a.id).await, "live: resolved");
+    let want = f.resolved.pr_tagged().expect("pr");
+    let live = f.a.roots(&f.engine).await;
+    assert_eq!(live.pr, want, "live: the resolved chain");
+    let restarted = restart(&f.blobs).await;
+    assert!(!in_error(&restarted, &f.a.id).await, "restart: resolved");
+    assert_eq!(f.a.roots(&restarted).await, live, "restart: same roots");
+}
+
+/// Claim (SPEC 10.5 "to sign/act as a primary principal", 6.5): a data
+/// action signed by a key of B is admitted, judged by B's key timeline at
+/// its `now`; it stays in A's Data Tree after B removes the key and after a
+/// rebuild from blobs alone.
+///
+/// Turns red if the action is refused, or replay judges it against a later
+/// B and drops it.
+/// End to end: yes.
+#[tokio::test]
+async fn action_signed_through_b_is_admitted_and_survives_rebuild() {
+    let (alice, bob, carol) = (kp(), kp(), kp());
+    let (mut b, b_pr) = b_with_carol(&bob, &carol).await;
+    let a = a_embedding(&alice, &b_pr, &b.state).await;
+    let blobs = MemoryBlobStore::new();
+    let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    b.push_all(&engine).await;
+    a.push_all(&engine).await;
+    a.push(&engine, &action_by(&carol, "cyphr.me/test/note", T0 + 20))
+        .await
+        .expect("carol acts for A through B");
+    let acts = |p: &Principal| p.actions().count();
+    let live = engine
+        .load_principal(&a.id, a.genesis.clone())
+        .await
+        .expect("load");
+    assert_eq!(acts(&live), 1, "the action is in DT");
+
+    let removal = b
+        .commit(&bob, "key/delete", &carol.tmb.to_b64(), None, T0 + 30)
+        .await
+        .expect("B removes carol");
+    b.push(&engine, &removal).await.expect("B takes it");
+    let restarted = restart(&blobs).await;
+    for e in [&engine, &restarted] {
+        let p = e
+            .load_principal(&a.id, a.genesis.clone())
+            .await
+            .expect("load");
+        assert_eq!(acts(&p), 1, "the action is judged against B as admitted");
+    }
+}
+
+/// Stated limit: an embedding created and used in the same bundle is
+/// refused, typed and closed (`UnknownKey`): the digest is not in the Key
+/// Tree the engine follows until the bundle that creates it is admitted.
+/// Turns red if it is admitted, or fails any other way.
+#[tokio::test]
+async fn embedding_created_and_used_in_one_bundle_is_an_unknown_key() {
+    let (alice, bob, carol, dave) = (kp(), kp(), kp(), kp());
+    let (b, b_pr) = b_with_carol(&bob, &carol).await;
+    let mut a = Line::new(&alice).await;
+    a.state
+        .reveal_embedded(&b_pr, Tracking::Pin(Box::new(Tip::new(&b.state, T0 + 100))))
+        .expect("reveal");
+    let pay = |signer: &Kp, typ: &str, id: &str, now: i64| {
+        let alg = signer.kp.alg.name();
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": alg, "id": id, "now": now,
+            "tmb": signer.tmb.to_b64(), "typ": format!("cyphr.me/cyphr/{typ}"),
+        }))
+        .expect("pay");
+        let (sig, cad) =
+            coz::sign_json(&pay, alg, &signer.kp.prv_bytes, &signer.kp.pub_bytes).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, alg).expect("czd");
+        (pay, sig, czd)
+    };
+    let mut scope = a.state.begin_commit();
+    let (p, s, c) = pay(&alice, "AT/KT/nonce/create", &b_pr, T0 + 1);
+    scope.verify_and_apply(&p, &s, c, None).expect("embed");
+    let (p, s, c) = pay(&carol, "key/create", &dave.tmb.to_b64(), T0 + 1);
+    scope
+        .verify_and_apply(&p, &s, c, Some(dave.key(T0 + 1)))
+        .expect("carol signs in the same commit");
+    scope
+        .finalize_with_software(&alice.signer(), T0 + 1, "cyphr.me")
+        .await
+        .expect("finalize");
+    let bundle = test_fixtures::bundle::last_commit_bundle(&a.state).expect("bundle");
+
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    b.push_all(&engine).await;
+    a.push(&engine, &a.bundles[0]).await.expect("A genesis");
+    let refused = a.push(&engine, &bundle).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Protocol(cyphr::Error::UnknownKey))
+        ),
+        "{refused:?}"
+    );
+}
+
+/// Stated limit: B with no commits is opaque unless its genesis state is
+/// held. A names the PR of a principal that was never pushed (so none is
+/// held); its genesis key's commit is an unknown key.
+/// Turns red if the engine admits it or fails any other way.
+#[tokio::test]
+async fn embedded_principal_with_no_commits_is_opaque() {
+    let (alice, bob, dave) = (kp(), kp(), kp());
+    let bare = Principal::implicit(bob.key(T0)).await.expect("genesis");
+    let bare_pr = bare.pr_tagged().expect("pr");
+    let mut a = a_embedding(&alice, &bare_pr, &bare).await;
+    a.commit(&bob, "key/create", &dave.tmb.to_b64(), Some(&dave), T0 + 20)
+        .await
+        .expect("built against the bare B");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for bundle in &a.bundles[..2] {
+        a.push(&engine, bundle).await.expect("A's own commits");
+    }
+    let refused = a.push(&engine, &a.bundles[2]).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Protocol(cyphr::Error::UnknownKey))
+        ),
+        "{refused:?}"
+    );
+}
+
+/// Stated limit (SPEC 10.6): a principal embedding its own PR follows
+/// nothing and authorizes nothing. A creates `carol`, embeds its own PR
+/// from that state, then removes carol; a commit by carol built against the
+/// earlier state is refused (`UnknownKey`), not authorized by A's past.
+/// Turns red if the engine follows A as its own embedded principal.
+#[tokio::test]
+async fn self_embedding_authorizes_nothing() {
+    let (alice, carol, dave) = (kp(), kp(), kp());
+    let mut a = Line::new(&alice).await;
+    a.commit(
+        &alice,
+        "key/create",
+        &carol.tmb.to_b64(),
+        Some(&carol),
+        T0 + 1,
+    )
+    .await
+    .expect("A creates carol");
+    let past = a.state.fork().await.expect("fork");
+    let own_pr = a.state.pr_tagged().expect("pr");
+    a.commit(&alice, "AT/KT/nonce/create", &own_pr, None, T0 + 2)
+        .await
+        .expect("A embeds its own PR");
+    a.commit(&alice, "key/delete", &carol.tmb.to_b64(), None, T0 + 3)
+        .await
+        .expect("A removes carol");
+    let mut built = a.state.fork().await.expect("fork");
+    built
+        .reveal_embedded(&own_pr, Tracking::Pin(Box::new(Tip::new(&past, T0 + 100))))
+        .expect("reveal");
+    let by_carol = commit_on(
+        &mut built,
+        &carol,
+        "key/create",
+        &dave.tmb.to_b64(),
+        Some(&dave),
+        T0 + 4,
+    )
+    .await
+    .expect("built against A's own past");
+
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    a.push_all(&engine).await;
+    let refused = a.push(&engine, &by_carol).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Protocol(cyphr::Error::UnknownKey))
+        ),
+        "{refused:?}"
+    );
+}
+
+/// Delegates to a [`MemoryBlobStore`], counting `get`s: replaying a chain
+/// reads its blobs, so the count observes a pass over it.
+struct CountingBlobs {
+    inner: MemoryBlobStore,
+    gets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl cyphr_storage::blob::BlobStore for CountingBlobs {
+    async fn put(
+        &self,
+        data: &[u8],
+    ) -> Result<cyphr_storage::blob::Blake3Hash, cyphr_storage::blob::BlobStoreError> {
+        self.inner.put(data).await
+    }
+
+    async fn get(
+        &self,
+        hash: &cyphr_storage::blob::Blake3Hash,
+    ) -> Result<Option<Vec<u8>>, cyphr_storage::blob::BlobStoreError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get(hash).await
+    }
+
+    async fn exists(
+        &self,
+        hash: &cyphr_storage::blob::Blake3Hash,
+    ) -> Result<bool, cyphr_storage::blob::BlobStoreError> {
+        self.inner.exists(hash).await
+    }
+
+    async fn iter(
+        &self,
+    ) -> Result<
+        Box<
+            dyn Iterator<
+                    Item = Result<
+                        cyphr_storage::blob::Blake3Hash,
+                        cyphr_storage::blob::BlobStoreError,
+                    >,
+                > + Send,
+        >,
+        cyphr_storage::blob::BlobStoreError,
+    > {
+        self.inner.iter().await
+    }
+}
+
+/// Claim: loading A reads B's held chain once, however many distinct states
+/// of B its commits were admitted against (one forward pass per call, the
+/// state at each needed PR taken on the way; dropped with the call). A
+/// carries three commits through B at three different PRs of B.
+///
+/// Turns red if each pin replays B from its genesis again (the reads grow
+/// with the pins), or if a state is taken from the wrong prefix (A fails to
+/// load).
+/// End to end: yes (interleaved pushes, blob reads counted).
+#[tokio::test]
+async fn load_reads_b_once_for_every_pinned_state() {
+    let (alice, bob, carol) = (kp(), kp(), kp());
+    let (mut b, b_pr) = b_with_carol(&bob, &carol).await;
+    let mut a = a_embedding(&alice, &b_pr, &b.state).await;
+    let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = StorageEngine::new(
+        CountingBlobs {
+            inner: MemoryBlobStore::new(),
+            gets: gets.clone(),
+        },
+        MemoryIndexer::new(),
+    );
+    type Counted = StorageEngine<CountingBlobs, MemoryIndexer>;
+    async fn push(engine: &Counted, line: &Line, bundle: &WireBundle) -> Result<(), EngineError> {
+        engine
+            .submit_commit(&line.id, Some(line.genesis.clone()), bundle)
+            .await
+            .map(|_| ())
+    }
+    for bundle in &b.bundles {
+        push(&engine, &b, bundle).await.expect("B");
+    }
+    for bundle in &a.bundles {
+        push(&engine, &a, bundle).await.expect("A");
+    }
+    for i in 0..3_i64 {
+        let key = kp();
+        let bundle = a
+            .commit(
+                &carol,
+                "key/create",
+                &key.tmb.to_b64(),
+                Some(&key),
+                T0 + 20 + i,
+            )
+            .await
+            .expect("carol signs for A");
+        push(&engine, &a, &bundle).await.expect("A through B");
+        // B moves on, so the next commit of A is admitted against a later PR.
+        let spare = kp();
+        let moved = b
+            .commit(
+                &bob,
+                "key/create",
+                &spare.tmb.to_b64(),
+                Some(&spare),
+                T0 + 50 + i,
+            )
+            .await
+            .expect("B moves");
+        push(&engine, &b, &moved).await.expect("B takes it");
+        a.state
+            .reveal_embedded(&b_pr, Tracking::Pin(Box::new(Tip::new(&b.state, T0 + 100))))
+            .expect("reveal B");
+    }
+    let blobs_of =
+        |bundles: &[WireBundle]| bundles.iter().map(|x| x.cozies().count()).sum::<usize>();
+    let a_blobs = blobs_of(&a.bundles[..a.bundles.len()]);
+
+    gets.store(0, std::sync::atomic::Ordering::SeqCst);
+    let loaded = engine
+        .load_principal(&a.id, a.genesis.clone())
+        .await
+        .expect("A loads");
+    assert_eq!(
+        loaded.pr_tagged().expect("pr"),
+        a.state.pr_tagged().expect("pr")
+    );
+    let read = gets.load(std::sync::atomic::Ordering::SeqCst);
+    let b_blobs = blobs_of(&b.bundles);
+    assert!(
+        read <= a_blobs + b_blobs,
+        "{read} reads for A's {a_blobs} blobs and one pass over B's {b_blobs}"
+    );
+}
