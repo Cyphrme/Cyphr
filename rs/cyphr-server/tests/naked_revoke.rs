@@ -877,7 +877,13 @@ async fn revoked_key_refused_at_push() {
          {rjson:?}"
     );
 
-    // A follow-up commit signed by the now-dead key_a.
+    // A follow-up commit signed by the now-dead key_a, dated after this
+    // server received the revoke: the receipt time is the cutoff (#203).
+    let after_receipt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 60;
     let body = followup_push_body(
         &pool,
         pid,
@@ -886,7 +892,7 @@ async fn revoked_key_refused_at_push() {
         RVK,
         "key_a",
         "carol",
-        RVK + 100,
+        after_receipt,
     )
     .await;
     let (status, json) = post_push(&state, body).await;
@@ -1401,3 +1407,36 @@ async fn oversize_naked_revoke_is_rejected() {
 // ========================================================================
 // 14 -- HARDENING R2: the death record is durable across a store reopen
 // ========================================================================
+
+/// Backs "first accepted stands" in the death set (the spec author on
+/// #203: a key's cutoff is the witness's receipt of its revoke, and Coz
+/// valid revokes are always accepted): `key_a` is revoked, then revoked
+/// again with an earlier `rvk` and `now`. Both are accepted; `/revoked`
+/// keeps serving the first, since a revoke's own `rvk` decides nothing.
+/// Turns red if a later revoke replaces the held one, as the earlier
+/// least-`rvk` rule did.
+#[tokio::test]
+async fn the_first_accepted_revoke_stands() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+    let first = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK + 10));
+    let (status, json) = post_revoke(&state, first.clone()).await;
+    assert!(status.is_success(), "first: {status} {json:?}");
+    let earlier = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
+    let (status, json) = post_revoke(&state, earlier).await;
+    assert!(
+        status.is_success(),
+        "a later revoke is accepted: {status} {json:?}"
+    );
+
+    let tmb = tmb_b64(&pool, "key_a");
+    let (status, json) =
+        common::get_json(build_router(state.clone()), &format!("/revoked?tmbs={tmb}")).await;
+    assert_eq!(status, StatusCode::OK, "{json:?}");
+    assert_eq!(
+        common::envelope_payload(&json)["revoked"],
+        serde_json::json!([first]),
+        "the first accepted revoke is the one served"
+    );
+}

@@ -24,6 +24,8 @@
 //! this is a third copy of that rule. HA1 replaces all three with one core
 //! function.
 
+use std::collections::BTreeMap;
+
 use cyphr::eml::MemoryStorage;
 use cyphr::replay::WireBundle;
 use cyphr::{Commit, Principal};
@@ -333,6 +335,209 @@ pub async fn verify_principal_fork(
         pre,
         commits: [id(&ca)?, id(&cb)?],
     })
+}
+
+/// A commit proved to extend a rival branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extension {
+    /// Its position.
+    pub height: u64,
+    /// Its bundle.
+    pub bundle: WireBundle,
+    /// Its commit id.
+    pub id: String,
+    /// The id of the commit it extends: a fork's rival, or an extension.
+    pub parent: String,
+}
+
+/// What a holder's chain proves of a set of served `principal-fork` items.
+#[derive(Debug, Default)]
+pub struct ItemSet {
+    /// Each fork at a position of the chain, with its rival's bundle (the
+    /// item's commit that is not the chain's).
+    pub forks: Vec<(ForkProof, WireBundle)>,
+    /// Each commit that extends a rival branch, in position order.
+    pub extensions: Vec<Extension>,
+    /// Why each other item was refused.
+    pub rejected: Vec<EvidenceFailure>,
+}
+
+/// Verify a peer's `principal-fork` items against a holder's chain
+/// (`entries` replayed from `base`; `chain_ids` the chain's commit ids by
+/// position).
+///
+/// An item whose `pre` is on the chain is a fork
+/// ([`verify_principal_fork`]). One whose `pre` is off it is
+/// tried as a commit extending a rival branch: each proved rival's state is
+/// replayed once, items are taken in position order and matched by
+/// (position below, `pre`) to the one branch tip they can extend, and the
+/// item's commit that applies there becomes that branch's next tip. Each
+/// item is verified at most once, from its parent's state, so the result
+/// is the same for any order or repetition of the items, and an item whose
+/// parent is not proved (a broken link, a `pre` from later in a branch) is
+/// refused.
+pub async fn verify_fork_items(
+    items: &[&Value],
+    pg: &str,
+    base: &Principal<MemoryStorage>,
+    entries: &[PatchEntry],
+    chain_ids: &[Option<String>],
+) -> ItemSet {
+    let mut set = ItemSet::default();
+    let fork_of = async |p: &Principal<MemoryStorage>, at: usize| {
+        p.fork()
+            .await
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })
+    };
+    let mut off_chain = Vec::new();
+    for item in items {
+        let verified = async {
+            let proof = verify_principal_fork(item, pg, fork_of(base, 0).await?, entries).await?;
+            let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
+            let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
+            let mine = chain_ids.get(height).cloned().flatten();
+            let rival = if mine.as_ref() == Some(&proof.commits[1]) {
+                a
+            } else {
+                b
+            };
+            Ok::<_, EvidenceFailure>((proof, rival))
+        }
+        .await;
+        match verified {
+            Ok(fork) => {
+                if !set.forks.iter().any(|(p, _)| p == &fork.0) {
+                    set.forks.push(fork);
+                }
+            },
+            Err(EvidenceFailure::PreMismatch) => off_chain.push(*item),
+            Err(failure) => set.rejected.push(failure),
+        }
+    }
+
+    // Each branch tip, by (position, PR): its state and commit id.
+    let mut tips: BTreeMap<(usize, String), (Principal<MemoryStorage>, String)> = BTreeMap::new();
+    for (proof, rival) in &set.forks {
+        let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
+        let Some(prefix) = entries.get(..height) else {
+            continue;
+        };
+        let mut line = prefix.to_vec();
+        line.push(PatchEntry {
+            sequence: proof.height,
+            bundle: Ok(rival.clone()),
+        });
+        let Ok(base) = fork_of(base, 0).await else {
+            continue;
+        };
+        let Ok(state) = replay_chain(base, &line).await else {
+            continue;
+        };
+        let (Ok(pr), Some(id)) = (state.pr_tagged(), rival_id(proof, chain_ids)) else {
+            continue;
+        };
+        tips.insert((height, pr), (state, id));
+    }
+
+    let mut pending: Vec<(usize, Option<String>, &Value)> = Vec::new();
+    for item in off_chain {
+        match EvidenceItem::parse(item) {
+            Ok(EvidenceItem::PrincipalFork { pg: named, .. }) if named != pg => {
+                set.rejected.push(EvidenceFailure::OtherPrincipal);
+            },
+            Ok(EvidenceItem::PrincipalFork { height, pre, .. }) => {
+                pending.push((usize::try_from(height).unwrap_or(usize::MAX), pre, item));
+            },
+            Err(failure) => set.rejected.push(failure),
+        }
+    }
+    pending.sort_by_key(|(height, ..)| *height);
+    for (height, pre, item) in pending {
+        let parent = pre.and_then(|pre| {
+            let below = height.checked_sub(1)?;
+            tips.get(&(below, pre))
+        });
+        let Some((state, parent)) = parent else {
+            set.rejected.push(EvidenceFailure::PreMismatch);
+            continue;
+        };
+        let parent = parent.clone();
+        match extend(item, state, height).await {
+            Ok(applied) => {
+                for (bundle, id, next) in applied {
+                    if !set.extensions.iter().any(|e| e.id == id) {
+                        set.extensions.push(Extension {
+                            height: height as u64,
+                            bundle,
+                            id: id.clone(),
+                            parent: parent.clone(),
+                        });
+                    }
+                    if let Ok(pr) = next.pr_tagged() {
+                        tips.insert((height, pr), (next, id));
+                    }
+                }
+            },
+            Err(failure) => set.rejected.push(failure),
+        }
+    }
+    set
+}
+
+/// The id of a proved fork's rival: its commit that is not the chain's.
+fn rival_id(proof: &ForkProof, chain_ids: &[Option<String>]) -> Option<String> {
+    let height = usize::try_from(proof.height).ok()?;
+    let mine = chain_ids.get(height).cloned().flatten();
+    proof
+        .commits
+        .iter()
+        .find(|c| Some(*c) != mine.as_ref())
+        .cloned()
+}
+
+/// Each of the item's commits that applies on `state` (the branch tip
+/// below it), with its id and the state after it: both, when the serving
+/// peer retained two extensions of one rival commit.
+async fn extend(
+    item: &Value,
+    state: &Principal<MemoryStorage>,
+    height: usize,
+) -> Result<Vec<(WireBundle, String, Principal<MemoryStorage>)>, EvidenceFailure> {
+    let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
+    let mut applied = Vec::new();
+    for blobs in [b, a] {
+        let mut copy = state
+            .fork()
+            .await
+            .map_err(|source| EvidenceFailure::Replay {
+                commit: height,
+                source,
+            })?;
+        if replay_commit(&mut copy, height, &blobs).await.is_err() {
+            continue;
+        }
+        let id = copy
+            .commits()
+            .last()
+            .map(|c| c.tr().0.tagged_first().map(|d| d.to_string()))
+            .transpose()
+            .map_err(|source| EvidenceFailure::Replay {
+                commit: height,
+                source,
+            })?
+            .ok_or(EvidenceFailure::BadCommit {
+                commit: height,
+                what: "no commit formed",
+            })?;
+        applied.push((blobs, id, copy));
+    }
+    if applied.is_empty() {
+        return Err(EvidenceFailure::BadCommit {
+            commit: height,
+            what: "neither commit extends the rival branch",
+        });
+    }
+    Ok(applied)
 }
 
 /// Whether `g`, a tagged or bare root, names `pg` (bare).

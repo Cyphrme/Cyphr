@@ -9,7 +9,7 @@ use cyphr::eml::MemoryStorage;
 use cyphr::state::{HashAlg, TaggedDigest};
 use cyphr::{Key, Principal};
 use cyphr_client::PatchEntry;
-use cyphr_client::evidence::{replay_chain, verify_principal_fork};
+use cyphr_client::evidence::{replay_chain, verify_fork_items, verify_principal_fork};
 use serde_json::Value;
 
 /// Keys known to the verifier, by thumbprint: `tmb -> (alg, public key)`
@@ -323,6 +323,69 @@ fn claimed_extent(pay: &Value) -> Result<(u64, String, Value), String> {
         .as_str()
         .ok_or("statement has no commit_id")?;
     Ok((size, commit_id.to_owned(), pay["roots"].clone()))
+}
+
+/// What every item a peer serves proves, verified offline against the
+/// peer's `chain`, and the tips of the rival branches it proves.
+pub struct VerifiedSet {
+    pub proven: std::collections::BTreeSet<Proven>,
+    /// Each rival branch's last commit id: a fork's rival no verified item
+    /// extends, or the last extension of one.
+    pub rival_tips: std::collections::BTreeSet<String>,
+}
+
+/// Verify all of a peer's evidence `items` as one set. A `principal-fork`
+/// item is checked by the client's own [`verify_fork_items`] against the
+/// peer's `chain`: a fork at a position of the chain, or a commit extending
+/// a rival branch proved by another item, in any order. Every other item
+/// is checked by [`verify_evidence`]. One item that verifies nowhere fails
+/// the whole set: a peer that serves a forgery vouches for nothing.
+pub async fn verify_evidence_set(
+    items: &[Value],
+    requested: &str,
+    keys: &Keys,
+    peers: &BTreeMap<String, String>,
+    chain: &ChainView,
+) -> Result<VerifiedSet, String> {
+    let mut proven = std::collections::BTreeSet::new();
+    let mut forks = Vec::new();
+    for item in items {
+        if item["kind"].as_str() == Some("principal-fork") {
+            forks.push(item);
+        } else {
+            proven.insert(verify_evidence(item, requested, keys, peers, chain).await?);
+        }
+    }
+    if forks.is_empty() {
+        return Ok(VerifiedSet {
+            proven,
+            rival_tips: std::collections::BTreeSet::new(),
+        });
+    }
+    let genesis = chain.genesis.as_ref().ok_or("no chain to replay from")?;
+    let chain_ids: Vec<Option<String>> = chain.commit_ids.iter().cloned().map(Some).collect();
+    let set = verify_fork_items(&forks, requested, genesis, &chain.entries, &chain_ids).await;
+    if let Some(why) = set.rejected.first() {
+        return Err(why.to_string());
+    }
+    for (proof, _) in &set.forks {
+        proven.insert(Proven::PrincipalFork {
+            pg: proof.pg.clone(),
+        });
+    }
+    let extended: std::collections::BTreeSet<&String> =
+        set.extensions.iter().map(|e| &e.parent).collect();
+    let rival_tips = set
+        .forks
+        .iter()
+        .filter_map(|(proof, _)| {
+            let mine = chain.commit_ids.get(usize::try_from(proof.height).ok()?);
+            proof.commits.iter().find(|c| Some(*c) != mine).cloned()
+        })
+        .chain(set.extensions.iter().map(|e| e.id.clone()))
+        .filter(|id| !extended.contains(id))
+        .collect();
+    Ok(VerifiedSet { proven, rival_tips })
 }
 
 /// Verify one served evidence item offline. `requested` is the principal

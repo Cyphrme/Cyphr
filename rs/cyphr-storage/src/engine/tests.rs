@@ -899,37 +899,3 @@ proptest::proptest! {
     }
 }
 mod pgk;
-
-/// Claim: a rival whose parent is a disqualified rival is itself no
-/// participant, so two children of a rival signed by a revoked key do not
-/// put the principal in Error. Turns red if the participant parent check is
-/// dropped (both children then count as a fork over one `pre`). A unit test
-/// on the pure fork rule: the scenario needs a revoked key's rival and two
-/// children of it, which no honest write path stores.
-#[test]
-fn children_of_a_disqualified_rival_are_not_a_fork() {
-    let held = |sequence: u64, id: &str, pre: Option<&str>, signer: &str, canonical: bool| Held {
-        sequence,
-        id: id.into(),
-        pre: pre.map(Into::into),
-        pr: format!("pr-{id}"),
-        signed: vec![signer.into()],
-        canonical,
-        removes: Vec::new(),
-    };
-    let commits = [
-        held(0, "c0", None, "ok", true),
-        held(1, "c1", Some("pr-c0"), "ok", true),
-        held(1, "r1", Some("pr-c0"), "revoked", false),
-        held(2, "r2a", Some("pr-r1"), "ok", false),
-        held(2, "r2b", Some("pr-r1"), "ok", false),
-    ];
-    let revoked: Revoked = [("revoked".to_string(), 0)].into_iter().collect();
-    assert!(
-        !in_error(&commits, &revoked),
-        "two children of a disqualified rival counted as a fork"
-    );
-    // Control: with the key not revoked, r1 participates and so do its
-    // children, which fork over one pre.
-    assert!(in_error(&commits, &Revoked::new()));
-}

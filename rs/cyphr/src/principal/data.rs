@@ -209,11 +209,14 @@ impl<S: eml::Storage> Principal<S> {
         self.key_timeline.knows(tmb) || self.auth.revoked.contains_key(&tmb.to_b64())
     }
 
-    /// Take in a naked revoke of `tmb` dated `now` that the caller has
-    /// verified (SPEC 6.4): from `now` on, the key authorizes no data
-    /// action. It changes no root: a naked revoke does not mutate PR.
-    pub fn note_naked_revoke(&mut self, tmb: &coz::Thumbprint, now: i64) {
-        self.state.core_mut().key_timeline.revoke(tmb, now);
+    /// Take in a naked revoke of `tmb` that the caller has verified (SPEC
+    /// 6.4), cutting the key off at `cutoff`: from then on, the key
+    /// authorizes no data action. The caller chooses the cutoff; a witness
+    /// passes its own receipt time of the revoke, not the revoke's `now` or
+    /// `rvk` (the spec author on #203). It changes no root: a naked revoke
+    /// does not mutate PR.
+    pub fn note_naked_revoke(&mut self, tmb: &coz::Thumbprint, cutoff: i64) {
+        self.state.core_mut().key_timeline.revoke(tmb, cutoff);
     }
 
     /// Verify signature and record an action in one step.

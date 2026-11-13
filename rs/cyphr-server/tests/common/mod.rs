@@ -509,3 +509,56 @@ pub fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
     );
     &body["payload"]
 }
+
+/// One commit on `p` in which pool key `signer` creates pool key `name`,
+/// finalized by `signer` at `now`; its bundle.
+pub async fn key_commit_by(
+    p: &mut cyphr::Principal,
+    signer: &str,
+    name: &str,
+    now: i64,
+) -> WireBundle {
+    let pool = load_pool();
+    let s = pool.get(signer).expect("signer");
+    let key = pool.get(name).expect("pool key").key().expect("key");
+    let mut pay = serde_json::json!({
+        "alg": s.alg, "id": key.tmb().to_b64(), "now": now,
+        "tmb": s.compute_tmb_b64().expect("tmb"), "typ": "cyphr.me/cyphr/key/create"
+    });
+    if let Some(obj) = pay.as_object_mut() {
+        obj.sort_keys();
+    }
+    let pay = serde_json::to_vec(&pay).expect("pay");
+    let prv = Base64UrlUnpadded::decode_vec(s.prv.as_ref().expect("prv")).expect("prv b64");
+    let pubb = Base64UrlUnpadded::decode_vec(&s.pub_key).expect("pub b64");
+    let (sig, cad) = coz::sign_json(&pay, &s.alg, &prv, &pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &s.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(key))
+        .expect("applies");
+    scope
+        .finalize_with_software(&s.software_signer().expect("signer"), now, "cyphr.me")
+        .await
+        .expect("finalizes");
+    WireBundle::of_commit(p.commits().last().expect("a commit")).expect("bundle")
+}
+
+/// `eve`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, key}`.
+pub fn eve_revoke(rvk: i64) -> serde_json::Value {
+    let pool = load_pool();
+    let e = pool.get("eve_ed25519").expect("eve");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": e.alg, "now": rvk, "rvk": rvk, "tmb": e.compute_tmb_b64().expect("tmb"),
+        "typ": "cyphr.me/cyphr/key/revoke"
+    }))
+    .expect("pay");
+    let prv = Base64UrlUnpadded::decode_vec(e.prv.as_ref().expect("prv")).expect("prv b64");
+    let pubb = Base64UrlUnpadded::decode_vec(&e.pub_key).expect("pub b64");
+    let (sig, _) = coz::sign_json(&pay, &e.alg, &prv, &pubb).expect("sign");
+    serde_json::json!({
+        "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {"alg": e.alg, "pub": e.pub_key},
+    })
+}

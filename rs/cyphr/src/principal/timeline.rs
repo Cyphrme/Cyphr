@@ -14,11 +14,12 @@ use crate::key::Key;
 /// Every key's active periods (SPEC 6.2: a key may have several). A
 /// period opens at the commit that leaves the key in KT and closes at the
 /// commit that takes it out, each dated by the commit's `now`, or at a
-/// revoke's own `now` (SPEC 6.4).
+/// naked revoke's cutoff (SPEC 6.4).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct KeyTimeline {
     periods: Vec<Period>,
-    /// Naked revokes by key: each takes effect from its own `now`.
+    /// Naked revokes by key: each takes effect from the cutoff it was
+    /// noted with.
     revoked_from: HashMap<String, i64>,
     /// The spans the principal was frozen (SPEC 14.9), by commit `now`.
     frozen: Vec<(i64, Option<i64>)>,
@@ -74,11 +75,12 @@ impl KeyTimeline {
         }
     }
 
-    /// A naked revoke of `tmb` dated `now` (SPEC 6.4): every period of the
-    /// key ends at `now` at the latest.
-    pub(crate) fn revoke(&mut self, tmb: &Thumbprint, now: i64) {
-        let at = self.revoked_from.entry(tmb.to_b64()).or_insert(now);
-        *at = (*at).min(now);
+    /// A naked revoke of `tmb` cutting the key off at `cutoff` (SPEC 6.4;
+    /// the caller's choice, a witness's receipt time): every period of the
+    /// key ends at `cutoff` at the latest.
+    pub(crate) fn revoke(&mut self, tmb: &Thumbprint, cutoff: i64) {
+        let at = self.revoked_from.entry(tmb.to_b64()).or_insert(cutoff);
+        *at = (*at).min(cutoff);
         let at = *at;
         for p in self.periods.iter_mut().filter(|p| p.key.tmb() == tmb) {
             if p.until.is_none_or(|u| u > at) {

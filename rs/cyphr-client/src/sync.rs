@@ -36,7 +36,7 @@ use cyphr::{Key, Principal, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
-use crate::evidence::{EvidenceFailure, EvidenceItem, names_pg, pg_names, verify_principal_fork};
+use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,
@@ -556,6 +556,9 @@ pub struct PullReport {
     pub forks: Vec<ForkFinding>,
     /// The keys newly made inactive by verified naked revokes.
     pub revoked: Vec<RevokedKey>,
+    /// Commits a peer serves as evidence that extend a fork's rival,
+    /// each verified on the rival's branch, lowest first per branch.
+    pub extensions: Vec<WireBundle>,
 }
 
 /// A peer's branch head, as it claims it. A hint, never evidence.
@@ -581,7 +584,7 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
             rejected_revokes: Vec::new(),
             revoke_fetch: None,
         };
-        match pull_commits(record, peer.connector, &mut outcome).await {
+        match pull_commits(record, peer.connector, &mut outcome, &mut report.extensions).await {
             Ok((standing, forks)) => {
                 outcome.standing = standing;
                 for fork in forks {
@@ -598,6 +601,53 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
         pull_revokes(record, peer, outcome, &mut report.revoked).await;
     }
     report
+}
+
+/// What a holder that keeps branches is handed after `report`, in order:
+/// each fork's rival, the verified commits extending a rival, then the
+/// chain of each peer that forked, past the lowest fork position. A peer
+/// on the other side of a fork may have extended its branch or resolved
+/// the fork; only its commits past the fork show which.
+///
+/// Nothing here is verified past what the pull verified: the holder admits
+/// or retains each commit only if it verifies, and refuses what it holds.
+pub async fn branch_bundles<C: Connector>(
+    record: &Record,
+    report: &PullReport,
+    peers: &[PullPeer<'_, C>],
+) -> Vec<WireBundle> {
+    let mut bundles: Vec<WireBundle> = report.forks.iter().map(|f| f.rival.clone()).collect();
+    bundles.extend(report.extensions.iter().cloned());
+    let Some(height) = report.forks.iter().map(|f| f.height).min() else {
+        return bundles;
+    };
+    let forked = report
+        .peers
+        .iter()
+        .filter(|o| matches!(o.standing, PeerStanding::Forked));
+    for outcome in forked {
+        let Some(peer) = peers.iter().find(|p| p.name == outcome.peer) else {
+            continue;
+        };
+        let request = PatchRequest {
+            principal_id: &record.id,
+            anchor: None,
+        };
+        // A peer that cannot serve its chain now adds nothing: its fork
+        // finding stands on the rival alone.
+        let Ok(patch) =
+            fetch_patch(peer.connector, &request, BindingPolicy::NotRequired, None).await
+        else {
+            continue;
+        };
+        for entry in patch.entries.iter().skip(height + 1) {
+            let Ok(bundle) = entry.bundle.clone() else {
+                break;
+            };
+            bundles.push(bundle);
+        }
+    }
+    bundles
 }
 
 impl ForkFinding {
@@ -660,6 +710,7 @@ async fn pull_commits<C: Connector>(
     record: &mut Record,
     connector: &C,
     outcome: &mut PeerOutcome,
+    extensions: &mut Vec<WireBundle>,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
     let heads = parse_heads(
         &fetch_payload(
@@ -687,7 +738,7 @@ async fn pull_commits<C: Connector>(
         _ => reach(record, connector).await?,
     };
     if heads.len() > 1 {
-        evidence(record, connector, outcome, &mut forks).await;
+        evidence(record, connector, outcome, &mut forks, extensions).await;
     }
     Ok((standing, forks))
 }
@@ -845,6 +896,7 @@ async fn evidence<C: Connector>(
     connector: &C,
     outcome: &mut PeerOutcome,
     forks: &mut Vec<ForkFinding>,
+    extensions: &mut Vec<WireBundle>,
 ) {
     let Some(held) = &record.held else { return };
     let target = format!("/evidence?pr={}", percent_encode_query_value(&record.id));
@@ -860,34 +912,24 @@ async fn evidence<C: Connector>(
             .push(EvidenceFailure::Malformed("items is not an array"));
         return;
     };
-    for item in items.iter().take(MAX_EVIDENCE_ITEMS) {
-        let verified = async {
-            let mut base = Principal::implicit(held.root.clone())
-                .await
-                .map_err(|source| EvidenceFailure::Replay { commit: 0, source })?;
-            base.set_clock(record.clock);
-            let proof = verify_principal_fork(item, record.bare_id(), base, &held.entries).await?;
-            let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
-            let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
-            let mine = held.ids.get(height).and_then(commit_id);
-            let rival = if mine.as_ref() == Some(&proof.commits[1]) {
-                a
-            } else {
-                b
-            };
-            Ok(ForkFinding {
-                height,
-                pre: proof.pre,
-                commits: proof.commits,
-                rival,
-            })
-        }
-        .await;
-        match verified {
-            Ok(finding) => forks.push(finding),
-            Err(failure) => outcome.rejected_evidence.push(failure),
-        }
-    }
+    let Ok(mut base) = Principal::implicit(held.root.clone()).await else {
+        outcome.rejected_evidence.push(EvidenceFailure::Malformed(
+            "the record's genesis does not open a principal",
+        ));
+        return;
+    };
+    base.set_clock(record.clock);
+    let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
+    let chain_ids: Vec<Option<String>> = held.ids.iter().map(commit_id).collect();
+    let set = verify_fork_items(&items, record.bare_id(), &base, &held.entries, &chain_ids).await;
+    forks.extend(set.forks.into_iter().map(|(proof, rival)| ForkFinding {
+        height: usize::try_from(proof.height).unwrap_or(usize::MAX),
+        pre: proof.pre,
+        commits: proof.commits,
+        rival,
+    }));
+    extensions.extend(set.extensions.into_iter().map(|e| e.bundle));
+    outcome.rejected_evidence.extend(set.rejected);
 }
 
 /// Fetch the naked revokes `connector` holds for `tmbs`, as served and
@@ -930,35 +972,56 @@ async fn pull_revokes<C: Connector>(
         .map(|k| k.tmb().clone())
         .filter(|t| !record.dead.contains_key(&t.to_b64()))
         .collect();
-    for batch in asked.chunks(REVOKE_BATCH) {
-        let envelopes = match fetch_revoked(peer.connector, batch).await {
-            Ok(envelopes) => envelopes,
-            Err(failure) => {
-                outcome.revoke_fetch = Some(failure);
-                return;
-            },
-        };
-        for envelope in &envelopes {
+    let found = match verified_revokes(peer.connector, peer.name, &asked).await {
+        Ok((found, rejected)) => {
+            outcome.rejected_revokes.extend(rejected);
+            found
+        },
+        Err(failure) => {
+            outcome.revoke_fetch = Some(failure);
+            return;
+        },
+    };
+    for revoke in found {
+        let known = record.dead.get(&revoke.tmb.to_b64()).copied();
+        if known.is_none_or(|rvk| revoke.rvk < rvk) {
+            record.dead.insert(revoke.tmb.to_b64(), revoke.rvk);
+        }
+        if known.is_none() {
+            revoked.push(revoke);
+        }
+    }
+}
+
+/// The naked revokes `connector` (named `peer`) serves for `keys`, each
+/// verified (SPEC 6.4), and why each other one was refused. Only revokes
+/// of keys asked about are kept: a peer cannot grow a holder's memory with
+/// revokes of strangers. The pull step and a witness's sync both ask
+/// through this.
+///
+/// # Errors
+///
+/// A [`PatchFailure`] when the revokes cannot be fetched.
+pub async fn verified_revokes<C: Connector>(
+    connector: &C,
+    peer: &str,
+    keys: &[Thumbprint],
+) -> Result<(Vec<RevokedKey>, Vec<RevokeFailure>), PatchFailure> {
+    let mut found = Vec::new();
+    let mut rejected = Vec::new();
+    for batch in keys.chunks(REVOKE_BATCH) {
+        for envelope in &fetch_revoked(connector, batch).await? {
             match verify_naked_revoke(envelope) {
-                // Only keys the record holds are recorded: a peer cannot
-                // grow the record's memory with revokes of strangers.
-                Ok(revoke) if batch.contains(&revoke.tmb) => {
-                    let known = record.dead.get(&revoke.tmb.to_b64()).copied();
-                    if known.is_none_or(|rvk| revoke.rvk < rvk) {
-                        record.dead.insert(revoke.tmb.to_b64(), revoke.rvk);
-                    }
-                    if known.is_none() {
-                        revoked.push(RevokedKey {
-                            tmb: revoke.tmb,
-                            rvk: revoke.rvk,
-                            peer: peer.name.to_owned(),
-                            envelope: envelope.clone(),
-                        });
-                    }
-                },
+                Ok(revoke) if batch.contains(&revoke.tmb) => found.push(RevokedKey {
+                    tmb: revoke.tmb,
+                    rvk: revoke.rvk,
+                    peer: peer.to_owned(),
+                    envelope: envelope.clone(),
+                }),
                 Ok(_) => {},
-                Err(failure) => outcome.rejected_revokes.push(failure),
+                Err(failure) => rejected.push(failure),
             }
         }
     }
+    Ok((found, rejected))
 }

@@ -790,8 +790,6 @@ pub async fn push(
     peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     AppJson(request): AppJson<PushRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     if request.bundle.is_empty() {
         return Err(AppError::bad_request("empty commit bundle"));
     }
@@ -828,49 +826,8 @@ pub async fn push(
         )));
     }
 
-    // Global key-death gate (SPEC §6.4): a naked-revoked key is refused for
-    // every capability, push included. Refuse the bundle if any signing key
-    // (`pay.tmb`) is dead. Runs before submit_commit so a dead key is an auth
-    // refusal, never a stale-predecessor 409. A blob whose shape submit_commit
-    // will itself reject (unparseable, no tmb, non-b64url tmb) is left for
-    // that authoritative validation rather than pre-judged here.
-    //
-    // INVARIANT (refusal-only): this fence consults an UNVERIFIED,
-    // client-declared `pay.tmb` -- the signature is not checked until
-    // submit_commit below. It is compliant ONLY because its outcome is pure
-    // refusal: a forged `pay.tmb` naming a dead key can at worst refuse a push
-    // the forger was making anyway. It must NEVER be extended to admit,
-    // authorize, or otherwise act on this unverified `tmb`; any such use would
-    // trust a value the client fully controls.
-    for raw in request.bundle.cozies() {
-        let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw) else {
-            continue;
-        };
-        // SPEC §6.4: a dead key is not re-added to any principal either.
-        if state
-            .observations
-            .introduces_dead_key(&parsed)
-            .await
-            .map_err(AppError::observation)?
-        {
-            return Err(AppError::forbidden("push introduces a revoked key"));
-        }
-        let Some(tmb_b64) = parsed["pay"]["tmb"].as_str() else {
-            continue;
-        };
-        let Ok(tmb_bytes) = Base64UrlUnpadded::decode_vec(tmb_b64) else {
-            continue;
-        };
-        let tmb = coz::Thumbprint::from_bytes(tmb_bytes);
-        if state
-            .observations
-            .is_dead(&tmb)
-            .await
-            .map_err(AppError::observation)?
-        {
-            return Err(AppError::unauthorized("push signing key was revoked"));
-        }
-    }
+    // Key death (SPEC §6.4) is refused by the engine at admission
+    // (`EngineError::DeadKey`), for this route and every other that submits.
 
     // Genesis auto-detection: the engine resolves genesis from stored
     // state (existing principal) or from the submitted blobs (new principal).
@@ -1003,10 +960,12 @@ pub async fn revoke(
     }
 
     // The engine keeps the revoke too, as a record a rebuild re-verifies:
-    // it judges forks by it (SPEC 15.7.1, a revocation resolves one).
+    // it judges forks by it (SPEC 15.7.1, a revocation resolves one), with
+    // this server's receipt time as the key's cutoff (#203). `interpret`
+    // above already refused anything the engine would.
     state
         .engine
-        .record_revoke(&verified.evidence)
+        .record_revoke(&verified.evidence, crate::auth::server_now())
         .await
         .map_err(AppError::engine)?;
 
