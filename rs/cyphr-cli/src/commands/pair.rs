@@ -30,7 +30,7 @@ const PAIRING_ACT: &str = "pairing/create";
 /// may sit. SPEC 17.3 requires a bounded timestamp window ("within +-N
 /// seconds") and leaves N to the verifier; its 17.2 example is 60. Pairing
 /// crosses a human-carried channel, so the default is wider.
-pub const DEFAULT_WINDOW_SECS: i64 = 300;
+pub const DEFAULT_WINDOW_SECS: u64 = 300;
 
 fn pairing_typ(authority: &str) -> String {
     format!("{authority}/{PAIRING_ACT}")
@@ -78,7 +78,7 @@ pub fn request(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "tmb": tmb,
-                    "alg": algo,
+                    "alg": public.alg,
                     "identity": identity,
                 }))?
             ),
@@ -106,7 +106,7 @@ fn verify_request(
     authority: &str,
     identity: &str,
     now: i64,
-    window: i64,
+    window: u64,
 ) -> crate::Result<Verified> {
     let refuse = |why: String| Error::InvalidArgument(format!("pairing request refused: {why}"));
     let pay = request.get("pay").ok_or(Error::MissingField("pay"))?;
@@ -142,9 +142,6 @@ fn verify_request(
     if coz::compute_thumbprint_for_alg(alg, &pub_key).is_none_or(|t| t.to_b64() != tmb) {
         return Err(refuse("the disclosed key does not hash to `tmb`".into()));
     }
-    if text("alg")? != alg {
-        return Err(refuse("pay `alg` differs from the key's".into()));
-    }
     if coz::verify_json(&serde_json::to_vec(pay)?, &sig, alg, &pub_key) != Some(true) {
         return Err(refuse(
             "the signature does not verify: no proof of possession".into(),
@@ -155,7 +152,7 @@ fn verify_request(
         .get("now")
         .and_then(Value::as_i64)
         .ok_or(Error::MissingField("now"))?;
-    if (now - at).abs() > window {
+    if now.abs_diff(at) > window {
         return Err(refuse(format!(
             "`now` {at} is outside the +-{window}s window around {now} (stale or replayed)"
         )));
@@ -182,7 +179,7 @@ pub fn accept(
     identity: &str,
     signer_tmb: &str,
     file: &std::path::Path,
-    window: i64,
+    window: u64,
 ) -> crate::Result<()> {
     let request: Value = serde_json::from_slice(&std::fs::read(file)?)?;
     let v = verify_request(

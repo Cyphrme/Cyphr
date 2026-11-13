@@ -673,7 +673,7 @@ pub enum KeyCommands {
 
         /// Seconds either side of now the request's `now` may sit
         #[arg(long, default_value_t = crate::commands::pair::DEFAULT_WINDOW_SECS)]
-        window: i64,
+        window: u64,
     },
 
     /// List keys (from keystore if no identity, from identity if provided)

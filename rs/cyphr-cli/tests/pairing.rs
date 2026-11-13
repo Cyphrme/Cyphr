@@ -172,3 +172,37 @@ fn pairing_refuses_a_request_for_another_principal() {
     assert!(!r.ok && r.stderr.contains("not `"), "{}", r.stderr);
     assert!(!holds(&laptop, &pr, &tmb));
 }
+
+/// A request under another authority's pairing typ, validly signed by the
+/// key, is refused: the typ is the role separation (SPEC 7.3), so a request
+/// signed for another authority cannot be taken as this one's.
+#[test]
+fn pairing_refuses_a_request_under_another_authority() {
+    let laptop = User::new();
+    let phone = User::new();
+    let pr = laptop.new_identity();
+    let file = laptop.dir.path().join("foreign.json");
+    let r = phone.run(&[
+        "--authority=other.example",
+        "key",
+        "request",
+        &format!("--identity={pr}"),
+        &format!("--file={}", file.display()),
+    ]);
+    assert!(r.ok, "{}", r.stderr);
+    let tmb = r.json()["tmb"].as_str().unwrap().to_owned();
+    let r = accept(&laptop, &pr, &file, &[]);
+    assert!(!r.ok && r.stderr.contains("is not `"), "{}", r.stderr);
+    assert!(!holds(&laptop, &pr, &tmb));
+}
+
+/// `--window` is unsigned: a negative window cannot be asked for.
+#[test]
+fn pairing_rejects_a_negative_window() {
+    let laptop = User::new();
+    let phone = User::new();
+    let pr = laptop.new_identity();
+    let (file, _) = request(&phone, &laptop, &pr);
+    let r = accept(&laptop, &pr, &file, &["--window=-1"]);
+    assert!(!r.ok);
+}

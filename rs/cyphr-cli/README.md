@@ -49,6 +49,30 @@ cyphr key add --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc \
 cyphr inspect --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
 ```
 
+### Pair a device
+
+Each device enrolls its own key; no private key is exported or copied. On
+the new device, sign a pairing request for the principal, then carry the
+file to a device already in the principal and accept it there:
+
+```sh
+cyphr key request --identity <PR> --file request.json
+cyphr key accept --identity <PR> --signer <TMB> --file request.json
+```
+
+The request is signed by the new key (a proof of possession) under an
+application typ, `<authority>/pairing/create`. `accept` refuses a request
+whose signature does not verify, that names another principal or
+authority, or whose `now` is more than 300 seconds from the accepting
+device's clock (`--window` changes it). The window is an implementation
+choice: SPEC 17.2 and 17.3 (at `be0663f`) require a bounded timestamp
+window and leave N to the verifier.
+
+Replay limit: a request replayed after acceptance is refused while its key
+is active. Within the window, if the owner deleted that key and runs
+`accept` again on the same file, the key is added back. The MVP has no
+challenge nonce.
+
 ### Export and import
 
 ```bash
