@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Ran, User};
@@ -26,7 +26,7 @@ fn request(phone: &User, laptop: &User, pr: &str) -> (PathBuf, String) {
     (file, v["tmb"].as_str().expect("tmb").to_owned())
 }
 
-fn accept(laptop: &User, pr: &str, file: &PathBuf, extra: &[&str]) -> Ran {
+fn accept(laptop: &User, pr: &str, file: &Path, extra: &[&str]) -> Ran {
     let mut args = vec![
         "key".to_owned(),
         "accept".to_owned(),
@@ -45,7 +45,7 @@ fn holds(laptop: &User, pr: &str, tmb: &str) -> bool {
         .contains(tmb)
 }
 
-fn edit(file: &PathBuf, f: impl FnOnce(&mut Value)) {
+fn edit(file: &Path, f: impl FnOnce(&mut Value)) {
     let mut v: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
     f(&mut v);
     std::fs::write(file, serde_json::to_string(&v).unwrap()).unwrap();
