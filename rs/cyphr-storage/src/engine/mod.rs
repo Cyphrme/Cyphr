@@ -3607,6 +3607,23 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .map(|(fork_point, heads)| ErrorState { fork_point, heads }))
     }
 
+    /// Whether the engine holds the commit `commit_id` of `principal_id`,
+    /// on its canonical chain or as a retained branch. `false` for a
+    /// principal that is not stored.
+    pub async fn holds_commit(
+        &self,
+        principal_id: &str,
+        commit_id: &str,
+    ) -> Result<bool, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self
+            .held(&principal_id)
+            .await?
+            .iter()
+            .any(|h| h.id == commit_id))
+    }
+
     async fn error_state_of(
         &self,
         principal_id: &str,
@@ -3626,7 +3643,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .unwrap_or_default();
         let mut heads = Vec::with_capacity(assessed.heads.len());
         for id in &assessed.heads {
-            let head = by_id[id.as_str()];
+            // Heads are drawn from `held` by `assessment`, so each is in
+            // `by_id`; a miss is an inconsistency, reported, not a panic.
+            let head = by_id.get(id.as_str()).ok_or_else(|| {
+                EngineError::NotFound(format!("tied head {id} of {principal_id} is not held"))
+            })?;
             let held_since = match retained.iter().find(|r| &r.tip.tip == id) {
                 Some(r) => r.tip.seen,
                 None => {
