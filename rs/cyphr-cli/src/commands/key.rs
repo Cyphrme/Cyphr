@@ -36,6 +36,18 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             signer,
         } => replace(cli, identity, key.as_deref(), signer, &cli.authority),
         KeyCommands::NakedRevoke { key, msg, peer } => naked_revoke(cli, key, msg.as_deref(), peer),
+        KeyCommands::Request {
+            identity,
+            algo,
+            tag,
+            file,
+        } => super::pair::request(cli, identity, algo, tag.as_deref(), file.as_deref()),
+        KeyCommands::Accept {
+            identity,
+            signer,
+            file,
+            window,
+        } => super::pair::accept(cli, identity, signer, file, *window),
         KeyCommands::List { identity } => list(cli, identity.as_deref()),
     }
 }

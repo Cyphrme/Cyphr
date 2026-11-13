@@ -631,6 +631,51 @@ pub enum KeyCommands {
         signer: String,
     },
 
+    /// Enroll this device's own key: sign a pairing request with it
+    ///
+    /// The new key is generated here and never leaves the device; the
+    /// request carries only its public half, signed by the key itself as a
+    /// proof of possession. Carry it to a device already in the principal.
+    Request {
+        /// Principal Root (base64url) the request is for
+        #[arg(long)]
+        identity: String,
+
+        /// Algorithm (ES256, ES384, ES512, Ed25519)
+        #[arg(long, default_value = "ES256")]
+        algo: String,
+
+        /// Optional tag for the key
+        #[arg(long)]
+        tag: Option<String>,
+
+        /// Write the request here instead of stdout
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+
+    /// Accept a pairing request: commit its key to an identity
+    ///
+    /// Refused unless the request's proof of possession verifies, it names
+    /// this identity, and its `now` is within the window.
+    Accept {
+        /// Principal Root (base64url)
+        #[arg(long)]
+        identity: String,
+
+        /// Thumbprint of the signing key
+        #[arg(long)]
+        signer: String,
+
+        /// The pairing request file
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Seconds either side of now the request's `now` may sit
+        #[arg(long, default_value_t = crate::commands::pair::DEFAULT_WINDOW_SECS)]
+        window: i64,
+    },
+
     /// List keys (from keystore if no identity, from identity if provided)
     List {
         /// Principal Root (base64url) - if omitted, lists keystore keys

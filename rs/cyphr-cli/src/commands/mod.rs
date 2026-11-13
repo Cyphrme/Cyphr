@@ -14,6 +14,8 @@ pub mod io;
 pub mod key;
 /// Network commands: push, fetch, rebase.
 pub mod network;
+/// Device pairing: request and accept.
+pub mod pair;
 /// ParsedCoz commands.
 pub mod tx;
 /// The verifier: verify, watch, audit and gossip export/import.
