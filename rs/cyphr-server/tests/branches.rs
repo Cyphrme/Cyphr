@@ -115,6 +115,21 @@ async fn tip_payload(app: axum::Router, id: &str) -> serde_json::Value {
     payload
 }
 
+/// The commit ids `/tip` names as tied heads while the principal is in
+/// Error; panics on any other answer, which would name a single tip.
+fn error_heads(payload: &serde_json::Value) -> Vec<String> {
+    assert_eq!(
+        payload["state"], "error",
+        "not an Error answer: {payload:?}"
+    );
+    payload["heads"]
+        .as_array()
+        .expect("heads")
+        .iter()
+        .map(|h| h["commit_id"].as_str().expect("commit_id").to_owned())
+        .collect()
+}
+
 /// One principal with a PG, three PG hash variants (ES256, ES384, Ed25519
 /// genesis keys), and a fork at its last position: two rival commits that
 /// both verify at the same `pre`.
@@ -199,10 +214,10 @@ async fn fork_is_listed_under_every_pg_spelling() {
         StatusCode::CONFLICT,
         "the fork must still be refused: {body:?}"
     );
-    assert_eq!(
-        tip_payload(app.clone(), &f.id).await,
-        tip_before,
-        "the fork moved the tip"
+    let after = tip_payload(app.clone(), &f.id).await;
+    assert!(
+        error_heads(&after).contains(&tip_before["commit_id"].as_str().expect("id").to_owned()),
+        "the refused fork dropped the canonical head: {after:?}"
     );
 
     let pre_expected = f.shared.pr_tagged().expect("pr at the fork's parent");
@@ -598,7 +613,11 @@ async fn second_resolution_then_extension() {
         StatusCode::CONFLICT,
         "D is a fork, not a tip: {body:?}"
     );
-    assert_eq!(tip_payload(app.clone(), id).await, tip, "C stays the tip");
+    let errored_tip = tip_payload(app.clone(), id).await;
+    assert!(
+        error_heads(&errored_tip).contains(&tip["commit_id"].as_str().expect("id").to_owned()),
+        "C stays held as a tied head"
+    );
     let list = heads(&app, id).await;
     assert_eq!(
         list.iter().filter(|h| h.0 == n as u64 + 1).count(),
@@ -613,7 +632,7 @@ async fn second_resolution_then_extension() {
     // A restart rebuilds the verdict from the blobs alone (I1).
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
-    assert_eq!(tip_payload(app.clone(), id).await, tip);
+    assert_eq!(tip_payload(app.clone(), id).await, errored_tip);
     assert_eq!(heads(&app, id).await, list);
     assert!(
         state.engine.is_errored(id).await.expect("verdict"),
@@ -947,10 +966,14 @@ async fn errored_refuses_and_retains() {
         status, ERRORED,
         "an action-only bundle is refused: {body:?}"
     );
-    assert_eq!(
-        tip_payload(app.clone(), &t.id).await,
-        tip,
-        "nothing moved the tip"
+    // E is held as evidence and ties the greatest height too, so it joins
+    // the tied heads; nothing else moved.
+    let after = tip_payload(app.clone(), &t.id).await;
+    assert_eq!(after["fork_point"], tip["fork_point"], "the fork point");
+    let (before, now) = (error_heads(&tip), error_heads(&after));
+    assert!(
+        before.iter().all(|h| now.contains(h)) && now.len() == before.len() + 1,
+        "C and D stay heads and E joins them: {before:?} -> {now:?}"
     );
     let list = heads(&app, &t.id).await;
     assert_eq!(
@@ -963,7 +986,7 @@ async fn errored_refuses_and_retains() {
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
     assert!(errored(&state, &t.id).await, "Error survives a rebuild");
-    assert_eq!(tip_payload(app.clone(), &t.id).await, tip);
+    assert_eq!(tip_payload(app.clone(), &t.id).await, after);
     assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
 }
 
@@ -1521,10 +1544,10 @@ async fn a_deleted_keys_line_counts_and_can_out_extend() {
         assert!(status.is_client_error(), "R at {i}: {body:?}");
     }
     assert!(errored(&state, &id).await, "R_d ties the deletion: Error");
-    assert_eq!(
-        tip_payload(app.clone(), &id).await,
-        tip,
-        "nothing moved yet"
+    assert!(
+        error_heads(&tip_payload(app.clone(), &id).await)
+            .contains(&tip["commit_id"].as_str().expect("id").to_owned()),
+        "the chain stays held as a tied head"
     );
     let (status, body) = post_json(app.clone(), "/push", wire(&r, n + 2, &id)).await;
     assert_eq!(status, StatusCode::CREATED, "R_(d+1): {body:?}");
@@ -1973,7 +1996,8 @@ type Row<'a> = (
     Vec<serde_json::Value>,
 );
 
-/// The verdict a peer holds: (Error?, `/tip` commit id, the heads).
+/// The verdict a peer holds: (Error?, `/tip` commit id, the heads). In Error
+/// `/tip` names no single tip, so the commit id is null.
 async fn verdict(
     app: &axum::Router,
     state: &cyphr_server::AppState,
@@ -2079,6 +2103,7 @@ async fn fork_table_tallest_subtree_wins_and_a_tie_is_error() {
             .map(|h| h.as_str().expect("id").to_owned())
             .collect();
         heads.sort();
+        let tip = if error { serde_json::Value::Null } else { tip };
         let expected = (error, tip, heads);
         assert_eq!(
             verdict(&app, &state, &t.id).await,

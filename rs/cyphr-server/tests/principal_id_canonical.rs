@@ -272,12 +272,21 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
         "the revoked key committed through the alias spelling: {body:?}"
     );
 
-    let (_, mut after) = tip(app, &bare).await;
-    let mut before = before;
-    // `now` is the response's own clock, not principal state.
-    before.as_object_mut().expect("tip object").remove("now");
-    after.as_object_mut().expect("tip object").remove("now");
-    assert_eq!(before, after, "the alias push moved the principal");
+    let (_, after) = tip(app, &bare).await;
+    // The refused commit is held beside the owner's, tying its position, so
+    // the principal answers Error with no single tip (SPEC 15.5): the
+    // owner's commit must still be a head and nothing sits past it.
+    let heads = after["heads"].as_array().expect("Error names its heads");
+    assert!(
+        heads.iter().any(|h| h["commit_id"] == before["commit_id"]),
+        "the alias push dropped the owner's head: {after:?}"
+    );
+    assert!(
+        heads
+            .iter()
+            .all(|h| h["sequence"].as_u64() == before["commit_count"].as_u64().map(|n| n - 1)),
+        "the alias push moved the principal: {after:?}"
+    );
 }
 
 /// Backs SPEC §3.7.1 ("PG is an immutable principal identifier"): a
