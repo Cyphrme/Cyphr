@@ -1418,3 +1418,123 @@ async fn the_owner_out_extends_a_revoked_keys_line() {
         e.rebuild_index_from_scratch().await.expect("rebuild");
     }
 }
+
+/// A data action signed by `k` at `now`, recorded on `p`: its wire blob.
+fn action_by(p: &mut cyphr::Principal, k: &Kp, now: i64) -> Vec<u8> {
+    let pay = serde_json::json!({
+        "alg": k.alg, "now": now, "tmb": k.tmb.to_b64(), "typ": "cyphr.me/app/post/create",
+    });
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&bytes, &k.alg, &k.prv, &k.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &k.alg).expect("czd");
+    p.verify_and_record_action(&bytes, &sig, czd)
+        .expect("the action records");
+    serde_json::to_vec(&serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("wire action")
+}
+
+/// Backs SPEC 6.4 ("further use of the revoked key must be rejected") on
+/// every admission path: `key_a` is revoked with a cutoff of NOW+5, then a
+/// rival commit at position 1 arrives carrying `key_a`'s data action dated
+/// NOW+10. A refused push keeps nothing: no branch is retained, the
+/// verdict and every answer stay as before, and a later commit over the
+/// rival has nothing to promote; a rebuild agrees. The same bundle shape
+/// extending the tip is refused too (the control). Turns red if the rival
+/// path admits or retains a dead key's action that arrived after its
+/// revoke.
+#[tokio::test]
+async fn a_rival_carrying_a_dead_keys_action_is_refused_and_not_kept() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut c = f.base.fork().await.expect("fork");
+    create_key(&mut c, &f.golden, &kp(&pool, "bob"), NOW + 1).await;
+    pushed_tip(&e, &f, &blobs(&c, 1)).await.expect("C1");
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 5)
+        .await
+        .expect("revoke");
+    let before = answers(&e, &f).await;
+
+    let mut t = c.fork().await.expect("fork");
+    let dead = action_by(&mut t, &key_a, NOW + 10);
+    create_key(&mut t, &f.golden, &kp(&pool, "carol"), NOW + 11).await;
+    let extension = WireBundle {
+        actions: vec![dead],
+        ..blobs(&t, 2)
+    };
+    assert!(
+        pushed_tip(&e, &f, &extension).await.is_err(),
+        "the control: refused as a tip extension"
+    );
+
+    let mut r = f.base.fork().await.expect("fork");
+    let dead = action_by(&mut r, &key_a, NOW + 10);
+    create_key(&mut r, &f.golden, &kp(&pool, "carol"), NOW + 11).await;
+    let rival = WireBundle {
+        actions: vec![dead],
+        ..blobs(&r, 1)
+    };
+    assert!(
+        pushed_tip(&e, &f, &rival).await.is_err(),
+        "the rival is refused"
+    );
+    assert_eq!(
+        answers(&e, &f).await,
+        before,
+        "a refused push keeps nothing"
+    );
+    create_key(&mut r, &f.golden, &kp(&pool, "alice"), NOW + 12).await;
+    assert!(
+        pushed_tip(&e, &f, &blobs(&r, 2)).await.is_err(),
+        "nothing is held to extend"
+    );
+    assert_eq!(answers(&e, &f).await, before, "nothing promoted");
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert_eq!(answers(&e, &f).await, before, "a rebuild agrees");
+}
+
+/// The same gate where the arrival extends a retained rival line (the
+/// path that can promote it): `golden`'s rival R1 is retained before
+/// `key_a`'s revoke (cutoff NOW+5); R2 over R1 then arrives carrying
+/// `key_a`'s data action dated NOW+10. It is refused, nothing of it is kept
+/// or promoted, and a rebuild agrees. Turns red if a dead key's action
+/// reaches the served chain through a rival line's extension.
+#[tokio::test]
+async fn an_extension_carrying_a_dead_keys_action_is_refused_and_not_kept() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut c = f.base.fork().await.expect("fork");
+    create_key(&mut c, &f.golden, &kp(&pool, "bob"), NOW + 1).await;
+    pushed_tip(&e, &f, &blobs(&c, 1)).await.expect("C1");
+    let mut r = f.base.fork().await.expect("fork");
+    create_key(&mut r, &f.golden, &kp(&pool, "carol"), NOW + 2).await;
+    assert!(
+        pushed_tip(&e, &f, &blobs(&r, 1)).await.is_err(),
+        "R1 is a rival"
+    );
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 5)
+        .await
+        .expect("revoke");
+    let before = answers(&e, &f).await;
+    let dead = action_by(&mut r, &key_a, NOW + 10);
+    create_key(&mut r, &f.golden, &kp(&pool, "alice"), NOW + 11).await;
+    let extension = WireBundle {
+        actions: vec![dead],
+        ..blobs(&r, 2)
+    };
+    assert!(
+        pushed_tip(&e, &f, &extension).await.is_err(),
+        "R2 carrying a dead key's action is refused"
+    );
+    assert_eq!(answers(&e, &f).await, before, "nothing kept or promoted");
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert_eq!(answers(&e, &f).await, before, "a rebuild agrees");
+}

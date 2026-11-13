@@ -2895,8 +2895,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 self.retention_trials
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Verified on a fork and never committed: the staged build
-                // is dropped, and only its manifest is kept.
+                // is dropped, and only its manifest is kept. The bundle is
+                // an arrival, so the held revokes gate it as on the
+                // canonical path (SPEC 6.4); the held history below it was
+                // replayed without them and is not judged again.
                 let mut candidate = principal.fork().await?;
+                note_revokes(&mut candidate, &self.revoked());
                 if let Ok(Some(build)) =
                     Self::build_commit(&mut candidate, bundle, principal_id, position as u64).await
                 {
@@ -3007,6 +3011,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             if !built {
                 continue;
             }
+            // `bundle` is an arrival: the held revokes gate it as on the
+            // canonical path (SPEC 6.4); the held line above was replayed
+            // without them and is not judged again.
+            note_revokes(&mut principal, &self.revoked());
             let Ok(Some(next)) =
                 Self::build_commit(&mut principal, bundle, principal_id, at + 1).await
             else {
