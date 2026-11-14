@@ -73,9 +73,16 @@ kill "$pid"; wait "$pid" 2>/dev/null || true; pid=
 # Unknown-key case: the shipped config plus one misspelled key must not
 # start. The key is injected into an existing table (a second table of the
 # same name would be refused as a duplicate, for the wrong reason).
+# $3 is the line to inject, $4 an optional table header regex to inject it
+# after (default: the top of the file). awk and printf rather than sed's
+# one-line i/a commands, whose syntax differs between GNU and BSD sed.
 refused() {
-  local label=$1 key=$2 inject=$3 cfg="$tmp/unknown-$1.toml"
-  sed -e "$inject" "$tmp/config.toml" >"$cfg"
+  local label=$1 key=$2 line=$3 after=${4:-} cfg="$tmp/unknown-$1.toml"
+  if [[ -z $after ]]; then
+    { printf '%s\n' "$line"; cat "$tmp/config.toml"; } >"$cfg"
+  else
+    awk -v l="$line" -v re="$after" '{ print } $0 ~ re && !d { print l; d = 1 }' "$tmp/config.toml" >"$cfg"
+  fi
   grep -q "^$key" "$cfg" || { echo "smoke bug: '$key' not injected" >&2; return 1; }
   "$bin" --config "$cfg" serve >"$tmp/out-$label" 2>"$tmp/err-$label" &
   local p=$! up=
@@ -100,9 +107,9 @@ refused() {
   }
 }
 failed=0
-refused top listn '1i listn = "127.0.0.1:1"' || failed=1
-refused admission polcy '/^\[admission\]/a polcy = "invite"' || failed=1
-refused limits max_body_byte '/^\[limits\]/a max_body_byte = 1' || failed=1
+refused top listn 'listn = "127.0.0.1:1"' || failed=1
+refused admission polcy 'polcy = "invite"' '^[[]admission[]]' || failed=1
+refused limits max_body_byte 'max_body_byte = 1' '^[[]limits[]]' || failed=1
 [[ $failed == 0 ]] || exit 1
 
 # Transport case. The signing key is an Ed25519 pair made with openssl: the
@@ -122,7 +129,8 @@ start_with_transport() {
   grep -q '^transport_listen' "$tmp/t-$1.toml" || { echo "smoke bug: transport_listen not enabled" >&2; return 1; }
   # Top-level keys go first: appended, they would land in [limits].
   if [[ $1 == keyed ]]; then
-    sed -i -e "1i signing_key_path = \"$tmp/signing-key.json\"" -e '1i audience = "smoke.example"' "$tmp/t-$1.toml"
+    { printf 'signing_key_path = "%s"\naudience = "smoke.example"\n' "$tmp/signing-key.json"; cat "$tmp/t-$1.toml"; } >"$tmp/t-$1.new"
+    mv "$tmp/t-$1.new" "$tmp/t-$1.toml"
   fi
   "$bin" --config "$tmp/t-$1.toml" serve >"$tmp/out-t-$1" 2>"$tmp/err-t-$1" &
   pid=$!
