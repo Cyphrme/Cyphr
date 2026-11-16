@@ -352,7 +352,16 @@ impl<'m> PinSource<'m> {
 /// that names them (`None`: it names no held principal): each principal is
 /// replayed once however many candidate states of the principal embedding it
 /// the call tries. Dropped with the call, never a cache across calls.
-type HeldCache<S> = HashMap<String, Option<(cyphr::Tip, String, cyphr::Principal<S>)>>;
+type HeldCache<S> = HashMap<String, Option<HeldTip<S>>>;
+
+/// A held embedded principal: the tip it gives, the PR it stands at, and the
+/// principal itself.
+type HeldTip<S> = (cyphr::Tip, String, cyphr::Principal<S>);
+
+/// What reading a held tip yields, boxed ([`StorageEngine::held_tip`]).
+type HeldRead<'a, S> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<HeldTip<S>>, EngineError>> + Send + 'a>,
+>;
 
 /// The tips of embedded principals this engine holds, for the core to
 /// follow ([`StorageEngine::follow_held`]): the engine's own store, never a
@@ -3552,18 +3561,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Boxed: it is the one way `follow_held` re-enters the engine, and a
     /// `Send` proof for `follow_held` otherwise runs through the whole
     /// replay call graph, past the compiler's recursion limit.
-    fn held_tip<'a>(
-        &'a self,
-        member: &'a str,
-        own_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Option<(cyphr::Tip, String, cyphr::Principal<S>)>, EngineError>,
-                > + Send
-                + 'a,
-        >,
-    > {
+    fn held_tip<'a>(&'a self, member: &'a str, own_id: &'a str) -> HeldRead<'a, S> {
         Box::pin(async move {
             // A principal embedding itself names no other principal's tip; its
             // log is also the one the caller is writing.
