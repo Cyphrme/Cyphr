@@ -462,6 +462,12 @@ impl PrincipalState {
                 if self.auth.revoked.contains_key(&id.to_b64()) {
                     return Err(Error::KeyRevoked);
                 }
+                // A key already marked revoked would enter the key set
+                // without being in `auth.revoked`, leave `active_algs`, and
+                // diverge the roots from a replay that never sees the mark.
+                if key.revocation().is_some() {
+                    return Err(Error::KeyRevoked);
+                }
                 let tmb = id.to_b64();
                 if !self.genesis_created && tmb == self.genesis_key {
                     // SPEC 5.1 step 1, 5.3, 7.7 Example 1: the genesis key

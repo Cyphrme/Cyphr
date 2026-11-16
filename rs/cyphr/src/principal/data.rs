@@ -127,6 +127,13 @@ impl PrincipalState {
             .to_string();
         let now = pay_value["now"].as_i64().ok_or(Error::MalformedPayload)?;
 
+        // A transaction typ is applied through a commit. Recording it here
+        // would put its czd in `included_czds`, and the real transaction
+        // would then be refused as COZ_REUSE.
+        if crate::parsed_coz::typ::is_transaction(&typ) {
+            return Err(Error::MalformedPayload);
+        }
+
         match when {
             // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
             // actions are possible on a closed account". Data actions have no

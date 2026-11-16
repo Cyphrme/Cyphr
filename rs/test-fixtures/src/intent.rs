@@ -108,6 +108,10 @@ pub struct TxIntent {
     /// Optional revocation timestamp.
     #[serde(default)]
     pub rvk: Option<i64>,
+    /// An `arrow` stated verbatim on the coz, for a vector that puts it
+    /// where only `commit/create` may carry it (SPEC 4.3).
+    #[serde(default)]
+    pub arrow: Option<String>,
 }
 
 /// Setup modifiers for test.

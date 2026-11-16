@@ -461,3 +461,20 @@ tx = [
 
 [test.expected]
 error = "DuplicateNonce"
+
+# archrev:A1, SPEC 4.3: a commit is finalized by commit/create alone, which
+# alone carries `arrow`. A key/create carrying one is no finalizer and is
+# refused.
+[[test]]
+name      = "arrow_on_non_commit_create_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { arrow = "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI", now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "MalformedPayload"

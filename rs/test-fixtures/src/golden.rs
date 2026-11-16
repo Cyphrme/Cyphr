@@ -1725,6 +1725,11 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
+        // Canonical (alphabetic) order: `arrow` sorts right after `alg`.
+        if let Some(arrow) = &cz.arrow {
+            fields.insert("arrow".to_string(), Value::String(arrow.clone()));
+        }
+
         // id field handling depends on coz type. principal/create and the
         // three lifecycle transactions (principal/delete, freeze/create,
         // freeze/delete) all target the signer's own PR rather than a
