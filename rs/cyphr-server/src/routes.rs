@@ -752,15 +752,17 @@ async fn held_patch_statement(
 /// The tip `t` is read AFTER the entries, so it can be newer than what was
 /// served; an attestation is only true of the response when the range
 /// reaches the attested tip. `served_end` is the last served entry's commit
-/// id; with no entries, the range is empty and reaches the tip only when the
-/// resync `anchor` is the attested tip itself.
+/// id; with no entries, the range is empty and reaches the tip only when it
+/// starts at the attested tip's commit count, i.e. the resync anchor is the
+/// attested tip. Positions are compared, not digest strings, so an anchor in
+/// any algorithm's spelling counts.
 async fn sign_patch_envelope(
     state: &Arc<AppState>,
     t: &TipState,
     pr: &str,
     bounded: bool,
     served_end: Option<&str>,
-    anchor: Option<&cyphr::state::TaggedDigest>,
+    from: Option<u64>,
 ) -> Option<coz::CozJson> {
     if bounded {
         tracing::debug!(
@@ -774,10 +776,7 @@ async fn sign_patch_envelope(
     // (which `sign_tip_attestation` may have advanced past `t`).
     let reaches = |tip: &TipState| match served_end {
         Some(end) => end == tip.commit_id,
-        None => anchor.is_some_and(|a| {
-            let a = a.to_string();
-            a == tip.pr || a == tip.commit_id
-        }),
+        None => from == Some(tip.commit_count),
     };
     match sign_tip_attestation(state, t).await {
         Ok(Some(signed)) if reaches(&signed.tip) => Some(signed.coz),
@@ -845,6 +844,7 @@ pub async fn patch(
         )));
     }
 
+    let from = response.from;
     let served_end = response
         .entries
         .last()
@@ -933,7 +933,7 @@ pub async fn patch(
                 &query.pr,
                 query.to.is_some(),
                 served_end.as_deref(),
-                anchor.as_ref(),
+                from,
             )
             .await
         },
@@ -1552,7 +1552,7 @@ mod commit_count_underflow_tests {
             .await
             .expect("get_tip")
             .expect("tip");
-        let at_t1: cyphr::state::TaggedDigest = t1.pr.parse().expect("tip pr is a digest");
+        let after_t1 = t1.commit_count;
         push_second_commit(&state, g, 1_700_500_100).await;
         let t2 = state
             .engine
@@ -1564,13 +1564,13 @@ mod commit_count_underflow_tests {
         // Nothing served after t1, but the tip is t2: the empty range does
         // not reach it.
         let stale =
-            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(&at_t1)).await;
+            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(after_t1)).await;
         assert!(stale.is_none(), "anchor t1 is not the attested tip t2");
 
         // Caught up: the anchor is the attested tip.
-        let at_t2: cyphr::state::TaggedDigest = t2.pr.parse().expect("tip pr is a digest");
         let fresh =
-            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(&at_t2)).await;
+            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(t2.commit_count))
+                .await;
         assert!(fresh.is_some(), "anchor at the tip is attested");
     }
 

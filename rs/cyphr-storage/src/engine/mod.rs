@@ -51,6 +51,10 @@ pub struct PatchResponse {
     pub principal_id: String,
     /// Ordered commit entries with their blob contents.
     pub entries: Vec<PatchEntry>,
+    /// The chain position the range starts at: the position just after the
+    /// resync anchor, whichever algorithm spelled it; `None` for a full
+    /// chain. An empty range with `from == tip.commit_count` is caught up.
+    pub from: Option<u64>,
     /// Every action-only bundle the principal holds, by its earliest
     /// `now` (SPEC 4.8.1): actions hold no chain position, so a range
     /// bounds the commits only.
@@ -1329,6 +1333,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// [`Indexer::get_commit_chain`] needs to serve exactly the entries a
     /// caller does not yet hold, never re-serving the anchored commit
     /// itself.
+            from: from_seq,
     ///
     /// An anchor that does not resolve to ANY indexed position at all is
     /// refused as [`EngineError::NotFound`] rather than silently degrading
