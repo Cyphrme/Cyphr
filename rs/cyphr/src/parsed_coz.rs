@@ -292,7 +292,14 @@ impl ParsedCoz {
         if matches!(kind, CozKind::SelfRevoke { .. }) && !coz::is_valid_rvk(now) {
             return Err(Error::MalformedPayload);
         }
-        let arrow = Self::extract_arrow(pay)?;
+        // SPEC 4.3: `arrow` belongs to `commit/create` alone, which is how a
+        // commit is finalized. A coz of any other typ carrying it would read
+        // as a finalizer (`Transaction::is_commit`) without being one.
+        let arrow = match &kind {
+            CozKind::CommitCreate { arrow } => Some(arrow.clone()),
+            _ if pay.extra.contains_key("arrow") => return Err(Error::MalformedPayload),
+            _ => None,
+        };
         Ok(Self {
             kind,
             signer,

@@ -596,6 +596,85 @@ async fn s4_6_commit_coz_must_be_last_in_txs() {
 }
 
 // ============================================================================
+// archrev:A1 / A5 / A6 (core): finality, transaction typs, revoked keys
+// ============================================================================
+
+/// archrev:A1. Backs SPEC 4.3: a commit "is finalized with a commit
+/// transaction, `commit/create`, with the field `arrow`". Scenario: a
+/// `key/create` that carries an `arrow` field must not be accepted as a
+/// finalizer; before the fix the core treated any coz with an `arrow` as
+/// the commit transaction. Turns red if `arrow` on a non-`commit/create`
+/// typ is accepted. End to end: yes (public verify path).
+#[tokio::test]
+async fn archrev_a1_arrow_on_a_non_commit_create_coz_is_refused() {
+    let (mut p, a, _) = two_key_principal().await;
+    let k3 = kp();
+    let before = snapshot(&p);
+    let arrow = format!("SHA-512:{}", Base64UrlUnpadded::encode_string(&[7u8; 64]));
+    let mut pay = key_create_pay(&a, &k3.tmb, T);
+    pay["arrow"] = json!(arrow);
+    let (pay, sig, czd) = sign(&a, pay);
+    let mut scope = p.begin_commit();
+    let r = scope.verify_and_apply(&pay, &sig, czd, Some(key_of(&k3)));
+    assert!(
+        matches!(r, Err(Error::MalformedPayload)),
+        "a key/create carrying `arrow` was accepted: {r:?}"
+    );
+    drop(scope);
+    assert_eq!(before, snapshot(&p), "a refused coz changed state");
+}
+
+/// archrev:A5. Backs SPEC 7.6 / 4.1: a transaction is applied through a
+/// commit, a data action is recorded as an action; the two never mix.
+/// Scenario: recording a signed `key/create` as a data action must be
+/// refused, and the same coz must still apply as a transaction (before the
+/// fix it was recorded as an action, and the real transaction then failed
+/// as COZ_REUSE). End to end: yes (public action and commit APIs).
+#[tokio::test]
+async fn archrev_a5_transaction_typ_is_not_a_data_action() {
+    let (mut p, a, _) = two_key_principal().await;
+    let k3 = kp();
+    let before = snapshot(&p);
+    let (pay, sig, czd) = sign(&a, key_create_pay(&a, &k3.tmb, T));
+    let r = p.verify_and_record_action(&pay, &sig, czd.clone());
+    assert!(
+        matches!(r, Err(Error::MalformedPayload)),
+        "a key/create was recorded as a data action: {r:?}"
+    );
+    assert_eq!(before, snapshot(&p), "a refused action changed state");
+    commit_one(&mut p, &a, (pay, sig, czd), Some(key_of(&k3)), T + 1)
+        .await
+        .expect("the key/create still applies as a transaction");
+    assert!(p.is_key_active(&k3.tmb));
+}
+
+/// archrev:A6. Backs SPEC 6.4: "a revoked key is never trusted again".
+/// Scenario: a `Key` already marked revoked, offered through `key/create`,
+/// must be refused with `KeyRevoked`; before the fix it entered the key
+/// set, its algorithm left the active set, and the roots diverged. End to
+/// end: yes (public commit API).
+#[tokio::test]
+async fn archrev_a6_key_create_refuses_an_already_revoked_key() {
+    let (mut p, a, _) = two_key_principal().await;
+    let k3 = kp();
+    let before = snapshot(&p);
+    let revoked = key_of(&k3).with_revocation(cyphr::key::Revocation { rvk: T, by: None });
+    let r = commit_one(
+        &mut p,
+        &a,
+        sign(&a, key_create_pay(&a, &k3.tmb, T)),
+        Some(revoked),
+        T + 1,
+    )
+    .await;
+    assert!(
+        matches!(r, Err(Error::KeyRevoked)),
+        "a pre-revoked key was added through key/create: {r:?}"
+    );
+    assert_eq!(before, snapshot(&p), "a refused key/create changed state");
+}
+
+// ============================================================================
 // SPEC 2.2.13 (line 203): public keys must be revealed for verification
 // ============================================================================
 
