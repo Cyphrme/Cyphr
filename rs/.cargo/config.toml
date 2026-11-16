@@ -1,0 +1,5 @@
+# getrandom 0.4 selects its wasm32-unknown-unknown backend by cfg, not by
+# feature alone; the "wasm_js" feature on the dependency is necessary but
+# not sufficient. Scoped to wasm32 so native builds are unchanged.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
