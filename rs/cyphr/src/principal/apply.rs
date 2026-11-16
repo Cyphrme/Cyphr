@@ -258,6 +258,8 @@ impl<S: eml::Storage> Principal<S> {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
+    /// - `CozReuse`: This principal already included this coz (checked before the signer, which
+    ///   that coz may have retired)
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
     #[must_use = "coz application may fail; handle the Result"]
@@ -268,21 +270,11 @@ impl<S: eml::Storage> Principal<S> {
         czd: coz::Czd,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
-        use crate::parsed_coz::verify_coz;
-
-        // Parse Pay to get signer thumbprint
-        let pay: coz::Pay =
-            serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
-        let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
-
-        // Signer must be an ACTIVE key (not revoked)
-        let signer_key = self.active_signer(signer_tmb)?;
-
-        // Verify signature and parse coz
-        let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
-
-        // Apply as single-cz atomic commit
-        self.apply_transaction(vtx).await
+        // Through the commit scope so the SPEC 7.6 COZ_REUSE check precedes
+        // signer resolution, exactly as on every other verify path.
+        let mut scope = self.begin_commit();
+        scope.verify_and_apply(pay_json, sig, czd, new_key)?;
+        scope.finalize().await
     }
 }
 

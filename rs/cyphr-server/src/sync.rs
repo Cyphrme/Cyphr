@@ -296,13 +296,16 @@ async fn sync_locked(
     let mut seqs = Vec::new();
     // In Error `entries` ends with the canonical branch; that branch is
     // handled with the others below, past the already-held guard.
-    let common_len = patch.entries.len()
-        - patch
+    // The counts come off the wire: a peer overstating the canonical branch
+    // must not wrap the subtraction.
+    let common_len = patch.entries.len().saturating_sub(
+        patch
             .fork
             .iter()
             .flat_map(|f| &f.branches)
             .find(|b| b.canonical)
-            .map_or(0, |b| b.entries.len());
+            .map_or(0, |b| b.entries.len()),
+    );
     for entry in patch.entries.iter().take(common_len) {
         let seq = entry.sequence;
         if seq < from_seq {

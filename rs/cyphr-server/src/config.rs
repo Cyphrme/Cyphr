@@ -6,6 +6,7 @@
 //! 3. TOML config file
 //! 4. Compiled defaults
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -318,19 +319,22 @@ impl Default for GossipConfig {
 /// handler.
 ///
 /// `#[serde(default)]` makes every field independently omittable, so a partial
-/// `[limits]` table tunes one fence and inherits defaults for the rest.
+/// `[limits]` table tunes one fence and inherits defaults for the rest. The
+/// three caps are `NonZeroU64`: a zero would silently refuse every body,
+/// every principal's first commit or every naked revoke, so it does not
+/// deserialize.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum request body in bytes; an over-cap body is refused `413` before
     /// any handler work. Defaults to 2 MiB (the historical push-body bound).
-    pub max_body_bytes: u64,
+    pub max_body_bytes: NonZeroU64,
 
     /// Per-principal hard commit-count cap. A principal already at or over
     /// this many commits is refused a further commit with a distinct quota
     /// `4xx`. Generous by default so it bounds runaway growth without
     /// impeding ordinary use.
-    pub count_quota: u64,
+    pub count_quota: NonZeroU64,
 
     /// Rate bucket keyed on the connection peer address (per-IP fence).
     ///
@@ -362,7 +366,7 @@ pub struct LimitsConfig {
     /// The most keys the naked-revoke death set may hold. A naked revoke
     /// needs no prior knowledge of its key, so this quota (with the rate
     /// buckets) is what bounds the set; a revoke past it is refused `507`.
-    pub max_dead_keys: u64,
+    pub max_dead_keys: NonZeroU64,
 }
 
 /// The expected upstream-authority signing identity for witness-mode sync
@@ -387,9 +391,9 @@ pub struct AuthorityIdentity {
 /// `burst` capacity. Deserialized from a `{ per_second = N, burst = N }`
 /// inline TOML table.
 ///
-/// Unlike `max_body_bytes = 0` / `count_quota = 0` (rejected loudly at
-/// startup by `resolve_config` -- a zero there silently bricks every request
-/// or every principal's first commit), a `0` here is deliberately clamped to
+/// Unlike the `NonZeroU64` caps above (a zero there silently bricks every
+/// request or every principal's first commit, so it fails to deserialize), a
+/// `0` here is deliberately clamped to
 /// the tightest live bucket rather than rejected: see `rate_limit`'s
 /// `quota()` for the clamp and its rationale. A misconfigured rate stays
 /// functional (merely very strict) rather than bricking writes, so it is
@@ -402,6 +406,9 @@ pub struct RateBucket {
     /// Bucket capacity -- the largest instantaneous burst admitted.
     pub burst: u32,
 }
+
+/// The default caps are nonzero literals.
+const NONZERO: &str = "nonzero literal";
 
 impl Default for LimitsConfig {
     fn default() -> Self {
@@ -417,14 +424,14 @@ impl Default for LimitsConfig {
             burst: 100,
         };
         Self {
-            max_body_bytes: 2 * 1024 * 1024,
-            count_quota: 1_000_000,
+            max_body_bytes: NonZeroU64::new(2 * 1024 * 1024).expect(NONZERO),
+            count_quota: NonZeroU64::new(1_000_000).expect(NONZERO),
             per_ip: reads,
             read: reads,
             push: writes,
             login: writes,
             revoke: writes,
-            max_dead_keys: 1_000_000,
+            max_dead_keys: NonZeroU64::new(1_000_000).expect(NONZERO),
         }
     }
 }
@@ -602,21 +609,6 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         .extract()
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
 
-    // Silent-brick class: `#[serde(default)]` on every `[limits]` field means
-    // an operator who writes (or omits, then overrides with) `max_body_bytes = 0` gets a server
-    // that refuses every request body, and `count_quota = 0` gets a server that refuses every
-    // principal's first commit -- both with no deserialization error, so both
-    // must be checked explicitly here.
-    if config.limits.max_body_bytes == 0 {
-        return Err(ConfigError::LimitsMaxBodyBytesZero);
-    }
-    if config.limits.count_quota == 0 {
-        return Err(ConfigError::LimitsCountQuotaZero);
-    }
-    if config.limits.max_dead_keys == 0 {
-        return Err(ConfigError::LimitsMaxDeadKeysZero);
-    }
-
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::RotateKey(ref args) = cli.command {
         if let Some(ref data_dir) = args.data_dir {
@@ -734,22 +726,6 @@ pub enum ConfigError {
     )]
     WitnessModeUnimplemented,
 
-    /// `[limits] max_body_bytes = 0` was configured, which refuses every
-    /// request body before any handler runs.
-    #[error(
-        "limits.max_body_bytes is 0 -- this refuses every request body; set it to the intended \
-         cap in bytes (the default is 2 MiB)"
-    )]
-    LimitsMaxBodyBytesZero,
-
-    /// `[limits] count_quota = 0` was configured, which refuses every
-    /// principal's first commit.
-    #[error(
-        "limits.count_quota is 0 -- this refuses every principal's first commit; set it to the \
-         intended per-principal commit cap"
-    )]
-    LimitsCountQuotaZero,
-
     /// An upstream (the witness authority or a gossip peer) is plain
     /// `http://` to a host that is not loopback.
     #[error(
@@ -777,14 +753,6 @@ pub enum ConfigError {
     /// gossip loop.
     #[error("gossip.interval_secs is 0 -- set it to the seconds between gossip rounds")]
     GossipIntervalZero,
-
-    /// `[limits] max_dead_keys = 0` was configured, which refuses every
-    /// naked revoke.
-    #[error(
-        "limits.max_dead_keys is 0 -- this refuses every naked revoke; set it to the intended cap \
-         on the death set"
-    )]
-    LimitsMaxDeadKeysZero,
 }
 
 #[cfg(test)]
@@ -870,36 +838,6 @@ mod tests {
         assert!(
             matches!(&result, Err(ConfigError::Figment(e)) if e.to_string().contains("pow")),
             "a config naming the removed pow policy must be a typed config error, got: {result:?}"
-        );
-    }
-
-    /// A `max_body_bytes` of 0 refuses every request body, silently bricking
-    /// all writes (and reads with a body). Serde happily deserializes it, so
-    /// `resolve_config` must reject it explicitly (see `ConfigError::LimitsMaxBodyBytesZero`).
-    #[test]
-    fn limits_max_body_bytes_zero_is_rejected() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(tmp.path(), "[limits]\nmax_body_bytes = 0\n");
-        let result = resolve_config(&cli);
-        assert!(
-            result.is_err(),
-            "a limits max_body_bytes of 0 (which refuses every body) must be rejected at \
-             resolution, got: {result:?}"
-        );
-    }
-
-    /// A `count_quota` of 0 refuses every principal's first commit, silently
-    /// bricking all writes; it must be rejected at `resolve_config` exactly as
-    /// the zero body cap is (see `ConfigError::LimitsCountQuotaZero`).
-    #[test]
-    fn limits_count_quota_zero_is_rejected() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(tmp.path(), "[limits]\ncount_quota = 0\n");
-        let result = resolve_config(&cli);
-        assert!(
-            result.is_err(),
-            "a limits count_quota of 0 (which refuses every principal's first commit) must be \
-             rejected at resolution, got: {result:?}"
         );
     }
 

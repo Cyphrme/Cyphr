@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
@@ -1850,6 +1851,87 @@ async fn sync_resumes_from_digest_anchor() {
         "the resync anchor MUST be the witness's own tip PR content digest, not a sequence number \
          -- captured second outbound query: {:?}",
         queries[1]
+    );
+}
+
+/// An authority that does not hold the witness's anchor answers 404 to an
+/// anchored `/patch`; the witness must then ask again from genesis (a witness
+/// may always do so) rather than fail the sync. Backs `sync_from_authority`'s
+/// retry: red if the 404 fails the sync, or if the retry is also anchored.
+#[tokio::test]
+async fn sync_asks_again_from_genesis_when_the_authority_lacks_the_anchor() {
+    let now = 1_700_000_000;
+    let principal = common::golden_principal_id(&load_pool()).await;
+    let authority = authority_with_two_commits(&principal, now).await;
+
+    let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let refuse_anchor = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let upstream = authority.url.clone();
+    let app = axum::Router::new().route(
+        "/patch",
+        axum::routing::get({
+            let (captured, refuse_anchor) = (captured.clone(), refuse_anchor.clone());
+            move |raw: axum::extract::RawQuery| {
+                let (upstream, captured, refuse_anchor) =
+                    (upstream.clone(), captured.clone(), refuse_anchor.clone());
+                async move {
+                    let query = raw.0.unwrap_or_default();
+                    captured.lock().unwrap().push(query.clone());
+                    if refuse_anchor.load(std::sync::atomic::Ordering::SeqCst)
+                        && query.contains("from=")
+                    {
+                        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({})))
+                            .into_response();
+                    }
+                    let body: serde_json::Value = reqwest::Client::new()
+                        .get(format!("{upstream}/patch?{query}"))
+                        .header("accept", "application/json")
+                        .send()
+                        .await
+                        .expect("upstream")
+                        .json()
+                        .await
+                        .expect("upstream json");
+                    axum::Json(body).into_response()
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy");
+    let proxy_url = format!("http://{}", listener.local_addr().expect("addr"));
+    let _proxy = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let (witness_state, _witness_app) = witness_for(&proxy_url, None).await;
+
+    let first = sync_from_authority(&witness_state, &principal).await;
+    assert!(
+        matches!(
+            first,
+            SyncOutcome::Synced {
+                applied: 2,
+                rejected: 0
+            }
+        ),
+        "{first:?}"
+    );
+
+    refuse_anchor.store(true, std::sync::atomic::Ordering::SeqCst);
+    captured.lock().unwrap().clear();
+    let second = sync_from_authority(&witness_state, &principal).await;
+    assert!(matches!(second, SyncOutcome::UpToDate), "{second:?}");
+    let queries = captured.lock().unwrap().clone();
+    assert_eq!(
+        queries.len(),
+        2,
+        "anchored ask, then one retry: {queries:?}"
+    );
+    assert!(queries[0].contains("from="), "{queries:?}");
+    assert!(
+        !queries[1].contains("from="),
+        "the retry is unanchored: {queries:?}"
     );
 }
 

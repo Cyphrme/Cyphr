@@ -894,3 +894,36 @@ pub async fn replace_chain_from_repoints_the_chain<I: Indexer + IndexerWrite>(in
         "the repeated root falls back to the kept commit"
     );
 }
+
+/// Every function in this module on a fresh indexer from `fresh`, which
+/// also returns a guard (a temp directory, say) held for the call. A
+/// function added to this module is listed here, once, so no backend's
+/// suite can leave it unwired.
+pub async fn run_all<I: Indexer + IndexerWrite, G>(fresh: impl Fn() -> (I, G)) {
+    index_commit_and_get_tip(&fresh().0).await;
+    index_commit_with_absent_roots_reads_back_none(&fresh().0).await;
+    get_tip_unknown_returns_none(&fresh().0).await;
+    tip_updates_on_subsequent_commits(&fresh().0).await;
+    index_commit_idempotent(&fresh().0).await;
+    get_commit_chain_full(&fresh().0).await;
+    get_commit_chain_range(&fresh().0).await;
+    get_commit_chain_unknown_returns_empty(&fresh().0).await;
+    resolve_digest_returns_none_for_unknown(&fresh().0).await;
+    resolve_digest_returns_indexed_position(&fresh().0).await;
+    indexed_blobs_tracked_in_commit_chain(&fresh().0).await;
+    list_principals_returns_all(&fresh().0).await;
+    principal_summary_tracks_creation_time(&fresh().0).await;
+    new_indexer_methods(&fresh().0).await;
+    alias_pg_variants_resolve_to_the_principal(&fresh().0).await;
+    pg_established_marker_tracks_the_pg_commit(&fresh().0).await;
+    alias_conflict_second_principal_is_refused(&fresh().0).await;
+    alias_conflict_naming_another_principal_is_refused(&fresh().0).await;
+    digest_conflict_same_principal_repeat_is_allowed(&fresh().0).await;
+    digest_holders_shared_digest_names_every_holder(&fresh().0).await;
+    index_commit_idempotency_is_keyed_by_chain_position(&fresh().0).await;
+    replace_chain_from_repoints_the_chain(&fresh().0).await;
+    // Compares two indexers fed in opposite orders.
+    digest_holders_do_not_depend_on_arrival_order(&fresh().0, &fresh().0).await;
+    // Compares two indexers fed in opposite orders.
+    digest_holders_are_a_duplicate_free_set(&fresh().0, &fresh().0).await;
+}

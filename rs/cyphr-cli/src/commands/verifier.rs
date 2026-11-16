@@ -413,8 +413,6 @@ async fn run_round<C: Connector>(
     for fork in &mut entry.forks {
         fork.resolution = resolution_of(fork, &assessed);
     }
-    // The forks the peers serve evidence of in this round.
-    let served: Vec<&[String; 2]> = report.forks.iter().map(|f| &f.commits).collect();
 
     let added = tip.commits.saturating_sub(held_before);
     let unresolved: Vec<&HeldFork> = entry
@@ -434,18 +432,14 @@ async fn run_round<C: Connector>(
                 "commits": f.commits, "first_seen": f.first_seen})
         })
         .collect();
-    // A resolved fork stays evidence while the peers serve it: a verdict
-    // that omitted the items would claim less than the peers show, and one
-    // that kept them after the peers dropped them would claim more.
-    evidence.extend(
-        resolved
-            .iter()
-            .filter(|f| served.iter().any(|c| f.is(c)))
-            .map(|f| {
-                json!({"kind": "principal_fork", "height": f.height, "pre": f.pre,
+    // SPEC 15.8: the abandoned branch is discarded, "retaining it only as
+    // proof of error". The verifier holds that proof verified, so it is
+    // reported from its own record, not only while a peer happens to serve
+    // it: one round's unreachable peer must not make it vanish.
+    evidence.extend(resolved.iter().map(|f| {
+        json!({"kind": "principal_fork", "height": f.height, "pre": f.pre,
                     "commits": f.commits, "first_seen": f.first_seen, "resolved": true})
-            }),
-    );
+    }));
     evidence.extend(
         entry
             .revoked

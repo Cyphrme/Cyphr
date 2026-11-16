@@ -313,6 +313,87 @@ async fn backdated_commit_by_a_removed_key_is_refused() {
     assert_eq!(a.roots(&engine).await, before, "nothing of it is stored");
 }
 
+/// Claim (SPEC 10.5, 6.2): a signer is judged through B's current view
+/// unless a key of A's own authorizes it. A key that signs a coz BEFORE the
+/// same bundle introduces it is not yet a key of A, so a commit of that shape
+/// signed by a `carol` that B has since removed is refused, as it is when
+/// the bundle introduces her nowhere, and A's chain is as it was.
+///
+/// Turns red if the engine counts a signer as A's own because the bundle
+/// introduces it somewhere, skips following B, and admits carol through a
+/// stale pinned view of B.
+/// End to end: yes (real chains, HTTP-free engine push).
+#[tokio::test]
+async fn key_used_before_its_introduction_is_judged_through_b() {
+    let (alice, bob, carol, dave, erin) = (kp(), kp(), kp(), kp(), kp());
+    let (mut b, b_pr) = b_with_carol(&bob, &carol).await;
+    let mut a = a_embedding(&alice, &b_pr, &b.state).await;
+    // A has admitted a commit by carol, so replaying A pins B with carol in
+    // it: the stale view a skipped follow would leave.
+    a.commit(
+        &carol,
+        "key/create",
+        &erin.tmb.to_b64(),
+        Some(&erin),
+        T0 + 12,
+    )
+    .await
+    .expect("carol signs through B while active there");
+    // Built while carol is active in B: carol signs, then alice introduces
+    // carol, in one commit.
+    let signed = |signer: &Kp, typ: &str, id: &str, now: i64| {
+        let alg = signer.kp.alg.name();
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": alg, "id": id, "now": now,
+            "tmb": signer.tmb.to_b64(), "typ": format!("cyphr.me/cyphr/{typ}"),
+        }))
+        .expect("pay");
+        let (sig, cad) =
+            coz::sign_json(&pay, alg, &signer.kp.prv_bytes, &signer.kp.pub_bytes).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, alg).expect("czd");
+        (pay, sig, czd)
+    };
+    let now = T0 + 15;
+    let (p1, s1, c1) = signed(&carol, "key/create", &dave.tmb.to_b64(), now);
+    let (p2, s2, c2) = signed(&alice, "key/create", &carol.tmb.to_b64(), now);
+    let mut scope = a.state.begin_commit();
+    scope
+        .verify_and_apply(&p1, &s1, c1, Some(dave.key(now)))
+        .expect("carol signs through B while active there");
+    scope
+        .verify_and_apply(&p2, &s2, c2, Some(carol.key(now)))
+        .expect("alice then introduces carol");
+    scope
+        .finalize_with_software(&alice.signer(), now, "cyphr.me")
+        .await
+        .expect("finalize");
+    let bundle = test_fixtures::bundle::last_commit_bundle(&a.state).expect("bundle");
+    let removal = b
+        .commit(&bob, "key/delete", &carol.tmb.to_b64(), None, T0 + 20)
+        .await
+        .expect("B removes carol");
+
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for held in &b.bundles[..2] {
+        b.push(&engine, held).await.expect("B before the removal");
+    }
+    a.push_all(&engine).await;
+    b.push(&engine, &removal).await.expect("B removes carol");
+    let before = a.roots(&engine).await;
+
+    let refused = a.push(&engine, &bundle).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Protocol(
+                cyphr::Error::UnknownKey | cyphr::Error::KeyRevoked
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(a.roots(&engine).await, before, "nothing of it is stored");
+}
+
 /// Claim (SPEC 11.1, 6.2): with B in Error a push through B is refused, and
 /// the history A already holds through B still loads. A admits a commit by
 /// `carol`, B then forks, and a second commit by carol is refused while the

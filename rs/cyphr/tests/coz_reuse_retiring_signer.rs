@@ -100,5 +100,19 @@ async fn reinclusion_of_a_signer_retiring_coz_is_coz_reuse() {
         .expect_err("re-inclusion must be refused");
     assert!(matches!(refused, Error::CozReuse), "got {refused:?}");
     drop(scope);
+    assert_eq!((p.pr().clone(), p.commits().count()), (pr.clone(), count));
+
+    // The one-call entry point answers the same way: it resolved the
+    // signer before the reuse check, so it said `UnknownKey`.
+    let refused = p
+        .verify_and_apply_transaction(
+            &replace.pay,
+            &replace.sig,
+            replace.czd.clone(),
+            Some(key_of(key_a).with_first_seen(T)),
+        )
+        .await
+        .expect_err("re-inclusion must be refused");
+    assert!(matches!(refused, Error::CozReuse), "got {refused:?}");
     assert_eq!((p.pr().clone(), p.commits().count()), (pr, count));
 }

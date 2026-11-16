@@ -81,7 +81,7 @@ pub const CHALLENGE_BYTES: usize = 32;
 #[derive(Debug, thiserror::Error)]
 pub enum LoginError {
     /// The request body was not valid JSON in the expected Coz shape.
-    #[error("login payload is not valid JSON in the expected shape: {0}")]
+    #[error("login payload is not valid JSON in the expected shape ({})", super::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// A required field was absent from the signed payload.
@@ -464,8 +464,12 @@ pub async fn login(
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
     let (identity, audience) = login_capability(&state)?;
 
-    let coz_json: coz::CozJson = serde_json::from_str(&body)
-        .map_err(|e| AppError::bad_request(format!("failed to parse login body as JSON: {e}")))?;
+    let coz_json: coz::CozJson = serde_json::from_str(&body).map_err(|e| {
+        AppError::bad_request(format!(
+            "failed to parse login body as JSON ({})",
+            super::json_fault(&e)
+        ))
+    })?;
 
     // One schema parse + audience binding for both flows (ruling R6a).
     let parsed = parse_login(coz_json, audience)?;

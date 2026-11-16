@@ -59,7 +59,7 @@ pub enum EnvelopeError {
         supported: u32,
     },
     /// The document is not an envelope of the expected shape.
-    #[error("malformed envelope: {0}")]
+    #[error("malformed envelope ({})", crate::auth::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 }
 

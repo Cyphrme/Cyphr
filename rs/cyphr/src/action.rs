@@ -36,8 +36,7 @@ impl Action {
     /// Create an action from already-verified, extracted values (internal).
     ///
     /// Used when we extract fields from raw JSON rather than parsing into coz::Pay.
-    /// The raw CozJson preserves the original message for storage/export and
-    /// is the source of [`Action::get_field`] and [`Action::msg`].
+    /// The raw CozJson preserves the original message for storage/export.
     pub(crate) fn new(
         typ: String,
         signer: Thumbprint,
@@ -102,15 +101,5 @@ impl Action {
     /// Get the raw Coz message for storage/export.
     pub fn raw(&self) -> &coz::CozJson {
         &self.raw
-    }
-
-    /// Get a field (standard or application-specific) from the signed payload.
-    pub fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
-        self.raw.pay.get(key)
-    }
-
-    /// Get the message content if present.
-    pub fn msg(&self) -> Option<&str> {
-        self.get_field("msg")?.as_str()
     }
 }

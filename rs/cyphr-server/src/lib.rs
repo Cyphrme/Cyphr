@@ -144,7 +144,7 @@ impl AppState {
         };
 
         let observations = observation::ObservationStore::open(&config.observations_dir())?
-            .with_ceiling(config.limits.max_dead_keys);
+            .with_ceiling(config.limits.max_dead_keys.get());
 
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -368,13 +368,13 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
         &admission_config,
         &admission_record_dir,
         resident,
-        limits.max_body_bytes as usize,
+        limits.max_body_bytes.get() as usize,
     )? {
         app = app.layer(gate);
     }
     app = app.layer(rate_limit::layer(&limits, count_probe));
     app = app.layer(axum::extract::DefaultBodyLimit::max(
-        limits.max_body_bytes as usize,
+        limits.max_body_bytes.get() as usize,
     ));
     // Outermost, so refusals from the admission, rate-limit and body-limit
     // layers are counted too.

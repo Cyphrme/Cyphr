@@ -9,13 +9,14 @@ use super::{conformance, *};
 /// no end-to-end route names a backend-independent contract.
 #[tokio::test]
 async fn memory_blob_store_passes_the_shared_conformance_suite() {
-    conformance::put_get_roundtrip(&MemoryBlobStore::new()).await;
-    conformance::get_missing_returns_none(&MemoryBlobStore::new()).await;
-    conformance::exists_reflects_presence(&MemoryBlobStore::new()).await;
-    conformance::put_is_idempotent(&MemoryBlobStore::new()).await;
-    conformance::iter_returns_all_stored(&MemoryBlobStore::new()).await;
-    let capped = MemoryBlobStore::new().with_max_blob_size(10);
-    conformance::max_blob_size_enforced(&capped, 10).await;
+    conformance::run_all(|cap| {
+        let store = MemoryBlobStore::new();
+        match cap {
+            Some(n) => (store.with_max_blob_size(n), ()),
+            None => (store, ()),
+        }
+    })
+    .await;
 }
 
 // -- Blake3Hash unit tests --

@@ -146,7 +146,15 @@ where
             Ok(value) => Ok(Self(value.0)),
             Err(rejection) => {
                 let status = rejection.status();
-                let msg = rejection.body_text();
+                // axum's text for a body that parses but does not fit the type
+                // quotes the offending value; only a fixed sentence goes back.
+                let msg = match &rejection {
+                    axum::extract::rejection::JsonRejection::JsonDataError(_)
+                    | axum::extract::rejection::JsonRejection::JsonSyntaxError(_) => {
+                        "request body is not valid JSON of the expected shape".to_string()
+                    },
+                    _ => rejection.body_text(),
+                };
                 if status == StatusCode::PAYLOAD_TOO_LARGE || msg.contains("length limit exceeded")
                 {
                     Err(AppError {

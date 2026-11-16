@@ -71,14 +71,6 @@ pub struct VerifiedRevoke {
     pub evidence: serde_json::Value,
 }
 
-/// Whether `typ` is a `key/revoke` under some authority segment, e.g.
-/// `cyphr.me/cyphr/key/revoke`, or the bare `cyphr/key/revoke` (SPEC §7.3).
-/// Reuses the core `KEY_REVOKE` constant so the
-/// accepted shape cannot drift from the protocol's.
-fn is_revoke_typ(typ: &str) -> bool {
-    cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE)
-}
-
 /// Parse, validate, and verify a naked-revoke request against its DISCLOSED
 /// key -- replay-free, self-signed-only, and reading no server state.
 ///
@@ -102,16 +94,23 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
         .as_ref()
         .ok_or_else(|| AppError::bad_request("naked revoke must disclose its public key"))?;
 
-    let pay_bytes = serde_json::to_vec(&envelope.pay)
-        .map_err(|e| AppError::bad_request(format!("revoke payload not serializable: {e}")))?;
-    let pay: coz::Pay = serde_json::from_value(envelope.pay.clone())
-        .map_err(|e| AppError::bad_request(format!("malformed revoke payload: {e}")))?;
+    let pay_bytes = serde_json::to_vec(&envelope.pay).map_err(|e| {
+        AppError::bad_request(format!(
+            "revoke payload not serializable ({})",
+            crate::auth::json_fault(&e)
+        ))
+    })?;
+    let pay: coz::Pay = serde_json::from_value(envelope.pay.clone()).map_err(|e| {
+        AppError::bad_request(format!(
+            "malformed revoke payload ({})",
+            crate::auth::json_fault(&e)
+        ))
+    })?;
 
     let typ = pay.typ.as_deref().unwrap_or_default();
-    if !is_revoke_typ(typ) {
-        return Err(AppError::bad_request(format!(
-            "coz typ `{typ}` is not a key/revoke"
-        )));
+    if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE) {
+        // The typ is the sender's own text; it is not reflected back.
+        return Err(AppError::bad_request("coz typ is not a key/revoke"));
     }
 
     let rvk = pay
@@ -171,28 +170,4 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
         rvk,
         evidence,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_revoke_typ;
-
-    /// Characterization (green): the naked-revoke gate already requires a
-    /// `/` boundary before `cyphr/key/revoke`, the behavior the core
-    /// classifier must match (the core side is the `typ_boundary_*` tests in
-    /// `cyphr::parsed_coz`). Turns red if the gate regresses to a bare
-    /// suffix match. Unit level: the predicate is private and a spoof
-    /// reaching it by HTTP needs a full keyed server for no extra coverage.
-    #[test]
-    fn typ_boundary_naked_revoke_requires_slash_before_suffix() {
-        assert!(is_revoke_typ("cyphr.me/cyphr/key/revoke"));
-        assert!(is_revoke_typ("a.b/c/cyphr/key/revoke"));
-        assert!(!is_revoke_typ("cyphr.me/xcyphr/key/revoke"));
-        assert!(!is_revoke_typ("evilcyphr/key/revoke"));
-        // SPEC §7.3: the bare form (protocol as authority) is valid; an
-        // empty authority is not.
-        assert!(is_revoke_typ("cyphr/key/revoke"));
-        assert!(!is_revoke_typ("/cyphr/key/revoke"));
-        assert!(!is_revoke_typ("cyphr.me/cyphr/key/create"));
-    }
 }

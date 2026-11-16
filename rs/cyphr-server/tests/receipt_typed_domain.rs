@@ -267,6 +267,39 @@ fn null_sr_and_ar_are_absent_roots_but_a_missing_field_is_malformed() {
     }
 }
 
+/// Backs the tip report's `typ` rule: the parse reads a statement of any
+/// other `typ` (here a held statement's) as no tip report at all, rather than
+/// trusting that its fields happen to have a tip's shape.
+#[test]
+fn a_statement_of_another_typ_is_not_a_tip_report() {
+    let (_dir, identity) = identity_with_seed(0x46);
+    let root = digest_string(&[7u8; 32]);
+    let roots = Roots {
+        pr: root.clone(),
+        sr: None,
+        ar: None,
+        cr: None,
+    };
+    let report = block_on(receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        principal_digest(&[9u8; 32]),
+        0u64,
+        root,
+        &roots,
+        1,
+        1_700_000_000,
+    ))
+    .expect("signable");
+    TipReport::parse(&report).expect("the genuine report parses");
+    let mut other = report;
+    other.pay["typ"] = serde_json::json!(receipt::HELD_REPORT_TYP);
+    assert!(matches!(
+        TipReport::parse(&other),
+        Err(cyphr_client::TipReportParseError::WrongTyp)
+    ));
+}
+
 /// The set of verdicts an HONEST pair (conflicting or not) can produce
 /// under the pinned predicate, checked in the ORDER `check_equivocation`
 /// checks them: `Proven` (a genuine conflict) and the three "no standing

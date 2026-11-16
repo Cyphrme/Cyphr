@@ -421,13 +421,19 @@ fn reserialized_world() -> (User, String, Hostile, Server) {
 }
 
 fn world(unsigned_extras: bool) -> (User, String, Hostile, Server) {
+    world_serving(|chain| patch_with(chain, unsigned_extras))
+}
+
+/// A user pushed to a real server, and a hostile peer that serves the
+/// user's own chain as `patch` builds it.
+fn world_serving(patch: impl FnOnce(&[WireBundle]) -> Vec<u8>) -> (User, String, Hostile, Server) {
     let real = Server::start();
     let a = User::new();
     let id = a.new_identity();
     let pushed = a.peer_cmd("push", &id, &real.url);
     assert!(pushed.ok, "setup push: {}", pushed.stderr);
     let chain = real.chain(&id);
-    let body = patch_with(&chain, unsigned_extras);
+    let body = patch(&chain);
     // The pull step reads heads and revokes before the patch; a head names
     // a tip the verifier does not hold, so it reads the patch itself.
     let branches = serde_json::to_vec(&serde_json::json!({"v": 1, "payload": {"branches": [
@@ -469,6 +475,45 @@ fn reserialized_chain_is_not_a_fork_in_verify() {
     // The default anchor is the identity itself, so the answer must say its
     // anchor check is trivially satisfied.
     assert_eq!(v["anchor"]["is_identity"], true, "anchor provenance: {v}");
+}
+
+/// Claim (SPEC 6.2, 14.12): a peer that serves an action signed by a key the
+/// principal never held gets a refusal from fetch, not a silent drop: only
+/// an action whose signer the principal once held is ignored when its
+/// history voids it. Turns red if fetch skips the stranger's action and
+/// reports success (the shape of a refusal for an inactive signer is the
+/// same either way; only the signer's history tells them apart).
+#[test]
+fn fetch_refuses_an_action_by_a_never_held_key() {
+    let stranger = coz::Alg::ES256.generate_keypair();
+    let tmb = coz::Alg::ES256
+        .compute_thumbprint(&stranger.pub_bytes)
+        .expect("tmb");
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": "ES256", "msg": "from nobody", "now": 1_700_000_000,
+        "tmb": tmb.to_b64(), "typ": "cyphr.me/comment/create",
+    }))
+    .expect("pay");
+    let (sig, _cad) =
+        coz::sign_json(&pay, "ES256", &stranger.prv_bytes, &stranger.pub_bytes).expect("sign");
+    let action = serde_json::to_vec(&serde_json::json!({
+        "pay": serde_json::from_slice::<Value>(&pay).expect("pay json"),
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("action");
+    let (a, id, peer, _real) = world_serving(|chain| {
+        let mut body: Value = serde_json::from_slice(&patch_with(chain, false)).expect("patch");
+        body["payload"]["actions"] =
+            serde_json::json!([{"blobs": [Base64UrlUnpadded::encode_string(&action)]}]);
+        serde_json::to_vec(&body).expect("body")
+    });
+    a.add_key(&id);
+    let r = a.peer_cmd("fetch", &id, &peer.url);
+    assert!(
+        !r.ok,
+        "an action by a key the principal never held must be refused: {}",
+        r.stdout
+    );
 }
 
 /// Claim: fetch from a peer that re-serializes our own history stores

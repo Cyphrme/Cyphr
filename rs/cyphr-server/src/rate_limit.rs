@@ -177,8 +177,8 @@ impl Fences {
             push: BoundedLimiter::new(quota(limits.push)),
             login: BoundedLimiter::new(quota(limits.login)),
             revoke: BoundedLimiter::new(quota(limits.revoke)),
-            max_body_bytes: limits.max_body_bytes,
-            count_quota: limits.count_quota,
+            max_body_bytes: limits.max_body_bytes.get(),
+            count_quota: limits.count_quota.get(),
         }
     }
 
@@ -199,8 +199,8 @@ impl Fences {
 /// quota: one cell replenished every `1s / per_second`, up to `burst` capacity.
 /// Both fields are clamped to at least 1 so a misconfigured `0` becomes the
 /// tightest live bucket rather than a panic. Deliberately a silent LOOSENING,
-/// unlike `max_body_bytes == 0` / `count_quota == 0` (rejected loudly at
-/// startup -- see `config::resolve_config`): a clamped-tightest bucket still
+/// unlike `max_body_bytes` / `count_quota` (`NonZeroU64`, so a zero does not
+/// deserialize): a clamped-tightest bucket still
 /// serves traffic, just very strictly, so it never bricks writes and is
 /// clamped rather than refused.
 fn quota(bucket: RateBucket) -> Quota {

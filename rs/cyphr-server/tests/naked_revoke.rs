@@ -643,7 +643,7 @@ async fn the_ceiling_never_refuses_a_held_keys_revoke() {
         audience: Some(AUDIENCE.to_string()),
         ..Default::default()
     };
-    config.limits.max_dead_keys = 1;
+    config.limits.max_dead_keys = std::num::NonZeroU64::MIN;
     let state = Arc::new(AppState::new(config).expect("open keyed AppState"));
     let pool = common::load_pool();
     bootstrap_golden_key_a(&state, &pool).await;
