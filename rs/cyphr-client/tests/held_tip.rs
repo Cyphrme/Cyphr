@@ -107,7 +107,7 @@ fn active_tip_answer_still_parses() {
     let body = json!({
         "v": 1,
         "payload": { "principal_id": b64(7), "pr": digest(1), "sr": null, "ar": null,
-            "cr": "", "commit_id": digest(9), "commit_count": 3, "last_updated": 5, "now": 6 },
+            "cr": null, "commit_id": digest(9), "commit_count": 3, "last_updated": 5, "now": 6 },
         "statement": { "kind": "unsigned" },
     });
     assert_eq!(

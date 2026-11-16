@@ -43,6 +43,8 @@ pub mod principal;
 pub mod principal_tree;
 /// Replay of stored commit bundles: one entry point for every consumer.
 pub mod replay;
+/// Naked-revoke validity (SPEC 6.4): the one rule every consumer calls.
+pub mod revoke;
 /// Semantic Tree nodes (KT, AR-node, SR-node) — generalizes `PrincipalTree`'s
 /// pattern from "one instance at the root" to "one instance per semantic
 /// node." See module docs for the full design.

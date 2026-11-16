@@ -71,88 +71,22 @@ pub struct VerifiedRevoke {
     pub evidence: serde_json::Value,
 }
 
-/// Parse, validate, and verify a naked-revoke request against its DISCLOSED
-/// key -- replay-free, self-signed-only, and reading no server state.
+/// Verify a naked-revoke request against its DISCLOSED key -- replay-free,
+/// self-signed-only, and reading no server state.
 ///
-/// Verification order, each a distinct rejection:
-/// 1. the body discloses a `key` (else 400 -- a naked revoke must disclose it);
-/// 2. the payload parses and its `typ` is a `key/revoke`;
-/// 3. `rvk` is a integer in 1..=2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is NOT
-///    checked, so a pre-signed `rvk`=1 is valid;
-/// 4. the serialized payload is within `RVK_MAX_SIZE`;
-/// 5. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), welding the
-///    disclosed key to the thumbprint before it is trusted;
-/// 6. VERIFY: the signature verifies against the DISCLOSED key. A revoke signed by any key OTHER
-///    than the one `tmb` names fails here -- the entire self-signed-only rule.
-///
-/// A missing key, malformed payload, bad `rvk`, wrong `typ`, or a disclosed
-/// key that does not hash to its `tmb` is a 400; a signature that does not
+/// The rule is core's ([`cyphr::revoke::verify_naked_revoke`]), the same
+/// one the client's verifier and the engine apply; this adds only the
+/// request's own requirement to disclose a key. A missing key, malformed
+/// payload, bad `rvk`, oversize payload, wrong `typ`, or a disclosed key
+/// that does not hash to its `tmb` is a 400; a signature that does not
 /// verify is a 401.
 pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke, AppError> {
+    use cyphr::revoke::RevokeFailure;
+
     let key = envelope
         .key
         .as_ref()
         .ok_or_else(|| AppError::bad_request("naked revoke must disclose its public key"))?;
-
-    let pay_bytes = serde_json::to_vec(&envelope.pay).map_err(|e| {
-        AppError::bad_request(format!(
-            "revoke payload not serializable ({})",
-            crate::auth::json_fault(&e)
-        ))
-    })?;
-    let pay: coz::Pay = serde_json::from_value(envelope.pay.clone()).map_err(|e| {
-        AppError::bad_request(format!(
-            "malformed revoke payload ({})",
-            crate::auth::json_fault(&e)
-        ))
-    })?;
-
-    let typ = pay.typ.as_deref().unwrap_or_default();
-    if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE) {
-        // The typ is the sender's own text; it is not reflected back.
-        return Err(AppError::bad_request("coz typ is not a key/revoke"));
-    }
-
-    let rvk = pay
-        .rvk
-        .ok_or_else(|| AppError::bad_request("revoke payload has no rvk"))?;
-    if !coz::is_valid_rvk(rvk) {
-        return Err(AppError::bad_request(format!(
-            "rvk {rvk} is not an integer in 1..=2^53-1"
-        )));
-    }
-
-    // Bound the revoke to the coz standard's `RVK_MAX_SIZE` (2048 bytes),
-    // measured over the serialized payload. An oversized revoke is a
-    // semantically valid payload the size limit alone rejects, so this is the
-    // authoritative semantic check (never a parse or signature failure).
-    coz::validate_revoke_size(&pay, pay_bytes.len())
-        .map_err(|e| AppError::bad_request(e.to_string()))?;
-
-    let tmb = pay
-        .tmb
-        .clone()
-        .ok_or_else(|| AppError::bad_request("revoke payload names no key (tmb)"))?;
-
-    // BIND: the disclosed key must hash back to the named `tmb` (`tmb = H(pub)`).
-    // This weld is what keeps the revoke self-signed-only and forge-proof: to
-    // kill `tmb` T an attacker must present a `pub` with `H(pub) = T`, a preimage
-    // only T's holder has. Without this bind the signature check below would be
-    // tautological -- any key could "revoke" any `tmb`.
-    let recomputed = coz::compute_thumbprint_for_alg(&key.alg, &key.pub_key).ok_or_else(|| {
-        AppError::bad_request(format!("revoke key algorithm `{}` is unsupported", key.alg))
-    })?;
-    if recomputed != tmb {
-        return Err(AppError::bad_request(
-            "disclosed key does not hash to the revoked thumbprint",
-        ));
-    }
-
-    // VERIFY: the signature must verify against the DISCLOSED key -- a revoke
-    // signed by any other key fails here (self-signed-only).
-    if coz::verify_json(&pay_bytes, &envelope.sig, &key.alg, &key.pub_key) != Some(true) {
-        return Err(AppError::unauthorized("revoke signature does not verify"));
-    }
 
     // The full envelope is self-contained, independently re-verifiable evidence:
     // storing it lets any later reader re-check the death with no index.
@@ -165,9 +99,87 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
         },
     });
 
+    // The refusal text is the sender's own material, never reflected back.
+    let revoke = cyphr::revoke::verify_naked_revoke(&evidence).map_err(|e| match e {
+        RevokeFailure::BadSignature => AppError::unauthorized("revoke signature does not verify"),
+        other => AppError::bad_request(other.to_string()),
+    })?;
+
     Ok(VerifiedRevoke {
-        revoked_tmb: tmb,
-        rvk,
+        revoked_tmb: revoke.tmb,
+        rvk: revoke.rvk,
         evidence,
     })
+}
+
+/// Record a verified naked revoke in both places the server keeps deaths,
+/// in the one order every path uses: the engine first, then the
+/// observation set every capability consults. `/revoke`, gossip and
+/// witness sync all come through here, so every caller is bounded.
+///
+/// The engine's blob-store record is the truth (I1; it judges admission
+/// and forks, and a rebuild re-verifies it), so the observation set is
+/// written only once the engine holds the revoke: a revoke the engine
+/// refuses reaches neither store.
+///
+/// The operator's ceiling (`[limits] max_dead_keys`) bounds the revokes of
+/// keys no stored principal holds, for every caller: past it such a revoke
+/// is refused (507) before either store is written, while the revoke of a
+/// held key is still recorded (SPEC 6.4). A peer that names fresh
+/// thumbprints can therefore grow neither store past the ceiling plus the
+/// keys the server really holds. Ceiling check and writes run under one
+/// gate, so concurrent revokes cannot overshoot it.
+///
+/// A failure between the two writes leaves the engine dead and the set
+/// not. A repeat of the same revoke closes that gap whatever the ceiling,
+/// since the engine already holding the death is checked first and
+/// both writes are idempotent.
+///
+/// # Errors
+///
+/// The engine's refusal or storage fault, the ceiling, or the set's fault.
+pub async fn record_everywhere(
+    state: &crate::AppState,
+    tmb: &Thumbprint,
+    evidence: &serde_json::Value,
+) -> Result<(), AppError> {
+    use cyphr_storage::index::Indexer;
+
+    let _one_revoke_at_a_time = state.observations.revoke_gate().await;
+    let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
+
+    // A death the engine already holds adds nothing to either store's size.
+    if !state.engine.is_revoked(&tmb_b64) {
+        match state.observations.check_room(tmb).await {
+            Ok(()) => {},
+            Err(full @ crate::observation::ObservationError::Full { .. }) => {
+                let held = state
+                    .engine
+                    .indexer()
+                    .get_key(&tmb_b64)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "naked-revoke presence lookup failed");
+                        AppError::internal("key index lookup failed")
+                    })?
+                    .is_some();
+                if !held {
+                    return Err(AppError::observation(full));
+                }
+            },
+            Err(other) => return Err(AppError::observation(other)),
+        }
+    }
+
+    // The key's cutoff is this node's own receipt time (#203).
+    state
+        .engine
+        .record_revoke(evidence, crate::auth::server_now())
+        .await
+        .map_err(AppError::engine)?;
+    state
+        .observations
+        .record(tmb, evidence.clone())
+        .await
+        .map_err(AppError::observation)
 }

@@ -674,6 +674,25 @@ async fn archrev_a6_key_create_refuses_an_already_revoked_key() {
     assert_eq!(before, snapshot(&p), "a refused key/create changed state");
 }
 
+/// archrev:A6. Backs SPEC 6.4 as above, for `key/replace`: it reaches the
+/// same key-set insert as `key/create`, and before the fix a pre-revoked
+/// key swapped in for the signer. End to end: yes (public commit API).
+#[tokio::test]
+async fn archrev_a6_key_replace_refuses_an_already_revoked_key() {
+    let (mut p, a, _) = two_key_principal().await;
+    let k3 = kp();
+    let before = snapshot(&p);
+    let revoked = key_of(&k3).with_revocation(cyphr::key::Revocation { rvk: T, by: None });
+    let mut pay = key_create_pay(&a, &k3.tmb, T);
+    pay["typ"] = json!("cyphr.me/cyphr/key/replace");
+    let r = commit_one(&mut p, &a, sign(&a, pay), Some(revoked), T + 1).await;
+    assert!(
+        matches!(r, Err(Error::KeyRevoked)),
+        "a pre-revoked key was swapped in through key/replace: {r:?}"
+    );
+    assert_eq!(before, snapshot(&p), "a refused key/replace changed state");
+}
+
 // ============================================================================
 // SPEC 2.2.13 (line 203): public keys must be revealed for verification
 // ============================================================================

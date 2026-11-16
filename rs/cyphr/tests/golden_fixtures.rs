@@ -85,6 +85,8 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::GenesisIncomplete => "GenesisIncomplete",
         Error::StateMismatch => "StateMismatch",
         Error::MixedTransactionTyp => "MixedTransactionTyp",
+        Error::EmptyCommit => "EmptyCommit",
+        Error::EmptyMultihash => "EmptyMultihash",
         _ => "UnknownError",
     }
 }
@@ -352,6 +354,9 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         "[no-revoke-non-self]" => "MalformedPayload",
         // What a Dead principal answers: its revoked key signs nothing.
         "[no-self-revoke-recovery]" => "KeyRevoked",
+        // Structural constraints
+        "[commit-one-or-more]" => "EmptyCommit",
+        "[no-empty-mr]" => "EmptyMultihash",
         // Authentication
         "[verification-timestamp-order]" => "TimestampPast",
         // Principal Lifecycle
@@ -430,6 +435,26 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
             );
         },
     };
+
+    // A vector with no genesis key at all (`[no-empty-mr]`): there is no
+    // principal to replay, so the proposition is the one the constraint
+    // states, a state digest computed from zero children. Built from the
+    // core's own key tree over no members.
+    if genesis_keys.is_empty() {
+        let sha256 = [coz::HashAlg::Sha256];
+        let root = cyphr::semantic_tree::KeyTree::build_tree(&[], &sha256)
+            .and_then(|kt| kt.root(&sha256).map(|_| ()));
+        match (root, expected_error) {
+            (Err(e), Some(expected)) if error_name(&e) == expected => {
+                println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                return;
+            },
+            (got, _) => panic!(
+                "{}: an empty key tree gave {got:?}, expected {expected_error:?}",
+                fixture.name
+            ),
+        }
+    }
 
     // A principal is its genesis key, the first listed; every further key
     // enters by a `key/create` the vector's commits carry (SPEC 5.1).
@@ -665,6 +690,15 @@ async fn test_golden_lifecycle() {
 #[tokio::test]
 async fn test_golden_witness() {
     run_golden_dir("witness").await;
+}
+
+/// Structural-constraint vectors (`[commit-one-or-more]`,
+/// `[no-empty-mr]`): the vectors `constraint_coverage.md` names as TESTED.
+/// Their expected errors are constraint tags, mapped to `Error` variants by
+/// [`resolve_constraint_tag`].
+#[tokio::test]
+async fn test_golden_structural_constraints() {
+    run_golden_dir("structural_constraints").await;
 }
 
 /// Key-authentication vectors (SPEC 6.4): a revoked key is never re-added.
