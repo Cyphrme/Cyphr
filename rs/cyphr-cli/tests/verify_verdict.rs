@@ -496,6 +496,10 @@ fn rebase_keeps_an_existing_backup_of_the_same_second() {
     let r = b.run(&["rebase", &ident, &format!("--peer={}", s1.url)]);
     accepted(&r, "rebase with this second's backup name taken");
     for dir in &taken {
-        assert!(dir.join("earlier").exists(), "{} was overwritten", dir.display());
+        assert!(
+            dir.join("earlier").exists(),
+            "{} was overwritten",
+            dir.display()
+        );
     }
 }

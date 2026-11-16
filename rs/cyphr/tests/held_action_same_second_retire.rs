@@ -15,10 +15,7 @@ fn b64(bytes: &[u8]) -> String {
     Base64UrlUnpadded::encode_string(bytes)
 }
 
-fn sign(
-    k: &coz::KeyPair,
-    mut pay: serde_json::Value,
-) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+fn sign(k: &coz::KeyPair, mut pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     pay.as_object_mut().expect("pay object").sort_keys();
     let v = serde_json::to_vec(&pay).expect("pay bytes");
     let alg = k.alg.name();
