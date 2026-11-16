@@ -176,7 +176,7 @@ pub struct RelyingParty {
     clock: Clock,
     /// Clock reading at the newest successful pull.
     last_pull: Option<i64>,
-    /// The latest pull showed a fork.
+    /// Some pull showed a fork; never cleared by a later pull.
     forked: bool,
     /// Issued challenges, by value, with their issue time.
     challenges: BTreeMap<String, i64>,
@@ -231,7 +231,11 @@ impl RelyingParty {
             .any(|p| !matches!(p.standing, PeerStanding::Failed(_)));
         if answered && self.record.tip().is_some() {
             self.last_pull = Some((self.clock)());
-            self.forked = !report.forks.is_empty();
+            // Sticky: a proved fork is the witness's proof of error (SPEC
+            // 15.7.1) and stays until a verified resolution, which this
+            // relying party has no path to yet; a pull the rival peer
+            // misses must not clear it.
+            self.forked |= !report.forks.is_empty();
         }
         report
     }

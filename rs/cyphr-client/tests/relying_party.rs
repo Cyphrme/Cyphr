@@ -498,3 +498,55 @@ async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
             .is_ok()
     );
 }
+
+/// archrev:B1. Claim: a fork the relying party has proved stays recorded
+/// (SPEC 15.7.1 "Witnesses should keep such transaction as proof of
+/// error"): a later pull that only the honest peer answers must not clear
+/// it, or sign-in resumes just because the peer that showed the fork went
+/// silent.
+///
+/// Turns red if the fork flag is recomputed from the latest pull alone.
+/// End-to-end scenario: yes (two diverging real chains, then a pull the
+/// rival peer does not answer).
+#[tokio::test]
+async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
+    let (g, device, rival_key) = (kp(), kp(), kp());
+    let pg = g.tmb.to_b64();
+    let mut honest = Chain::new(&g).await;
+    let mut honest_line = Line::of(&honest);
+    let blobs = honest.commit(&device, T0 + 50).await;
+    honest_line.push(&honest, blobs);
+    let mut rival = Chain::new(&g).await;
+    let mut rival_line = Line::of(&rival);
+    let blobs = rival.commit(&rival_key, T0 + 60).await;
+    rival_line.push(&rival, blobs);
+    let honest_peer = Mirror { line: honest_line };
+    let rival_peer = Mirror { line: rival_line };
+    LIFE_CLOCK.store(T0 + 100, Ordering::SeqCst);
+
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        life_clock,
+    );
+    let report = rp
+        .refresh(&[peer("honest", &honest_peer), peer("rival", &rival_peer)])
+        .await;
+    assert!(!report.forks.is_empty(), "the rival peer shows a fork");
+    let c = rp.challenge();
+    assert_eq!(
+        rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
+        Err(Refusal::Forked)
+    );
+
+    // The rival peer no longer shows it; only the honest peer answers.
+    let report = rp.refresh(&[peer("honest", &honest_peer)]).await;
+    assert!(report.forks.is_empty(), "this pull shows no fork");
+    let c = rp.challenge();
+    assert_eq!(
+        rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
+        Err(Refusal::Forked),
+        "a proved fork stays recorded until a verified resolution"
+    );
+}
