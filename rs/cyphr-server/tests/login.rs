@@ -665,7 +665,10 @@ async fn malformed_login_bodies_do_not_echo_values() {
     let app = build_router(login_state());
     for (path, body) in [
         ("/auth/login", r#"{"pay":{},"sig":424242424242}"#),
-        ("/auth/login", r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#),
+        (
+            "/auth/login",
+            r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#,
+        ),
         ("/push", r#"{"principal_id":424242424242}"#),
     ] {
         let (status, reply) = post_json(app.clone(), path, body.to_string()).await;

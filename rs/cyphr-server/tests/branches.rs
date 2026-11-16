@@ -2701,8 +2701,11 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
     let commit_id = tip["commit_id"].as_str().expect("commit_id").to_owned();
 
     for anchor in [pr_384, commit_id] {
-        let (status, body) =
-            get_json(app.clone(), &format!("/patch?pr={}&from={}", enc(&id), enc(&anchor))).await;
+        let (status, body) = get_json(
+            app.clone(),
+            &format!("/patch?pr={}&from={}", enc(&id), enc(&anchor)),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{anchor}: {body:?}");
         assert_eq!(
             body["payload"]["entries"],

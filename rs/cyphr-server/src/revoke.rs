@@ -94,20 +94,18 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
         .as_ref()
         .ok_or_else(|| AppError::bad_request("naked revoke must disclose its public key"))?;
 
-    let pay_bytes = serde_json::to_vec(&envelope.pay)
-        .map_err(|e| {
-            AppError::bad_request(format!(
-                "revoke payload not serializable ({})",
-                crate::auth::json_fault(&e)
-            ))
-        })?;
-    let pay: coz::Pay = serde_json::from_value(envelope.pay.clone())
-        .map_err(|e| {
-            AppError::bad_request(format!(
-                "malformed revoke payload ({})",
-                crate::auth::json_fault(&e)
-            ))
-        })?;
+    let pay_bytes = serde_json::to_vec(&envelope.pay).map_err(|e| {
+        AppError::bad_request(format!(
+            "revoke payload not serializable ({})",
+            crate::auth::json_fault(&e)
+        ))
+    })?;
+    let pay: coz::Pay = serde_json::from_value(envelope.pay.clone()).map_err(|e| {
+        AppError::bad_request(format!(
+            "malformed revoke payload ({})",
+            crate::auth::json_fault(&e)
+        ))
+    })?;
 
     let typ = pay.typ.as_deref().unwrap_or_default();
     if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE) {

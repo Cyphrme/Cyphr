@@ -330,9 +330,15 @@ async fn key_used_before_its_introduction_is_judged_through_b() {
     let mut a = a_embedding(&alice, &b_pr, &b.state).await;
     // A has admitted a commit by carol, so replaying A pins B with carol in
     // it: the stale view a skipped follow would leave.
-    a.commit(&carol, "key/create", &erin.tmb.to_b64(), Some(&erin), T0 + 12)
-        .await
-        .expect("carol signs through B while active there");
+    a.commit(
+        &carol,
+        "key/create",
+        &erin.tmb.to_b64(),
+        Some(&erin),
+        T0 + 12,
+    )
+    .await
+    .expect("carol signs through B while active there");
     // Built while carol is active in B: carol signs, then alice introduces
     // carol, in one commit.
     let signed = |signer: &Kp, typ: &str, id: &str, now: i64| {

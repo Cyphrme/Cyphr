@@ -331,7 +331,6 @@ async fn mutually_embedding_principals_stay_loadable() {
     b.commit(&bob, "AT/KT/nonce/create", &a_pr, None, T0 + 12)
         .await
         .expect("B embeds A");
-    let b2 = b.state.pr_tagged().expect("pr");
     let blobs = MemoryBlobStore::new();
     let engine = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
     b.push_all(&engine).await;
