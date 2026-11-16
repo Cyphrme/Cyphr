@@ -109,6 +109,15 @@ pub struct KeyRef(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tip(pub String);
 
+/// What a device's own store holds for a principal (`cyphr inspect`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalView {
+    pub tip: Tip,
+    pub height: u64,
+    pub pr: String,
+    pub ar: String,
+}
+
 /// What a peer itself holds for a principal, read from its own `GET /tip`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerTip {
@@ -495,10 +504,24 @@ impl Harness {
         Ok(())
     }
 
-    /// Stop a peer's server process.
+    /// Stop a peer's server process, keeping its counters (see
+    /// [`Harness::lifetime_counters`]).
     pub async fn stop_peer(&self, peer: &str) -> ActionResult<()> {
+        if !self.peer_down(peer).await {
+            self.bank_counters(peer)
+                .await
+                .map_err(ActionError::Failed)?;
+        }
         self.peer(peer)
             .stop()
+            .await
+            .map_err(|e| ActionError::Failed(e.to_string()))
+    }
+
+    /// Start a stopped peer again on its data, as an operator would.
+    pub async fn start_peer(&self, peer: &str) -> ActionResult<()> {
+        self.peer(peer)
+            .restart(self.bins)
             .await
             .map_err(|e| ActionError::Failed(e.to_string()))
     }
@@ -560,6 +583,20 @@ impl Client<'_> {
     async fn local_commit(&self, p: &Principal) -> ActionResult<Tip> {
         let v = self.cyphr(&["inspect", "--identity", &p.0]).await?;
         field(&v, "tip").map(Tip)
+    }
+
+    /// What this device's own store holds for `p`, read without asking any
+    /// peer: the owner's side of an agreement check.
+    pub async fn local_view(&self, p: &Principal) -> ActionResult<LocalView> {
+        let v = self.cyphr(&["inspect", "--identity", &p.0]).await?;
+        Ok(LocalView {
+            tip: Tip(field(&v, "tip")?),
+            height: v["commit_count"].as_u64().ok_or_else(|| {
+                ActionError::Failed(format!("inspect answered without commit_count: {v}"))
+            })?,
+            pr: field(&v, "pr")?,
+            ar: field(&v, "as")?,
+        })
     }
 
     /// The local tip, as `cyphr verify` reports it against `peer`.

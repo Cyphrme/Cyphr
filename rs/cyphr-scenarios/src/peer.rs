@@ -55,6 +55,9 @@ pub enum Role {
 pub struct Limits {
     /// `[limits] max_body_bytes`.
     pub max_body_bytes: Option<u64>,
+    /// Lift every rate bucket far above any scenario's traffic, to tell a
+    /// rate-limit effect from any other cause.
+    pub unthrottled: bool,
 }
 
 pub struct Peer {
@@ -101,6 +104,11 @@ impl Launch {
             move |source| PeerError::Io { name, what, source }
         };
         let mut cmd = Command::new(&bins.server);
+        // The gossip debug line is what lets a scenario count gossip rounds.
+        cmd.env(
+            "RUST_LOG",
+            "cyphr_server=info,tower_http=info,cyphr_server::gossip=debug",
+        );
         cmd.arg("--config")
             .arg(&self.config)
             .args(["serve", "--listen", listen, "--data-dir"])
@@ -195,8 +203,19 @@ impl Peer {
 
         // Without pinned limits the file is never created: compiled defaults.
         let config_path = dir.path().join("server.toml");
+        let mut limits_toml = String::new();
         if let Some(n) = limits.max_body_bytes {
-            std::fs::write(&config_path, format!("[limits]\nmax_body_bytes = {n}\n"))
+            limits_toml.push_str(&format!("max_body_bytes = {n}\n"));
+        }
+        if limits.unthrottled {
+            for bucket in ["per_ip", "read", "push", "login", "revoke"] {
+                limits_toml.push_str(&format!(
+                    "{bucket} = {{ per_second = 100000, burst = 100000 }}\n"
+                ));
+            }
+        }
+        if !limits_toml.is_empty() {
+            std::fs::write(&config_path, format!("[limits]\n{limits_toml}"))
                 .map_err(io_err("writing config"))?;
         }
         let launch = Launch {

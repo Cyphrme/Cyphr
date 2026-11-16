@@ -12,6 +12,7 @@ pub mod cli;
 pub mod faults;
 pub mod harness;
 pub mod idempotency;
+pub mod netsim;
 pub mod oracle;
 pub mod peer;
 pub mod proxy;

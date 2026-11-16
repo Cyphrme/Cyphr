@@ -23,6 +23,7 @@ async fn s10_hostile() {
         &["p1", "p2"],
         Limits {
             max_body_bytes: Some(LIMIT),
+            ..Limits::default()
         },
     )
     .await
