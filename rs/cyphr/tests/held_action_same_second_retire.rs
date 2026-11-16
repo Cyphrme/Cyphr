@@ -27,10 +27,9 @@ fn sign(
     (v, sig, czd)
 }
 
-/// Red before the fix: the signer is judged (`UnknownKey`) before the
+/// Red before the fix (NETSIM-2): the signer is judged (`UnknownKey`) before the
 /// held-czd check, so the re-presented action is refused instead of ignored.
 #[tokio::test]
-#[ignore = "RED(NETSIM-2): a held action re-presented after its signer was replaced in the same second is UnknownKey, not ignored (SPEC 7.6)"]
 async fn held_action_resubmitted_after_same_second_replace_is_ignored() {
     let g = coz::Alg::Ed25519.generate_keypair();
     let g_tmb = g.alg.compute_thumbprint(&g.pub_bytes).expect("tmb");
