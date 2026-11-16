@@ -348,6 +348,13 @@ impl<'m> PinSource<'m> {
     }
 }
 
+/// The held tips of embedded principals read during one call, by the digest
+/// that names them (`None`: it names no held principal): each principal is
+/// replayed once however many candidate states of the principal embedding it
+/// the call tries. Dropped with the call, never a cache across calls.
+type HeldCache<S> =
+    HashMap<String, Option<(cyphr::Tip, String, cyphr::Principal<S>)>>;
+
 /// The tips of embedded principals this engine holds, for the core to
 /// follow ([`StorageEngine::follow_held`]): the engine's own store, never a
 /// network. A failure to read a held principal is kept, not swallowed, and
@@ -355,9 +362,9 @@ impl<'m> PinSource<'m> {
 struct HeldTips<'e, B, I, S: cyphr::eml::Storage> {
     engine: &'e StorageEngine<B, I, S>,
     own_id: &'e str,
-    /// For each followed digest that names a held principal: the PR the
-    /// tip stands at, and the principal.
-    found: std::collections::BTreeMap<String, (String, cyphr::Principal<S>)>,
+    cache: &'e mut HeldCache<S>,
+    /// The followed digests that name a held principal, read from `cache`.
+    found: std::collections::BTreeSet<String>,
     failed: Option<EngineError>,
 }
 
@@ -365,17 +372,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> cyphr::Tip
     for HeldTips<'_, B, I, S>
 {
     async fn tip(&mut self, member: &str) -> Option<cyphr::Tip> {
-        match self.engine.held_tip(member, self.own_id).await {
-            Ok(Some((tip, pr, state))) => {
-                self.found.insert(member.to_string(), (pr, state));
-                Some(tip)
-            },
-            Ok(None) => None,
-            Err(e) => {
-                self.failed.get_or_insert(e);
-                None
-            },
+        if !self.cache.contains_key(member) {
+            match self.engine.held_tip(member, self.own_id).await {
+                Ok(held) => {
+                    self.cache.insert(member.to_string(), held);
+                },
+                Err(e) => {
+                    self.failed.get_or_insert(e);
+                    return None;
+                },
+            }
         }
+        let (tip, _, _) = self.cache.get(member)?.as_ref()?;
+        self.found.insert(member.to_string());
+        Some(tip.clone())
     }
 }
 
@@ -3285,7 +3295,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // holds (SPEC 10.3, 10.5); the manifest of what it forms, a commit
         // or the actions alone, records the state it was judged against.
         let embedded = self
-            .follow_held(principal_id, &mut principal, bundle)
+            .follow_held(principal_id, &mut principal, bundle, &mut HeldCache::new())
             .await?;
         let mut build =
             match Self::build_commit(&mut principal, bundle, principal_id, next_seq).await {
@@ -3429,10 +3439,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         own_id: &'a str,
         principal: &'a mut cyphr::Principal<T>,
         bundle: &'a WireBundle,
+        held: &'a mut HeldCache<S>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<EmbeddedPin>, EngineError>> + Send + 'a>,
     > {
-        Box::pin(self.follow_held_unboxed(own_id, principal, bundle))
+        Box::pin(self.follow_held_unboxed(own_id, principal, bundle, held))
     }
 
     async fn follow_held_unboxed<T: cyphr::eml::Storage>(
@@ -3440,6 +3451,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         own_id: &str,
         principal: &mut cyphr::Principal<T>,
         bundle: &WireBundle,
+        held: &mut HeldCache<S>,
     ) -> Result<Vec<EmbeddedPin>, EngineError> {
         if !principal.has_kt_digests() {
             return Ok(Vec::new());
@@ -3461,13 +3473,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut tips = HeldTips {
             engine: self,
             own_id,
-            found: std::collections::BTreeMap::new(),
+            cache: held,
+            found: std::collections::BTreeSet::new(),
             failed: None,
         };
         principal.follow_embedded(&mut tips).await;
         if let Some(failed) = tips.failed {
             return Err(failed);
         }
+        let found = tips.found;
         let decoded = decode_bundle(bundle)?;
         let mut pins: Vec<EmbeddedPin> = Vec::new();
         for coz in decoded.cozies() {
@@ -3477,7 +3491,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             if principal.is_key_active(tmb) || decoded.introduced_keys().any(|k| k.tmb() == tmb) {
                 continue;
             }
-            for (member, (b, state)) in &tips.found {
+            for member in &found {
+                let Some((_, b, state)) = held.get(member).and_then(Option::as_ref) else {
+                    continue;
+                };
                 let pin = EmbeddedPin {
                     member: member.clone(),
                     b: b.clone(),
@@ -3760,6 +3777,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut principal =
             Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
         let source = PinSource::stored();
+        let mut held = HeldCache::new();
         for (position, (entry, pins)) in entries.iter().zip(&stored.pins).enumerate() {
             // A signer A never held may be a key of an embedded principal:
             // tried only where A's Key Tree holds a digest to follow.
@@ -3779,7 +3797,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 note_revokes(&mut candidate, &self.revoked());
                 // The rival is authenticated against the tips held now (R3),
                 // and its manifest records them.
-                let Ok(embedded) = self.follow_held(principal_id, &mut candidate, bundle).await
+                let Ok(embedded) = self
+                    .follow_held(principal_id, &mut candidate, bundle, &mut held)
+                    .await
                 else {
                     continue;
                 };
@@ -3823,6 +3843,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// `Ok(None)` is a bundle extending no retained rival. Authenticated
     /// first, like [`Self::retain_rival`], so an unauthenticated bundle
     /// costs blob reads only. Caller holds the principal's write lock.
+    ///
+    /// Known cost: the canonical prefix is replayed once per retained
+    /// rival, because a retained commit's `pre` is bound only inside its
+    /// arrow, `MR(pre, fwd, TMR)`, and the engine stores no verifiable
+    /// `pre` per retained commit to resume from. The pass is reached only
+    /// by an authenticated bundle, so an unauthenticated one never pays it.
     async fn resolve_fork(
         &self,
         principal_id: &str,
@@ -3849,6 +3875,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .iter()
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
             .collect();
+        let mut held = HeldCache::new();
         for rival in &rivals {
             let at = rival.tip.sequence;
             // The retained line the rival ends: it and its retained
@@ -3915,7 +3942,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // canonical path (SPEC 6.4); the held line above was replayed
             // without them and is not judged again.
             note_revokes(&mut principal, &self.revoked());
-            let Ok(embedded) = self.follow_held(principal_id, &mut principal, bundle).await else {
+            let Ok(embedded) = self
+                .follow_held(principal_id, &mut principal, bundle, &mut held)
+                .await
+            else {
                 continue;
             };
             let Ok(Some(next)) =
@@ -4788,6 +4818,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`QuarantineReason::Unreplayable`]) with the rest of its chain, as
     /// is a principal whose sequence-0 blobs disclose no genesis (every
     /// chain begins with a genesis commit, SPEC 5.1).
+    ///
+    /// Known cost: the rebuild replays the whole store twice, the first
+    /// time into a throwaway in-memory index (the quarantine set is
+    /// written before the index is cleared, so a crash between the clear
+    /// and the re-index cannot re-admit a quarantined manifest), and holds
+    /// that index until the first pass ends. It is an operator-run
+    /// recovery, not a request path, so the cost is accepted.
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_from_scratch(&self) -> Result<usize, EngineError> {
         Ok(self.rebuild_index_from_scratch_with_report().await?.indexed)

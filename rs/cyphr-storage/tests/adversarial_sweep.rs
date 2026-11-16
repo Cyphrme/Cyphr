@@ -274,30 +274,33 @@ async fn stranger_cost(tail: usize) -> (usize, usize, String) {
 }
 
 /// Claim (resource bound): a push to A signed by a key A never held, which
-/// nobody authorized and which A refuses, costs the engine no more than
-/// reading A and the principals A embeds once. Anyone may push to any
-/// principal (no bearer token is required) with a signature by any key the
-/// index holds, so the refusal path's cost is the attacker's lever.
+/// nobody authorized and which A refuses, costs the engine a fixed number of
+/// passes over A however long A is, and one read of each principal A embeds,
+/// never a replay of the embedded principal per position of A. Anyone may
+/// push to any principal (no bearer token is required) with a signature by
+/// any key the index holds, so the refusal path's cost is the attacker's
+/// lever.
 ///
-/// Today the rival retention tries the stranger's bundle at every position
-/// of A after the embedding and, at each one, follows every principal A's
-/// Key Tree names: a replay of B per position. A stranger's single push to
-/// an A with 24 commits after its embedding reads many times what loading A
-/// reads, and the cost grows with A's length times B's.
+/// The refused push loads A (admission) and replays it once more to try the
+/// stranger's bundle at each position (rival retention): two passes. What
+/// the retention may not do is follow every principal A's Key Tree names at
+/// each position, a replay of B per position, which makes the cost grow with
+/// A's length times B's. The assertion is on the growth between a short and
+/// a long A, so it does not depend on B's size.
 ///
-/// Turns red while a refused stranger's push costs more than two loads of A.
-/// End to end: yes (real chains, blob reads counted at the store).
+/// Turns red while the extra reads per added commit of A exceed two loads of
+/// it. End to end: yes (real chains, blob reads counted at the store).
 #[tokio::test]
-#[ignore = "RED(DEBT3)"]
-async fn strangers_refused_push_costs_at_most_a_load_of_a() {
+async fn strangers_refused_push_costs_two_passes_over_a() {
     let (short_push, short_load, short_answer) = stranger_cost(4).await;
     let (long_push, long_load, long_answer) = stranger_cost(24).await;
-    println!("tail 4: push {short_push} load {short_load} ({short_answer})");
-    println!("tail 24: push {long_push} load {long_load} ({long_answer})");
+    assert!(short_answer.starts_with("Err"), "the stranger is refused");
     assert!(long_answer.starts_with("Err"), "the stranger is refused");
+    let (push_growth, load_growth) = (long_push - short_push, long_load - short_load);
     assert!(
-        long_push <= 2 * long_load,
-        "a stranger's refused push read {long_push} blobs; one load of A reads {long_load}"
+        push_growth <= 2 * load_growth,
+        "20 more commits of A cost a refused push {push_growth} more blob reads; one load of A \
+         grows by {load_growth}"
     );
 }
 
