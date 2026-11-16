@@ -1009,7 +1009,7 @@ async fn level_one_session(addr: SocketAddr, held: &mut PeerChain) -> NoiseConne
 /// End-to-end scenario: yes.
 #[tokio::test]
 async fn the_transport_carries_the_body_limit() {
-    let (state, _dir) = attestor_with(|c| c.limits.max_body_bytes = 64).await;
+    let (state, _dir) = attestor_with(|c| c.limits.max_body_bytes = std::num::NonZeroU64::new(64).expect("nonzero")).await;
     let app = build_router(state.clone());
     let (mut held, ..) = pinned_and_followed(&app).await;
     let addr = start_noise(state).await;

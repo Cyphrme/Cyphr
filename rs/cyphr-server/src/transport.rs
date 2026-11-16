@@ -286,7 +286,7 @@ async fn session(
             .map_err(|_| TransportError::Timeout)??;
     // A request carries its body plus a target of at most 64 KiB; anything
     // declared larger would be refused by the body limit anyway.
-    let max_request = usize::try_from(state.config.limits.max_body_bytes)
+    let max_request = usize::try_from(state.config.limits.max_body_bytes.get())
         .unwrap_or(usize::MAX)
         .saturating_add(64 * 1024);
     serve_requests(&mut channel, peer, &identity, &router, max_request).await
