@@ -287,7 +287,7 @@ proptest! {
 /// End-to-end: no; the item set is the unit the pull step and the
 /// scenario oracle share, and this builds it from real chains.
 #[test]
-#[ignore = "RED(archrev:B2): needs a second item kind, a wire change across server/scenarios"]
+#[ignore = "RED(archrev:B2): needs a second item kind, deferred to wire-contract work, #209"]
 fn archrev_b2_honest_items_are_not_rejected_for_a_holder_on_the_other_branch() {
     let f = fixture();
     runtime().block_on(async {
