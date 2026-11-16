@@ -92,7 +92,16 @@ impl Harness {
     /// `to`), so partitioning two peers cuts their gossip link and the
     /// proxy counts the attempts.
     pub async fn start_gossiping(names: &[&str], interval_secs: u64) -> Result<Harness, PeerError> {
-        let h = Self::start(names).await?;
+        Self::start_gossiping_with(names, interval_secs, Limits::default()).await
+    }
+
+    /// [`Harness::start_gossiping`] with server limits pinned explicitly.
+    pub async fn start_gossiping_with(
+        names: &[&str],
+        interval_secs: u64,
+        limits: Limits,
+    ) -> Result<Harness, PeerError> {
+        let h = Self::start_with(names, limits).await?;
         for from in names {
             let mut routes = Vec::new();
             for to in names.iter().filter(|to| to != &from) {
