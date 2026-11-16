@@ -44,9 +44,8 @@ tokio         = { workspace = true }
 
 # coz's RustCrypto stack pulls two getrandom majors, and neither has a
 # wasm32-unknown-unknown backend by default; the core must build for the
-# browser. 0.2 takes the "js" feature. 0.4 (via crypto-bigint) takes
-# "wasm_js", which also needs the getrandom_backend cfg set in
-# rs/.cargo/config.toml.
+# browser. 0.2 takes the "js" feature; 0.4 (via crypto-bigint) selects its
+# wasm_js backend from the "wasm_js" feature alone.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom   = { version = "0.2", features = ["js"] }
 getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
