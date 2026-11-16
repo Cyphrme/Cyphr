@@ -3539,30 +3539,43 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The tip this node holds of the principal `member` names, with the PR
     /// it stands at and the principal itself: its stored chain replayed,
     /// the naked revokes held applied, `Error` marked.
-    async fn held_tip(
-        &self,
-        member: &str,
-        own_id: &str,
-    ) -> Result<Option<(cyphr::Tip, String, cyphr::Principal<S>)>, EngineError> {
-        // A principal embedding itself names no other principal's tip; its
-        // log is also the one the caller is writing.
-        let Some(id) = self
-            .principal_named(member)
-            .await?
-            .filter(|id| id != own_id)
-        else {
-            return Ok(None);
-        };
-        let genesis = self.genesis_of_stored(&id).await?;
-        let state = self.replay_stored(&id, genesis).await?;
-        let pr = state.pr_tagged().map_err(EngineError::Protocol)?;
-        let revoked = self.revoked();
-        let mut tip = cyphr::Tip::new(&state, unix_now().unwrap_or(0))
-            .with_revoked(revoked.keys().map(String::as_str));
-        if self.error_state_of(&id).await?.is_some() {
-            tip = tip.in_error();
-        }
-        Ok(Some((tip, pr, state)))
+    ///
+    /// Boxed: it is the one way `follow_held` re-enters the engine, and a
+    /// `Send` proof for `follow_held` otherwise runs through the whole
+    /// replay call graph, past the compiler's recursion limit.
+    fn held_tip<'a>(
+        &'a self,
+        member: &'a str,
+        own_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Option<(cyphr::Tip, String, cyphr::Principal<S>)>, EngineError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            // A principal embedding itself names no other principal's tip; its
+            // log is also the one the caller is writing.
+            let Some(id) = self
+                .principal_named(member)
+                .await?
+                .filter(|id| id != own_id)
+            else {
+                return Ok(None);
+            };
+            let genesis = self.genesis_of_stored(&id).await?;
+            let state = self.replay_stored(&id, genesis).await?;
+            let pr = state.pr_tagged().map_err(EngineError::Protocol)?;
+            let revoked = self.revoked();
+            let mut tip = cyphr::Tip::new(&state, unix_now().unwrap_or(0))
+                .with_revoked(revoked.keys().map(String::as_str));
+            if self.error_state_of(&id).await?.is_some() {
+                tip = tip.in_error();
+            }
+            Ok(Some((tip, pr, state)))
+        })
     }
 
     /// Store an accepted action-only bundle and its [`ActionManifest`],
