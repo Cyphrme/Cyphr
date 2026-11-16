@@ -1824,7 +1824,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             if let Some(json) = data.strip_prefix(REVOKE_RECORD_PREFIX) {
                 // The revoke a record carries is re-verified, never
                 // trusted; its receipt time is this node's own statement.
-                // One that fails costs only itself.
+                // One that fails costs only itself. That includes a record
+                // an earlier build accepted that the current rule refuses
+                // (an over-size revoke): it is quarantined here and its key
+                // is not dead in the engine, so the warning below names it.
                 let record = serde_json::from_slice::<RevokeRecord>(json);
                 let verified = match &record {
                     Ok(r) => verify_revoke(&r.evidence).map(|tmb| (tmb, r.wrt)),
