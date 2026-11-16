@@ -160,17 +160,16 @@ async fn generate_single(intent_path: &Path, output_path: &PathBuf, pool: &test_
     };
 
     // Create parent directories if needed
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!(
-                    "✗ Failed to create output directory '{}': {}",
-                    parent.display(),
-                    e
-                );
-                std::process::exit(1);
-            }
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "✗ Failed to create output directory '{}': {}",
+            parent.display(),
+            e
+        );
+        std::process::exit(1);
     }
 
     if let Err(e) = std::fs::write(output_path, &json) {

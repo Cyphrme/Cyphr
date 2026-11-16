@@ -108,25 +108,24 @@ pub fn extract_genesis_from_commits(
 
     // When keystore is available, prefer signer-based lookup.
     // The signer of the first coz IS the genesis key.
-    if let Some(ks) = keystore {
-        if let Some(signer_tmb) = first_commit
+    if let Some(ks) = keystore
+        && let Some(signer_tmb) = first_commit
             .txs
             .first()
             .and_then(|tx| tx.first())
             .and_then(|coz| coz.pointer("/pay/tmb"))
             .and_then(|v| v.as_str())
-        {
-            // The keystore is the local authority: a key in the
-            // (untrusted) bundle never overrides it.
-            if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
-                return Ok(Genesis::Implicit(key));
-            }
+    {
+        // The keystore is the local authority: a key in the
+        // (untrusted) bundle never overrides it.
+        if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
+            return Ok(Genesis::Implicit(key));
+        }
 
-            // Not in the keystore: fall back to the self-signed genesis
-            // key the bundle discloses.
-            if let Some(entry) = named(signer_tmb) {
-                return entry_key(entry).map(Genesis::Implicit);
-            }
+        // Not in the keystore: fall back to the self-signed genesis
+        // key the bundle discloses.
+        if let Some(entry) = named(signer_tmb) {
+            return entry_key(entry).map(Genesis::Implicit);
         }
     }
 

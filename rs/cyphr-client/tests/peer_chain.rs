@@ -529,10 +529,10 @@ async fn nonce_golden_chains_follow_to_the_recorded_pr() {
                         let mut coz = coz.clone();
                         let id = coz["pay"]["id"].clone();
                         let typ = coz["pay"]["typ"].as_str().expect("typ").to_string();
-                        if cyphr::parsed_coz::typ::is_key_introducing(&typ) {
-                            if let Some(key) = keys.iter().find(|k| k["tmb"] == id) {
-                                coz["key"] = key.clone();
-                            }
+                        if cyphr::parsed_coz::typ::is_key_introducing(&typ)
+                            && let Some(key) = keys.iter().find(|k| k["tmb"] == id)
+                        {
+                            coz["key"] = key.clone();
                         }
                         Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).expect("json"))
                     })

@@ -283,13 +283,13 @@ impl BlobStore for FjallBlobStore {
         let blobs = self.blobs.clone();
         let data = data.to_vec();
         async move {
-            if let Some(max) = max_blob_size {
-                if data.len() > max {
-                    return Err(BlobStoreError::BlobTooLarge {
-                        size: data.len(),
-                        max,
-                    });
-                }
+            if let Some(max) = max_blob_size
+                && data.len() > max
+            {
+                return Err(BlobStoreError::BlobTooLarge {
+                    size: data.len(),
+                    max,
+                });
             }
             let hash = Blake3Hash::from_bytes(*blake3::hash(&data).as_bytes());
             tokio::task::spawn_blocking(move || {

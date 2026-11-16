@@ -459,15 +459,15 @@ impl<'a> Generator<'a> {
 
         let status = format!("{:?}", cyphr::merge_status(&principal, &other));
         let mut expected = self.build_expected_from_principal(&principal, test.expected.as_ref());
-        if let Some(declared) = test.expected.as_ref().and_then(|e| e.merge_status.as_ref()) {
-            if *declared != status {
-                return Err(Error::InvalidIntent {
-                    message: format!(
-                        "test '{}': declares merge_status {declared}, the chains give {status}",
-                        test.name
-                    ),
-                });
-            }
+        if let Some(declared) = test.expected.as_ref().and_then(|e| e.merge_status.as_ref())
+            && *declared != status
+        {
+            return Err(Error::InvalidIntent {
+                message: format!(
+                    "test '{}': declares merge_status {declared}, the chains give {status}",
+                    test.name
+                ),
+            });
         }
         expected.merge_status = Some(status);
         let (commits, digests) = Self::export_principal_commits(&principal)?;

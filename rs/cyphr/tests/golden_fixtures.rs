@@ -255,20 +255,20 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 
     if let Some(ref pg) = expected.pg {
         // Skip empty PG or non-prefixed format (implicit genesis uses raw thumbprint)
-        if !pg.is_empty() {
-            if let Some((alg, expected_digest)) = parse_alg_digest(pg) {
-                use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                let hash_alg = parse_hash_alg(&alg)
-                    .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-                let actual_pg = principal
-                    .pg()
-                    .and_then(|pg_val| pg_val.get(hash_alg))
-                    .map(Base64UrlUnpadded::encode_string)
-                    .unwrap_or_default();
-                assert_eq!(actual_pg, expected_digest, "{}: pg mismatch", test_name);
-            }
-            // If no ':' in pg, it's a raw thumbprint format - skip alg:digest verification
+        if !pg.is_empty()
+            && let Some((alg, expected_digest)) = parse_alg_digest(pg)
+        {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_pg = principal
+                .pg()
+                .and_then(|pg_val| pg_val.get(hash_alg))
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(actual_pg, expected_digest, "{}: pg mismatch", test_name);
         }
+        // If no ':' in pg, it's a raw thumbprint format - skip alg:digest verification
     }
 
     if let Some(ref ds) = expected.dr {
@@ -418,11 +418,11 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         Ok(keys) => keys,
         Err(e) => {
             // Genesis failed (e.g. unsupported algorithm)
-            if let Some(expected) = expected_error {
-                if expected == error_name(&e) {
-                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                    return;
-                }
+            if let Some(expected) = expected_error
+                && expected == error_name(&e)
+            {
+                println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                return;
             }
             panic!(
                 "{}: genesis failed with {:?}, but expected error was {:?}",
@@ -443,11 +443,11 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         Ok(p) => p,
         Err(e) => {
             let err_str = error_name(&e);
-            if let Some(expected) = expected_error {
-                if expected == err_str {
-                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                    return;
-                }
+            if let Some(expected) = expected_error
+                && expected == err_str
+            {
+                println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                return;
             }
             panic!(
                 "{}: genesis failed with {:?}, but expected error was {:?}",
