@@ -693,24 +693,6 @@ const ALICE_CHAIN: [&str; 3] = [
     "SHA-256:commit-alice-2",
 ];
 
-/// Claim: a valid commit manifest whose `pre` is a held commit but which
-/// lost the canonical walk and finds no retention slot (its key has kept
-/// [`super::BRANCH_PER_KEY`] rivals) is quarantined as fork evidence, the
-/// kind a verification pass exempts. Turns red if it is reported as any
-/// other kind (a verification failure). A unit test: rival manifests
-/// cannot be built from signed cozes, and `store_blobs_and_manifest` is the
-/// only way to write them past ingest.
-#[tokio::test]
-async fn rebuild_reports_a_rival_past_its_slots_as_fork() {
-    use super::QuarantineReason;
-    let (report, chain) = rebuild_with_rivals((0..3).map(rival).collect()).await;
-    assert_eq!(chain, ALICE_CHAIN);
-    assert!(
-        matches!(reasons(&report)[..], [QuarantineReason::Fork(_)]),
-        "{report:?}"
-    );
-}
-
 /// Claim: a commit manifest whose `pre` names no held commit is
 /// quarantined as orphaned. Turns red if it is reported as a fork (an
 /// exempt kind) or kept. Unit, for the reason above.

@@ -2239,8 +2239,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The index is already final when this runs and is never read to
     /// decide the canonical chain here, so the result is a function of the
     /// blob set: manifests are taken by position, then in hash order, which
-    /// only decides which rivals survive [`BRANCH_LIMIT`] if a store holds
-    /// more than the engine ever wrote.
+    /// fixes the order a branch can extend a kept branch. The retention
+    /// caps ([`BRANCH_LIMIT`]) are admission rules and are not applied
+    /// here.
     async fn classify_branches(
         &self,
         mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
@@ -2326,16 +2327,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             let signer = commit_signer(&commit);
-            if !has_slot(of_principal, &signer) {
-                reject(unless_fork(
-                    format!(
-                        "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per \
-                         key, {BRANCH_LIMIT} per principal"
-                    ),
-                    QuarantineReason::Conflict,
-                ));
-                continue;
-            }
+            // No quota here: the caps bound what ingest admits, and a
+            // promotion retains its displaced commits past them, so a
+            // quota in the rebuild would drop a once-canonical commit the
+            // live store keeps (I1).
             for pr in &commit.prs {
                 kept_prs.insert((commit.principal_id.clone(), commit.sequence, pr.clone()));
             }
