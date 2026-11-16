@@ -53,6 +53,11 @@ jobs:
         run: bash ../packaging/smoke.sh target/debug/cyphr-server
       - run: cargo test --workspace --verbose
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The workspace-wide build above unifies features, so the dev-only
+      # `test-utils` feature of `cyphr` is on there. Selecting just the
+      # shipped binaries builds them as a release does, without it.
+      - name: Check the shipped binaries without dev features
+        run: cargo check -p cyphr-server -p cyphr-cli
 
   fuzz:
     runs-on: ubuntu-latest
