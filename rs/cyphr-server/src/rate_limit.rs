@@ -279,10 +279,10 @@ where
 {
     // (1) Size cap on the declared length -- refuse before any keying or
     // buffering when the client announces an over-cap body.
-    if let Some(len) = declared_len(&req) {
-        if len > fences.max_body_bytes {
-            return too_large(fences.max_body_bytes);
-        }
+    if let Some(len) = declared_len(&req)
+        && len > fences.max_body_bytes
+    {
+        return too_large(fences.max_body_bytes);
     }
 
     // (2) Per-IP fence over every request.
@@ -293,10 +293,10 @@ where
 
     // (3) Per-operation fence (keyed on peer IP within the operation).
     let op = classify(req.method(), req.uri().path());
-    if let Some(limiter) = fences.op_limiter(op) {
-        if limiter.check_key(&ip).is_err() {
-            return rate_limited();
-        }
+    if let Some(limiter) = fences.op_limiter(op)
+        && limiter.check_key(&ip).is_err()
+    {
+        return rate_limited();
     }
 
     // (4) Write path: buffer the body (enforcing the size cap on the actual

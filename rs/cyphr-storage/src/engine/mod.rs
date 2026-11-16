@@ -1732,15 +1732,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.record_frame(&commit, &Shape::of(bundle), seen, embedded);
         // A commit refused while the principal was in Error and kept as
         // evidence is now canonical: it is listed once, as the chain.
-        if let Some(id) = commit.commit_ids.first() {
-            if let Some(kept) = self
+        if let Some(id) = commit.commit_ids.first()
+            && let Some(kept) = self
                 .branches
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .get_mut(&commit.principal_id)
-            {
-                kept.retain(|r| !(r.tip.tip == *id && r.tip.sequence == commit.sequence));
-            }
+        {
+            kept.retain(|r| !(r.tip.tip == *id && r.tip.sequence == commit.sequence));
         }
 
         Ok(IngestResult {
@@ -2862,10 +2861,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // ancestry below. A true self-pin finds that line held as well.
             let slot = source.slot(member);
             if let Ok(mut canonical) = slot.try_lock() {
-                if canonical.is_none() {
-                    if let Some(chain) = self.embedded_chain(source, member).await? {
-                        *canonical = Some(Self::chain_memo(chain, member).await?);
-                    }
+                if canonical.is_none()
+                    && let Some(chain) = self.embedded_chain(source, member).await?
+                {
+                    *canonical = Some(Self::chain_memo(chain, member).await?);
                 }
                 if let Some(memo) = canonical.as_mut() {
                     match self.advance(memo, source, b, depth).await {
@@ -3535,10 +3534,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             if keys.contains_key(&tmb) {
                 continue;
             }
-            if let Some(info) = self.indexer.get_key(&tmb).await? {
-                if let Ok(public) = Base64UrlUnpadded::decode_vec(&info.public_key) {
-                    keys.insert(tmb, (info.algorithm, public));
-                }
+            if let Some(info) = self.indexer.get_key(&tmb).await?
+                && let Ok(public) = Base64UrlUnpadded::decode_vec(&info.public_key)
+            {
+                keys.insert(tmb, (info.algorithm, public));
             }
         }
         Ok(keys)
@@ -5345,21 +5344,21 @@ fn authenticated_signers(
         // `key/replace`) may sign the cozies after it, as its own commit
         // does when it finalizes a rotation; the bundle discloses it, bound
         // to the `id` by its thumbprint.
-        if cyphr::parsed_coz::typ::is_key_introducing(&header.typ) {
-            if let Some(id) = pay.get("id").and_then(|v| v.as_str()) {
-                // A key the principal already held is no new signer.
-                let disclosed = bundle
-                    .keys
-                    .iter()
-                    .find(|k| k.tmb == id && !history.contains_key(id));
-                if let Some(k) = disclosed {
-                    let public = Base64UrlUnpadded::decode_vec(&k.pub_key).ok()?;
-                    let bound = coz::compute_thumbprint_for_alg(&k.alg, &public)
-                        .is_some_and(|t| t.to_b64() == id);
-                    if bound {
-                        history.insert(id.to_string(), (k.alg.clone(), public));
-                        introduced.insert(id.to_string());
-                    }
+        if cyphr::parsed_coz::typ::is_key_introducing(&header.typ)
+            && let Some(id) = pay.get("id").and_then(|v| v.as_str())
+        {
+            // A key the principal already held is no new signer.
+            let disclosed = bundle
+                .keys
+                .iter()
+                .find(|k| k.tmb == id && !history.contains_key(id));
+            if let Some(k) = disclosed {
+                let public = Base64UrlUnpadded::decode_vec(&k.pub_key).ok()?;
+                let bound = coz::compute_thumbprint_for_alg(&k.alg, &public)
+                    .is_some_and(|t| t.to_b64() == id);
+                if bound {
+                    history.insert(id.to_string(), (k.alg.clone(), public));
+                    introduced.insert(id.to_string());
                 }
             }
         }

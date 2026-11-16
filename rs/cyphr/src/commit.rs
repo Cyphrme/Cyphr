@@ -220,14 +220,13 @@ impl PendingCommit {
             crate::transaction_root::compute_tmr(&tx_refs, algs)
         };
 
-        if let Some(ctx) = commit_tx {
-            if let Some(tcr) = ctx
+        if let Some(ctx) = commit_tx
+            && let Some(tcr) = ctx
                 .id(algs)
                 .map(crate::transaction_root::TransactionCommitRoot)
-            {
-                let tr = crate::transaction_root::compute_tr(&tx_refs, &tcr, algs);
-                return (tmr, Some(tcr), tr);
-            }
+        {
+            let tr = crate::transaction_root::compute_tr(&tx_refs, &tcr, algs);
+            return (tmr, Some(tcr), tr);
         }
 
         (tmr, None, None)
@@ -413,10 +412,10 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// `typ` (SPEC §4.1); nothing is applied in that case.
     pub fn apply_tx(&mut self, vts: Vec<VerifiedCoz>) -> crate::error::Result<()> {
         let typ_of = |vt: &VerifiedCoz| vt.raw().pay.get("typ").cloned();
-        if let Some(first) = vts.first().map(typ_of) {
-            if vts.iter().any(|vt| typ_of(vt) != first) {
-                return Err(crate::error::Error::MixedTransactionTyp);
-            }
+        if let Some(first) = vts.first().map(typ_of)
+            && vts.iter().any(|vt| typ_of(vt) != first)
+        {
+            return Err(crate::error::Error::MixedTransactionTyp);
         }
         let mut tx = Vec::with_capacity(vts.len());
         for vt in vts {
@@ -512,10 +511,9 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .alg
             .as_deref()
             .and_then(|alg| crate::parsed_coz::compute_czd(pay_json, sig, alg))
+            && self.projected.included_czds.contains(own.as_bytes())
         {
-            if self.projected.included_czds.contains(own.as_bytes()) {
-                return Err(crate::error::Error::CozReuse);
-            }
+            return Err(crate::error::Error::CozReuse);
         }
         let signer_key = self.resolve_signer(signer_tmb)?;
         crate::parsed_coz::verify_coz(pay_json, sig, signer_key, czd, new_key)

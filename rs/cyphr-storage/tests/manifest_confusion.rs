@@ -91,11 +91,11 @@ fn raw_blobs(commit: &serde_json::Value) -> Vec<serde_json::Value> {
         .map(|c| {
             let mut coz = c.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) {
-                if let Some(k) = keys.and_then(|ks| ks.get(key_idx)) {
-                    coz.as_object_mut().unwrap().insert("key".into(), k.clone());
-                    key_idx += 1;
-                }
+            if cyphr::parsed_coz::typ::is_key_introducing(typ)
+                && let Some(k) = keys.and_then(|ks| ks.get(key_idx))
+            {
+                coz.as_object_mut().unwrap().insert("key".into(), k.clone());
+                key_idx += 1;
             }
             coz
         })

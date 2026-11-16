@@ -937,10 +937,10 @@ async fn patch_truncated_entries_rejected() {
     let (proxy_url, _proxy) = spawn_patch_proxy(
         authority.url.clone(),
         Arc::new(|mut body: serde_json::Value| {
-            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
-                if entries.len() > 1 {
-                    entries.pop();
-                }
+            if let Some(entries) = body["payload"]["entries"].as_array_mut()
+                && entries.len() > 1
+            {
+                entries.pop();
             }
             body
         }),

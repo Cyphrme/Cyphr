@@ -98,10 +98,10 @@ fn refuse_key_in_record(config: &ServerConfig) -> Result<(), OpsError> {
     let record = config.record_dir();
     // An absent path cannot be canonicalized; an absent key file is not in
     // the tree either.
-    if let (Ok(key), Ok(record)) = (key.canonicalize(), record.canonicalize()) {
-        if key.starts_with(&record) {
-            return Err(OpsError::KeyInRecord { key, record });
-        }
+    if let (Ok(key), Ok(record)) = (key.canonicalize(), record.canonicalize())
+        && key.starts_with(&record)
+    {
+        return Err(OpsError::KeyInRecord { key, record });
     }
     Ok(())
 }
@@ -156,10 +156,10 @@ pub async fn backup_with(
 /// directory is what makes the next attempt's removal visible to the
 /// operator.
 fn discard_partial(partial: &Path) {
-    if let Err(e) = std::fs::remove_dir_all(partial) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(path = %partial.display(), error = %e, "could not remove a partial backup");
-        }
+    if let Err(e) = std::fs::remove_dir_all(partial)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %partial.display(), error = %e, "could not remove a partial backup");
     }
 }
 
@@ -224,15 +224,15 @@ pub async fn restore(config: &ServerConfig, from: &Path) -> Result<RestoreReport
     // the displaced record is.
     let put_back = |why: OpsError| {
         let mut failed = Vec::new();
-        if let Err(e) = std::fs::remove_dir_all(&record) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                failed.push(format!("removing the partial {}: {e}", record.display()));
-            }
+        if let Err(e) = std::fs::remove_dir_all(&record)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            failed.push(format!("removing the partial {}: {e}", record.display()));
         }
-        if kept.is_some() {
-            if let Err(e) = std::fs::rename(&displaced, &record) {
-                failed.push(format!("moving {} back: {e}", displaced.display()));
-            }
+        if kept.is_some()
+            && let Err(e) = std::fs::rename(&displaced, &record)
+        {
+            failed.push(format!("moving {} back: {e}", displaced.display()));
         }
         if failed.is_empty() {
             why
@@ -250,12 +250,12 @@ pub async fn restore(config: &ServerConfig, from: &Path) -> Result<RestoreReport
     // The index belongs to the replaced record; it is derived, so drop it
     // and let the restored blobs rebuild it.
     let index = config.index_dir();
-    if index.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&index) {
-            return Err(put_back(OpsError::io("dropping the stale index", &index)(
-                e,
-            )));
-        }
+    if index.exists()
+        && let Err(e) = std::fs::remove_dir_all(&index)
+    {
+        return Err(put_back(OpsError::io("dropping the stale index", &index)(
+            e,
+        )));
     }
     let after = match open(config) {
         Ok(state) => commit_counts(&state).await,
