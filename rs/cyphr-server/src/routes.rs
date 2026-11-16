@@ -88,6 +88,14 @@ pub struct PushRequest {
 // Response types
 // ========================================================================
 
+/// A stored commit root as the wire states it: storage reports "no commit
+/// root yet" as an empty string, and every response (payload and signed
+/// statement, `/tip` and `/push`) states it as JSON `null` (#147). The one
+/// place the sentinel is translated.
+fn absent_cr(cr: &str) -> Option<String> {
+    (!cr.is_empty()).then(|| cr.to_owned())
+}
+
 /// Response for `GET /tip`.
 #[derive(Debug, Serialize)]
 pub struct TipResponse {
@@ -371,7 +379,7 @@ pub async fn tip(
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
-        cr: (!t.cr.is_empty()).then(|| t.cr.clone()),
+        cr: absent_cr(&t.cr),
         commit_id: t.commit_id.clone(),
         commit_count: t.commit_count,
         last_updated: t.last_updated,
@@ -658,7 +666,7 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedR
                 // yet" as an empty string (cyphr-storage, out of this
                 // node's surface) -- this is the boundary where that
                 // sentinel becomes the receipt's typed absence (#147).
-                cr: (!derived.cr.is_empty()).then_some(derived.cr),
+                cr: absent_cr(&derived.cr),
             };
             return Ok(AttestedRoots { tip: t, roots });
         }
@@ -1049,7 +1057,7 @@ async fn push_response(
             pr: tip.pr.clone(),
             sr: tip.sr.clone(),
             ar: tip.ar.clone(),
-            cr: (!tip.cr.is_empty()).then(|| tip.cr.clone()),
+            cr: absent_cr(&tip.cr),
         },
     };
     let Some(signer) = signer else {
@@ -1059,7 +1067,7 @@ async fn push_response(
         pr: tip.pr.clone(),
         sr: tip.sr.clone(),
         ar: tip.ar.clone(),
-        cr: (!tip.cr.is_empty()).then(|| tip.cr.clone()),
+        cr: absent_cr(&tip.cr),
     };
     // The commit is durable: a receipt that cannot be signed degrades the
     // envelope to unsigned, it does not turn the answer into an error.
@@ -1773,6 +1781,10 @@ mod push_response_tests {
         let signed_cr = &wire["statement"]["coz"]["pay"]["roots"]["cr"];
         assert_eq!(payload_cr, signed_cr, "wire: {wire}");
         assert!(signed_cr.is_null(), "wire: {wire}");
+        // The `/tip` payload maps through the same function; its handler
+        // cannot reach an empty `cr` through a real push either.
+        assert_eq!(absent_cr(""), None);
+        assert_eq!(absent_cr("SHA-256:x").as_deref(), Some("SHA-256:x"));
     }
 
     /// Backs: a receipt-signing failure never turns a committed push into an error; the commit is
