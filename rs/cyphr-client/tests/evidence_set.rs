@@ -274,3 +274,46 @@ proptest! {
         prop_assert_eq!((forks, exts), (clean.0, clean.1));
     }
 }
+
+/// archrev:B2. A verifier holding the rival branch is served the items a
+/// peer on the other branch retains: the fork at 1, then one item per
+/// commit past it. The fork is evidence; the later items concern commits
+/// of the verifier's own branch and prove nothing against it, but they are
+/// honest, so none may be filed as rejected (a rejection means "this item
+/// is not evidence", which would taint an honest peer).
+///
+/// Turns red if an item whose `pre` falls on the holder's chain is always
+/// read as a fork claim, so honest extension items are rejected.
+/// End-to-end: no; the item set is the unit the pull step and the
+/// scenario oracle share, and this builds it from real chains.
+#[test]
+#[ignore = "RED(archrev:B2): needs a second item kind, a wire change across server/scenarios"]
+fn archrev_b2_honest_items_are_not_rejected_for_a_holder_on_the_other_branch() {
+    let f = fixture();
+    runtime().block_on(async {
+        let base = cyphr::Principal::implicit(f.g.domain_key(1_700_000_000))
+            .await
+            .expect("genesis");
+        let entries: Vec<PatchEntry> = f
+            .rival
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, blobs)| PatchEntry {
+                sequence: i as u64,
+                bundle: Ok(serde_json::from_value::<WireBundle>(entry_bundle(i, blobs))
+                    .expect("bundle")),
+            })
+            .collect();
+        let ids: Vec<Option<String>> = f.rival.ids.iter().cloned().map(Some).collect();
+        let items: Vec<Value> = (1..=DEPTH).map(|h| f.valid(h)).collect();
+        let refs: Vec<&Value> = items.iter().collect();
+        let set = verify_fork_items(&refs, &f.pg, &base, &entries, &ids).await;
+        assert_eq!(set.forks.len(), 1, "the fork at 1 is proved");
+        assert!(
+            set.rejected.is_empty(),
+            "honest items rejected: {:?}",
+            set.rejected
+        );
+    });
+}
