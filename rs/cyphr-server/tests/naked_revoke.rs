@@ -1440,3 +1440,163 @@ async fn the_first_accepted_revoke_stands() {
         "the first accepted revoke is the one served"
     );
 }
+
+// ========================================================================
+// archrev:A2 -- one validity rule, one write order
+// ========================================================================
+
+/// A self-revoke of `key_a` whose payload carries `extra` fields and no
+/// `now`, signed and disclosed by `key_a`.
+fn revoke_without_now(pool: &Pool, extra: serde_json::Value) -> serde_json::Value {
+    let signer = pool.get("key_a").expect("key_a");
+    let mut pay = serde_json::json!({
+        "alg": signer.alg,
+        "rvk": RVK,
+        "tmb": tmb_b64(pool, "key_a"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    pay.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    sign_coz_disclosed(pool, "key_a", pay, "key_a")
+}
+
+/// archrev:A2. A naked revoke is valid iff it is Coz-valid (spec author on
+/// #203: "Coz valid revokes are always accepted"), and `now` is not part of
+/// that: the cutoff is this node's receipt time. A revoke with no `now` was
+/// accepted by the route but refused by the engine, which left the key dead
+/// for login but not for push admission. Turns red if any store refuses it:
+/// the key must be dead for login and for a push dated after receipt, and
+/// stay so after a restart and rebuild (the engine's record, not the death
+/// set, carries admission).
+#[tokio::test]
+async fn archrev_a2_revoke_without_now_is_dead_everywhere() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let data_dir = dir.path().join("data");
+    let pool = common::load_pool();
+    let state = keyed_state_at(&data_dir, &key_path);
+    let pid = common::golden_principal_id(&pool).await;
+    bootstrap_via_push(&state, &pool, &pid, "golden", "key_a", RVK).await;
+
+    let (status, json) =
+        post_revoke(&state, revoke_without_now(&pool, serde_json::json!({}))).await;
+    assert!(
+        status.is_success(),
+        "no `now` is Coz-valid: {status} {json:?}"
+    );
+
+    let after_receipt = now_secs() + 60;
+    let refused = |s: StatusCode| s == StatusCode::UNAUTHORIZED || s == StatusCode::FORBIDDEN;
+    let push = |state: Arc<AppState>| {
+        let (pool, pid) = (&pool, &pid);
+        async move {
+            let body = followup_push_body(
+                pool,
+                pid,
+                "golden",
+                "key_a",
+                RVK,
+                "key_a",
+                "carol",
+                after_receipt,
+            )
+            .await;
+            post_push(&state, body).await
+        }
+    };
+
+    assert_eq!(
+        login_status(&state, &pool, "key_a", &pid).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, json) = push(state.clone()).await;
+    assert!(refused(status), "push by the dead key: {status} {json:?}");
+
+    drop(state);
+    let state = keyed_state_at(&data_dir, &key_path);
+    state
+        .engine
+        .rebuild_index_from_scratch()
+        .await
+        .expect("rebuild");
+    let (status, json) = push(state.clone()).await;
+    assert!(refused(status), "after rebuild: {status} {json:?}");
+}
+
+/// archrev:A2. An over-size revoke (the Coz limit, `coz::RVK_MAX_SIZE`) is
+/// refused by every path: the route refused it but gossip ingest and the
+/// engine accepted it. Turns red if the engine records it (it then rides
+/// out through `/revoked` and kills the key at admission), or if the route
+/// leaves a trace of it.
+#[tokio::test]
+async fn archrev_a2_oversize_revoke_is_recorded_nowhere() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+
+    let over = coz::RVK_MAX_SIZE + 1000;
+    let coz = revoke_without_now(
+        &pool,
+        // `now` present, so only the size can make the engine refuse.
+        serde_json::json!({ "now": RVK, "pad": "A".repeat(over) }),
+    );
+    let (status, json) = post_revoke(&state, coz.clone()).await;
+    assert_rejected(status, &json, "over-size revoke at /revoke");
+
+    // The engine alone, as gossip and witness sync reach it.
+    let engine = state.engine.record_revoke(&coz, now_secs()).await;
+    assert!(engine.is_err(), "the engine must refuse it too: {engine:?}");
+
+    let tmb = tmb_b64(&pool, "key_a");
+    let (_, json) =
+        common::get_json(build_router(state.clone()), &format!("/revoked?tmbs={tmb}")).await;
+    assert_eq!(
+        common::envelope_payload(&json)["revoked"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        login_status(
+            &state,
+            &pool,
+            "key_a",
+            &common::golden_principal_id(&pool).await
+        )
+        .await,
+        StatusCode::OK,
+        "a refused revoke kills nothing"
+    );
+}
+
+/// archrev:A2. The engine's record is the truth and is written first; the
+/// death set follows. A failure between the two writes (the process dies
+/// after the engine, before the set) leaves the engine dead and the set
+/// not, and re-posting the same revoke must close the gap, since both
+/// writes are idempotent. The crash is simulated by recording the revoke in
+/// the engine alone, which is the state that window leaves.
+#[tokio::test]
+async fn archrev_a2_repost_closes_a_gap_between_the_two_stores() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+
+    let coz = revoke_without_now(&pool, serde_json::json!({}));
+    state
+        .engine
+        .record_revoke(&coz, now_secs())
+        .await
+        .expect("engine accepts");
+    assert_eq!(
+        login_status(&state, &pool, "key_a", &pid).await,
+        StatusCode::OK,
+        "the gap: the death set does not yet know"
+    );
+
+    let (status, json) = post_revoke(&state, coz).await;
+    assert!(status.is_success(), "{status} {json:?}");
+    assert_eq!(
+        login_status(&state, &pool, "key_a", &pid).await,
+        StatusCode::UNAUTHORIZED,
+        "re-posting closes the gap"
+    );
+}

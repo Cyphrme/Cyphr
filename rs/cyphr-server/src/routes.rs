@@ -1101,51 +1101,32 @@ pub async fn revoke(
 
     let verified = crate::revoke::interpret(&envelope).await?;
 
-    // Store the full `{pay, sig, key}` envelope: self-contained evidence any
-    // later reader can re-verify with no index. Once the death set is at its
-    // ceiling, only a key some stored principal holds is still recorded: the
-    // ceiling bounds junk revokes of keys nobody here holds, and must never
-    // deny the emergency revoke of a held key (SPEC 6.4). The index is read
-    // for presence only, never content.
-    match state
-        .observations
-        .record(&verified.revoked_tmb, verified.evidence.clone())
-        .await
+    // Once the death set is at its ceiling, only a key some stored
+    // principal holds is still recorded: the ceiling bounds junk revokes of
+    // keys nobody here holds, and must never deny the emergency revoke of a
+    // held key (SPEC 6.4). The index is read for presence only, never
+    // content. This is settled before the engine writes, so a refused
+    // revoke reaches neither store.
+    if let Err(full @ crate::observation::ObservationError::Full { .. }) =
+        state.observations.check_room(&verified.revoked_tmb).await
     {
-        Ok(()) => {},
-        Err(full @ crate::observation::ObservationError::Full { .. }) => {
-            let tmb_b64 = Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes());
-            let held = state
-                .engine
-                .indexer()
-                .get_key(&tmb_b64)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "naked-revoke presence lookup failed");
-                    AppError::internal("key index lookup failed")
-                })?
-                .is_some();
-            if !held {
-                return Err(AppError::observation(full));
-            }
-            state
-                .observations
-                .record_seen(&verified.revoked_tmb, verified.evidence.clone())
-                .await
-                .map_err(AppError::observation)?;
-        },
-        Err(e) => return Err(AppError::observation(e)),
+        let tmb_b64 = Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes());
+        let held = state
+            .engine
+            .indexer()
+            .get_key(&tmb_b64)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "naked-revoke presence lookup failed");
+                AppError::internal("key index lookup failed")
+            })?
+            .is_some();
+        if !held {
+            return Err(AppError::observation(full));
+        }
     }
 
-    // The engine keeps the revoke too, as a record a rebuild re-verifies:
-    // it judges forks by it (SPEC 15.7.1, a revocation resolves one), with
-    // this server's receipt time as the key's cutoff (#203). `interpret`
-    // above already refused anything the engine would.
-    state
-        .engine
-        .record_revoke(&verified.evidence, crate::auth::server_now())
-        .await
-        .map_err(AppError::engine)?;
+    crate::revoke::record_everywhere(&state, &verified.revoked_tmb, &verified.evidence).await?;
 
     let payload = RevokeResponse {
         revoked_tmb: Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes()),

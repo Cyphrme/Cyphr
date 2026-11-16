@@ -521,49 +521,13 @@ struct RevokeRecord {
     evidence: serde_json::Value,
 }
 
-/// Verify a naked revoke's `{pay, sig, key}` envelope: `pay` is a
-/// `key/revoke` with a valid `rvk` naming `tmb`, the disclosed key hashes
-/// to `tmb`, and the signature verifies under it (self-signed only).
-/// Returns the revoked thumbprint (base64url).
+/// Verify a naked revoke's `{pay, sig, key}` envelope by the one core
+/// rule ([`cyphr::revoke::verify_naked_revoke`]), returning the revoked
+/// thumbprint (base64url).
 fn verify_revoke(evidence: &serde_json::Value) -> Result<String, String> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pay = &evidence["pay"];
-    let typ = pay["typ"].as_str().unwrap_or_default();
-    if !cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE) {
-        return Err(format!("coz typ `{typ}` is not a key/revoke"));
-    }
-    pay["rvk"]
-        .as_i64()
-        .filter(|rvk| coz::is_valid_rvk(*rvk))
-        .ok_or("revoke has no valid rvk")?;
-    // Coz validity (SPEC 6.4): `now`, like `rvk`, an integer in 1..2^53-1.
-    // Its value decides nothing: the cutoff is the receipt time.
-    pay["now"]
-        .as_i64()
-        .filter(|now| coz::is_valid_rvk(*now))
-        .ok_or("revoke has no valid now")?;
-    let tmb = pay["tmb"].as_str().ok_or("revoke names no tmb")?;
-    let alg = evidence["key"]["alg"]
-        .as_str()
-        .ok_or("revoke discloses no key alg")?;
-    let decode = |field: &serde_json::Value, what: &str| {
-        field
-            .as_str()
-            .and_then(|b| Base64UrlUnpadded::decode_vec(b).ok())
-            .ok_or(format!("revoke {what} is not base64url"))
-    };
-    let pub_key = decode(&evidence["key"]["pub"], "key")?;
-    let sig = decode(&evidence["sig"], "sig")?;
-    let bound = coz::compute_thumbprint_for_alg(alg, &pub_key).is_some_and(|t| t.to_b64() == tmb);
-    if !bound {
-        return Err("disclosed key does not hash to the revoked thumbprint".into());
-    }
-    let pay_bytes = serde_json::to_vec(pay).map_err(|e| e.to_string())?;
-    if coz::verify_json(&pay_bytes, &sig, alg, &pub_key) != Some(true) {
-        return Err("revoke signature does not verify".into());
-    }
-    Ok(tmb.to_string())
+    cyphr::revoke::verify_naked_revoke(evidence)
+        .map(|revoke| revoke.tmb.to_b64())
+        .map_err(|e| e.to_string())
 }
 
 /// Discriminator of an [`ActionManifest`].

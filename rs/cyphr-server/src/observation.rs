@@ -182,12 +182,12 @@ impl ObservationStore {
     /// of a key already dead short-circuits before the write path, so a
     /// repeated POST forces no fsync and never grows the set. The engine
     /// keeps its own first revoke, and only the engine's receipt time is a
-    /// key's cutoff (#203). The two stores are written in different orders
-    /// (`POST /revoke` here first, gossip and witness sync the engine
-    /// first), so two revokes of one key arriving concurrently can leave
-    /// each store holding a different one: both are verified revokes of
-    /// the key, and the one served here need not be the one whose receipt
-    /// set the engine's cutoff.
+    /// key's cutoff (#203). Every path writes the engine first and this set
+    /// second ([`crate::revoke::record_everywhere`]), so two revokes of one
+    /// key arriving concurrently can still leave each store holding a
+    /// different one: both are verified revokes of the key, and the one
+    /// served here need not be the one whose receipt set the engine's
+    /// cutoff.
     ///
     /// Past the ceiling ([`Self::with_ceiling`]) a new key is refused
     /// [`ObservationError::Full`]; [`Self::record_seen`] records past it.
@@ -238,6 +238,28 @@ impl ObservationStore {
         })
         .await
         .map_err(|e| ObservationError::Join(e.to_string()))?
+    }
+
+    /// Whether a bounded [`Self::record`] of `tmb` would be accepted: the
+    /// key is already dead (nothing new is written) or the set has room.
+    /// Read before the engine writes, so a key the ceiling would refuse is
+    /// never recorded in the engine alone.
+    ///
+    /// # Errors
+    ///
+    /// [`ObservationError::Full`] when `tmb` is new and the set is at its
+    /// ceiling.
+    pub async fn check_room(&self, tmb: &Thumbprint) -> Result<(), ObservationError> {
+        if self.is_dead(tmb).await? {
+            return Ok(());
+        }
+        let count = *self.dead_count.lock().unwrap_or_else(|p| p.into_inner());
+        if count >= self.ceiling {
+            return Err(ObservationError::Full {
+                ceiling: self.ceiling,
+            });
+        }
+        Ok(())
     }
 
     /// Whether `coz` introduces a dead key: a `key/create` or `key/replace`
