@@ -3456,6 +3456,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if !principal.has_kt_digests() {
             return Ok(Vec::new());
         }
+        let decoded = decode_bundle(bundle)?;
+        // Only a signer that is neither a key of the principal nor one the
+        // bundle introduces can be an embedded principal's key; with none,
+        // there is nothing to follow, and every embedded principal's replay
+        // is saved.
+        let outside = |p: &cyphr::Principal<T>, tmb: &coz::Thumbprint| {
+            !(p.is_key_active(tmb) || decoded.introduced_keys().any(|k| k.tmb() == tmb))
+        };
+        if !decoded.cozies().any(|coz| outside(principal, &coz.header().tmb)) {
+            return Ok(Vec::new());
+        }
         // The core reports every Key Tree digest but offers no list of
         // them, and only a revealed digest is followed: a source with no
         // tips names them, then each is revealed as followed.
@@ -3482,13 +3493,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Err(failed);
         }
         let found = tips.found;
-        let decoded = decode_bundle(bundle)?;
         let mut pins: Vec<EmbeddedPin> = Vec::new();
         for coz in decoded.cozies() {
             let tmb = &coz.header().tmb;
-            // Only a signer that is neither a key of the principal nor one
-            // the bundle introduces can be an embedded principal's key.
-            if principal.is_key_active(tmb) || decoded.introduced_keys().any(|k| k.tmb() == tmb) {
+            if !outside(principal, tmb) {
                 continue;
             }
             for member in &found {
