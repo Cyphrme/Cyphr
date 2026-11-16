@@ -457,3 +457,45 @@ fn human_recovery_is_a_local_revisable_choice_that_leaves_the_verdict_error() {
         "{v}"
     );
 }
+
+/// Claim (NETSIM-2): a rebase whose backup name is already taken (two
+/// rebases in one second name the backup by the second) keeps the existing
+/// backup and writes its own, instead of failing to rename onto it. The
+/// names for every second the rebase can finish in are taken beforehand, so
+/// the collision does not depend on timing. Defect that turns it red: the
+/// backup named by the second alone, so the rebase dies with `Directory not
+/// empty`. End-to-end: yes (a server, two devices, a rebase).
+#[test]
+fn rebase_keeps_an_existing_backup_of_the_same_second() {
+    let s1 = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    accepted(&a.push(&id, &s1.url), "base to peer");
+    let b = a.clone_identity(&id);
+    let (ident, signer) = (format!("--identity={id}"), format!("--signer={id}"));
+    let data = |u: &User, msg: &str| {
+        u.setup(&["data", "action", &ident, &signer, &format!("--msg={msg}")]);
+        u.setup(&["data", "commit", &ident, &signer]);
+    };
+    data(&a, "online");
+    accepted(&a.push(&id, &s1.url), "A's data commit to peer");
+    data(&b, "offline");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs();
+    let taken: Vec<_> = (now - 1..now + 120)
+        .map(|t| b.dir.path().join(format!("data.pre-rebase-{t}")))
+        .collect();
+    for dir in &taken {
+        std::fs::create_dir(dir).expect("taken backup");
+        std::fs::write(dir.join("earlier"), b"an earlier backup").expect("earlier backup");
+    }
+
+    let r = b.run(&["rebase", &ident, &format!("--peer={}", s1.url)]);
+    accepted(&r, "rebase with this second's backup name taken");
+    for dir in &taken {
+        assert!(dir.join("earlier").exists(), "{} was overwritten", dir.display());
+    }
+}
