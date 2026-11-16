@@ -346,7 +346,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
         push(&mut model, &mut log, op);
     }
     let mid = size.principals - setup_count(size);
-    let epoch_len = (size.ops / size.epochs).max(1);
+    let epoch_len = size.ops.div_ceil(size.epochs).max(1);
     let join_every = (size.ops / (mid + 1)).max(1);
     let all_pairs = pairs(size.peers);
 
