@@ -1323,6 +1323,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(PatchResponse {
             principal_id: principal_id.to_string(),
             entries,
+            from: from_seq,
             actions,
             fork,
         })
@@ -1333,7 +1334,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// [`Indexer::get_commit_chain`] needs to serve exactly the entries a
     /// caller does not yet hold, never re-serving the anchored commit
     /// itself.
-            from: from_seq,
     ///
     /// An anchor that does not resolve to ANY indexed position at all is
     /// refused as [`EngineError::NotFound`] rather than silently degrading
