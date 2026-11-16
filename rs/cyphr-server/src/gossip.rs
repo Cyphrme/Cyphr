@@ -16,18 +16,31 @@
 //! Peers are dialled at the address configured, so a deployment (or the
 //! scenario proxy) can carry and cut the link.
 //!
+//! A principal whose every peer is idle is not pulled: when each peer lists
+//! only heads this server holds (or does not hold the principal at all),
+//! there is nothing to fetch and the stored chain is not replayed. The
+//! idle test is [`cyphr_client::PeerHeads::idle`], the one the pull step
+//! itself uses. The revoke probe is never skipped: a naked revoke moves no
+//! head, so each round still asks every peer about the principal's active
+//! keys, remembered from the last replay (see [`Gossip`]).
+//!
 //! Limits, stated rather than hidden: only principals the server already
 //! holds are pulled (a peer learns a new principal from its owner's `/push`;
-//! discovery is not part of this), and a round replays each held principal
-//! from its stored chain (replay-cost caching is deferred, see
-//! `[gossip] interval_secs`).
+//! discovery is not part of this), and a principal that is not idle is
+//! replayed from its stored chain (replay-on-change caching is deferred,
+//! see `[gossip] interval_secs`). The gate reads heads only, so it is as
+//! blind to data actions that move no head as the pull step is; that is
+//! the open action question (GitHub #211), not something the gate adds.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ActionBundle, Anchor, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, pull,
+    ActionBundle, Anchor, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, peer_heads,
+    pull, verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, info, warn};
@@ -77,37 +90,120 @@ pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
     let every = Duration::from_secs(config.gossip.interval_secs);
     let state = Arc::clone(state);
     Some(tokio::spawn(async move {
+        let mut gossip = Gossip::default();
         let mut tick = tokio::time::interval(every);
         // A slow round must not queue up a burst of rounds behind it.
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            round(&state, &peers).await;
+            gossip.round(&state, &peers).await;
         }
     }))
 }
 
-/// One gossip round: pull every held principal from every peer.
-pub async fn round(state: &Arc<AppState>, peers: &[(String, HttpConnector)]) {
-    let principals = match state.engine.indexer().list_principals().await {
-        Ok(principals) => principals,
-        Err(err) => {
-            warn!(%err, "gossip: cannot list principals");
-            return;
-        },
-    };
-    for summary in principals {
-        if let Err(err) = round_principal(state, peers, &summary.principal_id).await {
-            warn!(principal = %summary.principal_id, %err, "gossip: round skipped");
+/// What the gate keeps between rounds: for each principal, the active keys
+/// of the chain at the tip commit last replayed. A naked revoke moves no
+/// head, so a skipped round still asks every peer about these keys, and
+/// the chain is not replayed to learn them. The set is a function of the
+/// tip commit id alone; it only ever lets a round skip work, is never
+/// persisted, and a restart costs one replay per principal.
+#[derive(Default)]
+pub struct Gossip {
+    keys: HashMap<String, KeyMemo>,
+}
+
+struct KeyMemo {
+    tip: String,
+    keys: Vec<Thumbprint>,
+}
+
+impl Gossip {
+    /// One gossip round: pull every held principal from every peer, and
+    /// skip the pull (not the revoke probe) of a principal every peer is
+    /// idle on.
+    pub async fn round(&mut self, state: &Arc<AppState>, peers: &[(String, HttpConnector)]) {
+        let principals = match state.engine.indexer().list_principals().await {
+            Ok(principals) => principals,
+            Err(err) => {
+                warn!(%err, "gossip: cannot list principals");
+                return;
+            },
+        };
+        for summary in principals {
+            let id = &summary.principal_id;
+            if let Some(keys) = self.idle_keys(state, peers, id).await {
+                probe_revokes(state, peers, &keys).await;
+                continue;
+            }
+            match round_principal(state, peers, id).await {
+                Ok(memo) => {
+                    self.keys.insert(id.clone(), memo);
+                },
+                Err(err) => warn!(principal = %id, %err, "gossip: round skipped"),
+            }
+        }
+        state.metrics.gossip_round();
+    }
+
+    /// The remembered revoke-probe keys of `principal_id` when the gate
+    /// says idle: the engine's tip is the one the keys were read at, and
+    /// every peer lists only heads the engine holds (a 404 lists none).
+    /// `None` when any of that cannot be shown, which runs the full pull.
+    async fn idle_keys(
+        &self,
+        state: &Arc<AppState>,
+        peers: &[(String, HttpConnector)],
+        principal_id: &str,
+    ) -> Option<Vec<Thumbprint>> {
+        let tip = state.engine.get_tip(principal_id).await.ok()??;
+        let memo = self
+            .keys
+            .get(principal_id)
+            .filter(|m| m.tip == tip.commit_id)?;
+        for (_, connector) in peers {
+            let Ok(heads) = peer_heads(connector, principal_id).await else {
+                return None;
+            };
+            let Some(heads) = heads else { continue };
+            let mut held = BTreeSet::new();
+            for head in heads.tips() {
+                if state.engine.holds_commit(principal_id, head).await.ok()? {
+                    held.insert(head.to_owned());
+                }
+            }
+            if !heads.idle(|tip| held.contains(tip)) {
+                return None;
+            }
+        }
+        Some(memo.keys.clone())
+    }
+}
+
+/// Ask every peer for the naked revokes of `keys`, as a full pull's last
+/// step does, and record what verified.
+async fn probe_revokes(
+    state: &Arc<AppState>,
+    peers: &[(String, HttpConnector)],
+    keys: &[Thumbprint],
+) {
+    let mut seen = BTreeSet::new();
+    let mut revoked = Vec::new();
+    for (name, connector) in peers {
+        match verified_revokes(connector, name, keys).await {
+            Ok((found, _rejected)) => {
+                revoked.extend(found.into_iter().filter(|r| seen.insert(r.tmb.to_b64())));
+            },
+            Err(err) => debug!(peer = %name, %err, "gossip: revoke probe failed"),
         }
     }
+    record_revokes(state, &revoked).await;
 }
 
 async fn round_principal(
     state: &Arc<AppState>,
     peers: &[(String, HttpConnector)],
     principal_id: &str,
-) -> Result<(), RoundError> {
+) -> Result<KeyMemo, RoundError> {
     let stored = state.engine.get_patch(principal_id, None, None).await?;
     let genesis = stored.entries.first().ok_or(RoundError::Empty)?;
     let anchor = Anchor::GenesisCommit(genesis.commit.commit_id.clone());
@@ -128,6 +224,15 @@ async fn round_principal(
         .collect();
     let mut record =
         Record::from_entries(principal_id, anchor, system_clock, &entries, &actions).await?;
+    state.metrics.gossip_record_built();
+    let memo = KeyMemo {
+        tip: stored
+            .entries
+            .last()
+            .map(|e| e.commit.commit_id.clone())
+            .ok_or(RoundError::Empty)?,
+        keys: record.unrevoked_keys(),
+    };
     let mark = record.log_len();
 
     let dialled: Vec<PullPeer<'_, HttpConnector>> = peers
@@ -168,7 +273,7 @@ async fn round_principal(
             Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
         }
     }
-    Ok(())
+    Ok(memo)
 }
 
 /// Record each verified naked revoke where the server keeps deaths (SPEC

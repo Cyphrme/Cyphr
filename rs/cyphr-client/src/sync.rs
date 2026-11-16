@@ -253,6 +253,21 @@ impl Record {
                 .is_some_and(|h| h.principal.is_key_active(tmb))
     }
 
+    /// The thumbprints of the keys a naked revoke could still change: the
+    /// chain's active keys with no verified revoke yet. What [`pull`]
+    /// asks each peer about, and what a holder that skips a pull must ask
+    /// about instead.
+    #[must_use]
+    pub fn unrevoked_keys(&self) -> Vec<Thumbprint> {
+        self.held.as_ref().map_or_else(Vec::new, |h| {
+            h.principal
+                .active_keys()
+                .map(|k| k.tmb().clone())
+                .filter(|t| !self.dead.contains_key(&t.to_b64()))
+                .collect()
+        })
+    }
+
     /// The record's key `tmb` as the replayed chain holds it, active or
     /// not: how a relying party reads the public half it verifies against.
     #[must_use]
@@ -383,6 +398,13 @@ impl Held {
             }
         }
         Ok(())
+    }
+
+    /// Whether every head is a commit this chain replayed.
+    fn holds_all(&self, heads: &[Head]) -> bool {
+        PeerHeads::idle_of(heads, |tip| {
+            self.ids.iter().filter_map(commit_id).any(|id| id == tip)
+        })
     }
 
     /// This chain extended by `entries`, on a copy: a patch that does not
@@ -574,6 +596,58 @@ struct Head {
     canonical: bool,
 }
 
+/// The view a peer states of one principal: the commit ids it lists as
+/// heads. A plain value, so the idle predicate does not care where it
+/// came from; today the source is the peer's `/branches`, pending the
+/// shape of gossip messages (GitHub #211).
+pub struct PeerHeads(Vec<Head>);
+
+impl PeerHeads {
+    /// Whether the peer has nothing to teach the holder: every head it
+    /// lists, on its canonical chain or as a retained branch, is a commit
+    /// `holds` says the holder has. The one idle predicate, asked by
+    /// [`pull`] of the record it replayed and by a holder that keeps the
+    /// chain itself (a server's gossip gate) of its own store.
+    ///
+    /// It reads heads only, so it is exactly as blind as the heads: a
+    /// peer's data actions that moved no head are invisible to it, as they
+    /// are to the pull's own skip (GitHub #211, the spec author's ruling
+    /// on data actions is pending).
+    #[must_use]
+    pub fn idle(&self, holds: impl Fn(&str) -> bool) -> bool {
+        Self::idle_of(&self.0, holds)
+    }
+
+    fn idle_of(heads: &[Head], holds: impl Fn(&str) -> bool) -> bool {
+        heads.iter().all(|h| holds(&h.tip))
+    }
+
+    /// The commit ids the peer names as heads.
+    pub fn tips(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|h| h.tip.as_str())
+    }
+}
+
+/// The branch heads `connector` lists for `principal_id`. `None` when the
+/// peer does not hold the principal (404): it has nothing to pull from,
+/// which is idle.
+///
+/// # Errors
+///
+/// A [`PatchFailure`] when the peer cannot be reached or does not answer
+/// in the envelope shape.
+pub async fn peer_heads<C: Connector>(
+    connector: &C,
+    principal_id: &str,
+) -> Result<Option<PeerHeads>, PatchFailure> {
+    let target = format!("/branches?pr={}", percent_encode_query_value(principal_id));
+    match fetch_payload(connector, &target).await {
+        Ok(payload) => Ok(Some(PeerHeads(parse_heads(&payload)?))),
+        Err(PatchFailure::NonSuccess(404)) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
 /// Pull from every peer, in order, into `record`.
 ///
 /// Each peer is asked for its branch heads, the patch from the record's
@@ -718,13 +792,12 @@ async fn pull_commits<C: Connector>(
     outcome: &mut PeerOutcome,
     extensions: &mut Vec<WireBundle>,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
-    let heads = parse_heads(
-        &fetch_payload(
-            connector,
-            &format!("/branches?pr={}", percent_encode_query_value(&record.id)),
-        )
-        .await?,
-    )?;
+    // The gate treats a peer that lacks the principal as idle; a pull
+    // still reports it as the failure it is, so callers that read
+    // "answered" keep their meaning.
+    let Some(PeerHeads(heads)) = peer_heads(connector, &record.id).await? else {
+        return Err(PatchFailure::NonSuccess(404).into());
+    };
     let canonical = heads.iter().find(|h| h.canonical);
 
     let (standing, mut forks) = match (&record.held, canonical) {
@@ -743,7 +816,13 @@ async fn pull_commits<C: Connector>(
         },
         _ => reach(record, connector).await?,
     };
-    if heads.len() > 1 {
+    // A peer whose every head is a commit the record holds has no rival
+    // branch to prove.
+    let idle = record
+        .held
+        .as_ref()
+        .is_some_and(|held| held.holds_all(&heads));
+    if heads.len() > 1 && !idle {
         evidence(record, connector, outcome, &mut forks, extensions).await;
     }
     Ok((standing, forks))
@@ -971,13 +1050,10 @@ async fn pull_revokes<C: Connector>(
     outcome: &mut PeerOutcome,
     revoked: &mut Vec<RevokedKey>,
 ) {
-    let Some(held) = &record.held else { return };
-    let asked: Vec<Thumbprint> = held
-        .principal
-        .active_keys()
-        .map(|k| k.tmb().clone())
-        .filter(|t| !record.dead.contains_key(&t.to_b64()))
-        .collect();
+    let asked = record.unrevoked_keys();
+    if record.held.is_none() {
+        return;
+    }
     let found = match verified_revokes(peer.connector, peer.name, &asked).await {
         Ok((found, rejected)) => {
             outcome.rejected_revokes.extend(rejected);

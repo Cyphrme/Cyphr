@@ -201,7 +201,9 @@ async fn one_round_takes_a_peers_resolution() {
     let url = serve(&p1).await;
     let connector =
         HttpConnector::with_client(p2.http_client.clone(), &url, true).expect("connector");
-    cyphr_server::gossip::round(&p2, &[(url, connector)]).await;
+    cyphr_server::gossip::Gossip::default()
+        .round(&p2, &[(url, connector)])
+        .await;
 
     assert_eq!(tip_pr(&app2, &id).await, want, "P2 took C in one round");
     assert!(
@@ -282,7 +284,9 @@ async fn one_round(from: &Arc<AppState>, to: &Arc<AppState>) {
     let url = serve(to).await;
     let connector =
         HttpConnector::with_client(from.http_client.clone(), &url, true).expect("connector");
-    cyphr_server::gossip::round(from, &[(url, connector)]).await;
+    cyphr_server::gossip::Gossip::default()
+        .round(from, &[(url, connector)])
+        .await;
 }
 
 /// Backs key death at admission (SPEC 6.4) on the gossip path: P1 holds X
