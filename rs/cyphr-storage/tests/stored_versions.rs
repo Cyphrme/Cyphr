@@ -274,7 +274,12 @@ async fn archrev_a4_unknown_engine_blob_version_is_quarantined() {
     let tip = engine.get_tip(&pid).await.unwrap().expect("tip");
 
     let mut planted = Vec::new();
-    for kind in ["commit-manifest", "branch-manifest", "action-manifest", "revoke-record"] {
+    for kind in [
+        "commit-manifest",
+        "branch-manifest",
+        "action-manifest",
+        "revoke-record",
+    ] {
         let mut blob = format!("\0cyphr-storage/{kind}/v9\0").into_bytes();
         blob.extend_from_slice(b"{}");
         planted.push(engine.blob_store().put(&blob).await.expect("put"));
@@ -283,10 +288,9 @@ async fn archrev_a4_unknown_engine_blob_version_is_quarantined() {
     let report = engine.rebuild_index_with_report().await.expect("rebuild");
     for hash in &planted {
         assert!(
-            report
-                .quarantined
-                .iter()
-                .any(|q| q.manifest == *hash && matches!(q.reason, QuarantineReason::Unsupported(_))),
+            report.quarantined.iter().any(
+                |q| q.manifest == *hash && matches!(q.reason, QuarantineReason::Unsupported(_))
+            ),
             "{hash} of an unknown version was not quarantined: {:?}",
             report.quarantined
         );

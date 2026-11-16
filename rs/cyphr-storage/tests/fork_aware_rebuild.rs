@@ -508,6 +508,13 @@ mod eml {
         release: tokio::sync::Notify,
     }
 
+    use cyphr_storage::index::{
+        CommitRef, DeriveToken as Tok, EntityRef, IndexableCommit, Indexer, IndexerError,
+        IndexerWrite, PrincipalSummary, PublicKeyInfo, TipState,
+    };
+
+    type R<T> = Result<T, IndexerError>;
+
     macro_rules! delegate {
         ($($name:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {$(
             async fn $name(&self $(, $arg: $ty)*) -> $ret {
@@ -519,33 +526,33 @@ mod eml {
     /// Both indexer traits over a shared [`Gated`].
     struct GatedIndex(Arc<Gated>);
 
-    impl cyphr_storage::index::Indexer for GatedIndex {
+    impl Indexer for GatedIndex {
         delegate! {
-            get_tip(&self, id: &str) -> Result<Option<cyphr_storage::index::TipState>, cyphr_storage::index::IndexerError>;
-            is_pg_established(&self, id: &str) -> Result<bool, cyphr_storage::index::IndexerError>;
-            get_commit_chain(&self, id: &str, from: Option<u64>, to: Option<u64>) -> Result<Vec<cyphr_storage::index::CommitRef>, cyphr_storage::index::IndexerError>;
-            resolve_digest(&self, d: &cyphr::state::TaggedDigest) -> Result<Option<cyphr_storage::index::EntityRef>, cyphr_storage::index::IndexerError>;
-            list_principals(&self) -> Result<Vec<cyphr_storage::index::PrincipalSummary>, cyphr_storage::index::IndexerError>;
-            is_blob_indexed(&self, h: &Blake3Hash) -> Result<bool, cyphr_storage::index::IndexerError>;
-            get_key(&self, t: &str) -> Result<Option<cyphr_storage::index::PublicKeyInfo>, cyphr_storage::index::IndexerError>;
+            get_tip(&self, id: &str) -> R<Option<TipState>>;
+            is_pg_established(&self, id: &str) -> R<bool>;
+            get_commit_chain(&self, id: &str, a: Option<u64>, b: Option<u64>) -> R<Vec<CommitRef>>;
+            resolve_digest(&self, d: &cyphr::state::TaggedDigest) -> R<Option<EntityRef>>;
+            list_principals(&self) -> R<Vec<PrincipalSummary>>;
+            is_blob_indexed(&self, h: &Blake3Hash) -> R<bool>;
+            get_key(&self, t: &str) -> R<Option<PublicKeyInfo>>;
         }
     }
 
-    impl cyphr_storage::index::IndexerWrite for GatedIndex {
+    impl IndexerWrite for GatedIndex {
         delegate! {
-            check_commit(&self, c: &cyphr_storage::index::IndexableCommit, t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
-            replace_chain_from(&self, id: &str, seq: u64, c: &[cyphr_storage::index::IndexableCommit], t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
-            clear(&self, t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
-            set_quarantined(&self, m: &[(Blake3Hash, String)], t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
-            quarantined(&self) -> Result<Vec<(Blake3Hash, String)>, cyphr_storage::index::IndexerError>;
+            check_commit(&self, c: &IndexableCommit, t: &Tok) -> R<()>;
+            replace_chain_from(&self, id: &str, seq: u64, c: &[IndexableCommit], t: &Tok) -> R<()>;
+            clear(&self, t: &Tok) -> R<()>;
+            set_quarantined(&self, m: &[(Blake3Hash, String)], t: &Tok) -> R<()>;
+            quarantined(&self) -> R<Vec<(Blake3Hash, String)>>;
         }
 
-        async fn index_commit(
-            &self,
-            c: &cyphr_storage::index::IndexableCommit,
-            t: &cyphr_storage::index::DeriveToken,
-        ) -> Result<(), cyphr_storage::index::IndexerError> {
-            if self.0.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        async fn index_commit(&self, c: &IndexableCommit, t: &Tok) -> R<()> {
+            if self
+                .0
+                .armed
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
                 self.0.reached.notify_one();
                 self.0.release.notified().await;
             }
