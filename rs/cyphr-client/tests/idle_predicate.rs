@@ -225,14 +225,17 @@ async fn whenever_a_peer_is_idle_a_full_pull_adds_nothing() {
             assert_eq!(fresh.log_len(), mark, "{name}: bundles gained");
             assert!(report.forks.is_empty(), "{name}: forked");
             assert!(report.revoked.is_empty(), "{name}: revoked");
-            assert!(
+            // A pull still reports a peer that lacks the principal as
+            // failed; the predicate's promise is only that nothing changed.
+            let ok = if fake.absent {
+                matches!(report.peers[0].standing, PeerStanding::Failed(_))
+            } else {
                 matches!(
                     report.peers[0].standing,
                     PeerStanding::Current | PeerStanding::Behind { .. }
-                ),
-                "{name}: {:?}",
-                report.peers[0].standing
-            );
+                )
+            };
+            assert!(ok, "{name}: {:?}", report.peers[0].standing);
             assert_eq!(fake.served("/patch"), 0, "{name}: a patch was fetched");
         }
     }

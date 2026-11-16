@@ -792,8 +792,11 @@ async fn pull_commits<C: Connector>(
     outcome: &mut PeerOutcome,
     extensions: &mut Vec<WireBundle>,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
+    // The gate treats a peer that lacks the principal as idle; a pull
+    // still reports it as the failure it is, so callers that read
+    // "answered" keep their meaning.
     let Some(PeerHeads(heads)) = peer_heads(connector, &record.id).await? else {
-        return Ok((PeerStanding::Behind { peer_commits: 0 }, Vec::new()));
+        return Err(PatchFailure::NonSuccess(404).into());
     };
     let canonical = heads.iter().find(|h| h.canonical);
 
