@@ -248,3 +248,52 @@ async fn legacy_store_shared_manifest_is_refused_naming_reingest() {
         "remedy not named: {err}"
     );
 }
+
+// ---- unknown engine blob version: reported, never skipped -----------------
+
+/// archrev:A4. A blob in the engine's own keyspace whose version this build
+/// does not know (a newer engine's `commit-manifest/v2`, `action-manifest/v2`
+/// and so on) is not a wire blob. A rebuild that skipped it would report a
+/// clean store with those principals missing (R6), so each is quarantined
+/// as `Unsupported`, naming itself, while the rest of the store is indexed.
+/// Turns red if any is silently skipped.
+#[tokio::test]
+async fn archrev_a4_unknown_engine_blob_version_is_quarantined() {
+    use cyphr_storage::engine::QuarantineReason;
+
+    let fx = golden("freeze_create_transitions_to_frozen");
+    let genesis = genesis_of(&fx);
+    let pid = cyphr_storage::engine::genesis_principal_id(&genesis).expect("id");
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for commit in fx["commits"].as_array().unwrap() {
+        engine
+            .submit_commit(&pid, Some(genesis.clone()), &wire_blobs(commit))
+            .await
+            .expect("ingest");
+    }
+    let tip = engine.get_tip(&pid).await.unwrap().expect("tip");
+
+    let mut planted = Vec::new();
+    for kind in ["commit-manifest", "branch-manifest", "action-manifest", "revoke-record"] {
+        let mut blob = format!("\0cyphr-storage/{kind}/v9\0").into_bytes();
+        blob.extend_from_slice(b"{}");
+        planted.push(engine.blob_store().put(&blob).await.expect("put"));
+    }
+
+    let report = engine.rebuild_index_with_report().await.expect("rebuild");
+    for hash in &planted {
+        assert!(
+            report
+                .quarantined
+                .iter()
+                .any(|q| q.manifest == *hash && matches!(q.reason, QuarantineReason::Unsupported(_))),
+            "{hash} of an unknown version was not quarantined: {:?}",
+            report.quarantined
+        );
+    }
+    assert_eq!(
+        engine.get_tip(&pid).await.unwrap(),
+        Some(tip),
+        "the honest principal still rebuilds"
+    );
+}

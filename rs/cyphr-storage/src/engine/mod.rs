@@ -493,6 +493,12 @@ pub const BRANCH_LIMIT: usize = 16;
 /// can still fill [`BRANCH_LIMIT`].
 pub const BRANCH_PER_KEY: usize = 2;
 
+/// The leading bytes of every blob the engine itself writes (each prefix
+/// above extends it). A wire coz is JSON and never starts with NUL, so a
+/// blob that starts with this but matches no known prefix is the engine's
+/// own record in a version this build cannot read.
+const ENGINE_BLOB_NAMESPACE: &[u8] = b"\0cyphr-storage/";
+
 /// Marks a blob as a revoke record: these bytes followed by the JSON of a
 /// [`RevokeRecord`]. A keyspace of its own, as [`COMMIT_MANIFEST_PREFIX`]
 /// is. A rebuild re-verifies the revoke it carries rather than trusting it.
@@ -1929,6 +1935,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             let Some(json) = data.strip_prefix(COMMIT_MANIFEST_PREFIX) else {
+                // The engine's own keyspace under a version this build does
+                // not know: skipping it would report a clean store with
+                // whatever it records missing (R6), so it is quarantined.
+                if data.starts_with(ENGINE_BLOB_NAMESPACE) {
+                    quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: None,
+                        reason: QuarantineReason::Unsupported(
+                            "an engine blob of a version this build does not know".into(),
+                        ),
+                    });
+                    continue;
+                }
                 // A wire blob. One shaped like a manifest cannot have been
                 // written by this engine (it stores wire cozes in canonical
                 // form only), so it is an old shared-store manifest or a
