@@ -959,7 +959,11 @@ mod liveness_tests {
             let mut inner = new_tree(arity);
             register_algs(&mut inner, &algs).unwrap();
             inner
-                .set(cell, payload_with_foreign(HashAlg::Sha256, live), Vec::new())
+                .set(
+                    cell,
+                    payload_with_foreign(HashAlg::Sha256, live),
+                    Vec::new(),
+                )
                 .unwrap();
             inner
         };
@@ -999,7 +1003,10 @@ mod liveness_tests {
             ),
         ];
         for (node, honest, tampered) in cases {
-            assert_eq!(honest, tampered, "{node}: a foreign payload entry moved the root");
+            assert_eq!(
+                honest, tampered,
+                "{node}: a foreign payload entry moved the root"
+            );
         }
     }
 }

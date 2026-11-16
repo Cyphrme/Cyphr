@@ -352,8 +352,7 @@ impl<'m> PinSource<'m> {
 /// that names them (`None`: it names no held principal): each principal is
 /// replayed once however many candidate states of the principal embedding it
 /// the call tries. Dropped with the call, never a cache across calls.
-type HeldCache<S> =
-    HashMap<String, Option<(cyphr::Tip, String, cyphr::Principal<S>)>>;
+type HeldCache<S> = HashMap<String, Option<(cyphr::Tip, String, cyphr::Principal<S>)>>;
 
 /// The tips of embedded principals this engine holds, for the core to
 /// follow ([`StorageEngine::follow_held`]): the engine's own store, never a
@@ -383,7 +382,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> cyphr::Tip
                 },
             }
         }
-        let (tip, _, _) = self.cache.get(member)?.as_ref()?;
+        let (tip, ..) = self.cache.get(member)?.as_ref()?;
         self.found.insert(member.to_string());
         Some(tip.clone())
     }
@@ -3463,7 +3462,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let outside = |p: &cyphr::Principal<T>, tmb: &coz::Thumbprint| {
             !(p.is_key_active(tmb) || decoded.introduced_keys().any(|k| k.tmb() == tmb))
         };
-        if !decoded.cozies().any(|coz| outside(principal, &coz.header().tmb)) {
+        if !decoded
+            .cozies()
+            .any(|coz| outside(principal, &coz.header().tmb))
+        {
             return Ok(Vec::new());
         }
         // The core reports every Key Tree digest but offers no list of

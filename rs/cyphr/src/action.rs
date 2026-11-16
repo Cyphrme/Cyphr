@@ -103,4 +103,3 @@ impl Action {
         &self.raw
     }
 }
-

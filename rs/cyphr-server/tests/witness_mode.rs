@@ -1908,7 +1908,13 @@ async fn sync_asks_again_from_genesis_when_the_authority_lacks_the_anchor() {
 
     let first = sync_from_authority(&witness_state, &principal).await;
     assert!(
-        matches!(first, SyncOutcome::Synced { applied: 2, rejected: 0 }),
+        matches!(
+            first,
+            SyncOutcome::Synced {
+                applied: 2,
+                rejected: 0
+            }
+        ),
         "{first:?}"
     );
 
@@ -1917,9 +1923,16 @@ async fn sync_asks_again_from_genesis_when_the_authority_lacks_the_anchor() {
     let second = sync_from_authority(&witness_state, &principal).await;
     assert!(matches!(second, SyncOutcome::UpToDate), "{second:?}");
     let queries = captured.lock().unwrap().clone();
-    assert_eq!(queries.len(), 2, "anchored ask, then one retry: {queries:?}");
+    assert_eq!(
+        queries.len(),
+        2,
+        "anchored ask, then one retry: {queries:?}"
+    );
     assert!(queries[0].contains("from="), "{queries:?}");
-    assert!(!queries[1].contains("from="), "the retry is unanchored: {queries:?}");
+    assert!(
+        !queries[1].contains("from="),
+        "the retry is unanchored: {queries:?}"
+    );
 }
 
 /// N4.2: `fork_shares_sequence_rejected_by_digest_anchor`

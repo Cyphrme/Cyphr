@@ -1568,9 +1568,15 @@ mod commit_count_underflow_tests {
         assert!(stale.is_none(), "anchor t1 is not the attested tip t2");
 
         // Caught up: the anchor is the attested tip.
-        let fresh =
-            sign_patch_envelope(&state, &t2, &principal_id, false, None, Some(t2.commit_count))
-                .await;
+        let fresh = sign_patch_envelope(
+            &state,
+            &t2,
+            &principal_id,
+            false,
+            None,
+            Some(t2.commit_count),
+        )
+        .await;
         assert!(fresh.is_some(), "anchor at the tip is attested");
     }
 

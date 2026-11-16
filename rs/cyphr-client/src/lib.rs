@@ -50,6 +50,6 @@ pub use patch::{
 };
 pub use peer::{HeldTip, PeerChain, PeerFailure, PeerLimits};
 pub use report::{
-    COMMIT_RECEIPT_TYP, ForkPoint, HELD_REPORT_TYP, HeldHead, HeldReport, HeldReportParseError, TIP_REPORT_TYP, TipAnswer,
-    TipReport, TipReportParseError, TipReportRoots,
+    COMMIT_RECEIPT_TYP, ForkPoint, HELD_REPORT_TYP, HeldHead, HeldReport, HeldReportParseError,
+    TIP_REPORT_TYP, TipAnswer, TipReport, TipReportParseError, TipReportRoots,
 };

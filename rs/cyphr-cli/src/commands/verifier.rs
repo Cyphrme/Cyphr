@@ -436,14 +436,10 @@ async fn run_round<C: Connector>(
     // peer never drops it (SPEC 15.8), so a verdict that omitted it would
     // claim less than the peers show, and one round's unreachable peer
     // must not make it vanish.
-    evidence.extend(
-        resolved
-            .iter()
-            .map(|f| {
-                json!({"kind": "principal_fork", "height": f.height, "pre": f.pre,
+    evidence.extend(resolved.iter().map(|f| {
+        json!({"kind": "principal_fork", "height": f.height, "pre": f.pre,
                     "commits": f.commits, "first_seen": f.first_seen, "resolved": true})
-            }),
-    );
+    }));
     evidence.extend(
         entry
             .revoked

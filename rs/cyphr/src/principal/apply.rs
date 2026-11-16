@@ -258,8 +258,8 @@ impl<S: eml::Storage> Principal<S> {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `CozReuse`: This principal already included this coz (checked
-    ///   before the signer, which that coz may have retired)
+    /// - `CozReuse`: This principal already included this coz (checked before the signer, which
+    ///   that coz may have retired)
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
     #[must_use = "coz application may fail; handle the Result"]

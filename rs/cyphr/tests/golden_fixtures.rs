@@ -492,7 +492,12 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                         .map_err(|e| e.source)
                 },
                 Ok(Ok(bundle)) => {
-                    carried.extend(bundle.action_cozies().iter().map(|c| c.czd().as_bytes().to_vec()));
+                    carried.extend(
+                        bundle
+                            .action_cozies()
+                            .iter()
+                            .map(|c| c.czd().as_bytes().to_vec()),
+                    );
                     cyphr::replay::replay_held(&mut principal, &bundle)
                         .await
                         .map(|r| ignored += r.ignored.len())
