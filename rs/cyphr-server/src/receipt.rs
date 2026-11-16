@@ -22,7 +22,7 @@ use cyphr::signer::{SignerError, SoftwareSigner};
 use cyphr::state::TaggedDigest;
 // The canonical report parse lives in the client crate; `check_equivocation`
 // consumes it, and this re-export keeps `receipt::TipReport` one type, not two.
-pub use cyphr_client::{HELD_REPORT_TYP, TipReport};
+pub use cyphr_client::{HELD_REPORT_TYP, TIP_REPORT_TYP, TipReport};
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -106,10 +106,6 @@ pub enum ReceiptError {
 /// The `typ` a signed commit-acceptance receipt (the `/push` statement
 /// slot) is stamped with.
 pub const COMMIT_RECEIPT_TYP: &str = "cyphr-server/receipt/commit";
-
-/// The `typ` a signed tip report (the `/tip` statement slot) is stamped
-/// with.
-pub const TIP_REPORT_TYP: &str = "cyphr-server/receipt/tip";
 
 /// The post-commit roots a receipt attests, exactly as the tip payload
 /// carries them (`docs/specs/http-envelope.md` `[envelope-r-cr]`).

@@ -48,6 +48,10 @@ pub struct TipReport {
     pub roots: TipReportRoots,
 }
 
+/// The `typ` of the statement a server signs over `/tip` for a principal in
+/// good standing: a canonical tip report.
+pub const TIP_REPORT_TYP: &str = "cyphr-server/receipt/tip";
+
 /// Why a signed report's `pay` failed to canonicalize into a [`TipReport`].
 ///
 /// Every variant is a REJECT-LOUD outcome: a validly-signed report that
@@ -56,6 +60,10 @@ pub struct TipReport {
 /// comparison this type feeds today.
 #[derive(Debug, thiserror::Error)]
 pub enum TipReportParseError {
+    /// The statement's `typ` is not [`TIP_REPORT_TYP`]: a held or commit
+    /// statement shares the field shape but is not a tip.
+    #[error("statement is not a tip report")]
+    WrongTyp,
     /// `pr` is not a JSON string, or the string does not decode as a bare
     /// canonical b64ut genesis identifier: an array, a number, or `null`
     /// is not an identifier encoding at all -- never unwrapped to recover
@@ -85,6 +93,9 @@ impl TipReport {
     /// canonical parse, and the single boundary through which a report's
     /// claims enter typed comparison.
     pub fn parse(coz: &coz::CozJson) -> Result<Self, TipReportParseError> {
+        if coz.pay["typ"].as_str() != Some(TIP_REPORT_TYP) {
+            return Err(TipReportParseError::WrongTyp);
+        }
         let pr = parse_genesis_id(&coz.pay["pr"]).map_err(TipReportParseError::Pr)?;
         let commit_id =
             parse_digest_field(&coz.pay["commit_id"]).map_err(TipReportParseError::CommitId)?;

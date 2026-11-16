@@ -50,7 +50,7 @@ fn patch_body(auth: &Authority, pr: &str) -> Vec<u8> {
     let digest = |b: u8| format!("SHA-256:{}", b64(b));
     let pay = serde_json::json!({
         "alg": auth.key.alg,
-        "typ": "cyphr-server/tip",
+        "typ": "cyphr-server/receipt/tip",
         "pr": pr,
         "sequence": 1,
         "commit_id": digest(9),
