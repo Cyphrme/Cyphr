@@ -364,7 +364,8 @@ pub enum Commands {
     ///
     /// The store keeps no commit once it is written, so the replay builds a
     /// fresh store beside the old one and swaps them; the old store is kept
-    /// as `<store>.pre-rebase-<unix seconds>`.
+    /// as `<store>.pre-rebase-<unix seconds>` (`-<n>` appended if that name
+    /// is taken).
     ///
     /// A local data action the peer lacks is re-signed with the current time
     /// (an action older than the peer's latest message is refused, SPEC

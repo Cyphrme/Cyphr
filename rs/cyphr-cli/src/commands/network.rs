@@ -577,7 +577,17 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     }
     drop(old);
 
-    let backup = sibling(&path, &format!(".pre-rebase-{}", current_timestamp()));
+    // Named by the second, so a rebase finishing in the same second as an
+    // earlier one must not take that one's backup: rename onto a non-empty
+    // directory fails.
+    let stamp = current_timestamp();
+    let backup = (0u32..)
+        .map(|n| match n {
+            0 => sibling(&path, &format!(".pre-rebase-{stamp}")),
+            n => sibling(&path, &format!(".pre-rebase-{stamp}-{n}")),
+        })
+        .find(|candidate| !candidate.exists())
+        .ok_or_else(|| Error::InvalidArgument("no free rebase backup name".into()))?;
     // The marker names the backup before anything moves, so a process that
     // dies between the two renames leaves a trail `parse_store` refuses on.
     let marker = sibling(&path, SWAP_MARKER);

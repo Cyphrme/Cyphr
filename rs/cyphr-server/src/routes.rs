@@ -594,8 +594,14 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
         .ok_or_else(|| AppError::internal("tip commit_count is zero: cannot derive sequence"))
 }
 
-/// Re-derivation attempts for an attestation whose tip moved underneath it.
-const ATTEST_ATTEMPTS: usize = 3;
+/// How long an attestation keeps re-deriving while the index and the blob
+/// store disagree. Bounds the wait on a genuinely corrupt index, which never
+/// converges.
+const ATTEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Pause before re-reading an index that has not yet caught up with the
+/// blob store.
+const ATTEST_LAG_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// The roots re-derived from the blob store for tip `t`. The replay reads the
 /// principal's *current* chain, so on a principal that committed since `t`
@@ -641,16 +647,22 @@ struct AttestedRoots {
 /// chain does not hold.
 ///
 /// A commit landing between the caller's index read and the replay makes
-/// the roots disagree with `t` without any corruption. A disagreement is
-/// therefore re-checked against a fresh index read, up to
-/// [`ATTEST_ATTEMPTS`] times: if the tip moved, the attestation is of the
-/// newer tip (returned, so callers report the tip they attest); if it did
-/// not move, the index genuinely disagrees with the chain and that stays a
-/// 500. Roots are memoized only once they equal the index's for that
-/// commit, never under a commit id they do not belong to.
+/// the roots disagree with `t` without any corruption, in two ways: the tip
+/// moved, or the commit is durable in the blob store (which the replay
+/// reads) but not yet indexed (the write path indexes last). Either is
+/// re-checked against a fresh index read until [`ATTEST_BUDGET`] runs out:
+/// if the tip moved, the attestation is of the newer tip (returned, so
+/// callers report the tip they attest); if it did not, the index is given a
+/// moment to catch up, and only a disagreement that outlasts the budget is a
+/// genuine index/chain divergence and a 500. A churning principal can
+/// therefore delay a read by at most [`ATTEST_BUDGET`]; a read still
+/// unsettled then is a 500. Every signed answer is of roots that equal the index's for the tip it
+/// names. Roots are memoized only once they equal the index's for that commit, never under a commit
+/// id they do not belong to.
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedRoots, AppError> {
+    let deadline = tokio::time::Instant::now() + ATTEST_BUDGET;
     let mut t = t.clone();
-    for _ in 0..ATTEST_ATTEMPTS {
+    loop {
         let derived = derived_roots(state, &t).await?;
 
         if derived.pr == t.pr && derived.sr == t.sr && derived.ar == t.ar && derived.cr == t.cr {
@@ -671,6 +683,12 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedR
             return Ok(AttestedRoots { tip: t, roots });
         }
 
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::internal(format!(
+                "attestation root desynchronized with index for tip {} of {} after {:?}",
+                t.commit_id, t.principal_id, ATTEST_BUDGET
+            )));
+        }
         let fresh = state
             .engine
             .get_tip(&t.principal_id)
@@ -678,13 +696,18 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedR
             .map_err(AppError::engine)?
             .ok_or_else(|| AppError::internal("tip vanished during attestation"))?;
         if fresh.commit_id == t.commit_id {
-            break;
+            tokio::time::sleep(ATTEST_LAG_PAUSE).await;
+            // Re-read: the index may have caught up to the replayed chain.
+            t = state
+                .engine
+                .get_tip(&t.principal_id)
+                .await
+                .map_err(AppError::engine)?
+                .ok_or_else(|| AppError::internal("tip vanished during attestation"))?;
+        } else {
+            t = fresh;
         }
-        t = fresh;
     }
-    Err(AppError::internal(
-        "attestation root desynchronized with index",
-    ))
 }
 
 /// A tip-report attestation and the tip it attests, which is newer than the

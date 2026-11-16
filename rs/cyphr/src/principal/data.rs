@@ -150,6 +150,20 @@ impl PrincipalState {
             Judged::AtNow => self.key_timeline.open_at(now)?,
         }
 
+        // SPEC §7.6: replaying an applied data action is ignored. Decided
+        // before the signer is resolved, since a commit dated the same
+        // second may have retired that signer (the key timeline judges a
+        // signature dated at a removal as after it; forge #213), and from
+        // the action's own bytes, never
+        // the caller's `czd`: a match means these are the held bytes.
+        if let Some(own) = pay_value["alg"]
+            .as_str()
+            .and_then(|alg| crate::parsed_coz::compute_czd(pay_json, sig, alg))
+            && self.included_czds.contains(own.as_bytes())
+        {
+            return Ok(&self.pr);
+        }
+
         let signer_key = self.action_signer(&signer_tmb, now)?;
 
         // The signed pay must name the key that actually verifies it.
@@ -172,13 +186,6 @@ impl PrincipalState {
             .ok_or_else(|| Error::UnsupportedAlgorithm(signer_key.alg().to_owned()))?;
         if computed.as_bytes() != czd.as_bytes() {
             return Err(Error::CzdMismatch);
-        }
-
-        // SPEC §7.6: replaying an applied data action is ignored and
-        // produces no state change. Checked only after the czd is proven
-        // derived from verified bytes, so it cannot be spoofed.
-        if self.included_czds.contains(computed.as_bytes()) {
-            return Ok(&self.pr);
         }
 
         // Construct CozJson for storage

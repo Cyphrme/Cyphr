@@ -585,3 +585,50 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
         "error should surface the real storage failure, got: {err}"
     );
 }
+
+fn wall_second() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs() as i64
+}
+
+/// Backs NETSIM-2 D1 (key-timeline tie rule, forge #213): a data action signed by a key, then
+/// `key replace` of that key in the same second (a signature dated at a
+/// removal is judged after it), must not fail the replace. The action is a
+/// verdict its history flipped: ignored, not refused as `unknown key`.
+/// End-to-end: yes (CLI processes, one store). Red before the fix: `key
+/// replace` exits non-zero with `unknown key` while saving the action.
+#[test]
+fn test_key_replace_in_the_second_of_an_action_is_not_refused() {
+    for attempt in 0..5 {
+        let cli = CliTest::new();
+        let genesis = cli.run_json(&["key", "generate", "--algo", "Ed25519", "--tag", "genesis"]);
+        let tmb = genesis["tmb"].as_str().unwrap();
+        let identity_arg = format!("--identity={tmb}");
+        let signer_arg = format!("--signer={tmb}");
+        cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+        // Start at the top of a second so both commands land in it.
+        let start = wall_second();
+        while wall_second() == start {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let second = wall_second();
+        cli.run_ok(&[
+            "data",
+            "action",
+            &identity_arg,
+            &signer_arg,
+            "--msg=held",
+            &format!("--now={second}"),
+        ]);
+        let replaced = cli.run(&["key", "replace", &identity_arg, &signer_arg]);
+        if wall_second() != second {
+            assert!(attempt < 4, "never landed both commands in one second");
+            continue;
+        }
+        replaced.expect("key replace in the action's own second");
+        return;
+    }
+}
