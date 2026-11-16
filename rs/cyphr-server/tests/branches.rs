@@ -12,7 +12,7 @@ use cyphr_server::build_router;
 
 mod common;
 
-use common::{envelope_payload, get_json, keyless_server, load_pool, post_json};
+use common::{attestor_server, envelope_payload, get_json, keyless_server, load_pool, post_json};
 
 const NOW: i64 = 1_700_100_000;
 
@@ -2657,4 +2657,61 @@ async fn fork_siblings_creating_the_same_key_are_held_as_a_fork() {
 
     let heads = error_heads(&tip_payload(app.clone(), &id).await);
     assert_eq!(heads.len(), 2, "both siblings are held: {heads:?}");
+}
+
+/// Backs `/patch` attestation (SPEC 15.7): a caught-up peer, one whose
+/// resync anchor is the tip, gets an empty range signed whatever digest the
+/// anchor is spelled in. The anchor resolves in the engine to chain position
+/// `seq + 1`, which the route compares with the attested tip's commit count;
+/// a string comparison with the tip's own PR or commit id fails the SHA-384
+/// spelling, which names the same state with different text. Turns red if
+/// the empty range is served unsigned for the SHA-384 PR spelling or for the
+/// commit id. End to end: yes (three hash algorithms, a keyed server).
+#[tokio::test]
+async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (mut p, id) = genesis(
+        &[&g, &kp(&pool, "diana_es384"), &kp(&pool, "eve_ed25519")],
+        NOW + 2,
+    )
+    .await;
+    create_key(&mut p, &g, &kp(&pool, "key_a"), NOW + 3).await;
+    let (state, _identity, _dir) = attestor_server().await;
+    let app = build_router(state);
+    let n = cyphr_storage::export_commits(&p).expect("export").len();
+    for i in 0..n {
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &id)).await;
+        assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
+    }
+    let (status, tip_body) = get_json(app.clone(), &format!("/tip?pr={}", enc(&id))).await;
+    assert_eq!(status, StatusCode::OK, "{tip_body:?}");
+    let tip = tip_body["payload"].clone();
+    let mh = p.pr().as_multihash();
+    let pr_384 = mh
+        .algorithms()
+        .map(|alg| mh.tagged(alg).expect("variant").to_string())
+        .find(|t| t.starts_with("SHA-384:"))
+        .expect("the PR has a SHA-384 variant");
+    assert_ne!(
+        Some(pr_384.as_str()),
+        tip["pr"].as_str(),
+        "premise: the SHA-384 spelling is not the tip's own PR text"
+    );
+    let commit_id = tip["commit_id"].as_str().expect("commit_id").to_owned();
+
+    for anchor in [pr_384, commit_id] {
+        let (status, body) =
+            get_json(app.clone(), &format!("/patch?pr={}&from={}", enc(&id), enc(&anchor))).await;
+        assert_eq!(status, StatusCode::OK, "{anchor}: {body:?}");
+        assert_eq!(
+            body["payload"]["entries"],
+            serde_json::json!([]),
+            "{anchor}: caught up, nothing to serve"
+        );
+        assert_eq!(
+            body["statement"]["kind"], "signed",
+            "{anchor}: an empty range at the tip is attested: {body:?}"
+        );
+    }
 }
