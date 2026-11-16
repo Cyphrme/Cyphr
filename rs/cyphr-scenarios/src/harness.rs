@@ -12,6 +12,17 @@ use crate::carrier::TcpCarrier;
 use crate::peer::{Limits, Peer, PeerError, Role};
 use crate::proxy::Proxy;
 
+/// `name{labels} value` lines of Prometheus text, as (series, value).
+pub fn counters(text: &str) -> HashMap<String, u64> {
+    text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let (k, v) = l.rsplit_once(' ')?;
+            Some((k.to_owned(), v.parse().ok()?))
+        })
+        .collect()
+}
+
 pub struct Harness {
     pub peers: Vec<Peer>,
     pub proxy: Arc<Proxy>,
@@ -26,6 +37,9 @@ pub struct Harness {
     /// Each principal's genesis public key (a keystore entry), as its
     /// creator made it: what a person can be handed out of band.
     genesis: Mutex<HashMap<String, serde_json::Value>>,
+    /// Each peer's `/metrics` counters from process lifetimes that have
+    /// ended; a counter is per process, so a stop would otherwise erase it.
+    banked: Mutex<HashMap<String, HashMap<String, u64>>>,
 }
 
 /// A client that never reuses connections, so a fault injected between two
@@ -56,6 +70,17 @@ impl Harness {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos() as u64)
             });
+        Self::start_seeded(names, limits, seed).await
+    }
+
+    /// Like [`Harness::start_with`], with the seed given by the caller (a
+    /// run that owns its seed, such as NETSIM's, must not read it from the
+    /// environment twice).
+    pub async fn start_seeded(
+        names: &[&str],
+        limits: Limits,
+        seed: u64,
+    ) -> Result<Harness, PeerError> {
         eprintln!("scenario seed = {seed}");
         let bins = Bins::get();
         let http = http_client();
@@ -84,6 +109,7 @@ impl Harness {
             extra: Mutex::default(),
             routes: Mutex::default(),
             genesis: Mutex::default(),
+            banked: Mutex::default(),
         })
     }
 
@@ -102,6 +128,24 @@ impl Harness {
         limits: Limits,
     ) -> Result<Harness, PeerError> {
         let h = Self::start_with(names, limits).await?;
+        h.mesh(names, interval_secs).await?;
+        Ok(h)
+    }
+
+    /// [`Harness::start_gossiping_with`] with the seed given by the caller.
+    pub async fn start_gossiping_seeded(
+        names: &[&str],
+        interval_secs: u64,
+        limits: Limits,
+        seed: u64,
+    ) -> Result<Harness, PeerError> {
+        let h = Self::start_seeded(names, limits, seed).await?;
+        h.mesh(names, interval_secs).await?;
+        Ok(h)
+    }
+
+    async fn mesh(&self, names: &[&str], interval_secs: u64) -> Result<(), PeerError> {
+        let h = self;
         for from in names {
             let mut routes = Vec::new();
             for to in names.iter().filter(|to| to != &from) {
@@ -111,7 +155,7 @@ impl Harness {
                 .enable_gossip(h.bins, &routes, interval_secs)
                 .await?;
         }
-        Ok(h)
+        Ok(())
     }
 
     /// Remember `p`'s genesis public key (a public-only keystore entry).
@@ -288,6 +332,78 @@ impl Harness {
             })
         };
         Some(count(&v["payload"]["actions"], "blobs") + count(&v["payload"]["entries"], "actions"))
+    }
+
+    /// `peer`'s `/metrics` counters as `series -> value`, read directly. The
+    /// scrape rides the per-IP bucket it may be measuring, so a refusal is
+    /// retried; it is the caller's N6 that counts what the peer refused.
+    pub async fn scrape(&self, peer: &str) -> Result<HashMap<String, u64>, String> {
+        let url = format!("http://{}/metrics", self.upstream(peer));
+        let mut last = String::new();
+        for _ in 0..20 {
+            match self.http.get(&url).send().await {
+                Ok(r) if r.status().is_success() => {
+                    let text = r
+                        .text()
+                        .await
+                        .map_err(|e| format!("`{peer}` metrics body: {e}"))?;
+                    return Ok(counters(&text));
+                },
+                Ok(r) => last = format!("status {}", r.status()),
+                Err(e) => last = e.to_string(),
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Err(format!("metrics of `{peer}` never served: {last}"))
+    }
+
+    /// Add `peer`'s live counters to its banked total. Call it before
+    /// stopping the process the counters belong to.
+    pub async fn bank_counters(&self, peer: &str) -> Result<(), String> {
+        let live = self.scrape(peer).await?;
+        let mut banked = self.banked.lock().expect("banked counters");
+        let total = banked.entry(peer.to_owned()).or_default();
+        for (series, v) in live {
+            *total.entry(series).or_default() += v;
+        }
+        Ok(())
+    }
+
+    /// `peer`'s counters summed over every process lifetime: banked, plus
+    /// the live process when one is running.
+    pub async fn lifetime_counters(&self, peer: &str) -> Result<HashMap<String, u64>, String> {
+        let mut total = self
+            .banked
+            .lock()
+            .expect("banked counters")
+            .get(peer)
+            .cloned()
+            .unwrap_or_default();
+        if !self.peer_down(peer).await {
+            for (series, v) in self.scrape(peer).await? {
+                *total.entry(series).or_default() += v;
+            }
+        }
+        Ok(total)
+    }
+
+    /// How many times `peer`'s gossip has pulled one principal from one
+    /// other peer, over every process lifetime: the lines its log holds. A
+    /// round makes one per held principal per dialled peer, so deltas count
+    /// rounds exactly, which connection counts cannot (connections are kept
+    /// alive).
+    pub fn gossip_pulls(&self, peer: &str) -> usize {
+        self.log_lines(peer, "gossip: pulled").len()
+    }
+
+    /// Lines of `peer`'s server log containing `needle`.
+    pub fn log_lines(&self, peer: &str, needle: &str) -> Vec<String> {
+        std::fs::read_to_string(self.peer(peer).log_path())
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Read `peer`'s view of `p` until two reads 600ms apart agree, then

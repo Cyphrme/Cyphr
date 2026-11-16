@@ -104,6 +104,11 @@ impl Launch {
             move |source| PeerError::Io { name, what, source }
         };
         let mut cmd = Command::new(&bins.server);
+        // The gossip debug line is what lets a scenario count gossip rounds.
+        cmd.env(
+            "RUST_LOG",
+            "cyphr_server=info,tower_http=info,cyphr_server::gossip=debug",
+        );
         cmd.arg("--config")
             .arg(&self.config)
             .args(["serve", "--listen", listen, "--data-dir"])
