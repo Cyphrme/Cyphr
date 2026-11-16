@@ -7,11 +7,11 @@
 //! transport-erased connections.
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket};
 
 /// A bidirectional byte stream. Blanket-implemented so any suitable
 /// stream (TCP today, a Noise session later) is a `Duplex`.
@@ -31,11 +31,16 @@ pub enum CarrierKind {
     Udp,
 }
 
-/// A transport: bind a listener, or connect to an address.
+/// A transport: bind a listener, or connect to an address, optionally from
+/// a chosen local source IP so the far side sees one address per node.
 pub trait Carrier: Send + Sync + 'static {
     fn kind(&self) -> CarrierKind;
     fn bind(&self) -> BoxFuture<'_, io::Result<Box<dyn Accept>>>;
-    fn connect(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>>;
+    fn connect(
+        &self,
+        addr: SocketAddr,
+        src: Option<IpAddr>,
+    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>>;
 }
 
 /// Plain TCP on the loopback interface; the OS assigns the port.
@@ -73,8 +78,18 @@ impl Carrier for TcpCarrier {
         })
     }
 
-    fn connect(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
-        Box::pin(async move { Ok(Box::new(TcpStream::connect(addr).await?) as Box<dyn Duplex>) })
+    fn connect(
+        &self,
+        addr: SocketAddr,
+        src: Option<IpAddr>,
+    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
+        Box::pin(async move {
+            let socket = TcpSocket::new_v4()?;
+            if let Some(ip) = src {
+                socket.bind(SocketAddr::new(ip, 0))?;
+            }
+            Ok(Box::new(socket.connect(addr).await?) as Box<dyn Duplex>)
+        })
     }
 }
 
@@ -100,7 +115,11 @@ impl Carrier for UdpCarrier {
         Box::pin(async { unsupported() })
     }
 
-    fn connect(&self, _addr: SocketAddr) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
+    fn connect(
+        &self,
+        _addr: SocketAddr,
+        _src: Option<IpAddr>,
+    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
         Box::pin(async { unsupported() })
     }
 }
