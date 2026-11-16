@@ -627,6 +627,7 @@ dependencies = [
  "eml",
  "futures",
  "getrandom 0.2.17",
+ "getrandom 0.4.1",
  "indexmap",
  "polydigest",
  "polydigest-storage-fjall",

@@ -1039,6 +1039,7 @@ async fn try_connect_from(from: &str, addr: SocketAddr) -> std::io::Result<tokio
     socket.connect(addr).await
 }
 
+#[cfg(target_os = "linux")]
 async fn connect_from(from: &str, addr: SocketAddr) -> tokio::net::TcpStream {
     try_connect_from(from, addr).await.expect("connect")
 }
@@ -1057,6 +1058,12 @@ fn closed_by_peer(sock: &tokio::net::TcpStream) -> bool {
 /// Turns red if: the session slots are a shared pool one address can fill
 /// (the honest connect then times out), or one address may hold more than
 /// its allowance. End-to-end scenario: yes.
+///
+/// Linux only: the attacker binds 127.0.0.2, and macOS configures only
+/// 127.0.0.1 on its loopback, so the bind fails with EADDRNOTAVAIL (os error
+/// 49) before any connection is opened. Two distinct client addresses need
+/// an interface alias there, which a test should not create.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_address_cannot_hold_every_session_slot() {
     let (state, _dir) = attestor_with(|_| {}).await;
