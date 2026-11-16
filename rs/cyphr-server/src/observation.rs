@@ -121,11 +121,14 @@ pub struct ObservationStore {
     /// per-insert durability is only `PersistMode::Buffer`).
     db: Database,
     dead_keys: Keyspace,
-    /// How many keys the death set holds, guarded so the ceiling check and
+    /// How many keys the death set holds, guarded so the count and
     /// the insert are one step.
     dead_count: std::sync::Arc<std::sync::Mutex<u64>>,
     /// The most keys the death set may hold ([`Self::with_ceiling`]).
     ceiling: u64,
+    /// Held across a revoke's ceiling check and both writes, so concurrent
+    /// revokes cannot each pass the check and overshoot the ceiling.
+    revoke_gate: tokio::sync::Mutex<()>,
 }
 
 impl ObservationStore {
@@ -148,15 +151,23 @@ impl ObservationStore {
             dead_keys,
             dead_count: std::sync::Arc::new(std::sync::Mutex::new(count)),
             ceiling: u64::MAX,
+            revoke_gate: tokio::sync::Mutex::new(()),
         })
     }
 
-    /// Bound the death set to `ceiling` keys for [`Self::record`]. A naked
-    /// revoke needs no prior knowledge of its key (a Level 1 key signs
-    /// nothing a peer could have seen, SPEC 6.4), so revokes of unseen keys
-    /// are bounded by this operator quota; past it [`Self::record`] is
-    /// refused [`ObservationError::Full`] and stores nothing, while
-    /// [`Self::record_seen`] still records a key the server holds.
+    /// Serialize a revoke's ceiling check and its writes. Revokes are rare,
+    /// so one gate costs nothing and makes the ceiling exact for unheld keys.
+    pub async fn revoke_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.revoke_gate.lock().await
+    }
+
+    /// Bound the death set to `ceiling` keys for [`Self::check_room`]. A
+    /// naked revoke needs no prior knowledge of its key (a Level 1 key
+    /// signs nothing a peer could have seen, SPEC 6.4), so revokes of unseen
+    /// keys are bounded by this operator quota; past it a new unheld key is
+    /// refused [`ObservationError::Full`], while the revoke of a key the
+    /// server holds is still recorded (the caller decides, see
+    /// [`crate::revoke::record_everywhere`]).
     #[must_use]
     pub fn with_ceiling(mut self, ceiling: u64) -> Self {
         self.ceiling = ceiling;
@@ -189,48 +200,33 @@ impl ObservationStore {
     /// served here need not be the one whose receipt set the engine's
     /// cutoff.
     ///
-    /// Past the ceiling ([`Self::with_ceiling`]) a new key is refused
-    /// [`ObservationError::Full`]; [`Self::record_seen`] records past it.
+    /// The ceiling is not enforced here: the caller settles it first
+    /// ([`Self::check_room`]), because a key the server holds must be
+    /// recorded past it (SPEC 6.4).
     pub async fn record(
         &self,
         tmb: &Thumbprint,
         coz: serde_json::Value,
     ) -> Result<(), ObservationError> {
-        self.insert(tmb, coz, true).await
-    }
-
-    /// [`Self::record`] for a key the caller has established the server has
-    /// seen (one a stored principal holds), recorded even past the ceiling:
-    /// the ceiling bounds revokes of keys nobody here holds, and must never
-    /// deny the revoke of a key real principals hold (SPEC 6.4).
-    pub async fn record_seen(
-        &self,
-        tmb: &Thumbprint,
-        coz: serde_json::Value,
-    ) -> Result<(), ObservationError> {
-        self.insert(tmb, coz, false).await
+        self.insert(tmb, coz).await
     }
 
     async fn insert(
         &self,
         tmb: &Thumbprint,
         coz: serde_json::Value,
-        bounded: bool,
     ) -> Result<(), ObservationError> {
         let key = tmb.as_bytes().to_vec();
         let value =
             serde_json::to_vec(&coz).map_err(|e| ObservationError::Serialize(e.to_string()))?;
         let dead_keys = self.dead_keys.clone();
         let db = self.db.clone();
-        let (dead_count, ceiling) = (self.dead_count.clone(), self.ceiling);
+        let dead_count = self.dead_count.clone();
         tokio::task::spawn_blocking(move || {
             if dead_keys.contains_key(&key).map_err(backend)? {
                 return Ok(());
             }
             let mut count = dead_count.lock().unwrap_or_else(|p| p.into_inner());
-            if bounded && *count >= ceiling {
-                return Err(ObservationError::Full { ceiling });
-            }
             dead_keys.insert(key, value).map_err(backend)?;
             db.persist(PersistMode::SyncAll).map_err(backend)?;
             *count += 1;
@@ -240,10 +236,11 @@ impl ObservationStore {
         .map_err(|e| ObservationError::Join(e.to_string()))?
     }
 
-    /// Whether a bounded [`Self::record`] of `tmb` would be accepted: the
-    /// key is already dead (nothing new is written) or the set has room.
-    /// Read before the engine writes, so a key the ceiling would refuse is
-    /// never recorded in the engine alone.
+    /// Whether a new unheld key `tmb` fits under the ceiling: it is already
+    /// dead (nothing new is written) or the set has room. Read before the
+    /// engine writes, so a key the ceiling refuses is never recorded in the
+    /// engine alone. Not atomic with [`Self::record`]; the caller
+    /// serializes the pair ([`Self::revoke_gate`]).
     ///
     /// # Errors
     ///

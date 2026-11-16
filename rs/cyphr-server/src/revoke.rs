@@ -114,34 +114,72 @@ pub async fn interpret(envelope: &NakedRevokeEnvelope) -> Result<VerifiedRevoke,
 
 /// Record a verified naked revoke in both places the server keeps deaths,
 /// in the one order every path uses: the engine first, then the
-/// observation set every capability consults.
+/// observation set every capability consults. `/revoke`, gossip and
+/// witness sync all come through here, so every caller is bounded.
 ///
 /// The engine's blob-store record is the truth (I1; it judges admission
 /// and forks, and a rebuild re-verifies it), so the observation set is
 /// written only once the engine holds the revoke: a revoke the engine
-/// refuses reaches neither store, and a failure between the two writes
-/// leaves the engine dead and the set not, a gap a repeat of the same
-/// revoke closes (both writes are idempotent).
+/// refuses reaches neither store.
+///
+/// The operator's ceiling (`[limits] max_dead_keys`) bounds the revokes of
+/// keys no stored principal holds, for every caller: past it such a revoke
+/// is refused (507) before either store is written, while the revoke of a
+/// held key is still recorded (SPEC 6.4). A peer that names fresh
+/// thumbprints can therefore grow neither store past the ceiling plus the
+/// keys the server really holds. Ceiling check and writes run under one
+/// gate, so concurrent revokes cannot overshoot it.
+///
+/// A failure between the two writes leaves the engine dead and the set
+/// not. A repeat of the same revoke closes that gap whatever the ceiling,
+/// since the engine already holding the death is checked first and
+/// both writes are idempotent.
 ///
 /// # Errors
 ///
-/// The engine's refusal or storage fault, or the observation set's.
-pub(crate) async fn record_everywhere(
+/// The engine's refusal or storage fault, the ceiling, or the set's fault.
+pub async fn record_everywhere(
     state: &crate::AppState,
     tmb: &Thumbprint,
     evidence: &serde_json::Value,
 ) -> Result<(), AppError> {
+    use cyphr_storage::index::Indexer;
+
+    let _one_revoke_at_a_time = state.observations.revoke_gate().await;
+    let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
+
+    // A death the engine already holds adds nothing to either store's size.
+    if !state.engine.is_revoked(&tmb_b64) {
+        match state.observations.check_room(tmb).await {
+            Ok(()) => {},
+            Err(full @ crate::observation::ObservationError::Full { .. }) => {
+                let held = state
+                    .engine
+                    .indexer()
+                    .get_key(&tmb_b64)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "naked-revoke presence lookup failed");
+                        AppError::internal("key index lookup failed")
+                    })?
+                    .is_some();
+                if !held {
+                    return Err(AppError::observation(full));
+                }
+            },
+            Err(other) => return Err(AppError::observation(other)),
+        }
+    }
+
     // The key's cutoff is this node's own receipt time (#203).
     state
         .engine
         .record_revoke(evidence, crate::auth::server_now())
         .await
         .map_err(AppError::engine)?;
-    // The ceiling was settled by the caller before the engine wrote
-    // (`ObservationStore::has_room`), so this write is unbounded.
     state
         .observations
-        .record_seen(tmb, evidence.clone())
+        .record(tmb, evidence.clone())
         .await
         .map_err(AppError::observation)
 }

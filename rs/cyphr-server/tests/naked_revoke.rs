@@ -1600,3 +1600,97 @@ async fn archrev_a2_repost_closes_a_gap_between_the_two_stores() {
         "re-posting closes the gap"
     );
 }
+
+/// A keyed state over a fresh store whose death set holds at most one key.
+fn state_with_ceiling_one() -> (Arc<AppState>, TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let config = {
+        let mut c = ServerConfig {
+            data_dir: dir.path().join("data"),
+            signing_key_path: Some(key_path),
+            audience: Some(AUDIENCE.to_string()),
+            ..Default::default()
+        };
+        c.limits.max_dead_keys = std::num::NonZeroU64::MIN;
+        c
+    };
+    (Arc::new(AppState::new(config).expect("open")), dir)
+}
+
+/// The verified `{pay, sig, key}` envelope for `name` self-revoking, and its
+/// thumbprint, as a gossip or witness-sync caller hands them over.
+fn revoke_of(pool: &Pool, name: &str) -> (coz::Thumbprint, serde_json::Value) {
+    let body = self_revoke_coz(pool, name, serde_json::json!(RVK));
+    let tmb = pool.get(name).expect("key").compute_tmb().expect("tmb");
+    (tmb, body)
+}
+
+/// archrev:A2. The death-set ceiling bounds every caller of the one write
+/// path, not just `/revoke`: gossip and witness sync call it with revokes a
+/// peer chose to name, so an adversarial peer must not grow the engine's
+/// records or the death set past the operator's quota with fresh keys.
+/// Turns red if an unheld key's revoke is recorded past the ceiling by this
+/// path (the engine would then hold it too), or if a held key's is refused.
+/// Reached directly because the gossip and sync callers are reachable only
+/// through a live peer.
+#[tokio::test]
+async fn archrev_a2_the_ceiling_bounds_every_caller() {
+    let (state, _dir) = state_with_ceiling_one();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+
+    let (alice, alice_rv) = revoke_of(&pool, "alice");
+    cyphr_server::revoke::record_everywhere(&state, &alice, &alice_rv)
+        .await
+        .expect("an unheld key fills the set");
+    let (bob, bob_rv) = revoke_of(&pool, "bob");
+    let refused = cyphr_server::revoke::record_everywhere(&state, &bob, &bob_rv).await;
+    assert!(
+        refused.is_err(),
+        "an unheld key past the ceiling: {refused:?}"
+    );
+    assert!(
+        !state.engine.is_revoked(&bob.to_b64()),
+        "a refused revoke reached the engine"
+    );
+    assert!(!state.observations.is_dead(&bob).await.expect("set"));
+
+    let (held, held_rv) = revoke_of(&pool, "key_a");
+    cyphr_server::revoke::record_everywhere(&state, &held, &held_rv)
+        .await
+        .expect("a held key is recorded past the ceiling");
+    assert!(state.engine.is_revoked(&held.to_b64()));
+}
+
+/// archrev:A2. Re-posting a revoke the engine already holds closes the gap
+/// between the two stores even when the set is full and the key unheld: the
+/// engine has the death, so the set records it without growing past what
+/// the engine holds. Turns red if the full set answers 507 and the key
+/// stays alive for login while dead for admission.
+#[tokio::test]
+async fn archrev_a2_repost_closes_the_gap_with_a_full_set() {
+    let (state, _dir) = state_with_ceiling_one();
+    let pool = common::load_pool();
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "alice", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {json:?}");
+
+    let (bob, bob_rv) = revoke_of(&pool, "bob");
+    state
+        .engine
+        .record_revoke(&bob_rv, now_secs())
+        .await
+        .expect("the engine alone holds bob's death");
+    assert!(!state.observations.is_dead(&bob).await.expect("set"));
+
+    let (status, json) = post_revoke(&state, bob_rv).await;
+    assert!(
+        status.is_success(),
+        "re-post with a full set: {status} {json:?}"
+    );
+    assert!(state.observations.is_dead(&bob).await.expect("set"));
+}

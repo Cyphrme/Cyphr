@@ -353,7 +353,13 @@ async fn sync_locked(
 
     // The authority's verified revokes of the keys these commits name go to
     // the engine first, as gossip's do, so its admission refuses what a dead
-    // key signed after its death (SPEC 6.4).
+    // key signed after its death (SPEC 6.4). The keys are named by bundles
+    // not yet verified, and they must be asked about before the commits
+    // are applied (a dead key's own commits are refused only if its revoke
+    // is already held), so the authority can make this node ask about
+    // thumbprints it invented. The death-set ceiling bounds what that can
+    // store: `record_revokes` refuses a revoke of a key no stored
+    // principal holds once the set is full.
     let keys = named_keys(&bundles);
     match cyphr_client::verified_revokes(&connector, "authority", &keys).await {
         Ok((found, _)) => crate::gossip::record_revokes(state, &found).await,

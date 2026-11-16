@@ -1825,9 +1825,26 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 // The revoke a record carries is re-verified, never
                 // trusted; its receipt time is this node's own statement.
                 // One that fails costs only itself.
-                let verified = serde_json::from_slice::<RevokeRecord>(json)
-                    .map_err(|e| e.to_string())
-                    .and_then(|r| Ok((verify_revoke(&r.evidence)?, r.wrt)));
+                let record = serde_json::from_slice::<RevokeRecord>(json);
+                let verified = match &record {
+                    Ok(r) => verify_revoke(&r.evidence).map(|tmb| (tmb, r.wrt)),
+                    Err(e) => Err(e.to_string()),
+                };
+                if let Err(why) = &verified {
+                    // A record that no longer verifies (for one, a v2
+                    // record over the revoke size limit) leaves its key
+                    // alive in the engine, so the log names the key.
+                    let key = record
+                        .as_ref()
+                        .ok()
+                        .and_then(|r| r.evidence["pay"]["tmb"].as_str())
+                        .unwrap_or("unreadable");
+                    tracing::warn!(
+                        key,
+                        reason = %why,
+                        "revoke record quarantined on rebuild; its key is not dead in the engine"
+                    );
+                }
                 match verified {
                     // Live keeps one record per key, the first accepted;
                     // were there two, the earliest receipt stands.
@@ -4579,6 +4596,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             });
         }
         Ok(branches)
+    }
+
+    /// Whether the engine holds a revoke record for `tmb` (base64url).
+    #[must_use]
+    pub fn is_revoked(&self, tmb: &str) -> bool {
+        self.revoked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(tmb)
     }
 
     /// The revocations in force (a cache of the revoke records, I1).

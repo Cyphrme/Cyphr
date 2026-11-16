@@ -848,7 +848,7 @@ async fn revoke_eve(state: &cyphr_server::AppState, now: i64) {
     });
     state
         .observations
-        .record_seen(&e.tmb, envelope.clone())
+        .record(&e.tmb, envelope.clone())
         .await
         .expect("observed");
     state
