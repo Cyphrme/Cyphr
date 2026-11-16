@@ -12,9 +12,10 @@ env:
 
 jobs:
   rust:
-    # macOS is non-gating until two macOS-only failures are diagnosed:
-    # transport.rs ephemeral-port exhaustion and an unexplained
-    # s04_theft oracle mismatch that passes on Linux. Ubuntu still gates.
+    # macOS is non-gating until an undiagnosed macOS-only failure is
+    # resolved: cyphr-scenarios s04_theft ("verdict evidence differs from
+    # the items the peers serve") fails there and passes on Linux. Ubuntu
+    # still gates.
     continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       matrix:
