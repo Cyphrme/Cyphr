@@ -2845,24 +2845,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // own slot held: refused, not waited on.
             let cycle =
                 || EngineError::MalformedBlob(format!("embedded principal {member} pins itself"));
-            let canonical = source.slot(member);
-            let mut canonical = canonical.try_lock().map_err(|_| cycle())?;
-            if canonical.is_none() {
-                if let Some(chain) = self.embedded_chain(source, member).await? {
-                    *canonical = Some(Self::chain_memo(chain, member).await?);
+            // The canonical pass over `member` is held further up this call
+            // when `member` and the principal being replayed embed each
+            // other (SPEC 10.7): the state asked for here is an earlier one
+            // than that pass has reached, so it is read from its own
+            // ancestry below. A true self-pin finds that line held as well.
+            let slot = source.slot(member);
+            if let Ok(mut canonical) = slot.try_lock() {
+                if canonical.is_none() {
+                    if let Some(chain) = self.embedded_chain(source, member).await? {
+                        *canonical = Some(Self::chain_memo(chain, member).await?);
+                    }
+                }
+                if let Some(memo) = canonical.as_mut() {
+                    match self.advance(memo, source, b, depth).await {
+                        Ok(Some(state)) => return Ok(state),
+                        Ok(None) => {},
+                        Err(e) => {
+                            *canonical = None;
+                            return Err(e);
+                        },
+                    }
                 }
             }
-            if let Some(memo) = canonical.as_mut() {
-                match self.advance(memo, source, b, depth).await {
-                    Ok(Some(state)) => return Ok(state),
-                    Ok(None) => {},
-                    Err(e) => {
-                        *canonical = None;
-                        return Err(e);
-                    },
-                }
-            }
-            drop(canonical);
             let line = source.slot(&format!("{member}\0{b}"));
             let mut line = line.try_lock().map_err(|_| cycle())?;
             if line.is_none() {

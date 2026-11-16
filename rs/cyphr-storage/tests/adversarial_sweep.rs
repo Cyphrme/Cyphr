@@ -317,7 +317,6 @@ async fn strangers_refused_push_costs_at_most_a_load_of_a() {
 /// after them, or a rebuild from blobs quarantines anything.
 /// End to end: yes (two real chains, interleaved pushes, a restart).
 #[tokio::test]
-#[ignore = "RED(DEBT3)"]
 async fn mutually_embedding_principals_stay_loadable() {
     let (alice, bob, carol, x, y, z) = (kp(), kp(), kp(), kp(), kp(), kp());
     let (mut b, _) = b_with_carol(&bob, &carol).await;
