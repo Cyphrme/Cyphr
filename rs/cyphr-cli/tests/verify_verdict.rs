@@ -210,6 +210,15 @@ fn verdict_follows_the_branch_the_principal_resolves_to() {
         Some(1),
         "one live head: {after}"
     );
+    // The resolved fork stays reported as evidence, held by the verifier
+    // rather than by what one round's peers happen to serve.
+    let evidence = after["evidence"].as_array().expect("evidence");
+    assert!(
+        evidence
+            .iter()
+            .any(|e| e["kind"] == "principal_fork" && e["resolved"] == true),
+        "the resolved fork is still evidence: {after}"
+    );
 }
 
 /// Claim (SPEC 4.8.2, 15.8, 15.9): a fork of data commits made after a
