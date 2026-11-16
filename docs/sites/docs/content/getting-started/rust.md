@@ -7,7 +7,7 @@ toc         = true
 
 ## Installation
 
-Requires Rust 1.85 or later.
+Requires Rust 1.88 or later.
 
 ```bash
 cargo add cyphr
@@ -138,7 +138,7 @@ let restored = store.import()?;
 
 ## Next Steps
 
-- Read the [Protocol Specification](../specification.html) for the full
+- Read the [Protocol Specification](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md) for the full
   formal treatment
 - Browse the [source](https://github.com/Cyphrme/Cyphr/tree/main/rs) for
   implementation details

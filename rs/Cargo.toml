@@ -20,18 +20,18 @@ edition      = "2024"
 homepage     = "https://cyphr.me"
 license-file = "../LICENSE"
 repository   = "https://github.com/Cyphrme/Cyphr"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Core crypto - from coz-rs (re-exports digest, sha2)
-coz = { package = "coz-rs", version = "0.4.1" }
+coz = { package = "coz-rs", version = "0.5" }
 
 # Storage
 blake3        = "1"
-eml           = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
+eml           = "0.12"
 fjall         = "3"
-polydigest    = { git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
-storage-fjall = { package = "polydigest-storage-fjall", git = "https://github.com/Cyphrme/tsml", rev = "51df637" }
+polydigest    = "0.2"
+storage-fjall = { package = "polydigest-storage-fjall", version = "0.2" }
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }

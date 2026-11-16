@@ -118,13 +118,12 @@ async fn apply_golden_commit<S: eml::Storage>(
         let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(&typ);
 
         let mut new_key = None;
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    new_key = Some(golden_key_to_domain(&ks[key_idx]));
-                    key_idx += 1;
-                }
-            }
+        if is_key_introducing
+            && let Some(ks) = keys
+            && key_idx < ks.len()
+        {
+            new_key = Some(golden_key_to_domain(&ks[key_idx]));
+            key_idx += 1;
         }
 
         let sig_b64 = coz["sig"].as_str().expect("sig");

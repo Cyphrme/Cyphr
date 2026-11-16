@@ -75,21 +75,21 @@ async fn boot(config: ServerConfig, bootstrap_own_principal: bool) -> Arc<AppSta
         .await
         .expect("manifest heal on boot failed");
 
-    if bootstrap_own_principal {
-        if let (Some(identity), Some(key_path)) = (
+    if bootstrap_own_principal
+        && let (Some(identity), Some(key_path)) = (
             state.identity.clone(),
             state.config.signing_key_path.clone(),
-        ) {
-            let sp = cyphr_server::auth::principal::ServerPrincipal::bootstrap(
-                &state.engine,
-                identity,
-                &key_path,
-                &state.config.data_dir,
-            )
-            .await
-            .expect("bootstrap server principal failed");
-            state.principal = Some(Arc::new(sp));
-        }
+        )
+    {
+        let sp = cyphr_server::auth::principal::ServerPrincipal::bootstrap(
+            &state.engine,
+            identity,
+            &key_path,
+            &state.config.data_dir,
+        )
+        .await
+        .expect("bootstrap server principal failed");
+        state.principal = Some(Arc::new(sp));
     }
 
     Arc::new(state)

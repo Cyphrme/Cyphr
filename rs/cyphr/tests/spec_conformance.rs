@@ -889,10 +889,10 @@ fn parse_map() -> (Vec<Row>, BTreeMap<String, usize>) {
             body.push(l);
         } else if let Some(cells) = l.strip_prefix("| `") {
             let mut it = cells.split('|').map(str::trim);
-            if let (Some(d), Some(n)) = (it.next(), it.next()) {
-                if let Ok(n) = n.parse::<usize>() {
-                    summary.insert(d.trim_end_matches('`').to_string(), n);
-                }
+            if let (Some(d), Some(n)) = (it.next(), it.next())
+                && let Ok(n) = n.parse::<usize>()
+            {
+                summary.insert(d.trim_end_matches('`').to_string(), n);
             }
         }
     }

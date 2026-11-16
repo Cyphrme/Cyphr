@@ -235,13 +235,13 @@ impl MultihashDigest {
     pub fn matches(&self, other: &Self) -> bool {
         let mut common = false;
         for alg in self.algorithms() {
-            if let Some(d1) = self.get(alg) {
-                if let Some(d2) = other.get(alg) {
-                    if d1 != d2 {
-                        return false;
-                    }
-                    common = true;
+            if let Some(d1) = self.get(alg)
+                && let Some(d2) = other.get(alg)
+            {
+                if d1 != d2 {
+                    return false;
                 }
+                common = true;
             }
         }
         common
