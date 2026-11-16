@@ -387,13 +387,17 @@ impl Harness {
         Ok(total)
     }
 
-    /// How many times `peer`'s gossip has pulled one principal from one
-    /// other peer, over every process lifetime: the lines its log holds. A
-    /// round makes one per held principal per dialled peer, so deltas count
-    /// rounds exactly, which connection counts cannot (connections are kept
-    /// alive).
-    pub fn gossip_pulls(&self, peer: &str) -> usize {
-        self.log_lines(peer, "gossip: pulled").len()
+    /// How many gossip rounds `peer` has completed, over every process
+    /// lifetime, from its `/metrics` counter. A round that found every
+    /// principal idle counts too, which the `gossip: pulled` log lines
+    /// (one per pull) cannot see.
+    pub async fn gossip_rounds(&self, peer: &str) -> Result<u64, String> {
+        Ok(self
+            .lifetime_counters(peer)
+            .await?
+            .get("cyphr_gossip_rounds_total")
+            .copied()
+            .unwrap_or(0))
     }
 
     /// Lines of `peer`'s server log containing `needle`.

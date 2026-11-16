@@ -156,7 +156,7 @@ pub(crate) async fn barrier(
     }
     let convergence = began.elapsed();
 
-    wait_quiet_rounds(h, size, model, names).await?;
+    wait_quiet_rounds(h, size, names).await?;
 
     // Everything again, once, with nothing excused.
     for e in &expected {
@@ -214,33 +214,28 @@ async fn non_convergence(
 }
 
 /// Wait until every peer's gossip has completed `QUIET_ROUNDS` rounds past
-/// the point where this is called. A round pulls each held principal from
-/// each of the other peers, one log line apiece; counting from a snapshot,
-/// `QUIET_ROUNDS + 1` rounds' worth of lines contains that many complete
-/// rounds that began after it.
-async fn wait_quiet_rounds(
-    h: &Harness,
-    size: &Size,
-    model: &Model,
-    names: &[String],
-) -> Result<(), Failure> {
+/// the point where this is called. Rounds are counted from each server's
+/// `/metrics`, idle rounds included; a round already running at the
+/// snapshot does not count, so `QUIET_ROUNDS + 1` more completions contain
+/// that many rounds that began after it.
+async fn wait_quiet_rounds(h: &Harness, size: &Size, names: &[String]) -> Result<(), Failure> {
     let began = Instant::now();
     let mut need = Vec::new();
-    for (i, name) in names.iter().enumerate() {
-        let held = model
-            .principals
-            .iter()
-            .filter(|p| p.holders.contains(&i))
-            .count();
-        let per_round = held * (names.len() - 1);
-        need.push((name, h.gossip_pulls(name), per_round * (QUIET_ROUNDS + 1)));
+    for name in names {
+        let before = h
+            .gossip_rounds(name)
+            .await
+            .map_err(|e| fail("N1", format!("reading {name}'s gossip rounds: {e}")))?;
+        need.push((name, before + QUIET_ROUNDS as u64 + 1));
     }
     loop {
-        let behind: Vec<&str> = need
-            .iter()
-            .filter(|(name, before, want)| h.gossip_pulls(name) < before + want)
-            .map(|(name, ..)| name.as_str())
-            .collect();
+        let mut behind: Vec<&str> = Vec::new();
+        for (name, until) in &need {
+            // A failed scrape is a round not yet seen, not a verdict.
+            if !matches!(h.gossip_rounds(name).await, Ok(r) if r >= *until) {
+                behind.push(name.as_str());
+            }
+        }
         if behind.is_empty() {
             return Ok(());
         }

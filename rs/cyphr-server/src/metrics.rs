@@ -78,6 +78,8 @@ impl RefusalKind {
 pub struct Metrics {
     requests: AtomicU64,
     pushes_accepted: AtomicU64,
+    gossip_rounds: AtomicU64,
+    gossip_records_built: AtomicU64,
     refusals: [AtomicU64; RefusalKind::ALL.len()],
 }
 
@@ -90,6 +92,19 @@ impl Metrics {
         if let Some(kind) = RefusalKind::of(status) {
             self.refusals[kind as usize].fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// One gossip round finished, whether it pulled anything or skipped
+    /// every principal as idle: a barrier that waits on rounds must count
+    /// the quiet ones.
+    pub fn gossip_round(&self) {
+        self.gossip_rounds.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A gossip round replayed one principal's whole stored chain to open
+    /// a record: the cost the idle gate exists to avoid.
+    pub fn gossip_record_built(&self) {
+        self.gossip_records_built.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Render the Prometheus text exposition. `eml_append_failures` is the
@@ -109,6 +124,19 @@ impl Metrics {
             "# HELP cyphr_pushes_accepted_total Pushes answered 2xx.\n# TYPE \
              cyphr_pushes_accepted_total counter\ncyphr_pushes_accepted_total {}",
             self.pushes_accepted.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP cyphr_gossip_rounds_total Gossip rounds completed, idle ones included.\n# \
+             TYPE cyphr_gossip_rounds_total counter\ncyphr_gossip_rounds_total {}",
+            self.gossip_rounds.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP cyphr_gossip_records_built_total Principal chains a gossip round replayed in \
+             full.\n# TYPE cyphr_gossip_records_built_total \
+             counter\ncyphr_gossip_records_built_total {}",
+            self.gossip_records_built.load(Ordering::Relaxed)
         );
         let _ = writeln!(
             out,
