@@ -294,17 +294,17 @@ fn archrev_b2_honest_items_are_not_rejected_for_a_holder_on_the_other_branch() {
         let base = cyphr::Principal::implicit(f.g.domain_key(1_700_000_000))
             .await
             .expect("genesis");
-        let entries: Vec<PatchEntry> = f
-            .rival
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, blobs)| PatchEntry {
-                sequence: i as u64,
-                bundle: Ok(serde_json::from_value::<WireBundle>(entry_bundle(i, blobs))
-                    .expect("bundle")),
-            })
-            .collect();
+        let entries: Vec<PatchEntry> =
+            f.rival
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(i, blobs)| PatchEntry {
+                    sequence: i as u64,
+                    bundle: Ok(serde_json::from_value::<WireBundle>(entry_bundle(i, blobs))
+                        .expect("bundle")),
+                })
+                .collect();
         let ids: Vec<Option<String>> = f.rival.ids.iter().cloned().map(Some).collect();
         let items: Vec<Value> = (1..=DEPTH).map(|h| f.valid(h)).collect();
         let refs: Vec<&Value> = items.iter().collect();
