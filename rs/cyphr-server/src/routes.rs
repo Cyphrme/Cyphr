@@ -97,9 +97,10 @@ pub struct TipResponse {
     pub sr: Option<String>,
     /// `null` for a Dead principal.
     pub ar: Option<String>,
-    /// Current Commit Root (empty string if no commit has populated the
-    /// EML log yet). `docs/specs/http-envelope.md` `[envelope-r-cr]`.
-    pub cr: String,
+    /// Current Commit Root; `null` if no commit has populated the EML log
+    /// yet, matching the signed statement's `roots.cr` (#147).
+    /// `docs/specs/http-envelope.md` `[envelope-r-cr]`.
+    pub cr: Option<String>,
     pub commit_id: String,
     pub commit_count: u64,
     pub last_updated: i64,
@@ -224,7 +225,8 @@ pub struct PushRoots {
     pub pr: String,
     pub sr: Option<String>,
     pub ar: Option<String>,
-    pub cr: String,
+    /// `null` for no commit root yet, as in the receipt's `roots.cr`.
+    pub cr: Option<String>,
 }
 
 /// Response for `POST /revoke` -- acknowledgement that a self-signed naked
@@ -369,7 +371,7 @@ pub async fn tip(
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
-        cr: t.cr.clone(),
+        cr: (!t.cr.is_empty()).then(|| t.cr.clone()),
         commit_id: t.commit_id.clone(),
         commit_count: t.commit_count,
         last_updated: t.last_updated,
@@ -1047,7 +1049,7 @@ async fn push_response(
             pr: tip.pr.clone(),
             sr: tip.sr.clone(),
             ar: tip.ar.clone(),
-            cr: tip.cr.clone(),
+            cr: (!tip.cr.is_empty()).then(|| tip.cr.clone()),
         },
     };
     let Some(signer) = signer else {
@@ -1765,6 +1767,31 @@ mod push_response_tests {
             tip: Some(tip.clone()),
         };
         (result, tip)
+    }
+
+    /// archrev:A7. The payload and the signed statement of one response
+    /// state "no commit root yet" the same way: JSON `null` (#147 retired
+    /// the `""` sentinel on the wire). Unit: storage reports an empty `cr`
+    /// only on a heal-reindexed mock genesis, which no ordinary push
+    /// reaches.
+    #[tokio::test]
+    async fn archrev_a7_absent_cr_is_null_in_payload_and_statement() {
+        let (identity, _dir) = identity();
+        let (result, mut tip) = committed(digest(5));
+        tip.cr = String::new();
+        let (env, unavailable) = push_response(
+            &result,
+            &tip,
+            1_700_000_000,
+            Some(&identity as &dyn receipt::ReceiptSigner),
+        )
+        .await;
+        assert!(unavailable.is_none(), "receipt must sign: {unavailable:?}");
+        let wire = serde_json::to_value(&env).expect("envelope serializes");
+        let payload_cr = &wire["payload"]["roots"]["cr"];
+        let signed_cr = &wire["statement"]["coz"]["pay"]["roots"]["cr"];
+        assert_eq!(payload_cr, signed_cr, "wire: {wire}");
+        assert!(signed_cr.is_null(), "wire: {wire}");
     }
 
     /// Backs: a receipt-signing failure never turns a committed push into an error; the commit is
