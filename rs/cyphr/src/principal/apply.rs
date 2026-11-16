@@ -482,7 +482,7 @@ impl PrincipalState {
                 } else if self.auth.keys.contains_key(&tmb) {
                     return Err(Error::DuplicateKey);
                 } else {
-                    self.add_key(key, cz.now);
+                    self.add_key(key, cz.now)?;
                 }
             },
             CozKind::KeyDelete { id } => {
@@ -506,7 +506,7 @@ impl PrincipalState {
                 }
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
-                self.add_key(key, cz.now);
+                self.add_key(key, cz.now)?;
                 // The signer is removed outright: it is not a delete of a key
                 // (a key was just added, so the set cannot empty)
                 self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
@@ -826,10 +826,21 @@ impl PrincipalState {
     /// Add a key to the active key set.
     ///
     /// Sets `first_seen` to the given timestamp.
-    fn add_key(&mut self, mut key: Key, first_seen: i64) {
+    ///
+    /// # Errors
+    ///
+    /// - `KeyRevoked`: the key already carries a revocation mark. Entering the key set without
+    ///   being in `auth.revoked` would drop its algorithm from the active set and diverge the roots
+    ///   from a replay that never sees the mark; every route into the set goes through here, so
+    ///   `key/replace` is covered as `key/create` is.
+    fn add_key(&mut self, mut key: Key, first_seen: i64) -> Result<()> {
+        if key.revocation().is_some() {
+            return Err(Error::KeyRevoked);
+        }
         key.set_first_seen(first_seen);
         let tmb_b64 = key.tmb().to_b64();
         self.core_mut().auth.keys.insert(tmb_b64, key);
+        Ok(())
     }
 
     /// Remove a key from the active key set (delete, not revoke). Deleting
