@@ -313,11 +313,13 @@ async fn strangers_refused_push_costs_two_passes_over_a() {
 /// B at B2; alice (A) signs B3, pinned to A at A2; carol signs A3, pinned
 /// to B at B3. Loading A replays A3's pin, B to B3, whose pin replays A to
 /// A2, whose pin asks for B at B2 while B's chain is being replayed in the
-/// same call: today that is refused as a cycle ("pins itself"), so A, whose
-/// every commit was admitted, no longer loads, and a rebuild quarantines it.
+/// same call. That used to be refused as a cycle ("pins itself"), so A,
+/// whose every commit was admitted, no longer loaded, and a rebuild
+/// quarantined it; the earlier state is now read from its own ancestry.
 ///
 /// Turns red while any of the honest pushes is refused, A does not load
-/// after them, or a rebuild from blobs quarantines anything.
+/// after them, a rebuild from blobs quarantines anything, or the rebuilt
+/// engine loads A or B at another PR than the live one.
 /// End to end: yes (two real chains, interleaved pushes, a restart).
 #[tokio::test]
 async fn mutually_embedding_principals_stay_loadable() {
@@ -361,16 +363,32 @@ async fn mutually_embedding_principals_stay_loadable() {
         .commit(&carol, "key/create", &z.tmb.to_b64(), Some(&z), T0 + 40)
         .await
         .expect("carol signs A3");
-    let pushed = a.push(&engine, &a3).await;
-    println!("A3: {pushed:?}; b2 = {b2}");
-    pushed.expect("A3 admitted through B");
-    let loaded = engine.load_principal(&a.id, a.genesis.clone()).await;
-    println!("load A: {:?}", loaded.as_ref().map(|p| p.pr_tagged()));
-    let report = StorageEngine::new(blobs.clone(), MemoryIndexer::new())
+    a.push(&engine, &a3).await.expect("A3 admitted through B");
+    let live_a = engine
+        .load_principal(&a.id, a.genesis.clone())
+        .await
+        .expect("A loads after its every commit was admitted")
+        .pr_tagged()
+        .expect("pr");
+    let live_b = engine
+        .load_principal(&b.id, b.genesis.clone())
+        .await
+        .expect("B loads")
+        .pr_tagged()
+        .expect("pr");
+    let rebuilt = StorageEngine::new(blobs.clone(), MemoryIndexer::new());
+    let report = rebuilt
         .rebuild_index_from_scratch_with_report()
         .await
         .expect("rebuild");
-    println!("rebuild quarantined: {:?}", report.quarantined);
-    loaded.expect("A loads after its every commit was admitted");
     assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
+    for (line, live) in [(&a, live_a), (&b, live_b)] {
+        let again = rebuilt
+            .load_principal(&line.id, line.genesis.clone())
+            .await
+            .expect("loads after the rebuild")
+            .pr_tagged()
+            .expect("pr");
+        assert_eq!(again, live, "rebuild != live for {}", line.id);
+    }
 }

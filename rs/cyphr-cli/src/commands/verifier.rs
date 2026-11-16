@@ -432,10 +432,10 @@ async fn run_round<C: Connector>(
                 "commits": f.commits, "first_seen": f.first_seen})
         })
         .collect();
-    // A resolved fork stays evidence: the verifier holds it verified, and a
-    // peer never drops it (SPEC 15.8), so a verdict that omitted it would
-    // claim less than the peers show, and one round's unreachable peer
-    // must not make it vanish.
+    // SPEC 15.8: the abandoned branch is discarded, "retaining it only as
+    // proof of error". The verifier holds that proof verified, so it is
+    // reported from its own record, not only while a peer happens to serve
+    // it: one round's unreachable peer must not make it vanish.
     evidence.extend(resolved.iter().map(|f| {
         json!({"kind": "principal_fork", "height": f.height, "pre": f.pre,
                     "commits": f.commits, "first_seen": f.first_seen, "resolved": true})
