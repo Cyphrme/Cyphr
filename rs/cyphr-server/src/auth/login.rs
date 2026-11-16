@@ -81,7 +81,7 @@ pub const CHALLENGE_BYTES: usize = 32;
 #[derive(Debug, thiserror::Error)]
 pub enum LoginError {
     /// The request body was not valid JSON in the expected Coz shape.
-    #[error("login payload is not valid JSON in the expected shape: {0}")]
+    #[error("login payload is not valid JSON in the expected shape ({})", super::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// A required field was absent from the signed payload.

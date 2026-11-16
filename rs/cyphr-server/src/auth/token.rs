@@ -101,7 +101,7 @@ pub struct Claims {
 #[derive(Debug, thiserror::Error)]
 pub enum TokenError {
     /// The token was not valid JSON in the expected Coz shape.
-    #[error("bearer token is not valid JSON: {0}")]
+    #[error("bearer token is not valid JSON ({})", super::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// The payload verified but is missing a required claim.
@@ -405,6 +405,19 @@ mod tests {
             matches!(result, Err(TokenError::Expired)),
             "a token at/after its exp must be rejected, got: {result:?}"
         );
+    }
+
+    /// Backs the shared `json_fault` rule on the bearer path: a wrong-typed
+    /// token field is a typed refusal that does not echo the value.
+    #[test]
+    fn malformed_token_does_not_echo_values() {
+        let (_dir, path) = write_random_key_file();
+        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
+        let err = identity
+            .verify_token(r#"{"pay":{},"sig":424242424242}"#, 0)
+            .expect_err("a numeric sig is malformed");
+        assert!(matches!(err, TokenError::Malformed(_)));
+        assert!(!err.to_string().contains("424242424242"), "{err}");
     }
 
     /// Byte-exact golden vector: a fixed key, fixed claims, and fixed

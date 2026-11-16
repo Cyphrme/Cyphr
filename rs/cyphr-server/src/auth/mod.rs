@@ -20,6 +20,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// The category and position of a JSON fault, never serde's text: for a
+/// wrong-typed field that text quotes the offending scalar, which in a
+/// key file is key material and in a client body is an echo of attacker
+/// input into logs and responses.
+pub(crate) fn json_fault(e: &serde_json::Error) -> String {
+    format!(
+        "{:?} error at line {}, column {}",
+        e.classify(),
+        e.line(),
+        e.column()
+    )
+}
+
 /// Errors loading or using a server signing identity.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -29,10 +42,8 @@ pub enum AuthError {
 
     /// The key file was not valid JSON in the expected shape.
     ///
-    /// Reports only where and what kind of fault, never serde's text: for a
-    /// wrong-typed field that text quotes the value, which here is key
-    /// material.
-    #[error("signing key file is malformed ({:?} error at line {}, column {})", .0.classify(), .0.line(), .0.column())]
+    /// See [`json_fault`] for why serde's text is never echoed.
+    #[error("signing key file is malformed ({})", json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// The `alg` field named an algorithm coz does not recognize.
@@ -363,6 +374,17 @@ mod tests {
     /// never echoes the offending value -- serde's own type-mismatch text
     /// quotes scalars (`invalid type: integer `N``), and this error reaches
     /// the server log and, via `EarlyExit`, test output.
+    /// Backs the shared `json_fault` rule on the client-facing login path: a
+    /// wrong-typed payload field is a typed refusal that does not echo it.
+    #[test]
+    fn malformed_login_payload_does_not_echo_values() {
+        let coz_json: coz::CozJson =
+            serde_json::from_str(r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#).expect("shape");
+        let login = login::parse_login(coz_json, "cyphr.me").expect_err("tmb must be a string");
+        assert!(matches!(login, login::LoginError::Malformed(_)));
+        assert!(!login.to_string().contains("424242424242"), "{login}");
+    }
+
     #[test]
     fn malformed_key_file_error_does_not_echo_values() {
         let dir = tempfile::tempdir().expect("tempdir");

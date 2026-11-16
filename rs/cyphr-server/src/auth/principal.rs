@@ -67,7 +67,7 @@ pub enum ServerPrincipalError {
     KeyFile(#[from] super::AuthError),
 
     /// The genesis record was not valid JSON in the expected shape.
-    #[error("server principal genesis record malformed: {0}")]
+    #[error("server principal genesis record malformed ({})", super::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// coz rejected the server key while signing a chain coz, or a stored
