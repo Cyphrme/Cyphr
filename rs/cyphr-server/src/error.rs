@@ -116,6 +116,11 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // The client is told only the message; a server fault is otherwise
+        // invisible to the operator.
+        if self.status.is_server_error() {
+            tracing::error!(status = %self.status, error = %self.message, "server error");
+        }
         let now = crate::auth::server_now();
         let mut payload = serde_json::json!({
             "error": self.message,
