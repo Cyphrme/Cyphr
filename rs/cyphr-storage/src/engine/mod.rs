@@ -493,6 +493,12 @@ pub const BRANCH_LIMIT: usize = 16;
 /// can still fill [`BRANCH_LIMIT`].
 pub const BRANCH_PER_KEY: usize = 2;
 
+/// The leading bytes of every blob the engine itself writes (each prefix
+/// above extends it). A wire coz is JSON and never starts with NUL, so a
+/// blob that starts with this but matches no known prefix is the engine's
+/// own record in a version this build cannot read.
+const ENGINE_BLOB_NAMESPACE: &[u8] = b"\0cyphr-storage/";
+
 /// Marks a blob as a revoke record: these bytes followed by the JSON of a
 /// [`RevokeRecord`]. A keyspace of its own, as [`COMMIT_MANIFEST_PREFIX`]
 /// is. A rebuild re-verifies the revoke it carries rather than trusting it.
@@ -1929,6 +1935,19 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             let Some(json) = data.strip_prefix(COMMIT_MANIFEST_PREFIX) else {
+                // The engine's own keyspace under a version this build does
+                // not know: skipping it would report a clean store with
+                // whatever it records missing (R6), so it is quarantined.
+                if data.starts_with(ENGINE_BLOB_NAMESPACE) {
+                    quarantined.push(QuarantinedManifest {
+                        manifest: hash,
+                        principal_id: None,
+                        reason: QuarantineReason::Unsupported(
+                            "an engine blob of a version this build does not know".into(),
+                        ),
+                    });
+                    continue;
+                }
                 // A wire blob. One shaped like a manifest cannot have been
                 // written by this engine (it stores wire cozes in canonical
                 // form only), so it is an old shared-store manifest or a
@@ -2239,8 +2258,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The index is already final when this runs and is never read to
     /// decide the canonical chain here, so the result is a function of the
     /// blob set: manifests are taken by position, then in hash order, which
-    /// only decides which rivals survive [`BRANCH_LIMIT`] if a store holds
-    /// more than the engine ever wrote.
+    /// fixes the order a branch can extend a kept branch. The retention
+    /// caps ([`BRANCH_LIMIT`]) are admission rules and are not applied
+    /// here.
     async fn classify_branches(
         &self,
         mut branch_manifests: Vec<(Blake3Hash, CommitManifest)>,
@@ -2326,16 +2346,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             let signer = commit_signer(&commit);
-            if !has_slot(of_principal, &signer) {
-                reject(unless_fork(
-                    format!(
-                        "no retention slot left for key {signer}: at most {BRANCH_PER_KEY} per \
-                         key, {BRANCH_LIMIT} per principal"
-                    ),
-                    QuarantineReason::Conflict,
-                ));
-                continue;
-            }
+            // No quota here: the caps bound what ingest admits, and a
+            // promotion retains its displaced commits past them, so a
+            // quota in the rebuild would drop a once-canonical commit the
+            // live store keeps (I1).
             for pr in &commit.prs {
                 kept_prs.insert((commit.principal_id.clone(), commit.sequence, pr.clone()));
             }
@@ -2585,8 +2599,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<cyphr::Principal<S>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
-        self.replay_stored(key.as_deref().unwrap_or(principal_id), genesis)
-            .await
+        let stored = key.as_deref().unwrap_or(principal_id);
+        // The writer's lock: a push appends to the durable log before it
+        // writes the index, and a load in that window sees a log one leaf
+        // ahead of the chain and regenerates it for nothing.
+        let lock = self.principal_lock(stored);
+        let _no_write_in_flight = lock.lock().await;
+        self.replay_stored(stored, genesis).await
     }
 
     /// [`load_principal`](Self::load_principal) for an id already known to

@@ -455,6 +455,34 @@ async fn promotion_swaps_retained_commits_one_for_one() {
     assert_eq!(e.list_branches(&f.id).await.expect("branches").len(), held);
 }
 
+/// archrev:A3. A commit that was ever canonical is never removed (I1: the
+/// blobs are the truth, so a rebuild must serve what the live store
+/// served). After the promotion in the test above `golden` holds three
+/// retained rivals, one past its quota, because the displaced canonical
+/// commit is retained without quota. A from-scratch rebuild must answer
+/// exactly as the live store does. Turns red if the rebuild applies the
+/// admission quota to a displaced commit and drops one.
+#[tokio::test]
+async fn archrev_a3_rebuild_keeps_a_displaced_commit_past_the_quota() {
+    let f = Fork::new(3).await;
+    let (e, _) = f.engine_with(&[0, 1, 2]).await;
+    let pool = load_pool();
+    let key_a = kp(&pool, "key_a");
+    let mut r = f.base.fork().await.expect("fork");
+    create_key(&mut r, &key_a, &kp(&pool, "bob"), NOW + 20).await;
+    create_key(&mut r, &key_a, &kp(&pool, "carol"), NOW + 21).await;
+    assert!(f.submit(&e, &blobs(&r, 1)).await.is_err(), "R is a rival");
+    f.submit(&e, &blobs(&r, 2)).await.expect("B promotes R");
+    let live = answers(&e, &f).await;
+    let report = e.rebuild_index_with_report().await.expect("rebuild");
+    assert!(
+        report.quarantined.is_empty(),
+        "a rebuild quarantined held history: {:?}",
+        report.quarantined
+    );
+    assert_eq!(answers(&e, &f).await, live, "rebuild == live");
+}
+
 /// `k`'s self-signed naked revoke (SPEC 6.4) as of `rvk`: `{pay, sig, key}`.
 fn naked_revoke(k: &Kp, rvk: i64) -> serde_json::Value {
     let pay = serde_json::json!({
