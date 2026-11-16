@@ -499,6 +499,13 @@ async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
     );
 }
 
+// Each test owns its clock: a `Clock` is a bare `fn`, so sharing one
+// static between parallel tests lets one test's time bleed into another's.
+static FORK_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn fork_clock() -> i64 {
+    FORK_CLOCK.load(Ordering::SeqCst)
+}
+
 /// archrev:B1. Claim: a fork the relying party has proved stays recorded
 /// (SPEC 15.7.1 "Witnesses should keep such transaction as proof of
 /// error"): a later pull that only the honest peer answers must not clear
@@ -522,13 +529,13 @@ async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
     rival_line.push(&rival, blobs);
     let honest_peer = Mirror { line: honest_line };
     let rival_peer = Mirror { line: rival_line };
-    LIFE_CLOCK.store(T0 + 100, Ordering::SeqCst);
+    FORK_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
     let mut rp = RelyingParty::new(
         &pg,
         Anchor::GenesisKey(g.domain_key(T0)),
         config(),
-        life_clock,
+        fork_clock,
     );
     let report = rp
         .refresh(&[peer("honest", &honest_peer), peer("rival", &rival_peer)])
