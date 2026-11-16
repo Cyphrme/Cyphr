@@ -1,7 +1,7 @@
 //! SPEC 7.6: replaying a data action the principal already holds is
 //! ignored and changes no state. That must hold when the action's signer
 //! was retired by a commit dated the same second (a signature dated exactly
-//! at a removal is judged after it, SPEC 6.5), because every client that
+//! at a removal is judged after it by the key timeline, forge #213), because every client that
 //! pushes or saves resubmits the actions it holds after its commits.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};

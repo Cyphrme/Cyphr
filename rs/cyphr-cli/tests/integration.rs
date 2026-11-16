@@ -593,7 +593,7 @@ fn wall_second() -> i64 {
         .as_secs() as i64
 }
 
-/// Backs NETSIM-2 D1 and SPEC 6.5/6.2: a data action signed by a key, then
+/// Backs NETSIM-2 D1 (key-timeline tie rule, forge #213): a data action signed by a key, then
 /// `key replace` of that key in the same second (a signature dated at a
 /// removal is judged after it), must not fail the replace. The action is a
 /// verdict its history flipped: ignored, not refused as `unknown key`.

@@ -152,8 +152,9 @@ impl PrincipalState {
 
         // SPEC §7.6: replaying an applied data action is ignored. Decided
         // before the signer is resolved, since a commit dated the same
-        // second may have retired that signer (SPEC 6.5 judges a signature
-        // at a removal as after it), and from the action's own bytes, never
+        // second may have retired that signer (the key timeline judges a
+        // signature dated at a removal as after it; forge #213), and from
+        // the action's own bytes, never
         // the caller's `czd`: a match means these are the held bytes.
         if let Some(own) = pay_value["alg"]
             .as_str()

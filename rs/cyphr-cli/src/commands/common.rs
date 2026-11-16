@@ -395,18 +395,30 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             {
                 Ok(_) => {},
                 // An action this principal signed with a key that a later
-                // commit of its own retired in the same second: a signature
-                // dated at a removal is judged after it (SPEC 6.5), so the
-                // verdict flipped and the action is ignored (SPEC 6.2), as
-                // every replay of the stored history ignores it. Only an
-                // action-only line, and only a key the principal held.
+                // commit of its own retired in the same second: the key
+                // timeline judges a signature dated at a removal as after
+                // it (forge #213 asks the spec author whether SPEC 6.2
+                // agrees), so every replay of the stored history ignores
+                // the action. Only an action-only line, and only a key the
+                // principal held.
                 Err(cyphr_storage::engine::EngineError::Protocol(e))
                     if e.is_inactive_signer()
                         && commit.commit_id.is_empty()
                         && bundle.actions.iter().all(|blob| {
                             cyphr::replay::StoredCoz::from_wire(blob)
                                 .is_ok_and(|c| principal.held_key(&c.header().tmb))
-                        }) => {},
+                        }) =>
+                {
+                    for blob in &bundle.actions {
+                        if let Ok(c) = cyphr::replay::StoredCoz::from_wire(blob) {
+                            eprintln!(
+                                "warning: dropped action {}: its signer was retired by a \
+                                 key/replace dated the same second (see forge #213)",
+                                c.czd().to_b64()
+                            );
+                        }
+                    }
+                },
                 Err(e) => return Err(e.into()),
             }
         }

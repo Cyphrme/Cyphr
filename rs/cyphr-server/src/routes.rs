@@ -655,10 +655,10 @@ struct AttestedRoots {
 /// callers report the tip they attest); if it did not, the index is given a
 /// moment to catch up, and only a disagreement that outlasts the budget is a
 /// genuine index/chain divergence and a 500. A churning principal can
-/// therefore delay a read but never fail it, and every signed answer is of
-/// roots that equal the index's for the tip it names. Roots are memoized
-/// only once they equal the index's for that commit, never under a commit id
-/// they do not belong to.
+/// therefore delay a read by at most [`ATTEST_BUDGET`]; a read still
+/// unsettled then is a 500. Every signed answer is of roots that equal the index's for the tip it
+/// names. Roots are memoized only once they equal the index's for that commit, never under a commit
+/// id they do not belong to.
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<AttestedRoots, AppError> {
     let deadline = tokio::time::Instant::now() + ATTEST_BUDGET;
     let mut t = t.clone();
