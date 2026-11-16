@@ -3464,16 +3464,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Ok(Vec::new());
         }
         let decoded = decode_bundle(bundle)?;
-        // Only a signer that is neither a key of the principal nor one the
-        // bundle introduces can be an embedded principal's key; with none,
-        // there is nothing to follow, and every embedded principal's replay
-        // is saved.
         let outside = |p: &cyphr::Principal<T>, tmb: &coz::Thumbprint| {
             !(p.is_key_active(tmb) || decoded.introduced_keys().any(|k| k.tmb() == tmb))
         };
-        if !decoded
+        // With every signer a key of the principal now, none can be an
+        // embedded principal's and there is nothing to follow, which saves
+        // every embedded principal's replay. A key the bundle introduces
+        // does not count: one that signs before its own introduction is not
+        // yet a key of the principal, and is judged through the embedded
+        // views, which must be current (SPEC 10.5).
+        if decoded
             .cozies()
-            .any(|coz| outside(principal, &coz.header().tmb))
+            .all(|coz| principal.is_key_active(&coz.header().tmb))
         {
             return Ok(Vec::new());
         }
