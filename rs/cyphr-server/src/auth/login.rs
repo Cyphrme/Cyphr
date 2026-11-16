@@ -465,7 +465,12 @@ pub async fn login(
     let (identity, audience) = login_capability(&state)?;
 
     let coz_json: coz::CozJson = serde_json::from_str(&body)
-        .map_err(|e| AppError::bad_request(format!("failed to parse login body as JSON: {e}")))?;
+        .map_err(|e| {
+            AppError::bad_request(format!(
+                "failed to parse login body as JSON ({})",
+                super::json_fault(&e)
+            ))
+        })?;
 
     // One schema parse + audience binding for both flows (ruling R6a).
     let parsed = parse_login(coz_json, audience)?;

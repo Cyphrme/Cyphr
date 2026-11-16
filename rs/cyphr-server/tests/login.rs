@@ -653,6 +653,31 @@ async fn login_rejects_invalid_signature() {
 }
 
 // ========================================================================
+// Malformed bodies
+// ========================================================================
+
+/// A login (or push) body with a wrong-typed field is refused 400 and the
+/// refusal does not echo the field's value: serde's and axum's own texts
+/// quote it. Covers the handler's body parse, the payload schema parse and
+/// the shared JSON extractor. Turns red if any of the three reflects it.
+#[tokio::test]
+async fn malformed_login_bodies_do_not_echo_values() {
+    let app = build_router(login_state());
+    for (path, body) in [
+        ("/auth/login", r#"{"pay":{},"sig":424242424242}"#),
+        ("/auth/login", r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#),
+        ("/push", r#"{"principal_id":424242424242}"#),
+    ] {
+        let (status, reply) = post_json(app.clone(), path, body.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path} {body}: {reply:?}");
+        assert!(
+            !reply.to_string().contains("424242424242"),
+            "{path} echoed the value: {reply:?}"
+        );
+    }
+}
+
+// ========================================================================
 // Unknown principal
 // ========================================================================
 
