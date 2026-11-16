@@ -591,7 +591,10 @@ async fn nonce_created_twice_at_one_level_is_refused() {
     let commits = p.commits().count();
 
     let r = commit_one(&mut p, &g, create(Level::Kt, &g, &n, T + 11), None, T + 11).await;
-    assert!(r.is_err(), "a repeat KT create was accepted");
+    assert!(
+        matches!(r, Err(cyphr::Error::DuplicateNonce)),
+        "a repeat KT create must be DuplicateNonce, got {r:?}"
+    );
     assert_eq!(roots(&p), armed, "a refused create moved a root");
     assert_eq!(p.commits().count(), commits, "a refused create finalized");
 

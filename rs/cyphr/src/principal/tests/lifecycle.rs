@@ -433,14 +433,13 @@ async fn later_commit_bare_finalizer_on_already_deleted_is_rejected() {
     );
 }
 
-/// Backs SPEC 7.6 / 10.1 at the principal: creating a nonce twice at one
-/// level is `DuplicateNonce`, deleting one that is absent is `UnknownNonce`,
-/// and a refused nonce leaves the roots as they were. Unit level: the signed
-/// wire scenarios in `tests/nonce.rs` never repeat a nonce or delete an
-/// absent one at the principal, and these two refusals have no cheaper
-/// scenario. Turns red if either refusal is accepted or moves a root.
+/// Backs SPEC 10.1 at the principal: deleting a nonce that is absent is
+/// `UnknownNonce`. Unit level: the signed wire scenarios in
+/// `tests/nonce.rs` never delete an absent nonce (they pin the duplicate
+/// create), and this refusal has no cheaper scenario. Turns red if the
+/// delete is accepted.
 #[tokio::test]
-async fn duplicate_nonce_and_absent_delete_are_typed_refusals() {
+async fn absent_nonce_delete_is_a_typed_refusal() {
     use crate::nonce::{Nonce, NonceLevel};
     use crate::parsed_coz::CozKind;
 
@@ -453,10 +452,6 @@ async fn duplicate_nonce_and_absent_delete_are_typed_refusals() {
         HashAlg::Sha256,
     )
     .unwrap();
-    let create = || CozKind::NonceCreate {
-        level: NonceLevel::Kt,
-        nonce: nonce.clone(),
-    };
     let delete = || CozKind::NonceDelete {
         level: NonceLevel::Kt,
         nonce: nonce.clone(),
@@ -469,18 +464,4 @@ async fn duplicate_nonce_and_absent_delete_are_typed_refusals() {
             None,
         ));
     assert!(matches!(r, Err(Error::UnknownNonce)), "{r:?}");
-
-    p.state_mut()
-        .apply_verified_internal(VerifiedCoz::from_transaction_unsafe(
-            make_lifecycle_cz(create(), &tmb, 2001),
-            None,
-        ))
-        .unwrap();
-    let r = p
-        .state_mut()
-        .apply_verified_internal(VerifiedCoz::from_transaction_unsafe(
-            make_lifecycle_cz(create(), &tmb, 2002),
-            None,
-        ));
-    assert!(matches!(r, Err(Error::DuplicateNonce)), "{r:?}");
 }
