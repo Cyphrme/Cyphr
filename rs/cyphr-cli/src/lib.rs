@@ -284,12 +284,12 @@ pub enum Commands {
         algo: String,
 
         /// Use existing key from keystore (by thumbprint)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         key: Option<String>,
 
         /// Create a multi-key genesis (comma-separated thumbprints; the first
         /// is the genesis key, which creates the rest)
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, allow_hyphen_values = true, value_delimiter = ',')]
         keys: Option<Vec<String>>,
 
         /// Publish the genesis commit: the genesis key (the first) signs a
@@ -327,14 +327,14 @@ pub enum Commands {
     /// Display identity state
     Inspect {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },
 
     /// Export identity to JSONL file
     Export {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Output file path
@@ -352,7 +352,7 @@ pub enum Commands {
     /// Send the commits a peer lacks; refuses a peer holding a newer tip
     Push {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL (e.g., http://127.0.0.1:8080)
@@ -373,7 +373,7 @@ pub enum Commands {
     /// field of the action's own pay (SPEC 4.8.2).
     Rebase {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL
@@ -384,7 +384,7 @@ pub enum Commands {
     /// Pull and verify a peer's commits into the local store
     Fetch {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL
@@ -398,7 +398,7 @@ pub enum Commands {
     /// newer tip; it never claims the view is current.
     Verify {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL to ask (repeatable)
@@ -407,7 +407,7 @@ pub enum Commands {
 
         /// Trust anchor: the genesis key or the genesis commit id (never the
         /// PG alone)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         anchor: Option<String>,
 
         /// TOML file with `anchor`, `peers` and `freshness_secs`; flags win
@@ -422,7 +422,7 @@ pub enum Commands {
     /// Run `verify` on a timer, printing each round's verdict
     Watch {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL to ask (repeatable)
@@ -430,7 +430,7 @@ pub enum Commands {
         peer: Vec<String>,
 
         /// Trust anchor: the genesis key or genesis commit id
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         anchor: Option<String>,
 
         /// TOML file with `anchor`, `peers` and `freshness_secs`; flags win
@@ -454,7 +454,7 @@ pub enum Commands {
     /// the resolving key, the naked revokes) in full
     Audit {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL to ask (repeatable)
@@ -462,7 +462,7 @@ pub enum Commands {
         peer: Vec<String>,
 
         /// Trust anchor: the genesis key or genesis commit id
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         anchor: Option<String>,
 
         /// TOML file with `anchor`, `peers` and `freshness_secs`; flags win
@@ -482,11 +482,16 @@ pub enum Commands {
     /// commits or sent to a peer, and `verify` still reports Error.
     Recover {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// The branch head to trust, as `verify` lists it
-        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            conflicts_with = "clear",
+            required_unless_present = "clear"
+        )]
         head: Option<String>,
 
         /// Why, recorded beside the choice
@@ -513,7 +518,7 @@ pub enum GossipCommands {
     /// the naked revokes held to a bundle file
     Export {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Bundle file to write
@@ -525,7 +530,7 @@ pub enum GossipCommands {
     /// were a peer: nothing in it is believed except by replay
     Import {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Bundle file to read
@@ -534,7 +539,7 @@ pub enum GossipCommands {
 
         /// Trust anchor: the genesis key or genesis commit id (without it
         /// the bundle's own genesis commit is a hint)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         anchor: Option<String>,
     },
 }
@@ -556,45 +561,45 @@ pub enum KeyCommands {
     /// Add a key to an identity
     Add {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of key to add (if omitted, generates new key)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         key: Option<String>,
 
         /// Thumbprint of signing key
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
     },
 
     /// Remove a key from an identity without marking it compromised (SPEC 6.2)
     Delete {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of the key to remove
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         key: String,
 
         /// Thumbprint of signing key
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
     },
 
     /// Swap the signing key for a new one in one commit (SPEC 6.3)
     Replace {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of the new key (if omitted, generates one)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         key: Option<String>,
 
         /// Thumbprint of the key to replace, which signs
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
     },
 
@@ -604,7 +609,7 @@ pub enum KeyCommands {
     /// accepts it refuses further use of the key.
     NakedRevoke {
         /// Thumbprint of the key to revoke, which must be in the keystore
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         key: String,
 
         /// Why the key is compromised
@@ -619,15 +624,15 @@ pub enum KeyCommands {
     /// Revoke a key from an identity, by a commit signed by that key
     Revoke {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of key to revoke
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         key: String,
 
         /// Thumbprint of signing key
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
     },
 
@@ -638,7 +643,7 @@ pub enum KeyCommands {
     /// proof of possession. Carry it to a device already in the principal.
     Request {
         /// Principal Root (base64url) the request is for
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Algorithm (ES256, ES384, ES512, Ed25519)
@@ -660,11 +665,11 @@ pub enum KeyCommands {
     /// this identity, and its `now` is within the window.
     Accept {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of the signing key
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
 
         /// The pairing request file
@@ -679,7 +684,7 @@ pub enum KeyCommands {
     /// List keys (from keystore if no identity, from identity if provided)
     List {
         /// Principal Root (base64url) - if omitted, lists keystore keys
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: Option<String>,
     },
 }
@@ -693,11 +698,11 @@ pub enum DataCommands {
     /// `ds/create`. `push` sends recorded actions ahead of the commits.
     Action {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of the signing key
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
 
         /// Message the `comment/create` action carries
@@ -716,18 +721,18 @@ pub enum DataCommands {
     /// Sign a `ds/create` over the local DT; its `id` becomes DR in PR
     Commit {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Thumbprint of the signing key
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         signer: String,
     },
 
     /// Send a signed action (the output of `data action`) to a peer
     Submit {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
 
         /// Peer base URL
@@ -746,14 +751,14 @@ pub enum TxCommands {
     /// List cozies for an identity
     List {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },
 
     /// Verify coz chain integrity
     Verify {
         /// Principal Root (base64url)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         identity: String,
     },
 }
