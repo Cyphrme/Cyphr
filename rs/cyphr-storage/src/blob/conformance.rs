@@ -102,3 +102,16 @@ pub async fn max_blob_size_enforced<S: BlobStore>(store: &S, max: usize) {
         max + 1
     );
 }
+
+/// Every function in this module on a fresh store from `fresh`, which
+/// returns a guard (a temp directory, say) held for the call and a store
+/// capped at the given size when one is asked for. A function added to this
+/// module is listed here, once, so no backend's suite can leave it unwired.
+pub async fn run_all<S: BlobStore, G>(fresh: impl Fn(Option<usize>) -> (S, G)) {
+    put_get_roundtrip(&fresh(None).0).await;
+    get_missing_returns_none(&fresh(None).0).await;
+    exists_reflects_presence(&fresh(None).0).await;
+    put_is_idempotent(&fresh(None).0).await;
+    iter_returns_all_stored(&fresh(None).0).await;
+    max_blob_size_enforced(&fresh(Some(10)).0, 10).await;
+}

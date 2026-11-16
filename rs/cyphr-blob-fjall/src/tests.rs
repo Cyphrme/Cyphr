@@ -19,16 +19,14 @@ use super::*;
 /// end-to-end route names a backend-independent contract.
 #[tokio::test]
 async fn fjall_blob_store_passes_the_shared_conformance_suite() {
-    conformance::put_get_roundtrip(&FjallBlobStore::temp().expect("open").0).await;
-    conformance::get_missing_returns_none(&FjallBlobStore::temp().expect("open").0).await;
-    conformance::exists_reflects_presence(&FjallBlobStore::temp().expect("open").0).await;
-    conformance::put_is_idempotent(&FjallBlobStore::temp().expect("open").0).await;
-    conformance::iter_returns_all_stored(&FjallBlobStore::temp().expect("open").0).await;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let capped = FjallBlobStore::open(dir.path())
-        .expect("open")
-        .with_max_blob_size(10);
-    conformance::max_blob_size_enforced(&capped, 10).await;
+    conformance::run_all(|cap| {
+        let (store, guard) = FjallBlobStore::temp().expect("open");
+        match cap {
+            Some(n) => (store.with_max_blob_size(n), guard),
+            None => (store, guard),
+        }
+    })
+    .await;
 }
 
 /// Trivial fixed-width hasher for exercising generic EML log storage in
