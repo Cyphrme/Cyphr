@@ -16,6 +16,8 @@
 //! store where the rival is canonical and its blobs are copied across:
 //! exactly the bytes the first store would hold after the push.
 
+#![recursion_limit = "256"]
+
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, MemoryBlobStore};
@@ -493,6 +495,120 @@ mod eml {
             .await
             .expect("replay of the canonical chain"),
             "the regenerated log is the canonical chain's"
+        );
+    }
+
+    /// An indexer that, once armed, parks the next `index_commit` until
+    /// released, so a test can stand in the window after a commit's log
+    /// append and before its index write.
+    struct Gated {
+        inner: FjallIndexer,
+        armed: std::sync::atomic::AtomicBool,
+        reached: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    macro_rules! delegate {
+        ($($name:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {$(
+            async fn $name(&self $(, $arg: $ty)*) -> $ret {
+                self.0.inner.$name($($arg),*).await
+            }
+        )*};
+    }
+
+    /// Both indexer traits over a shared [`Gated`].
+    struct GatedIndex(Arc<Gated>);
+
+    impl cyphr_storage::index::Indexer for GatedIndex {
+        delegate! {
+            get_tip(&self, id: &str) -> Result<Option<cyphr_storage::index::TipState>, cyphr_storage::index::IndexerError>;
+            is_pg_established(&self, id: &str) -> Result<bool, cyphr_storage::index::IndexerError>;
+            get_commit_chain(&self, id: &str, from: Option<u64>, to: Option<u64>) -> Result<Vec<cyphr_storage::index::CommitRef>, cyphr_storage::index::IndexerError>;
+            resolve_digest(&self, d: &cyphr::state::TaggedDigest) -> Result<Option<cyphr_storage::index::EntityRef>, cyphr_storage::index::IndexerError>;
+            list_principals(&self) -> Result<Vec<cyphr_storage::index::PrincipalSummary>, cyphr_storage::index::IndexerError>;
+            is_blob_indexed(&self, h: &Blake3Hash) -> Result<bool, cyphr_storage::index::IndexerError>;
+            get_key(&self, t: &str) -> Result<Option<cyphr_storage::index::PublicKeyInfo>, cyphr_storage::index::IndexerError>;
+        }
+    }
+
+    impl cyphr_storage::index::IndexerWrite for GatedIndex {
+        delegate! {
+            check_commit(&self, c: &cyphr_storage::index::IndexableCommit, t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
+            replace_chain_from(&self, id: &str, seq: u64, c: &[cyphr_storage::index::IndexableCommit], t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
+            clear(&self, t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
+            set_quarantined(&self, m: &[(Blake3Hash, String)], t: &cyphr_storage::index::DeriveToken) -> Result<(), cyphr_storage::index::IndexerError>;
+            quarantined(&self) -> Result<Vec<(Blake3Hash, String)>, cyphr_storage::index::IndexerError>;
+        }
+
+        async fn index_commit(
+            &self,
+            c: &cyphr_storage::index::IndexableCommit,
+            t: &cyphr_storage::index::DeriveToken,
+        ) -> Result<(), cyphr_storage::index::IndexerError> {
+            if self.0.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.0.reached.notify_one();
+                self.0.release.notified().await;
+            }
+            self.0.inner.index_commit(c, t).await
+        }
+    }
+
+    /// archrev:B3. Claim: a read that lands between a commit's log append
+    /// and its index write must not regenerate the log. The append is
+    /// ordered after the blob record and before the index write (I1), so
+    /// in that window the log is one leaf ahead of the served chain; the
+    /// stale check reads that as a log the chain re-pointed away from and
+    /// regenerates into a new generation, retiring the one the writer just
+    /// appended to. Turns red if the in-flight commit's read opens any
+    /// generation beyond 0. End-to-end: a durable store, one push parked
+    /// at its index write, one concurrent read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn archrev_b3_a_read_during_a_push_does_not_regenerate_the_log() {
+        let s = Scenario::new().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fjall::Database::builder(dir.path().join("blobs"))
+            .open()
+            .expect("db");
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(Gated {
+            inner: FjallIndexer::open(&dir.path().join("index")).expect("index"),
+            armed: std::sync::atomic::AtomicBool::new(false),
+            reached: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let e = Arc::new(StorageEngine::with_log_factory(
+            FjallBlobStore::from_database(db.clone()).expect("blobs"),
+            GatedIndex(gate.clone()),
+            Recorded {
+                logs: EmlLogs::new(db).expect("logs"),
+                opened: opened.clone(),
+            },
+        ));
+        e.submit_commit(&s.id, Some(s.genesis.clone()), &s.g)
+            .await
+            .expect("G");
+        opened.lock().expect("lock").clear();
+
+        gate.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let push = {
+            let (e, s_id, genesis, a) = (e.clone(), s.id.clone(), s.genesis.clone(), s.a.clone());
+            tokio::spawn(async move { e.submit_commit(&s_id, Some(genesis), &a).await })
+        };
+        gate.reached.notified().await;
+        let read = {
+            let (e, id) = (e.clone(), s.id.clone());
+            tokio::spawn(async move { e.rederive_roots(&id).await })
+        };
+        // An unlocked read finishes well inside this pause (the backends
+        // are local); a read that waits for the push is still parked.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let during = opened.lock().expect("lock").clone();
+        gate.release.notify_one();
+        push.await.expect("join").expect("A");
+        read.await.expect("join").expect("the read");
+        assert!(
+            during.iter().all(|g| *g == 0),
+            "a read between the log append and the index write opened generations {during:?}"
         );
     }
 

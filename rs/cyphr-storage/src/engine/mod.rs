@@ -2599,8 +2599,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<cyphr::Principal<S>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
-        self.replay_stored(key.as_deref().unwrap_or(principal_id), genesis)
-            .await
+        let stored = key.as_deref().unwrap_or(principal_id);
+        // The writer's lock: a push appends to the durable log before it
+        // writes the index, and a load in that window sees a log one leaf
+        // ahead of the chain and regenerates it for nothing.
+        let lock = self.principal_lock(stored);
+        let _no_write_in_flight = lock.lock().await;
+        self.replay_stored(stored, genesis).await
     }
 
     /// [`load_principal`](Self::load_principal) for an id already known to
