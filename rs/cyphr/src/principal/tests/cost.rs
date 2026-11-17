@@ -68,26 +68,30 @@ async fn a_commit_write_copies_no_held_action() {
 
 /// Cost: extending a forked or detached principal by one commit copies
 /// none of the commits or actions it shares with the original (the client
-/// record and server gossip extend one per round). Red while the first
-/// settle after the split copies the shared part.
+/// record and server gossip extend one per round). A write may copy the
+/// settled segments no larger than twice what it adds (the tiered merge of
+/// `Grown`, amortised O(log n) per commit), never the history it extends:
+/// here 20 held commits against one new.
+/// Red while the first settle after the split copies the shared part.
 #[tokio::test]
 async fn extending_a_forked_or_detached_principal_copies_no_held_history() {
-    let (principal, key) = principal_holding(40).await;
+    let (mut principal, key) = principal_holding(40).await;
+    for n in 0..20u8 {
+        let new_key = make_test_key(0x30 + n);
+        principal
+            .apply_transaction_test(
+                key_create(&key, &new_key, 1000 + i64::from(n), 0x80 + n),
+                Some(new_key),
+            )
+            .await
+            .unwrap();
+    }
+    let held = principal.commit_count();
     let forked = principal.fork().await.unwrap();
     let detached = principal.detach().await.unwrap();
     for (name, mut extended) in [("forked", forked), ("detached", detached)] {
         let key2 = make_test_key(0x22);
-        let cz = ParsedCoz {
-            kind: CozKind::KeyCreate {
-                id: key2.tmb().clone(),
-            },
-            signer: key.tmb().clone(),
-            now: 5000,
-            czd: Czd::from_bytes(vec![0xBB; 32]),
-            hash_alg: crate::state::HashAlg::Sha256,
-            arrow: None,
-            raw: dummy_coz_json(),
-        };
+        let cz = key_create(&key, &key2, 5000, 0xBB);
         let (actions, commits) = (probe::action_clones(), probe::commit_clones());
         extended
             .apply_transaction_test(cz, Some(key2))
@@ -96,7 +100,51 @@ async fn extending_a_forked_or_detached_principal_copies_no_held_history() {
         assert_eq!(probe::action_clones() - actions, 0, "{name}: actions");
         assert_eq!(probe::commit_clones() - commits, 0, "{name}: commits");
         assert_eq!(extended.action_count(), 40);
+        assert_eq!(extended.commit_count(), held + 1);
     }
+}
+
+/// A key-create coz of `signer`, distinct per `n`.
+fn key_create(signer: &Key, new: &Key, now: i64, n: u8) -> ParsedCoz {
+    ParsedCoz {
+        kind: CozKind::KeyCreate {
+            id: new.tmb().clone(),
+        },
+        signer: signer.tmb().clone(),
+        now,
+        czd: Czd::from_bytes(vec![n; 32]),
+        hash_alg: crate::state::HashAlg::Sha256,
+        arrow: None,
+        raw: dummy_coz_json(),
+    }
+}
+
+/// Cost: while a copy of the state is held (gossip holds the kept state
+/// across a write), writes do not pile up segments in the commit chain:
+/// their number stays logarithmic in the commits held (`Grown` documents
+/// the bound). Red while a shared last segment is never merged.
+#[tokio::test]
+async fn commit_segments_stay_logarithmic_while_a_copy_is_held() {
+    let (mut principal, key) = principal_holding(0).await;
+    let mut held = principal.state().clone();
+    for n in 0..60u8 {
+        let new_key = make_test_key(0x30 + n);
+        principal
+            .apply_transaction_test(
+                key_create(&key, &new_key, 1000 + i64::from(n), 0x80 + n),
+                Some(new_key),
+            )
+            .await
+            .unwrap();
+        held = principal.state().clone();
+        let commits = principal.commit_count();
+        assert!(
+            principal.state().commit_segments() <= commits.ilog2() as usize + 1,
+            "{commits} commits in {} segments",
+            principal.state().commit_segments()
+        );
+    }
+    assert!(held.commit_count() > 60);
 }
 
 /// Cost: DT's view is read from a memo, and a write of one more action

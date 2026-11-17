@@ -128,6 +128,12 @@ impl PrincipalState {
         self.auth.commits.iter()
     }
 
+    /// How many shared segments the chain's commits are held in.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn commit_segments(&self) -> usize {
+        self.auth.commits.segments()
+    }
+
     /// How many commits the chain holds.
     pub fn commit_count(&self) -> usize {
         self.auth.commits.len()

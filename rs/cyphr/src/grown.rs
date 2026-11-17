@@ -16,15 +16,20 @@ use std::sync::Arc;
 
 /// A collection a [`Grown`] folds additions into.
 pub trait Absorb: Default + Clone {
-    /// Whether nothing is held.
-    fn is_blank(&self) -> bool;
+    /// How many items are held.
+    fn weight(&self) -> usize;
     /// Take in everything `tail` holds.
     fn absorb(&mut self, tail: Self);
+
+    /// Whether nothing is held.
+    fn is_blank(&self) -> bool {
+        self.weight() == 0
+    }
 }
 
 impl<T: Clone> Absorb for Vec<T> {
-    fn is_blank(&self) -> bool {
-        self.is_empty()
+    fn weight(&self) -> usize {
+        self.len()
     }
 
     fn absorb(&mut self, mut tail: Self) {
@@ -32,23 +37,25 @@ impl<T: Clone> Absorb for Vec<T> {
     }
 }
 
+// Sets and maps extend item by item: O(tail log held), where `append` would
+// walk what is held too.
 impl<T: Clone + Ord> Absorb for BTreeSet<T> {
-    fn is_blank(&self) -> bool {
-        self.is_empty()
+    fn weight(&self) -> usize {
+        self.len()
     }
 
-    fn absorb(&mut self, mut tail: Self) {
-        self.append(&mut tail);
+    fn absorb(&mut self, tail: Self) {
+        self.extend(tail);
     }
 }
 
 impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
-    fn is_blank(&self) -> bool {
-        self.is_empty()
+    fn weight(&self) -> usize {
+        self.len()
     }
 
-    fn absorb(&mut self, mut tail: Self) {
-        self.append(&mut tail);
+    fn absorb(&mut self, tail: Self) {
+        self.extend(tail);
     }
 }
 
@@ -56,11 +63,23 @@ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
 /// since. Cloning copies the additions and one pointer per segment.
 ///
 /// Segments are in order, and a key of a map or set is held in one at most.
-/// A segment is added only when the last is shared with another state, so
-/// their number is the depth of forks over the principal's history; a read
-/// pays it as a factor (a point read walks the segments, a range read merges
-/// them), and [`Self::settle`] folds them back into one once they are
-/// unshared.
+///
+/// # Segment bound
+///
+/// Segments are size-tiered: after every [`Self::settle`], each segment
+/// weighs more than twice the one after it. Settle pushes the additions as
+/// a segment, then while `2 * newest >= previous` merges the newest into
+/// the previous (by move if nothing else holds them, else by copying).
+///
+/// - Count: with `S` segments the oldest weighs more than `2^(S-1)` times the newest, which weighs
+///   at least 1, so `n > 2^(S-1)` and `S <= log2(n) + 1`, whoever else shares the segments. A point
+///   read pays that factor, a range read an S-way merge.
+/// - Copy: a merge copies at most the previous and the newest segment, and `previous <= 2 *
+///   newest`, so it copies at most `3 * newest` items. The merged segment weighs at least `1.5 *
+///   newest` and at least `1.5 * previous`, so an item sits in a merge input at most `log_{1.5}(n)`
+///   times, and `n` items cost `O(n log n)` copies in all: O(log n) each, amortised, and never a
+///   copy of a segment much larger than what the write added (the forked history is the oldest,
+///   largest segment, which no small write reaches).
 #[derive(Debug, Clone)]
 pub struct Grown<C: Absorb> {
     settled: Vec<Arc<C>>,
@@ -77,43 +96,32 @@ impl<C: Absorb> Default for Grown<C> {
 }
 
 impl<C: Absorb> Grown<C> {
-    /// Take the additions into the settled segments. Free when the
-    /// additions are none, and copies no held item: the additions fold into
-    /// the last segment if nothing else shares it, and become a new segment
-    /// if something does.
+    /// Take the additions into the settled segments, keeping the segments
+    /// within the bound above.
     pub fn settle(&mut self) {
-        if !self.added.is_blank() {
-            let tail = std::mem::take(&mut self.added);
-            match self.settled.last_mut().and_then(Arc::get_mut) {
-                Some(last) => last.absorb(tail),
-                None => self.settled.push(Arc::new(tail)),
-            }
+        if self.added.is_blank() {
+            return;
         }
-        self.compact();
-    }
-
-    /// Merge the last segment into the one before it while neither is
-    /// shared, so segments left by a fork are gone once the fork is.
-    fn compact(&mut self) {
+        self.settled.push(Arc::new(std::mem::take(&mut self.added)));
         while self.settled.len() >= 2 {
-            let Some(last) = self.settled.pop() else {
+            let n = self.settled.len();
+            if 2 * self.settled[n - 1].weight() < self.settled[n - 2].weight() {
+                return;
+            }
+            let Some(newest) = self.settled.pop() else {
                 return;
             };
-            let tail = match Arc::try_unwrap(last) {
-                Ok(tail) => tail,
-                Err(shared) => {
-                    self.settled.push(shared);
-                    return;
-                },
-            };
-            match self.settled.last_mut().and_then(Arc::get_mut) {
-                Some(prev) => prev.absorb(tail),
-                None => {
-                    self.settled.push(Arc::new(tail));
-                    return;
-                },
+            let tail = Arc::try_unwrap(newest).unwrap_or_else(|shared| (*shared).clone());
+            if let Some(previous) = self.settled.last_mut() {
+                Arc::make_mut(previous).absorb(tail);
             }
         }
+    }
+
+    /// How many settled segments are held.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn segments(&self) -> usize {
+        self.settled.len()
     }
 }
 
@@ -337,59 +345,92 @@ mod tests {
         }
     }
 
-    /// Settling a copy of each collection kind copies no held item, reads
-    /// cover the segments the copy left, and once the original is gone the
-    /// segments fold back into one. A count is the one evaluator for a
-    /// copy that no read can tell from a share.
+    /// Settling a copy of each collection kind with a small write copies no
+    /// held item, and reads cover the segments the copy left. A count is the
+    /// one evaluator for a copy that no read can tell from a share.
     #[test]
     fn settling_a_shared_part_copies_nothing_and_reads_across_segments() {
-        let v = Grown::from_vec(vec![Counted(1), Counted(2)]);
+        let v = Grown::from_vec((1..=6).map(Counted).collect());
         let mut s = Grown::<BTreeSet<Counted>>::default();
         let mut m = Grown::<BTreeMap<u8, Counted>>::default();
-        s.insert(Counted(1));
-        m.insert(2, Counted(2));
-        m.insert(4, Counted(4));
+        for n in (10..=15).step_by(1) {
+            s.insert(Counted(n));
+        }
+        for k in [2, 4, 6, 8, 10, 12] {
+            m.insert(k, Counted(k));
+        }
         s.settle();
         m.settle();
         let (mut v2, mut s2, mut m2) = (v.clone(), s.clone(), m.clone());
         let before = CLONES.with(|c| c.get());
-        v2.push(Counted(3));
-        s2.insert(Counted(2));
+        v2.push(Counted(7));
+        s2.insert(Counted(1));
         m2.insert(3, Counted(3));
         m2.insert(1, Counted(1));
-        m2.insert(2, Counted(9));
+        m2.insert(2, Counted(99));
         v2.settle();
         s2.settle();
         m2.settle();
         assert_eq!(CLONES.with(|c| c.get()) - before, 0);
-        assert_eq!(v2.iter().map(|c| c.0).collect::<Vec<_>>(), [1, 2, 3]);
         assert_eq!(
-            (v2.get(2).map(|c| c.0), v2.last().map(|c| c.0)),
-            (Some(3), Some(3))
+            v2.iter().map(|c| c.0).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6, 7]
         );
-        assert_eq!((v2.get(1).map(|c| c.0), v2.get(3)), (Some(2), None));
-        assert!(s2.contains(&Counted(1)) && s2.contains(&Counted(2)));
-        assert_eq!(s2.iter().count(), 2);
+        assert_eq!(
+            (v2.get(6).map(|c| c.0), v2.last().map(|c| c.0)),
+            (Some(7), Some(7))
+        );
+        assert_eq!((v2.get(1).map(|c| c.0), v2.get(7)), (Some(2), None));
+        assert!(s2.contains(&Counted(1)) && s2.contains(&Counted(15)));
+        assert_eq!(s2.iter().count(), 7);
         assert_eq!(
             m2.iter().map(|(k, c)| (*k, c.0)).collect::<Vec<_>>(),
-            [(1, 1), (2, 2), (3, 3), (4, 4)]
+            [
+                (1, 1),
+                (2, 2),
+                (3, 3),
+                (4, 4),
+                (6, 6),
+                (8, 8),
+                (10, 10),
+                (12, 12)
+            ]
         );
         assert_eq!(
-            m2.iter_from(&3).map(|(k, _)| *k).collect::<Vec<_>>(),
-            [3, 4]
+            m2.iter_from(&8).map(|(k, _)| *k).collect::<Vec<_>>(),
+            [8, 10, 12]
         );
-        assert_eq!(m2.len(), 4);
-        // The original is untouched, and with it gone the copy is one segment.
-        assert_eq!((v.len(), s.iter().count(), m.len()), (2, 1, 2));
-        drop((v, s, m));
-        v2.push(Counted(4));
-        v2.settle();
-        s2.settle();
-        m2.settle();
-        assert_eq!(
-            (v2.settled.len(), s2.settled.len(), m2.settled.len()),
-            (1, 1, 1)
-        );
-        assert_eq!(v2.iter().map(|c| c.0).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert_eq!(m2.len(), 8);
+        // The original is untouched.
+        assert_eq!((v.len(), s.iter().count(), m.len()), (6, 6, 6));
+    }
+
+    /// Whoever holds a copy, N one-item settles leave at most log2(N) + 1
+    /// segments and copy O(N log N) items in all (the bound proved on
+    /// [`Grown`]); no read sees the segments, so only a count can pin it.
+    #[test]
+    fn segments_stay_logarithmic_and_copies_amortised_while_a_copy_is_held() {
+        for held in [false, true] {
+            let mut g = Grown::from_vec(vec![Counted(0)]);
+            let mut copies_held = Vec::new();
+            let before = CLONES.with(|c| c.get());
+            let mut widest = 0;
+            for n in 1..=600u32 {
+                g.push(Counted(0));
+                g.settle();
+                if held && n % 50 == 0 {
+                    copies_held.push(g.clone());
+                }
+                widest = widest.max(g.segments());
+                let bound = f64::from(n + 1).log2() as usize + 1;
+                assert!(g.segments() <= bound, "n={n}: {} segments", g.segments());
+            }
+            let copies = CLONES.with(|c| c.get()) - before;
+            // 601 items, log_{1.5}(601) = 16: 3 copies per merge input is slack.
+            assert!(copies <= 601 * 16 * 3, "held={held}: {copies} copies");
+            assert_eq!(g.len(), 601);
+            assert!(widest <= 10);
+            assert_eq!(copies_held.len(), if held { 12 } else { 0 });
+        }
     }
 }
