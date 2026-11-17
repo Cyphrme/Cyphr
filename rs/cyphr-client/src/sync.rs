@@ -571,9 +571,11 @@ impl Held {
         // are all held and no commit is new, there is nothing to replay
         // and no copy to make.
         if entries.is_empty()
-            && actions
-                .iter()
-                .all(|a| a.blobs.as_ref().is_ok_and(|b| self.holds_actions(&WireBundle::actions(b.clone()))))
+            && actions.iter().all(|a| {
+                a.blobs
+                    .as_ref()
+                    .is_ok_and(|b| self.holds_actions(&WireBundle::actions(b.clone())))
+            })
         {
             return Ok(0);
         }
@@ -647,12 +649,7 @@ pub fn opener_of(genesis: &WireBundle) -> Result<Key, &'static str> {
 }
 
 fn commit_id_of(commit: &Commit) -> Option<String> {
-    commit
-        .tr()
-        .0
-        .tagged_first()
-        .ok()
-        .map(|d| d.to_string())
+    commit.tr().0.tagged_first().ok().map(|d| d.to_string())
 }
 
 /// What names a commit for comparing two chains: its TR and the PR it
@@ -1123,7 +1120,9 @@ async fn compare_whole_chain<C: Connector>(
             // takes only the commits past its tip, onto the state it has,
             // so what it keeps stays what it verified.
             let held = mine_links.len();
-            record.extend(&patch.entries[held..], &patch.actions).await?;
+            record
+                .extend(&patch.entries[held..], &patch.actions)
+                .await?;
             Ok((
                 PeerStanding::Extended {
                     added: their_links.len() - held,
@@ -1132,9 +1131,7 @@ async fn compare_whole_chain<C: Connector>(
             ))
         },
         Relation::Diverges(at) => {
-            let (Some(ours), Some(rival)) =
-                (mine.commit_id_at(at), theirs.commit_id_at(at))
-            else {
+            let (Some(ours), Some(rival)) = (mine.commit_id_at(at), theirs.commit_id_at(at)) else {
                 return Err(PeerFailure::Fork { index: at });
             };
             // One commit, different attached actions: the chains disagree
@@ -1207,11 +1204,7 @@ async fn evidence<C: Connector>(
     };
     base.set_clock(record.clock);
     let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
-    let chain_ids: Vec<Option<String>> = held
-        .principal
-        .commits()
-        .map(commit_id_of)
-        .collect();
+    let chain_ids: Vec<Option<String>> = held.principal.commits().map(commit_id_of).collect();
     let set = verify_fork_items(&items, record.bare_id(), &base, &prefix, &chain_ids).await;
     forks.extend(set.forks.into_iter().map(|(proof, rival)| ForkFinding {
         height: usize::try_from(proof.height).unwrap_or(usize::MAX),

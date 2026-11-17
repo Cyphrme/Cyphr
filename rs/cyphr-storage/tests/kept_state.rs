@@ -756,7 +756,10 @@ async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it()
         .expect("the detached principal verifies the commit");
     let after = e.get_tip(&w.id).await.expect("tip").expect("held");
     assert_eq!(after.commit_id, tip.commit_id, "the engine stored nothing");
-    assert!(e.kept_principal(&w.id).await.is_some(), "its state is still kept");
+    assert!(
+        e.kept_principal(&w.id).await.is_some(),
+        "its state is still kept"
+    );
 
     w.submit(&e, &bundle).await.expect("the engine admits it");
     let admitted = e.kept_state(&w.id).await.expect("kept state");

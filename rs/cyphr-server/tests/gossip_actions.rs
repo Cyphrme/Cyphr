@@ -19,8 +19,8 @@ use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_client::HttpConnector;
-use cyphr_server::gossip::Gossip;
 use cyphr_server::config::ServerConfig;
+use cyphr_server::gossip::Gossip;
 use cyphr_server::{AppState, build_router};
 
 mod common;
@@ -80,7 +80,11 @@ fn replayed(state: &AppState) -> u64 {
 
 /// How many action bundles `app` serves for `id`.
 async fn held_actions(app: &axum::Router, id: &str) -> usize {
-    let (status, body) = get_json(app.clone(), &format!("/patch?pr={}", id.replace(':', "%3A"))).await;
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/patch?pr={}", id.replace(':', "%3A")),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     envelope_payload(&body)["actions"]
         .as_array()
@@ -148,7 +152,10 @@ async fn data_actions_reach_this_server_with_the_next_commit_by_gossip() {
     // P1's engine kept the principal's state from the pushes.
     let mut gossip = Gossip::default();
     gossip.round(&p1, &peers(&p1)).await;
-    assert_eq!(tip_of(app1.clone(), id.clone()).await, tip_of(app2.clone(), id.clone()).await);
+    assert_eq!(
+        tip_of(app1.clone(), id.clone()).await,
+        tip_of(app2.clone(), id.clone()).await
+    );
     assert_eq!(held_actions(&app1, &id).await, 1, "P1 took the action");
     assert_eq!(replayed(&p1), 1, "only the new commit is replayed");
     gossip.round(&p1, &peers(&p1)).await;
@@ -166,7 +173,14 @@ async fn data_actions_reach_this_server_with_the_next_commit_by_gossip() {
     let third = common::key_commit_by(&mut owner, "golden", "bob", T + 12).await;
     push_to_p2(third).await;
     Gossip::default().round(&p1, &peers(&p1)).await;
-    assert_eq!(tip_of(app1.clone(), id.clone()).await, tip_of(app2.clone(), id.clone()).await);
+    assert_eq!(
+        tip_of(app1.clone(), id.clone()).await,
+        tip_of(app2.clone(), id.clone()).await
+    );
     assert_eq!(held_actions(&app1, &id).await, 2, "P1 took the second");
-    assert_eq!(replayed(&p1), 4, "the 3 stored commits once, then the new one");
+    assert_eq!(
+        replayed(&p1),
+        4,
+        "the 3 stored commits once, then the new one"
+    );
 }

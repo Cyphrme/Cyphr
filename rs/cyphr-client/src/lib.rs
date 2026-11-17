@@ -27,9 +27,8 @@ pub use relying_party::{
 };
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
-    ChainSource,
-    Anchor, DEFAULT_PATCH_CAP, ForkFinding, PeerHeads, PeerOutcome, PeerStanding, PullPeer,
-    PullReport, Record, RecordTip, RevokedKey, branch_bundles, fetch_revoked, opener_of,
+    Anchor, ChainSource, DEFAULT_PATCH_CAP, ForkFinding, PeerHeads, PeerOutcome, PeerStanding,
+    PullPeer, PullReport, Record, RecordTip, RevokedKey, branch_bundles, fetch_revoked, opener_of,
     peer_heads, pull, verified_revokes,
 };
 

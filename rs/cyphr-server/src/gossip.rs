@@ -47,8 +47,8 @@ use std::time::Duration;
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ActionBundle, Anchor, ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, peer_heads,
-    pull, verified_revokes,
+    ActionBundle, Anchor, ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles,
+    peer_heads, pull, verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, info, warn};
