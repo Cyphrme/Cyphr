@@ -11,11 +11,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
-use cyphr_server::AppState;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
+use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+use crate::common::Chain;
 
 pub const AUDIENCE: &str = "cyphr.me";
 
@@ -155,4 +157,141 @@ pub fn login_body(id: &str) -> String {
         sig,
     })
     .expect("login")
+}
+
+/// What a pull from a forked peer cost the holder, as the peer was asked.
+pub struct ForkLocation {
+    pub n: usize,
+    pub height: usize,
+    pub forked: bool,
+    pub consistency: usize,
+    pub inclusion: usize,
+    pub patch: usize,
+    /// Commits the peer's `/patch` answers carried.
+    pub fetched: usize,
+    pub ms: f64,
+}
+
+/// Counts what the holder asks the peer.
+struct Asked {
+    inner: cyphr_client::HttpConnector,
+    asked: std::sync::Mutex<Vec<String>>,
+    fetched: std::sync::Mutex<usize>,
+}
+
+impl cyphr_client::Connector for Asked {
+    fn channel_binding(&self) -> Option<&cyphr_client::ChannelBinding> {
+        self.inner.channel_binding()
+    }
+
+    async fn exchange(
+        &self,
+        request: &cyphr_client::Request,
+    ) -> Result<Vec<u8>, cyphr_client::ConnectError> {
+        self.asked
+            .lock()
+            .expect("asked")
+            .push(request.target.clone());
+        let body = self.inner.exchange(request).await?;
+        if request.target.starts_with("/patch") {
+            let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            let n = json["payload"]["entries"].as_array().map_or(0, Vec::len);
+            *self.fetched.lock().expect("fetched") += n;
+        }
+        Ok(body)
+    }
+}
+
+/// A holder of `n` commits pulls from a peer that agrees with it up to
+/// position `n / 2` and then goes its own way for the rest and one commit
+/// more: where the logs part is found, and what it cost.
+pub async fn fork_location(n: usize) -> ForkLocation {
+    let mut mine = Chain::new("golden", "key_a", "key_b").await;
+    while mine.commits < n / 2 {
+        mine.next().await;
+    }
+    let mut theirs = mine.fork().await;
+    theirs.diverge("carol");
+    let height = mine.commits;
+    while mine.commits < n {
+        mine.next().await;
+    }
+    while theirs.commits <= n {
+        theirs.next().await;
+    }
+
+    let (peer, _dir) = keyless();
+    let app = build_router(peer.clone());
+    for i in 0..theirs.commits {
+        let (st, ..) = call(
+            &app,
+            "POST",
+            "/push",
+            push_body(&theirs.id, &theirs.bundle(i)),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "peer push {i}");
+    }
+    let (url, _wire) = serve_counting(app).await;
+
+    let key = {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+        let pool = test_fixtures::Pool::load(&path).expect("pool");
+        pool.get("golden").expect("golden").key().expect("key")
+    };
+    let entries: Vec<cyphr_client::PatchEntry> = (0..mine.commits)
+        .map(|i| cyphr_client::PatchEntry {
+            sequence: i as u64,
+            bundle: Ok(mine.bundle(i)),
+        })
+        .collect();
+    fn clock() -> i64 {
+        i64::MAX / 4
+    }
+    let mut record = cyphr_client::Record::from_entries(
+        &mine.id,
+        cyphr_client::Anchor::GenesisKey(key),
+        clock,
+        &entries,
+        &[],
+    )
+    .await
+    .expect("record");
+
+    let connector = Asked {
+        inner: cyphr_client::HttpConnector::with_client(reqwest::Client::new(), &url, true)
+            .expect("connector"),
+        asked: Default::default(),
+        fetched: Default::default(),
+    };
+    let t = std::time::Instant::now();
+    let report = cyphr_client::pull(
+        &mut record,
+        &[cyphr_client::PullPeer {
+            name: "peer",
+            connector: &connector,
+        }],
+    )
+    .await;
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let count = |route: &str| {
+        connector
+            .asked
+            .lock()
+            .expect("asked")
+            .iter()
+            .filter(|t| t.starts_with(route))
+            .count()
+    };
+    ForkLocation {
+        n: mine.commits,
+        height,
+        forked: report.forks.first().is_some_and(|f| f.height == height),
+        consistency: count("/consistency"),
+        inclusion: count("/inclusion"),
+        patch: count("/patch"),
+        fetched: *connector.fetched.lock().expect("fetched"),
+        ms,
+    }
 }

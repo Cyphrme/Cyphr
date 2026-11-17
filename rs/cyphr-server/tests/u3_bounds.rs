@@ -240,3 +240,27 @@ async fn gossip_pull_replays_only_the_new_commits() {
         assert_eq!(o.pull_replayed, 0, "{o:?}");
     }
 }
+
+/// Bound: a holder pulling from a peer on a fork finds where the logs part
+/// with one consistency request, at most ceil(log2 n) + 2 inclusion
+/// requests and exactly one commit fetched, at any n (the peer's chain is
+/// not transferred).
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_location_is_logarithmic() {
+    for n in [SHORT, LONG] {
+        let f = fork_location(n).await;
+        let cap = (f.n as f64).log2().ceil() as usize + 2;
+        assert!(f.forked, "n={n}: the fork at {} was not found", f.height);
+        assert_eq!(f.consistency, 1, "n={n}");
+        assert!(
+            f.inclusion <= cap,
+            "n={n}: {} inclusion asks, cap {cap}",
+            f.inclusion
+        );
+        assert_eq!(
+            f.fetched, 1,
+            "n={n}: commits fetched ({} /patch asks)",
+            f.patch
+        );
+    }
+}

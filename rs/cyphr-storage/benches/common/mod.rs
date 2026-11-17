@@ -9,6 +9,7 @@ use cyphr_storage::Genesis;
 
 pub const NOW: i64 = 1_700_300_000;
 
+#[derive(Clone)]
 pub struct Kp {
     alg: String,
     prv: Vec<u8>,
@@ -74,6 +75,31 @@ impl Chain {
             active: false,
             commits: 1,
         }
+    }
+
+    /// A copy of this chain as it stands, to grow another way.
+    pub async fn fork(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            genesis: self.genesis.clone(),
+            shadow: self.shadow.fork().await.expect("fork"),
+            signer: self.signer.clone(),
+            toggled: self.toggled.clone(),
+            active: self.active,
+            commits: self.commits,
+        }
+    }
+
+    /// From here on toggle pool key `name` instead: a fork's next commit
+    /// then differs from the original chain's.
+    pub fn diverge(&mut self, name: &str) {
+        self.toggled = kp(name);
+        self.active = false;
+    }
+
+    /// The bundle of commit `i` (0 is the genesis).
+    pub fn bundle(&self, i: usize) -> WireBundle {
+        bundle_at(&self.shadow, i)
     }
 
     pub fn first(&self) -> WireBundle {

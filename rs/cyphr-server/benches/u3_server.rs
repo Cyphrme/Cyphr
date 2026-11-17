@@ -297,5 +297,11 @@ async fn main() {
     println!("|--:|---|---|--:|--:|--:|--:|--:|--:|");
     for n in ns {
         run(n).await;
+        let f = fork_location(n).await;
+        println!(
+            "| {} | fork location (parts at {}) | 1 consistency, O(log n) inclusion, 1 commit | 0 \
+             | 0 | 0 | {} consistency + {} inclusion + {} patch asks | {} commits | {:.3} |",
+            f.n, f.height, f.consistency, f.inclusion, f.patch, f.fetched, f.ms
+        );
     }
 }
