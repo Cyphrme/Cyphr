@@ -572,6 +572,49 @@ async fn login_token(
         .to_string()
 }
 
+/// Backs: a login and a token check read the principal from the state the
+/// engine keeps, as a write does, and replay none of its commits. Both ran
+/// a replay of the whole chain per request, the token check on every
+/// authenticated request and the login for anyone who asks.
+///
+/// The replay count is the engine's own: the answers are the same either
+/// way. End to end: a login and a bearer-authorized push over the router.
+#[tokio::test]
+async fn login_and_a_token_check_replay_nothing_of_a_kept_principal() {
+    let state = state_with_login();
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], 1_700_000_000)
+        .await
+        .expect("genesis");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
+    let second = common::key_commit_by(&mut p, "golden", "key_a", 1_700_000_001).await;
+    let third = common::key_commit_by(&mut p, "golden", "key_b", 1_700_000_002).await;
+    for b in [&genesis, &second] {
+        let body = common::push_body(&id, b);
+        let (status, json) = send(push_request(body, None), build_router(state.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "{json:?}");
+    }
+
+    let before = state.engine.commits_replayed();
+    let token = login_token(&state, &pool, "golden", &id).await;
+    let body = common::push_body(&id, &third);
+    let (status, json) = send(
+        push_request(body, Some(&token)),
+        build_router(state.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{json:?}");
+    assert_eq!(
+        state.engine.commits_replayed() - before,
+        0,
+        "commits replayed by a login and an authorized push"
+    );
+}
+
 /// A signed "self-revoke `signer_name`" commit onto `principal`, wire-ready
 /// for `submit_commit`. Mirrors `tests/login.rs::sign_key_revoke_commit`.
 async fn sign_key_revoke_commit<S: eml::Storage>(
