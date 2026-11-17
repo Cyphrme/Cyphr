@@ -967,6 +967,111 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedCache<K, V> {
     }
 }
 
+/// What a kept [`cyphr::PrincipalState`] was folded from beyond the chain:
+/// the tip it stands at, the action-only bundles held for the principal,
+/// and the naked revokes noted into it. All of it is read fresh under the
+/// principal's write lock on every write, and the state is used only when
+/// every part equals what is read now; any difference is a miss.
+#[derive(Debug, Clone, PartialEq)]
+struct KeptKey {
+    tip: String,
+    actions: Vec<Blake3Hash>,
+    revoked: Revoked,
+}
+
+/// A principal's verified state kept between its writes (the anchor
+/// verifier: retain the earlier record, check only the extension). A
+/// cache of what a replay of the blob store derives (I1), never
+/// authoritative and never persisted: losing it costs one replay.
+#[derive(Debug, Clone)]
+struct Kept {
+    state: cyphr::PrincipalState,
+    key: KeptKey,
+}
+
+/// The kept states, at most `capacity` of them, the least recently stored
+/// evicted first.
+///
+/// Every access takes the principal's write-lock guard as a witness, so
+/// an entry can be read or written only by the one writer of its
+/// principal (I2); the map's own mutex only orders the map, and is never
+/// held across an `.await`.
+struct KeptStates {
+    capacity: usize,
+    entries: std::sync::Mutex<(HashMap<String, Kept>, std::collections::VecDeque<String>)>,
+}
+
+/// [`StorageEngine::resume_kept`]'s boxed future.
+type ResumeFuture<'a, S> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Option<cyphr::Principal<S>>, EngineError>>
+            + Send
+            + 'a,
+    >,
+>;
+
+/// Proof that the caller holds the principal's write lock.
+type WriteLock<'a> = tokio::sync::MutexGuard<'a, ()>;
+
+impl KeptStates {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: std::sync::Mutex::default(),
+        }
+    }
+
+    /// A copy of the entry for `principal_id`: the writer applies a bundle
+    /// to the copy, so a refused bundle leaves the entry as it was.
+    fn copy(&self, principal_id: &str, _write: &WriteLock<'_>) -> Option<Kept> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .0
+            .get(principal_id)
+            .cloned()
+    }
+
+    fn put(&self, principal_id: &str, kept: Kept, _write: &WriteLock<'_>) {
+        if self.capacity == 0 {
+            return;
+        }
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let (map, order) = &mut *guard;
+        if map.insert(principal_id.to_string(), kept).is_some() {
+            order.retain(|id| id != principal_id);
+        }
+        order.push_back(principal_id.to_string());
+        while map.len() > self.capacity {
+            match order.pop_front() {
+                Some(oldest) => {
+                    map.remove(&oldest);
+                },
+                None => break,
+            }
+        }
+    }
+
+    fn drop_entry(&self, principal_id: &str, _write: &WriteLock<'_>) {
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        guard.0.remove(principal_id);
+        guard.1.retain(|id| id != principal_id);
+    }
+
+    /// Forget everything: a rebuild re-derives the engine's caches from
+    /// the blobs, and so must the states folded from the old ones.
+    fn clear(&self) {
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        guard.0.clear();
+        guard.1.clear();
+    }
+}
+
+/// Kept states an engine holds unless told otherwise. Each is the size of
+/// its principal's history, so the bound is on memory; an evicted
+/// principal's next write replays, as every write once did.
+const DEFAULT_KEPT_CAPACITY: usize = 128;
+
 // Compile-time proof that the engine's write path is `Send` for every
 // backend, so the server's multi-threaded runtime can drive it over the
 // durable store: a `!Send` value held across one of its awaits fails here.
@@ -1064,6 +1169,18 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// ([`Self::log_append_failures`]): the log is behind until the next
     /// load repairs it.
     log_append_failures: std::sync::atomic::AtomicU64,
+    /// Each principal's verified state between its writes ([`Kept`]).
+    kept: KeptStates,
+    /// Check every kept-state use against a cold replay
+    /// ([`Self::with_kept_shadow`]).
+    kept_shadow: bool,
+    /// Writes served from a kept state, and writes that replayed.
+    kept_hits: std::sync::atomic::AtomicU64,
+    kept_misses: std::sync::atomic::AtomicU64,
+    /// Shadow checks where the kept state was not the replayed one.
+    kept_divergences: std::sync::atomic::AtomicU64,
+    /// Stored commits replayed by [`Self::replay_onto`], ever.
+    commits_replayed: std::sync::atomic::AtomicU64,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -1098,6 +1215,81 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
             log_append_failures: std::sync::atomic::AtomicU64::new(0),
+            kept: KeptStates::new(DEFAULT_KEPT_CAPACITY),
+            kept_shadow: std::env::var_os("CYPHR_KEPT_SHADOW").is_some_and(|v| v != "0"),
+            kept_hits: std::sync::atomic::AtomicU64::new(0),
+            kept_misses: std::sync::atomic::AtomicU64::new(0),
+            kept_divergences: std::sync::atomic::AtomicU64::new(0),
+            commits_replayed: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Keep at most `capacity` principals' verified states between their
+    /// writes; 0 keeps none, so every write replays the principal's
+    /// history from the blob store.
+    #[must_use]
+    pub fn with_kept_states(mut self, capacity: usize) -> Self {
+        self.kept = KeptStates::new(capacity);
+        self
+    }
+
+    /// Replay cold, and compare with the kept state, every time a write
+    /// would use one: a divergence is counted ([`Self::kept_divergences`]),
+    /// logged, and fails the write with [`EngineError::Storage`], so a
+    /// run that exercises it cannot pass over one. Also on when the
+    /// `CYPHR_KEPT_SHADOW` environment variable is set and not `0`.
+    #[must_use]
+    pub fn with_kept_shadow(mut self, on: bool) -> Self {
+        self.kept_shadow = on;
+        self
+    }
+
+    /// Writes served from a kept state, over this engine's lifetime.
+    pub fn kept_hits(&self) -> u64 {
+        self.kept_hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Writes of an existing principal that replayed its history because
+    /// no kept state matched.
+    pub fn kept_misses(&self) -> u64 {
+        self.kept_misses.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Shadow checks where a kept state differed from the replay. Must be
+    /// 0: a kept state is a cache of the replay, never another answer.
+    pub fn kept_divergences(&self) -> u64 {
+        self.kept_divergences
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Stored commits replayed by whole-chain or bounded replays, over this
+    /// engine's lifetime: what a write or a root derivation cost in
+    /// protocol checks.
+    pub fn commits_replayed(&self) -> u64 {
+        self.commits_replayed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The state the next write of `principal_id` would start from if it
+    /// is kept and current (the tip, held actions and revokes it was
+    /// folded from are what they are now). A cache of the replay of the
+    /// stored chain, exposed so a test can hold it to that.
+    pub async fn kept_state(&self, principal_id: &str) -> Option<cyphr::PrincipalState> {
+        let key = self.resolve_key(principal_id).await.ok()?;
+        let stored = key.as_deref().unwrap_or(principal_id);
+        let lock = self.principal_lock(stored);
+        let write = lock.lock().await;
+        let tip = self.indexer.get_tip(stored).await.ok()??;
+        let kept = self.kept.copy(stored, &write)?;
+        (kept.key == self.kept_key(stored, &tip, self.revoked())).then_some(kept.state)
+    }
+
+    /// What a state kept now would have been folded from, beyond the chain.
+    fn kept_key(&self, principal_id: &str, tip: &TipState, revoked: Revoked) -> KeptKey {
+        KeptKey {
+            tip: tip.commit_id.clone(),
+            actions: self.action_manifests(principal_id),
+            revoked,
         }
     }
 
@@ -1785,6 +1977,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// ([`Self::build_commit`]), and a manifest whose commit the replay
     /// does not reproduce is quarantined ([`QuarantineReason::Unreplayable`]).
     async fn rebuild_pass(&self, replay: bool) -> Result<RebuildReport, EngineError> {
+        self.kept.clear();
         self.rebuild_pass_on(&self.indexer, replay).await
     }
 
@@ -2678,6 +2871,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut principal = Self::principal_from_genesis(genesis.clone(), storage).await?;
 
         let stored = self.stored_entries(principal_id, through).await?;
+        self.commits_replayed.fetch_add(
+            stored.entries.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let source = PinSource::stored();
         for (position, (entry, pins)) in stored.entries.iter().zip(&stored.pins).enumerate() {
             self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
@@ -3273,14 +3470,31 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // ingested. Held for the remainder of this function; a concurrent
         // caller for a DIFFERENT principal_id never contends on this lock.
         let lock = self.principal_lock(principal_id);
-        let _serialize_writes = lock.lock().await;
+        let write = lock.lock().await;
 
-        // 2. Load (or construct) the principal from existing state.
-        let mut principal = self.replay_stored(principal_id, genesis.clone()).await?;
-
-        // 3. Determine the next sequence number.
+        // 2. Determine the tip this write extends, then load (or
+        // construct) the principal at it: from the state kept after the
+        // last write when everything it was folded from is unchanged,
+        // else by replaying the stored chain.
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
+        // Taken before the load, so a revoke recorded during it can only
+        // make the kept key differ, never match a state that lacks it.
+        let revoked_at_load = self.revoked();
+        let kept = self
+            .resume_kept(
+                principal_id,
+                &genesis,
+                tip_before.as_ref(),
+                &revoked_at_load,
+                &write,
+            )
+            .await?;
+        let resumed = kept.is_some();
+        let mut principal = match kept {
+            Some(principal) => principal,
+            None => self.replay_stored(principal_id, genesis.clone()).await?,
+        };
 
         // Key death (SPEC 6.4), read under the lock. A revoke recorded
         // concurrently is not serialized with it (it takes no principal
@@ -3428,8 +3642,190 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     return Err(refused);
                 },
             };
+        let remembered = embedded.is_empty();
         build.embedded = embedded;
-        self.ingest_commit(bundle, build).await
+        let result = self.ingest_commit(bundle, build).await?;
+        if remembered && let Some(tip) = &result.tip {
+            self.remember(
+                principal_id,
+                &principal,
+                tip,
+                revoked_at_load,
+                resumed,
+                &write,
+            )
+            .await;
+        }
+        Ok(result)
+    }
+
+    /// The principal at the tip a write extends, resumed from the state
+    /// kept after the previous write, or `None` for a replay: nothing is
+    /// kept, or something it was folded from has changed.
+    ///
+    /// The kept state is copied; the write applies to the copy and
+    /// [`Self::remember`] replaces the entry only on success, so a refused
+    /// bundle leaves no trace. With shadow checking on, the state is also
+    /// replayed cold and compared, and a difference fails the write.
+    ///
+    /// Boxed, as is [`Self::follow_held`]: the auto-trait proof that
+    /// `submit_commit` is `Send` would otherwise run through the replay and
+    /// exceed the compiler's recursion limit for a caller with a concrete
+    /// storage type.
+    fn resume_kept<'a>(
+        &'a self,
+        principal_id: &'a str,
+        genesis: &'a crate::Genesis,
+        tip: Option<&'a TipState>,
+        revoked: &'a Revoked,
+        write: &'a WriteLock<'_>,
+    ) -> ResumeFuture<'a, S> {
+        Box::pin(self.resume_kept_unboxed(principal_id, genesis, tip, revoked, write))
+    }
+
+    async fn resume_kept_unboxed(
+        &self,
+        principal_id: &str,
+        genesis: &crate::Genesis,
+        tip: Option<&TipState>,
+        revoked: &Revoked,
+        write: &WriteLock<'_>,
+    ) -> Result<Option<cyphr::Principal<S>>, EngineError> {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let Some(tip) = tip else {
+            return Ok(None);
+        };
+        let fresh = self.kept_key(principal_id, tip, revoked.clone());
+        let resumed = match self.kept.copy(principal_id, write) {
+            Some(kept) if kept.key == fresh => self.resume_over_log(principal_id, kept.state).await,
+            _ => None,
+        };
+        let Some(resumed) = resumed else {
+            // A stale entry can never match again, and a cold write is
+            // about to replace it.
+            self.kept.drop_entry(principal_id, write);
+            self.kept_misses.fetch_add(1, Relaxed);
+            return Ok(None);
+        };
+        if self.kept_shadow {
+            let cold = self.replay_stored(principal_id, genesis.clone()).await?;
+            if format!("{:?}", *cold) != format!("{:?}", *resumed) {
+                self.kept_divergences.fetch_add(1, Relaxed);
+                self.kept.drop_entry(principal_id, write);
+                let why = format!(
+                    "kept state of {principal_id} at {} differs from the replay of its stored \
+                     chain",
+                    tip.commit_id
+                );
+                tracing::error!("{why}");
+                // Loud on purpose: shadow checking exists to fail a run that
+                // would otherwise be answered, correctly, from the replay.
+                return Err(EngineError::Storage(why));
+            }
+        }
+        self.kept_hits.fetch_add(1, Relaxed);
+        if self.kept_shadow {
+            // Under the server's own target so a run's log shows that the
+            // check ran (the scenarios' `RUST_LOG` names `cyphr_server`).
+            tracing::info!(
+                target: "cyphr_server::kept_state",
+                principal = %principal_id,
+                "shadow check: kept state equals the replay"
+            );
+        }
+        Ok(Some(resumed))
+    }
+
+    /// `state` over its principal's current commit log, or `None` if that
+    /// log is not the one it was folded from (a regenerated or lagging log
+    /// is the replay's to repair).
+    async fn resume_over_log(
+        &self,
+        principal_id: &str,
+        state: cyphr::PrincipalState,
+    ) -> Option<cyphr::Principal<S>> {
+        let generation = self.logs.generation(principal_id).ok()?;
+        let storage = self.logs.open(principal_id, generation).ok()?;
+        cyphr::Principal::resume(state, storage).await.ok()
+    }
+
+    /// Keep `principal`, which has just admitted the commit `tip` names,
+    /// for the principal's next write, if it is one a replay would
+    /// reproduce exactly.
+    ///
+    /// Not kept: a principal whose state is not at `tip` (the commit
+    /// stored but its log append failed: the next load repairs it), or
+    /// whose history carries an embedded principal's pin or Key Tree
+    /// digest. The views of embedded principals in a state that admitted a
+    /// commit follow the embedded principal's current tip, those of a
+    /// replay are pinned at the tip each commit was admitted against, so
+    /// the two differ and such a principal replays.
+    async fn remember(
+        &self,
+        principal_id: &str,
+        principal: &cyphr::Principal<S>,
+        tip: &CommittedTip,
+        revoked: Revoked,
+        resumed: bool,
+        write: &WriteLock<'_>,
+    ) {
+        if self.kept.capacity == 0 {
+            return;
+        }
+        let at_tip = tip
+            .sequence
+            .checked_add(1)
+            .is_some_and(|count| principal.commits().count() as u64 == count);
+        // A resumed principal's history was checked when it was first kept.
+        let embeds = principal.has_kt_digests()
+            || (!resumed && self.history_has_pins(principal_id).await.unwrap_or(true));
+        if !at_tip || embeds {
+            self.kept.drop_entry(principal_id, write);
+            return;
+        }
+        let kept = Kept {
+            state: (**principal).clone(),
+            key: KeptKey {
+                tip: tip.commit_id.clone(),
+                actions: self.action_manifests(principal_id),
+                revoked,
+            },
+        };
+        self.kept.put(principal_id, kept, write);
+    }
+
+    /// The manifests of the action-only bundles held for `principal_id`,
+    /// in the order they replay.
+    fn action_manifests(&self, principal_id: &str) -> Vec<Blake3Hash> {
+        self.actions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .map(|held| held.iter().map(|a| a.manifest).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether any commit or held action bundle of `principal_id` was
+    /// admitted through an embedded principal ([`EmbeddedPin`]).
+    async fn history_has_pins(&self, principal_id: &str) -> Result<bool, EngineError> {
+        let held_actions = self
+            .actions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .is_some_and(|held| held.iter().any(|a| !a.embedded.is_empty()));
+        if held_actions {
+            return Ok(true);
+        }
+        let chain = self
+            .indexer
+            .get_commit_chain(principal_id, None, None)
+            .await?;
+        Ok(chain.iter().any(|commit| {
+            self.frame(principal_id, commit)
+                .is_none_or(|f| !f.embedded.is_empty())
+        }))
     }
 
     /// Follow every Key Tree digest of `principal` that names a principal

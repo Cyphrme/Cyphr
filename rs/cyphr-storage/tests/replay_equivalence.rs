@@ -244,6 +244,120 @@ fn corpus_chains_agree_across_core_ingest_and_rebuild() {
     });
 }
 
+/// U3 (I1): the state an engine keeps between a principal's writes is the
+/// replay of its stored chain, for every chain of the golden corpus: held
+/// data actions, freezes, deletes, key rollovers and every other
+/// transition the vectors pin. Each chain is pushed through an engine over
+/// fjall commit logs (so a kept state can resume) with shadow checking on,
+/// which replays cold at every use of a kept state and fails the push on
+/// any difference, then the state left after the last push is held to the
+/// replay too. Turns red if a transition leaves a state in memory that a
+/// replay of the same blobs does not reproduce.
+/// End-to-end scenario: yes (the whole corpus through engine ingest).
+#[test]
+fn corpus_chains_kept_state_equals_replay() {
+    let chains = corpus();
+    let hits: usize = std::thread::scope(|s| {
+        let runs: Vec<_> = chains
+            .iter()
+            .map(|chain| {
+                s.spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("runtime")
+                        .block_on(check_kept_chain(chain))
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| run.join().expect("a chain's check"))
+            .sum()
+    });
+    // Not vacuous: most chains have a second push to resume (68 uses today).
+    assert!(hits > 50, "kept states were used ({hits} times)");
+}
+
+/// Pushes `chain` as [`ingest`] does, over a kept-state engine; the number
+/// of writes served from a kept state.
+async fn check_kept_chain(chain: &Chain) -> usize {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = fjall::Database::builder(dir.path().join("db"))
+        .open()
+        .expect("open db");
+    let engine = StorageEngine::with_log_factory(
+        MemoryBlobStore::new(),
+        MemoryIndexer::new(),
+        cyphr_blob_fjall::EmlLogs::new(db).expect("logs"),
+    )
+    .with_kept_shadow(true);
+    let mut pushes = Vec::new();
+    if let Some(peer) = &chain.peer {
+        pushes.push((
+            peer.genesis.clone(),
+            principal_id(peer).await,
+            &peer.bundles,
+        ));
+    }
+    let id = principal_id(chain).await;
+    pushes.push((chain.genesis.clone(), id.clone(), &chain.bundles));
+    for (genesis, id, bundles) in pushes {
+        let mut ordered: Vec<&WireBundle> = bundles.iter().collect();
+        ordered.sort_by_key(|b| {
+            b.decode()
+                .ok()
+                .and_then(|d| d.cozies().map(|c| c.header().now).min())
+        });
+        for (i, bundle) in ordered.into_iter().enumerate() {
+            // A chain that starts with data actions alone is refused
+            // until its genesis commit ([`check_chain`] pins that).
+            let pushed = engine
+                .submit_commit(&id, Some(genesis.clone()), bundle)
+                .await;
+            if let Err(e) = pushed
+                && !matches!(
+                    e,
+                    cyphr_storage::engine::EngineError::Protocol(cyphr::Error::GenesisIncomplete)
+                )
+            {
+                panic!("{}: commit {i} on the kept path: {e}", chain.name);
+            }
+        }
+    }
+    assert_eq!(engine.kept_divergences(), 0, "{}", chain.name);
+    if let Some(kept) = engine.kept_state(&id).await {
+        let loaded = engine
+            .load_principal(&id, chain.genesis.clone())
+            .await
+            .expect("replay");
+        let (kept, replayed) = (format!("{kept:#?}"), format!("{:#?}", *loaded));
+        if kept != replayed {
+            // The whole state is too long to read: the first line that
+            // differs, with its neighbours.
+            let at = kept
+                .lines()
+                .zip(replayed.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
+            let around = |s: &str| {
+                s.lines()
+                    .skip(at.saturating_sub(4))
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            panic!(
+                "{}: the state left after the last push is not the replay: line {at}\n--- \
+                 kept\n{}\n--- replayed\n{}",
+                chain.name,
+                around(&kept),
+                around(&replayed)
+            );
+        }
+    }
+    engine.kept_hits() as usize
+}
+
 async fn check_chain(chain: &Chain) {
     {
         let mut core = principal(&chain.genesis).await;
