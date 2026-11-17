@@ -324,13 +324,14 @@ impl<S: eml::Storage> CommitTrees<S> {
     /// Stage the append of the commit leaf `data`. A log reopened from a
     /// frontier ([`Self::detach`]) holds no leaves, only the digests the
     /// frontier names, so the leaf goes in as a one-leaf subtree, whose
-    /// digest is the digest a flat append of it gives.
+    /// digest is the digest a flat append of it gives. (An empty log reads
+    /// as subtree-kind but binds to whichever append comes first.)
     pub(crate) fn stage_leaf(
         &self,
         staged: &mut polydigest::Staged<S>,
         data: &[u8],
     ) -> LogResult<(), S> {
-        if self.log.kind() == eml::LogKind::Subtree {
+        if self.log.kind() == eml::LogKind::Subtree && self.log.count() > 0 {
             staged.append_subtree(&eml::Subtree::Leaf(data.to_vec()))
         } else {
             staged.append_leaf(data)
