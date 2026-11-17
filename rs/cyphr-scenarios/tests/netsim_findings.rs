@@ -4,7 +4,10 @@
 // gate stays about the rest of the network; remove the steering with the
 // ignore.
 
+use std::time::Duration;
+
 use cyphr_scenarios::Harness;
+use cyphr_scenarios::actions::KeyRef;
 
 // Found by NETSIM at the gating size, seed 772, whose theft episode on
 // principal 1 left its owner unable to commit. Reduced op log (replayable
@@ -82,4 +85,62 @@ async fn a_restored_peer_relearns_a_naked_revoke() {
     run::run(&h, &size, &ops)
         .await
         .unwrap_or_else(|f| panic!("{f}"));
+}
+
+async fn lists_revoke(h: &Harness, peer: &str, key: &KeyRef) -> bool {
+    let v: serde_json::Value = h
+        .http
+        .get(format!("http://{}/revoked", h.peer(peer).addr()))
+        .query(&[("tmbs", key.0.as_str())])
+        .send()
+        .await
+        .expect("GET /revoked")
+        .json()
+        .await
+        .expect("revoked json");
+    v["payload"]["revoked"]
+        .as_array()
+        .is_some_and(|r| !r.is_empty())
+}
+
+// Found by the large run (seed 20261117, a naked revoke while a holder was
+// stopped failed the whole `cyphr key naked-revoke` with "unreachable ...
+// /revoke"); NETSIM now generates a revoke only while every holder runs.
+//
+// `naked-revoke` sends to every peer the device knows for the principal, which
+// after publication is every holder. An emergency revoke (SPEC 6.4) must not
+// abort because one peer is down.
+//
+// Must hold: with one holder stopped the revoke is still sent, the live
+// holders list it, and the stopped holder lists it after it restarts, by
+// gossip.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(revoke-with-a-holder-down): naked-revoke fails when one known peer is stopped"]
+async fn a_naked_revoke_survives_a_stopped_holder() {
+    let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
+        .await
+        .expect("start peers");
+    let alice = h.client("alice");
+    let pr = h.ok(alice.create_principal().await);
+    h.ok(alice.push(&pr, &["p1", "p2", "p3"]).await)
+        .accepted("publish");
+    let key = h.ok(alice.add_backup_key(&pr).await);
+    h.ok(alice.push(&pr, &["p1", "p2", "p3"]).await)
+        .accepted("key push");
+
+    h.ok(h.stop_peer("p3").await);
+    h.ok(alice.naked_revoke(&pr, &key).await);
+    for live in ["p1", "p2"] {
+        h.eventually("a live holder to list the revoke", Duration::from_secs(20), || async {
+            Ok(lists_revoke(&h, live, &key).await)
+        })
+        .await;
+    }
+    h.ok(h.start_peer("p3").await);
+    h.eventually(
+        "the restarted holder to learn the revoke",
+        Duration::from_secs(30),
+        || async { Ok(lists_revoke(&h, "p3", &key).await) },
+    )
+    .await;
 }

@@ -507,7 +507,10 @@ pub(crate) async fn verdict_check(
     act(obs.trust_genesis(&ps.pr, &holders).await, what)?;
     let v = act(obs.verdict(&ps.pr, &holders).await, what)?;
     // The oracle asserts; a failed assertion is this invariant's red.
-    let checked = AssertUnwindSafe(h.check_verdict(&v, &ps.pr, &Expect::new(&holders, &ps.pr.0)))
+    // The verdict's anchor is the genesis key, which is the principal's PG
+    // only for one opened by a single key.
+    let anchor = act(h.genesis_tmb(&ps.pr), what)?;
+    let checked = AssertUnwindSafe(h.check_verdict(&v, &ps.pr, &Expect::new(&holders, &anchor)))
         .catch_unwind()
         .await;
     if let Err(panic) = checked {
