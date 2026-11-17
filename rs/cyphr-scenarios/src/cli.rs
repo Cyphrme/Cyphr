@@ -8,12 +8,22 @@
 //! is a failure of the step itself.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tempfile::TempDir;
 
 use crate::actions::{ActionError, ActionResult, Refusal, RefusalKind};
 use crate::bins::Bins;
+
+/// How long a `cyphr` call waits on a peer, in seconds. A loaded host (the
+/// large network scenario runs ten servers and eight clients at once) needs
+/// longer than the scenarios' usual bound before a slow peer is a dead one.
+static PEER_TIMEOUT_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
+
+pub fn set_peer_timeout_secs(secs: u64) {
+    PEER_TIMEOUT_SECS.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
 
 pub struct Device {
     pub store: PathBuf,
@@ -38,15 +48,23 @@ impl Device {
 
     /// Run `cyphr <args>` against this device.
     pub async fn run(&self, bins: &Bins, args: &[&str]) -> ActionResult<Value> {
-        let out = tokio::process::Command::new(&bins.cli)
-            .arg("--store")
+        let peer_wait = PEER_TIMEOUT_SECS.load(std::sync::atomic::Ordering::Relaxed);
+        let mut cmd = tokio::process::Command::new(&bins.cli);
+        cmd.arg("--store")
             .arg(format!("file:{}", self.store.display()))
             .arg("--keystore")
             .arg(&self.keystore)
-            .args(["--output", "json", "--peer-timeout-secs", "5"])
+            .args(["--output", "json", "--peer-timeout-secs"])
+            .arg(peer_wait.to_string())
             .args(bind_values(args))
-            .output()
+            .kill_on_drop(true);
+        // The CLI bounds its own peer calls; a call that outlives them many
+        // times over has hung (a deadlocked process was seen once at the large
+        // size), which must end the run with a name, not stall it for ever.
+        let hung = Duration::from_secs(peer_wait * 6 + 60);
+        let out = tokio::time::timeout(hung, cmd.output())
             .await
+            .map_err(|_| ActionError::Failed(format!("cyphr {args:?} hung for over {hung:?}")))?
             .map_err(|e| ActionError::Failed(format!("spawning cyphr: {e}")))?;
         if out.status.success() {
             return serde_json::from_slice(&out.stdout).map_err(|e| {

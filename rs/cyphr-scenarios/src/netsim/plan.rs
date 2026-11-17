@@ -60,6 +60,49 @@ pub enum Op {
     Concurrent {
         p: usize,
     },
+    /// Device `d`, which holds the principal's oldest backup key, revokes it
+    /// by a naked revoke, then the owner's `key/delete` commit retires it.
+    NakedRevoke {
+        p: usize,
+        d: usize,
+    },
+    /// Fork episode: the home peer is cut off from the rest, the two devices
+    /// each extend the chain twice on opposite sides, the cut heals, and the
+    /// first device's next commit resolves the fork.
+    Fork {
+        p: usize,
+    },
+    /// Theft episode: a thief copies the second device's key and forks the
+    /// principal; the owner revokes the key and resolves by `key/delete`.
+    Theft {
+        p: usize,
+    },
+    /// Snapshot a peer with `cyphr-server backup`.
+    Backup {
+        peer: usize,
+    },
+    /// Put the backup back with `cyphr-server restore`, then re-push what
+    /// the peer holds from each owner.
+    Restore {
+        peer: usize,
+    },
+    /// Rotate a peer's signing key, once per run.
+    RollPeerKey {
+        peer: usize,
+    },
+    /// At the next barrier, a fresh observer's verdict over every holder.
+    Verdict {
+        p: usize,
+    },
+    /// At the next barrier, sign in to a relying party as the principal.
+    SignIn {
+        p: usize,
+    },
+    /// At the next barrier, stop the peer, run `cyphr-server verify-all` and
+    /// start it again.
+    VerifyAll {
+        peer: usize,
+    },
     /// Cut the gossip link between two peers.
     Partition {
         a: usize,
@@ -103,6 +146,7 @@ impl Op {
             | Op::Pair { p, .. }
             | Op::Replace { p, .. }
             | Op::DelKey { p, .. }
+            | Op::NakedRevoke { p, .. }
             | Op::Concurrent { p } => Some(*p),
             _ => None,
         }
@@ -131,6 +175,15 @@ impl fmt::Display for Op {
             Op::Replace { p, d } => write!(f, "replace p={p} d={d}"),
             Op::DelKey { p, d } => write!(f, "delkey p={p} d={d}"),
             Op::Concurrent { p } => write!(f, "concurrent p={p}"),
+            Op::NakedRevoke { p, d } => write!(f, "nakedrevoke p={p} d={d}"),
+            Op::Fork { p } => write!(f, "fork p={p}"),
+            Op::Theft { p } => write!(f, "theft p={p}"),
+            Op::Backup { peer } => write!(f, "backup peer={peer}"),
+            Op::Restore { peer } => write!(f, "restore peer={peer}"),
+            Op::RollPeerKey { peer } => write!(f, "rollpeerkey peer={peer}"),
+            Op::Verdict { p } => write!(f, "verdict p={p}"),
+            Op::SignIn { p } => write!(f, "signin p={p}"),
+            Op::VerifyAll { peer } => write!(f, "verifyall peer={peer}"),
             Op::Partition { a, b } => write!(f, "partition a={a} b={b}"),
             Op::Heal { a, b } => write!(f, "heal a={a} b={b}"),
             Op::Degrade {
@@ -206,6 +259,18 @@ impl FromStr for Op {
                 d: num("d")?,
             },
             "concurrent" => Op::Concurrent { p: num("p")? },
+            "nakedrevoke" => Op::NakedRevoke {
+                p: num("p")?,
+                d: num("d")?,
+            },
+            "fork" => Op::Fork { p: num("p")? },
+            "theft" => Op::Theft { p: num("p")? },
+            "backup" => Op::Backup { peer: num("peer")? },
+            "restore" => Op::Restore { peer: num("peer")? },
+            "rollpeerkey" => Op::RollPeerKey { peer: num("peer")? },
+            "verdict" => Op::Verdict { p: num("p")? },
+            "signin" => Op::SignIn { p: num("p")? },
+            "verifyall" => Op::VerifyAll { peer: num("peer")? },
             "partition" => Op::Partition {
                 a: num("a")?,
                 b: num("b")?,
@@ -255,6 +320,13 @@ enum Kind {
     Replace,
     DelKey,
     Concurrent,
+    NakedRevoke,
+    Fork,
+    Theft,
+    Backup,
+    Restore,
+    Verdict,
+    SignIn,
     Partition,
     Heal,
     Degrade,
@@ -263,9 +335,10 @@ enum Kind {
     Start,
 }
 
-/// The weights follow the frame's mix, without the adversity ops (NETSIM-2):
-/// ordinary writes dominate; link faults and restarts are the minority that
-/// the writes must survive.
+/// Ordinary writes dominate; link faults, restarts and the adversity
+/// episodes are the minority that the writes must survive. A peer key
+/// rollover happens once per run and a `verify-all` once per epoch, both
+/// scheduled rather than drawn, so every run has them.
 fn weight(kind: Kind) -> u32 {
     match kind {
         Kind::Commit => 40,
@@ -275,6 +348,13 @@ fn weight(kind: Kind) -> u32 {
         Kind::Replace => 6,
         Kind::DelKey => 4,
         Kind::Concurrent => 5,
+        Kind::NakedRevoke => 3,
+        Kind::Fork => 3,
+        Kind::Theft => 3,
+        Kind::Backup => 1,
+        Kind::Restore => 4,
+        Kind::Verdict => 2,
+        Kind::SignIn => 2,
         Kind::Partition => 3,
         Kind::Heal => 3,
         Kind::Degrade => 2,
@@ -285,7 +365,7 @@ fn weight(kind: Kind) -> u32 {
     }
 }
 
-const KINDS: [Kind; 13] = [
+const KINDS: [Kind; 20] = [
     Kind::Commit,
     Kind::Record,
     Kind::AddKey,
@@ -293,6 +373,13 @@ const KINDS: [Kind; 13] = [
     Kind::Replace,
     Kind::DelKey,
     Kind::Concurrent,
+    Kind::NakedRevoke,
+    Kind::Fork,
+    Kind::Theft,
+    Kind::Backup,
+    Kind::Restore,
+    Kind::Verdict,
+    Kind::SignIn,
     Kind::Partition,
     Kind::Heal,
     Kind::Degrade,
@@ -329,7 +416,8 @@ fn create(rng: &mut ChaCha8Rng, model: &Model, size: &Size, multikey: bool) -> O
 }
 
 /// The op log for `seed` at `size`: the setup creates, then `size.ops` mixed
-/// ops with a barrier after each epoch, then a final barrier.
+/// ops with a barrier after each epoch (each preceded by a `verify-all` of
+/// the epoch's peer), then a final barrier.
 pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut model = Model::new(size.peers);
@@ -349,19 +437,40 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
     let epoch_len = size.ops.div_ceil(size.epochs).max(1);
     let join_every = (size.ops / (mid + 1)).max(1);
     let all_pairs = pairs(size.peers);
+    let roll_at = size.ops * 2 / 5;
+    let mut epoch = 0;
 
     for i in 0..size.ops {
         if i > 0 && i % epoch_len == 0 {
+            push(
+                &mut model,
+                &mut log,
+                Op::VerifyAll {
+                    peer: epoch % size.peers,
+                },
+            );
+            epoch += 1;
             push(&mut model, &mut log, Op::Barrier);
+        }
+        if i == roll_at {
+            let up: Vec<usize> = (0..size.peers)
+                .filter(|p| !model.down.contains(p))
+                .collect();
+            let peer = *up.choose(&mut rng).expect("at most one peer is stopped");
+            push(&mut model, &mut log, Op::RollPeerKey { peer });
+            continue;
         }
         if i > 0 && i % join_every == 0 && model.principals.len() < size.principals {
             let op = create(&mut rng, &model, size, true);
             push(&mut model, &mut log, op);
             continue;
         }
-        // Principals whose home peer is up; only they can act.
+        // Principals whose home peer is up and that may still commit; only
+        // they can act.
         let live: Vec<usize> = (0..model.principals.len())
-            .filter(|&p| !model.down.contains(&model.principals[p].holders[0]))
+            .filter(|&p| {
+                !model.down.contains(&model.principals[p].holders[0]) && !model.principals[p].spent
+            })
             .collect();
         let pick = |rng: &mut ChaCha8Rng, ok: &dyn Fn(usize) -> bool| -> Option<usize> {
             let c: Vec<usize> = live.iter().copied().filter(|&p| ok(p)).collect();
@@ -374,15 +483,39 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
             .collect();
         let cut_pairs: Vec<(usize, usize)> = model.partitioned.iter().copied().collect();
         let bent_pairs: Vec<(usize, usize)> = model.degraded.iter().copied().collect();
+        // An episode needs every peer running and a principal with two
+        // devices, which a previous episode or a pairing leaves.
+        let episodic = |p: usize| {
+            model.down.is_empty()
+                && model.principals[p].devices == 2
+                && model.principals[p].holders.len() >= 2
+        };
+        // A naked revoke reaches every holder, so none may be stopped.
+        let revocable = |p: usize| {
+            !model.principals[p].backups.is_empty()
+                && !model.principals[p]
+                    .holders
+                    .iter()
+                    .any(|h| model.down.contains(h))
+        };
         let enabled: Vec<Kind> = KINDS
             .into_iter()
             .filter(|k| match k {
                 Kind::Commit | Kind::Record | Kind::AddKey | Kind::Replace => !live.is_empty(),
-                Kind::Pair => live
+                Kind::Pair => live.iter().any(|&p| {
+                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
+                }),
+                Kind::DelKey => live
                     .iter()
-                    .any(|&p| model.principals[p].devices < MAX_DEVICES),
-                Kind::DelKey => live.iter().any(|&p| model.principals[p].deletable > 0),
+                    .any(|&p| !model.principals[p].backups.is_empty()),
                 Kind::Concurrent => live.iter().any(|&p| model.principals[p].devices == 2),
+                Kind::NakedRevoke => live.iter().any(|&p| revocable(p)),
+                Kind::Fork | Kind::Theft => live.iter().any(|&p| episodic(p)),
+                Kind::Backup => model.backed_up.is_none() && model.down.len() < size.peers,
+                Kind::Restore => model
+                    .backed_up
+                    .is_some_and(|peer| !model.down.contains(&peer)),
+                Kind::Verdict | Kind::SignIn => !model.principals.is_empty(),
                 Kind::Partition => open_pairs.len() > all_pairs.len() / 2,
                 Kind::Heal => !cut_pairs.is_empty(),
                 Kind::Degrade => !all_pairs.is_empty(),
@@ -418,15 +551,17 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 }
             },
             Kind::Pair => {
-                let p = pick(&mut rng, &|p| model.principals[p].devices < MAX_DEVICES)
-                    .expect("enabled implies one");
+                let p = pick(&mut rng, &|p| {
+                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
+                })
+                .expect("enabled implies one");
                 Op::Pair {
                     p,
                     d: rng.gen_range(0..model.principals[p].devices),
                 }
             },
             Kind::DelKey => {
-                let p = pick(&mut rng, &|p| model.principals[p].deletable > 0)
+                let p = pick(&mut rng, &|p| !model.principals[p].backups.is_empty())
                     .expect("enabled implies one");
                 Op::DelKey {
                     p,
@@ -437,6 +572,41 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 let p = pick(&mut rng, &|p| model.principals[p].devices == 2)
                     .expect("enabled implies one");
                 Op::Concurrent { p }
+            },
+            Kind::NakedRevoke => {
+                let p = pick(&mut rng, &revocable).expect("enabled implies one");
+                let d = *model.principals[p]
+                    .backups
+                    .front()
+                    .expect("picked for having a backup");
+                Op::NakedRevoke { p, d }
+            },
+            Kind::Fork | Kind::Theft => {
+                let p = pick(&mut rng, &episodic).expect("enabled implies one");
+                if kind == Kind::Fork {
+                    Op::Fork { p }
+                } else {
+                    Op::Theft { p }
+                }
+            },
+            Kind::Backup => {
+                let up: Vec<usize> = (0..size.peers)
+                    .filter(|p| !model.down.contains(p))
+                    .collect();
+                Op::Backup {
+                    peer: *up.choose(&mut rng).expect("enabled implies one"),
+                }
+            },
+            Kind::Restore => Op::Restore {
+                peer: model.backed_up.expect("enabled implies a backup"),
+            },
+            Kind::Verdict | Kind::SignIn => {
+                let p = rng.gen_range(0..model.principals.len());
+                if kind == Kind::Verdict {
+                    Op::Verdict { p }
+                } else {
+                    Op::SignIn { p }
+                }
             },
             Kind::Partition => {
                 let (a, b) = *open_pairs.choose(&mut rng).expect("enabled implies one");
@@ -468,6 +638,13 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
         };
         push(&mut model, &mut log, op);
     }
+    push(
+        &mut model,
+        &mut log,
+        Op::VerifyAll {
+            peer: epoch % size.peers,
+        },
+    );
     push(&mut model, &mut log, Op::Barrier);
     log
 }

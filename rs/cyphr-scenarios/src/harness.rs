@@ -178,6 +178,15 @@ impl Harness {
             })
     }
 
+    /// Put `p`'s genesis public key in a keystore, where `cyphr` resolves a
+    /// trusted genesis from: under the key's own thumbprint, which is how the
+    /// CLI looks a commit's signer up and which it checks every entry against.
+    /// For a principal opened by one key that is also the principal's
+    /// handle; one opened by several has a PG that is no key's thumbprint.
+    pub fn give_genesis(&self, keystore: &std::path::Path, p: &Principal) -> ActionResult<()> {
+        crate::cli::put_key(keystore, &self.genesis_tmb(p)?, self.genesis_of(p)?)
+    }
+
     /// The thumbprint of `p`'s genesis key, the anchor a relying party is
     /// enrolled with. A principal opened by one key has that thumbprint as
     /// its PG, so a session subject that resolves under this key names the

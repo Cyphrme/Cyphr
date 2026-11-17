@@ -1,16 +1,26 @@
-// NETSIM-1: the honest network, randomized.
+// NETSIM: a seeded, randomized network scenario.
 //
-// 5 gossiping attestors, 12 principals each published to 3-5 of them, 150
-// seeded ops in 3 epochs (data commits, recorded actions, key add / replace /
-// delete, device pairing, two devices committing at once, new principals,
-// link partitions and degradation, peer stop and restart), at the servers'
-// default limits. Barriers check N1 (every holder agrees with the owner's
-// chain), N2 (honest ops are accepted, or refused Stale then accepted after
-// rebase) and N6 (no 5xx, no 429, no panic, summed over every peer lifetime).
+// 5 gossiping attestors, 12 principals each published to 3-5 of them, seeded
+// ops in 3 epochs (data commits, recorded actions, key add / replace / delete
+// / naked revoke, device pairing, two devices committing at once, fork and
+// theft episodes, peer backup and restore, one peer key rollover, new
+// principals, link partitions and degradation, peer stop and restart,
+// sampled verdicts and sign-ins), at the servers' default limits.
+//
+//   N1  every holder of an unforked principal agrees with the owner's chain
+//   N2  honest ops are accepted, or refused Stale then accepted after rebase
+//   N3  `verify-all` on a stopped peer changes nothing it serves
+//   N4  a fork is Error with both heads and evidence at every holder, and
+//       the owner's resolution settles every holder, abandoned branch kept
+//   N5  a revoked key opens nothing and every holder lists the revoke
+//   N6  no 5xx, no 429, no panic, summed over every peer lifetime
+//   N7  a fresh observer's verdict matches the owner's chain
+//   N8  sign-in: active key yes; dead key or principal in Error no
+//   N9  (large only) the witness equals its authority
 //
 // Size and replay:
 //   CYPHR_SCENARIO_SEED=n       another seed (the pinned one is the gate)
-//   CYPHR_NETSIM_SIZE=large     9 peers, 60 principals, 2000 ops (manual)
+//   CYPHR_NETSIM_SIZE=large     9 peers + a witness, 60 principals, 600 ops
 //   CYPHR_NETSIM_OPS=n          only the first n ops of the log
 //   CYPHR_NETSIM_REPLAY=file    run a recorded op log instead of generating
 // A failing run prints the seed and keeps its op log; replaying that file
@@ -19,14 +29,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use cyphr_scenarios::Harness;
 use cyphr_scenarios::netsim::plan::{self, Op};
 use cyphr_scenarios::netsim::{Size, check, run};
-use cyphr_scenarios::peer::Limits;
 
 /// The gate's seed. A seed that goes red twice on an unrelated change is
 /// moved to the scheduled run and filed, not retried.
-const PINNED_SEED: u64 = 20_261_116;
+const PINNED_SEED: u64 = 963;
 
 fn seed() -> u64 {
     std::env::var("CYPHR_SCENARIO_SEED")
@@ -62,7 +70,7 @@ fn every_seed_generates_a_valid_log_that_covers_the_mix() {
             seen.insert(op.to_string().split_whitespace().next().unwrap().to_owned());
         }
     }
-    for kind in [
+    let kinds = [
         "create",
         "commit",
         "record",
@@ -71,6 +79,15 @@ fn every_seed_generates_a_valid_log_that_covers_the_mix() {
         "replace",
         "delkey",
         "concurrent",
+        "nakedrevoke",
+        "fork",
+        "theft",
+        "backup",
+        "restore",
+        "rollpeerkey",
+        "verdict",
+        "signin",
+        "verifyall",
         "partition",
         "heal",
         "degrade",
@@ -78,13 +95,26 @@ fn every_seed_generates_a_valid_log_that_covers_the_mix() {
         "stop",
         "start",
         "barrier",
-    ] {
+    ];
+    for kind in kinds {
         assert!(
             seen.contains(kind),
             "no seed in 0..40 ever generates `{kind}`"
         );
     }
+    // The gate runs one seed, so that seed must itself exercise every kind
+    // of op, or a regression in one would pass unseen.
     let ops = plan::generate(PINNED_SEED, &size);
+    let pinned: std::collections::BTreeSet<String> = ops
+        .iter()
+        .map(|o| o.to_string().split_whitespace().next().unwrap().to_owned())
+        .collect();
+    for kind in kinds {
+        assert!(
+            pinned.contains(kind),
+            "the pinned seed never generates `{kind}`"
+        );
+    }
     assert_eq!(
         ops.iter().filter(|o| **o == Op::Barrier).count(),
         size.epochs
@@ -96,15 +126,19 @@ fn every_seed_generates_a_valid_log_that_covers_the_mix() {
 fn n6_names_every_kind_of_violation() {
     let counters = |s: &str| cyphr_scenarios::harness::counters(s);
     let clean = counters("cyphr_refusals_total{kind=\"stale\"} 4\n");
-    assert_eq!(check::n6_diff("p0", &clean, &[]), None);
+    assert_eq!(check::n6_diff("p0", &clean, 0, &[]), None);
     let bad = counters(
         "cyphr_refusals_total{kind=\"server_error\"} \
          1\ncyphr_refusals_total{kind=\"rate_limited\"} 2\n",
     );
-    let why = check::n6_diff("p0", &bad, &["thread 'x' panicked at".into()]).expect("red");
+    let why = check::n6_diff("p0", &bad, 0, &["thread 'x' panicked at".into()]).expect("red");
     for part in ["server_error", "rate_limited", "panic"] {
         assert!(why.contains(part), "{why}");
     }
+    // A designed 503 is not a defect, but one more than designed is.
+    let once = counters("cyphr_refusals_total{kind=\"server_error\"} 3\n");
+    assert_eq!(check::n6_diff("p0", &once, 3, &[]), None);
+    assert!(check::n6_diff("p0", &once, 2, &[]).is_some());
 }
 
 // ---- the network ----
@@ -133,7 +167,7 @@ impl Drop for LogDir {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn netsim_honest_network() {
+async fn netsim_network() {
     let (seed, size) = (seed(), Size::from_env());
     let ops = run::plan_from_env(seed, &size).unwrap_or_else(|e| panic!("op log: {e}"));
     let dir = LogDir(Some(
@@ -149,11 +183,9 @@ async fn netsim_honest_network() {
         dir.path().display()
     );
 
-    let names = size.peer_names();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let h = Harness::start_gossiping_seeded(&names, 1, Limits::default(), seed)
+    let h = run::start(&size, seed)
         .await
-        .expect("start peers");
+        .unwrap_or_else(|e| panic!("{e}"));
 
     match run::run(&h, &size, &ops).await {
         Ok(out) => {
@@ -175,7 +207,7 @@ async fn netsim_honest_network() {
             panic!(
                 "NETSIM FAILED {f}\n  seed = {seed}\n  size = {size:?}\n  op log: {}\n  replay: \
                  CYPHR_SCENARIO_SEED={seed} CYPHR_NETSIM_REPLAY={} cargo test -p cyphr-scenarios \
-                 --test netsim netsim_honest_network",
+                 --test netsim netsim_network",
                 log.display(),
                 log.display(),
             );
