@@ -29,6 +29,8 @@ async fn principal_holding(actions: u8) -> (Principal, Key) {
             .record_action(action_at(key.tmb(), 100 + i64::from(n), n))
             .unwrap();
     }
+    // As `hold_actions` does once the actions are held.
+    principal.state_mut().settle();
     (principal, key)
 }
 

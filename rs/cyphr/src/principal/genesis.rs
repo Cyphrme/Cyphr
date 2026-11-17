@@ -59,6 +59,7 @@ impl PrincipalState {
         Ok(Self {
             core: PrincipalCore::new(key, roots),
             pg: None,
+            hidden: Default::default(),
         })
     }
 
@@ -71,6 +72,7 @@ impl PrincipalState {
             return Err(Error::StateMismatch); // already established
         }
         self.pg = Some(pg);
+        self.hidden.clear();
         Ok(())
     }
 }

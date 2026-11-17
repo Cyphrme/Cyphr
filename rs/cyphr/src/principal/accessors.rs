@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::{Arrival, Clock, Level, MAX_NOW, Principal, PrincipalState};
+use super::{Clock, Level, MAX_NOW, Principal, PrincipalState};
 use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
@@ -152,10 +152,11 @@ impl PrincipalState {
     /// action a later commit dated before it takes out of DT is held
     /// still, and is back if a later commit restores its key.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
+        let hidden = self.hidden();
         self.data
             .actions
-            .values()
-            .filter(|a| self.judge(&a.signer, a.now, Arrival::Held).is_ok())
+            .iter()
+            .filter_map(move |(key, a)| (!hidden.contains(key)).then_some(a))
     }
 
     /// Determine the current feature level.
@@ -248,7 +249,7 @@ impl PrincipalState {
 
     /// The number of actions DT shows ([`Self::actions`]).
     pub fn action_count(&self) -> usize {
-        self.actions().count()
+        self.data.actions.len() - self.hidden().len()
     }
 
     /// MR over the actions DT shows: the `id` a `ds/create` signed now would

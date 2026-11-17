@@ -1,5 +1,8 @@
 //! Data-layer action recording (Level 4).
 
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
 use super::{Principal, PrincipalState};
 use crate::action::Action;
 use crate::error::{Error, Result};
@@ -16,7 +19,66 @@ pub(crate) enum Arrival {
     Held,
 }
 
+/// The held actions DT does not show: those [`PrincipalState::judge`]
+/// refuses, by `(now, czd)`. A cache of the view, never a record: it is
+/// read from the key timeline and the held actions, and it is dropped by
+/// anything that can change a verdict ([`PrincipalState::core_mut`]), so
+/// the state that holds it is the one a replay builds. Kept up to date by
+/// [`PrincipalState::insert_action`] alone, since a held action changes no
+/// verdict but its own.
+#[derive(Default)]
+pub(super) struct Hidden(Mutex<Option<Arc<HiddenSet>>>);
+
+/// The `(now, czd)` of each action in a [`Hidden`].
+type HiddenSet = BTreeSet<(i64, Vec<u8>)>;
+
+/// Prints nothing of the cache: two states of one record are equal whether or
+/// not either has read its view (the kept-state tests compare printed states).
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hidden")
+    }
+}
+
+impl Clone for Hidden {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.get()))
+    }
+}
+
+impl Hidden {
+    fn get(&self) -> Option<Arc<HiddenSet>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    fn set(&self, hidden: Arc<HiddenSet>) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(hidden);
+    }
+
+    pub(super) fn clear(&mut self) {
+        *self.0.get_mut().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
 impl PrincipalState {
+    /// The held actions DT does not show, read once and kept until a change
+    /// that can alter a verdict.
+    pub(super) fn hidden(&self) -> Arc<HiddenSet> {
+        if let Some(hidden) = self.hidden.get() {
+            return hidden;
+        }
+        let hidden: Arc<HiddenSet> = Arc::new(
+            self.data
+                .actions
+                .iter()
+                .filter(|(_, a)| self.judge(&a.signer, a.now, Arrival::Held).is_err())
+                .map(|(key, _)| key.clone())
+                .collect(),
+        );
+        self.hidden.set(hidden.clone());
+        hidden
+    }
+
     /// Whether the action of `tmb` dated `now` counts: the key that
     /// authorizes it, or why none does. This is the one judgment of a data
     /// action, for admission and for every read of DT alike: the signer's key
@@ -111,8 +173,19 @@ impl PrincipalState {
     /// held history alike. Idempotent (SPEC 7.6), and commutative with
     /// every other insertion and with every commit.
     pub(crate) fn insert_action(&mut self, action: Action) {
+        let key = (action.now, action.czd.as_bytes().to_vec());
+        if self.data.actions.contains_key(&key) {
+            return;
+        }
+        // The one verdict a held action can change is its own.
+        let judged = self.hidden.get().map(|hidden| {
+            let refused = self
+                .judge(&action.signer, action.now, Arrival::Held)
+                .is_err();
+            (hidden, refused)
+        });
         let tmb = action.signer.to_b64();
-        let core = self.core_mut();
+        let core = &mut self.core;
         core.included_czds.insert(action.czd.as_bytes().to_vec());
         let latest = core
             .data
@@ -129,9 +202,13 @@ impl PrincipalState {
         {
             key.set_last_used(action.now);
         }
-        core.data
-            .actions
-            .insert((action.now, action.czd.as_bytes().to_vec()), action);
+        core.data.actions.insert(key.clone(), action);
+        if let Some((mut hidden, refused)) = judged {
+            if refused {
+                Arc::make_mut(&mut hidden).insert(key);
+            }
+            self.hidden.set(hidden);
+        }
     }
 
     /// Record an action in the Data Tree (Level 4+), judged as a new
@@ -293,6 +370,7 @@ impl<S: eml::Storage> Principal<S> {
         for action in actions {
             self.state.insert_action(action);
         }
+        self.state.settle();
     }
 
     /// Whether `tmb` was ever a key of this principal: in its key history,
@@ -334,6 +412,8 @@ impl<S: eml::Storage> Principal<S> {
         sig: &[u8],
         czd: coz::Czd,
     ) -> Result<&PrincipalRoot> {
-        self.state.verify_and_record_action(pay_json, sig, czd)
+        self.state.verify_and_record_action(pay_json, sig, czd)?;
+        self.state.settle();
+        Ok(&self.state.pr)
     }
 }
