@@ -4173,35 +4173,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(pins)
     }
 
-    /// The public key the index holds for each signer of `bundle`: the keys a
-    /// rival signed through an embedded principal can be authenticated by
-    /// before anything is replayed.
-    async fn outside_keys(
-        &self,
-        bundle: &WireBundle,
-    ) -> Result<HashMap<String, (String, Vec<u8>)>, EngineError> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-        let mut keys = HashMap::new();
-        for blob in bundle.cozies() {
-            let Some(tmb) = serde_json::from_slice::<serde_json::Value>(blob)
-                .ok()
-                .and_then(|v| Some(v.pointer("/pay/tmb")?.as_str()?.to_owned()))
-            else {
-                continue;
-            };
-            if keys.contains_key(&tmb) {
-                continue;
-            }
-            if let Some(info) = self.indexer.get_key(&tmb).await?
-                && let Ok(public) = Base64UrlUnpadded::decode_vec(&info.public_key)
-            {
-                keys.insert(tmb, (info.algorithm, public));
-            }
-        }
-        Ok(keys)
-    }
-
     /// The tip this node holds of the principal `member` names, with the PR
     /// it stands at and the principal itself: its stored chain replayed,
     /// the naked revokes held applied, `Error` marked.
@@ -4446,8 +4417,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         // Authenticated before any of the stored chain is read: a bundle
         // no key of the principal signed costs its own size.
-        let outside = self.outside_keys(bundle).await?;
-        let Some(signers) = authenticated_signers(bundle, tip, &outside) else {
+        let Some(signers) = authenticated_signers(bundle, tip) else {
             return Ok(false);
         };
         let stored = self.stored_entries(principal_id, None).await?;
@@ -4461,7 +4431,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // tried only where A's Key Tree holds a digest to follow.
             let tried = |t: &coz::Thumbprint| {
                 principal.is_key_active(t)
-                    || (outside.contains_key(&t.to_b64()) && principal.has_kt_digests())
+                    || (tip.key_ever_held(t).is_none() && principal.has_kt_digests())
             };
             if signers.iter().all(tried) {
                 self.retention_trials
@@ -4545,8 +4515,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if rivals.is_empty() || self.is_already_stored(principal_id, bundle).await? {
             return Ok(None);
         }
-        let outside = self.outside_keys(bundle).await?;
-        if authenticated_signers(bundle, tip, &outside).is_none() {
+        if authenticated_signers(bundle, tip).is_none() {
             return Ok(None);
         }
         let stored = self.stored_entries(principal_id, None).await?;
@@ -6056,15 +6025,15 @@ fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
 fn authenticated_signers(
     bundle: &WireBundle,
     tip: &cyphr::PrincipalState,
-    outside: &HashMap<String, (String, Vec<u8>)>,
 ) -> Option<Vec<coz::Thumbprint>> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    // The keys of the bundle's signers, as far as the principal has held
-    // them. A key it never held may be a key of an embedded principal
-    // (SPEC 10.3): its signature is checked here against the key the index
-    // holds for the thumbprint, which only a replay can tie to a principal.
-    let mut history: HashMap<String, (String, Vec<u8>)> = outside.clone();
+    // The keys of the bundle's signers: those the principal has held, and
+    // those a principal it embeds has held (SPEC 10.3), by the views `tip`
+    // holds of them. A key known to the store for some other principal is
+    // nobody's here: a stranger's signature authenticates nothing, however
+    // well the store knows the stranger.
+    let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
     for blob in bundle.cozies() {
         let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
         for named in ["tmb", "id"] {
@@ -6077,7 +6046,11 @@ fn authenticated_signers(
             let Ok(bytes) = Base64UrlUnpadded::decode_vec(tmb) else {
                 continue;
             };
-            if let Some(key) = tip.key_ever_held(&coz::Thumbprint::from_bytes(bytes)) {
+            let tmb_bytes = coz::Thumbprint::from_bytes(bytes);
+            if let Some(key) = tip
+                .key_ever_held(&tmb_bytes)
+                .or_else(|| tip.embedded_key_ever_held(&tmb_bytes))
+            {
                 history.insert(
                     tmb.to_owned(),
                     (key.alg().to_owned(), key.pub_key().to_vec()),

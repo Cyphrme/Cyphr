@@ -283,6 +283,15 @@ impl Members {
         refusal
     }
 
+    /// A key some member in view has held under `tmb` at any commit
+    /// ([`PrincipalState::key_ever_held`]).
+    pub(crate) fn key_ever_held(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.0
+            .values()
+            .filter_map(|member| member.view.as_ref())
+            .find_map(|tip| tip.state.key_ever_held(tmb))
+    }
+
     /// [`Self::signer`] judged by each member's key history at `now`
     /// rather than at its tip: the authority for a data action.
     pub(crate) fn signer_at(
