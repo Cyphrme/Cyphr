@@ -125,23 +125,47 @@ fn engine_with_logs(
     kept: usize,
     shadow: bool,
 ) -> (Engine, cyphr_blob_fjall::EmlLogs, tempfile::TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = fjall::Database::builder(dir.path().join("db"))
-        .open()
-        .expect("open db");
-    let e = StorageEngine::with_log_factory(
-        MemoryBlobStore::new(),
-        MemoryIndexer::new(),
-        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
-    )
-    .with_kept_states(kept)
-    .with_kept_shadow(shadow);
-    (e, cyphr_blob_fjall::EmlLogs::new(db).expect("logs"), dir)
+    let stores = Stores::new();
+    let logs = cyphr_blob_fjall::EmlLogs::new(stores.db.clone()).expect("logs");
+    (stores.engine(kept, shadow), logs, stores.dir)
 }
 
 fn engine(kept: usize, shadow: bool) -> (Engine, tempfile::TempDir) {
     let (e, _logs, dir) = engine_with_logs(kept, shadow);
     (e, dir)
+}
+
+/// What outlives an engine: the blobs and the commit logs. An engine opened
+/// over them again is the process restarted: it holds no kept state and
+/// rebuilds its index from the blobs.
+struct Stores {
+    blobs: MemoryBlobStore,
+    db: fjall::Database,
+    dir: tempfile::TempDir,
+}
+
+impl Stores {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fjall::Database::builder(dir.path().join("db"))
+            .open()
+            .expect("open db");
+        Self {
+            blobs: MemoryBlobStore::new(),
+            db,
+            dir,
+        }
+    }
+
+    fn engine(&self, kept: usize, shadow: bool) -> Engine {
+        StorageEngine::with_log_factory(
+            self.blobs.clone(),
+            MemoryIndexer::new(),
+            cyphr_blob_fjall::EmlLogs::new(self.db.clone()).expect("logs"),
+        )
+        .with_kept_states(kept)
+        .with_kept_shadow(shadow)
+    }
 }
 
 /// A principal of genesis keys `golden`, `key_a` after its genesis commit,
@@ -501,6 +525,50 @@ async fn u3_a_refusal_costs_the_kept_state_nothing_and_a_revoke_costs_one_replay
         );
     }
     assert!(e.commits_replayed() > before);
+    assert_eq!(e.kept_divergences(), 0);
+}
+
+/// A naked revoke gates what arrives after it and judges nothing held
+/// (SPEC 6.4, 14.12), so it is no part of what a kept state was folded
+/// from: a revoke of a key the principal never held, and one of its own
+/// key, each leave the state kept and the next write replaying nothing.
+/// One revoke of any key otherwise makes every principal of the server
+/// replay its history, and anyone can sign one. The gate itself holds: an
+/// action the revoked key signs at or after the cutoff is refused, one
+/// dated before it admitted.
+#[tokio::test]
+async fn a_naked_revoke_leaves_every_kept_state_kept() {
+    let (e, _dir) = engine(8, false);
+    let mut w = history(&e, 3).await;
+    for (i, name) in ["bob", "key_a"].into_iter().enumerate() {
+        e.record_revoke(&naked_revoke(&kp(name), NOW + 110), NOW + 115)
+            .await
+            .expect("revoke");
+        assert!(
+            e.kept_state(&w.id).await.is_some(),
+            "a revoke of {name} dropped the kept state"
+        );
+        let at = e.commits_replayed();
+        let (next, bundle) = w
+            .toggle("alice", NOW + 200 + 10 * i as i64)
+            .await
+            .expect("toggle");
+        w.submit(&e, &bundle).await.expect("write");
+        w.adopt(next);
+        assert_eq!(
+            e.commits_replayed() - at,
+            0,
+            "the write after a revoke of {name} replayed the chain"
+        );
+    }
+    let by_key_a = |now| WireBundle::actions(vec![action_blob(&kp("key_a"), now)]);
+    assert!(
+        w.submit(&e, &by_key_a(NOW + 115)).await.is_err(),
+        "an action dated at the cutoff is refused"
+    );
+    w.submit(&e, &by_key_a(NOW + 114))
+        .await
+        .expect("an action dated before the cutoff is admitted");
     assert_eq!(e.kept_divergences(), 0);
 }
 
