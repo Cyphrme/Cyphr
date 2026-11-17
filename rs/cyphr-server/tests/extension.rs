@@ -500,11 +500,11 @@ async fn a_forked_peer_cannot_hide_behind_a_fabricated_proof() {
 }
 
 /// Backs: a principal whose state the engine does not keep (after a restart)
-/// is not proved from: each proof request would replay its chain, which a
-/// peer could ask for over and over. The routes refuse with a 503 and replay
-/// nothing, and a follower falls back to the no-proof pull.
+/// is replayed once for the first proof asked of it and kept: asking over
+/// and over, which any peer can, replays nothing more, and a follower pulls
+/// with a proof as from any other principal.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_unkept_principal_is_not_replayed_for_a_proof() {
+async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
     let mut shared = cyphr::Principal::implicit(g.key().expect("golden"))
@@ -531,14 +531,20 @@ async fn an_unkept_principal_is_not_replayed_for_a_proof() {
     let app = build_router(again.clone());
     let q = id.replace(':', "%3A");
     let before = again.engine.commits_replayed();
-    for route in [
-        format!("/consistency?pr={q}&from=2"),
-        format!("/inclusion?pr={q}&index=1"),
-    ] {
-        let (status, body) = get_json(app.clone(), &route).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{route}: {body:?}");
+    for _ in 0..3 {
+        for route in [
+            format!("/consistency?pr={q}&from=2"),
+            format!("/inclusion?pr={q}&index=1"),
+        ] {
+            let (status, body) = get_json(app.clone(), &route).await;
+            assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
+        }
     }
-    assert_eq!(again.engine.commits_replayed(), before, "nothing replayed");
+    assert_eq!(
+        again.engine.commits_replayed() - before,
+        4,
+        "the chain of 4 commits replayed once for six proofs"
+    );
 
     let url = serve(&again).await;
     let c = Watched::new(

@@ -346,6 +346,9 @@ enum Op {
     /// A rival of the chain's second commit: a fork that puts the
     /// principal in Error (SPEC 15.5) until a commit extends the head.
     Rival,
+    /// The keeping engine restarted over its blobs and logs: nothing kept,
+    /// the index rebuilt.
+    Restart,
 }
 
 const TOGGLED: [&str; 3] = ["key_b", "alice", "bob"];
@@ -375,6 +378,7 @@ fn steps() -> impl Strategy<Value = Vec<Op>> {
             1 => (0..REVOKED.len()).prop_map(Op::Revoke),
             3 => (0..ACTORS.len(), 1..80i64).prop_map(|(k, off)| Op::Act(k, off)),
             1 => Just(Op::Rival),
+            1 => Just(Op::Restart),
         ],
         0..7,
     )
@@ -392,7 +396,8 @@ fn damaged(mut bundle: WireBundle) -> WireBundle {
 }
 
 async fn run(ops: Vec<Op>) {
-    let (kept, _d1) = engine(8, true);
+    let stores = Stores::new();
+    let mut kept = stores.engine(8, true);
     let (cold, _d2) = engine(0, false);
     let mut w = World::new().await;
     for e in [&kept, &cold] {
@@ -425,6 +430,10 @@ async fn run(ops: Vec<Op>) {
                 None,
             ),
             Op::Damage => (damaged(w.last()), None),
+            Op::Restart => {
+                kept = stores.engine(8, true);
+                continue;
+            },
             Op::Revoke(k) => {
                 // Received between this op's time and the next's.
                 let evidence = naked_revoke(&kp(REVOKED[k]), now);
@@ -450,13 +459,22 @@ async fn run(ops: Vec<Op>) {
             cold.get_tip(&w.id).await.expect("tip"),
         ];
         assert_eq!(tips[0], tips[1], "op {i}: tips differ");
+        let cold_replay = replayed(&kept, &w).await;
         if let Some(state) = kept.kept_state(&w.id).await {
             assert_same_state(
                 &format!("{state:#?}"),
-                &replayed(&kept, &w).await,
+                &cold_replay,
                 &format!("op {i}: the kept state is not the replay of the stored chain"),
             );
         }
+        // A reader gets the same state, kept or replayed, and leaves it
+        // kept for the next write.
+        let read = kept.at_tip(&w.id).await.expect("read").expect("stored");
+        assert_same_state(
+            &format!("{:#?}", **read),
+            &cold_replay,
+            &format!("op {i}: a reader's state is not the replay of the stored chain"),
+        );
     }
     assert_eq!(
         kept.kept_divergences(),
@@ -470,8 +488,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     /// U3, I1: a state the engine keeps is a cache of the replay of the stored
     /// chain, never another answer. Over arbitrary histories of key toggles,
-    /// refused bundles (a reused commit, a damaged signature) and naked
-    /// revokes, an engine that keeps states and one that replays every write
+    /// refused bundles (a reused commit, a damaged signature), naked
+    /// revokes, restarts and reads, an engine that keeps states and one that
+    /// replays every write
     /// give the same verdict on every bundle and hold the same tip, and the
     /// state the first keeps is the state the replay of its blobs builds
     /// (the engine's shadow check, on, replays cold at every use and fails the
@@ -809,8 +828,7 @@ async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
 /// A holder that verifies against the engine's kept state (a gossip pull)
 /// gets the principal as the next write would start from, checks the next
 /// commit on it, and leaves the engine's store untouched until the engine
-/// itself admits the commit; both then hold the same state. Nothing is
-/// handed out when no current state is kept.
+/// itself admits the commit; both then hold the same state.
 ///
 /// Turns red if: the detached principal differs from the kept state, refuses
 /// the commit the engine accepts, writes to the engine's log or tip, or
@@ -820,7 +838,8 @@ async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
 async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it() {
     let (e, _dir) = engine(128, false);
     let w = history(&e, 6).await;
-    let mut detached = e.kept_principal(&w.id).await.expect("a kept principal");
+    let at_tip = e.at_tip(&w.id).await.expect("read").expect("stored");
+    let mut detached = at_tip.detach().await.expect("detaches");
     let kept = e.kept_state(&w.id).await.expect("kept state");
     assert_eq!(detached.projection(), kept.projection());
     let tip = e.get_tip(&w.id).await.expect("tip").expect("held");
@@ -833,7 +852,7 @@ async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it()
     let after = e.get_tip(&w.id).await.expect("tip").expect("held");
     assert_eq!(after.commit_id, tip.commit_id, "the engine stored nothing");
     assert!(
-        e.kept_principal(&w.id).await.is_some(),
+        e.kept_state(&w.id).await.is_some(),
         "its state is still kept"
     );
 
@@ -842,7 +861,11 @@ async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it()
     assert_eq!(detached.projection(), admitted.projection());
     drop(next);
 
+    // An engine that keeps nothing serves the same principal, by a replay.
     let (cold, _dir) = engine(0, false);
     let w = history(&cold, 3).await;
-    assert!(cold.kept_principal(&w.id).await.is_none());
+    let before = cold.commits_replayed();
+    let read = cold.at_tip(&w.id).await.expect("read").expect("stored");
+    assert_eq!(cold.commits_replayed() - before, 3);
+    assert_eq!(format!("{:#?}", **read), replayed(&cold, &w).await);
 }

@@ -24,16 +24,12 @@ pub async fn export(config: &ServerConfig, out: &Path) -> Result<Vec<String>, Op
     std::fs::create_dir_all(out).map_err(OpsError::io("creating", out))?;
     let mut written = Vec::new();
     for (n, id) in commit_counts(&state).await?.into_keys().enumerate() {
-        let genesis = state
-            .engine
-            .resolve_genesis(&id, &[])
-            .await
-            .map_err(OpsError::store("resolving a genesis"))?;
         let principal = state
             .engine
-            .load_principal(&id, genesis)
+            .at_tip(&id)
             .await
-            .map_err(OpsError::store("replaying a chain"))?;
+            .map_err(OpsError::store("replaying a chain"))?
+            .ok_or_else(|| OpsError::Refused(format!("principal {id} has no stored chain")))?;
         let mut body = serde_json::json!({ "principal": id }).to_string();
         for line in cyphr_storage::export_commits(&principal)
             .map_err(OpsError::store("exporting a chain"))?
@@ -138,6 +134,8 @@ pub async fn verify_all(config: &ServerConfig) -> Result<VerifyReport, OpsError>
         .collect();
     let counts = commit_counts(&state).await?;
     for id in counts.keys() {
+        // The replay itself is what is being checked, so this asks for it
+        // outright, where every other reader takes the kept state.
         let replayed = async {
             let genesis = state.engine.resolve_genesis(id, &[]).await?;
             state.engine.load_principal(id, genesis).await.map(drop)

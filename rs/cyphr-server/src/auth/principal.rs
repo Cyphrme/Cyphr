@@ -293,15 +293,21 @@ impl ServerPrincipal {
         let genesis_key = record.genesis_key.to_key()?;
 
         // A record with no served chain (e.g. the index was wiped out from
-        // under it) must fail loudly, not silently "load" the nascent
-        // principal `load_principal` would reconstruct from genesis alone.
-        if engine.get_tip(&record.pg).await?.is_none() {
+        // under it) fails loudly.
+        let principal = engine
+            .at_tip(&record.pg)
+            .await?
+            .ok_or(ServerPrincipalError::RecordMismatch)?;
+        // The chain is read from its own stored genesis: the record's
+        // genesis key must be that chain's.
+        let stored_genesis = match engine.resolve_genesis(&record.pg, &[]).await? {
+            Genesis::Implicit(key) => Some(key),
+            Genesis::Disclosed(keys) => keys.into_iter().next(),
+            _ => None,
+        };
+        if stored_genesis.is_none_or(|key| key.tmb() != genesis_key.tmb()) {
             return Err(ServerPrincipalError::RecordMismatch);
         }
-
-        let principal = engine
-            .load_principal(&record.pg, Genesis::Disclosed(vec![genesis_key.clone()]))
-            .await?;
 
         let current_tmb = identity_thumbprint(identity)?;
         if !principal.is_key_active(&current_tmb) {
@@ -334,21 +340,16 @@ impl ServerPrincipal {
         let state_path = data_dir.join(RECORD_DIR_NAME).join(STATE_FILE);
         let vouched = if state_path.exists() {
             let record = read_record(&state_path)?;
-            if engine.get_tip(&record.pg).await?.is_none() {
-                false
-            } else {
-                let principal = engine
-                    .load_principal(
-                        &record.pg,
-                        Genesis::Disclosed(vec![record.genesis_key.to_key()?]),
-                    )
-                    .await?;
+            match engine.at_tip(&record.pg).await? {
                 // An unreadable `.next` is a torn staging write; it cannot
                 // be active on any chain.
-                match ServerIdentity::load_from_path(super::next_key_path(signing_key_path)) {
-                    Ok(staged) => principal.is_key_active(&identity_thumbprint(&staged)?),
-                    Err(_) => false,
-                }
+                Some(principal) => {
+                    match ServerIdentity::load_from_path(super::next_key_path(signing_key_path)) {
+                        Ok(staged) => principal.is_key_active(&identity_thumbprint(&staged)?),
+                        Err(_) => false,
+                    }
+                },
+                None => false,
             }
         } else {
             false
@@ -422,8 +423,13 @@ impl ServerPrincipal {
         let current = ServerIdentity::load_from_path(&self.signing_key_path)?;
         let alg = current.alg().name();
 
+        // Detached: the commit is built on a copy over an in-memory log,
+        // and reaches the engine's log only through `submit_commit` below.
         let mut principal = engine
-            .load_principal(&self.pg, Genesis::Disclosed(vec![self.genesis_key.clone()]))
+            .at_tip(&self.pg)
+            .await?
+            .ok_or(ServerPrincipalError::RecordMismatch)?
+            .detach()
             .await?;
 
         // Keep the new coz strictly monotonic over the chain's latest

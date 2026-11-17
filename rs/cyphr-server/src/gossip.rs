@@ -47,7 +47,7 @@ use std::time::Duration;
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ActionBundle, Anchor, ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles,
+    ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles,
     peer_heads, pull, verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
@@ -60,7 +60,7 @@ use crate::AppState;
 enum RoundError {
     #[error("reading the stored chain: {0}")]
     Store(#[from] cyphr_storage::engine::EngineError),
-    #[error("the stored chain does not replay from its own genesis: {0}")]
+    #[error("the stored state is not a record of the principal: {0}")]
     Replay(#[from] cyphr_client::PeerFailure),
     #[error("the principal holds no commits")]
     Empty,
@@ -114,7 +114,7 @@ pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
 /// head, so a skipped round still asks every peer about these keys, and
 /// the chain is not replayed to learn them. The set is a function of the
 /// tip commit id alone; it only ever lets a round skip work, is never
-/// persisted, and a restart costs one replay per principal.
+/// persisted, and after a restart is read again from the engine's state.
 #[derive(Default)]
 pub struct Gossip {
     keys: HashMap<String, KeyMemo>,
@@ -231,30 +231,25 @@ impl ChainSource for StoredChain {
     }
 }
 
-/// A record of `principal_id` at the engine's tip: opened over the state
-/// the engine keeps, or, when it keeps none that is current, replayed from
-/// the stored genesis commit.
+/// A record of `principal_id` at the engine's tip, opened over the
+/// engine's verified state of it (`StorageEngine::at_tip`): no commit is
+/// replayed here, whether or not a peer answers.
 async fn open_record(state: &Arc<AppState>, principal_id: &str) -> Result<Record, RoundError> {
-    if let Some(kept) = state.engine.kept_principal(principal_id).await {
-        let store = Arc::new(StoredChain {
-            state: Arc::clone(state),
-            principal_id: principal_id.to_owned(),
-        });
-        if let Ok(record) = Record::resume(principal_id, kept, system_clock, store) {
-            return Ok(record);
-        }
-    }
-    let stored = state.engine.get_patch(principal_id, None, None).await?;
-    let genesis = stored.entries.first().ok_or(RoundError::Empty)?;
-    let anchor = Anchor::GenesisCommit(genesis.commit.commit_id.clone());
-    Ok(Record::from_entries(
+    let at_tip = state
+        .engine
+        .at_tip(principal_id)
+        .await?
+        .ok_or(RoundError::Empty)?;
+    let store = Arc::new(StoredChain {
+        state: Arc::clone(state),
+        principal_id: principal_id.to_owned(),
+    });
+    Ok(Record::resume(
         principal_id,
-        anchor,
+        at_tip.detach().await?,
         system_clock,
-        &patch_entries(&stored),
-        &patch_actions(&stored),
-    )
-    .await?)
+        store,
+    )?)
 }
 
 fn patch_entries(stored: &cyphr_storage::engine::PatchResponse) -> Vec<PatchEntry> {
@@ -264,16 +259,6 @@ fn patch_entries(stored: &cyphr_storage::engine::PatchResponse) -> Vec<PatchEntr
         .map(|e| PatchEntry {
             sequence: e.commit.sequence,
             bundle: Ok(e.bundle.clone()),
-        })
-        .collect()
-}
-
-fn patch_actions(stored: &cyphr_storage::engine::PatchResponse) -> Vec<ActionBundle> {
-    stored
-        .actions
-        .iter()
-        .map(|a| ActionBundle {
-            blobs: Ok(a.blobs.clone()),
         })
         .collect()
 }

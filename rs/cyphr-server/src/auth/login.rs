@@ -474,19 +474,15 @@ pub async fn login(
     // One schema parse + audience binding for both flows (ruling R6a).
     let parsed = parse_login(coz_json, audience)?;
 
-    // Load the *claimed* principal and gate on it: key active in it, and
-    // it is Active. Reconstructed from stored state via the same engine
-    // the write path uses.
-    let genesis = state
-        .engine
-        .resolve_genesis(&parsed.pr, &[])
-        .await
-        .map_err(map_load_error)?;
+    // Read the *claimed* principal and gate on it: key active in it, and
+    // it is Active. The verified state at its tip, from the same engine
+    // entry the write path uses.
     let principal = state
         .engine
-        .load_principal(&parsed.pr, genesis)
+        .at_tip(&parsed.pr)
         .await
-        .map_err(map_load_error)?;
+        .map_err(map_load_error)?
+        .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
     authorize_login(&parsed, &principal)?;
     let canonical_id = state
         .engine

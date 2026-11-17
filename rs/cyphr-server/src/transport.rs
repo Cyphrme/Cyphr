@@ -412,16 +412,12 @@ async fn authorize_initiator(
     if stored {
         // A stored principal is judged by its chain alone; any sidecar the
         // statement carries is ignored, so it cannot widen who may speak.
-        let genesis = state
-            .engine
-            .resolve_genesis(pr, &[])
-            .await
-            .map_err(lookup)?;
         let principal = state
             .engine
-            .load_principal(pr, genesis)
+            .at_tip(pr)
             .await
-            .map_err(lookup)?;
+            .map_err(lookup)?
+            .ok_or(SessionError::Initiator("the principal is not stored"))?;
         // `get_key` also returns revoked keys, so activity is its own check.
         let key = principal
             .get_key(statement.tmb())
