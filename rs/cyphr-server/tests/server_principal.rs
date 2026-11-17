@@ -472,3 +472,32 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
         );
     }
 }
+
+/// A rebooted server signs its own PG's tip with nothing remembered of the
+/// roots it derived before: the chain's genesis, which the blobs cannot
+/// express, is the one the server supplies. Lying impls it catches: a
+/// supplied genesis that is never used, or one used for every principal.
+/// E2E: boot, drop, reboot, then HTTP.
+#[tokio::test]
+async fn rebooted_server_signs_its_own_pg_tip() {
+    let (first, _identity, dir) = common::attestor_server().await;
+    let pg = first
+        .principal
+        .as_ref()
+        .expect("bootstrapped")
+        .pg()
+        .to_string();
+    drop(first);
+    let key_path = dir.path().join("signing-key.json");
+    let mut state = common::keyed_appstate(&dir.path().join("data"), &key_path);
+    let identity = state.identity.clone().expect("identity");
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+        .await
+        .expect("second boot");
+    state.principal = Some(Arc::new(sp));
+    let app = cyphr_server::build_router(Arc::new(state));
+
+    let (status, env) = common::get_json(app, &format!("/tip?pr={pg}")).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{env:?}");
+    assert_eq!(env["statement"]["kind"], "signed", "{env:?}");
+}

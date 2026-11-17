@@ -38,6 +38,8 @@ struct Watched {
     /// Commits the peer's `/patch` answers carried.
     fetched: Mutex<usize>,
     lie: Option<fn(&mut serde_json::Value)>,
+    /// An edit of the `/inclusion` answers.
+    inclusion_lie: Option<fn(&mut serde_json::Value)>,
 }
 
 impl Watched {
@@ -47,6 +49,7 @@ impl Watched {
             asked: Mutex::default(),
             fetched: Mutex::default(),
             lie: None,
+            inclusion_lie: None,
         }
     }
 
@@ -76,7 +79,14 @@ impl Connector for Watched {
             let entries = json["payload"]["entries"].as_array().map_or(0, Vec::len);
             *self.fetched.lock().expect("fetched") += entries;
         }
-        let (true, Some(lie)) = (request.target.starts_with("/consistency"), self.lie) else {
+        let lie = if request.target.starts_with("/consistency") {
+            self.lie
+        } else if request.target.starts_with("/inclusion") {
+            self.inclusion_lie
+        } else {
+            None
+        };
+        let Some(lie) = lie else {
             return Ok(body);
         };
         let mut json: serde_json::Value = serde_json::from_slice(&body).expect("json");
@@ -502,4 +512,64 @@ async fn a_proof_from_a_kept_principal_replays_nothing() {
     let (status, _) = get_json(app, &format!("/inclusion?pr={id}&index=1")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(w.peer.engine.commits_replayed(), before);
+}
+
+/// Backs: the search for where a fork parts is kept to one log. An
+/// inclusion answer that names another position, another size or another
+/// root than the one asked, or whose proof does not hold, ends the search;
+/// the pull then compares the whole chain and finds the same fork, at the
+/// price of fetching it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_inconsistent_inclusion_answer_ends_the_search() {
+    let lies: [(&str, fn(&mut serde_json::Value)); 4] = [
+        ("another position", |v| {
+            v["index"] = (v["index"].as_u64().expect("index") + 1).into();
+        }),
+        ("another size", |v| {
+            v["size"] = (v["size"].as_u64().expect("size") + 1).into();
+        }),
+        ("another root", |v| {
+            let cr = v["cr"].as_str().expect("cr").to_owned();
+            let last = if cr.ends_with('A') { 'B' } else { 'A' };
+            v["cr"] = format!("{}{last}", &cr[..cr.len() - 1]).into();
+        }),
+        ("a proof that does not hold", |v| {
+            let h = v["proof"]["path"][0]["siblings"][0]
+                .as_str()
+                .map(str::to_owned);
+            if let Some(h) = h {
+                let first = if h.starts_with('A') { 'B' } else { 'A' };
+                v["proof"]["path"][0]["siblings"][0] = format!("{first}{}", &h[1..]).into();
+            } else {
+                v["leaf"] = v["cr"].clone();
+            }
+        }),
+    ];
+    for (what, lie) in lies {
+        let (w, _) = world(&["key_a", "key_b", "alice", "bob", "carol", "eve_ed25519"]).await;
+        let (_, mine) = line(
+            &w.shared,
+            &["key_a", "key_b", "alice", "bob", "diana_es384"],
+            T + 1,
+        )
+        .await;
+        let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
+        let mut record = follower(&w.id, &held).await;
+        let mut c = connector(&w);
+        c.inclusion_lie = Some(lie);
+        let report = pull(
+            &mut record,
+            &[PullPeer {
+                name: "b",
+                connector: &c,
+            }],
+        )
+        .await;
+        assert!(
+            matches!(only_standing(&report), PeerStanding::Forked),
+            "{what}: {:?}",
+            only_standing(&report)
+        );
+        assert!(c.fetched() > 1, "{what}: the whole chain was compared");
+    }
 }
