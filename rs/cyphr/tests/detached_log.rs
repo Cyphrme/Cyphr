@@ -127,5 +127,9 @@ async fn a_detached_principal_derives_the_roots_of_the_original_at_every_prefix(
             whole.projection(),
             "detached after {prefix} commits"
         );
+        let count = detached.commit_count();
+        assert_eq!(count, bundles.len() + 1, "the genesis commit and the rest");
+        assert!(detached.commit_at(count - 1).is_some());
+        assert!(detached.commit_at(count).is_none());
     }
 }
