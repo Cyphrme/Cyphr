@@ -1236,6 +1236,8 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     kept_divergences: std::sync::atomic::AtomicU64,
     /// Stored commits replayed by [`Self::replay_onto`], ever.
     commits_replayed: std::sync::atomic::AtomicU64,
+    /// Commit records read from the index by [`Self::chain`], ever.
+    chain_rows_read: std::sync::atomic::AtomicU64,
     /// The four roots at each commit this engine admitted or derived,
     /// by principal id and commit id: a commit's roots depend on its
     /// history alone, so an entry is exact for the commit that names it.
@@ -1286,6 +1288,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             kept_misses: std::sync::atomic::AtomicU64::new(0),
             kept_divergences: std::sync::atomic::AtomicU64::new(0),
             commits_replayed: std::sync::atomic::AtomicU64::new(0),
+            chain_rows_read: std::sync::atomic::AtomicU64::new(0),
             roots_at: BoundedCache::new(ROOTS_MEMO_CAPACITY),
         }
     }
@@ -1335,6 +1338,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub fn commits_replayed(&self) -> u64 {
         self.commits_replayed
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Commit records this engine has read from its index, over its
+    /// lifetime: what a request cost in index reads, which the replay count
+    /// cannot see (a walk of the chain checks no signature).
+    pub fn chain_rows_read(&self) -> u64 {
+        self.chain_rows_read
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The index's commit records of `principal_id` from `from` to `to`
+    /// ([`Indexer::get_commit_chain`]), counted: every chain read the
+    /// engine makes goes through here.
+    async fn chain(
+        &self,
+        principal_id: &str,
+        from: Option<u64>,
+        to: Option<u64>,
+    ) -> Result<Vec<CommitRef>, crate::index::IndexerError> {
+        let rows = self
+            .indexer
+            .get_commit_chain(principal_id, from, to)
+            .await?;
+        self.chain_rows_read
+            .fetch_add(rows.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(rows)
     }
 
     /// The state the next write of `principal_id` would start from if it
@@ -1594,9 +1623,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let chain = if error.as_ref().is_some_and(|(p, _)| p.height == 0) {
             Vec::new()
         } else {
-            self.indexer
-                .get_commit_chain(principal_id, from_seq, to)
-                .await?
+            self.chain(principal_id, from_seq, to).await?
         };
 
         let mut entries = Vec::with_capacity(chain.len());
@@ -2648,8 +2675,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             };
             let from = commit.sequence.saturating_sub(1);
             let chain = self
-                .indexer
-                .get_commit_chain(&commit.principal_id, Some(from), Some(commit.sequence))
+                .chain(&commit.principal_id, Some(from), Some(commit.sequence))
                 .await?;
             // A branch past the canonical head (refused while the principal
             // was in Error) has no canonical commit at its position; its
@@ -3126,10 +3152,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             Some(count) => Some(count - 1),
             None => None,
         };
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, None, last)
-            .await?;
+        let chain = self.chain(principal_id, None, last).await?;
         let mut stored = StoredChain::default();
         for commit_ref in &chain {
             let bundle = self.commit_bundle(principal_id, commit_ref).await?;
@@ -3445,8 +3468,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         .ok_or_else(lost)?,
                 };
                 let mut held: Vec<HeldCommit<'_>> = self
-                    .indexer
-                    .get_commit_chain(&id, None, None)
+                    .chain(&id, None, None)
                     .await?
                     .into_iter()
                     .map(|c| HeldCommit {
@@ -4005,10 +4027,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if held_actions {
             return Ok(true);
         }
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, None, None)
-            .await?;
+        let chain = self.chain(principal_id, None, None).await?;
         Ok(chain.iter().any(|commit| {
             self.frame(principal_id, commit)
                 .is_none_or(|f| !f.embedded.is_empty())
@@ -4617,10 +4636,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 coz.blob_hash = *hash;
             }
         }
-        let displaced_chain = self
-            .indexer
-            .get_commit_chain(principal_id, Some(base), None)
-            .await?;
+        let displaced_chain = self.chain(principal_id, Some(base), None).await?;
         if displaced_chain.is_empty() {
             return Err(EngineError::NotFound(format!(
                 "no commit at {base} of {principal_id}"
@@ -4855,10 +4871,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if self.is_retained(principal_id, &hashes, &shape) {
             return Ok(true);
         }
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, None, None)
-            .await?;
+        let chain = self.chain(principal_id, None, None).await?;
         let frames = self.frames.lock().unwrap_or_else(|p| p.into_inner());
         Ok(chain.iter().any(|c| {
             c.blob_hashes == hashes
@@ -4883,8 +4896,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<(), EngineError> {
         let tip = commit.commit_ids.first().cloned().unwrap_or_default();
         let canonical = self
-            .indexer
-            .get_commit_chain(
+            .chain(
                 &commit.principal_id,
                 Some(commit.sequence),
                 Some(commit.sequence),
@@ -4984,8 +4996,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .ok_or_else(not_stored)?;
         let last = tip.commit_count.checked_sub(1).ok_or_else(not_stored)?;
         let head = self
-            .indexer
-            .get_commit_chain(&principal_id, Some(last), Some(last))
+            .chain(&principal_id, Some(last), Some(last))
             .await?
             .into_iter()
             .next()
@@ -5092,8 +5103,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 Some(r) => r.tip.seen,
                 None => {
                     let at = head.sequence;
-                    self.indexer
-                        .get_commit_chain(principal_id, Some(at), Some(at))
+                    self.chain(principal_id, Some(at), Some(at))
                         .await?
                         .first()
                         .and_then(|c| self.frame(principal_id, c))
@@ -5124,8 +5134,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .map(|h| ((h.sequence, h.pr.as_str()), h))
             .collect();
         let chain = self
-            .indexer
-            .get_commit_chain(principal_id, Some(fork_point.height), None)
+            .chain(principal_id, Some(fork_point.height), None)
             .await?;
         let retained = self
             .branches
@@ -5211,10 +5220,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Every commit the engine holds for `principal_id`: its canonical
     /// chain and each retained branch.
     async fn held(&self, principal_id: &str) -> Result<Vec<Held>, EngineError> {
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, None, None)
-            .await?;
+        let chain = self.chain(principal_id, None, None).await?;
         let mut held = Vec::with_capacity(chain.len());
         for c in chain {
             let frame = self.frame(principal_id, &c).ok_or_else(|| {
@@ -5274,10 +5280,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let mut out = Vec::with_capacity(rivals.len());
         for rival in rivals {
             let at = rival.tip.sequence;
-            let chain = self
-                .indexer
-                .get_commit_chain(&principal_id, Some(at), Some(at))
-                .await?;
+            let chain = self.chain(&principal_id, Some(at), Some(at)).await?;
             let Some(canonical) = chain.first() else {
                 continue;
             };
@@ -5351,10 +5354,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// Genesis of the principal stored under exactly `stored_id`, read from
     /// its first stored commit's blobs.
     async fn genesis_of_stored(&self, stored_id: &str) -> Result<crate::Genesis, EngineError> {
-        let chain = self
-            .indexer
-            .get_commit_chain(stored_id, Some(0), Some(0))
-            .await?;
+        let chain = self.chain(stored_id, Some(0), Some(0)).await?;
         let first_commit = chain.first().ok_or_else(|| {
             EngineError::NotFound(format!("principal {stored_id} has no stored commits"))
         })?;
@@ -5385,10 +5385,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let Some(tip) = self.indexer.get_tip(&candidate).await? else {
                 continue;
             };
-            let chain = self
-                .indexer
-                .get_commit_chain(&candidate, Some(0), Some(0))
-                .await?;
+            let chain = self.chain(&candidate, Some(0), Some(0)).await?;
             if !chain.is_empty() {
                 return Ok(Some(tip.principal_id));
             }
