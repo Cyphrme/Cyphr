@@ -899,12 +899,14 @@ async fn reach<C: Connector>(
     connector: &C,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
     let tip = match &record.held {
-        Some(held) => Some(held.principal.pr_tagged().map_err(|source| {
-            PeerFailure::Replay {
-                commit: held.ids.len(),
-                source,
-            }
-        })?),
+        Some(held) => Some(
+            held.principal
+                .pr_tagged()
+                .map_err(|source| PeerFailure::Replay {
+                    commit: held.ids.len(),
+                    source,
+                })?,
+        ),
         None => None,
     };
     if let Some(tip) = tip {

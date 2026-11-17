@@ -201,7 +201,8 @@ fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
 ///
 /// Turns red if: the memo is used at a tip it was not read at, so the
 /// probe asks only about the old keys and the revoke of the new one is
-/// never heard, or learning the new key replays more than the new commit. End to end over two servers on real sockets: yes.
+/// never heard, or learning the new key replays more than the new commit. End to end over two
+/// servers on real sockets: yes.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_added_while_idle_is_probed_for_revokes() {
     let pool = load_pool();

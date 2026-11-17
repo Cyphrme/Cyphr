@@ -685,7 +685,10 @@ async fn a_second_pull_replays_only_what_is_new_and_agrees_with_a_cold_build() {
     let mut cold = record(&pg, &g);
     pull(&mut cold, &[peer("b", &b)]).await;
     assert_eq!(cold.replayed(), 5);
-    let (kept_state, cold_state) = (kept.principal().expect("kept"), cold.principal().expect("cold"));
+    let (kept_state, cold_state) = (
+        kept.principal().expect("kept"),
+        cold.principal().expect("cold"),
+    );
     assert_eq!(kept_state.projection(), cold_state.projection());
     assert_eq!(kept.tip(), cold.tip());
 }
