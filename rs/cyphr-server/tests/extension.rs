@@ -521,7 +521,8 @@ async fn a_proof_from_a_kept_principal_replays_nothing() {
 /// price of fetching it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_inconsistent_inclusion_answer_ends_the_search() {
-    let lies: [(&str, fn(&mut serde_json::Value)); 4] = [
+    type Lie = fn(&mut serde_json::Value);
+    let lies: [(&str, Lie); 4] = [
         ("another position", |v| {
             v["index"] = (v["index"].as_u64().expect("index") + 1).into();
         }),
