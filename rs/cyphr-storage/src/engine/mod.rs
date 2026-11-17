@@ -1007,6 +1007,19 @@ struct Kept {
     key: KeptKey,
 }
 
+/// A principal over its engine's durable commit log, for reading proofs
+/// from: [`StorageEngine::kept_log`]. It hands out only a shared reference,
+/// so nothing a holder does can append to the log.
+pub struct LogReader<S: cyphr::eml::Storage>(cyphr::Principal<S>);
+
+impl<S: cyphr::eml::Storage> LogReader<S> {
+    /// The principal, to read its commit log's size, roots and proofs.
+    #[must_use]
+    pub fn principal(&self) -> &cyphr::Principal<S> {
+        &self.0
+    }
+}
+
 /// The kept states, at most `capacity` of them, the least recently stored
 /// evicted first.
 ///
@@ -1369,6 +1382,26 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .detach()
             .await
             .ok()
+    }
+
+    /// The commit log `principal_id`'s next write would start from, read
+    /// only: the engine's own durable log under the kept state, so a proof
+    /// over any past size can be made without a replay. It can be asked
+    /// for proofs and nothing else; it cannot append to the engine's log.
+    /// `None` exactly when [`Self::kept_principal`] is.
+    pub async fn kept_log(&self, principal_id: &str) -> Option<LogReader<S>> {
+        let key = self.resolve_key(principal_id).await.ok()?;
+        let stored = key.as_deref().unwrap_or(principal_id);
+        let lock = self.principal_lock(stored);
+        let write = Self::lock_writes(&lock, stored).await;
+        let tip = self.indexer.get_tip(stored).await.ok()??;
+        let kept = self.kept.copy(&write)?;
+        if kept.key != KeptKey::at(&tip.commit_id, self.revoked()) {
+            return None;
+        }
+        self.resume_over_log(stored, kept.state)
+            .await
+            .map(LogReader)
     }
 
     /// How many accepted commits have had their commit-log append fail

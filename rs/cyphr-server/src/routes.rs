@@ -484,6 +484,181 @@ pub async fn branches(
     Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
+/// Query parameters for `GET /consistency`.
+#[derive(Debug, Deserialize)]
+pub struct ConsistencyQuery {
+    /// Principal genesis identifier.
+    pub pr: String,
+    /// The size, in commits, of the log the asker holds. Raw string here,
+    /// parsed in the handler so a malformed value is refused with the
+    /// app's JSON error envelope, as `GET /patch`'s anchor is.
+    pub from: String,
+}
+
+/// Query parameters for `GET /inclusion`.
+#[derive(Debug, Deserialize)]
+pub struct InclusionQuery {
+    /// Principal genesis identifier.
+    pub pr: String,
+    /// The commit's position in the log, from 0. Raw string, as
+    /// [`ConsistencyQuery::from`].
+    pub index: String,
+}
+
+type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
+
+/// The commit log a proof is made from: the engine's own, read only, when
+/// it keeps the principal's state; otherwise one replayed from the chain.
+enum Proving {
+    Kept(cyphr_storage::engine::LogReader<LogStorage>),
+    Replayed(cyphr::Principal<LogStorage>),
+}
+
+impl Proving {
+    fn principal(&self) -> &cyphr::Principal<LogStorage> {
+        match self {
+            Self::Kept(log) => log.principal(),
+            Self::Replayed(principal) => principal,
+        }
+    }
+}
+
+/// The tip of a principal that has one log to prove against: 404 for an
+/// unknown principal, 409 for one in Error (SPEC 15.5).
+async fn provable_tip(state: &Arc<AppState>, pr: &str) -> Result<TipState, AppError> {
+    witness_sync(state, pr).await;
+    let t = state
+        .engine
+        .get_tip(pr)
+        .await
+        .map_err(AppError::engine)?
+        .ok_or_else(|| AppError::not_found(format!("principal {pr} not found")))?;
+    if state
+        .engine
+        .error_state(pr)
+        .await
+        .map_err(|e| AppError::internal(format!("fork state unreadable from the index: {e}")))?
+        .is_some()
+    {
+        return Err(AppError::conflict(format!(
+            "principal {pr} is in Error: it has no single log to prove against"
+        )));
+    }
+    Ok(t)
+}
+
+/// The log of `t`, from the kept state when there is one (no commit is
+/// replayed), else by replaying the chain.
+async fn proving_log(state: &Arc<AppState>, t: &TipState) -> Result<Proving, AppError> {
+    if let Some(log) = state.engine.kept_log(&t.principal_id).await {
+        return Ok(Proving::Kept(log));
+    }
+    let genesis = match own_genesis(state, &t.principal_id) {
+        Some(genesis) => genesis,
+        None => state
+            .engine
+            .resolve_genesis(&t.principal_id, &[])
+            .await
+            .map_err(AppError::engine)?,
+    };
+    state
+        .engine
+        .load_principal(&t.principal_id, genesis)
+        .await
+        .map(Proving::Replayed)
+        .map_err(AppError::engine)
+}
+
+/// A bound on a count in a proof request, parsed from `raw`.
+fn proof_count(what: &str, raw: &str) -> Result<u64, AppError> {
+    raw.parse()
+        .map_err(|_| AppError::bad_request(format!("{what} must be a commit count, got {raw:?}")))
+}
+
+/// The proof's answer, as an unsigned envelope naming the principal.
+fn proof_answer(t: &TipState, mut payload: serde_json::Value) -> impl IntoResponse + use<> {
+    payload["principal_id"] = cyphr_storage::engine::bare_digest(&t.principal_id)
+        .to_string()
+        .into();
+    Json(Envelope::unsigned(payload))
+}
+
+/// `GET /consistency?pr=<PG>&from=<n>` -- the proof that the principal's
+/// commit log, as it stands, extends the log of its first `n` commits
+/// (SPEC 4.4).
+///
+/// The payload is `{principal_id, size, cr, proof}`: the log's size and
+/// Commit Root as of the answer, and the consistency proof from `n` to
+/// it. They are the server's claim, for the asker to check against the
+/// log it holds (`cyphr_client::verify_extension`) and, once the commits
+/// they cover replay, against what replayed; the server signs nothing
+/// here and the proof asks to be believed no further than it verifies.
+///
+/// `n` must be at least 1 and below the log's size: an asker that holds
+/// the whole log, or none of it, has nothing to ask. A principal in Error
+/// has no single log (SPEC 15.5) and is a 409, as is a commit landing
+/// between reading the tip and proving against it.
+#[tracing::instrument(skip(state))]
+pub async fn consistency(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ConsistencyQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let from = proof_count("from", &query.from)?;
+    let t = provable_tip(&state, &query.pr).await?;
+    if from == 0 || from >= t.commit_count {
+        return Err(AppError::bad_request(format!(
+            "from must be between 1 and {} (the log's size less one), got {from}",
+            t.commit_count.saturating_sub(1)
+        )));
+    }
+    let log = proving_log(&state, &t).await?;
+    let extension = cyphr_client::Extension::of(log.principal(), from)
+        .await
+        .map_err(|e| AppError::internal(format!("consistency proof not made: {e}")))?;
+    if extension.size != t.commit_count {
+        return Err(AppError::conflict(format!(
+            "the log of {} moved from {} to {} commits: read the tip again",
+            t.principal_id, t.commit_count, extension.size
+        )));
+    }
+    Ok(proof_answer(&t, extension.to_payload()))
+}
+
+/// `GET /inclusion?pr=<PG>&index=<i>` -- the commit the principal's log
+/// holds at position `i`, with the proof that it is in the log (SPEC 4.4).
+/// How an asker that holds a different log finds where the two part,
+/// without being sent either.
+///
+/// The payload is `{principal_id, index, size, cr, leaf, proof}`, the
+/// asker's to check (`cyphr_client::Inclusion::holds`) and no more than a
+/// claim: a fork it points at is proved by the commits' signatures. `i`
+/// must be below the log's size; the answers of 409 are `/consistency`'s.
+#[tracing::instrument(skip(state))]
+pub async fn inclusion(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<InclusionQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let index = proof_count("index", &query.index)?;
+    let t = provable_tip(&state, &query.pr).await?;
+    if index >= t.commit_count {
+        return Err(AppError::bad_request(format!(
+            "index must be below the log's size {}, got {index}",
+            t.commit_count
+        )));
+    }
+    let log = proving_log(&state, &t).await?;
+    let stated = cyphr_client::Inclusion::of(log.principal(), index)
+        .await
+        .map_err(|e| AppError::internal(format!("inclusion proof not made: {e}")))?;
+    if stated.size != t.commit_count {
+        return Err(AppError::conflict(format!(
+            "the log of {} moved from {} to {} commits: read the tip again",
+            t.principal_id, t.commit_count, stated.size
+        )));
+    }
+    Ok(proof_answer(&t, stated.to_payload()))
+}
+
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds
 /// evidence of, each item self-describing and checkable offline.
 ///
@@ -605,13 +780,7 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
 ///
 /// [`StorageEngine::derive_roots_at`]: cyphr_storage::engine::StorageEngine::derive_roots_at
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
-    // The server's own principal has an explicit genesis, which its blobs
-    // cannot express, so its genesis is supplied rather than read back.
-    let own_genesis = state
-        .principal
-        .as_ref()
-        .filter(|p| p.pg() == t.principal_id)
-        .map(|p| cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]));
+    let own_genesis = own_genesis(state, &t.principal_id);
     let derived = state
         .engine
         .derive_roots_at(t, own_genesis)
@@ -642,6 +811,17 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::
         // sentinel becomes the receipt's typed absence (#147).
         cr: absent_cr(&derived.cr),
     })
+}
+
+/// The server's own principal has an explicit genesis, which its blobs
+/// cannot express, so its genesis is supplied rather than read back;
+/// `None` for any other principal.
+fn own_genesis(state: &Arc<AppState>, principal_id: &str) -> Option<cyphr_storage::Genesis> {
+    state
+        .principal
+        .as_ref()
+        .filter(|p| p.pg() == principal_id)
+        .map(|p| cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]))
 }
 
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
