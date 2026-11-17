@@ -1486,6 +1486,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
     }
 
+    /// [`Self::lock_writes`] if the lock is free now, `None` if it is held.
+    fn try_lock_writes<'a>(
+        lock: &'a Arc<tokio::sync::Mutex<()>>,
+        principal_id: &str,
+    ) -> Option<WriteLock<'a>> {
+        Some(WriteLock {
+            principal: principal_id.to_string(),
+            _guard: lock.try_lock().ok()?,
+        })
+    }
+
     /// Get a reference to the underlying blob store.
     pub fn blob_store(&self) -> &B {
         &self.blob_store
@@ -4174,8 +4185,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// The tip this node holds of the principal `member` names, with the PR
-    /// it stands at and the principal itself: its stored chain replayed,
-    /// the naked revokes held applied, `Error` marked.
+    /// it stands at and the principal itself: read at its tip from the
+    /// state the engine keeps, or replayed once and kept
+    /// ([`Self::verified`]), the naked revokes held applied, `Error`
+    /// marked.
     ///
     /// Boxed: it is the one way `follow_held` re-enters the engine, and a
     /// `Send` proof for `follow_held` otherwise runs through the whole
@@ -4191,8 +4204,34 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             else {
                 return Ok(None);
             };
-            let genesis = self.genesis_of_stored(&id).await?;
-            let state = self.replay_stored(&id, genesis).await?;
+            // B at its tip, by the one entry every reader takes, so a
+            // bundle that merely names a signer A does not hold (anyone can
+            // send one) replays B at most once and is then served from the
+            // state kept for B. B's write lock is only tried: A's is held,
+            // and two principals that embed each other, written at once,
+            // would each wait on the other's. A B that is being written is
+            // replayed without it, as B's own log repair allows.
+            let lock = self.principal_lock(&id);
+            let state = match Self::try_lock_writes(&lock, &id) {
+                Some(write) => match self.indexer.get_tip(&id).await? {
+                    Some(tip) => {
+                        let verified = self.verified(&id, None, &tip, &write).await?;
+                        self.keep(
+                            verified.principal.state().clone(),
+                            &tip.commit_id,
+                            tip.commit_count,
+                            verified.embeds,
+                            &write,
+                        );
+                        verified.principal
+                    },
+                    None => return Ok(None),
+                },
+                None => {
+                    let genesis = self.genesis_of_stored(&id).await?;
+                    self.replay_stored(&id, genesis).await?
+                },
+            };
             let pr = state.pr_tagged().map_err(EngineError::Protocol)?;
             let revoked = self.revoked();
             let mut tip = cyphr::Tip::new(&state, unix_now().unwrap_or(0))
@@ -4379,8 +4418,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// The refusal is attacker-reachable, so the search is bounded:
     ///
     /// 1. **Authenticate first, reading none of the chain.** Every coz of the bundle must name a
-    ///    key this principal has ever held, by the key history of `tip` (its verified state at its
-    ///    tip), and verify under that key's public key. Anyone else costs the bundle's own size.
+    ///    key this principal has ever held, or one a principal it embeds has held, by `tip` (its
+    ///    verified state at its tip, with the views it holds of the principals it embeds), and
+    ///    verify under that key's public key. Anyone else, a stranger whose key the store knows for
+    ///    another principal included, costs the bundle's own size.
     /// 2. **One forward pass.** The stored chain is replayed once onto a private in-memory Commit
     ///    Tree. At each position where the bundle's transaction signers are active, a clone of that
     ///    prefix state tries the bundle through [`Self::build_commit`], the admission path's own
@@ -5698,7 +5739,12 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
             .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.wrt))
     };
     // A data action a dead key signs is refused as the core refuses one
-    // signed by a key revoked in the chain.
+    // signed by a key revoked in the chain: `KeyRevoked`. That is the
+    // answer whoever the key belonged to. Key death is global by
+    // thumbprint (SPEC 6.4), so a dead key that was never this principal's
+    // is answered `KeyRevoked` here too, where a live key it never held is
+    // answered `UnknownKey` by the core: a client sees the revoke, not the
+    // absence, when both are true.
     for raw in &bundle.actions {
         let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
             continue;
@@ -6016,9 +6062,13 @@ fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
 }
 
 /// The thumbprints that sign the transactions of `bundle`, if every coz
-/// of the bundle is signed by a key the principal has ever held and its
-/// signature verifies under that key; `None` otherwise, or if the bundle
-/// has no transaction. The key history is read from `tip`, the principal's
+/// of the bundle is signed by a key the principal has ever held, or one a
+/// principal it embeds has ever held, and its signature verifies under
+/// that key; `None` otherwise, or if the bundle has no transaction. The
+/// store's index of keys by thumbprint is never asked: it knows the keys of
+/// every principal stored, a stranger's among them.
+///
+/// The key history is read from `tip`, the principal's
 /// verified state at its tip, so this costs the bundle and reads nothing of
 /// the stored chain: a bundle nobody of the principal signed is settled
 /// here, before any of its history is read.
