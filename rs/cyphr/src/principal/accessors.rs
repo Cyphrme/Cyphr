@@ -128,6 +128,16 @@ impl PrincipalState {
         self.auth.commits.iter()
     }
 
+    /// How many commits the chain holds.
+    pub fn commit_count(&self) -> usize {
+        self.auth.commits.len()
+    }
+
+    /// The commit at chain position `index`, from 0.
+    pub fn commit_at(&self, index: usize) -> Option<&Commit> {
+        self.auth.commits.get(index)
+    }
+
     /// Get the TR of the current commit (if any).
     pub fn current_tr(&self) -> Option<&crate::transaction_root::TransactionRoot> {
         self.tr.as_ref()

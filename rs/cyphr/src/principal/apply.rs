@@ -797,8 +797,7 @@ impl PrincipalState {
                         .map_err(|e| Error::Storage(e.to_string()))?;
                 }
             }
-            staged
-                .append_leaf(&serialized)
+            log.stage_leaf(&mut staged, &serialized)
                 .map_err(|e| Error::Storage(e.to_string()))?;
             let cr = crate::commit_root::commit_root_from_staged(&staged, &algs)?;
             (cr, Some(staged))
