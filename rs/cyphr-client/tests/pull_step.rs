@@ -692,3 +692,89 @@ async fn a_second_pull_replays_only_what_is_new_and_agrees_with_a_cold_build() {
     assert_eq!(kept_state.projection(), cold_state.projection());
     assert_eq!(kept.tip(), cold.tip());
 }
+
+/// The chain a resumed record's state covers, as a store would serve it.
+struct Stored(Vec<cyphr_client::PatchEntry>);
+
+impl cyphr_client::ChainSource for Stored {
+    fn first(
+        &self,
+        count: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<cyphr_client::PatchEntry>, String>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move { Ok(self.0[..count].to_vec()) })
+    }
+}
+
+/// `held`'s verified state as a record that starts from it, with the
+/// chain it covers as its store.
+async fn resumed(pg: &str, held: &Record) -> Record {
+    let state = held
+        .principal()
+        .expect("held a chain")
+        .fork()
+        .await
+        .expect("copy");
+    let store = std::sync::Arc::new(Stored(held.entries().to_vec()));
+    Record::resume(pg, state, CLOCK, store).expect("resumes")
+}
+
+/// Claim: a verifier that starts from a state it already verified (SPEC
+/// 4.5: the trust anchor is the last known trusted state) pulls exactly as
+/// one that replayed the chain: it replays only the commits past its tip,
+/// holds the state a cold pull of the union gives, and still finds a fork
+/// both from a rival peer's chain and from a single peer's evidence, whose
+/// proof needs the commits below the state it started from.
+///
+/// Turns red if: a resumed record replays the history its state covers,
+/// ends in another state than a cold pull, or loses a fork finding because
+/// it holds no entries below its state.
+/// End-to-end scenario: yes (real chains over a carrier that plays peers).
+#[tokio::test]
+async fn a_record_resumed_from_a_verified_state_pulls_as_a_replayed_one_does() {
+    let (g, k1, k2, k3, k4) = (kp(), kp(), kp(), kp(), kp());
+    let (c1, c2) = ((&k1, T0 + 100), (&k2, T0 + 200));
+    let pg = g.tmb.to_b64();
+    let short = line(&g, &[c1]).await;
+    let long = line(&g, &[c1, c2, (&k4, T0 + 300)]).await;
+    let (a, b) = (Fake::new(&pg, &short), Fake::new(&pg, &long));
+
+    let mut held = record(&pg, &g);
+    pull(&mut held, &[peer("a", &a)]).await;
+    let mut rec = resumed(&pg, &held).await;
+    assert_eq!(rec.replayed(), 0, "resuming replays nothing");
+    pull(&mut rec, &[peer("b", &b)]).await;
+    assert_eq!(rec.replayed(), 2, "only the commits past the state");
+    let mut cold = record(&pg, &g);
+    pull(&mut cold, &[peer("b", &b)]).await;
+    assert_eq!(
+        rec.principal().expect("resumed").projection(),
+        cold.principal().expect("cold").projection()
+    );
+    assert_eq!(rec.tip(), cold.tip());
+
+    let main = line(&g, &[c1, c2]).await;
+    let rival = line(&g, &[c1, (&k3, T0 + 201)]).await;
+    let mut held = record(&pg, &g);
+    pull(&mut held, &[peer("main", &Fake::new(&pg, &main))]).await;
+
+    let mut both = Fake::new(&pg, &main);
+    both.rival = Some(rival.clone());
+    both.evidence = vec![fork_item(&pg, &main, &rival, 2)];
+    let mut rec = resumed(&pg, &held).await;
+    let report = pull(&mut rec, &[peer("both", &both)]).await;
+    assert_eq!(report.forks.len(), 1, "evidence read below the state");
+    assert_eq!(rec.tip().expect("tip").commit_id, main.tip());
+
+    let p_rival = Fake::new(&pg, &rival);
+    let mut rec = resumed(&pg, &held).await;
+    let report = pull(&mut rec, &[peer("rival", &p_rival)]).await;
+    assert!(matches!(standing(&report, "rival"), PeerStanding::Forked));
+    assert_eq!(report.forks[0].height, 2);
+    assert_eq!(rec.tip().expect("tip").commit_id, main.tip());
+}

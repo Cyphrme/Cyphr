@@ -27,13 +27,16 @@
 //! fetched and replayed or ignored.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use coz::Thumbprint;
 use cyphr::eml::MemoryStorage;
 use cyphr::principal::{Clock, system_clock};
-use cyphr::replay::{BundleId, WireBundle};
-use cyphr::{Key, Principal, StateDigest as _};
+use cyphr::replay::WireBundle;
+use cyphr::{Commit, Key, Principal, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
@@ -78,6 +81,9 @@ pub struct Record {
     clock: Clock,
     patch_cap: usize,
     held: Option<Held>,
+    /// Where the commits a [`resume`](Record::resume)d record holds only as
+    /// verified state are stored.
+    source: Option<Arc<dyn ChainSource>>,
     /// Naked-revoked keys, by thumbprint, each with its cutoff: the record's
     /// clock when it accepted the first revoke of the key.
     dead: BTreeMap<String, i64>,
@@ -88,18 +94,32 @@ pub struct Record {
 }
 
 struct Held {
-    root: Key,
     principal: Principal<MemoryStorage>,
+    /// How many commits were verified before this record opened (its
+    /// [`resume`](Record::resume) state): their entries are not held here,
+    /// the record's [`ChainSource`] has them. 0 for a record built by
+    /// replay.
+    base: usize,
+    /// The entries of the commits replayed since `base`, in chain order.
     entries: Vec<PatchEntry>,
-    /// The identity of each commit bundle, one per entry.
-    ids: Vec<BundleId>,
-    /// The action-only bundles replayed, each with the commit count it
-    /// followed (`after`) and its blobs, so a bundle a later patch serves
-    /// again is not replayed twice.
-    actions: Vec<ActionBundle>,
-    /// Every bundle replayed, commits and action-only bundles, in replay
-    /// order: what a holder that keeps the chain must store to catch up.
+    /// Every bundle replayed since the record opened, commits and
+    /// action-only bundles, in replay order: what a holder that keeps the
+    /// chain must store to catch up.
     log: Vec<WireBundle>,
+}
+
+/// Where the chain a resumed [`Record`] does not hold is stored. The
+/// record needs it only to read the commits below a fork point, to check
+/// a peer's evidence against; everything else it asks of its verified
+/// state. What it reads is replayed by the core like anything a peer
+/// serves, so the source is no more trusted than a peer.
+pub trait ChainSource: Send + Sync {
+    /// The first `count` stored commits, in chain order, or why they
+    /// cannot be read.
+    fn first(
+        &self,
+        count: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchEntry>, String>> + Send + '_>>;
 }
 
 /// How far a record reaches.
@@ -124,6 +144,7 @@ impl Record {
             clock: system_clock,
             patch_cap: DEFAULT_PATCH_CAP,
             held: None,
+            source: None,
             dead: BTreeMap::new(),
             replayed: AtomicU64::new(0),
         }
@@ -151,33 +172,49 @@ impl Record {
         Ok(record)
     }
 
-    /// Extend the chain this record holds by `entries`, the commits after
-    /// its tip, and by `actions`: how a holder that keeps the chain itself
-    /// (a peer's store) brings a record it kept up to the store without
-    /// replaying what the record already verified. Every commit goes
-    /// through the core, so the store is no more trusted than a peer. A
-    /// record that holds nothing replays from its anchor, as
-    /// [`from_entries`](Self::from_entries) does.
+    /// A record of `principal_id` that starts from `principal`, a state
+    /// already verified (the engine's kept state, or a client's own), so
+    /// a pull verifies only what is past its tip: O(new), where
+    /// [`from_entries`](Self::from_entries) replays the chain. The anchor
+    /// is the genesis commit the state itself holds.
+    ///
+    /// The commits the state covers are not held as entries, so
+    /// [`entries`](Self::entries) and [`bundles_since`](Self::bundles_since)
+    /// cover what the record replays after this, and `source` answers for
+    /// the rest when a peer's fork evidence needs them.
     ///
     /// # Errors
     ///
-    /// The [`PeerFailure`] of the first entry that does not replay; the
-    /// record is then as it was.
-    pub async fn catch_up(
-        &mut self,
-        entries: &[PatchEntry],
-        actions: &[ActionBundle],
-    ) -> Result<(), PeerFailure> {
-        match &mut self.held {
-            Some(held) => {
-                held.extend(entries, actions, self.clock, &self.replayed)
-                    .await
-            },
-            None => {
-                self.held = Some(self.replay_full(entries, actions).await?);
-                Ok(())
-            },
+    /// [`PeerFailure::PrincipalMismatch`] if `principal` is not the
+    /// principal `principal_id` names, or holds no commit.
+    pub fn resume(
+        principal_id: &str,
+        mut principal: Principal<MemoryStorage>,
+        clock: Clock,
+        source: Arc<dyn ChainSource>,
+    ) -> Result<Self, PeerFailure> {
+        let mut record = Self::new(principal_id, Anchor::GenesisCommit(String::new()));
+        let mismatch = || PeerFailure::PrincipalMismatch {
+            id: principal_id.to_owned(),
+        };
+        let genesis = principal
+            .commit_at(0)
+            .and_then(commit_id_of)
+            .ok_or_else(mismatch)?;
+        if !pg_names(&principal, record.bare_id()) {
+            return Err(mismatch());
         }
+        principal.set_clock(clock);
+        record.anchor = Anchor::GenesisCommit(genesis);
+        record.clock = clock;
+        record.source = Some(source);
+        record.held = Some(Held {
+            base: principal.commit_count(),
+            principal,
+            entries: Vec::new(),
+            log: Vec::new(),
+        });
+        Ok(record)
     }
 
     /// How many commits this record has run through the core, over its
@@ -208,9 +245,9 @@ impl Record {
     pub fn tip(&self) -> Option<RecordTip> {
         let held = self.held.as_ref()?;
         Some(RecordTip {
-            commits: held.ids.len(),
+            commits: held.principal.commit_count(),
             pr: held.principal.pr_tagged().ok()?,
-            commit_id: held.ids.last().and_then(commit_id)?,
+            commit_id: held.principal.commits().last().and_then(commit_id_of)?,
         })
     }
 
@@ -255,10 +292,12 @@ impl Record {
     /// The tagged id of the commit at `index`, if the record holds one.
     #[must_use]
     pub fn commit_id_at(&self, index: usize) -> Option<String> {
-        self.held.as_ref()?.ids.get(index).and_then(commit_id)
+        self.held.as_ref()?.commit_id_at(index)
     }
 
-    /// The verified entries, in chain order.
+    /// The entries of the commits this record replayed, in chain order: all
+    /// of them for a record built by replay, only those after its state for
+    /// a [`resume`](Self::resume)d one.
     #[must_use]
     pub fn entries(&self) -> &[PatchEntry] {
         self.held.as_ref().map_or(&[], |h| h.entries.as_slice())
@@ -355,6 +394,45 @@ impl Record {
             .map(|(tmb, cutoff)| (tmb.as_str(), *cutoff))
     }
 
+    /// The entries of every commit the record holds, in chain order: those
+    /// below a resumed record's state read from its [`ChainSource`].
+    async fn chain_entries(&self) -> Result<Vec<PatchEntry>, &'static str> {
+        let held = self.held.as_ref().ok_or("the record holds no chain")?;
+        let mut entries = Vec::new();
+        if held.base > 0 {
+            let source = self
+                .source
+                .as_ref()
+                .ok_or("the record's stored chain is not available")?;
+            entries = source
+                .first(held.base)
+                .await
+                .map_err(|_| "the record's stored chain could not be read")?;
+            if entries.len() != held.base {
+                return Err("the record's stored chain is shorter than its state");
+            }
+        }
+        entries.extend(held.entries.iter().cloned());
+        Ok(entries)
+    }
+
+    /// Extend the held chain by `entries` and `actions`, all or nothing,
+    /// and say how many bundles that added to the log.
+    async fn extend(
+        &mut self,
+        entries: &[PatchEntry],
+        actions: &[ActionBundle],
+    ) -> Result<usize, PeerFailure> {
+        let Some(held) = &mut self.held else {
+            let held = self.replay_full(entries, actions).await?;
+            let logged = held.log.len();
+            self.held = Some(held);
+            return Ok(logged);
+        };
+        held.extend(entries, actions, self.clock, &self.replayed)
+            .await
+    }
+
     fn bare_id(&self) -> &str {
         self.id.split_once(':').map_or(&self.id, |(_, bare)| bare)
     }
@@ -369,7 +447,7 @@ impl Record {
             Anchor::GenesisKey(key) => key.clone(),
             Anchor::GenesisCommit(_) => opener_key(entries)?,
         };
-        let mut principal = Principal::implicit(root.clone())
+        let mut principal = Principal::implicit(root)
             .await
             .map_err(|source| PeerFailure::Replay { commit: 0, source })?;
         principal.set_clock(self.clock);
@@ -377,16 +455,14 @@ impl Record {
             .pr_tagged()
             .is_ok_and(|pr| names_pg(self.bare_id(), &pr));
         let mut held = Held {
-            root,
             principal,
+            base: 0,
             entries: Vec::with_capacity(entries.len()),
-            ids: Vec::with_capacity(entries.len()),
-            actions: Vec::new(),
             log: Vec::new(),
         };
         held.replay(entries, actions, &self.replayed).await?;
         if let Anchor::GenesisCommit(want) = &self.anchor
-            && held.ids.first().and_then(commit_id).as_ref() != Some(want)
+            && held.commit_id_at(0).as_ref() != Some(want)
         {
             return Err(PeerFailure::AnchorMismatch);
         }
@@ -409,35 +485,35 @@ impl Held {
         actions: &[ActionBundle],
         tally: &AtomicU64,
     ) -> Result<(), PeerFailure> {
-        for step in replay_order(self.ids.len(), entries, actions) {
+        for step in replay_order(self.principal.commit_count(), entries, actions) {
             match step {
                 Step::Commit(index, entry) => {
                     let bundle = entry.bundle.as_ref().map_err(|defect| PeerFailure::Entry {
                         index,
                         defect: *defect,
                     })?;
-                    let id = replay_entry(&mut self.principal, bundle)
+                    replay_entry(&mut self.principal, bundle)
                         .await
                         .map_err(|refusal| entry_failure(index, refusal))?;
                     tally.fetch_add(1, Ordering::Relaxed);
-                    self.ids.push(id);
                     self.entries.push(entry.clone());
                     self.log.push(bundle.clone());
                 },
                 Step::Actions(bundle) => {
-                    let index = self.ids.len();
+                    let index = self.principal.commit_count();
                     let blobs = bundle.blobs.as_ref().map_err(|defect| PeerFailure::Entry {
                         index,
                         defect: *defect,
                     })?;
-                    if self.actions.contains(bundle) {
+                    let only = WireBundle::actions(blobs.clone());
+                    // A bundle already held is not replayed twice: a peer
+                    // serves every action it holds with each patch.
+                    if self.holds_actions(&only) {
                         continue;
                     }
-                    let only = WireBundle::actions(blobs.clone());
                     replay_entry(&mut self.principal, &only)
                         .await
                         .map_err(|refusal| entry_failure(index, refusal))?;
-                    self.actions.push(bundle.clone());
                     self.log.push(only);
                 },
             }
@@ -445,11 +521,39 @@ impl Held {
         Ok(())
     }
 
-    /// Whether every head is a commit this chain replayed.
+    /// Whether every head is a commit this chain holds.
     fn holds_all(&self, heads: &[Head]) -> bool {
-        PeerHeads::idle_of(heads, |tip| {
-            self.ids.iter().filter_map(commit_id).any(|id| id == tip)
-        })
+        heads
+            .iter()
+            .all(|h| self.commit_id_at(h.sequence).as_deref() == Some(h.tip.as_str()))
+    }
+
+    /// The tagged id of the commit at `index`.
+    fn commit_id_at(&self, index: usize) -> Option<String> {
+        self.principal.commit_at(index).and_then(commit_id_of)
+    }
+
+    /// Whether every action of `only` is one the principal already holds.
+    fn holds_actions(&self, only: &WireBundle) -> bool {
+        let Ok(decoded) = only.decode() else {
+            return false;
+        };
+        let actions = decoded.action_cozies();
+        !actions.is_empty()
+            && actions
+                .iter()
+                .all(|a| self.principal.has_included(a.czd().as_bytes()))
+    }
+
+    /// Each commit as the pair a chain is compared by.
+    fn links(&self) -> Vec<Link> {
+        self.principal
+            .commits()
+            .map(|c| Link {
+                tr: c.tr().clone(),
+                pr: c.pr().clone(),
+            })
+            .collect()
     }
 
     /// Extend this chain by `entries` and `actions`, all or nothing: the
@@ -462,32 +566,35 @@ impl Held {
         actions: &[ActionBundle],
         clock: Clock,
         tally: &AtomicU64,
-    ) -> Result<(), PeerFailure> {
+    ) -> Result<usize, PeerFailure> {
+        // A peer serves every action it holds with each patch: when they
+        // are all held and no commit is new, there is nothing to replay
+        // and no copy to make.
+        if entries.is_empty()
+            && actions
+                .iter()
+                .all(|a| a.blobs.as_ref().is_ok_and(|b| self.holds_actions(&WireBundle::actions(b.clone()))))
+        {
+            return Ok(0);
+        }
         let mut principal = self
             .principal
             .fork()
             .await
             .map_err(|source| PeerFailure::Replay {
-                commit: self.ids.len(),
+                commit: self.principal.commit_count(),
                 source,
             })?;
         principal.set_clock(clock);
-        let before = (
-            self.entries.len(),
-            self.ids.len(),
-            self.actions.len(),
-            self.log.len(),
-        );
+        let before = (self.entries.len(), self.log.len());
         std::mem::swap(&mut self.principal, &mut principal);
         let replayed = self.replay(entries, actions, tally).await;
         if replayed.is_err() {
             std::mem::swap(&mut self.principal, &mut principal);
             self.entries.truncate(before.0);
-            self.ids.truncate(before.1);
-            self.actions.truncate(before.2);
-            self.log.truncate(before.3);
+            self.log.truncate(before.1);
         }
-        replayed
+        replayed.map(|()| self.log.len() - before.1)
     }
 }
 
@@ -539,12 +646,26 @@ pub fn opener_of(genesis: &WireBundle) -> Result<Key, &'static str> {
         .ok_or("the genesis commit does not carry its opener's key")
 }
 
-fn commit_id(id: &BundleId) -> Option<String> {
-    id.tr.as_ref()?.0.tagged_first().ok().map(|d| d.to_string())
+fn commit_id_of(commit: &Commit) -> Option<String> {
+    commit
+        .tr()
+        .0
+        .tagged_first()
+        .ok()
+        .map(|d| d.to_string())
 }
 
-fn pr_id(id: &BundleId) -> Option<String> {
-    id.pr
+/// What names a commit for comparing two chains: its TR and the PR it
+/// leads to. The actions a commit carries inline are recorded data, and a
+/// peer that holds them as bundles of their own holds the same commit.
+#[derive(PartialEq, Eq)]
+struct Link {
+    tr: cyphr::TransactionRoot,
+    pr: cyphr::PrincipalRoot,
+}
+
+fn pr_id_of(link: &Link) -> Option<String> {
+    link.pr
         .as_multihash()
         .tagged_first()
         .ok()
@@ -857,9 +978,9 @@ async fn pull_commits<C: Connector>(
     let (standing, mut forks) = match (&record.held, canonical) {
         (_, None) => (PeerStanding::Behind { peer_commits: 0 }, Vec::new()),
         (Some(held), Some(head))
-            if held.ids.get(head.sequence).and_then(commit_id).as_ref() == Some(&head.tip) =>
+            if held.commit_id_at(head.sequence).as_ref() == Some(&head.tip) =>
         {
-            let standing = if head.sequence + 1 == held.ids.len() {
+            let standing = if head.sequence + 1 == held.principal.commit_count() {
                 PeerStanding::Current
             } else {
                 PeerStanding::Behind {
@@ -903,7 +1024,7 @@ async fn reach<C: Connector>(
             held.principal
                 .pr_tagged()
                 .map_err(|source| PeerFailure::Replay {
-                    commit: held.ids.len(),
+                    commit: held.principal.commit_count(),
                     source,
                 })?,
         ),
@@ -920,7 +1041,10 @@ async fn reach<C: Connector>(
                 if patch.entries.is_empty() && patch.actions.is_empty() {
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
-                record.catch_up(&patch.entries, &patch.actions).await?;
+                let logged = record.extend(&patch.entries, &patch.actions).await?;
+                if patch.entries.is_empty() && logged == 0 {
+                    return Ok((PeerStanding::Current, Vec::new()));
+                }
                 return Ok((
                     PeerStanding::Extended {
                         added: patch.entries.len(),
@@ -948,18 +1072,12 @@ enum Relation {
     Diverges(usize),
 }
 
-/// Whether two replayed bundles are the same step of a chain. A commit is
-/// named by its TR and the PR it leads to: the actions a bundle carries
-/// inline are recorded data, and a peer that holds them as bundles of their
-/// own holds the same commit, though the bundle's coz digests differ.
-fn same_step(m: &BundleId, t: &BundleId) -> bool {
-    match (&m.tr, &t.tr) {
-        (Some(a), Some(b)) => a == b && m.pr == t.pr,
-        _ => m == t,
-    }
+/// Whether two commits are the same step of a chain.
+fn same_step(m: &Link, t: &Link) -> bool {
+    m == t
 }
 
-fn relate(mine: &[BundleId], theirs: &[BundleId]) -> Relation {
+fn relate(mine: &[Link], theirs: &[Link]) -> Relation {
     if let Some(at) = mine.iter().zip(theirs).position(|(m, t)| !same_step(m, t)) {
         return Relation::Diverges(at);
     }
@@ -987,25 +1105,35 @@ async fn compare_whole_chain<C: Connector>(
     // must stand on its own signatures.
     let theirs = record.replay_full(&patch.entries, &patch.actions).await?;
     let Some(mine) = &record.held else {
-        let added = theirs.ids.len();
+        let added = theirs.principal.commit_count();
         record.held = Some(theirs);
         return Ok((PeerStanding::Extended { added }, Vec::new()));
     };
-    match relate(&mine.ids, &theirs.ids) {
+    let (mine_links, their_links) = (mine.links(), theirs.links());
+    match relate(&mine_links, &their_links) {
         Relation::Equal => Ok((PeerStanding::Current, Vec::new())),
         Relation::Behind => Ok((
             PeerStanding::Behind {
-                peer_commits: theirs.ids.len(),
+                peer_commits: their_links.len(),
             },
             Vec::new(),
         )),
         Relation::Ahead => {
-            let added = theirs.ids.len() - mine.ids.len();
-            record.held = Some(theirs);
-            Ok((PeerStanding::Extended { added }, Vec::new()))
+            // The peer's chain stands on its own signatures; the record
+            // takes only the commits past its tip, onto the state it has,
+            // so what it keeps stays what it verified.
+            let held = mine_links.len();
+            record.extend(&patch.entries[held..], &patch.actions).await?;
+            Ok((
+                PeerStanding::Extended {
+                    added: their_links.len() - held,
+                },
+                Vec::new(),
+            ))
         },
         Relation::Diverges(at) => {
-            let (Some(ours), Some(rival)) = (commit_id(&mine.ids[at]), commit_id(&theirs.ids[at]))
+            let (Some(ours), Some(rival)) =
+                (mine.commit_id_at(at), theirs.commit_id_at(at))
             else {
                 return Err(PeerFailure::Fork { index: at });
             };
@@ -1020,7 +1148,7 @@ async fn compare_whole_chain<C: Connector>(
                 .map_err(|defect| PeerFailure::Entry { index: at, defect })?;
             let finding = ForkFinding {
                 height: at,
-                pre: at.checked_sub(1).and_then(|i| pr_id(&mine.ids[i])),
+                pre: at.checked_sub(1).and_then(|i| pr_id_of(&mine_links[i])),
                 commits: [ours, rival],
                 rival: bundle,
             };
@@ -1052,7 +1180,26 @@ async fn evidence<C: Connector>(
             .push(EvidenceFailure::Malformed("items is not an array"));
         return;
     };
-    let Ok(mut base) = Principal::implicit(held.root.clone()).await else {
+    let prefix = match record.chain_entries().await {
+        Ok(entries) => entries,
+        Err(why) => {
+            outcome
+                .rejected_evidence
+                .push(EvidenceFailure::Malformed(why));
+            return;
+        },
+    };
+    let root = match &record.anchor {
+        Anchor::GenesisKey(key) => Ok(key.clone()),
+        Anchor::GenesisCommit(_) => opener_key(&prefix),
+    };
+    let Ok(root) = root else {
+        outcome.rejected_evidence.push(EvidenceFailure::Malformed(
+            "the record's genesis does not open a principal",
+        ));
+        return;
+    };
+    let Ok(mut base) = Principal::implicit(root).await else {
         outcome.rejected_evidence.push(EvidenceFailure::Malformed(
             "the record's genesis does not open a principal",
         ));
@@ -1060,8 +1207,12 @@ async fn evidence<C: Connector>(
     };
     base.set_clock(record.clock);
     let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
-    let chain_ids: Vec<Option<String>> = held.ids.iter().map(commit_id).collect();
-    let set = verify_fork_items(&items, record.bare_id(), &base, &held.entries, &chain_ids).await;
+    let chain_ids: Vec<Option<String>> = held
+        .principal
+        .commits()
+        .map(commit_id_of)
+        .collect();
+    let set = verify_fork_items(&items, record.bare_id(), &base, &prefix, &chain_ids).await;
     forks.extend(set.forks.into_iter().map(|(proof, rival)| ForkFinding {
         height: usize::try_from(proof.height).unwrap_or(usize::MAX),
         pre: proof.pre,
