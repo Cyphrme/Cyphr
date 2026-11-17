@@ -5,7 +5,7 @@ use coz::Thumbprint;
 use crate::error::{Error, Result};
 
 /// Revocation information for a key.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Revocation {
     /// Revocation timestamp (SPEC `rvk` field).
     pub rvk: i64,
@@ -26,7 +26,7 @@ pub struct Revocation {
 /// and every state root bind only the `tmb`; the public key travels
 /// unsigned beside it, so without this invariant anyone able to supply the
 /// sidecar could impersonate a thumbprint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Key {
     alg: coz::Alg,
     tmb: Thumbprint,

@@ -838,11 +838,6 @@ pub enum QuarantineReason {
     /// Replaying the manifest's blobs onto its principal does not yield the
     /// commit the manifest records (only a rebuild from scratch replays).
     Unreplayable(String),
-    /// An action manifest none of whose actions the replayed key history
-    /// authorizes: each signer was not active at the action's own `now`
-    /// (a commit dated before the action removed its key), so the actions
-    /// are ignored (SPEC 6.2). Not corruption: the blobs stay stored.
-    SignerInactive(String),
 }
 
 /// A manifest a rebuild left out, and why.
@@ -980,15 +975,27 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedCache<K, V> {
 }
 
 /// What a kept [`cyphr::PrincipalState`] was folded from beyond the chain:
-/// the tip it stands at, the action-only bundles held for the principal,
-/// and the naked revokes noted into it. All of it is read fresh under the
-/// principal's write lock on every write, and the state is used only when
-/// every part equals what is read now; any difference is a miss.
+/// the tip it stands at and the naked revokes noted into it. Both are read
+/// fresh under the principal's write lock on every write, and the state is
+/// used only when both equal what is read now; any difference is a miss.
+///
+/// The held actions are no part of the key: every one is stored by a write
+/// that holds the state under the same lock, so a state kept after it holds
+/// it too.
 #[derive(Debug, Clone, PartialEq)]
 struct KeptKey {
     tip: String,
-    actions: Vec<Blake3Hash>,
     revoked: Revoked,
+}
+
+impl KeptKey {
+    /// What a state at the commit `tip` was folded from, with `revoked`.
+    fn at(tip: &str, revoked: Revoked) -> Self {
+        Self {
+            tip: tip.to_string(),
+            revoked,
+        }
+    }
 }
 
 /// A principal's verified state kept between its writes, so a write checks
@@ -1003,10 +1010,11 @@ struct Kept {
 /// The kept states, at most `capacity` of them, the least recently stored
 /// evicted first.
 ///
-/// Every access takes the principal's write-lock guard as a witness, so
-/// an entry can be read or written only by the one writer of its
-/// principal (I2); the map's own mutex only orders the map, and is never
-/// held across an `.await`.
+/// Every access takes the principal's write-lock guard as a witness and
+/// names its principal through it, so an entry can be read or written only
+/// by the one writer of its principal (I2), and no call can pair one
+/// principal's guard with another's id; the map's own mutex only orders the
+/// map, and is never held across an `.await`.
 struct KeptStates {
     capacity: usize,
     entries: std::sync::Mutex<(HashMap<String, Kept>, std::collections::VecDeque<String>)>,
@@ -1023,17 +1031,11 @@ type ResumeFuture<'a, S> = std::pin::Pin<
 
 /// Proof that the caller holds the write lock of one named principal:
 /// built only by [`StorageEngine::lock_writes`] from that principal's own
-/// lock, and checked against the id on every access, so another keyed lock
-/// (revoke, log generation, alias) cannot stand for it.
+/// lock, so another keyed lock (revoke, log generation, alias) cannot stand
+/// for it.
 struct WriteLock<'a> {
     principal: String,
     _guard: tokio::sync::MutexGuard<'a, ()>,
-}
-
-impl WriteLock<'_> {
-    fn covers(&self, principal_id: &str) -> bool {
-        self.principal == principal_id
-    }
 }
 
 impl KeptStates {
@@ -1044,30 +1046,36 @@ impl KeptStates {
         }
     }
 
-    /// A copy of the entry for `principal_id`: the writer applies a bundle
-    /// to the copy, so a refused bundle leaves the entry as it was.
-    fn copy(&self, principal_id: &str, write: &WriteLock<'_>) -> Option<Kept> {
-        if !write.covers(principal_id) {
-            return None;
-        }
+    /// A copy of the entry of the principal `write` locks, for a reader
+    /// that must leave it in place ([`StorageEngine::kept_state`]).
+    fn copy(&self, write: &WriteLock<'_>) -> Option<Kept> {
         self.entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .0
-            .get(principal_id)
+            .get(&write.principal)
             .cloned()
     }
 
-    fn put(&self, principal_id: &str, kept: Kept, write: &WriteLock<'_>) {
-        if self.capacity == 0 || !write.covers(principal_id) {
+    /// Move the entry out for the one write that holds `write`: the writer
+    /// applies a bundle to it in place, and [`Self::put`] stores it again
+    /// only if the write left it a state of the stored chain.
+    fn take(&self, write: &WriteLock<'_>) -> Option<Kept> {
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        guard.1.retain(|id| *id != write.principal);
+        guard.0.remove(&write.principal)
+    }
+
+    fn put(&self, kept: Kept, write: &WriteLock<'_>) {
+        if self.capacity == 0 {
             return;
         }
         let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let (map, order) = &mut *guard;
-        if map.insert(principal_id.to_string(), kept).is_some() {
-            order.retain(|id| id != principal_id);
+        if map.insert(write.principal.clone(), kept).is_some() {
+            order.retain(|id| *id != write.principal);
         }
-        order.push_back(principal_id.to_string());
+        order.push_back(write.principal.clone());
         while map.len() > self.capacity {
             match order.pop_front() {
                 Some(oldest) => {
@@ -1076,15 +1084,6 @@ impl KeptStates {
                 None => break,
             }
         }
-    }
-
-    fn drop_entry(&self, principal_id: &str, write: &WriteLock<'_>) {
-        if !write.covers(principal_id) {
-            return;
-        }
-        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        guard.0.remove(principal_id);
-        guard.1.retain(|id| id != principal_id);
     }
 
     /// Forget everything: a rebuild re-derives the engine's caches from
@@ -1318,8 +1317,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// The state the next write of `principal_id` would start from if it
-    /// is kept and current (the tip, held actions and revokes it was
-    /// folded from are what they are now). A cache of the replay of the
+    /// is kept and current (the tip and revokes it was folded from are what
+    /// they are now). A cache of the replay of the
     /// stored chain, exposed so a test can hold it to that.
     pub async fn kept_state(&self, principal_id: &str) -> Option<cyphr::PrincipalState> {
         let key = self.resolve_key(principal_id).await.ok()?;
@@ -1327,17 +1326,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let lock = self.principal_lock(stored);
         let write = Self::lock_writes(&lock, stored).await;
         let tip = self.indexer.get_tip(stored).await.ok()??;
-        let kept = self.kept.copy(stored, &write)?;
-        (kept.key == self.kept_key(stored, &tip, self.revoked())).then_some(kept.state)
-    }
-
-    /// What a state kept now would have been folded from, beyond the chain.
-    fn kept_key(&self, principal_id: &str, tip: &TipState, revoked: Revoked) -> KeptKey {
-        KeptKey {
-            tip: tip.commit_id.clone(),
-            actions: self.action_manifests(principal_id),
-            revoked,
-        }
+        let kept = self.kept.copy(&write)?;
+        (kept.key == KeptKey::at(&tip.commit_id, self.revoked())).then_some(kept.state)
     }
 
     /// How many accepted commits have had their commit-log append fail
@@ -2432,12 +2422,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         continue;
                     }
                     match cyphr::replay::replay_held(principal, &bundle.bundle).await {
-                        Ok(r) if r.ignored.len() == bundle.bundle.cozies().count() => orphaned(
-                            bundle,
-                            QuarantineReason::SignerInactive(
-                                "no action's signer was active at the action's now".into(),
-                            ),
-                        ),
                         Ok(_) => actions
                             .entry(principal_id.clone())
                             .or_default()
@@ -2961,12 +2945,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// position must never read, append to or mismatch the principal's
     /// durable log.
     ///
-    /// The stored action-only bundles are recorded once the commits are
-    /// in, each action judged at its own `now` (SPEC 6.5) against the key
-    /// history. One the history does not authorize, as a commit dated
-    /// before an action can remove its key, is ignored (SPEC 6.2); its
-    /// blobs stay stored (I1). The naked revokes the engine holds are taken
-    /// in after the held actions, so they gate only what arrives next.
+    /// The stored action-only bundles are held once the commits are in. An
+    /// action the key history does not authorize at its own `now` (SPEC 6.2,
+    /// 6.5), as when a commit dated before it removes its key, is held but
+    /// not shown in DT, and shown again if a later commit restores its key;
+    /// its blobs stay stored (I1). The naked revokes the engine holds are
+    /// taken in with them.
     async fn replay_onto<T: cyphr::eml::Storage>(
         &self,
         principal_id: &str,
@@ -2986,9 +2970,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             self.replay_pinned(&mut principal, &source, entry, pins, position, EMBED_DEPTH)
                 .await?;
         }
-        // Held actions were admitted when they arrived and are never judged
-        // again (SPEC 14.12); the revokes are noted after them, so they gate
-        // only what arrives next.
+        // Held actions are held as they are, with no verdict: whether one
+        // counts is read from the key timeline, the naked revokes included,
+        // whatever order they are taken in.
         for held in self.action_history(principal_id).await? {
             if let Err(why) = self
                 .apply_pins(&mut principal, &source, &held.embedded, EMBED_DEPTH)
@@ -3003,12 +2987,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             }
             match cyphr::replay::replay_held(&mut principal, &held.bundle).await {
-                Ok(r) if !r.ignored.is_empty() => tracing::debug!(
-                    principal = %principal_id,
-                    manifest = %held.manifest,
-                    ignored = r.ignored.len(),
-                    "stored actions whose signer was not active at their now are ignored"
-                ),
                 Ok(_) => {},
                 Err(refused) => tracing::warn!(
                     principal = %principal_id,
@@ -3601,34 +3579,47 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             Some(principal) => principal,
             None => self.replay_stored(principal_id, genesis.clone()).await?,
         };
+        // The key a resumed state goes back under if the bundle is refused.
+        let restore = tip_before
+            .as_ref()
+            .map(|tip| KeptKey::at(&tip.commit_id, revoked_at_load.clone()));
+        // Set once the write has changed the state past what a refusal can
+        // leave as it was (a stored bundle, an embedded principal followed).
+        let mut changed = false;
 
-        // Key death (SPEC 6.4), read under the lock. A revoke recorded
-        // concurrently is not serialized with it (it takes no principal
-        // lock), so it acts as one that arrived just after this bundle.
-        if let Some(dead) = dead_key_in(bundle, &self.revoked()) {
-            return Err(dead);
-        }
+        // The write itself. Its refusals leave `principal` as it was, so a
+        // resumed state goes back to the cache and the next write is served
+        // from it: a refused bundle is free to send, and must cost no replay.
+        let written: Result<(IngestResult, bool), EngineError> = async {
+            // Key death (SPEC 6.4), read under the lock. A revoke recorded
+            // concurrently is not serialized with it (it takes no principal
+            // lock), so it acts as one that arrived just after this bundle.
+            if let Some(dead) = dead_key_in(bundle, &self.revoked()) {
+                return Err(dead);
+            }
 
-        // SPEC 15.5: while the principal is in Error, only a bundle that
-        // leaves Error is processed; what it would leave is `in_error` of
-        // the held commits plus the candidate. A fixed protocol rule, never
-        // a recovery strategy's.
-        let held = self.held(principal_id).await?;
-        let errored = in_error(&held).then_some(held.as_slice());
+            // SPEC 15.5: while the principal is in Error, only a bundle that
+            // leaves Error is processed; what it would leave is `in_error` of
+            // the held commits plus the candidate. A fixed protocol rule, never
+            // a recovery strategy's.
+            let held = self.held(principal_id).await?;
+            let errored = in_error(&held).then_some(held.as_slice());
 
-        // The data actions DT held before this bundle, by czd.
-        let held_czds: HashSet<Vec<u8>> = principal
-            .actions()
-            .map(|a| a.czd().as_bytes().to_vec())
-            .collect();
-        // A bundle may be signed through an embedded principal this node
-        // holds (SPEC 10.3, 10.5); the manifest of what it forms, a commit
-        // or the actions alone, records the state it was judged against.
-        let embedded = self
-            .follow_held(principal_id, &mut principal, bundle, &mut HeldCache::new())
-            .await?;
-        let mut build =
-            match Self::build_commit(&mut principal, bundle, principal_id, next_seq).await {
+            // Whether every action the bundle carries is one the principal
+            // already holds, before the bundle is applied to it: a client
+            // cannot tell which actions a peer holds, so a push repeats them.
+            let repeats =
+                bundle_czds(bundle).map(|czds| czds.iter().all(|c| principal.has_included(c)));
+            // A bundle may be signed through an embedded principal this node
+            // holds (SPEC 10.3, 10.5); the manifest of what it forms, a commit
+            // or the actions alone, records the state it was judged against.
+            let embedded = self
+                .follow_held(principal_id, &mut principal, bundle, &mut HeldCache::new())
+                .await?;
+            changed |= !embedded.is_empty();
+            let mut build = match Self::build_commit(&mut principal, bundle, principal_id, next_seq)
+                .await
+            {
                 Ok(Some(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit)) => {
                     // Refused, and kept as evidence: it verifies on the chain.
                     self.keep_evidence(bundle, build.commit, &embedded).await;
@@ -3656,16 +3647,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     // already held is the same push repeated (a client cannot
                     // tell which actions a peer holds): it stores nothing
                     // (SPEC 7.6).
-                    let blob_hashes = if bundle_czds(bundle)?
-                        .iter()
-                        .all(|czd| held_czds.contains(czd))
-                    {
+                    let blob_hashes = if repeats? {
                         bundle
                             .actions
                             .iter()
                             .map(|blob| Blake3Hash::from_bytes(*blake3::hash(blob).as_bytes()))
                             .collect()
                     } else {
+                        changed = true;
                         self.store_actions(principal_id, &bundle.actions, &embedded)
                             .await?
                     };
@@ -3682,12 +3671,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             cr: t.cr,
                         })
                     });
-                    return Ok(IngestResult {
-                        principal_id: principal_id.to_string(),
-                        blob_hashes,
-                        manifest_hash: None,
-                        tip,
-                    });
+                    // The actions are held on the state already: it is the
+                    // kept state of the next write.
+                    return Ok((
+                        IngestResult {
+                            principal_id: principal_id.to_string(),
+                            blob_hashes,
+                            manifest_hash: None,
+                            tip,
+                        },
+                        embedded.is_empty(),
+                    ));
                 },
                 Err(refused) => {
                     // A genesis commit pushed to a principal that has one is a
@@ -3711,7 +3705,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             .resolve_fork(principal_id, &genesis, bundle, canonical_len)
                             .await
                         {
-                            Ok(Some(resolved)) => return Ok(resolved),
+                            Ok(Some(resolved)) => return Ok((resolved, false)),
                             Ok(None) => {},
                             Err(
                                 refusal @ (EngineError::BranchLimit { .. }
@@ -3748,31 +3742,48 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     return Err(refused);
                 },
             };
-        let remembered = embedded.is_empty();
-        build.embedded = embedded;
-        let result = self.ingest_commit(bundle, build).await?;
-        if remembered && let Some(tip) = &result.tip {
-            self.remember(
-                principal_id,
-                &principal,
-                tip,
-                revoked_at_load,
-                resumed,
-                &write,
-            )
-            .await;
+            let remembered = embedded.is_empty();
+            build.embedded = embedded;
+            changed = true;
+            let result = self.ingest_commit(bundle, build).await?;
+            Ok((result, remembered))
         }
-        Ok(result)
+        .await;
+
+        match written {
+            Ok((result, remember)) => {
+                if remember && let Some(tip) = &result.tip {
+                    self.remember(
+                        principal_id,
+                        principal,
+                        tip,
+                        revoked_at_load,
+                        resumed,
+                        &write,
+                    )
+                    .await;
+                }
+                Ok(result)
+            },
+            Err(refused) => {
+                if let (true, false, Some(key)) = (resumed, changed, restore) {
+                    let state = principal.into_state();
+                    self.kept.put(Kept { state, key }, &write);
+                }
+                Err(refused)
+            },
+        }
     }
 
     /// The principal at the tip a write extends, resumed from the state
     /// kept after the previous write, or `None` for a replay: nothing is
     /// kept, or something it was folded from has changed.
     ///
-    /// The kept state is copied; the write applies to the copy and
-    /// [`Self::remember`] replaces the entry only on success, so a refused
-    /// bundle leaves no trace. With shadow checking on, the state is also
-    /// replayed cold and compared, and a difference fails the write.
+    /// The kept state is moved out of the cache, never copied; the write
+    /// applies to it in place, [`Self::remember`] stores it again once the
+    /// write succeeds, and a refused bundle puts it back as it was. With
+    /// shadow checking on, the state is also replayed cold and compared,
+    /// and a difference fails the write.
     ///
     /// Boxed, as is [`Self::follow_held`]: the auto-trait proof that
     /// `submit_commit` is `Send` would otherwise run through the replay and
@@ -3802,23 +3813,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let Some(tip) = tip else {
             return Ok(None);
         };
-        let fresh = self.kept_key(principal_id, tip, revoked.clone());
-        let resumed = match self.kept.copy(principal_id, write) {
+        let fresh = KeptKey::at(&tip.commit_id, revoked.clone());
+        let resumed = match self.kept.take(write) {
             Some(kept) if kept.key == fresh => self.resume_over_log(principal_id, kept.state).await,
             _ => None,
         };
         let Some(resumed) = resumed else {
             // A stale entry can never match again, and a cold write is
-            // about to replace it.
-            self.kept.drop_entry(principal_id, write);
+            // about to replace it: it is already out of the cache.
             self.kept_misses.fetch_add(1, Relaxed);
             return Ok(None);
         };
         if self.kept_shadow {
             let cold = self.replay_stored(principal_id, genesis.clone()).await?;
-            if format!("{:?}", *cold) != format!("{:?}", *resumed) {
+            if cold.projection() != resumed.projection() {
                 self.kept_divergences.fetch_add(1, Relaxed);
-                self.kept.drop_entry(principal_id, write);
                 let why = format!(
                     "kept state of {principal_id} at {} differs from the replay of its stored \
                      chain",
@@ -3870,7 +3879,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     async fn remember(
         &self,
         principal_id: &str,
-        principal: &cyphr::Principal<S>,
+        principal: cyphr::Principal<S>,
         tip: &CommittedTip,
         revoked: Revoked,
         resumed: bool,
@@ -3886,36 +3895,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // A resumed principal's history was checked when it was first kept.
         let embeds = principal.has_kt_digests()
             || (!resumed && self.history_has_pins(principal_id).await.unwrap_or(true));
-        // Held actions are judged against the whole key timeline, so a
-        // later commit dated before one can void it; a state that applied
-        // the commit on top of the action does not know that. Until the
-        // core holds actions as a set with a read-time view, such a
-        // principal replays.
-        let holds_actions = !self.action_manifests(principal_id).is_empty();
-        if !at_tip || embeds || holds_actions {
-            self.kept.drop_entry(principal_id, write);
+        if !at_tip || embeds {
             return;
         }
         let kept = Kept {
-            state: (**principal).clone(),
-            key: KeptKey {
-                tip: tip.commit_id.clone(),
-                actions: self.action_manifests(principal_id),
-                revoked,
-            },
+            state: principal.into_state(),
+            key: KeptKey::at(&tip.commit_id, revoked),
         };
-        self.kept.put(principal_id, kept, write);
-    }
-
-    /// The manifests of the action-only bundles held for `principal_id`,
-    /// in the order they replay.
-    fn action_manifests(&self, principal_id: &str) -> Vec<Blake3Hash> {
-        self.actions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(principal_id)
-            .map(|held| held.iter().map(|a| a.manifest).collect())
-            .unwrap_or_default()
+        self.kept.put(kept, write);
     }
 
     /// Whether any commit or held action bundle of `principal_id` was

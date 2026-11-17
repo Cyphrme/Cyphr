@@ -553,8 +553,15 @@ async fn u3_a_held_action_then_a_commit_that_removes_its_signer_before_it() {
     w.submit(&e, &bundle).await.expect("a later write");
     w.adopt(next);
     assert_eq!(e.kept_divergences(), 0);
-    let kept = e.kept_state(&w.id).await.expect("a principal holding actions is kept");
-    assert_eq!(kept.action_count(), 0, "the removed signer's action is out of DT");
+    let kept = e
+        .kept_state(&w.id)
+        .await
+        .expect("a principal holding actions is kept");
+    assert_eq!(
+        kept.action_count(),
+        0,
+        "the removed signer's action is out of DT"
+    );
 }
 
 /// U3, the cost of an action: an action-only write steps the kept state
@@ -570,7 +577,11 @@ async fn u3_an_action_only_write_is_served_from_the_kept_state() {
     w.submit(&e, &bundle).await.expect("a commit after it");
     w.adopt(next);
     assert_eq!(
-        (e.kept_hits() - hits, e.kept_misses() - misses, e.commits_replayed() - replayed),
+        (
+            e.kept_hits() - hits,
+            e.kept_misses() - misses,
+            e.commits_replayed() - replayed
+        ),
         (2, 0, 0),
         "the action write, or the commit after it, replayed the chain"
     );

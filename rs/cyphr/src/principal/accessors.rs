@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::{Clock, Level, MAX_NOW, Principal, PrincipalState};
+use super::{Arrival, Clock, Level, MAX_NOW, Principal, PrincipalState};
 use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
@@ -146,9 +146,16 @@ impl PrincipalState {
         self.sr.as_ref()
     }
 
-    /// Get all actions.
+    /// The actions DT shows, in the order SPEC 4.8.1 gives it (by `now`, then
+    /// `czd`): the held actions whose signer authorized them at their own
+    /// `now` (SPEC 6.2, 6.5), read from the key timeline as it stands. An
+    /// action a later commit dated before it takes out of DT is held
+    /// still, and is back if a later commit restores its key.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
-        self.data.actions.iter()
+        self.data
+            .actions
+            .values()
+            .filter(|a| self.judge(&a.signer, a.now, Arrival::Held).is_ok())
     }
 
     /// Determine the current feature level.
@@ -239,9 +246,16 @@ impl PrincipalState {
         self.dr.as_ref()
     }
 
-    /// Get the number of recorded actions.
+    /// The number of actions DT shows ([`Self::actions`]).
     pub fn action_count(&self) -> usize {
-        self.data.actions.len()
+        self.actions().count()
+    }
+
+    /// MR over the actions DT shows: the `id` a `ds/create` signed now would
+    /// name.
+    pub(crate) fn data_root_of_view(&self, algs: &[HashAlg]) -> Result<Option<DataRoot>> {
+        let actions: Vec<&Action> = self.actions().collect();
+        crate::state::compute_dr(&actions, None, algs)
     }
 }
 

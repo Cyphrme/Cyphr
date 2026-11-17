@@ -83,7 +83,7 @@ pub use key::Key;
 pub use merge::{MergeClaim, MergeStatus, merge_status};
 pub use multihash::MultihashDigest;
 pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, compute_czd, verify_coz};
-pub use principal::{Principal, PrincipalState};
+pub use principal::{Principal, PrincipalState, StateProjection};
 #[cfg(any(test, feature = "test-utils"))]
 pub use state::compute_pr;
 pub use state::{

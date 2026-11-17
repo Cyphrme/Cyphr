@@ -144,7 +144,9 @@ async fn rebuilt(g: &K, p: &Principal, held: &[&Act]) -> Principal {
 }
 
 async fn hold(p: &mut Principal, a: &Act) -> Result<(), String> {
-    let bundle = WireBundle::actions(vec![a.blob()]).decode().expect("decode");
+    let bundle = WireBundle::actions(vec![a.blob()])
+        .decode()
+        .expect("decode");
     replay_held(p, &bundle)
         .await
         .map(|_| ())
@@ -160,6 +162,8 @@ fn dt(p: &Principal) -> Vec<String> {
 fn czds(acts: &[&Act]) -> Vec<String> {
     let mut czds: Vec<String> = acts.iter().map(|a| a.czd.to_b64()).collect();
     czds.sort();
+    // The same action generated twice is one action (SPEC 7.6).
+    czds.dedup();
     czds
 }
 
@@ -338,8 +342,7 @@ async fn build(keys: &[K], script: &Script) -> (Principal, Vec<(usize, bool, i64
 fn counts(applied: &[(usize, bool, i64)], i: usize, now: i64) -> bool {
     applied
         .iter()
-        .filter(|&&(k, _, at)| k == i && T + at <= now)
-        .last()
+        .rfind(|&&(k, _, at)| k == i && T + at <= now)
         .map_or(i < 2, |&(_, create, _)| create)
 }
 
@@ -391,7 +394,9 @@ proptest! {
                     let seen = &applied[..n - 1];
                     let expected: Vec<&Act> = held
                         .iter()
-                        .filter(|(i, off, _)| r.held_key(&keys[*i].tmb) && counts(seen, *i, T + off))
+                        .filter(|(i, off, _)| {
+                            r.held_key(&keys[*i].tmb) && counts(seen, *i, T + off)
+                        })
                         .map(|(.., a)| a)
                         .collect();
                     prop_assert_eq!(dt(&r), czds(&expected), "prefix {}", n);

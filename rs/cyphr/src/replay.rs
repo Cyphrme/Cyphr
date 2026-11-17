@@ -9,18 +9,19 @@
 //! engine's ingest, rebuild and load, a client following a peer) replays
 //! through [`replay_bundle`], so a bundle means one thing on every path.
 //!
-//! The order rule: the bundle's actions are recorded first, then every
+//! The order rule: the bundle's actions are held first, then every
 //! transaction is applied through [`CommitScope::apply_tx`] inside one
 //! commit scope and the commit is finalized. Each transaction's cozies are
 //! verified against the state the transaction meets and applied one by
 //! one, so the transaction is one leaf of TR, `TX = MR(czd0, czd1?, ...)`
 //! (SPEC 3.7.5), and all its cozies share one `typ` (4.1). Actions to be
 //! recorded after a commit travel in a following action-only bundle. A
-//! bundle with no transaction forms no commit: its actions are recorded in
-//! DT in `now` order, the lexical order of their digests breaking ties
-//! (SPEC 4.8.1: actions "are not chained, and are recorded in DT",
+//! bundle with no transaction forms no commit: its actions are held in
+//! DT (SPEC 4.8.1: actions "are not chained, and are recorded in DT",
 //! "Ordered by `now`"; 3.7 step 2), whatever order they travelled in, so a
-//! later `ds/create` includes them (4.8.2).
+//! later `ds/create` includes them (4.8.2). Whether a held action counts
+//! is read from the key timeline when DT is read, so an action means the
+//! same in a bundle that forms a commit and in one that does not.
 //!
 //! [`CommitScope::apply_tx`]: crate::commit::CommitScope::apply_tx
 
@@ -31,7 +32,7 @@ use serde_json::Value;
 use crate::error::Error;
 use crate::key::Key;
 use crate::parsed_coz::{CozHeader, compute_czd, typ};
-use crate::principal::Principal;
+use crate::principal::{Arrival, Principal};
 use crate::state::{HashAlg, PrincipalRoot, hash_alg_from_str};
 use crate::transaction_root::TransactionRoot;
 
@@ -631,15 +632,16 @@ impl<S: eml::Storage> StagedBundle<'_, S> {
     }
 }
 
-/// Verify one stored bundle onto `principal` through the verifying commit
+/// Verify one new submission onto `principal` through the verifying commit
 /// scope, by the order rule in the [module docs](self), and stage it: the
 /// commit's log append is computed and nothing is written. Every coz is
 /// verified before [`StagedBundle::commit`] writes, so a refused bundle
-/// leaves no log leaf.
+/// leaves no log leaf. Its actions are admitted only if their signers
+/// authorize them (SPEC 6.5).
 ///
-/// On error `principal` may hold the bundle's actions (in memory only); a
-/// caller that needs all-or-nothing replays onto a principal it can
-/// discard.
+/// A refused bundle leaves `principal` as it was: its actions are held
+/// only together with the commit, or, for a bundle with no transaction,
+/// only when every one of them verifies.
 ///
 /// # Errors
 ///
@@ -649,6 +651,14 @@ impl<S: eml::Storage> StagedBundle<'_, S> {
 pub async fn stage_bundle<'a, S: eml::Storage>(
     principal: &'a mut Principal<S>,
     bundle: &Bundle,
+) -> Result<StagedBundle<'a, S>, ReplayError> {
+    stage(principal, bundle, Arrival::Submitted).await
+}
+
+async fn stage<'a, S: eml::Storage>(
+    principal: &'a mut Principal<S>,
+    bundle: &Bundle,
+    arrival: Arrival,
 ) -> Result<StagedBundle<'a, S>, ReplayError> {
     let at = |i: usize| {
         move |source| ReplayError {
@@ -661,21 +671,16 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
     if czds.is_empty() {
         return Err(whole(Error::EmptyCommit));
     }
-    let record = |principal: &mut Principal<S>, i: usize, c: &StoredCoz| {
-        principal
-            .verify_and_record_action(&c.pay_json, &c.sig, c.czd.clone())
-            .map(|_| ())
-            .map_err(at(i))
-    };
 
     if bundle.txs.is_empty() {
-        let mut order: Vec<(usize, &StoredCoz)> = bundle.actions.iter().enumerate().collect();
-        order.sort_by(|(_, a), (_, b)| {
-            (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
-        });
-        order
-            .into_iter()
-            .try_for_each(|(i, c)| record(principal, i, c))?;
+        let mut prepared = Vec::with_capacity(bundle.actions.len());
+        for (i, c) in bundle.actions.iter().enumerate() {
+            let action = principal
+                .prepare_action(&c.pay_json, &c.sig, c.czd.clone(), arrival)
+                .map_err(at(i))?;
+            prepared.extend(action);
+        }
+        principal.hold_actions(prepared);
         return Ok(StagedBundle::Actions(BundleId {
             czds,
             tr: None,
@@ -683,8 +688,12 @@ pub async fn stage_bundle<'a, S: eml::Storage>(
         }));
     }
 
-    (bundle.actions.iter().enumerate()).try_for_each(|(i, c)| record(principal, i, c))?;
     let mut scope = principal.begin_commit();
+    for (i, c) in bundle.actions.iter().enumerate() {
+        scope
+            .hold_action(&c.pay_json, &c.sig, c.czd.clone(), arrival)
+            .map_err(at(i))?;
+    }
     let mut i = bundle.actions.len();
     for tx in &bundle.txs {
         // Every coz of a transaction is verified against the state the
@@ -736,73 +745,27 @@ pub async fn replay_bundle<S: eml::Storage>(
 pub struct Replayed {
     /// What the bundle formed.
     pub id: BundleId,
-    /// The bundle-order indices ([`Bundle::cozies`]) of the actions the
-    /// replay ignored.
-    pub ignored: Vec<usize>,
 }
 
 /// [`replay_bundle`] for history already admitted somewhere (a store, a
-/// peer, an export), not a new submission. An action-only bundle's actions
-/// are each judged at their own `now`, and one whose signer was not active
-/// then is ignored (SPEC 6.2: "actions signed after it has been removed are
-/// ignored"): a commit dated before an action can remove its key after the
-/// action was accepted. An action dated in a frozen span or after the
-/// principal's delete is ignored the same way (SPEC 14.9, 11.4): every
-/// gate is judged at the action's own `now`. An action by a key this
-/// principal never held is no such verdict and stays a refusal. A bundle that forms a commit
+/// peer, an export), not a new submission: every action is held once its
+/// signature verifies under a key the principal has held, and whether it
+/// counts is left to DT's read of the key timeline (SPEC 6.2: "actions
+/// signed after it has been removed are ignored"), so replaying a history
+/// gives the DT the principal that lived it had. An action by a key this
+/// principal never held stays a refusal. A bundle that forms a commit
 /// replays as [`replay_bundle`] does.
 ///
 /// # Errors
 ///
-/// As [`replay_bundle`], for every refusal but an inactive signer's.
+/// As [`replay_bundle`], but no action is refused for its signer's inactivity.
 pub async fn replay_held<S: eml::Storage>(
     principal: &mut Principal<S>,
     bundle: &Bundle,
 ) -> Result<Replayed, ReplayError> {
-    if !bundle.txs.is_empty() {
-        let id = replay_bundle(principal, bundle).await?;
-        return Ok(Replayed {
-            id,
-            ignored: Vec::new(),
-        });
-    }
-    let czds: Vec<Czd> = bundle.cozies().map(|c| c.czd.clone()).collect();
-    if czds.is_empty() {
-        return Err(ReplayError {
-            coz: None,
-            source: Error::EmptyCommit,
-        });
-    }
-    let mut order: Vec<(usize, &StoredCoz)> = bundle.actions.iter().enumerate().collect();
-    order.sort_by(|(_, a), (_, b)| {
-        (a.header.now, a.czd.as_bytes()).cmp(&(b.header.now, b.czd.as_bytes()))
-    });
-    let mut ignored = Vec::new();
-    for (i, c) in order {
-        match principal.record_held_action(&c.pay_json, &c.sig, c.czd.clone()) {
-            Ok(()) => {},
-            // Only a key this principal held: a stranger's action is no
-            // verdict that flipped, and stays a defect.
-            Err(e) if e.is_inactive_signer() && principal.held_key(&c.header.tmb) => {
-                ignored.push(i);
-            },
-            // Dated in a frozen span or after the delete: a later freeze or
-            // delete, backdated, took the action out (SPEC 14.9, 11.4).
-            Err(Error::Frozen | Error::AlreadyDeleted) => ignored.push(i),
-            Err(source) => {
-                return Err(ReplayError {
-                    coz: Some(i),
-                    source,
-                });
-            },
-        }
-    }
-    Ok(Replayed {
-        id: BundleId {
-            czds,
-            tr: None,
-            pr: principal.pr().clone(),
-        },
-        ignored,
-    })
+    let id = stage(principal, bundle, Arrival::Held)
+        .await?
+        .commit()
+        .await?;
+    Ok(Replayed { id })
 }

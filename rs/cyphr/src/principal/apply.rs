@@ -839,6 +839,11 @@ impl PrincipalState {
         }
         key.set_first_seen(first_seen);
         let tmb_b64 = key.tmb().to_b64();
+        // A key added after actions of its thumbprint are held reads the
+        // same as one that was active when they arrived.
+        if let Some(&signed) = self.data.last_signed.get(&tmb_b64) {
+            key.set_last_used(signed);
+        }
         self.core_mut().auth.keys.insert(tmb_b64, key);
         Ok(())
     }
