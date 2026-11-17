@@ -599,6 +599,34 @@ async fn a_refused_write_to_an_unkept_principal_replays_once() {
     assert!(e.kept_state(&w.id).await.is_some(), "kept by the refusal");
 }
 
+/// A refused bundle that is no rival costs index reads bounded by the
+/// bundle, whatever the principal's history: a commit whose signature does
+/// not verify, and a commit the chain already holds pushed again. Both are
+/// free to send (the second is served by `/patch` to anyone), so a refusal
+/// that read the chain to decide would let anyone make the store read a
+/// principal's whole history per request.
+///
+/// Counted at the engine's one chain read, over histories of 4 and of 24
+/// commits: the refusals are the same either way, and no signature is
+/// replayed, so only the count shows the read.
+#[tokio::test]
+async fn a_refused_bundle_that_is_no_rival_reads_no_more_as_history_grows() {
+    let mut rows = Vec::new();
+    for n in [4, 24] {
+        let (e, _dir) = engine(8, false);
+        let w = history(&e, n).await;
+        let before = e.chain_rows_read();
+        for refused in [damaged(w.last()), bundle_at(&w.shadow, 1)] {
+            assert!(w.submit(&e, &refused).await.is_err(), "refused");
+        }
+        rows.push(e.chain_rows_read() - before);
+    }
+    assert_eq!(
+        rows[0], rows[1],
+        "index commit records read by two refusals, over 4 commits and over 24"
+    );
+}
+
 /// U3: a state resumes only over the commit log it was folded from, so a
 /// kept state that fell behind its log (a regenerated or newer log) is
 /// refused rather than extended: the log holds a different number of
