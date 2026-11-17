@@ -36,6 +36,9 @@ struct Memo {
     hidden: Arc<HiddenSet>,
     /// Verdicts of actions dated at or after this are not read yet.
     stale_from: Option<i64>,
+    /// Verdicts of every action of these signers (base64 thumbprints) are
+    /// not read yet, whatever their date.
+    stale_signers: BTreeSet<String>,
 }
 
 /// The `(now, czd)` of each action in a [`Hidden`].
@@ -75,6 +78,14 @@ impl Hidden {
             memo.stale_from = Some(memo.stale_from.map_or(t, |s| s.min(t)));
         }
     }
+
+    /// A key became known to the key timeline: its actions, of any date,
+    /// are judged by its periods from now on.
+    pub(super) fn invalidate_signer(&mut self, tmb: String) {
+        if let Some(memo) = self.0.get_mut().unwrap_or_else(|p| p.into_inner()) {
+            memo.stale_signers.insert(tmb);
+        }
+    }
 }
 
 impl PrincipalState {
@@ -110,12 +121,14 @@ impl PrincipalState {
             Some(Memo {
                 hidden,
                 stale_from: None,
-            }) => return hidden,
+                stale_signers,
+            }) if stale_signers.is_empty() => return hidden,
             Some(Memo {
                 hidden,
-                stale_from: Some(t),
+                stale_from,
+                stale_signers,
             }) => {
-                let from = (t, Vec::new());
+                let from = (stale_from.unwrap_or(i64::MAX), Vec::new());
                 let mut kept = (*hidden).clone();
                 kept.split_off(&from);
                 kept.extend(
@@ -125,6 +138,19 @@ impl PrincipalState {
                         .filter(refused)
                         .map(|(key, _)| key.clone()),
                 );
+                // Before `from`, only the actions of a key made known since
+                // can differ (see `KeyTimeline::record_commit`).
+                for (key, action) in self.data.actions.iter() {
+                    if *key >= from {
+                        break;
+                    }
+                    if stale_signers.contains(&action.signer.to_b64()) {
+                        kept.remove(key);
+                        if refused(&(key, action)) {
+                            kept.insert(key.clone());
+                        }
+                    }
+                }
                 kept
             },
             None => self
@@ -139,6 +165,7 @@ impl PrincipalState {
         self.hidden.set(Memo {
             hidden: hidden.clone(),
             stale_from: None,
+            stale_signers: BTreeSet::new(),
         });
         hidden
     }
