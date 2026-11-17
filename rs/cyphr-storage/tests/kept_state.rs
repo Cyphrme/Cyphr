@@ -572,6 +572,32 @@ async fn a_naked_revoke_leaves_every_kept_state_kept() {
     assert_eq!(e.kept_divergences(), 0);
 }
 
+/// A refused write leaves the principal's verified state kept, whether the
+/// write resumed it or replayed it: after a restart nothing is kept, and a
+/// refused bundle is free to send, so a refusal that dropped the replayed
+/// state would cost a whole replay per bundle, for every principal. The
+/// first refusal after the restart replays the chain once; the second
+/// replays nothing.
+///
+/// The replay count is the engine's own: both refusals answer alike, so no
+/// response can tell them apart.
+#[tokio::test]
+async fn a_refused_write_to_an_unkept_principal_replays_once() {
+    let stores = Stores::new();
+    let w = history(&stores.engine(8, false), 5).await;
+    let e = stores.engine(8, false);
+    assert!(e.get_tip(&w.id).await.expect("tip").is_some(), "rebuilt");
+    assert!(e.kept_state(&w.id).await.is_none(), "nothing kept yet");
+    let mut replayed = Vec::new();
+    for _ in 0..2 {
+        let at = e.commits_replayed();
+        assert!(w.submit(&e, &damaged(w.last())).await.is_err(), "refused");
+        replayed.push(e.commits_replayed() - at);
+    }
+    assert_eq!(replayed, [5, 0], "commits replayed by each refusal");
+    assert!(e.kept_state(&w.id).await.is_some(), "kept by the refusal");
+}
+
 /// U3: a state resumes only over the commit log it was folded from, so a
 /// kept state that fell behind its log (a regenerated or newer log) is
 /// refused rather than extended: the log holds a different number of
