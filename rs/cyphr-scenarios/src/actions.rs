@@ -414,6 +414,7 @@ impl Harness {
     /// (`cyphr-server backup`); the peer is stopped for it and starts again
     /// on the same address.
     pub async fn backup_peer(&self, peer: &str) -> ActionResult<Backup> {
+        self.bank_running(peer).await?;
         self.peer(peer)
             .backup(self.bins)
             .await
@@ -424,6 +425,7 @@ impl Harness {
     /// Restore a peer from a backup with `cyphr-server restore`; returns
     /// the report naming the commits the restore lost.
     pub async fn restore_peer(&self, peer: &str, from: &Backup) -> ActionResult<String> {
+        self.bank_running(peer).await?;
         self.peer(peer)
             .restore(self.bins, std::path::Path::new(&from.0))
             .await
@@ -434,11 +436,32 @@ impl Harness {
     /// peer is stopped, `cyphr-server rotate-key` runs on its data, and the
     /// peer starts again on the same address. Returns the new key.
     pub async fn rotate_peer_key(&self, peer: &str) -> ActionResult<KeyRef> {
+        self.bank_running(peer).await?;
         self.peer(peer)
             .rotate_key(self.bins)
             .await
             .map(KeyRef)
             .map_err(|e| ActionError::Failed(e.to_string()))
+    }
+
+    /// Replay every chain the peer stores with `cyphr-server verify-all`
+    /// (the peer is stopped for it and starts again); returns the command's
+    /// report. A chain that fails to replay is an error naming it.
+    pub async fn verify_all_peer(&self, peer: &str) -> ActionResult<String> {
+        self.bank_running(peer).await?;
+        self.peer(peer)
+            .verify_all(self.bins)
+            .await
+            .map_err(|e| ActionError::Failed(e.to_string()))
+    }
+
+    /// The offline operator commands stop the process their counters belong
+    /// to, so its counters are banked first (see [`Harness::stop_peer`]).
+    async fn bank_running(&self, peer: &str) -> ActionResult<()> {
+        if self.peer_down(peer).await {
+            return Ok(());
+        }
+        self.bank_counters(peer).await.map_err(ActionError::Failed)
     }
 
     /// Make a peer answer with an envelope of version `v`.
@@ -695,8 +718,7 @@ impl Client<'_> {
         ])
         .await?;
 
-        let genesis = self.h.genesis_of(p)?;
-        cli::put_key(&other.dev.keystore, &p.0, genesis)?;
+        self.h.give_genesis(&other.dev.keystore, p)?;
         let bundle = self.dev.scratch("pairing.jsonl");
         let bundle = bundle.to_string_lossy();
         self.cyphr(&["export", "--identity", &p.0, "--output", &bundle])
@@ -720,9 +742,8 @@ impl Client<'_> {
         for (p, signer) in theirs.signer {
             if signer == key.0 {
                 // The genesis public key lets the copied store replay.
-                if let Ok(g) = self.h.genesis_of(&Principal(p.clone())) {
-                    cli::put_key(&self.dev.keystore, &p, g)?;
-                }
+                self.h
+                    .give_genesis(&self.dev.keystore, &Principal(p.clone()))?;
                 mine.signer.insert(p.clone(), signer);
                 mine.peers
                     .insert(p.clone(), theirs.peers.get(&p).cloned().unwrap_or_default());
@@ -926,7 +947,7 @@ impl Client<'_> {
     /// the genesis public key goes into this device's keystore, which is
     /// where `cyphr` resolves a trusted genesis from.
     pub async fn trust_genesis(&self, p: &Principal, hint: &[&str]) -> ActionResult<()> {
-        cli::put_key(&self.dev.keystore, &p.0, self.h.genesis_of(p)?)?;
+        self.h.give_genesis(&self.dev.keystore, p)?;
         self.know(p, hint);
         Ok(())
     }
@@ -1115,6 +1136,12 @@ impl Client<'_> {
         self.sign_action(p, &self.signer(p)?, msg, None).await
     }
 
+    /// A data action signed by `key`, which this device holds, whatever the
+    /// chain says of that key now.
+    pub async fn action_by(&self, p: &Principal, key: &KeyRef, msg: &str) -> ActionResult<Action> {
+        self.sign_action(p, &key.0, msg, None).await
+    }
+
     /// A data action signed by `key` but dated an hour before now, so before
     /// `key` was retired when it was retired within the hour.
     pub async fn forge_backdated(&self, p: &Principal, key: &KeyRef) -> ActionResult<Action> {
@@ -1249,7 +1276,18 @@ impl Client<'_> {
                 },
             }
         };
-        let p = Principal(handle);
+        self.sign_in_with(rp, &Principal(handle), &KeyRef(key)).await
+    }
+
+    /// [`Client::sign_in`] with a key this device holds, active or not: how
+    /// a scenario shows that a dead key opens nothing.
+    pub async fn sign_in_with(
+        &self,
+        rp: &RelyingParty<'_>,
+        p: &Principal,
+        key: &KeyRef,
+    ) -> ActionResult<Session> {
+        let (p, key) = (p.clone(), key.0.clone());
         let entry = cli::key_entry(&self.dev.keystore, &key)?;
         let mut guard = rp.enrolled.lock().await;
         if guard.is_none() {

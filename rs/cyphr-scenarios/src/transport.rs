@@ -133,6 +133,15 @@ async fn connect_fresh(
     .map_err(|e| e.to_string())?
     .with_first_seen(g["first_seen"].as_i64().ok_or("no first_seen")?);
     let mut held = PeerChain::pin(d["pg"].as_str().ok_or("/server has no pg")?, genesis).await;
+    // The peer may have rotated its signing key since its genesis: a client
+    // brings the chain it pinned up to the peer's own, from the peer's own
+    // HTTP face, before it judges the key the peer signs the handshake with.
+    held.follow(&cyphr_client::HttpConnector::new(
+        http.clone(),
+        &format!("http://{http_addr}"),
+    ))
+    .await
+    .map_err(|e| format!("following the peer's own chain: {e}"))?;
 
     let me = Identity::generate()?;
     NoiseConnector::connect(addr, &mut held, &me.signer(), &me.pg())

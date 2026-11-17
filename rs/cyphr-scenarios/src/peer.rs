@@ -423,6 +423,13 @@ impl Peer {
         Ok(dest)
     }
 
+    /// Replay every stored chain with `cyphr-server verify-all`; returns
+    /// the report. The command exits non-zero and names each chain that
+    /// fails, which is an error here.
+    pub async fn verify_all(&self, bins: &Bins) -> Result<String, PeerError> {
+        self.offline(bins, "verify-all", &[]).await
+    }
+
     /// Put a backup back with `cyphr-server restore`; returns the command's
     /// report, which states the window the restore lost.
     pub async fn restore(&self, bins: &Bins, from: &Path) -> Result<String, PeerError> {
