@@ -758,10 +758,9 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
 ///
 /// [`StorageEngine::derive_roots_at`]: cyphr_storage::engine::StorageEngine::derive_roots_at
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
-    let own_genesis = own_genesis(state, &t.principal_id);
     let derived = state
         .engine
-        .derive_roots_at(t, own_genesis)
+        .derive_roots_at(t, None)
         .await
         .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?
         .ok_or_else(|| {
@@ -789,17 +788,6 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::
         // sentinel becomes the receipt's typed absence (#147).
         cr: absent_cr(&derived.cr),
     })
-}
-
-/// The server's own principal has an explicit genesis, which its blobs
-/// cannot express, so its genesis is supplied rather than read back;
-/// `None` for any other principal.
-fn own_genesis(state: &Arc<AppState>, principal_id: &str) -> Option<cyphr_storage::Genesis> {
-    state
-        .principal
-        .as_ref()
-        .filter(|p| p.pg() == principal_id)
-        .map(|p| cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]))
 }
 
 /// Sign a tip-report attestation over an already-fetched tip state `t` --

@@ -473,10 +473,10 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
     }
 }
 
-/// A rebooted server signs its own PG's tip with nothing remembered of the
-/// roots it derived before: the chain's genesis, which the blobs cannot
-/// express, is the one the server supplies. Lying impls it catches: a
-/// supplied genesis that is never used, or one used for every principal.
+/// A rebooted server signs its own PG's tip with no derived roots
+/// remembered: the roots are re-derived from the stored chain, genesis
+/// included. Regression test; lying impls it catches: an unsigned answer
+/// or a re-derivation that cannot read the server's own genesis.
 /// E2E: boot, drop, reboot, then HTTP.
 #[tokio::test]
 async fn rebooted_server_signs_its_own_pg_tip() {
