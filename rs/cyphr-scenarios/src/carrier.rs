@@ -86,6 +86,9 @@ impl Carrier for TcpCarrier {
         Box::pin(async move {
             let socket = TcpSocket::new_v4()?;
             if let Some(ip) = src {
+                // Without this, bind(port 0) reserves a port per source IP
+                // regardless of destination, and TIME_WAIT strands the range.
+                socket.set_reuseaddr(true)?;
                 socket.bind(SocketAddr::new(ip, 0))?;
             }
             Ok(Box::new(socket.connect(addr).await?) as Box<dyn Duplex>)
@@ -121,5 +124,29 @@ impl Carrier for UdpCarrier {
         _src: Option<IpAddr>,
     ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
         Box::pin(async { unsupported() })
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    // A node under gossip opens far more short connections than one source
+    // IP has ephemeral ports; binding before connect must not strand them in
+    // TIME_WAIT.
+    #[tokio::test]
+    async fn one_source_ip_survives_more_connections_than_ports() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let dst = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                drop(s);
+            }
+        });
+        let src = Some(IpAddr::from([127, 0, 0, 2]));
+        for i in 0..35_000 {
+            let c = TcpCarrier.connect(dst, src).await;
+            assert!(c.is_ok(), "connect {i} failed: {:?}", c.err());
+        }
     }
 }
