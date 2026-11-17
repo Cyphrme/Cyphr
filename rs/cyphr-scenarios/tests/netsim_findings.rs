@@ -144,3 +144,38 @@ async fn a_naked_revoke_survives_a_stopped_holder() {
     )
     .await;
 }
+
+// Found by the large run (seed 20261117, barrier 2): a relying party refused
+// to sign in a principal whose fork the owner had already resolved, with "the
+// principal forked; its lifecycle state is not Active", while every peer and a
+// third party's verdict reported it Active (N4 passes).
+//
+// SPEC 15.6 returns a principal from Error to Active "upon observing a valid
+// resolution" and says nothing of a lasting mark. Either the relying party's
+// sticky refusal is intended and the spec should say so, or it is a defect:
+// for the spec author to rule, not for the harness to pick. NETSIM does not
+// ask for this sign-in until it is ruled on.
+//
+// Must hold, if the spec's reading stands: an active key of a principal whose
+// fork was resolved signs in.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(resolved-fork-sign-in): the relying party refuses an active key of a principal whose fork was resolved"]
+async fn a_principal_signs_in_after_its_fork_is_resolved() {
+    use cyphr_scenarios::netsim::{Size, plan, run};
+    let size = Size {
+        forgive_forked_sign_in: false,
+        ..Size::ci()
+    };
+    let ops = plan::parse(
+        "create p=0 multikey=false holders=0,1,2\n\
+         pair p=0 d=0\n\
+         fork p=0\n\
+         signin p=0\n\
+         barrier\n",
+    )
+    .expect("op log");
+    let h = run::start(&size, 20_261_117).await.expect("start peers");
+    run::run(&h, &size, &ops)
+        .await
+        .unwrap_or_else(|f| panic!("{f}"));
+}
