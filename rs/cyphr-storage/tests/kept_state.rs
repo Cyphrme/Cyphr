@@ -743,7 +743,7 @@ async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
 #[tokio::test]
 async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it() {
     let (e, _dir) = engine(128, false);
-    let mut w = history(&e, 6).await;
+    let w = history(&e, 6).await;
     let mut detached = e.kept_principal(&w.id).await.expect("a kept principal");
     let kept = e.kept_state(&w.id).await.expect("kept state");
     assert_eq!(detached.projection(), kept.projection());
