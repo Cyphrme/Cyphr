@@ -316,11 +316,15 @@ enum Op {
     ReplayLast,
     Damage,
     Revoke(usize),
+    /// A data action by `ACTORS[k]` dated `offset` seconds after this op's
+    /// time: ahead of the chain, so a later commit can void it.
+    Act(usize, i64),
 }
 
 const TOGGLED: [&str; 3] = ["key_b", "alice", "bob"];
 // Keys that can sign their own revoke; `alice` and `bob` are also toggled.
 const REVOKED: [&str; 3] = ["key_a", "alice", "bob"];
+const ACTORS: [&str; 2] = ["key_a", "golden"];
 
 fn ops() -> impl Strategy<Value = Vec<Op>> {
     proptest::collection::vec(
@@ -329,6 +333,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
             1 => Just(Op::ReplayLast),
             1 => Just(Op::Damage),
             1 => (0..REVOKED.len()).prop_map(Op::Revoke),
+            3 => (0..ACTORS.len(), 1..80i64).prop_map(|(k, off)| Op::Act(k, off)),
         ],
         1..9,
     )
@@ -360,6 +365,10 @@ async fn run(ops: Vec<Op>) {
                 None => continue,
             },
             Op::ReplayLast => (w.last(), None),
+            Op::Act(k, off) => (
+                WireBundle::actions(vec![action_blob(&kp(ACTORS[k]), now + off)]),
+                None,
+            ),
             Op::Damage => (damaged(w.last()), None),
             Op::Revoke(k) => {
                 // Received between this op's time and the next's.
@@ -543,5 +552,73 @@ async fn u3_a_held_action_then_a_commit_that_removes_its_signer_before_it() {
     let (next, bundle) = w.toggle("alice", NOW + 60).await.expect("toggle");
     w.submit(&e, &bundle).await.expect("a later write");
     w.adopt(next);
+    assert_eq!(e.kept_divergences(), 0);
+    let kept = e.kept_state(&w.id).await.expect("a principal holding actions is kept");
+    assert_eq!(kept.action_count(), 0, "the removed signer's action is out of DT");
+}
+
+/// U3, the cost of an action: an action-only write steps the kept state
+/// instead of invalidating it, so the writes around it replay nothing.
+#[tokio::test]
+async fn u3_an_action_only_write_is_served_from_the_kept_state() {
+    let (e, _dir) = engine(8, false);
+    let mut w = history(&e, 3).await;
+    let (hits, misses, replayed) = (e.kept_hits(), e.kept_misses(), e.commits_replayed());
+    let action = WireBundle::actions(vec![action_blob(&kp("key_a"), NOW + 100)]);
+    w.submit(&e, &action).await.expect("the action is held");
+    let (next, bundle) = w.toggle("alice", NOW + 110).await.expect("toggle");
+    w.submit(&e, &bundle).await.expect("a commit after it");
+    w.adopt(next);
+    assert_eq!(
+        (e.kept_hits() - hits, e.kept_misses() - misses, e.commits_replayed() - replayed),
+        (2, 0, 0),
+        "the action write, or the commit after it, replayed the chain"
+    );
+    let kept = e.kept_state(&w.id).await.expect("kept");
+    assert_eq!(kept.action_count(), 1);
+}
+
+/// U3, refusal leaves no trace, with actions: a commit bundle that carries
+/// an action and is refused (a damaged signature) leaves the kept state
+/// as it was, and the next honest write is served from it.
+#[tokio::test]
+async fn u3_a_refused_bundle_carrying_an_action_costs_no_replay() {
+    let (e, _dir) = engine(8, false);
+    let mut w = history(&e, 3).await;
+    let (next, mut bundle) = w.toggle("alice", NOW + 100).await.expect("toggle");
+    bundle.actions = vec![action_blob(&kp("key_a"), NOW + 90)];
+    let (misses, replayed) = (e.kept_misses(), e.commits_replayed());
+    assert!(w.submit(&e, &damaged(bundle.clone())).await.is_err());
+    w.submit(&e, &bundle).await.expect("the honest write");
+    w.adopt(next);
+    assert_eq!(
+        (e.kept_misses() - misses, e.commits_replayed() - replayed),
+        (0, 0),
+        "a refused bundle made the next write replay"
+    );
+    assert_eq!(e.kept_state(&w.id).await.expect("kept").action_count(), 1);
+}
+
+/// SPEC 6.2, 6.5: an action gets one verdict whatever envelope carries it.
+/// Carried in the commit that removes its signer (dated before it), or
+/// held alone ahead of that commit, it is out of DT, in a replay of the
+/// store as in the state the engine kept. Red before the fix: the bundle
+/// path judged it at the tip before the commit and kept it.
+#[tokio::test]
+async fn an_action_in_a_commit_bundle_gets_the_verdict_it_would_alone() {
+    let (e, _dir) = engine(8, true);
+    let mut w = history(&e, 2).await;
+    let (next, mut bundle) = w.toggle("key_a", NOW + 50).await.expect("delete key_a");
+    bundle.actions = vec![action_blob(&kp("key_a"), NOW + 100)];
+    w.submit(&e, &bundle).await.expect("the carrying commit");
+    w.adopt(next);
+    let cold = e
+        .load_principal(&w.id, w.genesis.clone())
+        .await
+        .expect("replay");
+    assert_eq!(cold.action_count(), 0, "the replay of the store");
+    if let Some(kept) = e.kept_state(&w.id).await {
+        assert_eq!(kept.action_count(), 0, "the kept state");
+    }
     assert_eq!(e.kept_divergences(), 0);
 }
