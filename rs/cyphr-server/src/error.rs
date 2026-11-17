@@ -77,6 +77,18 @@ impl AppError {
         }
     }
 
+    /// 503 Service Unavailable.
+    ///
+    /// For an answer the server could give but not cheaply right now: the
+    /// asker can do without it and may ask again later.
+    pub fn unavailable(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: msg.into(),
+            kind: None,
+        }
+    }
+
     /// 501 Not Implemented.
     ///
     /// For a capability the server genuinely does not offer under its

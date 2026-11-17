@@ -424,12 +424,13 @@ impl Record {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
+        claim: Option<&Extension>,
     ) -> Result<(), PeerFailure> {
         let Some(held) = &mut self.held else {
             self.held = Some(self.replay_full(entries, actions).await?);
             return Ok(());
         };
-        held.extend(entries, actions, self.clock, &self.replayed)
+        held.extend(entries, actions, claim, self.clock, &self.replayed)
             .await
     }
 
@@ -564,6 +565,7 @@ impl Held {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
+        claim: Option<&Extension>,
         clock: Clock,
         tally: &AtomicU64,
     ) -> Result<(), PeerFailure> {
@@ -578,7 +580,14 @@ impl Held {
         principal.set_clock(clock);
         let before = (self.entries.len(), self.log.len());
         std::mem::swap(&mut self.principal, &mut principal);
-        let replayed = self.replay(entries, actions, tally).await;
+        // The claim is held to the replayed log before the chain is kept, so
+        // a claim the commits contradict leaves the chain as it was.
+        let replayed = match self.replay(entries, actions, tally).await {
+            Ok(()) => claim.map_or(Ok(()), |c| {
+                confirm_extension(&self.principal, c).map_err(PeerFailure::from)
+            }),
+            failed => failed,
+        };
         if replayed.is_err() {
             std::mem::swap(&mut self.principal, &mut principal);
             self.entries.truncate(before.0);
@@ -686,11 +695,6 @@ pub enum PeerStanding {
     /// The peer's chain diverges from the record's; the [`ForkFinding`] is
     /// in [`PullReport::forks`].
     Forked,
-    /// The peer's tip does not extend the record's, by the peer's own
-    /// consistency proof, but no commit where the two logs part could be
-    /// found: nothing was fetched and there is no [`ForkFinding`], for a
-    /// proof alone is no evidence of a fork.
-    Diverged,
     /// The peer could not be used; nothing it served changed the record.
     Failed(PeerFailure),
 }
@@ -1023,11 +1027,13 @@ async fn reach<C: Connector>(
     let offered = if tip.is_some() {
         match offered_extension(record, connector).await? {
             Offer::Extends(offer) => Some(offer),
-            Offer::Diverged(offer) => {
-                return Ok(match locate_fork(record, connector, &offer).await? {
-                    Some(finding) => (PeerStanding::Forked, vec![finding]),
-                    None => (PeerStanding::Diverged, Vec::new()),
-                });
+            // A peer's tree is its own word: when no fork can be proved from
+            // it (it is fabricated, or the log does extend), the pull goes
+            // on without it, so a fork never hides behind what the peer
+            // says of its tree.
+            Offer::Diverged(offer) => match locate_fork(record, connector, &offer).await {
+                Ok(Some(finding)) => return Ok((PeerStanding::Forked, vec![finding])),
+                Ok(None) | Err(_) => None,
             },
             Offer::Unavailable => None,
         }
@@ -1045,10 +1051,9 @@ async fn reach<C: Connector>(
                 if patch.entries.is_empty() && patch.actions.is_empty() {
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
-                record.extend(&patch.entries, &patch.actions).await?;
-                if let (Some(offer), Some(held)) = (&offered, &record.held) {
-                    confirm_extension(&held.principal, offer)?;
-                }
+                record
+                    .extend(&patch.entries, &patch.actions, offered.as_ref())
+                    .await?;
                 return Ok((
                     PeerStanding::Extended {
                         added: patch.entries.len(),
@@ -1324,7 +1329,7 @@ async fn compare_whole_chain<C: Connector>(
             // so what it keeps stays what it verified.
             let held = mine_links.len();
             record
-                .extend(&patch.entries[held..], &patch.actions)
+                .extend(&patch.entries[held..], &patch.actions, None)
                 .await?;
             Ok((
                 PeerStanding::Extended {
