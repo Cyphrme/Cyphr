@@ -285,6 +285,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/patch", axum::routing::get(routes::patch))
         .route("/branches", axum::routing::get(routes::branches))
         .route("/consistency", axum::routing::get(routes::consistency))
+        .route("/inclusion", axum::routing::get(routes::inclusion))
         .route("/evidence", axum::routing::get(routes::evidence))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))

@@ -41,7 +41,9 @@ use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
-use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension};
+use crate::extension::{
+    Extension, ExtensionFailure, Inclusion, confirm_extension, verify_extension,
+};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,
@@ -81,9 +83,6 @@ pub struct Record {
     anchor: Anchor,
     clock: Clock,
     patch_cap: usize,
-    /// Ask a peer for the proof that its tip extends the held one before
-    /// fetching its commits ([`Record::with_extension_proofs`]).
-    extension_proofs: bool,
     held: Option<Held>,
     /// Where the commits a [`resume`](Record::resume)d record holds only as
     /// verified state are stored.
@@ -147,7 +146,6 @@ impl Record {
             anchor,
             clock: system_clock,
             patch_cap: DEFAULT_PATCH_CAP,
-            extension_proofs: false,
             held: None,
             source: None,
             dead: BTreeMap::new(),
@@ -242,20 +240,6 @@ impl Record {
     #[must_use]
     pub fn with_patch_cap(mut self, cap: usize) -> Self {
         self.patch_cap = cap;
-        self
-    }
-
-    /// Before fetching a peer's commits, ask it for the proof that its tip
-    /// extends the record's, and fetch nothing from a peer whose proof
-    /// does not verify ([`PeerStanding::Diverged`]). A peer that serves no
-    /// proofs is pulled as before.
-    ///
-    /// Off by default: a refused peer leaves no [`ForkFinding`], since a
-    /// proof shows that a log diverged but not the commits to prove it
-    /// with, and a holder that must enter `Error` on a fork needs those.
-    #[must_use]
-    pub fn with_extension_proofs(mut self) -> Self {
-        self.extension_proofs = true;
         self
     }
 
@@ -703,9 +687,9 @@ pub enum PeerStanding {
     /// in [`PullReport::forks`].
     Forked,
     /// The peer's tip does not extend the record's, by the peer's own
-    /// consistency proof ([`Record::with_extension_proofs`]): no commit
-    /// was fetched and there is no [`ForkFinding`], for the proof alone is
-    /// no evidence of a fork.
+    /// consistency proof, but no commit where the two logs part could be
+    /// found: nothing was fetched and there is no [`ForkFinding`], for a
+    /// proof alone is no evidence of a fork.
     Diverged,
     /// The peer could not be used; nothing it served changed the record.
     Failed(PeerFailure),
@@ -1036,10 +1020,15 @@ async fn reach<C: Connector>(
         ),
         None => None,
     };
-    let offered = if record.extension_proofs {
+    let offered = if tip.is_some() {
         match offered_extension(record, connector).await? {
             Offer::Extends(offer) => Some(offer),
-            Offer::Diverged => return Ok((PeerStanding::Diverged, Vec::new())),
+            Offer::Diverged(offer) => {
+                return Ok(match locate_fork(record, connector, &offer).await? {
+                    Some(finding) => (PeerStanding::Forked, vec![finding]),
+                    None => (PeerStanding::Diverged, Vec::new()),
+                });
+            },
             Offer::Unavailable => None,
         }
     } else {
@@ -1080,7 +1069,7 @@ async fn reach<C: Connector>(
 /// the record's comes to.
 enum Offer {
     Extends(Extension),
-    Diverged,
+    Diverged(Extension),
     /// The peer cannot say (it serves no such route, or has nothing the
     /// record can be judged against): the pull goes on without a proof.
     Unavailable,
@@ -1103,17 +1092,173 @@ async fn offered_extension<C: Connector>(
         "/consistency?pr={}&from={held_size}",
         percent_encode_query_value(&record.id)
     );
-    let payload = match fetch_payload(connector, &target).await {
-        Ok(payload) => payload,
-        Err(PatchFailure::NonSuccess(_)) => return Ok(Offer::Unavailable),
-        Err(other) => return Err(other.into()),
+    // Whatever stops the answer (no such route, an unreachable peer) is
+    // met again by the fetch that follows, which reports it.
+    let Ok(payload) = fetch_payload(connector, &target).await else {
+        return Ok(Offer::Unavailable);
     };
-    let offer = Extension::from_payload(&payload)?;
+    // A peer that answers the route with something that is not a proof is
+    // pulled as one that serves none: every commit is still replayed, so
+    // the answer decides only what is fetched, never what is believed.
+    let Ok(offer) = Extension::from_payload(&payload) else {
+        return Ok(Offer::Unavailable);
+    };
     match verify_extension(&held.principal, &offer) {
         Ok(()) => Ok(Offer::Extends(offer)),
-        Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => Ok(Offer::Diverged),
+        Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => {
+            Ok(Offer::Diverged(offer))
+        },
         Err(_) => Ok(Offer::Unavailable),
     }
+}
+
+/// Where the peer's log leaves the record's, by inclusion proofs, and the
+/// one commit the peer holds there, proved a fork by its signatures.
+///
+/// A commit commits to the one before it, so the two logs agree at a
+/// position only if they agree below it, and the first position at which
+/// they differ is found in O(log n) asks. The peer's answers only steer the
+/// search: what is returned is verified from the record's own chain and the
+/// peer's one commit, the way a served fork item is, so a peer's word is
+/// never the evidence. `None` when no position within both logs differs.
+async fn locate_fork<C: Connector>(
+    record: &Record,
+    connector: &C,
+    offer: &Extension,
+) -> Result<Option<ForkFinding>, PeerFailure> {
+    let Some(held) = &record.held else {
+        return Ok(None);
+    };
+    let alg = offer.cr.alg();
+    let unlocatable = |what: &str| {
+        PeerFailure::Extension(ExtensionFailure::Malformed(format!(
+            "fork location: {what}"
+        )))
+    };
+    let overlap = held
+        .principal
+        .commit_count()
+        .min(usize::try_from(offer.size).unwrap_or(usize::MAX));
+    // Whether the peer's commit at `index` is not the record's.
+    let differs = async |index: usize| -> Result<bool, PeerFailure> {
+        let target = format!(
+            "/inclusion?pr={}&index={index}",
+            percent_encode_query_value(&record.id)
+        );
+        let payload = fetch_payload(connector, &target).await?;
+        let stated = Inclusion::from_payload(&payload)?;
+        if stated.index != index as u64
+            || stated.size != offer.size
+            || stated.cr != offer.cr
+            || !stated.holds()
+        {
+            return Err(unlocatable("the peer's inclusion proof does not hold"));
+        }
+        let ours = held
+            .principal
+            .commit_at(index)
+            .and_then(|c| c.tr().0.get(alg).map(<[u8]>::to_vec));
+        Ok(ours.as_deref() != Some(stated.leaf.as_bytes()))
+    };
+    let Some(last) = overlap.checked_sub(1) else {
+        return Ok(None);
+    };
+    if !differs(last).await? {
+        return Ok(None);
+    }
+    let (mut low, mut high) = (0, last);
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if differs(mid).await? {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    let height = low;
+
+    let pre = match height.checked_sub(1) {
+        Some(below) => {
+            let commit = held
+                .principal
+                .commit_at(below)
+                .ok_or_else(|| unlocatable("no pre"))?;
+            let tagged = commit.pr().as_multihash().tagged_first();
+            Some(tagged.map_err(|_| unlocatable("no pre"))?.to_string())
+        },
+        None => None,
+    };
+    let mut target = format!("/patch?pr={}", percent_encode_query_value(&record.id));
+    if let Some(pre) = &pre {
+        target.push_str(&format!("&from={}", percent_encode_query_value(pre)));
+    }
+    target.push_str(&format!("&to={height}"));
+    let body = connector
+        .exchange(&Request::get(target))
+        .await
+        .map_err(PatchFailure::from)?;
+    let patch = crate::patch::verify_patch_body(&body, &record.id, None)?;
+    let [rival] = patch.entries.as_slice() else {
+        return Err(unlocatable(
+            "the peer did not serve exactly the one commit asked for",
+        ));
+    };
+    let rival = rival.bundle.clone().map_err(|defect| PeerFailure::Entry {
+        index: height,
+        defect,
+    })?;
+
+    let (base, prefix) = fork_context(record).await.map_err(unlocatable)?;
+    let ours = prefix
+        .get(height)
+        .and_then(|e| e.bundle.clone().ok())
+        .ok_or_else(|| unlocatable("the record's own commit is unreadable"))?;
+    let proved = |rival: &WireBundle| {
+        serde_json::json!({
+            "kind": "principal-fork",
+            "pg": record.bare_id(),
+            "height": height,
+            "pre": pre,
+            "a": ours,
+            "b": rival,
+        })
+    };
+    let proof = match crate::evidence::verify_principal_fork(
+        &proved(&rival),
+        record.bare_id(),
+        base,
+        &prefix,
+    )
+    .await
+    {
+        Ok(proof) => (proof, rival),
+        // The commit may name data actions the patch carries apart.
+        Err(EvidenceFailure::CommitRefused { .. }) => {
+            let mut with_actions = rival.clone();
+            for action in &patch.actions {
+                if let Ok(blobs) = &action.blobs {
+                    with_actions.actions.extend(blobs.iter().cloned());
+                }
+            }
+            let (base, _) = fork_context(record).await.map_err(unlocatable)?;
+            let proof = crate::evidence::verify_principal_fork(
+                &proved(&with_actions),
+                record.bare_id(),
+                base,
+                &prefix,
+            )
+            .await
+            .map_err(|_| unlocatable("the peer's commit is no fork of the record's"))?;
+            (proof, with_actions)
+        },
+        Err(_) => return Err(unlocatable("the peer's commit is no fork of the record's")),
+    };
+    Ok(Some(ForkFinding {
+        height,
+        pre: proof.0.pre,
+        commits: proof.0.commits,
+        rival: proof.1,
+    }))
 }
 
 /// How a peer's whole chain relates to the record's.
@@ -1212,6 +1357,23 @@ async fn compare_whole_chain<C: Connector>(
     }
 }
 
+/// What a fork is verified against: a principal at the record's genesis
+/// and the record's chain, whole.
+async fn fork_context(
+    record: &Record,
+) -> Result<(Principal<MemoryStorage>, Vec<PatchEntry>), &'static str> {
+    let prefix = record.chain_entries().await?;
+    let root = match &record.anchor {
+        Anchor::GenesisKey(key) => Ok(key.clone()),
+        Anchor::GenesisCommit(_) => opener_key(&prefix),
+    };
+    const NOT_OPENED: &str = "the record's genesis does not open a principal";
+    let root = root.map_err(|_| NOT_OPENED)?;
+    let mut base = Principal::implicit(root).await.map_err(|_| NOT_OPENED)?;
+    base.set_clock(record.clock);
+    Ok((base, prefix))
+}
+
 /// A peer that retains more than one branch serves the proof: fork
 /// evidence the verifier replays from its own chain.
 async fn evidence<C: Connector>(
@@ -1235,8 +1397,8 @@ async fn evidence<C: Connector>(
             .push(EvidenceFailure::Malformed("items is not an array"));
         return;
     };
-    let prefix = match record.chain_entries().await {
-        Ok(entries) => entries,
+    let (base, prefix) = match fork_context(record).await {
+        Ok(context) => context,
         Err(why) => {
             outcome
                 .rejected_evidence
@@ -1244,23 +1406,6 @@ async fn evidence<C: Connector>(
             return;
         },
     };
-    let root = match &record.anchor {
-        Anchor::GenesisKey(key) => Ok(key.clone()),
-        Anchor::GenesisCommit(_) => opener_key(&prefix),
-    };
-    let Ok(root) = root else {
-        outcome.rejected_evidence.push(EvidenceFailure::Malformed(
-            "the record's genesis does not open a principal",
-        ));
-        return;
-    };
-    let Ok(mut base) = Principal::implicit(root).await else {
-        outcome.rejected_evidence.push(EvidenceFailure::Malformed(
-            "the record's genesis does not open a principal",
-        ));
-        return;
-    };
-    base.set_clock(record.clock);
     let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
     let chain_ids: Vec<Option<String>> = held.principal.commits().map(commit_id_of).collect();
     let set = verify_fork_items(&items, record.bare_id(), &base, &prefix, &chain_ids).await;

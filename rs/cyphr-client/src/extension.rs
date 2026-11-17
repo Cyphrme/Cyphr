@@ -9,7 +9,7 @@
 //! [`Record`](crate::Record) confirms it against the replayed log then.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::eml::{ConsistencyProof, ProofStep, Storage};
+use cyphr::eml::{ConsistencyProof, InclusionProof, ProofStep, Storage};
 use cyphr::state::TaggedDigest;
 use cyphr::{HashAlg, MaltHasher, Principal};
 use serde_json::{Value, json};
@@ -96,10 +96,7 @@ impl Extension {
             "cr": self.cr.to_string(),
             "proof": {
                 "boundary_hash": b64(&self.proof.boundary_hash),
-                "peak_path": self.proof.peak_path.iter().map(|s| json!({
-                    "position": s.position,
-                    "siblings": s.siblings.iter().map(|h| b64(h)).collect::<Vec<_>>(),
-                })).collect::<Vec<_>>(),
+                "peak_path": steps_to_json(&self.proof.peak_path),
                 "new_peaks": self.proof.new_peaks.iter().map(|h| b64(h)).collect::<Vec<_>>(),
                 "split_index": self.proof.split_index,
             },
@@ -151,25 +148,7 @@ impl Extension {
             .iter()
             .map(|h| hash(h, "proof.new_peaks"))
             .collect::<Result<Vec<_>, _>>()?;
-        let peak_path = list(p.get("peak_path"), "proof.peak_path", MAX_DEPTH)?
-            .iter()
-            .map(|step| {
-                let position = step
-                    .get("position")
-                    .and_then(Value::as_u64)
-                    .and_then(|n| usize::try_from(n).ok())
-                    .ok_or_else(|| bad("proof.peak_path.position"))?;
-                let siblings = list(
-                    step.get("siblings"),
-                    "proof.peak_path.siblings",
-                    MAX_SIBLINGS,
-                )?
-                .iter()
-                .map(|h| hash(h, "proof.peak_path.siblings"))
-                .collect::<Result<Vec<_>, _>>()?;
-                Ok(ProofStep { siblings, position })
-            })
-            .collect::<Result<Vec<_>, ExtensionFailure>>()?;
+        let peak_path = parse_steps(p.get("peak_path"), "proof.peak_path", width)?;
         let split_index = p
             .get("split_index")
             .and_then(Value::as_u64)
@@ -245,4 +224,183 @@ pub fn confirm_extension<S: Storage>(
         (Ok(size), Ok(root)) if size == offer.size && root == offer.cr.as_bytes() => Ok(()),
         _ => Err(ExtensionFailure::Unconfirmed),
     }
+}
+
+/// An offered log's claim to hold a given commit at a given position: the
+/// leaf, and the inclusion proof of it under the offered Commit Root.
+///
+/// Used to locate where an offered log leaves the held one. Any statement
+/// of it is a claim until the fork it points at is proved by signatures
+/// ([`crate::evidence`]); the proof only keeps the peer to one log while it
+/// is asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inclusion {
+    /// The position asked about.
+    pub index: u64,
+    /// The offered log's size, in commits.
+    pub size: u64,
+    /// The offered log's Commit Root.
+    pub cr: TaggedDigest,
+    /// The commit id (its transaction root) the log holds at `index`.
+    pub leaf: TaggedDigest,
+    /// The inclusion proof of `leaf` at `index`.
+    pub proof: InclusionProof,
+}
+
+impl Inclusion {
+    /// The proof that `principal`'s commit at `index` is in its current log.
+    ///
+    /// # Errors
+    ///
+    /// [`ExtensionFailure::Unprovable`] if `index` is past the log.
+    pub async fn of<S: Storage>(
+        principal: &Principal<S>,
+        index: u64,
+    ) -> Result<Self, ExtensionFailure> {
+        let unprovable = |e: String| ExtensionFailure::Unprovable(e);
+        let alg = principal.hash_alg();
+        let alg_id = cyphr::commit_root::hash_alg_to_u64(alg);
+        let trees = principal.commit_trees();
+        let size = trees
+            .tree_size(alg_id)
+            .map_err(|e| unprovable(e.to_string()))?;
+        let root = trees.root(alg_id).map_err(|e| unprovable(e.to_string()))?;
+        let commit = usize::try_from(index)
+            .ok()
+            .and_then(|i| principal.commit_at(i))
+            .ok_or_else(|| unprovable("no commit at that position".into()))?;
+        let leaf = commit
+            .tr()
+            .0
+            .get(alg)
+            .ok_or_else(|| unprovable("commit has no digest under the log's algorithm".into()))?
+            .to_vec();
+        let proof = principal
+            .inclusion_proof(alg, index)
+            .await
+            .map_err(|e| unprovable(e.to_string()))?;
+        Ok(Self {
+            index,
+            size,
+            cr: TaggedDigest::new(alg, root).map_err(|e| unprovable(e.to_string()))?,
+            leaf: TaggedDigest::new(alg, leaf).map_err(|e| unprovable(e.to_string()))?,
+            proof,
+        })
+    }
+
+    /// The wire form: `{index, size, cr, leaf, proof:{path}}`.
+    #[must_use]
+    pub fn to_payload(&self) -> Value {
+        json!({
+            "index": self.index,
+            "size": self.size,
+            "cr": self.cr.to_string(),
+            "leaf": self.leaf.to_string(),
+            "proof": { "path": steps_to_json(&self.proof.path) },
+        })
+    }
+
+    /// Parse the wire form under the same shape limits as [`Extension`].
+    ///
+    /// # Errors
+    ///
+    /// [`ExtensionFailure::Malformed`].
+    pub fn from_payload(payload: &Value) -> Result<Self, ExtensionFailure> {
+        let bad = |what: &str| ExtensionFailure::Malformed(what.to_owned());
+        let number = |field: &str| {
+            payload
+                .get(field)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| bad(field))
+        };
+        let digest = |field: &str| -> Result<TaggedDigest, ExtensionFailure> {
+            payload
+                .get(field)
+                .and_then(Value::as_str)
+                .ok_or_else(|| bad(field))?
+                .parse()
+                .map_err(|e: cyphr::Error| ExtensionFailure::Malformed(format!("{field}: {e}")))
+        };
+        let (cr, leaf) = (digest("cr")?, digest("leaf")?);
+        if cr.alg() != leaf.alg() {
+            return Err(bad("leaf and cr are under different algorithms"));
+        }
+        let path = parse_steps(
+            payload.get("proof").and_then(|p| p.get("path")),
+            "proof.path",
+            cr.alg().digest_size(),
+        )?;
+        Ok(Self {
+            index: number("index")?,
+            size: number("size")?,
+            cr,
+            leaf,
+            proof: InclusionProof { path },
+        })
+    }
+
+    /// Whether the proof puts `leaf` at `index` under `cr` for a log of
+    /// `size`, as this statement itself says. The caller holds `size` and
+    /// `cr` to the claim it is asking about.
+    #[must_use]
+    pub fn holds(&self) -> bool {
+        let alg = self.cr.alg();
+        cyphr::verify_inclusion(
+            &MaltHasher::new(alg),
+            self.leaf.as_bytes(),
+            self.index,
+            self.size,
+            &self.proof,
+            self.cr.as_bytes(),
+        )
+    }
+}
+
+fn steps_to_json(steps: &[ProofStep]) -> Vec<Value> {
+    steps
+        .iter()
+        .map(|s| {
+            json!({
+                "position": s.position,
+                "siblings": s.siblings.iter().map(|h| Base64UrlUnpadded::encode_string(h)).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+fn parse_steps(
+    value: Option<&Value>,
+    what: &str,
+    width: usize,
+) -> Result<Vec<ProofStep>, ExtensionFailure> {
+    let bad = |what: &str| ExtensionFailure::Malformed(what.to_owned());
+    let steps = value
+        .and_then(Value::as_array)
+        .filter(|a| a.len() <= MAX_DEPTH)
+        .ok_or_else(|| bad(what))?;
+    steps
+        .iter()
+        .map(|step| {
+            let position = step
+                .get("position")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bad(what))?;
+            let siblings = step
+                .get("siblings")
+                .and_then(Value::as_array)
+                .filter(|a| a.len() <= MAX_SIBLINGS)
+                .ok_or_else(|| bad(what))?
+                .iter()
+                .map(|h| {
+                    let bytes = h
+                        .as_str()
+                        .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
+                        .filter(|b| b.len() == width);
+                    bytes.ok_or_else(|| bad(what))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ProofStep { siblings, position })
+        })
+        .collect()
 }

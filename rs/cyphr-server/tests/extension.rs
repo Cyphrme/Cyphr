@@ -35,6 +35,8 @@ fn clock() -> i64 {
 struct Watched {
     inner: HttpConnector,
     asked: Mutex<Vec<String>>,
+    /// Commits the peer's `/patch` answers carried.
+    fetched: Mutex<usize>,
     lie: Option<fn(&mut serde_json::Value)>,
 }
 
@@ -43,8 +45,13 @@ impl Watched {
         Self {
             inner,
             asked: Mutex::default(),
+            fetched: Mutex::default(),
             lie: None,
         }
+    }
+
+    fn fetched(&self) -> usize {
+        *self.fetched.lock().expect("fetched")
     }
 
     fn asked(&self, route: &str) -> usize {
@@ -64,6 +71,11 @@ impl Connector for Watched {
             .expect("asked")
             .push(request.target.clone());
         let body = self.inner.exchange(request).await?;
+        if request.target.starts_with("/patch") {
+            let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            let entries = json["payload"]["entries"].as_array().map_or(0, Vec::len);
+            *self.fetched.lock().expect("fetched") += entries;
+        }
         let (true, Some(lie)) = (request.target.starts_with("/consistency"), self.lie) else {
             return Ok(body);
         };
@@ -124,7 +136,6 @@ async fn follower(id: &str, entries: &[&WireBundle]) -> Record {
     )
     .await
     .expect("record")
-    .with_extension_proofs()
 }
 
 struct World {
@@ -179,15 +190,25 @@ fn only_standing(report: &cyphr_client::PullReport) -> &PeerStanding {
 }
 
 /// Backs: a peer whose tip does not extend the follower's is refused on the
-/// proof, and not one commit is fetched to find out. The follower holds A
-/// (a commit on its own branch); the peer's B forks from the shared
-/// genesis.
+/// proof and the fork is found without its chain. The follower holds A (four
+/// keys past the genesis, then a fifth of its own); the peer's B shares the
+/// first four and then goes its own way. The follower asks for the proof,
+/// then for O(log n) positions to find where the logs part, and fetches the
+/// one commit the peer holds there: the fork finding is the one the whole
+/// chain gave, proved by signatures.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_fork_is_refused_on_the_proof_with_no_commits_fetched() {
-    let (w, _) = world(&["key_a", "carol", "key_b"]).await;
-    let (_, mine) = line(&w.shared, &["key_b"], T + 1).await;
-    let mut record = follower(&w.id, &[&w.genesis, &mine[0]]).await;
-    let held = record.tip().expect("tip");
+async fn a_fork_is_found_with_one_commit_fetched() {
+    let shared = ["key_a", "key_b", "alice", "bob"];
+    let (w, _) = world(&["key_a", "key_b", "alice", "bob", "carol", "eve_ed25519"]).await;
+    let (_, mine) = line(
+        &w.shared,
+        &[shared[0], shared[1], shared[2], shared[3], "diana_es384"],
+        T + 1,
+    )
+    .await;
+    let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
+    let mut record = follower(&w.id, &held).await;
+    let before = record.tip().expect("tip");
 
     let c = connector(&w);
     let report = pull(
@@ -200,13 +221,25 @@ async fn a_fork_is_refused_on_the_proof_with_no_commits_fetched() {
     .await;
 
     assert!(
-        matches!(only_standing(&report), PeerStanding::Diverged),
+        matches!(only_standing(&report), PeerStanding::Forked),
         "{:?}",
         only_standing(&report)
     );
-    assert_eq!(c.asked("/consistency"), 1, "the proof was asked for");
-    assert_eq!(c.asked("/patch"), 0, "no commit was fetched");
-    assert_eq!(record.tip().expect("tip"), held, "the record did not move");
+    let fork = report.forks.first().expect("a fork finding");
+    assert_eq!(fork.height, 5, "the logs part after genesis and four keys");
+    assert_ne!(fork.commits[0], fork.commits[1]);
+    assert_eq!(c.asked("/consistency"), 1);
+    assert!(
+        c.asked("/inclusion") <= 4,
+        "O(log n) asks: {}",
+        c.asked("/inclusion")
+    );
+    assert_eq!(c.fetched(), 1, "one commit, not the chain");
+    assert_eq!(
+        record.tip().expect("tip"),
+        before,
+        "the record did not move"
+    );
 }
 
 /// Backs: an honest extension still pulls exactly the new commits, after
@@ -233,13 +266,15 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
     );
     assert_eq!(c.asked("/consistency"), 1);
     assert_eq!(c.asked("/patch"), 1);
+    assert_eq!(c.fetched(), 2, "only the new commits");
     assert_eq!(record.tip().expect("tip").commits, 4);
 }
 
-/// Backs: a lying proof fails closed. A flipped byte in the proof, and a
-/// root the peer states that the proof was not made over, are each a
-/// refusal with no commit fetched; a payload that is not the wire shape
-/// fails the peer, not the record; and a size the proof cannot tell from
+/// Backs: a lying proof fails closed, with no commit fetched. A flipped
+/// byte in the proof of a log that does extend ours is refused with nothing
+/// to locate; a root stated other than the log's own, which the peer's
+/// later answers contradict, fails the peer; a payload that is not the wire shape
+/// is pulled as a peer that serves no proofs; and a size the proof cannot tell from
 /// the true one (a Commit Root does not commit to its size) is caught when
 /// the commits it covered replay, and fails the peer.
 #[tokio::test(flavor = "multi_thread")]
@@ -257,9 +292,13 @@ async fn a_lying_proof_fails_closed() {
         let last = if cr.ends_with('A') { 'B' } else { 'A' };
         v["cr"] = format!("{}{last}", &cr[..cr.len() - 1]).into();
     };
-    for (what, lie) in [
-        ("a flipped proof byte", flip as fn(&mut serde_json::Value)),
-        ("a stated root", wrong_root),
+    for (what, lie, want_diverged) in [
+        (
+            "a flipped proof byte",
+            flip as fn(&mut serde_json::Value),
+            true,
+        ),
+        ("a stated root", wrong_root, false),
     ] {
         let (w, bundles) = world(&["key_a", "carol", "key_b"]).await;
         let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
@@ -273,10 +312,14 @@ async fn a_lying_proof_fails_closed() {
             }],
         )
         .await;
+        let standing = only_standing(&report);
         assert!(
-            matches!(only_standing(&report), PeerStanding::Diverged),
-            "{what}: {:?}",
-            only_standing(&report)
+            if want_diverged {
+                matches!(standing, PeerStanding::Diverged)
+            } else {
+                matches!(standing, PeerStanding::Failed(PeerFailure::Extension(_)))
+            },
+            "{what}: {standing:?}"
         );
         assert_eq!(c.asked("/patch"), 0, "{what}: nothing fetched");
         assert_eq!(record.tip().expect("tip").commits, 2, "{what}");
@@ -316,14 +359,15 @@ async fn a_lying_proof_fails_closed() {
     )
     .await;
     assert!(
-        matches!(
-            only_standing(&report),
-            PeerStanding::Failed(PeerFailure::Extension(_))
-        ),
+        matches!(only_standing(&report), PeerStanding::Extended { added: 1 }),
         "{:?}",
         only_standing(&report)
     );
-    assert_eq!(c.asked("/patch"), 0);
+    assert_eq!(
+        c.fetched(),
+        1,
+        "pulled as a peer without proofs, and replayed"
+    );
 }
 
 /// Backs: the request is bounded. `from` must name a log the peer's log
@@ -349,8 +393,36 @@ async fn the_proof_request_is_bounded() {
     }
     let (status, _) = get_json(app.clone(), "/consistency?pr=nobody&from=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    for (index, want) in [
+        ("0", StatusCode::OK),
+        ("2", StatusCode::OK),
+        ("3", StatusCode::BAD_REQUEST),
+        ("-1", StatusCode::BAD_REQUEST),
+        ("x", StatusCode::BAD_REQUEST),
+    ] {
+        let (status, body) =
+            get_json(app.clone(), &format!("/inclusion?pr={id}&index={index}")).await;
+        assert_eq!(status, want, "index={index}: {body:?}");
+    }
+    let (status, _) = get_json(app.clone(), "/inclusion?pr=nobody&index=0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (_, body) = get_json(app, &format!("/consistency?pr={id}&from=1")).await;
     let payload = envelope_payload(&body);
     assert_eq!(payload["size"], 3, "{body:?}");
+}
+
+/// Backs: a proof request on a principal whose state the engine keeps
+/// replays no commit: the proof is read from the engine's own log.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proof_from_a_kept_principal_replays_nothing() {
+    let (w, _) = world(&["key_a", "carol", "key_b"]).await;
+    let app = build_router(w.peer.clone());
+    let id = w.id.replace(':', "%3A");
+    let before = w.peer.engine.commits_replayed();
+    let (status, _) = get_json(app.clone(), &format!("/consistency?pr={id}&from=2")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = get_json(app, &format!("/inclusion?pr={id}&index=1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(w.peer.engine.commits_replayed(), before);
 }
