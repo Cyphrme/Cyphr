@@ -15,7 +15,8 @@ use crate::state::HashAlg;
 ///
 /// This struct can only be created through verification. Fields are
 /// crate-internal to prevent external direct construction.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(not(any(test, feature = "test-utils")), derive(Clone))]
 pub struct Action {
     /// Action type from `typ` field (e.g., "cyphr.me/comment/create").
     pub(crate) typ: String,
@@ -30,6 +31,21 @@ pub struct Action {
     /// Raw Coz message: the signed payload (including application-specific
     /// fields) and signature, for storage/export.
     pub(crate) raw: coz::CozJson,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Clone for Action {
+    fn clone(&self) -> Self {
+        crate::probe::action_cloned();
+        Self {
+            typ: self.typ.clone(),
+            signer: self.signer.clone(),
+            now: self.now,
+            czd: self.czd.clone(),
+            hash_alg: self.hash_alg,
+            raw: self.raw.clone(),
+        }
+    }
 }
 
 impl Action {

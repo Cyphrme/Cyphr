@@ -39,6 +39,9 @@ pub mod multihash;
 pub mod nonce;
 pub mod parsed_coz;
 pub mod principal;
+/// Work counters for tests that pin cost (U3).
+#[cfg(any(test, feature = "test-utils"))]
+pub mod probe;
 /// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.
 pub mod principal_tree;
 /// Replay of stored commit bundles: one entry point for every consumer.

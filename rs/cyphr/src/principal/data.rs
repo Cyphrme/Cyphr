@@ -67,6 +67,8 @@ impl PrincipalState {
             Arrival::Submitted if self.frozen => return Err(Error::Frozen),
             Arrival::Submitted => self.key_timeline.authorize(tmb, now),
             Arrival::Held => {
+                #[cfg(any(test, feature = "test-utils"))]
+                crate::probe::view_judged();
                 self.key_timeline.open_at(now)?;
                 self.key_timeline.authorize_by_commits(tmb, now)
             },
@@ -253,7 +255,8 @@ impl PrincipalState {
             return Err(Error::AlgMismatch);
         }
 
-        // Verify signature
+        #[cfg(any(test, feature = "test-utils"))]
+        crate::probe::signature_checked();
         let valid = coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key())
             .unwrap_or(false);
         if !valid {

@@ -607,6 +607,23 @@ async fn u3_an_action_only_write_is_served_from_the_kept_state() {
     assert_eq!(kept.action_count(), 1);
 }
 
+/// U3, the cost of an action: an action-only write verifies each of its
+/// signatures once, not once to stage it and again to hold it. A count of
+/// checks: the verdicts are the same either way, so no scenario can tell.
+#[tokio::test]
+async fn u3_an_action_only_write_verifies_each_signature_once() {
+    let (e, _dir) = engine(8, false);
+    let w = history(&e, 2).await;
+    let actions = WireBundle::actions(vec![
+        action_blob(&kp("key_a"), NOW + 100),
+        action_blob(&kp("key_a"), NOW + 101),
+        action_blob(&kp("golden"), NOW + 102),
+    ]);
+    let before = cyphr::probe::signatures_checked();
+    w.submit(&e, &actions).await.expect("the actions are held");
+    assert_eq!(cyphr::probe::signatures_checked() - before, 3);
+}
+
 /// U3, refusal leaves no trace, with actions: a commit bundle that carries
 /// an action and is refused (a damaged signature) leaves the kept state
 /// as it was, and the next honest write is served from it.
