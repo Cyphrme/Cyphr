@@ -1,5 +1,8 @@
 //! Data-layer action recording (Level 4).
 
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
 use super::{Principal, PrincipalState};
 use crate::action::Action;
 use crate::error::{Error, Result};
@@ -16,7 +19,157 @@ pub(crate) enum Arrival {
     Held,
 }
 
+/// The held actions DT does not show: those [`PrincipalState::judge`]
+/// refuses, by `(now, czd)`. A cache of the view, never a record: it is
+/// read from the key timeline and the held actions, so the state that holds
+/// it is the one a replay builds. What may change a verdict drops it
+/// ([`PrincipalState::core_mut`]) or, for a change to the key timeline
+/// effective at time `t`, marks the verdicts of actions dated `t` or later
+/// stale ([`Hidden::invalidate_from`]): only those can differ, and the next
+/// read judges just them. A held action changes no verdict but its own, so
+/// [`PrincipalState::insert_action`] judges it and nothing else.
+#[derive(Default)]
+pub(super) struct Hidden(Mutex<Option<Memo>>);
+
+#[derive(Clone)]
+struct Memo {
+    hidden: Arc<HiddenSet>,
+    /// Verdicts of actions dated at or after this are not read yet.
+    stale_from: Option<i64>,
+    /// Verdicts of every action of these signers (base64 thumbprints) are
+    /// not read yet, whatever their date.
+    stale_signers: BTreeSet<String>,
+}
+
+/// The `(now, czd)` of each action in a [`Hidden`].
+type HiddenSet = BTreeSet<(i64, Vec<u8>)>;
+
+/// Prints nothing of the cache: two states of one record are equal whether or
+/// not either has read its view (the kept-state tests compare printed states).
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hidden")
+    }
+}
+
+impl Clone for Hidden {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.get()))
+    }
+}
+
+impl Hidden {
+    fn get(&self) -> Option<Memo> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    fn set(&self, memo: Memo) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(memo);
+    }
+
+    pub(super) fn clear(&mut self) {
+        *self.0.get_mut().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    /// A change to the key timeline effective at `t`: no verdict of an
+    /// action dated before `t` can differ.
+    pub(super) fn invalidate_from(&mut self, t: i64) {
+        if let Some(memo) = self.0.get_mut().unwrap_or_else(|p| p.into_inner()) {
+            memo.stale_from = Some(memo.stale_from.map_or(t, |s| s.min(t)));
+        }
+    }
+
+    /// A key became known to the key timeline: its actions, of any date,
+    /// are judged by its periods from now on.
+    pub(super) fn invalidate_signer(&mut self, tmb: String) {
+        if let Some(memo) = self.0.get_mut().unwrap_or_else(|p| p.into_inner()) {
+            memo.stale_signers.insert(tmb);
+        }
+    }
+}
+
 impl PrincipalState {
+    /// The held actions DT does not show, read once and kept; a read after a
+    /// change judges only the actions it can have changed the verdict of.
+    pub(super) fn hidden(&self) -> Arc<HiddenSet> {
+        let hidden = self.hidden_cached();
+        // The cache is a cache of the view: under test every read of it is
+        // held to a full judgment of every held action (I1). Fails the
+        // read of any history whose invalidation missed a verdict.
+        #[cfg(any(test, feature = "test-utils"))]
+        crate::probe::uncounted(|| {
+            let full: HiddenSet = self
+                .data
+                .actions
+                .iter()
+                .filter(|(_, a)| self.judge(&a.signer, a.now, Arrival::Held).is_err())
+                .map(|(key, _)| key.clone())
+                .collect();
+            assert_eq!(
+                *hidden, full,
+                "the memoized view of held actions differs from a full re-judge"
+            );
+        });
+        hidden
+    }
+
+    fn hidden_cached(&self) -> Arc<HiddenSet> {
+        let refused = |(_, a): &(&(i64, Vec<u8>), &Action)| {
+            self.judge(&a.signer, a.now, Arrival::Held).is_err()
+        };
+        let memo = match self.hidden.get() {
+            Some(Memo {
+                hidden,
+                stale_from: None,
+                stale_signers,
+            }) if stale_signers.is_empty() => return hidden,
+            Some(Memo {
+                hidden,
+                stale_from,
+                stale_signers,
+            }) => {
+                let from = (stale_from.unwrap_or(i64::MAX), Vec::new());
+                let mut kept = (*hidden).clone();
+                kept.split_off(&from);
+                kept.extend(
+                    self.data
+                        .actions
+                        .iter_from(&from)
+                        .filter(refused)
+                        .map(|(key, _)| key.clone()),
+                );
+                // Before `from`, only the actions of a key made known since
+                // can differ (see `KeyTimeline::record_commit`).
+                for (key, action) in self.data.actions.iter() {
+                    if *key >= from {
+                        break;
+                    }
+                    if stale_signers.contains(&action.signer.to_b64()) {
+                        kept.remove(key);
+                        if refused(&(key, action)) {
+                            kept.insert(key.clone());
+                        }
+                    }
+                }
+                kept
+            },
+            None => self
+                .data
+                .actions
+                .iter()
+                .filter(refused)
+                .map(|(key, _)| key.clone())
+                .collect(),
+        };
+        let hidden = Arc::new(memo);
+        self.hidden.set(Memo {
+            hidden: hidden.clone(),
+            stale_from: None,
+            stale_signers: BTreeSet::new(),
+        });
+        hidden
+    }
+
     /// Whether the action of `tmb` dated `now` counts: the key that
     /// authorizes it, or why none does. This is the one judgment of a data
     /// action, for admission and for every read of DT alike: the signer's key
@@ -67,6 +220,8 @@ impl PrincipalState {
             Arrival::Submitted if self.frozen => return Err(Error::Frozen),
             Arrival::Submitted => self.key_timeline.authorize(tmb, now),
             Arrival::Held => {
+                #[cfg(any(test, feature = "test-utils"))]
+                crate::probe::view_judged();
                 self.key_timeline.open_at(now)?;
                 self.key_timeline.authorize_by_commits(tmb, now)
             },
@@ -109,8 +264,19 @@ impl PrincipalState {
     /// held history alike. Idempotent (SPEC 7.6), and commutative with
     /// every other insertion and with every commit.
     pub(crate) fn insert_action(&mut self, action: Action) {
+        let key = (action.now, action.czd.as_bytes().to_vec());
+        if self.data.actions.contains_key(&key) {
+            return;
+        }
+        // The one verdict a held action can change is its own.
+        let judged = self.hidden.get().map(|memo| {
+            let refused = self
+                .judge(&action.signer, action.now, Arrival::Held)
+                .is_err();
+            (memo, refused)
+        });
         let tmb = action.signer.to_b64();
-        let core = self.core_mut();
+        let core = &mut self.core;
         core.included_czds.insert(action.czd.as_bytes().to_vec());
         let latest = core
             .data
@@ -127,9 +293,13 @@ impl PrincipalState {
         {
             key.set_last_used(action.now);
         }
-        core.data
-            .actions
-            .insert((action.now, action.czd.as_bytes().to_vec()), action);
+        core.data.actions.insert(key.clone(), action);
+        if let Some((mut memo, refused)) = judged {
+            if refused {
+                Arc::make_mut(&mut memo.hidden).insert(key);
+            }
+            self.hidden.set(memo);
+        }
     }
 
     /// Record an action in the Data Tree (Level 4+), judged as a new
@@ -253,7 +423,8 @@ impl PrincipalState {
             return Err(Error::AlgMismatch);
         }
 
-        // Verify signature
+        #[cfg(any(test, feature = "test-utils"))]
+        crate::probe::signature_checked();
         let valid = coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key())
             .unwrap_or(false);
         if !valid {
@@ -290,6 +461,7 @@ impl<S: eml::Storage> Principal<S> {
         for action in actions {
             self.state.insert_action(action);
         }
+        self.state.settle();
     }
 
     /// Whether `tmb` was ever a key of this principal: in its key history,
@@ -311,7 +483,11 @@ impl<S: eml::Storage> Principal<S> {
     /// `rvk` (the spec author on #203). It changes no root: a naked revoke
     /// does not mutate PR.
     pub fn note_naked_revoke(&mut self, tmb: &coz::Thumbprint, cutoff: i64) {
-        self.state.core_mut().key_timeline.revoke(tmb, cutoff);
+        // A naked revoke gates admission only; no held verdict reads it.
+        self.state
+            .core_unjudged_mut()
+            .key_timeline
+            .revoke(tmb, cutoff);
     }
 
     /// Verify signature and record an action in one step.
@@ -331,6 +507,8 @@ impl<S: eml::Storage> Principal<S> {
         sig: &[u8],
         czd: coz::Czd,
     ) -> Result<&PrincipalRoot> {
-        self.state.verify_and_record_action(pay_json, sig, czd)
+        self.state.verify_and_record_action(pay_json, sig, czd)?;
+        self.state.settle();
+        Ok(&self.state.pr)
     }
 }

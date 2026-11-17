@@ -377,3 +377,113 @@ async fn a_failed_refresh_drops_the_old_tip() {
         Err(Error::UnknownKey)
     ));
 }
+
+/// Backs SPEC 6.5 and 10.5 with I1 (live equals replay): an action signed
+/// through B's key counts while A has never held that key, and A adding the
+/// key later opens its first period, before which the key authorized
+/// nothing of A's own, so the action leaves DT. Turns red if the read of DT
+/// after the commit keeps it. End to end: yes.
+#[tokio::test]
+async fn a_key_first_added_after_its_embedded_action() {
+    let World {
+        mut a,
+        b,
+        alice,
+        carol,
+        ..
+    } = world().await;
+    let mut src = Fake::default();
+    src.tips.push_back(Tip::new(&b, T + 5));
+    a.follow_embedded(&mut src).await;
+    let (pay, sig, czd) = action_by(&carol, T + 15);
+    a.verify_and_record_action(&pay, &sig, czd)
+        .expect("held through B");
+    assert_eq!(a.action_count(), 1);
+    let parts = sign(&alice, "key/create", &tmb_id(&carol), T + 20);
+    commit(&mut a, &alice, parts, Some(key_of(&carol)), T + 20)
+        .await
+        .expect("A adds carol");
+    assert_eq!(a.action_count(), 0, "a full re-judge hides it");
+}
+
+#[derive(Debug, Clone)]
+enum Step {
+    /// An action by `carol` (through B) or `alice`, dated `offset` after the
+    /// last commit.
+    Act(bool, i64),
+    /// A's commit adding or deleting `carol`, `ahead` after the last one.
+    Toggle(i64),
+    /// A's commit toggling a nonce at a level: the Key Tree one feeds
+    /// verdicts through B.
+    Follow,
+}
+
+fn steps() -> impl proptest::strategy::Strategy<Value = Vec<Step>> {
+    use proptest::prelude::*;
+    proptest::collection::vec(
+        prop_oneof![
+            3 => (any::<bool>(), -30..30i64).prop_map(|(c, o)| Step::Act(c, o)),
+            3 => (1..20i64).prop_map(Step::Toggle),
+            1 => Just(Step::Follow),
+        ],
+        1..10,
+    )
+}
+
+/// Backs I1 (live equals replay) for DT's view: over histories of
+/// embedded-signed actions, key first-adds, deletes and re-adds, and
+/// refreshed tips, every read of the view is held to a full re-judge of
+/// every held action (the core's own check under `test-utils` fails the
+/// read otherwise). Turns red on any invalidation that misses a verdict.
+#[test]
+fn the_view_of_held_actions_equals_a_full_rejudge() {
+    use proptest::prelude::*;
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(24));
+    runner
+        .run(&steps(), |steps| {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("runtime")
+                .block_on(async move {
+                    let World {
+                        mut a,
+                        b,
+                        alice,
+                        carol,
+                        ..
+                    } = world().await;
+                    let mut at = T + 10;
+                    let mut has_carol = false;
+                    for step in steps {
+                        match step {
+                            Step::Follow => {
+                                let mut src = Fake::default();
+                                src.tips.push_back(Tip::new(&b, at));
+                                a.follow_embedded(&mut src).await;
+                            },
+                            Step::Act(by_carol, offset) => {
+                                let who = if by_carol { &carol } else { &alice };
+                                let (pay, sig, czd) = action_by(who, (at + offset).max(1));
+                                let _ = a.verify_and_record_action(&pay, &sig, czd);
+                            },
+                            Step::Toggle(ahead) => {
+                                at += ahead;
+                                let typ = if has_carol {
+                                    "key/delete"
+                                } else {
+                                    "key/create"
+                                };
+                                let parts = sign(&alice, typ, &tmb_id(&carol), at);
+                                let side = (!has_carol).then(|| key_of(&carol));
+                                if commit(&mut a, &alice, parts, side, at).await.is_ok() {
+                                    has_carol = !has_carol;
+                                }
+                            },
+                        }
+                        let _ = a.action_count();
+                    }
+                });
+            Ok(())
+        })
+        .expect("the view equals a full re-judge");
+}

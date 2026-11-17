@@ -2,7 +2,7 @@
 
 use coz::Thumbprint;
 
-use super::{Arrival, Clock, Level, MAX_NOW, Principal, PrincipalState};
+use super::{Clock, Level, MAX_NOW, Principal, PrincipalState};
 use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
@@ -152,10 +152,11 @@ impl PrincipalState {
     /// action a later commit dated before it takes out of DT is held
     /// still, and is back if a later commit restores its key.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
+        let hidden = self.hidden();
         self.data
             .actions
-            .values()
-            .filter(|a| self.judge(&a.signer, a.now, Arrival::Held).is_ok())
+            .iter()
+            .filter_map(move |(key, a)| (!hidden.contains(key)).then_some(a))
     }
 
     /// Determine the current feature level.
@@ -248,7 +249,7 @@ impl PrincipalState {
 
     /// The number of actions DT shows ([`Self::actions`]).
     pub fn action_count(&self) -> usize {
-        self.actions().count()
+        self.data.actions.len() - self.hidden().len()
     }
 
     /// MR over the actions DT shows: the `id` a `ds/create` signed now would
@@ -294,7 +295,7 @@ impl<S: eml::Storage> Principal<S> {
     /// copy that believes otherwise and pushes it to the real chain.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn pretend_held(&mut self, pr: PrincipalRoot) {
-        self.core_mut().held_prs.push(pr);
+        self.state.core_unjudged_mut().held_prs.push(pr);
     }
 
     /// Get a reference to the per-algorithm MALT trees.
@@ -312,7 +313,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Unsigned, so a skew that would refuse a `now` at or before the
     /// verifier clock cannot be expressed.
     pub fn set_max_clock_skew(&mut self, seconds: u64) {
-        self.core_mut().max_clock_skew = seconds;
+        self.state.core_unjudged_mut().max_clock_skew = seconds;
     }
 
     /// Install the verifier's time source (Unix seconds).
@@ -324,6 +325,6 @@ impl<S: eml::Storage> Principal<S> {
     /// cannot replay a peer chain either, since replay applies each coz
     /// through the same bound.
     pub fn set_clock(&mut self, clock: Clock) {
-        self.core_mut().clock = clock;
+        self.state.core_unjudged_mut().clock = clock;
     }
 }

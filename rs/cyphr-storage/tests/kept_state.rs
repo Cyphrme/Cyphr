@@ -329,7 +329,20 @@ const TOGGLED: [&str; 3] = ["key_b", "alice", "bob"];
 const REVOKED: [&str; 3] = ["key_a", "alice", "bob"];
 const ACTORS: [&str; 2] = ["key_a", "golden"];
 
+/// A history of generated steps behind the two that reach the fork path:
+/// a toggle (so the chain has a second commit) and a rival of it. Left to
+/// chance the rival came up in too few of 16 cases to catch a defect that
+/// only a rival exposes (the merge gate found one at 128 cases and not at
+/// 16), so every case reaches it and the steps after it are free.
 fn ops() -> impl Strategy<Value = Vec<Op>> {
+    steps().prop_map(|rest| {
+        let mut ops = vec![Op::Toggle(0), Op::Rival];
+        ops.extend(rest);
+        ops
+    })
+}
+
+fn steps() -> impl Strategy<Value = Vec<Op>> {
     proptest::collection::vec(
         prop_oneof![
             4 => (0..TOGGLED.len()).prop_map(Op::Toggle),
@@ -339,7 +352,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
             3 => (0..ACTORS.len(), 1..80i64).prop_map(|(k, off)| Op::Act(k, off)),
             1 => Just(Op::Rival),
         ],
-        1..9,
+        0..7,
     )
 }
 
@@ -605,6 +618,23 @@ async fn u3_an_action_only_write_is_served_from_the_kept_state() {
     );
     let kept = e.kept_state(&w.id).await.expect("kept");
     assert_eq!(kept.action_count(), 1);
+}
+
+/// U3, the cost of an action: an action-only write verifies each of its
+/// signatures once, not once to stage it and again to hold it. A count of
+/// checks: the verdicts are the same either way, so no scenario can tell.
+#[tokio::test]
+async fn u3_an_action_only_write_verifies_each_signature_once() {
+    let (e, _dir) = engine(8, false);
+    let w = history(&e, 2).await;
+    let actions = WireBundle::actions(vec![
+        action_blob(&kp("key_a"), NOW + 100),
+        action_blob(&kp("key_a"), NOW + 101),
+        action_blob(&kp("golden"), NOW + 102),
+    ]);
+    let before = cyphr::probe::signatures_checked();
+    w.submit(&e, &actions).await.expect("the actions are held");
+    assert_eq!(cyphr::probe::signatures_checked() - before, 3);
 }
 
 /// U3, refusal leaves no trace, with actions: a commit bundle that carries

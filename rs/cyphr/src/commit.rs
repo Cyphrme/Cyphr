@@ -21,7 +21,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 ///   CS (or promoted AS for genesis)
 ///
 /// A Commit is immutable once finalized.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(not(any(test, feature = "test-utils")), derive(Clone))]
 pub struct Commit {
     /// Transactions in this commit.
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
@@ -35,6 +36,20 @@ pub struct Commit {
     sr: Option<StateRoot>,
     /// Principal Root at the end of this commit.
     pr: PrincipalRoot,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Clone for Commit {
+    fn clone(&self) -> Self {
+        crate::probe::commit_cloned();
+        Self {
+            transactions: self.transactions.clone(),
+            tr: self.tr.clone(),
+            ar: self.ar.clone(),
+            sr: self.sr.clone(),
+            pr: self.pr.clone(),
+        }
+    }
 }
 
 impl Commit {
@@ -369,6 +384,17 @@ pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
     pending: PendingCommit,
     /// A copy of the principal's state the cozies are applied to. It holds
     /// no log, so applying never writes; the commit adopts it whole.
+    ///
+    /// What grows with the length of the history (held actions, commits,
+    /// included czds, held PRs) is shared, not copied ([`crate::grown`]),
+    /// so the copy costs what the write adds. What it still copies is the
+    /// active and revoked keys, the key timeline, the Principal Tree, the
+    /// nonce sets and the per-key latest-signed map. Each is bounded by key
+    /// churn or by what the principal chooses to hold live (nonces, which
+    /// are deleted when spent), none by the number of commits or actions:
+    /// the timeline gains a period per key added and a span per freeze, the
+    /// revoked set a key per revoke, the latest-signed map a thumbprint per
+    /// distinct signer.
     projected: crate::principal::PrincipalState,
 }
 
