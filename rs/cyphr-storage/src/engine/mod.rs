@@ -3834,7 +3834,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                         // fork (SPEC 15.8) or, below the head, forks anew.
                         let canonical_len = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
                         match self
-                            .resolve_fork(principal_id, &genesis, bundle, canonical_len)
+                            .resolve_fork(
+                                principal_id,
+                                &genesis,
+                                bundle,
+                                canonical_len,
+                                principal.state(),
+                            )
                             .await
                         {
                             Ok(Some(resolved)) => return Ok((resolved, false)),
@@ -3849,7 +3855,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                                 "could not test a refused bundle as a resolution; retaining it"
                             ),
                         }
-                        match self.retain_rival(principal_id, genesis, bundle).await {
+                        match self
+                            .retain_rival(principal_id, genesis, bundle, principal.state())
+                            .await
+                        {
                             // Held as a fork participant: the answer says so
                             // (the arrow does not fit the tip), whichever
                             // tip-state refusal the replay hit first, a
@@ -4398,9 +4407,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// The refusal is attacker-reachable, so the search is bounded:
     ///
-    /// 1. **Authenticate first, replaying nothing.** Every coz of the bundle must name a key this
-    ///    principal has ever held (its genesis keys and every key a stored coz introduced) and
-    ///    verify under that key's public key. Anyone else costs blob reads only.
+    /// 1. **Authenticate first, reading none of the chain.** Every coz of the bundle must name a key
+    ///    this principal has ever held, by the key history of `tip` (its verified state at its
+    ///    tip), and verify under that key's public key. Anyone else costs the bundle's own size.
     /// 2. **One forward pass.** The stored chain is replayed once onto a private in-memory Commit
     ///    Tree. At each position where the bundle's transaction signers are active, a clone of that
     ///    prefix state tries the bundle through [`Self::build_commit`], the admission path's own
@@ -4421,6 +4430,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: crate::Genesis,
         bundle: &WireBundle,
+        tip: &cyphr::PrincipalState,
     ) -> Result<bool, EngineError> {
         // Pushed again, a held rival is answered as the fork it is; the
         // canonical commit pushed again is no rival.
@@ -4434,12 +4444,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if self.is_already_stored(principal_id, bundle).await? {
             return Ok(false);
         }
-        let stored = self.stored_entries(principal_id, None).await?;
-        let entries = &stored.entries;
+        // Authenticated before any of the stored chain is read: a bundle
+        // no key of the principal signed costs its own size.
         let outside = self.outside_keys(bundle).await?;
-        let Some(signers) = authenticated_signers(bundle, &genesis, entries, &outside) else {
+        let Some(signers) = authenticated_signers(bundle, tip, &outside) else {
             return Ok(false);
         };
+        let stored = self.stored_entries(principal_id, None).await?;
+        let entries = &stored.entries;
         let mut principal =
             Self::principal_from_genesis(genesis, cyphr::eml::MemoryStorage::new()).await?;
         let source = PinSource::stored();
@@ -4506,8 +4518,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///   resolutions.
     ///
     /// `Ok(None)` is a bundle extending no retained rival. Authenticated
-    /// first, like [`Self::retain_rival`], so an unauthenticated bundle
-    /// costs blob reads only. Caller holds the principal's write lock.
+    /// first, like [`Self::retain_rival`], against the key history of
+    /// `tip`, so an unauthenticated bundle reads nothing of the chain. Caller holds the principal's write lock.
     ///
     /// Known cost: the canonical prefix is replayed once per retained
     /// rival, because a retained commit's `pre` is bound only inside its
@@ -4520,6 +4532,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: &crate::Genesis,
         bundle: &WireBundle,
         canonical_len: u64,
+        tip: &cyphr::PrincipalState,
     ) -> Result<Option<IngestResult>, EngineError> {
         let rivals = self
             .branches
@@ -4531,11 +4544,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if rivals.is_empty() || self.is_already_stored(principal_id, bundle).await? {
             return Ok(None);
         }
-        let stored = self.stored_entries(principal_id, None).await?;
         let outside = self.outside_keys(bundle).await?;
-        if authenticated_signers(bundle, genesis, &stored.entries, &outside).is_none() {
+        if authenticated_signers(bundle, tip, &outside).is_none() {
             return Ok(None);
         }
+        let stored = self.stored_entries(principal_id, None).await?;
         let by_pr: HashMap<(u64, &str), &Retained> = rivals
             .iter()
             .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
@@ -4901,14 +4914,58 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if self.is_retained(principal_id, &hashes, &shape) {
             return Ok(true);
         }
-        let chain = self.chain(principal_id, None, None).await?;
-        let frames = self.frames.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(chain.iter().any(|c| {
-            c.blob_hashes == hashes
-                && frames
-                    .get(&(principal_id.to_string(), c.commit_id.clone()))
-                    .is_some_and(|f| f.shape == shape)
-        }))
+        // A chain commit made of these blobs holds the bundle's last coz,
+        // and the index names every position that coz is held at: those
+        // commits are read, never the chain.
+        let Some(last) = hashes.last() else {
+            return Ok(false);
+        };
+        if !self.indexer.is_blob_indexed(last).await? {
+            return Ok(false);
+        }
+        let Ok(decoded) = bundle.decode() else {
+            return Ok(false);
+        };
+        let Some(coz) = decoded.cozies().last() else {
+            return Ok(false);
+        };
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let czd = cyphr::state::TaggedCzd::new(coz.czd(), coz.hash_alg());
+        let mut positions = std::collections::BTreeSet::new();
+        // The index files a coz under its digest in the principal's primary
+        // algorithm at the time, which this does not know: each is asked.
+        for label in ID_LABELS {
+            let Ok(alg) = cyphr::state::hash_alg_named(label) else {
+                continue;
+            };
+            let named = format!(
+                "{alg}:{}",
+                Base64UrlUnpadded::encode_string(&czd.convert_to(alg))
+            );
+            let Ok(digest) = named.parse::<TaggedDigest>() else {
+                continue;
+            };
+            for holder in self.indexer.resolve_digest_holders(&digest).await? {
+                if holder.principal_id.as_deref() == Some(principal_id)
+                    && let Some(at) = holder.sequence
+                {
+                    positions.insert(at);
+                }
+            }
+        }
+        for at in positions {
+            let there = self.chain(principal_id, Some(at), Some(at)).await?;
+            let frames = self.frames.lock().unwrap_or_else(|p| p.into_inner());
+            if there.iter().any(|c| {
+                c.blob_hashes == hashes
+                    && frames
+                        .get(&(principal_id.to_string(), c.commit_id.clone()))
+                        .is_some_and(|f| f.shape == shape)
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Store a verified rival `commit` and its blobs behind
@@ -5991,38 +6048,39 @@ fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
 /// The thumbprints that sign the transactions of `bundle`, if every coz
 /// of the bundle is signed by a key the principal has ever held and its
 /// signature verifies under that key; `None` otherwise, or if the bundle
-/// has no transaction. Reads no principal state: `genesis` and the keys the
-/// stored `entries` introduced are the whole key history.
+/// has no transaction. The key history is read from `tip`, the principal's
+/// verified state at its tip, so this costs the bundle and reads nothing of
+/// the stored chain: a bundle nobody of the principal signed is settled
+/// here, before any of its history is read.
 fn authenticated_signers(
     bundle: &WireBundle,
-    genesis: &crate::Genesis,
-    entries: &[crate::CommitEntry],
+    tip: &cyphr::PrincipalState,
     outside: &HashMap<String, (String, Vec<u8>)>,
 ) -> Option<Vec<coz::Thumbprint>> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let mut history: HashMap<String, (String, Vec<u8>)> = HashMap::new();
-    let genesis_keys: &[cyphr::Key] = match genesis {
-        crate::Genesis::Implicit(key) => std::slice::from_ref(key),
-        crate::Genesis::Disclosed(keys) => keys,
-    };
-    for key in genesis_keys {
-        history.insert(
-            key.tmb().to_b64(),
-            (key.alg().to_owned(), key.pub_key().to_vec()),
-        );
-    }
-    for key in entries.iter().flat_map(|e| &e.keys) {
-        if let Ok(public) = Base64UrlUnpadded::decode_vec(&key.pub_key) {
-            history.insert(key.tmb.clone(), (key.alg.clone(), public));
-        }
-    }
-
-    // A key the principal never held may be a key of an embedded principal
+    // The keys of the bundle's signers, as far as the principal has held
+    // them. A key it never held may be a key of an embedded principal
     // (SPEC 10.3): its signature is checked here against the key the index
     // holds for the thumbprint, which only a replay can tie to a principal.
-    for (tmb, key) in outside {
-        history.entry(tmb.clone()).or_insert_with(|| key.clone());
+    let mut history: HashMap<String, (String, Vec<u8>)> = outside.clone();
+    for blob in bundle.cozies() {
+        let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
+        for named in ["tmb", "id"] {
+            let Some(tmb) = value.pointer(&format!("/pay/{named}")).and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let Ok(bytes) = Base64UrlUnpadded::decode_vec(tmb) else {
+                continue;
+            };
+            if let Some(key) = tip.key_ever_held(&coz::Thumbprint::from_bytes(bytes)) {
+                history.insert(
+                    tmb.to_owned(),
+                    (key.alg().to_owned(), key.pub_key().to_vec()),
+                );
+            }
+        }
     }
 
     let mut signers = Vec::new();
