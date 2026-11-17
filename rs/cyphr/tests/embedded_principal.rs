@@ -435,54 +435,57 @@ fn steps() -> impl proptest::strategy::Strategy<Value = Vec<Step>> {
 /// refreshed tips, every read of the view is held to a full re-judge of
 /// every held action (the core's own check under `test-utils` fails the
 /// read otherwise). Turns red on any invalidation that misses a verdict.
+/// The case count is what makes it so: the defect this was written for
+/// escaped 24 cases and was caught at 512 (about 85 s unoptimized), and 256
+/// is the compromise between that and the suite's runtime.
 #[test]
 fn the_view_of_held_actions_equals_a_full_rejudge() {
     use proptest::prelude::*;
-    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(24));
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(256));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
     runner
         .run(&steps(), |steps| {
-            tokio::runtime::Builder::new_current_thread()
-                .build()
-                .expect("runtime")
-                .block_on(async move {
-                    let World {
-                        mut a,
-                        b,
-                        alice,
-                        carol,
-                        ..
-                    } = world().await;
-                    let mut at = T + 10;
-                    let mut has_carol = false;
-                    for step in steps {
-                        match step {
-                            Step::Follow => {
-                                let mut src = Fake::default();
-                                src.tips.push_back(Tip::new(&b, at));
-                                a.follow_embedded(&mut src).await;
-                            },
-                            Step::Act(by_carol, offset) => {
-                                let who = if by_carol { &carol } else { &alice };
-                                let (pay, sig, czd) = action_by(who, (at + offset).max(1));
-                                let _ = a.verify_and_record_action(&pay, &sig, czd);
-                            },
-                            Step::Toggle(ahead) => {
-                                at += ahead;
-                                let typ = if has_carol {
-                                    "key/delete"
-                                } else {
-                                    "key/create"
-                                };
-                                let parts = sign(&alice, typ, &tmb_id(&carol), at);
-                                let side = (!has_carol).then(|| key_of(&carol));
-                                if commit(&mut a, &alice, parts, side, at).await.is_ok() {
-                                    has_carol = !has_carol;
-                                }
-                            },
-                        }
-                        let _ = a.action_count();
+            runtime.block_on(async move {
+                let World {
+                    mut a,
+                    b,
+                    alice,
+                    carol,
+                    ..
+                } = world().await;
+                let mut at = T + 10;
+                let mut has_carol = false;
+                for step in steps {
+                    match step {
+                        Step::Follow => {
+                            let mut src = Fake::default();
+                            src.tips.push_back(Tip::new(&b, at));
+                            a.follow_embedded(&mut src).await;
+                        },
+                        Step::Act(by_carol, offset) => {
+                            let who = if by_carol { &carol } else { &alice };
+                            let (pay, sig, czd) = action_by(who, (at + offset).max(1));
+                            let _ = a.verify_and_record_action(&pay, &sig, czd);
+                        },
+                        Step::Toggle(ahead) => {
+                            at += ahead;
+                            let typ = if has_carol {
+                                "key/delete"
+                            } else {
+                                "key/create"
+                            };
+                            let parts = sign(&alice, typ, &tmb_id(&carol), at);
+                            let side = (!has_carol).then(|| key_of(&carol));
+                            if commit(&mut a, &alice, parts, side, at).await.is_ok() {
+                                has_carol = !has_carol;
+                            }
+                        },
                     }
-                });
+                    let _ = a.action_count();
+                }
+            });
             Ok(())
         })
         .expect("the view equals a full re-judge");

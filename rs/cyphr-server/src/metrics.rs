@@ -79,7 +79,7 @@ pub struct Metrics {
     requests: AtomicU64,
     pushes_accepted: AtomicU64,
     gossip_rounds: AtomicU64,
-    gossip_records_built: AtomicU64,
+    gossip_commits_replayed: AtomicU64,
     refusals: [AtomicU64; RefusalKind::ALL.len()],
 }
 
@@ -101,10 +101,11 @@ impl Metrics {
         self.gossip_rounds.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A gossip round replayed one principal's whole stored chain to open
-    /// a record: the cost the idle gate exists to avoid.
-    pub fn gossip_record_built(&self) {
-        self.gossip_records_built.fetch_add(1, Ordering::Relaxed);
+    /// A gossip round ran `commits` commits through the core: the cost the
+    /// idle gate and the kept records exist to hold to what is new.
+    pub fn gossip_replayed(&self, commits: u64) {
+        self.gossip_commits_replayed
+            .fetch_add(commits, Ordering::Relaxed);
     }
 
     /// Render the Prometheus text exposition. `eml_append_failures` is the
@@ -133,10 +134,10 @@ impl Metrics {
         );
         let _ = writeln!(
             out,
-            "# HELP cyphr_gossip_records_built_total Principal chains a gossip round replayed in \
-             full.\n# TYPE cyphr_gossip_records_built_total \
-             counter\ncyphr_gossip_records_built_total {}",
-            self.gossip_records_built.load(Ordering::Relaxed)
+            "# HELP cyphr_gossip_commits_replayed_total Commits gossip rounds ran through the \
+             core.\n# TYPE cyphr_gossip_commits_replayed_total \
+             counter\ncyphr_gossip_commits_replayed_total {}",
+            self.gossip_commits_replayed.load(Ordering::Relaxed)
         );
         let _ = writeln!(
             out,

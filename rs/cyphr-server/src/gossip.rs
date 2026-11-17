@@ -2,12 +2,18 @@
 //! step against the peers the operator chose (GOSSIP-MIN section 2).
 //!
 //! The timer is not a second protocol. Each round, for every principal the
-//! server holds, it opens a [`cyphr_client::Record`] from the principal's
-//! stored chain and calls the same [`cyphr_client::pull`] a verifying
-//! client calls, then stores what verified:
+//! server holds, it opens a [`cyphr_client::Record`] over the engine's
+//! kept state of the principal and calls the same [`cyphr_client::pull`] a
+//! verifying client calls, then stores what verified:
 //!
-//! - commits past the stored tip replay from the record's anchor (the stored genesis commit) and go
-//!   through the engine, which verifies them again before persisting;
+//! - the record starts from the verified state the engine already keeps, so a round verifies the
+//!   commits past that state (a peer's new head), not the chain. A principal the engine keeps no
+//!   current state for (evicted, not written since a restart, or one whose history embeds another
+//!   principal's pin or Key Tree digest, which are always replayed) is replayed once from its
+//!   stored genesis commit. A fork a peer proves needs the commits below it, which the record reads
+//!   from the store then;
+//! - commits past the stored tip go through the engine, which verifies them again before
+//!   persisting;
 //! - a rival branch the pull proved is handed to the engine, which keeps it (G1) so `/branches` and
 //!   `/evidence` serve it on;
 //! - a naked revoke that verified is recorded in the death set, so it travels on to the peers that
@@ -26,21 +32,23 @@
 //!
 //! Limits, stated rather than hidden: only principals the server already
 //! holds are pulled (a peer learns a new principal from its owner's `/push`;
-//! discovery is not part of this), and a principal that is not idle is
-//! replayed from its stored chain (replay-on-change caching is deferred,
-//! see `[gossip] interval_secs`). The gate reads heads only, so it is as
+//! discovery is not part of this), and a peer serves every action bundle it
+//! holds with each patch, so a pull reads them all (an action already held
+//! is not verified again). The gate reads heads only, so it is as
 //! blind to data actions that move no head as the pull step is; that is
 //! the open action question (GitHub #211), not something the gate adds.
 
 use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ActionBundle, Anchor, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, peer_heads,
-    pull, verified_revokes,
+    ActionBundle, Anchor, ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles,
+    peer_heads, pull, verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, info, warn};
@@ -199,38 +207,86 @@ async fn probe_revokes(
     record_revokes(state, &revoked).await;
 }
 
-async fn round_principal(
-    state: &Arc<AppState>,
-    peers: &[(String, HttpConnector)],
-    principal_id: &str,
-) -> Result<KeyMemo, RoundError> {
+/// The chain the engine stores, as a resumed record's store.
+struct StoredChain {
+    state: Arc<AppState>,
+    principal_id: String,
+}
+
+impl ChainSource for StoredChain {
+    fn first(
+        &self,
+        count: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchEntry>, String>> + Send + '_>> {
+        Box::pin(async move {
+            let last = u64::try_from(count.saturating_sub(1)).map_err(|e| e.to_string())?;
+            let stored = self
+                .state
+                .engine
+                .get_patch(&self.principal_id, None, Some(last))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(patch_entries(&stored))
+        })
+    }
+}
+
+/// A record of `principal_id` at the engine's tip: opened over the state
+/// the engine keeps, or, when it keeps none that is current, replayed from
+/// the stored genesis commit.
+async fn open_record(state: &Arc<AppState>, principal_id: &str) -> Result<Record, RoundError> {
+    if let Some(kept) = state.engine.kept_principal(principal_id).await {
+        let store = Arc::new(StoredChain {
+            state: Arc::clone(state),
+            principal_id: principal_id.to_owned(),
+        });
+        if let Ok(record) = Record::resume(principal_id, kept, system_clock, store) {
+            return Ok(record);
+        }
+    }
     let stored = state.engine.get_patch(principal_id, None, None).await?;
     let genesis = stored.entries.first().ok_or(RoundError::Empty)?;
     let anchor = Anchor::GenesisCommit(genesis.commit.commit_id.clone());
-    let entries: Vec<PatchEntry> = stored
+    Ok(Record::from_entries(
+        principal_id,
+        anchor,
+        system_clock,
+        &patch_entries(&stored),
+        &patch_actions(&stored),
+    )
+    .await?)
+}
+
+fn patch_entries(stored: &cyphr_storage::engine::PatchResponse) -> Vec<PatchEntry> {
+    stored
         .entries
         .iter()
         .map(|e| PatchEntry {
             sequence: e.commit.sequence,
             bundle: Ok(e.bundle.clone()),
         })
-        .collect();
-    let actions: Vec<ActionBundle> = stored
+        .collect()
+}
+
+fn patch_actions(stored: &cyphr_storage::engine::PatchResponse) -> Vec<ActionBundle> {
+    stored
         .actions
         .iter()
         .map(|a| ActionBundle {
             blobs: Ok(a.blobs.clone()),
         })
-        .collect();
-    let mut record =
-        Record::from_entries(principal_id, anchor, system_clock, &entries, &actions).await?;
-    state.metrics.gossip_record_built();
+        .collect()
+}
+
+async fn round_principal(
+    state: &Arc<AppState>,
+    peers: &[(String, HttpConnector)],
+    principal_id: &str,
+) -> Result<KeyMemo, RoundError> {
+    let mut record = open_record(state, principal_id).await?;
+    let tip = record.tip().ok_or(RoundError::Empty)?;
     let memo = KeyMemo {
-        tip: stored
-            .entries
-            .last()
-            .map(|e| e.commit.commit_id.clone())
-            .ok_or(RoundError::Empty)?,
+        tip: tip.commit_id,
         keys: record.unrevoked_keys(),
     };
     let mark = record.log_len();
@@ -273,6 +329,7 @@ async fn round_principal(
             Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
         }
     }
+    state.metrics.gossip_replayed(record.replayed());
     Ok(memo)
 }
 

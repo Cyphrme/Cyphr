@@ -592,6 +592,24 @@ impl<S: eml::Storage> Principal<S> {
         self.state
     }
 
+    /// This principal over an in-memory commit log, as a holder that
+    /// checks what arrives without writing to the original's store: the
+    /// state moves unchanged and the log is seeded from its frontier, so
+    /// it costs the state's unshared part plus O(log n) log nodes, never
+    /// the history. Every root it derives is the one the original derives
+    /// from the same commits.
+    ///
+    /// # Errors
+    ///
+    /// `Storage` if the frontier cannot be read or reopened.
+    pub async fn detach(self) -> Result<Principal<crate::eml::MemoryStorage>> {
+        let log = self.log.detach().await?;
+        Ok(Principal {
+            state: self.state,
+            log,
+        })
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     fn core_mut(&mut self) -> &mut PrincipalCore {
         self.state.core_mut()

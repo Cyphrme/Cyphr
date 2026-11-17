@@ -250,6 +250,29 @@ impl<S: eml::Storage> CommitTrees<S> {
         Ok(Self { log })
     }
 
+    /// This log as an in-memory log at the same size and with the same
+    /// roots, seeded from the frontier alone: O(log n) nodes are read and
+    /// no leaf is copied, whatever the backend. The result can append, so
+    /// a commit staged on it never reaches this log's store.
+    ///
+    /// # Errors
+    ///
+    /// The backend's own error if a frontier node cannot be read, or the
+    /// seed cannot be reopened.
+    pub(crate) async fn detach(self) -> crate::error::Result<CommitTrees<eml::MemoryStorage>> {
+        let storage = |e: String| crate::error::Error::Storage(e);
+        let sealed = self.log.seal().await.map_err(|e| storage(e.to_string()))?;
+        let mut hashers: Vec<(u64, Box<dyn eml::Hasher>)> = Vec::new();
+        for (alg_id, _) in sealed.frontiers() {
+            let alg = u64_to_hash_alg(*alg_id)?;
+            hashers.push((*alg_id, Box::new(MaltHasher::new(alg))));
+        }
+        let log = Log::resume(&sealed, eml::MemoryStorage::new(), hashers)
+            .await
+            .map_err(|e| storage(e.to_string()))?;
+        Ok(CommitTrees { log })
+    }
+
     /// An independent copy of this log over a forked store.
     pub(crate) async fn fork(&self) -> LogResult<Self, S>
     where
@@ -296,6 +319,23 @@ impl<S: eml::Storage> CommitTrees<S> {
     /// [`Self::commit`] in one atomic `Storage::apply`.
     pub(crate) fn stage(&self) -> polydigest::Staged<S> {
         self.log.stage()
+    }
+
+    /// Stage the append of the commit leaf `data`. A log reopened from a
+    /// frontier ([`Self::detach`]) holds no leaves, only the digests the
+    /// frontier names, so the leaf goes in as a one-leaf subtree, whose
+    /// digest is the digest a flat append of it gives. (An empty log reads
+    /// as subtree-kind but binds to whichever append comes first.)
+    pub(crate) fn stage_leaf(
+        &self,
+        staged: &mut polydigest::Staged<S>,
+        data: &[u8],
+    ) -> LogResult<(), S> {
+        if self.log.kind() == eml::LogKind::Subtree && self.log.count() > 0 {
+            staged.append_subtree(&eml::Subtree::Leaf(data.to_vec()))
+        } else {
+            staged.append_leaf(data)
+        }
     }
 
     /// Write `staged` in one atomic `Storage::apply` and adopt it. `staged`

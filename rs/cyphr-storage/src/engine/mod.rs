@@ -1338,6 +1338,39 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         (kept.key == KeptKey::at(&tip.commit_id, self.revoked())).then_some(kept.state)
     }
 
+    /// The principal `principal_id` as its next write would start from, if
+    /// its state is kept and current, detached onto an in-memory commit log
+    /// ([`cyphr::Principal::detach`]): a holder can verify commits against
+    /// it, as a pull does, without writing to the engine's log or taking
+    /// its write lock. The engine admits what that holder verified only
+    /// through [`Self::submit_commit`], which checks it again.
+    ///
+    /// Costs the state's unshared part (the settled history is shared, not
+    /// copied) and O(log n) commit-log nodes, never the history. `None`
+    /// when no current state is kept: an evicted or never-written
+    /// principal, one whose history embeds another principal's pin or Key
+    /// Tree digest (those are always replayed), or an engine over logs
+    /// that do not outlive a replay.
+    pub async fn kept_principal(
+        &self,
+        principal_id: &str,
+    ) -> Option<cyphr::Principal<cyphr::eml::MemoryStorage>> {
+        let key = self.resolve_key(principal_id).await.ok()?;
+        let stored = key.as_deref().unwrap_or(principal_id);
+        let lock = self.principal_lock(stored);
+        let write = Self::lock_writes(&lock, stored).await;
+        let tip = self.indexer.get_tip(stored).await.ok()??;
+        let kept = self.kept.copy(&write)?;
+        if kept.key != KeptKey::at(&tip.commit_id, self.revoked()) {
+            return None;
+        }
+        self.resume_over_log(stored, kept.state)
+            .await?
+            .detach()
+            .await
+            .ok()
+    }
+
     /// How many accepted commits have had their commit-log append fail
     /// after their manifest was stored, over this engine's lifetime. Each
     /// is repaired by the next load of its principal; a count that keeps

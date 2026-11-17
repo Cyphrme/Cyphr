@@ -86,6 +86,13 @@ impl<T: Clone> Grown<Vec<T>> {
         self.added.push(item);
     }
 
+    pub fn get(&self, index: usize) -> Option<&T> {
+        match index.checked_sub(self.settled.len()) {
+            Some(i) => self.added.get(i),
+            None => self.settled.get(index),
+        }
+    }
+
     pub fn last(&self) -> Option<&T> {
         self.added.last().or_else(|| self.settled.last())
     }
@@ -185,6 +192,7 @@ mod tests {
         assert_eq!(before, [1, 2, 3]);
         assert_eq!(v.iter().copied().collect::<Vec<_>>(), [1, 2, 3, 4]);
         assert_eq!((v.len(), v.last()), (4, Some(&4)));
+        assert_eq!((v.get(1), v.get(3), v.get(4)), (Some(&2), Some(&4), None));
     }
 
     #[test]
