@@ -80,10 +80,24 @@ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
 ///   times, and `n` items cost `O(n log n)` copies in all: O(log n) each, amortised, and never a
 ///   copy of a segment much larger than what the write added (the forked history is the oldest,
 ///   largest segment, which no small write reaches).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Grown<C: Absorb> {
     settled: Vec<Arc<C>>,
     added: C,
+}
+
+// Shows the content alone, never how it is split into segments: two states
+// holding the same history compare equal by their debug text (the live
+// equals cold tests do), however their writes were folded.
+impl<C: Absorb + std::fmt::Debug> std::fmt::Debug for Grown<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut all = C::default();
+        for segment in &self.settled {
+            all.absorb((**segment).clone());
+        }
+        all.absorb(self.added.clone());
+        f.debug_tuple("Grown").field(&all).finish()
+    }
 }
 
 impl<C: Absorb> Default for Grown<C> {
