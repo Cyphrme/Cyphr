@@ -5089,11 +5089,31 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<bool, EngineError> {
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
-        Ok(self
-            .held(&principal_id)
-            .await?
-            .iter()
-            .any(|h| h.id == commit_id))
+        let retained = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&principal_id)
+            .is_some_and(|kept| kept.iter().any(|r| r.tip.tip == commit_id));
+        if retained {
+            return Ok(true);
+        }
+        // On the canonical chain: the index names the position a commit id
+        // is held at, and the commit there is read to confirm it.
+        let Ok(digest) = commit_id.parse::<TaggedDigest>() else {
+            return Ok(false);
+        };
+        for holder in self.indexer.resolve_digest_holders(&digest).await? {
+            if holder.principal_id.as_deref() != Some(principal_id.as_str()) {
+                continue;
+            }
+            let Some(at) = holder.sequence else { continue };
+            let there = self.chain(&principal_id, Some(at), Some(at)).await?;
+            if there.first().is_some_and(|c| c.commit_id == commit_id) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn error_state_of(
@@ -5149,7 +5169,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         fork_point: &ForkPoint,
         heads: &[HeldHead],
     ) -> Result<Vec<PatchBranch>, EngineError> {
-        let held = self.held(principal_id).await?;
+        // Each line is walked down to the fork point and no further.
+        let held = self.held_from(principal_id, fork_point.height).await?;
         let by_pr: HashMap<(u64, &str), &Held> = held
             .iter()
             .map(|h| ((h.sequence, h.pr.as_str()), h))
@@ -5238,10 +5259,39 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .clone()
     }
 
-    /// Every commit the engine holds for `principal_id`: its canonical
-    /// chain and each retained branch.
+    /// The commits the engine holds for `principal_id` that its forks are
+    /// read from ([`assessment`]): every retained branch, and the canonical
+    /// chain from one position below the lowest of them, or its tip alone
+    /// when none is retained.
+    ///
+    /// The canonical chain below that has one commit at each position and
+    /// no retained commit beside or above it, so it holds no head, no fork,
+    /// and no point where two lines part: [`assessment`] over this is its
+    /// answer over every held commit, whose fork point, where the lines
+    /// share anything, is at or above the first commit read here. Reading
+    /// the fork state so costs the depth of the fork, not the length of the
+    /// history, on every write and every read of a tip or a proof. Both
+    /// inputs are caches rebuilt from the blobs (I1), and nothing else is
+    /// kept for it.
     async fn held(&self, principal_id: &str) -> Result<Vec<Held>, EngineError> {
-        let chain = self.chain(principal_id, None, None).await?;
+        let lowest_retained = self
+            .branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .and_then(|kept| kept.iter().map(|r| r.tip.sequence).min());
+        let Some(tip) = self.indexer.get_tip(principal_id).await? else {
+            return self.held_from(principal_id, 0).await;
+        };
+        let last = tip.commit_count.saturating_sub(1);
+        self.held_from(principal_id, assessed_from(lowest_retained, last))
+            .await
+    }
+
+    /// Every retained branch of `principal_id`, and its canonical chain
+    /// from position `from` up.
+    async fn held_from(&self, principal_id: &str, from: u64) -> Result<Vec<Held>, EngineError> {
+        let chain = self.chain(principal_id, Some(from), None).await?;
         let mut held = Vec::with_capacity(chain.len());
         for c in chain {
             let frame = self.frame(principal_id, &c).ok_or_else(|| {
@@ -5754,6 +5804,13 @@ fn assessment(held: &[Held]) -> Assessment {
         forks,
         fork_point,
     }
+}
+
+/// The lowest canonical position [`assessment`] must read to answer as it
+/// does over the whole chain: one below the lowest retained commit, and
+/// the canonical head `last` alone when none is retained.
+fn assessed_from(lowest_retained: Option<u64>, last: u64) -> u64 {
+    lowest_retained.map_or(last, |low| low.saturating_sub(1).min(last))
 }
 
 /// Whether a principal is in Error: [`assessment`]'s consensus.
