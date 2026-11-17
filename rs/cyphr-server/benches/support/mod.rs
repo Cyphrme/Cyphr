@@ -3,16 +3,17 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Relaxed;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
+use cyphr_server::AppState;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
-use cyphr_server::AppState;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -65,7 +66,12 @@ pub fn push_body(id: &str, b: &WireBundle) -> String {
 }
 
 /// One request through the router: status and response size.
-pub async fn call(app: &Router, method: &str, uri: &str, body: String) -> (StatusCode, usize, Vec<u8>) {
+pub async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: String,
+) -> (StatusCode, usize, Vec<u8>) {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -150,4 +156,3 @@ pub fn login_body(id: &str) -> String {
     })
     .expect("login")
 }
-

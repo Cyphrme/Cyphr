@@ -14,8 +14,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use common::{Chain, Ctr, Disk, Engine, bad_signature, median};
-use cyphr::state::TaggedDigest;
 use cyphr::replay::WireBundle;
+use cyphr::state::TaggedDigest;
 
 /// One operation's measured cost.
 #[derive(Default, Clone, Copy)]
@@ -143,7 +143,12 @@ async fn run(n: usize) {
             .expect_err("bad signature refused");
     })
     .await;
-    row(n, "refused push, bad signature", "O(bundle), indep. of n", c);
+    row(
+        n,
+        "refused push, bad signature",
+        "O(bundle), indep. of n",
+        c,
+    );
 
     let mut other = Chain::new("alice", "key_a", "key_b").await;
     let _ = other.next().await;
@@ -187,7 +192,10 @@ async fn main() {
         .split(',')
         .map(|s| s.trim().parse().expect("U3_NS is a list of counts"))
         .collect();
-    println!("| n | operation | bound | replayed | data sigs | idx calls | idx rows | blobs read | blob KB | ms |");
+    println!(
+        "| n | operation | bound | replayed | data sigs | idx calls | idx rows | blobs read | \
+         blob KB | ms |"
+    );
     println!("|--:|---|---|--:|--:|--:|--:|--:|--:|--:|");
     for n in ns {
         run(n).await;

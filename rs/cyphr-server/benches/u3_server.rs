@@ -14,11 +14,11 @@ mod common;
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use axum::http::StatusCode;
 use common::{Chain, bad_signature, median};
-use std::sync::atomic::Ordering::Relaxed;
 use cyphr_client::HttpConnector;
 use cyphr_server::gossip::Gossip;
 use cyphr_server::{AppState, build_router};
@@ -35,7 +35,16 @@ struct Cost {
 }
 
 /// Counters before an operation; `end` is the cost since.
-struct Mark<'a>(&'a AppState, Option<&'a Wire>, u64, u64, u64, u64, u64, Instant);
+struct Mark<'a>(
+    &'a AppState,
+    Option<&'a Wire>,
+    u64,
+    u64,
+    u64,
+    u64,
+    u64,
+    Instant,
+);
 
 fn mark<'a>(s: &'a AppState, w: Option<&'a Wire>) -> Mark<'a> {
     Mark(
@@ -123,7 +132,12 @@ async fn run(n: usize) {
     for bundle in &bundles {
         for app in [&app_a, &app_b] {
             let (st, _, body) = call(app, "POST", "/push", push_body(&id, bundle)).await;
-            assert_eq!(st, StatusCode::CREATED, "{}", String::from_utf8_lossy(&body));
+            assert_eq!(
+                st,
+                StatusCode::CREATED,
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
         }
     }
     eprintln!("n={n}: history built in {:.1}s", t.elapsed().as_secs_f64());
@@ -163,14 +177,31 @@ async fn run(n: usize) {
     row(n, "read: GET /patch from tip", "replayed 0", c);
 
     let c = measure(&a, None, 3, || async {
-        let (st, len, _) = call(&app_a, "GET", &format!("/consistency?pr={id}&from={}", n / 2), String::new()).await;
+        let (st, len, _) = call(
+            &app_a,
+            "GET",
+            &format!("/consistency?pr={id}&from={}", n / 2),
+            String::new(),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         len
     })
     .await;
-    row(n, "GET /consistency (from n/2)", "O(log n) hashes, replayed 0", c);
+    row(
+        n,
+        "GET /consistency (from n/2)",
+        "O(log n) hashes, replayed 0",
+        c,
+    );
     let c = measure(&a, None, 3, || async {
-        let (st, len, _) = call(&app_a, "GET", &format!("/inclusion?pr={id}&index={}", n / 2), String::new()).await;
+        let (st, len, _) = call(
+            &app_a,
+            "GET",
+            &format!("/inclusion?pr={id}&index={}", n / 2),
+            String::new(),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         len
     })
@@ -208,7 +239,12 @@ async fn run(n: usize) {
         len + bad.len()
     })
     .await;
-    row(n, "refused push, bad signature", "O(bundle), indep. of n", c);
+    row(
+        n,
+        "refused push, bad signature",
+        "O(bundle), indep. of n",
+        c,
+    );
     let mut other = Chain::new("alice", "key_a", "key_b").await;
     let _ = other.next().await;
     let stranger = push_body(&id, &other.next().await);
@@ -254,7 +290,10 @@ async fn main() {
         .split(',')
         .map(|s| s.trim().parse().expect("U3_NS is a list of counts"))
         .collect();
-    println!("| n | operation | bound | engine replayed | gossip replayed | data sigs | requests | KB | ms |");
+    println!(
+        "| n | operation | bound | engine replayed | gossip replayed | data sigs | requests | KB \
+         | ms |"
+    );
     println!("|--:|---|---|--:|--:|--:|--:|--:|--:|");
     for n in ns {
         run(n).await;

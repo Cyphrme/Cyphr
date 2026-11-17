@@ -91,20 +91,41 @@ async fn observe(n: usize) -> Obs {
     let commit_id = tip["payload"]["commit_id"].as_str().expect("commit_id");
 
     let before = replayed();
-    ok(call(&app_a, "GET", &format!("/patch?pr={id}&from={commit_id}"), String::new()).await);
+    ok(call(
+        &app_a,
+        "GET",
+        &format!("/patch?pr={id}&from={commit_id}"),
+        String::new(),
+    )
+    .await);
     let patch_replayed = replayed() - before;
 
     let before = replayed();
-    let c = ok(call(&app_a, "GET", &format!("/consistency?pr={id}&from={}", n / 2), String::new()).await);
+    let c = ok(call(
+        &app_a,
+        "GET",
+        &format!("/consistency?pr={id}&from={}", n / 2),
+        String::new(),
+    )
+    .await);
     let consistency_replayed = replayed() - before;
     let before = replayed();
-    let i = ok(call(&app_a, "GET", &format!("/inclusion?pr={id}&index={}", n / 2), String::new()).await);
+    let i = ok(call(
+        &app_a,
+        "GET",
+        &format!("/inclusion?pr={id}&index={}", n / 2),
+        String::new(),
+    )
+    .await);
     let inclusion_replayed = replayed() - before;
 
     let before = replayed();
     let login = ok(call(&app_a, "POST", "/auth/login", login_body(&id)).await);
     let login_replayed = replayed() - before;
-    let token = login["payload"]["token"].as_str().expect("token").to_owned();
+    let token = login["payload"]["token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
     let before = replayed();
     ok(call(&app_a, "POST", "/auth/session", token).await);
     let session_replayed = replayed() - before;

@@ -135,7 +135,8 @@ pub fn median(mut xs: Vec<f64>) -> f64 {
 }
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Relaxed;
 
 use cyphr::state::TaggedDigest;
 use cyphr_blob_fjall::{EmlLogs, FjallBlobStore};
@@ -160,6 +161,7 @@ impl BlobStore for CBlob {
     async fn put(&self, data: &[u8]) -> Result<Blake3Hash, BlobStoreError> {
         self.0.put(data).await
     }
+
     async fn get(&self, h: &Blake3Hash) -> Result<Option<Vec<u8>>, BlobStoreError> {
         let got = self.0.get(h).await?;
         self.1.blob_gets.fetch_add(1, Relaxed);
@@ -168,9 +170,11 @@ impl BlobStore for CBlob {
             .fetch_add(got.as_ref().map_or(0, |b| b.len() as u64), Relaxed);
         Ok(got)
     }
+
     async fn exists(&self, h: &Blake3Hash) -> Result<bool, BlobStoreError> {
         self.0.exists(h).await
     }
+
     async fn iter(
         &self,
     ) -> Result<Box<dyn Iterator<Item = Result<Blake3Hash, BlobStoreError>> + Send>, BlobStoreError>
@@ -195,10 +199,12 @@ impl Indexer for CIdx {
         self.read(usize::from(r.is_some()));
         Ok(r)
     }
+
     async fn is_pg_established(&self, p: &str) -> Result<bool, IndexerError> {
         self.read(1);
         self.0.is_pg_established(p).await
     }
+
     async fn get_commit_chain(
         &self,
         p: &str,
@@ -209,11 +215,13 @@ impl Indexer for CIdx {
         self.read(r.len());
         Ok(r)
     }
+
     async fn resolve_digest(&self, d: &TaggedDigest) -> Result<Option<EntityRef>, IndexerError> {
         let r = self.0.resolve_digest(d).await?;
         self.read(usize::from(r.is_some()));
         Ok(r)
     }
+
     async fn resolve_digest_holders(
         &self,
         d: &TaggedDigest,
@@ -222,15 +230,18 @@ impl Indexer for CIdx {
         self.read(r.len());
         Ok(r)
     }
+
     async fn list_principals(&self) -> Result<Vec<PrincipalSummary>, IndexerError> {
         let r = self.0.list_principals().await?;
         self.read(r.len());
         Ok(r)
     }
+
     async fn is_blob_indexed(&self, h: &Blake3Hash) -> Result<bool, IndexerError> {
         self.read(1);
         self.0.is_blob_indexed(h).await
     }
+
     async fn get_key(&self, t: &str) -> Result<Option<PublicKeyInfo>, IndexerError> {
         let r = self.0.get_key(t).await?;
         self.read(usize::from(r.is_some()));
@@ -242,9 +253,11 @@ impl IndexerWrite for CIdx {
     async fn check_commit(&self, c: &IndexableCommit, t: &DeriveToken) -> Result<(), IndexerError> {
         self.0.check_commit(c, t).await
     }
+
     async fn index_commit(&self, c: &IndexableCommit, t: &DeriveToken) -> Result<(), IndexerError> {
         self.0.index_commit(c, t).await
     }
+
     async fn replace_chain_from(
         &self,
         p: &str,
@@ -254,9 +267,11 @@ impl IndexerWrite for CIdx {
     ) -> Result<(), IndexerError> {
         self.0.replace_chain_from(p, s, c, t).await
     }
+
     async fn clear(&self, t: &DeriveToken) -> Result<(), IndexerError> {
         self.0.clear(t).await
     }
+
     async fn set_quarantined(
         &self,
         m: &[(Blake3Hash, String)],
@@ -264,6 +279,7 @@ impl IndexerWrite for CIdx {
     ) -> Result<(), IndexerError> {
         self.0.set_quarantined(m, t).await
     }
+
     async fn quarantined(&self) -> Result<Vec<(Blake3Hash, String)>, IndexerError> {
         self.0.quarantined().await
     }
@@ -304,4 +320,3 @@ impl Disk {
         )
     }
 }
-
