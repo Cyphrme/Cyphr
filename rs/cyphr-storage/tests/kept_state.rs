@@ -637,6 +637,62 @@ async fn a_refused_bundle_that_is_no_rival_reads_no_more_as_history_grows() {
     );
 }
 
+/// A stranger cannot make the store read or replay another principal's
+/// history. The stranger stores a principal of its own, so the store knows
+/// its key, then pushes a commit signed by that key to the victim. The
+/// victim never held the key and embeds no principal, so the bundle is no
+/// rival of it at any position, and that is settled from the bundle and the
+/// victim's verified state: nothing of the victim's chain is read and none
+/// of it is replayed, whatever its length.
+///
+/// Counted at the engine's chain read and its retention replays, over
+/// victims of 4 and of 24 commits: the refusal is the same either way.
+#[tokio::test]
+async fn a_strangers_key_buys_no_read_of_a_victims_history() {
+    let alice = kp("alice");
+    let mut stranger = cyphr::Principal::implicit(key_of(&alice))
+        .await
+        .expect("genesis");
+    stranger
+        .commit_genesis(&signer_of(&alice), &[key_of(&kp("bob"))], NOW, "cyphr.me")
+        .await
+        .expect("genesis commit");
+    let own = bundle_at(&stranger, 0);
+    let own_id = test_fixtures::bundle::genesis_id(&own).expect("id");
+    let carol = kp("carol");
+    assert!(
+        try_apply(
+            &mut stranger,
+            &alice,
+            pay("key/create", &alice, Some(&carol), NOW + 1_000),
+            Some(key_of(&carol)),
+            NOW + 1_000,
+        )
+        .await
+    );
+    let pushed = bundle_at(&stranger, 1);
+
+    let mut cost = Vec::new();
+    for n in [4, 24] {
+        let (e, _dir) = engine(8, false);
+        let w = history(&e, n).await;
+        e.submit_commit(&own_id, None, &own)
+            .await
+            .expect("the stranger's own principal");
+        let before = (e.chain_rows_read(), e.retention_replays());
+        assert!(w.submit(&e, &pushed).await.is_err(), "refused");
+        cost.push((
+            e.chain_rows_read() - before.0,
+            e.retention_replays() - before.1,
+        ));
+    }
+    assert_eq!(
+        cost[0], cost[1],
+        "(index commit records read, commits replayed) over 4 commits and over 24"
+    );
+    assert_eq!(cost[0].1, 0, "a stranger's bundle replayed the victim");
+}
+
 /// U3: a state resumes only over the commit log it was folded from, so a
 /// kept state that fell behind its log (a regenerated or newer log) is
 /// refused rather than extended: the log holds a different number of
