@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 use tempfile::TempDir;
 
+use std::time::Duration;
+
 use crate::actions::{ActionError, ActionResult, Refusal, RefusalKind};
 use crate::bins::Bins;
 
@@ -47,16 +49,24 @@ impl Device {
 
     /// Run `cyphr <args>` against this device.
     pub async fn run(&self, bins: &Bins, args: &[&str]) -> ActionResult<Value> {
-        let out = tokio::process::Command::new(&bins.cli)
+        let peer_wait = PEER_TIMEOUT_SECS.load(std::sync::atomic::Ordering::Relaxed);
+        let mut cmd = tokio::process::Command::new(&bins.cli);
+        cmd
             .arg("--store")
             .arg(format!("file:{}", self.store.display()))
             .arg("--keystore")
             .arg(&self.keystore)
             .args(["--output", "json", "--peer-timeout-secs"])
-            .arg(PEER_TIMEOUT_SECS.load(std::sync::atomic::Ordering::Relaxed).to_string())
+            .arg(peer_wait.to_string())
             .args(bind_values(args))
-            .output()
+            .kill_on_drop(true);
+        // The CLI bounds its own peer calls; a call that outlives them many
+        // times over has hung (a deadlocked process was seen once at the large
+        // size), which must end the run with a name, not stall it for ever.
+        let hung = Duration::from_secs(peer_wait * 6 + 60);
+        let out = tokio::time::timeout(hung, cmd.output())
             .await
+            .map_err(|_| ActionError::Failed(format!("cyphr {args:?} hung for over {hung:?}")))?
             .map_err(|e| ActionError::Failed(format!("spawning cyphr: {e}")))?;
         if out.status.success() {
             return serde_json::from_slice(&out.stdout).map_err(|e| {
