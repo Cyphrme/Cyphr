@@ -507,22 +507,6 @@ pub struct InclusionQuery {
 
 type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
 
-/// The commit log a proof is made from: the engine's own, read only, when
-/// it keeps the principal's state; otherwise one replayed from the chain.
-enum Proving {
-    Kept(cyphr_storage::engine::LogReader<LogStorage>),
-    Replayed(cyphr::Principal<LogStorage>),
-}
-
-impl Proving {
-    fn principal(&self) -> &cyphr::Principal<LogStorage> {
-        match self {
-            Self::Kept(log) => log.principal(),
-            Self::Replayed(principal) => principal,
-        }
-    }
-}
-
 /// The tip of a principal that has one log to prove against: 404 for an
 /// unknown principal, 409 for one in Error (SPEC 15.5).
 async fn provable_tip(state: &Arc<AppState>, pr: &str) -> Result<TipState, AppError> {
@@ -547,26 +531,20 @@ async fn provable_tip(state: &Arc<AppState>, pr: &str) -> Result<TipState, AppEr
     Ok(t)
 }
 
-/// The log of `t`, from the kept state when there is one (no commit is
-/// replayed), else by replaying the chain.
-async fn proving_log(state: &Arc<AppState>, t: &TipState) -> Result<Proving, AppError> {
-    if let Some(log) = state.engine.kept_log(&t.principal_id).await {
-        return Ok(Proving::Kept(log));
-    }
-    let genesis = match own_genesis(state, &t.principal_id) {
-        Some(genesis) => genesis,
-        None => state
-            .engine
-            .resolve_genesis(&t.principal_id, &[])
-            .await
-            .map_err(AppError::engine)?,
-    };
-    state
-        .engine
-        .load_principal(&t.principal_id, genesis)
-        .await
-        .map(Proving::Replayed)
-        .map_err(AppError::engine)
+/// The log of `t`, read from the kept state. A principal whose state is not
+/// kept (after a restart, evicted, or one whose history is always replayed)
+/// is not proved from: each request would replay its chain, and a peer can
+/// ask over and over. It is a 503, and the asker pulls without a proof.
+async fn proving_log(
+    state: &Arc<AppState>,
+    t: &TipState,
+) -> Result<cyphr_storage::engine::LogReader<LogStorage>, AppError> {
+    state.engine.kept_log(&t.principal_id).await.ok_or_else(|| {
+        AppError::unavailable(format!(
+            "no proof of {} is at hand; pull without one",
+            t.principal_id
+        ))
+    })
 }
 
 /// A bound on a count in a proof request, parsed from `raw`.
@@ -780,10 +758,9 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
 ///
 /// [`StorageEngine::derive_roots_at`]: cyphr_storage::engine::StorageEngine::derive_roots_at
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
-    let own_genesis = own_genesis(state, &t.principal_id);
     let derived = state
         .engine
-        .derive_roots_at(t, own_genesis)
+        .derive_roots_at(t, None)
         .await
         .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?
         .ok_or_else(|| {
@@ -811,17 +788,6 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::
         // sentinel becomes the receipt's typed absence (#147).
         cr: absent_cr(&derived.cr),
     })
-}
-
-/// The server's own principal has an explicit genesis, which its blobs
-/// cannot express, so its genesis is supplied rather than read back;
-/// `None` for any other principal.
-fn own_genesis(state: &Arc<AppState>, principal_id: &str) -> Option<cyphr_storage::Genesis> {
-    state
-        .principal
-        .as_ref()
-        .filter(|p| p.pg() == principal_id)
-        .map(|p| cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]))
 }
 
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
