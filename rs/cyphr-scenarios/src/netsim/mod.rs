@@ -19,6 +19,7 @@
 use std::time::Duration;
 
 pub mod check;
+pub mod episode;
 pub mod model;
 pub mod plan;
 pub mod run;
@@ -38,9 +39,14 @@ pub struct Size {
     /// How long a barrier waits for convergence before reporting
     /// non-convergence.
     pub converge: Duration,
+    /// One witness of `p0`, checked by N9.
+    pub witness: bool,
 }
 
 impl Size {
+    /// The witness's node name; it follows peer `p0`.
+    pub const WITNESS: &'static str = "w0";
+
     /// The gating size.
     pub fn ci() -> Size {
         Size {
@@ -51,6 +57,7 @@ impl Size {
             concurrency: 4,
             holders: (3, 5),
             converge: Duration::from_secs(120),
+            witness: false,
         }
     }
 
@@ -65,6 +72,7 @@ impl Size {
             concurrency: 8,
             holders: (7, 9),
             converge: Duration::from_secs(600),
+            witness: true,
         }
     }
 
