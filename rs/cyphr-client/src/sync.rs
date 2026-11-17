@@ -27,6 +27,7 @@
 //! fetched and replayed or ignored.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use coz::Thumbprint;
 use cyphr::eml::MemoryStorage;
@@ -80,6 +81,10 @@ pub struct Record {
     /// Naked-revoked keys, by thumbprint, each with its cutoff: the record's
     /// clock when it accepted the first revoke of the key.
     dead: BTreeMap<String, i64>,
+    /// Commits this record has run through the core, whether the chain they
+    /// built was kept or compared and dropped: what a pull cost in protocol
+    /// checks, for a test or a metric to hold to "only what is new".
+    replayed: AtomicU64,
 }
 
 struct Held {
@@ -120,6 +125,7 @@ impl Record {
             patch_cap: DEFAULT_PATCH_CAP,
             held: None,
             dead: BTreeMap::new(),
+            replayed: AtomicU64::new(0),
         }
     }
 
@@ -143,6 +149,43 @@ impl Record {
             record.held = Some(record.replay_full(entries, actions).await?);
         }
         Ok(record)
+    }
+
+    /// Extend the chain this record holds by `entries`, the commits after
+    /// its tip, and by `actions`: how a holder that keeps the chain itself
+    /// (a peer's store) brings a record it kept up to the store without
+    /// replaying what the record already verified. Every commit goes
+    /// through the core, so the store is no more trusted than a peer. A
+    /// record that holds nothing replays from its anchor, as
+    /// [`from_entries`](Self::from_entries) does.
+    ///
+    /// # Errors
+    ///
+    /// The [`PeerFailure`] of the first entry that does not replay; the
+    /// record is then as it was.
+    pub async fn catch_up(
+        &mut self,
+        entries: &[PatchEntry],
+        actions: &[ActionBundle],
+    ) -> Result<(), PeerFailure> {
+        match &mut self.held {
+            Some(held) => {
+                held.extend(entries, actions, self.clock, &self.replayed)
+                    .await
+            },
+            None => {
+                self.held = Some(self.replay_full(entries, actions).await?);
+                Ok(())
+            },
+        }
+    }
+
+    /// How many commits this record has run through the core, over its
+    /// lifetime. A pull of a record that already holds the chain adds only
+    /// the commits past its tip; a rebuild adds the whole chain.
+    #[must_use]
+    pub fn replayed(&self) -> u64 {
+        self.replayed.load(Ordering::Relaxed)
     }
 
     /// Replay with `clock` instead of the system clock (which reads 0 on
@@ -341,7 +384,7 @@ impl Record {
             actions: Vec::new(),
             log: Vec::new(),
         };
-        held.replay(entries, actions).await?;
+        held.replay(entries, actions, &self.replayed).await?;
         if let Anchor::GenesisCommit(want) = &self.anchor
             && held.ids.first().and_then(commit_id).as_ref() != Some(want)
         {
@@ -364,6 +407,7 @@ impl Held {
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
+        tally: &AtomicU64,
     ) -> Result<(), PeerFailure> {
         for step in replay_order(self.ids.len(), entries, actions) {
             match step {
@@ -375,6 +419,7 @@ impl Held {
                     let id = replay_entry(&mut self.principal, bundle)
                         .await
                         .map_err(|refusal| entry_failure(index, refusal))?;
+                    tally.fetch_add(1, Ordering::Relaxed);
                     self.ids.push(id);
                     self.entries.push(entry.clone());
                     self.log.push(bundle.clone());
@@ -407,14 +452,17 @@ impl Held {
         })
     }
 
-    /// This chain extended by `entries`, on a copy: a patch that does not
-    /// replay leaves the record as it was.
-    async fn extended(
-        &self,
+    /// Extend this chain by `entries` and `actions`, all or nothing: the
+    /// replay runs on a copy of the principal and the held lists grow only
+    /// as it succeeds, so a patch that does not replay leaves the record as
+    /// it was without copying what it already holds.
+    async fn extend(
+        &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
         clock: Clock,
-    ) -> Result<Self, PeerFailure> {
+        tally: &AtomicU64,
+    ) -> Result<(), PeerFailure> {
         let mut principal = self
             .principal
             .fork()
@@ -424,16 +472,22 @@ impl Held {
                 source,
             })?;
         principal.set_clock(clock);
-        let mut next = Self {
-            root: self.root.clone(),
-            principal,
-            entries: self.entries.clone(),
-            ids: self.ids.clone(),
-            actions: self.actions.clone(),
-            log: self.log.clone(),
-        };
-        next.replay(entries, actions).await?;
-        Ok(next)
+        let before = (
+            self.entries.len(),
+            self.ids.len(),
+            self.actions.len(),
+            self.log.len(),
+        );
+        std::mem::swap(&mut self.principal, &mut principal);
+        let replayed = self.replay(entries, actions, tally).await;
+        if replayed.is_err() {
+            std::mem::swap(&mut self.principal, &mut principal);
+            self.entries.truncate(before.0);
+            self.ids.truncate(before.1);
+            self.actions.truncate(before.2);
+            self.log.truncate(before.3);
+        }
+        replayed
     }
 }
 
@@ -844,14 +898,16 @@ async fn reach<C: Connector>(
     record: &mut Record,
     connector: &C,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
-    if let Some(held) = &record.held {
-        let tip = held
-            .principal
-            .pr_tagged()
-            .map_err(|source| PeerFailure::Replay {
+    let tip = match &record.held {
+        Some(held) => Some(held.principal.pr_tagged().map_err(|source| {
+            PeerFailure::Replay {
                 commit: held.ids.len(),
                 source,
-            })?;
+            }
+        })?),
+        None => None,
+    };
+    if let Some(tip) = tip {
         let request = PatchRequest {
             principal_id: &record.id,
             anchor: Some(&tip),
@@ -862,10 +918,7 @@ async fn reach<C: Connector>(
                 if patch.entries.is_empty() && patch.actions.is_empty() {
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
-                let next = held
-                    .extended(&patch.entries, &patch.actions, record.clock)
-                    .await?;
-                record.held = Some(next);
+                record.catch_up(&patch.entries, &patch.actions).await?;
                 return Ok((
                     PeerStanding::Extended {
                         added: patch.entries.len(),
