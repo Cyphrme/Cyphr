@@ -193,7 +193,14 @@ impl Model {
             // The key's own device signs the revoke, then the owner's
             // `key/delete` commit retires it (SPEC 6.4).
             Op::NakedRevoke { p, d } => {
+                let peers_down = self.down.clone();
                 let pm = self.principal(op, *p, *d)?;
+                // The CLI sends the revoke to every peer it knows for the
+                // principal, which after publication is every holder; one
+                // stopped holder makes the whole send fail.
+                if pm.holders.iter().any(|h| peers_down.contains(h)) {
+                    return Err(format!("`{op}`: every holder must be running"));
+                }
                 if pm.backups.front() != Some(d) {
                     return Err(format!("`{op}`: device {d} does not hold the oldest backup"));
                 }

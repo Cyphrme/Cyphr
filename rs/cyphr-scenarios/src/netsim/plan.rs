@@ -491,6 +491,14 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 && model.principals[p].devices == 2
                 && model.principals[p].holders.len() >= 2
         };
+        // A naked revoke reaches every holder, so none may be stopped.
+        let revocable = |p: usize| {
+            !model.principals[p].backups.is_empty()
+                && !model.principals[p]
+                    .holders
+                    .iter()
+                    .any(|h| model.down.contains(h))
+        };
         let enabled: Vec<Kind> = KINDS
             .into_iter()
             .filter(|k| match k {
@@ -500,7 +508,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                     .any(|&p| model.principals[p].devices < MAX_DEVICES),
                 Kind::DelKey => live.iter().any(|&p| !model.principals[p].backups.is_empty()),
                 Kind::Concurrent => live.iter().any(|&p| model.principals[p].devices == 2),
-                Kind::NakedRevoke => live.iter().any(|&p| !model.principals[p].backups.is_empty()),
+                Kind::NakedRevoke => live.iter().any(|&p| revocable(p)),
                 Kind::Fork | Kind::Theft => live.iter().any(|&p| episodic(p)),
                 Kind::Backup => {
                     model.backed_up.is_none() && model.down.len() < size.peers
@@ -565,8 +573,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 Op::Concurrent { p }
             },
             Kind::NakedRevoke => {
-                let p = pick(&mut rng, &|p| !model.principals[p].backups.is_empty())
-                    .expect("enabled implies one");
+                let p = pick(&mut rng, &revocable).expect("enabled implies one");
                 let d = *model.principals[p]
                     .backups
                     .front()
