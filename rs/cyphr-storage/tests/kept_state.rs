@@ -319,6 +319,9 @@ enum Op {
     /// A data action by `ACTORS[k]` dated `offset` seconds after this op's
     /// time: ahead of the chain, so a later commit can void it.
     Act(usize, i64),
+    /// A rival of the chain's second commit: a fork that puts the
+    /// principal in Error (SPEC 15.5) until a commit extends the head.
+    Rival,
 }
 
 const TOGGLED: [&str; 3] = ["key_b", "alice", "bob"];
@@ -334,6 +337,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
             1 => Just(Op::Damage),
             1 => (0..REVOKED.len()).prop_map(Op::Revoke),
             3 => (0..ACTORS.len(), 1..80i64).prop_map(|(k, off)| Op::Act(k, off)),
+            1 => Just(Op::Rival),
         ],
         1..9,
     )
@@ -357,6 +361,18 @@ async fn run(ops: Vec<Op>) {
     for e in [&kept, &cold] {
         w.submit(e, &w.last()).await.expect("genesis commit");
     }
+    let mut rival = w.shadow.fork().await.expect("fork");
+    let key = kp("alice");
+    assert!(
+        try_apply(
+            &mut rival,
+            &w.golden,
+            pay("key/create", &w.golden, Some(&key), NOW + 1),
+            Some(key_of(&key)),
+            NOW + 1
+        )
+        .await
+    );
     for (i, op) in ops.into_iter().enumerate() {
         let now = NOW + 10 * (i as i64 + 1);
         let (bundle, next) = match op {
@@ -365,6 +381,8 @@ async fn run(ops: Vec<Op>) {
                 None => continue,
             },
             Op::ReplayLast => (w.last(), None),
+            Op::Rival if w.shadow.commits().count() < 2 => continue,
+            Op::Rival => (bundle_at(&rival, 1), None),
             Op::Act(k, off) => (
                 WireBundle::actions(vec![action_blob(&kp(ACTORS[k]), now + off)]),
                 None,
@@ -632,4 +650,52 @@ async fn an_action_in_a_commit_bundle_gets_the_verdict_it_would_alone() {
         assert_eq!(kept.action_count(), 0, "the kept state");
     }
     assert_eq!(e.kept_divergences(), 0);
+}
+
+/// I1: a bundle refused while the principal is in Error (SPEC 15.5) stores
+/// nothing and leaves the kept state as it was, its actions included. Red
+/// when the refused actions stayed held on the kept state: once the
+/// principal left Error, a re-push of them read as already held, stored
+/// nothing, and the engine answered Ok with the action lost.
+#[tokio::test]
+async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
+    let (e, _dir) = engine(8, false);
+    let mut w = World::new().await;
+    w.submit(&e, &w.last()).await.expect("genesis commit");
+    let base = w.shadow.fork().await.expect("fork");
+    let (next, bundle) = w.toggle("key_b", NOW + 10).await.expect("toggle");
+    w.submit(&e, &bundle).await.expect("commit 1");
+    w.adopt(next);
+    let mut rival = base;
+    assert!(
+        try_apply(
+            &mut rival,
+            &w.golden,
+            pay("key/create", &w.golden, Some(&kp("alice")), NOW + 11),
+            Some(key_of(&kp("alice"))),
+            NOW + 11
+        )
+        .await
+    );
+    assert!(w.submit(&e, &bundle_at(&rival, 1)).await.is_err());
+    let action = WireBundle::actions(vec![action_blob(&kp("key_a"), NOW + 100)]);
+    assert!(
+        w.submit(&e, &action).await.is_err(),
+        "refused while in Error"
+    );
+    let (next, bundle) = w.toggle("bob", NOW + 20).await.expect("toggle");
+    w.submit(&e, &bundle)
+        .await
+        .expect("extends the canonical head");
+    w.adopt(next);
+    w.submit(&e, &action).await.expect("accepted");
+    let cold = e
+        .load_principal(&w.id, w.genesis.clone())
+        .await
+        .expect("replay");
+    assert_eq!(
+        cold.action_count(),
+        1,
+        "the accepted action is in the store"
+    );
 }

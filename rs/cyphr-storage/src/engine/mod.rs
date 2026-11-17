@@ -3655,8 +3655,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             .collect()
                     } else {
                         changed = true;
-                        self.store_actions(principal_id, &bundle.actions, &embedded)
-                            .await?
+                        let hashes = self
+                            .store_actions(principal_id, &bundle.actions, &embedded)
+                            .await?;
+                        // Held on the state only once stored, so no refusal
+                        // before this point leaves it holding an action the
+                        // store does not.
+                        cyphr::replay::replay_bundle(&mut principal, &decode_bundle(bundle)?)
+                            .await
+                            .map_err(|e| EngineError::Protocol(e.source))?;
+                        hashes
                     };
                     // Built from the tip read before any write: once the blobs are
                     // durable this response cannot fail (an error would report a
@@ -4165,7 +4173,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .await
             .map_err(|e| EngineError::Protocol(e.source))?;
         let principal = match &staged {
-            cyphr::replay::StagedBundle::Actions(_) => None,
+            cyphr::replay::StagedBundle::Actions { .. } => None,
             cyphr::replay::StagedBundle::Commit { staged, .. } => Some(staged.state()),
         };
         let digest_info = match principal {

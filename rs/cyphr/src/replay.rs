@@ -575,9 +575,16 @@ pub struct ReplayError {
 /// it in the blob store first, its source of truth).
 #[must_use = "a staged bundle that forms a commit writes nothing until .commit() is awaited"]
 pub enum StagedBundle<'a, S: eml::Storage> {
-    /// A bundle with no transaction: its actions are recorded on the
-    /// principal already, in memory, and there is nothing to write.
-    Actions(BundleId),
+    /// A bundle with no transaction: its actions are verified and held by
+    /// [`StagedBundle::commit`], in memory, and there is nothing to write.
+    Actions {
+        /// The principal that will hold the actions.
+        principal: &'a mut Principal<S>,
+        /// The verified actions, not yet held.
+        prepared: Vec<crate::action::Action>,
+        /// The identity the bundle has.
+        id: BundleId,
+    },
     /// A bundle that forms a commit, staged: every coz is verified.
     Commit {
         /// The staged commit (boxed: it carries the principal's whole
@@ -597,7 +604,7 @@ impl<S: eml::Storage> StagedBundle<'_, S> {
     /// construction).
     pub fn id(&self) -> Result<BundleId, ReplayError> {
         match self {
-            Self::Actions(id) => Ok(id.clone()),
+            Self::Actions { id, .. } => Ok(id.clone()),
             Self::Commit { staged, czds } => {
                 let state = staged.state();
                 let commit = state.commits().last().ok_or(ReplayError {
@@ -622,6 +629,15 @@ impl<S: eml::Storage> StagedBundle<'_, S> {
     /// principal is then as it was before the commit.
     pub async fn commit(self) -> Result<BundleId, ReplayError> {
         let id = self.id()?;
+        if let Self::Actions {
+            principal,
+            prepared,
+            ..
+        } = self
+        {
+            principal.hold_actions(prepared);
+            return Ok(id);
+        }
         if let Self::Commit { staged, .. } = self {
             staged
                 .commit()
@@ -639,9 +655,9 @@ impl<S: eml::Storage> StagedBundle<'_, S> {
 /// leaves no log leaf. Its actions are admitted only if their signers
 /// authorize them (SPEC 6.5).
 ///
-/// A refused bundle leaves `principal` as it was: its actions are held
-/// only together with the commit, or, for a bundle with no transaction,
-/// only when every one of them verifies.
+/// Nothing is held on `principal` until [`StagedBundle::commit`]: a
+/// refused or dropped stage leaves it as it was, whichever refusal comes
+/// between the stage and the commit.
 ///
 /// # Errors
 ///
@@ -680,12 +696,16 @@ async fn stage<'a, S: eml::Storage>(
                 .map_err(at(i))?;
             prepared.extend(action);
         }
-        principal.hold_actions(prepared);
-        return Ok(StagedBundle::Actions(BundleId {
+        let id = BundleId {
             czds,
             tr: None,
             pr: principal.pr().clone(),
-        }));
+        };
+        return Ok(StagedBundle::Actions {
+            principal,
+            prepared,
+            id,
+        });
     }
 
     let mut scope = principal.begin_commit();
