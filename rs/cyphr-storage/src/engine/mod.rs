@@ -1072,6 +1072,9 @@ impl KeptStates {
 /// principal's next write replays, as every write once did.
 const DEFAULT_KEPT_CAPACITY: usize = 128;
 
+/// Derived-roots entries an engine memoizes by commit.
+const ROOTS_MEMO_CAPACITY: usize = 1024;
+
 // Compile-time proof that the engine's write path is `Send` for every
 // backend, so the server's multi-threaded runtime can drive it over the
 // durable store: a `!Send` value held across one of its awaits fails here.
@@ -1181,6 +1184,10 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     kept_divergences: std::sync::atomic::AtomicU64,
     /// Stored commits replayed by [`Self::replay_onto`], ever.
     commits_replayed: std::sync::atomic::AtomicU64,
+    /// The four roots at each commit this engine admitted or derived,
+    /// by principal id and commit id: a commit's roots depend on its
+    /// history alone, so an entry is exact for the commit that names it.
+    roots_at: BoundedCache<(String, String), DerivedRoots>,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -1221,6 +1228,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             kept_misses: std::sync::atomic::AtomicU64::new(0),
             kept_divergences: std::sync::atomic::AtomicU64::new(0),
             commits_replayed: std::sync::atomic::AtomicU64::new(0),
+            roots_at: BoundedCache::new(ROOTS_MEMO_CAPACITY),
         }
     }
 
@@ -1673,31 +1681,63 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<DerivedRoots, EngineError> {
         self.ensure_healed().await?;
         let principal = self.load_principal(principal_id, genesis).await?;
+        roots_of(&principal)
+    }
 
-        let pr = format_multihash_all(principal.pr().as_multihash())?
-            .into_iter()
-            .next()
-            .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
-
-        // SR and AR are absent for a Dead principal (SPEC 3.7: an empty
-        // component is omitted).
-        let sr = format_multihash_opt(principal.sr().map(|s| s.as_multihash()))?
-            .into_iter()
-            .next();
-
-        let ar = format_multihash_opt(principal.auth_root().map(|a| a.as_multihash()))?
-            .into_iter()
-            .next();
-
-        let cr = match principal.cr() {
-            Some(cr_obj) => format_multihash_all(cr_obj.as_multihash())?
-                .into_iter()
-                .next()
-                .unwrap_or_default(),
-            None => String::new(),
+    /// The roots `tip` names, derived from the stored commits up to and
+    /// including that commit alone, never from the principal's current
+    /// chain: a commit landing after `tip` was read changes nothing here,
+    /// so what comes back is a statement about the commit `tip` names
+    /// whatever the principal does meanwhile. `None` if the chain no longer
+    /// has that commit at that position (a fork resolved under the read).
+    ///
+    /// Memoized by (principal, commit): a commit this engine admitted is
+    /// already there, so for the tip of a live principal this is a lookup;
+    /// otherwise (after a restart, or a commit another path stored) it is
+    /// one replay of the history up to the commit, onto a private log.
+    ///
+    /// `genesis` for a principal whose genesis its blobs cannot express
+    /// (the server's own); `None` reads it from the stored chain.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load_principal`].
+    #[tracing::instrument(skip(self, genesis))]
+    pub async fn derive_roots_at(
+        &self,
+        tip: &TipState,
+        genesis: Option<crate::Genesis>,
+    ) -> Result<Option<DerivedRoots>, EngineError> {
+        self.ensure_healed().await?;
+        let key = (tip.principal_id.clone(), tip.commit_id.clone());
+        if let Some(hit) = self.roots_at.get(&key) {
+            return Ok(Some(hit));
+        }
+        let genesis = match genesis {
+            Some(genesis) => genesis,
+            None => self.resolve_genesis(&tip.principal_id, &[]).await?,
         };
-
-        Ok(DerivedRoots { pr, sr, ar, cr })
+        let principal = self
+            .replay_onto(
+                &tip.principal_id,
+                genesis,
+                cyphr::eml::MemoryStorage::new(),
+                Some(tip.commit_count),
+            )
+            .await?;
+        let ends_at_tip = match principal.commits().last() {
+            Some(commit) => {
+                principal.commits().count() as u64 == tip.commit_count
+                    && format_multihash_all(&commit.tr().0)?.first() == Some(&tip.commit_id)
+            },
+            None => false,
+        };
+        if !ends_at_tip {
+            return Ok(None);
+        }
+        let roots = roots_of(&principal)?;
+        self.roots_at.insert(key, roots.clone());
+        Ok(Some(roots))
     }
 
     // ========================================================================
@@ -1896,10 +1936,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             );
         }
 
+        // The roots of a commit this process just verified, by the commit
+        // that names them, before the index can show the commit to a reader.
+        let admitted = CommittedTip::of(&commit);
+        self.roots_at.insert(
+            (commit.principal_id.clone(), admitted.commit_id),
+            DerivedRoots {
+                pr: admitted.pr,
+                sr: admitted.sr,
+                ar: admitted.ar,
+                cr: admitted.cr,
+            },
+        );
+        // The manifest is stored, so its frame is known before the index
+        // shows the commit: a reader that finds the commit in the index
+        // must find its frame, or it refuses the index as inconsistent.
+        self.record_frame(&commit, &Shape::of(bundle), seen, embedded);
         self.indexer
             .index_commit(&commit, &DeriveToken::new())
             .await?;
-        self.record_frame(&commit, &Shape::of(bundle), seen, embedded);
         // A commit refused while the principal was in Error and kept as
         // evidence is now canonical: it is listed once, as the chain.
         if let Some(id) = commit.commit_ids.first()
@@ -5876,6 +5931,36 @@ fn note_revokes<T: cyphr::eml::Storage>(principal: &mut cyphr::Principal<T>, rev
             principal.note_naked_revoke(&coz::Thumbprint::from_bytes(bytes), death.wrt);
         }
     }
+}
+
+/// The four roots of `principal`'s state.
+fn roots_of<T: cyphr::eml::Storage>(
+    principal: &cyphr::Principal<T>,
+) -> Result<DerivedRoots, EngineError> {
+    let pr = format_multihash_all(principal.pr().as_multihash())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
+
+    // SR and AR are absent for a Dead principal (SPEC 3.7: an empty
+    // component is omitted).
+    let sr = format_multihash_opt(principal.sr().map(|s| s.as_multihash()))?
+        .into_iter()
+        .next();
+
+    let ar = format_multihash_opt(principal.auth_root().map(|a| a.as_multihash()))?
+        .into_iter()
+        .next();
+
+    let cr = match principal.cr() {
+        Some(cr_obj) => format_multihash_all(cr_obj.as_multihash())?
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+
+    Ok(DerivedRoots { pr, sr, ar, cr })
 }
 
 /// The czds of an action-only bundle's actions.

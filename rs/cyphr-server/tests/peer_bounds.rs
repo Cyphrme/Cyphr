@@ -21,7 +21,6 @@ use clap::Parser;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::{AdmissionConfig, Cli, ConfigError, ServerConfig, ServerMode};
 use cyphr_server::{AppState, build_app_router, build_router};
-use tracing_subscriber::layer::{Context, SubscriberExt};
 
 mod common;
 
@@ -204,66 +203,19 @@ async fn well_formed_unknown_pr_still_syncs_once_per_request() {
 // Keyed /tip: an unchanged pre-PG tip must not replay history per GET
 // ========================================================================
 
-/// Counts `load_principal` spans created on a registered thread.
-///
-/// Installed ONCE as the process-global subscriber and keyed by thread. A
-/// per-thread `set_default` subscriber raced with the other tests in this
-/// binary: a `load_principal` callsite first hit by a thread with no
-/// subscriber had its (disabled) interest cached, so the counting thread
-/// intermittently saw zero spans (about 1 run in 10, tripping the control
-/// assertion below). A global subscriber leaves no interest to race on.
-struct ReplayCounter;
-
-type Counters =
-    std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, Arc<AtomicUsize>>>;
-
-fn counters() -> &'static Counters {
-    static COUNTERS: std::sync::OnceLock<Counters> = std::sync::OnceLock::new();
-    COUNTERS.get_or_init(Default::default)
-}
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReplayCounter {
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        _id: &tracing::span::Id,
-        _ctx: Context<'_, S>,
-    ) {
-        if attrs.metadata().name() != "load_principal" {
-            return;
-        }
-        let map = counters().lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(count) = map.get(&std::thread::current().id()) {
-            count.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-}
-
-/// Count this thread's `load_principal` spans from now on (current-thread
-/// runtime: every engine span is created here).
-fn counting_replays() -> (Arc<AtomicUsize>, ()) {
-    static INSTALL: std::sync::Once = std::sync::Once::new();
-    INSTALL.call_once(|| {
-        let sub = tracing_subscriber::registry().with(ReplayCounter);
-        tracing::subscriber::set_global_default(sub).expect("no other global subscriber");
-    });
-    let count = Arc::new(AtomicUsize::new(0));
-    counters()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(std::thread::current().id(), count.clone());
-    (count, ())
-}
-
-/// Claim: repeated unauthenticated reads cannot trigger unbounded work.
-/// Red if ten GETs of an UNCHANGED keyed pre-PG tip replay history ten more
-/// times. Lying impl it catches: nothing cached (base). Pairs with the
-/// invalidation test below, which catches a cache that never invalidates.
-/// E2E: HTTP reads, counted engine replays.
+/// Claim: repeated unauthenticated reads cannot trigger unbounded work, and
+/// a read of the tip the server itself admitted costs no replay at all: the
+/// engine holds the roots of every commit it admitted, by the commit that
+/// names them (U3). Red if a GET of an UNCHANGED keyed tip replays any
+/// stored commit. Lying impl it catches: roots re-derived from the whole
+/// chain on each read (base: the first read replayed, and so did every one
+/// that missed a cache keyed by the request). The control is the engine's
+/// own cold derivation, which the same counter must see. E2E: HTTP reads,
+/// counted engine replays.
 #[tokio::test]
 async fn repeated_tip_get_does_not_replay_history() {
     let (state, _identity, _dir) = attestor_server().await;
-    let app = build_router(state);
+    let app = build_router(state.clone());
     let pool = load_pool();
     let pid = golden_principal_id(&pool).await;
     let (s, b) = post_json(
@@ -274,24 +226,22 @@ async fn repeated_tip_get_does_not_replay_history() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{b:?}");
 
-    let (replays, _guard) = counting_replays();
     let uri = format!("/tip?pr={pid}");
-    let (s, _) = get_json(app.clone(), &uri).await; // warm the cache, if any
-    assert_eq!(s, StatusCode::OK);
-    assert!(
-        replays.load(Ordering::SeqCst) >= 1,
-        "control: a first read replays"
-    );
-
-    let before = replays.load(Ordering::SeqCst);
+    let before = state.engine.commits_replayed();
     for _ in 0..10 {
         let (s, _) = get_json(app.clone(), &uri).await;
         assert_eq!(s, StatusCode::OK);
     }
-    let extra = replays.load(Ordering::SeqCst) - before;
+    let extra = state.engine.commits_replayed() - before;
     assert_eq!(
         extra, 0,
-        "10 unchanged reads replayed history {extra} more times"
+        "10 unchanged reads replayed {extra} stored commits"
+    );
+
+    state.engine.rederive_roots(&pid).await.expect("rederive");
+    assert!(
+        state.engine.commits_replayed() > before,
+        "control: the counter sees a cold derivation"
     );
 }
 

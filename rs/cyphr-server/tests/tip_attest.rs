@@ -1,12 +1,15 @@
 //! A read of `GET /tip` while the principal's chain is growing is answered
-//! with a signed attestation of a tip the server actually derived, never a
-//! 500 (NETSIM-2 D2).
+//! with a signed attestation of the commit it names, never a 500
+//! (NETSIM-2 D2; U3).
 //!
 //! The write path makes a commit durable (manifest) before it indexes it,
-//! and the attestation replays the blob store while comparing against the
-//! index, so a read racing a push sees the two disagree without any
-//! corruption. End to end through the router: the unit that fails is the
-//! `attestation root desynchronized with index` 500.
+//! so a read racing a push can see the blob store ahead of the index
+//! without any corruption. The attestation derives the roots of the commit
+//! the tip names (the engine knows them from admitting it, or replays up to
+//! that commit alone), so there is nothing to wait out and no retry budget:
+//! every read is a 200 whose roots are those the push of that commit
+//! answered. End to end through the router: the unit that fails is the
+//! `attestation roots disagree` 500.
 
 use axum::http::StatusCode;
 use cyphr_server::build_router;
@@ -16,7 +19,7 @@ mod common;
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
 const GENESIS_NOW: i64 = 1_700_000_000;
-const COMMITS: usize = 15;
+const COMMITS: usize = 30;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tip_read_during_pushes_never_500s() {
@@ -63,35 +66,60 @@ async fn tip_read_during_pushes_never_500s() {
     }
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let readers: Vec<_> = (0..1)
+    let readers: Vec<_> = (0..3)
         .map(|_| {
             let (app, id, stop) = (app.clone(), id.clone(), stop.clone());
             tokio::spawn(async move {
                 let mut bad = Vec::new();
-                let mut reads = 0usize;
+                let mut seen = Vec::new();
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     let (status, body) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
-                    reads += 1;
                     if status != StatusCode::OK {
                         bad.push((status, body));
+                        continue;
                     }
+                    let payload = &body["payload"];
+                    seen.push((
+                        payload["commit_id"].as_str().expect("commit_id").to_owned(),
+                        payload["pr"].as_str().expect("pr").to_owned(),
+                    ));
                 }
-                (reads, bad)
+                (seen, bad)
             })
         })
         .collect();
 
+    // The roots each push answered, by the commit it admitted.
+    let mut admitted = std::collections::HashMap::new();
+    let (_, genesis) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+    let genesis = &genesis["payload"];
+    admitted.insert(
+        genesis["commit_id"].as_str().expect("commit_id").to_owned(),
+        genesis["pr"].as_str().expect("pr").to_owned(),
+    );
     for body in bodies {
         let (status, res) = post_json(app.clone(), "/push", body).await;
         assert!(status.is_success(), "push: {status} {res:?}");
+        let pushed = &res["payload"];
+        admitted.insert(
+            pushed["commit_id"].as_str().expect("commit_id").to_owned(),
+            pushed["roots"]["pr"].as_str().expect("pr").to_owned(),
+        );
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let mut reads = 0;
     for r in readers {
-        let (n, bad) = r.await.expect("reader");
-        reads += n;
+        let (seen, bad) = r.await.expect("reader");
         assert!(bad.is_empty(), "GET /tip during pushes: {bad:?}");
+        for (commit_id, pr) in &seen {
+            assert_eq!(
+                admitted.get(commit_id),
+                Some(pr),
+                "a tip read named commit {commit_id} with roots its push did not answer"
+            );
+        }
+        reads += seen.len();
     }
     assert!(reads > 0);
 
