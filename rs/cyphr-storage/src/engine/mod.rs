@@ -1127,6 +1127,14 @@ pub(crate) struct StagedBuild<'p, T: cyphr::eml::Storage> {
     embedded: Vec<EmbeddedPin>,
 }
 
+/// What a verified bundle forms ([`StorageEngine::build_staged`]).
+pub(crate) enum Built<'p, T: cyphr::eml::Storage> {
+    /// A commit, its log append not yet made.
+    Commit(StagedBuild<'p, T>),
+    /// Actions alone, verified and not yet held.
+    Actions(cyphr::replay::StagedBundle<'p, T>),
+}
+
 /// Coordinated storage engine joining blob and index layers.
 ///
 /// Generic over backend implementations. Use `MemoryBlobStore` +
@@ -3617,23 +3625,28 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .follow_held(principal_id, &mut principal, bundle, &mut HeldCache::new())
                 .await?;
             changed |= !embedded.is_empty();
-            let mut build = match Self::build_commit(&mut principal, bundle, principal_id, next_seq)
-                .await
+            let mut build = match Self::build_staged(
+                &mut principal,
+                bundle,
+                principal_id,
+                next_seq,
+            )
+            .await
             {
-                Ok(Some(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit)) => {
+                Ok(Built::Commit(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit)) => {
                     // Refused, and kept as evidence: it verifies on the chain.
                     self.keep_evidence(bundle, build.commit, &embedded).await;
                     return Err(EngineError::Errored {
                         principal_id: principal_id.to_string(),
                     });
                 },
-                Ok(Some(build)) => build,
-                Ok(None) if errored.is_some() => {
+                Ok(Built::Commit(build)) => build,
+                Ok(Built::Actions(_)) if errored.is_some() => {
                     return Err(EngineError::Errored {
                         principal_id: principal_id.to_string(),
                     });
                 },
-                Ok(None) => {
+                Ok(Built::Actions(staged)) => {
                     // An action is included only by a commit of its principal,
                     // and a principal's commits start at its genesis commit
                     // (be0663f 2.3.2): actions pushed ahead of it would be
@@ -3660,8 +3673,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                             .await?;
                         // Held on the state only once stored, so no refusal
                         // before this point leaves it holding an action the
-                        // store does not.
-                        cyphr::replay::replay_bundle(&mut principal, &decode_bundle(bundle)?)
+                        // store does not. Verified when staged, so holding
+                        // them checks nothing again, and holding actions in
+                        // memory has no failure path: this `?` is the Commit
+                        // variant's, which this one never takes.
+                        staged
+                            .commit()
                             .await
                             .map_err(|e| EngineError::Protocol(e.source))?;
                         hashes
@@ -4142,6 +4159,23 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         next_seq: u64,
     ) -> Result<Option<StagedBuild<'p, T>>, EngineError> {
+        Ok(
+            match Self::build_staged(principal, bundle, principal_id, next_seq).await? {
+                Built::Commit(build) => Some(build),
+                Built::Actions(_) => None,
+            },
+        )
+    }
+
+    /// [`Self::build_commit`], keeping the stage of an action-only bundle
+    /// for the caller that holds its actions once stored, so they are
+    /// verified once.
+    async fn build_staged<'p, T: cyphr::eml::Storage>(
+        principal: &'p mut cyphr::Principal<T>,
+        bundle: &WireBundle,
+        principal_id: &str,
+        next_seq: u64,
+    ) -> Result<Built<'p, T>, EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let active_algs = principal.active_algs().to_vec();
@@ -4172,84 +4206,74 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let staged = cyphr::replay::stage_bundle(principal, &decoded)
             .await
             .map_err(|e| EngineError::Protocol(e.source))?;
-        let principal = match &staged {
-            cyphr::replay::StagedBundle::Actions { .. } => None,
-            cyphr::replay::StagedBundle::Commit { staged, .. } => Some(staged.state()),
+        let cyphr::replay::StagedBundle::Commit { staged: stage, .. } = &staged else {
+            return Ok(Built::Actions(staged));
         };
-        let digest_info = match principal {
-            None => None,
-            Some(principal) => {
-                let commit = principal
-                    .commits()
-                    .last()
-                    .ok_or(EngineError::Protocol(cyphr::Error::MissingCommit))?;
-                let commit_ids = format_multihash_all(&commit.tr().0)?;
-                let ar = format_multihash_opt(commit.auth_root().map(|a| a.as_multihash()))?;
-                let sr = format_multihash_opt(commit.sr().map(|s| s.as_multihash()))?;
-                let pr = format_multihash_all(commit.pr().as_multihash())?;
-                let cr = principal
-                    .cr()
-                    .map(|c| format_multihash_all(c.as_multihash()))
-                    .transpose()?
-                    .unwrap_or_default();
-                Some((commit_ids, ar, sr, pr, cr))
-            },
+        let principal = stage.state();
+        let commit = principal
+            .commits()
+            .last()
+            .ok_or(EngineError::Protocol(cyphr::Error::MissingCommit))?;
+        let commit_ids = format_multihash_all(&commit.tr().0)?;
+        let ar = format_multihash_opt(commit.auth_root().map(|a| a.as_multihash()))?;
+        let sr = format_multihash_opt(commit.sr().map(|s| s.as_multihash()))?;
+        let pr = format_multihash_all(commit.pr().as_multihash())?;
+        let cr = principal
+            .cr()
+            .map(|c| format_multihash_all(c.as_multihash()))
+            .transpose()?
+            .unwrap_or_default();
+
+        let pg = match principal.pg() {
+            Some(pg) if !had_pg => format_multihash_all(pg.as_multihash())?,
+            _ => Vec::new(),
         };
 
-        if let (Some((commit_ids, ar, sr, pr, cr)), Some(principal)) = (digest_info, principal) {
-            let pg = match principal.pg() {
-                Some(pg) if !had_pg => format_multihash_all(pg.as_multihash())?,
-                _ => Vec::new(),
-            };
+        let mut indexed = Vec::with_capacity(cozies.len());
+        for coz in cozies {
+            let source_alg = coz.hash_alg();
+            let tagged = cyphr::state::TaggedCzd::new(coz.czd(), source_alg);
 
-            let mut indexed = Vec::with_capacity(cozies.len());
-            for coz in cozies {
-                let source_alg = coz.hash_alg();
-                let tagged = cyphr::state::TaggedCzd::new(coz.czd(), source_alg);
+            let post_active_algs = active_algs.clone();
+            let primary_alg = post_active_algs.first().copied().unwrap_or(source_alg);
+            let converted = tagged.convert_to(primary_alg);
+            let primary_czd = format!(
+                "{primary_alg}:{}",
+                Base64UrlUnpadded::encode_string(&converted)
+            );
 
-                let post_active_algs = active_algs.clone();
-                let primary_alg = post_active_algs.first().copied().unwrap_or(source_alg);
-                let converted = tagged.convert_to(primary_alg);
-                let primary_czd = format!(
-                    "{primary_alg}:{}",
-                    Base64UrlUnpadded::encode_string(&converted)
-                );
-
-                indexed.push(IndexableCoz {
-                    blob_hash: Blake3Hash::from_bytes([0; 32]), // filled in by ingest_commit
-                    czd: primary_czd,
-                    typ: coz.header().typ.clone(),
-                    tmb: coz.header().tmb.to_b64(),
-                    alg: coz.alg().to_string(),
-                    now: coz.header().now,
-                    payload: serde_json::to_string(coz.pay()).ok(),
-                });
-            }
-
-            let commit = IndexableCommit {
-                principal_id: principal_id.to_string(),
-                commit_ids,
-                sequence: next_seq,
-                pre: commit_pre,
-                prs: pr,
-                srs: sr,
-                ars: ar,
-                crs: cr,
-                blob_hashes: Vec::new(), // filled in by ingest_commit
-                cozies: indexed,
-                timestamp: last_timestamp,
-                keys: extracted_keys,
-                pg,
-            };
-
-            Ok(Some(StagedBuild {
-                commit,
-                staged,
-                embedded: Vec::new(),
-            }))
-        } else {
-            Ok(None)
+            indexed.push(IndexableCoz {
+                blob_hash: Blake3Hash::from_bytes([0; 32]), // filled in by ingest_commit
+                czd: primary_czd,
+                typ: coz.header().typ.clone(),
+                tmb: coz.header().tmb.to_b64(),
+                alg: coz.alg().to_string(),
+                now: coz.header().now,
+                payload: serde_json::to_string(coz.pay()).ok(),
+            });
         }
+
+        let commit = IndexableCommit {
+            principal_id: principal_id.to_string(),
+            commit_ids,
+            sequence: next_seq,
+            pre: commit_pre,
+            prs: pr,
+            srs: sr,
+            ars: ar,
+            crs: cr,
+            blob_hashes: Vec::new(), // filled in by ingest_commit
+            cozies: indexed,
+            timestamp: last_timestamp,
+            keys: extracted_keys,
+            pg,
+        };
+
+        Ok(Built::Commit(StagedBuild {
+            commit,
+            staged,
+            embedded: Vec::new(),
+        }))
     }
 
     /// Retain a refused bundle as a non-canonical branch if it is a fork:
