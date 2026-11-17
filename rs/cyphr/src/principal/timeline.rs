@@ -3,7 +3,7 @@
 //! verifier holds, with the spans the principal was frozen and the time it
 //! was deleted, so a data action is judged at its own `now`.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use coz::Thumbprint;
 use indexmap::IndexMap;
@@ -15,12 +15,18 @@ use crate::key::Key;
 /// period opens at the commit that leaves the key in KT and closes at the
 /// commit that takes it out, each dated by the commit's `now`, or at a
 /// naked revoke's cutoff (SPEC 6.4).
+///
+/// The periods are those of the commits alone, and a naked revoke is held
+/// beside them and applied when a period is read. So the timeline is the
+/// same whether a revoke arrived before a later commit (a live
+/// principal) or after every commit (a replay), and a state kept past a
+/// revoke equals the replay of its history.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct KeyTimeline {
     periods: Vec<Period>,
     /// Naked revokes by key: each takes effect from the cutoff it was
     /// noted with.
-    revoked_from: HashMap<String, i64>,
+    revoked_from: BTreeMap<String, i64>,
     /// The spans the principal was frozen (SPEC 14.9), by commit `now`.
     frozen: Vec<(i64, Option<i64>)>,
     /// The `now` of the commit that deleted the principal (SPEC 11.4).
@@ -38,8 +44,8 @@ struct Period {
 impl KeyTimeline {
     /// Record a commit dated `now` that leaves `active` in KT and `revoked`
     /// revoked: close the open period of every key it removed, open one
-    /// for every key it added. A key a naked revoke already took out opens
-    /// no authority past that revoke.
+    /// for every key it added. Naked revokes are not applied here: see the
+    /// type's docs.
     pub(crate) fn record_commit(
         &mut self,
         active: &IndexMap<String, Key>,
@@ -62,14 +68,13 @@ impl KeyTimeline {
                 p.revoked = revoked.contains_key(&tmb);
             }
         }
-        for (tmb, key) in active {
+        for key in active.values() {
             if self.open(key.tmb()).is_none() {
-                let from_revoke = self.revoked_from.get(tmb).copied();
                 self.periods.push(Period {
                     key: key.clone(),
                     from: now,
-                    until: from_revoke.map(|r| r.max(now)),
-                    revoked: from_revoke.is_some(),
+                    until: None,
+                    revoked: false,
                 });
             }
         }
@@ -81,12 +86,14 @@ impl KeyTimeline {
     pub(crate) fn revoke(&mut self, tmb: &Thumbprint, cutoff: i64) {
         let at = self.revoked_from.entry(tmb.to_b64()).or_insert(cutoff);
         *at = (*at).min(cutoff);
-        let at = *at;
-        for p in self.periods.iter_mut().filter(|p| p.key.tmb() == tmb) {
-            if p.until.is_none_or(|u| u > at) {
-                p.until = Some(at.max(p.from));
-                p.revoked = true;
-            }
+    }
+
+    /// `p` as a naked revoke leaves it: ended at the revoke's cutoff, no
+    /// earlier than it began, if it would run past it.
+    fn effective(&self, p: &Period) -> (Option<i64>, bool) {
+        match self.revoked_from.get(&p.key.tmb().to_b64()) {
+            Some(&cutoff) if p.until.is_none_or(|u| u > cutoff) => (Some(cutoff.max(p.from)), true),
+            _ => (p.until, p.revoked),
         }
     }
 
@@ -109,10 +116,11 @@ impl KeyTimeline {
         periods.peek()?;
         let mut refusal = Error::UnknownKey;
         for p in periods {
-            if p.from <= now && p.until.is_none_or(|u| now < u) {
+            let (until, revoked) = self.effective(p);
+            if p.from <= now && until.is_none_or(|u| now < u) {
                 return Some(Ok(&p.key));
             }
-            if p.revoked && p.until.is_some_and(|u| u <= now) {
+            if revoked && until.is_some_and(|u| u <= now) {
                 refusal = Error::KeyRevoked;
             }
         }

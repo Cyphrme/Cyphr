@@ -93,4 +93,38 @@ impl<S: eml::Storage> Principal<S> {
         let log = open_commit_trees(storage).await?;
         Ok(Self { state, log })
     }
+
+    /// Resume the principal whose verified `state` is held, over the
+    /// durable `storage` that is its commit log: no commit is replayed.
+    ///
+    /// The state is the fold of every commit already verified, so a holder
+    /// that kept it applies only what arrives after it. The check that the log is the one the state
+    /// was folded from is constant-size: the log holds as many commits as the state
+    /// and its Commit Root is the state's.
+    ///
+    /// # Errors
+    ///
+    /// `Storage` if the log cannot be read, or is not that state's: it holds
+    /// another number of commits or another Commit Root.
+    pub async fn resume(state: PrincipalState, storage: S) -> Result<Self> {
+        let log = open_commit_trees(storage).await?;
+        let commits = state.commits().count() as u64;
+        let same = log.global_size() == commits
+            && match state.cr() {
+                None => commits == 0,
+                Some(cr) => {
+                    let algs: Vec<_> = cr.as_multihash().algorithms().collect();
+                    crate::commit_root::commit_root_from_trees(&log, &algs)
+                        .is_ok_and(|root| &root == cr)
+                },
+            };
+        if !same {
+            return Err(Error::Storage(format!(
+                "commit log of {} leaves does not match the state's {commits} commits and Commit \
+                 Root",
+                log.global_size()
+            )));
+        }
+        Ok(Self { state, log })
+    }
 }

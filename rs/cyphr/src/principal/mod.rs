@@ -19,7 +19,7 @@ mod proofs;
 mod tests;
 mod timeline;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use coz::Thumbprint;
 use indexmap::IndexMap;
@@ -179,7 +179,8 @@ pub struct PrincipalCore {
     /// principal has included (SPEC §7.6). Keyed on the whole digest, not a
     /// prefix: czd width follows the signing algorithm (ES384 = 48 bytes).
     /// Rebuilt by replaying history; there is no checkpoint restore.
-    pub(crate) included_czds: HashSet<Vec<u8>>,
+    /// Ordered, so two states that hold the same czds print the same.
+    pub(crate) included_czds: BTreeSet<Vec<u8>>,
     /// Nonces held at the PR, AT and KT levels (SPEC §10.1).
     pub(crate) nonces: NonceSets,
     /// Latest timestamp of the chain (SPEC §14.1): its commits' cozies.
@@ -416,7 +417,7 @@ impl PrincipalCore {
             },
             key_timeline: timeline::KeyTimeline::default(),
             data: DataLedger::default(),
-            included_czds: HashSet::new(),
+            included_czds: BTreeSet::new(),
             nonces: NonceSets::default(),
             latest_timestamp: 0,
             max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,

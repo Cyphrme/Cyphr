@@ -139,8 +139,11 @@ impl Key {
         self.first_seen = first_seen;
     }
 
+    /// Note a signature dated `last_used`. The latest wins, not the last
+    /// noted: a held action dated before a commit is replayed after it, and
+    /// the state must not depend on which order the two were seen in.
     pub(crate) fn set_last_used(&mut self, last_used: i64) {
-        self.last_used = Some(last_used);
+        self.last_used = Some(self.last_used.map_or(last_used, |u| u.max(last_used)));
     }
 
     pub(crate) fn set_revocation(&mut self, revocation: Revocation) {
