@@ -98,7 +98,11 @@ async fn a_forked_pair_fails_exactly_past_the_shared_prefix() {
             let agree = a.principal.commit_trees().root_at(alg, n).await
                 == b.principal.commit_trees().root_at(alg, n).await;
             let verdict = verify_extension(held, &ext);
-            assert_eq!(verdict.is_ok(), agree, "shared {shared}, held {n}: {verdict:?}");
+            assert_eq!(
+                verdict.is_ok(),
+                agree,
+                "shared {shared}, held {n}: {verdict:?}"
+            );
             if !agree {
                 assert_eq!(verdict, Err(ExtensionFailure::NotAnExtension));
             }

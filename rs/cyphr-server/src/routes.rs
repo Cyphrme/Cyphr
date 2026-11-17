@@ -484,6 +484,97 @@ pub async fn branches(
     Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
+/// Query parameters for `GET /consistency`.
+#[derive(Debug, Deserialize)]
+pub struct ConsistencyQuery {
+    /// Principal genesis identifier.
+    pub pr: String,
+    /// The size, in commits, of the log the asker holds. Raw string here,
+    /// parsed in the handler so a malformed value is refused with the
+    /// app's JSON error envelope, as `GET /patch`'s anchor is.
+    pub from: String,
+}
+
+/// `GET /consistency?pr=<PG>&from=<n>` -- the proof that the principal's
+/// commit log, as it stands, extends the log of its first `n` commits
+/// (SPEC 4.4).
+///
+/// The payload is `{principal_id, size, cr, proof}`: the log's size and
+/// Commit Root as of the answer, and the consistency proof from `n` to
+/// it. They are the server's claim, for the asker to check against the
+/// log it holds (`cyphr_client::verify_extension`) and, once the commits
+/// they cover replay, against what replayed; the server signs nothing
+/// here and the proof asks to be believed no further than it verifies.
+///
+/// `n` must be at least 1 and below the log's size: an asker that holds
+/// the whole log, or none of it, has nothing to ask. A principal in Error
+/// has no single log (SPEC 15.5) and is a 409, as is a commit landing
+/// between reading the tip and proving against it.
+#[tracing::instrument(skip(state))]
+pub async fn consistency(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ConsistencyQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    witness_sync(&state, &query.pr).await;
+
+    let from: u64 = query.from.parse().map_err(|_| {
+        AppError::bad_request(format!("from must be a commit count, got {:?}", query.from))
+    })?;
+    let t = state
+        .engine
+        .get_tip(&query.pr)
+        .await
+        .map_err(AppError::engine)?
+        .ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
+    if from == 0 || from >= t.commit_count {
+        return Err(AppError::bad_request(format!(
+            "from must be between 1 and {} (the log's size less one), got {from}",
+            t.commit_count.saturating_sub(1)
+        )));
+    }
+    if state
+        .engine
+        .error_state(&query.pr)
+        .await
+        .map_err(|e| AppError::internal(format!("fork state unreadable from the index: {e}")))?
+        .is_some()
+    {
+        return Err(AppError::conflict(format!(
+            "principal {} is in Error: it has no single log to prove against",
+            query.pr
+        )));
+    }
+
+    let genesis = match own_genesis(&state, &t.principal_id) {
+        Some(genesis) => genesis,
+        None => state
+            .engine
+            .resolve_genesis(&t.principal_id, &[])
+            .await
+            .map_err(AppError::engine)?,
+    };
+    let principal = state
+        .engine
+        .load_principal(&t.principal_id, genesis)
+        .await
+        .map_err(AppError::engine)?;
+    let extension = cyphr_client::Extension::of(&principal, from)
+        .await
+        .map_err(|e| AppError::internal(format!("consistency proof not made: {e}")))?;
+    if extension.size != t.commit_count {
+        return Err(AppError::conflict(format!(
+            "the log of {} moved from {} to {} commits: read the tip again",
+            t.principal_id, t.commit_count, extension.size
+        )));
+    }
+
+    let mut payload = extension.to_payload();
+    payload["principal_id"] = cyphr_storage::engine::bare_digest(&t.principal_id)
+        .to_string()
+        .into();
+    Ok(Json(Envelope::unsigned(payload)))
+}
+
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds
 /// evidence of, each item self-describing and checkable offline.
 ///
@@ -605,13 +696,7 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
 ///
 /// [`StorageEngine::derive_roots_at`]: cyphr_storage::engine::StorageEngine::derive_roots_at
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
-    // The server's own principal has an explicit genesis, which its blobs
-    // cannot express, so its genesis is supplied rather than read back.
-    let own_genesis = state
-        .principal
-        .as_ref()
-        .filter(|p| p.pg() == t.principal_id)
-        .map(|p| cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]));
+    let own_genesis = own_genesis(state, &t.principal_id);
     let derived = state
         .engine
         .derive_roots_at(t, own_genesis)
@@ -642,6 +727,17 @@ async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::
         // sentinel becomes the receipt's typed absence (#147).
         cr: absent_cr(&derived.cr),
     })
+}
+
+/// The server's own principal has an explicit genesis, which its blobs
+/// cannot express, so its genesis is supplied rather than read back;
+/// `None` for any other principal.
+fn own_genesis(state: &Arc<AppState>, principal_id: &str) -> Option<cyphr_storage::Genesis> {
+    state
+        .principal
+        .as_ref()
+        .filter(|p| p.pg() == principal_id)
+        .map(|p| cyphr_storage::Genesis::Disclosed(vec![p.genesis_key().clone()]))
 }
 
 /// Sign a tip-report attestation over an already-fetched tip state `t` --

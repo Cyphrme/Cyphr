@@ -190,7 +190,14 @@ async fn a_fork_is_refused_on_the_proof_with_no_commits_fetched() {
     let held = record.tip().expect("tip");
 
     let c = connector(&w);
-    let report = pull(&mut record, &[PullPeer { name: "b", connector: &c }]).await;
+    let report = pull(
+        &mut record,
+        &[PullPeer {
+            name: "b",
+            connector: &c,
+        }],
+    )
+    .await;
 
     assert!(
         matches!(only_standing(&report), PeerStanding::Diverged),
@@ -210,7 +217,14 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
     let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
 
     let c = connector(&w);
-    let report = pull(&mut record, &[PullPeer { name: "b", connector: &c }]).await;
+    let report = pull(
+        &mut record,
+        &[PullPeer {
+            name: "b",
+            connector: &c,
+        }],
+    )
+    .await;
 
     assert!(
         matches!(only_standing(&report), PeerStanding::Extended { added: 2 }),
@@ -223,19 +237,20 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
 }
 
 /// Backs: a lying proof fails closed. A flipped byte in the proof, and a
-/// root or size the peer states that the proof was not made over, are each
-/// a refusal with no commit fetched; a payload that is not the wire shape
-/// fails the peer, not the record.
+/// root the peer states that the proof was not made over, are each a
+/// refusal with no commit fetched; a payload that is not the wire shape
+/// fails the peer, not the record; and a size the proof cannot tell from
+/// the true one (a Commit Root does not commit to its size) is caught when
+/// the commits it covered replay, and fails the peer.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lying_proof_fails_closed() {
     let flip = |v: &mut serde_json::Value| {
-        let h = v["proof"]["boundary_hash"].as_str().expect("hash").to_owned();
+        let h = v["proof"]["boundary_hash"]
+            .as_str()
+            .expect("hash")
+            .to_owned();
         let first = if h.starts_with('A') { 'B' } else { 'A' };
         v["proof"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
-    };
-    let wrong_size = |v: &mut serde_json::Value| {
-        let size = v["size"].as_u64().expect("size");
-        v["size"] = (size + 1).into();
     };
     let wrong_root = |v: &mut serde_json::Value| {
         let cr = v["cr"].as_str().expect("cr").to_owned();
@@ -244,14 +259,20 @@ async fn a_lying_proof_fails_closed() {
     };
     for (what, lie) in [
         ("a flipped proof byte", flip as fn(&mut serde_json::Value)),
-        ("a stated size", wrong_size),
         ("a stated root", wrong_root),
     ] {
         let (w, bundles) = world(&["key_a", "carol", "key_b"]).await;
         let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
         let mut c = connector(&w);
         c.lie = Some(lie);
-        let report = pull(&mut record, &[PullPeer { name: "b", connector: &c }]).await;
+        let report = pull(
+            &mut record,
+            &[PullPeer {
+                name: "b",
+                connector: &c,
+            }],
+        )
+        .await;
         assert!(
             matches!(only_standing(&report), PeerStanding::Diverged),
             "{what}: {:?}",
@@ -261,11 +282,39 @@ async fn a_lying_proof_fails_closed() {
         assert_eq!(record.tip().expect("tip").commits, 2, "{what}");
     }
 
+    let (w, bundles) = world(&["key_a", "carol", "key_b", "alice"]).await;
+    let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
+    let mut c = connector(&w);
+    c.lie = Some(|v| v["size"] = (v["size"].as_u64().expect("size") + 1).into());
+    let report = pull(
+        &mut record,
+        &[PullPeer {
+            name: "b",
+            connector: &c,
+        }],
+    )
+    .await;
+    assert!(
+        matches!(
+            only_standing(&report),
+            PeerStanding::Failed(PeerFailure::Extension(_))
+        ),
+        "a stated size: {:?}",
+        only_standing(&report)
+    );
+
     let (w, bundles) = world(&["key_a", "carol"]).await;
     let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
     let mut c = connector(&w);
     c.lie = Some(|v| *v = serde_json::json!({"size": "many"}));
-    let report = pull(&mut record, &[PullPeer { name: "b", connector: &c }]).await;
+    let report = pull(
+        &mut record,
+        &[PullPeer {
+            name: "b",
+            connector: &c,
+        }],
+    )
+    .await;
     assert!(
         matches!(
             only_standing(&report),
@@ -287,13 +336,15 @@ async fn the_proof_request_is_bounded() {
     let id = w.id.replace(':', "%3A");
     for (from, want) in [
         ("1", StatusCode::OK),
-        ("2", StatusCode::BAD_REQUEST),
+        ("2", StatusCode::OK),
+        ("3", StatusCode::BAD_REQUEST),
         ("0", StatusCode::BAD_REQUEST),
         ("18446744073709551615", StatusCode::BAD_REQUEST),
         ("-1", StatusCode::BAD_REQUEST),
         ("x", StatusCode::BAD_REQUEST),
     ] {
-        let (status, body) = get_json(app.clone(), &format!("/consistency?pr={id}&from={from}")).await;
+        let (status, body) =
+            get_json(app.clone(), &format!("/consistency?pr={id}&from={from}")).await;
         assert_eq!(status, want, "from={from}: {body:?}");
     }
     let (status, _) = get_json(app.clone(), "/consistency?pr=nobody&from=1").await;
@@ -301,5 +352,5 @@ async fn the_proof_request_is_bounded() {
 
     let (_, body) = get_json(app, &format!("/consistency?pr={id}&from=1")).await;
     let payload = envelope_payload(&body);
-    assert_eq!(payload["size"], 2, "{body:?}");
+    assert_eq!(payload["size"], 3, "{body:?}");
 }

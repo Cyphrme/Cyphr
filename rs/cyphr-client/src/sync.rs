@@ -40,8 +40,8 @@ use cyphr::{Commit, Key, Principal, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
-use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
+use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,

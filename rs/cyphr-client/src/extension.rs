@@ -8,10 +8,10 @@
 //! for itself. The offer is a claim until the commits it covers replay, and
 //! [`Record`](crate::Record) confirms it against the replayed log then.
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::eml::{ConsistencyProof, ProofStep, Storage};
 use cyphr::state::TaggedDigest;
 use cyphr::{HashAlg, MaltHasher, Principal};
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::{Value, json};
 
 /// Most peaks a frontier holds: one per set bit of a `u64` size.
@@ -75,7 +75,9 @@ impl Extension {
         let alg = principal.hash_alg();
         let alg_id = cyphr::commit_root::hash_alg_to_u64(alg);
         let trees = principal.commit_trees();
-        let size = trees.tree_size(alg_id).map_err(|e| unprovable(e.to_string()))?;
+        let size = trees
+            .tree_size(alg_id)
+            .map_err(|e| unprovable(e.to_string()))?;
         let root = trees.root(alg_id).map_err(|e| unprovable(e.to_string()))?;
         let proof = principal
             .consistency_proof(alg, from)
@@ -131,13 +133,16 @@ impl Extension {
                 .then_some(bytes)
                 .ok_or_else(|| bad(what))
         };
-        let list = |v: Option<&Value>, what: &str, max: usize| -> Result<Vec<Value>, ExtensionFailure> {
-            let items = v.and_then(Value::as_array).ok_or_else(|| bad(what))?;
-            (items.len() <= max)
-                .then(|| items.clone())
-                .ok_or_else(|| bad(what))
-        };
-        let p = payload.get("proof").ok_or_else(|| bad("proof is missing"))?;
+        let list =
+            |v: Option<&Value>, what: &str, max: usize| -> Result<Vec<Value>, ExtensionFailure> {
+                let items = v.and_then(Value::as_array).ok_or_else(|| bad(what))?;
+                (items.len() <= max)
+                    .then(|| items.clone())
+                    .ok_or_else(|| bad(what))
+            };
+        let p = payload
+            .get("proof")
+            .ok_or_else(|| bad("proof is missing"))?;
         let boundary_hash = hash(
             p.get("boundary_hash").unwrap_or(&Value::Null),
             "proof.boundary_hash",
@@ -154,10 +159,14 @@ impl Extension {
                     .and_then(Value::as_u64)
                     .and_then(|n| usize::try_from(n).ok())
                     .ok_or_else(|| bad("proof.peak_path.position"))?;
-                let siblings = list(step.get("siblings"), "proof.peak_path.siblings", MAX_SIBLINGS)?
-                    .iter()
-                    .map(|h| hash(h, "proof.peak_path.siblings"))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let siblings = list(
+                    step.get("siblings"),
+                    "proof.peak_path.siblings",
+                    MAX_SIBLINGS,
+                )?
+                .iter()
+                .map(|h| hash(h, "proof.peak_path.siblings"))
+                .collect::<Result<Vec<_>, _>>()?;
                 Ok(ProofStep { siblings, position })
             })
             .collect::<Result<Vec<_>, ExtensionFailure>>()?;
