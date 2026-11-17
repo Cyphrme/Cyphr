@@ -46,13 +46,21 @@ impl KeyTimeline {
     /// revoked: close the open period of every key it removed, open one
     /// for every key it added. Naked revokes are not applied here: see the
     /// type's docs.
+    ///
+    /// Returns the keys it made known (a key's first period) beside it: a
+    /// verdict of [`Self::authorize_by_commits`] or [`Self::open_at`] can
+    /// differ from what it was only at `now` or later, except for the
+    /// actions of those keys, since a known key judges every earlier `now`
+    /// by its periods where an unknown one is left to the embedded
+    /// principals.
     pub(crate) fn record_commit(
         &mut self,
         active: &IndexMap<String, Key>,
         revoked: &IndexMap<String, Key>,
         (frozen, deleted): (bool, bool),
         now: i64,
-    ) {
+    ) -> Vec<String> {
+        let mut made_known = Vec::new();
         match (frozen, self.frozen.last_mut()) {
             (true, Some((_, None))) | (false, None | Some((_, Some(_)))) => {},
             (true, _) => self.frozen.push((now, None)),
@@ -70,6 +78,9 @@ impl KeyTimeline {
         }
         for key in active.values() {
             if self.open(key.tmb()).is_none() {
+                if !self.knows(key.tmb()) {
+                    made_known.push(key.tmb().to_b64());
+                }
                 self.periods.push(Period {
                     key: key.clone(),
                     from: now,
@@ -78,6 +89,7 @@ impl KeyTimeline {
                 });
             }
         }
+        made_known
     }
 
     /// A naked revoke of `tmb` cutting the key off at `cutoff` (SPEC 6.4;

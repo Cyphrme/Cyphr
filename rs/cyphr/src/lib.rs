@@ -25,6 +25,7 @@ pub mod commit_root;
 /// Embedded principals at default weight (SPEC §10.3, §10.5, §10.7).
 pub mod embedded;
 pub mod error;
+mod grown;
 /// Portable inclusion-proof verification (F9) — free functions taking proof
 /// material and a trusted root as plain parameters, with no `Principal`
 /// dependency.
@@ -41,6 +42,9 @@ pub mod parsed_coz;
 pub mod principal;
 /// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.
 pub mod principal_tree;
+/// Work counters for tests that pin cost (U3).
+#[cfg(any(test, feature = "test-utils"))]
+pub mod probe;
 /// Replay of stored commit bundles: one entry point for every consumer.
 pub mod replay;
 /// Naked-revoke validity (SPEC 6.4): the one rule every consumer calls.

@@ -31,6 +31,7 @@ pub(crate) use proofs::{NodePath, NodePathHop};
 use crate::action::Action;
 use crate::commit::Commit;
 use crate::error::{Error, Result};
+use crate::grown::Grown;
 use crate::key::Key;
 use crate::nonce::{NonceLevel, NonceSets};
 use crate::principal_tree::PrincipalTree;
@@ -83,7 +84,7 @@ pub struct AuthLedger {
     /// Revoked keys for historical verification.
     pub revoked: IndexMap<String, Key>,
     /// Finalized commits (atomic coz bundles).
-    pub commits: Vec<Commit>,
+    pub commits: Grown<Vec<Commit>>,
 }
 
 /// Data ledger holding actions (Level 4+): the Data Tree (DT).
@@ -100,7 +101,7 @@ pub struct AuthLedger {
 pub struct DataLedger {
     /// Every held action, in the order SPEC 4.8.1 gives DT: by `now`, then
     /// by `czd`.
-    pub(crate) actions: BTreeMap<(i64, Vec<u8>), Action>,
+    pub(crate) actions: Grown<BTreeMap<(i64, Vec<u8>), Action>>,
     /// The latest `now` any held action of a key carries, by thumbprint:
     /// `last_used` of a key follows it however the key came to be held, so
     /// a key removed and added again reads as the history says.
@@ -151,7 +152,7 @@ pub struct PrincipalCore {
     /// is a point-in-time snapshot (SPEC 3.7.1), so merge matching
     /// (SPEC 11.5.1) needs the history, not only the current PR. Rebuilt
     /// by replaying history.
-    pub(crate) held_prs: Vec<PrincipalRoot>,
+    pub(crate) held_prs: Grown<Vec<PrincipalRoot>>,
     /// Current Key Root; `None` once no key remains (SPEC 3.7: an empty
     /// component is omitted, so a Dead principal has no KT).
     pub(crate) kr: Option<KeyRoot>,
@@ -184,7 +185,7 @@ pub struct PrincipalCore {
     /// prefix: czd width follows the signing algorithm (ES384 = 48 bytes).
     /// Rebuilt by replaying history; there is no checkpoint restore.
     /// Ordered, so two states that hold the same czds print the same.
-    pub(crate) included_czds: BTreeSet<Vec<u8>>,
+    pub(crate) included_czds: Grown<BTreeSet<Vec<u8>>>,
     /// Nonces held at the PR, AT and KT levels (SPEC §10.1).
     pub(crate) nonces: NonceSets,
     /// Latest timestamp of the chain (SPEC §14.1): its commits' cozies.
@@ -257,11 +258,38 @@ pub struct PrincipalCore {
 pub struct PrincipalState {
     core: PrincipalCore,
     pg: Option<PrincipalGenesis>,
+    /// A cache of DT's view of the held actions; see [`data::Hidden`].
+    hidden: data::Hidden,
 }
 
 impl PrincipalState {
+    /// The core, for a change that can alter a verdict of [`Self::judge`]:
+    /// the cache of verdicts is dropped. A held action is added through
+    /// `insert_action`, which keeps it.
     fn core_mut(&mut self) -> &mut PrincipalCore {
+        self.hidden.clear();
         &mut self.core
+    }
+
+    /// The core, for a change no verdict of [`Self::judge`] on held history
+    /// reads: the cache of verdicts stays. `judge` reads the key timeline
+    /// (changed only where [`data::Hidden::invalidate_from`] is called),
+    /// the revoked keys, the Key Tree nonces, the embedded principals and
+    /// the genesis; every site that changes one of those takes
+    /// [`Self::core_mut`].
+    fn core_unjudged_mut(&mut self) -> &mut PrincipalCore {
+        &mut self.core
+    }
+
+    /// Fold what a write added into what the state shares. Called by the
+    /// holder of the state once the write is adopted, when nothing else
+    /// shares it; until then the additions are held beside the shared part,
+    /// and reads see both.
+    fn settle(&mut self) {
+        self.core.auth.commits.settle();
+        self.core.held_prs.settle();
+        self.core.included_czds.settle();
+        self.core.data.actions.settle();
     }
 }
 
@@ -406,7 +434,7 @@ impl PrincipalCore {
             pr,
         } = roots;
         PrincipalCore {
-            held_prs: vec![pr.clone()],
+            held_prs: Grown::from_vec(vec![pr.clone()]),
             pr,
             kr: Some(kr),
             tr: None,
@@ -421,7 +449,7 @@ impl PrincipalCore {
             },
             key_timeline: timeline::KeyTimeline::default(),
             data: DataLedger::default(),
-            included_czds: BTreeSet::new(),
+            included_czds: Grown::default(),
             nonces: NonceSets::default(),
             latest_timestamp: 0,
             max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
@@ -564,6 +592,7 @@ impl<S: eml::Storage> Principal<S> {
         self.state
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     fn core_mut(&mut self) -> &mut PrincipalCore {
         self.state.core_mut()
     }
@@ -597,6 +626,7 @@ impl<S: eml::Storage> Principal<S> {
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
         self.state = state;
+        self.state.settle();
         self.state.auth.commits.last().ok_or(Error::EmptyCommit)
     }
 }

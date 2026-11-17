@@ -53,6 +53,10 @@ fn sorted(keys: &indexmap::IndexMap<String, Key>) -> Vec<&Key> {
 impl PrincipalState {
     /// This state's [`StateProjection`].
     pub fn projection(&self) -> StateProjection<'_> {
+        // The czds are held in two parts, each in order: the projection owes
+        // no one how they were split.
+        let mut included: Vec<&[u8]> = self.included_czds.iter().map(Vec::as_slice).collect();
+        included.sort_unstable();
         StateProjection {
             pr: &self.pr,
             sr: self.sr.as_ref(),
@@ -71,7 +75,7 @@ impl PrincipalState {
                 .map(|((now, czd), _)| (*now, czd.as_slice()))
                 .collect(),
             shown: self.actions().map(|a| a.czd().as_bytes()).collect(),
-            included: self.included_czds.iter().map(Vec::as_slice).collect(),
+            included,
             lifecycle: (self.deleted, self.frozen, self.errored),
             latest_timestamp: self.latest_timestamp,
         }

@@ -1,6 +1,7 @@
 //! Unit tests for the principal modules.
 
 mod apply;
+mod cost;
 mod lifecycle;
 mod proofs;
 mod tree;
