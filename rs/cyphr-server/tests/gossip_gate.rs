@@ -65,15 +65,17 @@ async fn revoked_at(app: &axum::Router, tmb: &str) -> usize {
         .len()
 }
 
-/// Backs the idle gate (GOSSIP-INC): P1 and P2 hold one principal at the
+/// Backs the idle gate: P1 and P2 hold one principal at the
 /// same tip. After the first round (which replays the chain once to learn
-/// its active keys) three more rounds must build no record and ask P2 for
+/// its active keys) three more rounds must replay nothing and ask P2 for
 /// nothing but `/branches` and `/revoked`; every round, idle ones included,
 /// is counted. A naked revoke of an active key posted to P2 while idle
-/// reaches P1 in one round with no record built (the probe is not gated),
-/// and a commit pushed to P2 opens the gate: P1 takes it.
+/// reaches P1 in one round with nothing replayed (the probe is not gated),
+/// and a commit pushed to P2 opens the gate: P1 takes it, and replays that
+/// one commit, not the chain it already verified.
 ///
-/// Turns red if: an idle round replays the chain (records built grows),
+/// Turns red if: an idle round replays the chain (commits replayed grows),
+/// or taking the new head replays more than the new commit,
 /// fetches a patch or evidence, skips the revoke probe, or does not count
 /// as a round; or the gate stays shut after P2 advances.
 /// End to end over two servers on real sockets: yes.
@@ -111,17 +113,17 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
         HttpConnector::with_client(p1.http_client.clone(), &url, true).expect("connector"),
     )];
     let mut gossip = Gossip::default();
-    let built = |s: &AppState| series(s, "cyphr_gossip_records_built_total");
+    let replayed = |s: &AppState| series(s, "cyphr_gossip_commits_replayed_total");
     let rounds = |s: &AppState| series(s, "cyphr_gossip_rounds_total");
 
     gossip.round(&p1, &peers).await;
-    assert_eq!(built(&p1), 1, "the first round learns the keys by replay");
+    assert_eq!(replayed(&p1), 2, "the first round replays the 2 commits");
     seen.lock().expect("log").clear();
 
     for _ in 0..3 {
         gossip.round(&p1, &peers).await;
     }
-    assert_eq!(built(&p1), 1, "idle rounds replayed a chain");
+    assert_eq!(replayed(&p1), 2, "idle rounds replayed a chain");
     assert_eq!(rounds(&p1), 4, "every round counts, idle ones too");
     let asked = seen.lock().expect("log").clone();
     assert!(
@@ -145,7 +147,7 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
     assert_eq!(revoked_at(&app1, &eve_tmb).await, 0, "P1 starts ignorant");
     gossip.round(&p1, &peers).await;
-    assert_eq!(built(&p1), 1, "the probe needs no replay");
+    assert_eq!(replayed(&p1), 2, "the probe needs no replay");
     assert_eq!(revoked_at(&app1, &eve_tmb).await, 1, "P1 heard the revoke");
 
     // A new head opens the gate.
@@ -156,7 +158,11 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
         StatusCode::CREATED
     );
     gossip.round(&p1, &peers).await;
-    assert_eq!(built(&p1), 2, "a peer with a new head is pulled");
+    assert_eq!(
+        replayed(&p1),
+        3,
+        "a peer with a new head costs the one new commit, not the chain"
+    );
     let want = owner.pr_tagged().expect("pr");
     let (_, tip) = get_json(app1.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
     assert_eq!(
@@ -186,16 +192,16 @@ fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
     })
 }
 
-/// Backs the memo's tip check (archrev gate review R1): the remembered
-/// revoke-probe keys are valid only at the tip they were read at. P1 and
+/// Backs the memo's tip check: the remembered revoke-probe keys are valid
+/// only at the tip they were read at. P1 and
 /// P2 both take a key-add commit by direct push, so both tips move and
 /// every peer head is held (the gate would say idle), then the NEW key is
-/// naked-revoked at P2. One round on P1 must replay (records built grows)
-/// to learn the new key, and P1 must hear the revoke.
+/// naked-revoked at P2. One round on P1 must verify the added commit (and
+/// only it) to learn the new key, and P1 must hear the revoke.
 ///
 /// Turns red if: the memo is used at a tip it was not read at, so the
 /// probe asks only about the old keys and the revoke of the new one is
-/// never heard. End to end over two servers on real sockets: yes.
+/// never heard, or learning the new key replays more than the new commit. End to end over two servers on real sockets: yes.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_added_while_idle_is_probed_for_revokes() {
     let pool = load_pool();
@@ -225,7 +231,7 @@ async fn a_key_added_while_idle_is_probed_for_revokes() {
     )];
     let mut gossip = Gossip::default();
     gossip.round(&p1, &peers).await;
-    let built = series(&p1, "cyphr_gossip_records_built_total");
+    let replayed = series(&p1, "cyphr_gossip_commits_replayed_total");
 
     let added = common::key_commit_by(&mut owner, "golden", "carol", T + 1).await;
     for app in [&app1, &app2] {
@@ -252,9 +258,9 @@ async fn a_key_added_while_idle_is_probed_for_revokes() {
     gossip.round(&p1, &peers).await;
 
     assert_eq!(
-        series(&p1, "cyphr_gossip_records_built_total"),
-        built + 1,
-        "a moved tip must replay to learn its keys"
+        series(&p1, "cyphr_gossip_commits_replayed_total"),
+        replayed + 1,
+        "a moved tip costs exactly the added commit"
     );
     assert_eq!(
         revoked_at(&app1, &carol).await,

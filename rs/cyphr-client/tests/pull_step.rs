@@ -646,3 +646,46 @@ async fn anchor_refuses_a_sibling_principal_on_the_same_key() {
     ));
     assert_eq!(rec.tip().expect("tip").commit_id, own.tip());
 }
+
+/// Claim: a verifier that keeps its record between pulls pays for what is
+/// new, not for its history (SPEC 4.5: the last trusted state is the trust
+/// anchor, and only the patch from it is fetched and verified). A record
+/// that pulled a 3-commit chain and then a 2-commit extension replays
+/// exactly 2 commits on the second pull and holds the same verified state
+/// as a record that took the whole 5-commit chain in one cold pull.
+///
+/// Turns red if: the second pull replays the history it already verified
+/// (the count exceeds the new commits), or two pulls leave a different
+/// state than one pull of the union.
+/// End-to-end scenario: yes (real chains over a carrier that plays peers).
+#[tokio::test]
+async fn a_second_pull_replays_only_what_is_new_and_agrees_with_a_cold_build() {
+    let (g, k1, k2, k3, k4) = (kp(), kp(), kp(), kp(), kp());
+    let grow = [
+        (&k1, T0 + 100),
+        (&k2, T0 + 200),
+        (&k3, T0 + 300),
+        (&k4, T0 + 400),
+    ];
+    let pg = g.tmb.to_b64();
+    let short = line(&g, &grow[..2]).await;
+    let long = line(&g, &grow).await;
+    let (a, b) = (Fake::new(&pg, &short), Fake::new(&pg, &long));
+
+    let mut kept = record(&pg, &g);
+    pull(&mut kept, &[peer("a", &a)]).await;
+    assert_eq!(kept.replayed(), 3, "the first pull replays the 3 commits");
+    pull(&mut kept, &[peer("b", &b)]).await;
+    assert_eq!(
+        kept.replayed(),
+        5,
+        "the second pull replays only the 2 new commits"
+    );
+
+    let mut cold = record(&pg, &g);
+    pull(&mut cold, &[peer("b", &b)]).await;
+    assert_eq!(cold.replayed(), 5);
+    let (kept_state, cold_state) = (kept.principal().expect("kept"), cold.principal().expect("cold"));
+    assert_eq!(kept_state.projection(), cold_state.projection());
+    assert_eq!(kept.tip(), cold.tip());
+}
