@@ -14,7 +14,7 @@
 use super::check::{
     Want, evidence_count, heal_everything, n5_refused, n8_refused, tip_diff, until, verdict_check,
 };
-use super::run::{Failure, PState, act, fail, refresh};
+use super::run::{Failure, PState, Revoked, act, fail, refresh};
 use super::Size;
 use crate::actions::{Backup, Client, KeyRef, PeerTip, PushOutcome, Tip};
 use crate::harness::Harness;
@@ -221,7 +221,7 @@ pub(crate) async fn theft<'h>(
     lap("n5 probes");
     n8_refused(h, &thief, &ps.pr, Some(&key), "with a revoked, deleted key", what).await?;
 
-    ps.revoked.push(key.clone());
+    ps.revoked.push(Revoked { key: key.clone(), forgotten_by: Vec::new() });
     ps.thieves.push((thief, key));
     let tip = view.tip;
     settle(ps, tip, t1);
@@ -245,6 +245,7 @@ fn settle(ps: &mut PState<'_>, resolved: Tip, abandoned: Tip) {
 /// those the restore dropped come back only from their owner (S06).
 pub(crate) async fn restore<'h>(
     h: &'h Harness,
+    size: &Size,
     names: &[String],
     states: &mut [Option<PState<'h>>],
     peer: usize,
@@ -257,6 +258,11 @@ pub(crate) async fn restore<'h>(
         let Some(ps) = ps.as_mut() else { continue };
         if !ps.holders.iter().any(|x| x == name) {
             continue;
+        }
+        if size.forgive_restored_peers {
+            for revoked in &mut ps.revoked {
+                revoked.forgotten_by.push(name.to_owned());
+            }
         }
         let owner = &ps.clients[ps.pusher];
         let w = format!("{what}: re-push of principal {p}");

@@ -28,7 +28,7 @@ use serde_json::Value;
 use super::Size;
 use super::model::Model;
 use super::plan::Op;
-use super::run::{Failure, PState, act, fail};
+use super::run::{Failure, PState, Revoked, act, fail};
 use crate::actions::{
     ActionError, Client, Evidence, KeyRef, LocalView, PeerTip, Principal, PushOutcome, RefusalKind,
     Standing, Tip, Verdict,
@@ -211,6 +211,7 @@ pub(crate) async fn barrier(b: Barrier<'_, '_>) -> Result<Duration, Failure> {
         tokio::time::sleep(POLL).await;
     }
     let convergence = began.elapsed();
+    eprintln!("NETSIM barrier {} agreed after {convergence:.1?}", b.index);
 
     wait_quiet_rounds(h, size, names).await?;
 
@@ -343,10 +344,10 @@ pub(crate) async fn n5_listed(
     states: &[Option<PState<'_>>],
 ) -> Result<(), Failure> {
     for (p, ps) in states.iter().enumerate().filter_map(|(p, s)| Some((p, s.as_ref()?))) {
-        for key in &ps.revoked {
+        for Revoked { key, forgotten_by } in &ps.revoked {
             until(size, &format!("principal {p}'s revoked key listed"), || async {
                 let mut lines = Vec::new();
-                for holder in &ps.holders {
+                for holder in ps.holders.iter().filter(|x| !forgotten_by.contains(x)) {
                     match lists_revoked(h, holder, key).await {
                         Ok(true) => {},
                         Ok(false) => lines.push(format!("`{holder}` does not list {}", key.0)),
@@ -608,7 +609,7 @@ async fn snapshot(h: &Harness, peer: &str, states: &[Option<PState<'_>>]) -> Res
             out.push((format!("principal {p} {path}"), payload(h, peer, path, &[("pr", &ps.pr.0)]).await?));
         }
         if !ps.revoked.is_empty() {
-            let tmbs = ps.revoked.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(",");
+            let tmbs = ps.revoked.iter().map(|k| k.key.0.as_str()).collect::<Vec<_>>().join(",");
             out.push((format!("principal {p} /revoked"), payload(h, peer, "/revoked", &[("tmbs", &tmbs)]).await?));
         }
     }

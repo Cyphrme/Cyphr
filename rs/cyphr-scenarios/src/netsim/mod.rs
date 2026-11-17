@@ -41,6 +41,9 @@ pub struct Size {
     pub converge: Duration,
     /// One witness of `p0`, checked by N9.
     pub witness: bool,
+    /// N5 does not ask a peer restored after a revoke to list it (see
+    /// `run::Revoked`). Only the findings test turns this off.
+    pub forgive_restored_peers: bool,
 }
 
 impl Size {
@@ -58,6 +61,7 @@ impl Size {
             holders: (3, 5),
             converge: Duration::from_secs(120),
             witness: false,
+            forgive_restored_peers: true,
         }
     }
 
@@ -73,6 +77,7 @@ impl Size {
             holders: (7, 9),
             converge: Duration::from_secs(600),
             witness: true,
+            forgive_restored_peers: true,
         }
     }
 

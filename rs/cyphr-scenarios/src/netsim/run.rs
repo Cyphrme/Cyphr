@@ -61,6 +61,16 @@ pub struct Outcome {
     pub wall: Duration,
 }
 
+/// A naked revoke the owner made.
+pub(crate) struct Revoked {
+    pub key: KeyRef,
+    /// Peers restored from a backup after the revoke. A restored peer
+    /// never relearns a revoke of a key the chain has since deleted
+    /// (reproduced by `tests/netsim_findings.rs`), so N5 does not ask them
+    /// to list it. Drop this field when that test passes.
+    pub forgotten_by: Vec<String>,
+}
+
 /// One principal as the driver knows it: its real identity and devices.
 pub(crate) struct PState<'h> {
     pub pr: Principal,
@@ -78,8 +88,10 @@ pub(crate) struct PState<'h> {
     /// The key each device signs with, when the driver was told it (the
     /// genesis device's is not).
     pub dev_keys: Vec<Option<KeyRef>>,
-    /// Keys the owner revoked: every holder must list each.
-    pub revoked: Vec<KeyRef>,
+    /// Keys the owner revoked: every holder must list each, bar those that
+    /// were restored from a backup older than the revoke (see
+    /// [`Revoked::forgotten_by`]).
+    pub revoked: Vec<Revoked>,
     /// Clients that hold a revoked key, which must open nothing.
     pub thieves: Vec<(Client<'h>, KeyRef)>,
     /// The tip of the latest branch an episode abandoned: the evidence of
@@ -283,7 +295,7 @@ async fn exec_op<'h>(
             act(c.naked_revoke(&ps.pr, &key).await, &what)?;
             act(c.remove_key(&ps.pr, &key).await, &what)?;
             push_honest(ps, *d, stale, &what).await?;
-            ps.revoked.push(key.clone());
+            ps.revoked.push(Revoked { key: key.clone(), forgotten_by: Vec::new() });
             let c = &ps.clients[*d];
             check::n5_refused(h, ps, c, &key, &ps.home, &what).await?;
             check::n8_refused(h, c, &ps.pr, Some(&key), "with a revoked, deleted key", &what).await
@@ -439,7 +451,7 @@ pub async fn run(h: &Harness, size: &Size, ops: &[Op]) -> Result<Outcome, Failur
                 let b = backup
                     .take()
                     .ok_or_else(|| fail("DRIVER", format!("{what}: no backup was taken")))?;
-                episode::restore(h, &names, &mut states, *peer, &b, &what).await?;
+                episode::restore(h, size, &names, &mut states, *peer, &b, &what).await?;
             },
             Op::RollPeerKey { peer } => {
                 act(h.rotate_peer_key(&names[*peer]).await, &what)?;

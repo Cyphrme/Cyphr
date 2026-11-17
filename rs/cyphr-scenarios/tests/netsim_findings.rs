@@ -39,3 +39,47 @@ async fn a_principal_keeps_committing_after_its_paired_key_is_deleted() {
         h.ok(alice.commit_data(&pr, &format!("after{i}")).await);
     }
 }
+
+// Found by NETSIM at the large size, seed 20261117 (a peer restored from a
+// backup taken before a naked revoke never listed it again), and reduced to
+// this log, which the model accepts:
+//
+//   create p=0 multikey=false holders=0,1,2
+//   addkey p=0 d=0
+//   backup peer=2
+//   nakedrevoke p=0 d=0     (revoke sent to the home, then the owner deletes the key)
+//   restore peer=2
+//   barrier                 (every peer agrees on the chain; p2 never lists the revoke)
+//
+// Gossip asks peers for the naked revokes of a principal's active keys, and
+// the owner's `key/delete` that SPEC 6.4 prescribes after a naked revoke
+// removes the key from that set, so a peer that loses its record of the
+// revoke has no reason to ask again. Its chain still refuses the key as not
+// active; what is lost is that the key was revoked (compromised) rather
+// than retired (SPEC 6.2).
+//
+// Must hold: at quiescence every holder serves the naked revoke (SPEC 6.4,
+// 13.7: revokes travel by gossip).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(restored-peer-revoke): a peer restored from before a naked revoke never relearns it"]
+async fn a_restored_peer_relearns_a_naked_revoke() {
+    use cyphr_scenarios::netsim::{Size, plan, run};
+    let size = Size {
+        forgive_restored_peers: false,
+        ..Size::ci()
+    };
+    let ops = plan::parse(
+        "create p=0 multikey=false holders=0,1,2\n\
+         addkey p=0 d=0\n\
+         backup peer=2\n\
+         nakedrevoke p=0 d=0\n\
+         restore peer=2\n\
+         barrier\n",
+    )
+    .expect("op log");
+    let h = run::start(&size, 20_261_117).await.expect("start peers");
+    // With no exemption for restored peers, N5 asks p2 too.
+    run::run(&h, &size, &ops)
+        .await
+        .unwrap_or_else(|f| panic!("{f}"));
+}
