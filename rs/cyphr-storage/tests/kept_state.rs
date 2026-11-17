@@ -729,3 +729,41 @@ async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
         "the accepted action is in the store"
     );
 }
+
+/// A holder that verifies against the engine's kept state (a gossip pull)
+/// gets the principal as the next write would start from, checks the next
+/// commit on it, and leaves the engine's store untouched until the engine
+/// itself admits the commit; both then hold the same state. Nothing is
+/// handed out when no current state is kept.
+///
+/// Turns red if: the detached principal differs from the kept state, refuses
+/// the commit the engine accepts, writes to the engine's log or tip, or
+/// ends in a state the engine's own write does not.
+/// End to end through the public engine API over fjall logs: yes.
+#[tokio::test]
+async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it() {
+    let (e, _dir) = engine(128, false);
+    let mut w = history(&e, 6).await;
+    let mut detached = e.kept_principal(&w.id).await.expect("a kept principal");
+    let kept = e.kept_state(&w.id).await.expect("kept state");
+    assert_eq!(detached.projection(), kept.projection());
+    let tip = e.get_tip(&w.id).await.expect("tip").expect("held");
+
+    let (next, bundle) = w.toggle("key_b", NOW + 100).await.expect("toggle applies");
+    let decoded = bundle.decode().expect("decodes");
+    cyphr::replay::replay_held(&mut detached, &decoded)
+        .await
+        .expect("the detached principal verifies the commit");
+    let after = e.get_tip(&w.id).await.expect("tip").expect("held");
+    assert_eq!(after.commit_id, tip.commit_id, "the engine stored nothing");
+    assert!(e.kept_principal(&w.id).await.is_some(), "its state is still kept");
+
+    w.submit(&e, &bundle).await.expect("the engine admits it");
+    let admitted = e.kept_state(&w.id).await.expect("kept state");
+    assert_eq!(detached.projection(), admitted.projection());
+    drop(next);
+
+    let (cold, _dir) = engine(0, false);
+    let w = history(&cold, 3).await;
+    assert!(cold.kept_principal(&w.id).await.is_none());
+}
