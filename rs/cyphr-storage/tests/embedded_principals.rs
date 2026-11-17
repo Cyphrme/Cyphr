@@ -1209,3 +1209,61 @@ async fn an_embedding_principals_kept_state_is_its_replay() {
     push(&engine, &a, &own).await.expect("A's own commit");
     assert_kept_is_the_replay(&engine, &a, "after A's own write").await;
 }
+
+/// Claim: a push nobody of the principal signed costs an embedding
+/// principal no replay of the principals it embeds. A bundle that names a
+/// signer A does not hold is judged through the principals A embeds, at
+/// the tips held for them, before any signature is checked, and anyone can
+/// name any signer. Those tips are read from the states the engine keeps:
+/// the first such push may replay B once, and every one after it replays
+/// nothing.
+///
+/// Turns red if each such push replays B (three pushes, three replays of
+/// B's chain). The replay count is the engine's own: each push is refused
+/// alike. Over durable logs, the only kind states are kept over.
+#[tokio::test]
+async fn an_unsigned_push_to_an_embedding_principal_replays_nothing_twice() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = fjall::Database::builder(dir.path().join("db"))
+        .open()
+        .expect("open db");
+    let blobs = MemoryBlobStore::new();
+    let (alice, bob, carol, dave) = (kp(), kp(), kp(), kp());
+    let (b, b_pr) = b_with_carol(&bob, &carol).await;
+    let mut a = a_embedding(&alice, &b_pr, &b.state).await;
+    let mut forged = a
+        .commit(
+            &carol,
+            "key/create",
+            &dave.tmb.to_b64(),
+            Some(&dave),
+            T0 + 20,
+        )
+        .await
+        .expect("carol signs for A");
+    a.bundles.pop();
+    let mut coz: serde_json::Value = serde_json::from_slice(&forged.txs[0][0]).expect("coz");
+    let sig = coz["sig"].as_str().expect("sig").to_owned();
+    let flipped = if sig.starts_with('A') { "B" } else { "A" };
+    coz["sig"] = format!("{flipped}{}", &sig[1..]).into();
+    forged.txs[0][0] = serde_json::to_vec(&coz).expect("coz bytes");
+
+    let engine = durable(&blobs, &db);
+    for bundle in &b.bundles {
+        push(&engine, &b, bundle).await.expect("B's commit");
+    }
+    for bundle in &a.bundles {
+        push(&engine, &a, bundle).await.expect("A's commit");
+    }
+    let mut replayed = Vec::new();
+    for _ in 0..3 {
+        let at = engine.commits_replayed();
+        assert!(push(&engine, &a, &forged).await.is_err(), "refused");
+        replayed.push(engine.commits_replayed() - at);
+    }
+    assert_eq!(
+        replayed[1..],
+        [0, 0],
+        "commits replayed by the second and third push: {replayed:?}"
+    );
+}
