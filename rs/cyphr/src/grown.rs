@@ -5,10 +5,10 @@
 //! [`Grown`] holds what was settled as shared segments and what a write
 //! added beside them, so a copy of the state costs what the write adds, not
 //! what the principal holds. [`Grown::settle`] takes the additions in once
-//! the state is adopted. It never copies a shared segment: it folds into
-//! the last segment when nothing else holds it, and otherwise starts a new
-//! one, which a fork or detach of the principal leaves for the next write
-//! to extend.
+//! the state is adopted, as a new segment merged into the older ones in
+//! size tiers (see [`Grown`]): a shared segment is copied by a merge, so
+//! the cost is amortised O(log n) copies per item added, and a single write
+//! may cascade through the tiers and copy O(n) once.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::iter::Peekable;
@@ -74,29 +74,48 @@ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
 /// - Count: with `S` segments the oldest weighs more than `2^(S-1)` times the newest, which weighs
 ///   at least 1, so `n > 2^(S-1)` and `S <= log2(n) + 1`, whoever else shares the segments. A point
 ///   read pays that factor, a range read an S-way merge.
-/// - Copy: a merge copies at most the previous and the newest segment, and `previous <= 2 *
-///   newest`, so it copies at most `3 * newest` items. The merged segment weighs at least `1.5 *
-///   newest` and at least `1.5 * previous`, so an item sits in a merge input at most `log_{1.5}(n)`
-///   times, and `n` items cost `O(n log n)` copies in all: O(log n) each, amortised, and never a
-///   copy of a segment much larger than what the write added (the forked history is the oldest,
-///   largest segment, which no small write reaches).
+/// - Copy: the newest segment is always unique (settle just made it), so a merge moves it, and only
+///   `make_mut(previous)` can copy, and only when another state shares `previous`. The merge
+///   condition gives `previous <= 2 * newest`, so a copy costs at most `2 * newest` items, and the
+///   merged segment weighs at least `1.5 * previous`. A copied item's segment therefore grows at
+///   least 1.5-fold per copy: at most `log_{1.5}(n)` copies per item per lineage of states, and
+///   O(log n) amortised per item added. A single write can still cascade (binary-counter style) and
+///   copy O(n) once, but only after the writes that built the tiers it merges, and never the large
+///   forked history under a small write.
 #[derive(Clone)]
 pub struct Grown<C: Absorb> {
     settled: Vec<Arc<C>>,
     added: C,
 }
 
-// Shows the content alone, never how it is split into segments: two states
-// holding the same history compare equal by their debug text (the live
-// equals cold tests do), however their writes were folded.
-impl<C: Absorb + std::fmt::Debug> std::fmt::Debug for Grown<C> {
+// Debug shows the content alone, never how it is split into segments: two
+// states holding the same history compare equal by their debug text (the
+// live equals cold tests do), however their writes were folded. It holds
+// references to the items, never copies of them; a set is sorted so that
+// its order does not depend on the split.
+impl<T: Clone + std::fmt::Debug> std::fmt::Debug for Grown<Vec<T>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut all = C::default();
-        for segment in &self.settled {
-            all.absorb((**segment).clone());
-        }
-        all.absorb(self.added.clone());
-        f.debug_tuple("Grown").field(&all).finish()
+        f.debug_tuple("Grown")
+            .field(&self.iter().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl<T: Clone + Ord + std::fmt::Debug> std::fmt::Debug for Grown<BTreeSet<T>> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut items: Vec<&T> = self.iter().collect();
+        items.sort();
+        f.debug_tuple("Grown").field(&items).finish()
+    }
+}
+
+impl<K: Clone + Ord + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fmt::Debug
+    for Grown<BTreeMap<K, V>>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Grown")
+            .field(&self.iter().collect::<Vec<_>>())
+            .finish()
     }
 }
 
@@ -446,5 +465,26 @@ mod tests {
             assert!(widest <= 10);
             assert_eq!(copies_held.len(), if held { 12 } else { 0 });
         }
+    }
+
+    /// A set weighs what it holds and merges like any other kind, so its
+    /// segments stay logarithmic; a blank addition settles to no segment.
+    #[test]
+    fn a_set_stays_logarithmic_and_a_blank_settle_pushes_nothing() {
+        let mut s = Grown::<BTreeSet<u32>>::default();
+        s.settle();
+        assert_eq!(s.segments(), 0);
+        for n in 0..300u32 {
+            s.insert(n);
+            s.settle();
+            assert!(s.segments() >= 1, "n={n}: the insert did not settle");
+            s.settle();
+            let bound = f64::from(n + 1).log2() as usize + 1;
+            assert!(s.segments() <= bound, "n={n}: {} segments", s.segments());
+        }
+        assert_eq!(s.iter().count(), 300);
+        let mut v = Grown::from_vec(vec![1u8]);
+        v.settle();
+        assert_eq!(v.segments(), 1);
     }
 }
