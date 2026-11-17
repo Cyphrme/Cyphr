@@ -384,3 +384,36 @@ pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_client::Re
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record() -> Record {
+        Record::new("pg", Anchor::GenesisCommit("c".into()))
+    }
+
+    /// The bound on kept records is memory the server never gives back, and
+    /// a round only reaches it with more than [`KEPT_RECORDS`] changing
+    /// principals; end to end would need that many live principals, so the
+    /// eviction is pinned here on the structure alone.
+    #[test]
+    fn kept_records_never_exceed_their_bound_and_drop_the_oldest() {
+        let mut kept = KeptRecords::default();
+        for n in 0..=KEPT_RECORDS {
+            kept.keep(&format!("p{n}"), record());
+        }
+        assert_eq!(kept.held.len(), KEPT_RECORDS);
+        assert_eq!(kept.order.len(), KEPT_RECORDS);
+        assert!(kept.take("p0").is_none(), "the oldest was evicted");
+
+        // Taking one leaves the others ordered, and keeping it again does
+        // not count it twice.
+        assert!(kept.take("p1").is_some());
+        assert_eq!(kept.order.len(), KEPT_RECORDS - 1);
+        kept.keep("p1", record());
+        kept.keep("p1", record());
+        assert_eq!(kept.order.len(), KEPT_RECORDS);
+        assert_eq!(kept.held.len(), KEPT_RECORDS);
+    }
+}
