@@ -29,6 +29,8 @@ struct Obs {
     write: Counts,
     tip: Counts,
     patch: Counts,
+    error_state: Counts,
+    holds_commit: Counts,
     bad_signature: Counts,
     unknown_key: Counts,
     restart_first: Counts,
@@ -77,6 +79,9 @@ async fn observe(n: usize) -> Obs {
     let anchor: TaggedDigest = tip_id.parse().expect("commit id digest");
     let patch = counted!(e.get_served_patch(&id, Some(&anchor), None));
 
+    let error_state = counted!(e.error_state(&id));
+    let holds_commit = counted!(e.holds_commit(&id, &tip_id));
+
     let next = chain.next().await;
     let bad = bad_signature(&next);
     let bad_signature = counted!(async {
@@ -104,6 +109,8 @@ async fn observe(n: usize) -> Obs {
         write,
         tip,
         patch,
+        error_state,
+        holds_commit,
         bad_signature,
         unknown_key,
         restart_first,
@@ -168,6 +175,25 @@ async fn tip_read_is_constant() {
 async fn patch_from_tip_is_constant() {
     let o = obs().await;
     same("get_served_patch from tip", |o| o.patch, o);
+}
+
+/// Bound: asking whether a principal is in Error (read by /tip, /patch,
+/// /consistency and /inclusion before they answer) reads O(1) index rows,
+/// independent of n.
+#[tokio::test]
+#[ignore = "bound not yet met: error_state reads the whole chain (held, engine/mod.rs:5213)"]
+async fn error_state_is_constant() {
+    let o = obs().await;
+    same("error_state", |o| o.error_state, o);
+}
+
+/// Bound: asking whether the engine holds a commit (the gossip idle gate
+/// asks it per peer head) reads O(1) index rows, independent of n.
+#[tokio::test]
+#[ignore = "bound not yet met: holds_commit reads the whole chain (held, engine/mod.rs:5213)"]
+async fn holds_commit_is_constant() {
+    let o = obs().await;
+    same("holds_commit", |o| o.holds_commit, o);
 }
 
 /// Bound: a refused push (bad signature, or signed by a key the principal
