@@ -1276,7 +1276,8 @@ impl Client<'_> {
                 },
             }
         };
-        self.sign_in_with(rp, &Principal(handle), &KeyRef(key)).await
+        self.sign_in_with(rp, &Principal(handle), &KeyRef(key))
+            .await
     }
 
     /// [`Client::sign_in`] with a key this device holds, active or not: how

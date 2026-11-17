@@ -303,7 +303,12 @@ where
 }
 
 /// What `GET path?pr=` answers at a peer, the envelope's payload.
-async fn payload(h: &Harness, peer: &str, path: &str, query: &[(&str, &str)]) -> Result<Value, String> {
+async fn payload(
+    h: &Harness,
+    peer: &str,
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<Value, String> {
     let resp = h
         .http
         .get(format!("http://{}{path}", h.peer(peer).addr()))
@@ -323,7 +328,11 @@ async fn payload(h: &Harness, peer: &str, path: &str, query: &[(&str, &str)]) ->
 }
 
 /// How many fork-evidence items a peer serves for `p`.
-pub(crate) async fn evidence_count(h: &Harness, peer: &str, p: &Principal) -> Result<usize, String> {
+pub(crate) async fn evidence_count(
+    h: &Harness,
+    peer: &str,
+    p: &Principal,
+) -> Result<usize, String> {
     let v = payload(h, peer, "/evidence", &[("pr", &p.0)]).await?;
     Ok(v["items"].as_array().map_or(0, Vec::len))
 }
@@ -343,19 +352,27 @@ pub(crate) async fn n5_listed(
     size: &Size,
     states: &[Option<PState<'_>>],
 ) -> Result<(), Failure> {
-    for (p, ps) in states.iter().enumerate().filter_map(|(p, s)| Some((p, s.as_ref()?))) {
+    for (p, ps) in states
+        .iter()
+        .enumerate()
+        .filter_map(|(p, s)| Some((p, s.as_ref()?)))
+    {
         for Revoked { key, forgotten_by } in &ps.revoked {
-            until(size, &format!("principal {p}'s revoked key listed"), || async {
-                let mut lines = Vec::new();
-                for holder in ps.holders.iter().filter(|x| !forgotten_by.contains(x)) {
-                    match lists_revoked(h, holder, key).await {
-                        Ok(true) => {},
-                        Ok(false) => lines.push(format!("`{holder}` does not list {}", key.0)),
-                        Err(e) => lines.push(e),
+            until(
+                size,
+                &format!("principal {p}'s revoked key listed"),
+                || async {
+                    let mut lines = Vec::new();
+                    for holder in ps.holders.iter().filter(|x| !forgotten_by.contains(x)) {
+                        match lists_revoked(h, holder, key).await {
+                            Ok(true) => {},
+                            Ok(false) => lines.push(format!("`{holder}` does not list {}", key.0)),
+                            Err(e) => lines.push(e),
+                        }
                     }
-                }
-                lines
-            })
+                    lines
+                },
+            )
             .await
             .map_err(|e| fail("N5", e))?;
         }
@@ -381,7 +398,10 @@ pub(crate) async fn n5_refused(
         )
     };
     let before = read().await;
-    let action = act(signer.action_by(&ps.pr, key, "after the revoke").await, what)?;
+    let action = act(
+        signer.action_by(&ps.pr, key, "after the revoke").await,
+        what,
+    )?;
     match signer.submit(&action, peer).await {
         Ok(PushOutcome::Refused(r))
             if matches!(r.kind, RefusalKind::Revoked | RefusalKind::KeyNotActive) => {},
@@ -398,17 +418,26 @@ pub(crate) async fn n5_refused(
             return Err(fail(
                 "N5",
                 format!(
-                    "{what}: `{peer}` accepted an action signed by the revoked key {} (tip {tip:?})",
+                    "{what}: `{peer}` accepted an action signed by the revoked key {} (tip \
+                     {tip:?})",
                     key.0
                 ),
             ));
         },
-        Err(e) => return Err(fail("DRIVER", format!("{what}: submitting to `{peer}`: {e}"))),
+        Err(e) => {
+            return Err(fail(
+                "DRIVER",
+                format!("{what}: submitting to `{peer}`: {e}"),
+            ));
+        },
     }
     if read().await != before {
         return Err(fail(
             "N5",
-            format!("{what}: `{peer}`'s state moved after it refused the revoked key {}", key.0),
+            format!(
+                "{what}: `{peer}`'s state moved after it refused the revoked key {}",
+                key.0
+            ),
         ));
     }
     Ok(())
@@ -434,7 +463,10 @@ pub(crate) async fn n8_refused(
         Err(e) => Err(fail("DRIVER", format!("{what}: sign-in ({why}): {e}"))),
         Ok(s) => Err(fail(
             "N8",
-            format!("{what}: the relying party signed in {why}: token for {:?}", s.principal),
+            format!(
+                "{what}: the relying party signed in {why}: token for {:?}",
+                s.principal
+            ),
         )),
     }
 }
@@ -466,7 +498,8 @@ fn verdict_diff(v: &Verdict, pr: &Principal, want: &Want<'_>) -> Option<String> 
                     v.standing, v.tip, v.branches
                 ));
             }
-            (!v.evidence.is_empty()).then(|| format!("evidence {:?} for a principal never forked", v.evidence))
+            (!v.evidence.is_empty())
+                .then(|| format!("evidence {:?} for a principal never forked", v.evidence))
         },
         Want::Forked([a, b]) => {
             let heads = sorted(&[(*a).clone(), (*b).clone()]);
@@ -480,12 +513,17 @@ fn verdict_diff(v: &Verdict, pr: &Principal, want: &Want<'_>) -> Option<String> 
         },
         Want::Resolved { tip, abandoned } => {
             if v.standing != Standing::Active || &v.tip != *tip {
-                return Some(format!("{:?} at {:?}, expected Active at {tip:?}", v.standing, v.tip));
+                return Some(format!(
+                    "{:?} at {:?}, expected Active at {tip:?}",
+                    v.standing, v.tip
+                ));
             }
             if !v.abandoned.contains(abandoned) {
                 return Some(format!("abandoned {:?} lacks {abandoned:?}", v.abandoned));
             }
-            v.resolved_by.is_none().then(|| "no resolving key named".to_owned())
+            v.resolved_by
+                .is_none()
+                .then(|| "no resolving key named".to_owned())
         },
     }
 }
@@ -530,7 +568,10 @@ pub(crate) async fn verdict_check(
             .cloned()
             .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
             .unwrap_or_else(|| "a non-string panic".into());
-        return Err(fail(invariant, format!("{what}: the verdict failed the oracle: {msg}")));
+        return Err(fail(
+            invariant,
+            format!("{what}: the verdict failed the oracle: {msg}"),
+        ));
     }
     match verdict_diff(&v, &ps.pr, &want) {
         None => Ok(v),
@@ -548,11 +589,21 @@ async fn n9(
     authority: &str,
     expected: &[Expected<'_>],
 ) -> Result<(), Failure> {
-    for e in expected.iter().filter(|e| e.ps.holders.iter().any(|x| x == authority)) {
-        until(size, &format!("witness `{witness}` to equal `{authority}` on principal {}", e.p), || async {
-            let got = h.peer_view(witness, &e.ps.pr).await;
-            tip_diff(&e.view, got.as_ref()).into_iter().collect()
-        })
+    for e in expected
+        .iter()
+        .filter(|e| e.ps.holders.iter().any(|x| x == authority))
+    {
+        until(
+            size,
+            &format!(
+                "witness `{witness}` to equal `{authority}` on principal {}",
+                e.p
+            ),
+            || async {
+                let got = h.peer_view(witness, &e.ps.pr).await;
+                tip_diff(&e.view, got.as_ref()).into_iter().collect()
+            },
+        )
         .await
         .map_err(|m| fail("N9", m))?;
     }
@@ -571,31 +622,53 @@ async fn sampled(b: &Barrier<'_, '_>) -> Result<(), Failure> {
         let what = format!("{op} (barrier {})", b.index);
         match op {
             Op::Verdict { p } => {
-                let Some(ps) = b.states[*p].as_ref() else { continue };
+                let Some(ps) = b.states[*p].as_ref() else {
+                    continue;
+                };
                 // A principal that was forked keeps its evidence for good.
                 let want = match &ps.abandoned {
-                    Some(abandoned) => Want::Resolved { tip: &ps.tip, abandoned },
+                    Some(abandoned) => Want::Resolved {
+                        tip: &ps.tip,
+                        abandoned,
+                    },
                     None => Want::Active(&ps.tip),
                 };
                 verdict_check(b.h, ps, &format!("obs-b{}p{p}", b.index), "N7", want, &what).await?;
             },
             Op::SignIn { p } => {
-                let Some(ps) = b.states[*p].as_ref() else { continue };
+                let Some(ps) = b.states[*p].as_ref() else {
+                    continue;
+                };
                 let rp = act(b.h.start_relying_party().await, &what)?;
                 let c = &ps.clients[0];
                 let skip = b.size.forgive_forked_sign_in && ps.abandoned.is_some();
-                match if skip { Ok(None) } else { c.sign_in(&rp).await.map(Some) } {
+                match if skip {
+                    Ok(None)
+                } else {
+                    c.sign_in(&rp).await.map(Some)
+                } {
                     Ok(_) => {},
                     Err(ActionError::Refused(r)) => {
                         return Err(fail(
                             "N8",
-                            format!("{what}: an active key was refused sign-in: {:?}: {}", r.kind, r.detail),
+                            format!(
+                                "{what}: an active key was refused sign-in: {:?}: {}",
+                                r.kind, r.detail
+                            ),
                         ));
                     },
                     Err(e) => return Err(fail("DRIVER", format!("{what}: {e}"))),
                 }
                 for (thief, key) in &ps.thieves {
-                    n8_refused(b.h, thief, &ps.pr, Some(key), "with a revoked, deleted key", &what).await?;
+                    n8_refused(
+                        b.h,
+                        thief,
+                        &ps.pr,
+                        Some(key),
+                        "with a revoked, deleted key",
+                        &what,
+                    )
+                    .await?;
                 }
             },
             Op::VerifyAll { peer } => n3(b, &b.names[*peer], &what).await?,
@@ -607,9 +680,17 @@ async fn sampled(b: &Barrier<'_, '_>) -> Result<(), Failure> {
 
 /// Everything `peer` serves for the principals it holds, with the
 /// timestamps and signatures that legitimately vary left out.
-async fn snapshot(h: &Harness, peer: &str, states: &[Option<PState<'_>>]) -> Result<Vec<(String, Value)>, String> {
+async fn snapshot(
+    h: &Harness,
+    peer: &str,
+    states: &[Option<PState<'_>>],
+) -> Result<Vec<(String, Value)>, String> {
     let mut out = Vec::new();
-    for (p, ps) in states.iter().enumerate().filter_map(|(p, s)| Some((p, s.as_ref()?))) {
+    for (p, ps) in states
+        .iter()
+        .enumerate()
+        .filter_map(|(p, s)| Some((p, s.as_ref()?)))
+    {
         if !ps.holders.iter().any(|x| x == peer) {
             continue;
         }
@@ -617,15 +698,31 @@ async fn snapshot(h: &Harness, peer: &str, states: &[Option<PState<'_>>]) -> Res
         out.push((
             format!("principal {p} tip"),
             tip.map_or(Value::Null, |t| {
-                serde_json::json!([t.heads.iter().map(|h| &h.0).collect::<Vec<_>>(), t.height, t.pr, t.ar])
+                serde_json::json!([
+                    t.heads.iter().map(|h| &h.0).collect::<Vec<_>>(),
+                    t.height,
+                    t.pr,
+                    t.ar
+                ])
             }),
         ));
         for path in ["/branches", "/evidence"] {
-            out.push((format!("principal {p} {path}"), payload(h, peer, path, &[("pr", &ps.pr.0)]).await?));
+            out.push((
+                format!("principal {p} {path}"),
+                payload(h, peer, path, &[("pr", &ps.pr.0)]).await?,
+            ));
         }
         if !ps.revoked.is_empty() {
-            let tmbs = ps.revoked.iter().map(|k| k.key.0.as_str()).collect::<Vec<_>>().join(",");
-            out.push((format!("principal {p} /revoked"), payload(h, peer, "/revoked", &[("tmbs", &tmbs)]).await?));
+            let tmbs = ps
+                .revoked
+                .iter()
+                .map(|k| k.key.0.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push((
+                format!("principal {p} /revoked"),
+                payload(h, peer, "/revoked", &[("tmbs", &tmbs)]).await?,
+            ));
         }
     }
     Ok(out)
@@ -637,11 +734,18 @@ async fn snapshot(h: &Harness, peer: &str, states: &[Option<PState<'_>>]) -> Res
 /// holds (the blob store is the record; the rebuilt index must agree with
 /// the one it replaces, root I1).
 async fn n3(b: &Barrier<'_, '_>, peer: &str, what: &str) -> Result<(), Failure> {
-    let before = snapshot(b.h, peer, b.states).await.map_err(|e| fail("DRIVER", format!("{what}: {e}")))?;
+    let before = snapshot(b.h, peer, b.states)
+        .await
+        .map_err(|e| fail("DRIVER", format!("{what}: {e}")))?;
     if let Err(e) = b.h.verify_all_peer(peer).await {
-        return Err(fail("N3", format!("{what}: verify-all on `{peer}` failed: {e}")));
+        return Err(fail(
+            "N3",
+            format!("{what}: verify-all on `{peer}` failed: {e}"),
+        ));
     }
-    let after = snapshot(b.h, peer, b.states).await.map_err(|e| fail("N3", format!("{what}: `{peer}` after verify-all: {e}")))?;
+    let after = snapshot(b.h, peer, b.states)
+        .await
+        .map_err(|e| fail("N3", format!("{what}: `{peer}` after verify-all: {e}")))?;
     if before != after {
         let (label, was, now) = before
             .iter()
@@ -651,7 +755,10 @@ async fn n3(b: &Barrier<'_, '_>, peer: &str, what: &str) -> Result<(), Failure> 
             .unwrap_or_else(|| ("the set of served items".into(), Value::Null, Value::Null));
         return Err(fail(
             "N3",
-            format!("{what}: `{peer}` serves a different {label} after verify-all\n  before: {was}\n  after:  {now}"),
+            format!(
+                "{what}: `{peer}` serves a different {label} after verify-all\n  before: {was}\n  \
+                 after:  {now}"
+            ),
         ));
     }
     Ok(())

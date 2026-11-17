@@ -110,7 +110,10 @@ fn every_seed_generates_a_valid_log_that_covers_the_mix() {
         .map(|o| o.to_string().split_whitespace().next().unwrap().to_owned())
         .collect();
     for kind in kinds {
-        assert!(pinned.contains(kind), "the pinned seed never generates `{kind}`");
+        assert!(
+            pinned.contains(kind),
+            "the pinned seed never generates `{kind}`"
+        );
     }
     assert_eq!(
         ops.iter().filter(|o| **o == Op::Barrier).count(),
@@ -139,7 +142,6 @@ fn n6_names_every_kind_of_violation() {
 }
 
 // ---- the network ----
-
 
 /// Keeps the op log where a failing run can be replayed from.
 struct LogDir(Option<tempfile::TempDir>);
@@ -181,7 +183,9 @@ async fn netsim_network() {
         dir.path().display()
     );
 
-    let h = run::start(&size, seed).await.unwrap_or_else(|e| panic!("{e}"));
+    let h = run::start(&size, seed)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
 
     match run::run(&h, &size, &ops).await {
         Ok(out) => {

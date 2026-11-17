@@ -31,7 +31,8 @@ use cyphr_scenarios::actions::KeyRef;
 // Must hold: a principal keeps committing after the only key of one of its
 // hash algorithms is deleted (SPEC 6.2, `key/delete` retires a key).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(paired-key-delete): the store fails the 6th commit after the only ES256 key is deleted"]
+#[ignore = "RED(paired-key-delete): the store fails the 6th commit after the only ES256 key is \
+            deleted"]
 async fn a_principal_keeps_committing_after_its_paired_key_is_deleted() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (alice, laptop) = (h.client("alice"), h.client("laptop"));
@@ -72,12 +73,8 @@ async fn a_restored_peer_relearns_a_naked_revoke() {
         ..Size::ci()
     };
     let ops = plan::parse(
-        "create p=0 multikey=false holders=0,1,2\n\
-         addkey p=0 d=0\n\
-         backup peer=2\n\
-         nakedrevoke p=0 d=0\n\
-         restore peer=2\n\
-         barrier\n",
+        "create p=0 multikey=false holders=0,1,2\naddkey p=0 d=0\nbackup peer=2\nnakedrevoke p=0 \
+         d=0\nrestore peer=2\nbarrier\n",
     )
     .expect("op log");
     let h = run::start(&size, 20_261_117).await.expect("start peers");
@@ -131,9 +128,11 @@ async fn a_naked_revoke_survives_a_stopped_holder() {
     h.ok(h.stop_peer("p3").await);
     h.ok(alice.naked_revoke(&pr, &key).await);
     for live in ["p1", "p2"] {
-        h.eventually("a live holder to list the revoke", Duration::from_secs(20), || async {
-            Ok(lists_revoke(&h, live, &key).await)
-        })
+        h.eventually(
+            "a live holder to list the revoke",
+            Duration::from_secs(20),
+            || async { Ok(lists_revoke(&h, live, &key).await) },
+        )
         .await;
     }
     h.ok(h.start_peer("p3").await);
@@ -159,7 +158,8 @@ async fn a_naked_revoke_survives_a_stopped_holder() {
 // Must hold, if the spec's reading stands: an active key of a principal whose
 // fork was resolved signs in.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(resolved-fork-sign-in): the relying party refuses an active key of a principal whose fork was resolved"]
+#[ignore = "RED(resolved-fork-sign-in): the relying party refuses an active key of a principal \
+            whose fork was resolved"]
 async fn a_principal_signs_in_after_its_fork_is_resolved() {
     use cyphr_scenarios::netsim::{Size, plan, run};
     let size = Size {
@@ -167,11 +167,7 @@ async fn a_principal_signs_in_after_its_fork_is_resolved() {
         ..Size::ci()
     };
     let ops = plan::parse(
-        "create p=0 multikey=false holders=0,1,2\n\
-         pair p=0 d=0\n\
-         fork p=0\n\
-         signin p=0\n\
-         barrier\n",
+        "create p=0 multikey=false holders=0,1,2\npair p=0 d=0\nfork p=0\nsignin p=0\nbarrier\n",
     )
     .expect("op log");
     let h = run::start(&size, 20_261_117).await.expect("start peers");

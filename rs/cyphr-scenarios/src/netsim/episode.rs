@@ -11,11 +11,11 @@
 //! branches settled by the owner's next commit (S03), and a stolen key's
 //! branch settled by the owner's naked revoke and `key/delete` (S04).
 
+use super::Size;
 use super::check::{
     Want, evidence_count, heal_everything, n5_refused, n8_refused, tip_diff, until, verdict_check,
 };
 use super::run::{Failure, PState, Revoked, act, fail, refresh};
-use super::Size;
 use crate::actions::{Backup, Client, KeyRef, PeerTip, PushOutcome, Tip};
 use crate::harness::Harness;
 
@@ -51,20 +51,24 @@ async fn both_heads_everywhere(
 ) -> Result<(), Failure> {
     let mut want = vec![heads[0].clone(), heads[1].clone()];
     want.sort();
-    until(size, "every holder to report both heads with evidence", || async {
-        let mut lines = Vec::new();
-        for holder in &ps.holders {
-            let got = h.peer_view(holder, &ps.pr).await;
-            let mut have: Vec<Tip> = got.as_ref().map(|t| t.heads.clone()).unwrap_or_default();
-            have.sort();
-            if have != want {
-                lines.push(format!("`{holder}` heads {have:?}, expected {want:?}"));
-            } else if evidence_count(h, holder, &ps.pr).await.unwrap_or(0) == 0 {
-                lines.push(format!("`{holder}` serves no fork evidence yet"));
+    until(
+        size,
+        "every holder to report both heads with evidence",
+        || async {
+            let mut lines = Vec::new();
+            for holder in &ps.holders {
+                let got = h.peer_view(holder, &ps.pr).await;
+                let mut have: Vec<Tip> = got.as_ref().map(|t| t.heads.clone()).unwrap_or_default();
+                have.sort();
+                if have != want {
+                    lines.push(format!("`{holder}` heads {have:?}, expected {want:?}"));
+                } else if evidence_count(h, holder, &ps.pr).await.unwrap_or(0) == 0 {
+                    lines.push(format!("`{holder}` serves no fork evidence yet"));
+                }
             }
-        }
-        lines
-    })
+            lines
+        },
+    )
     .await
     .map_err(|m| fail("N4", format!("{what}: {m}")))?;
     Ok(())
@@ -81,16 +85,20 @@ async fn resolved_everywhere(
     what: &str,
 ) -> Result<(), Failure> {
     let view = act(c0.local_view(&ps.pr).await, what)?;
-    until(size, "every holder to be Active on the resolution", || async {
-        let mut lines = Vec::new();
-        for holder in &ps.holders {
-            let got: Option<PeerTip> = h.peer_view(holder, &ps.pr).await;
-            if let Some(why) = tip_diff(&view, got.as_ref()) {
-                lines.push(format!("`{holder}`: {why}"));
+    until(
+        size,
+        "every holder to be Active on the resolution",
+        || async {
+            let mut lines = Vec::new();
+            for holder in &ps.holders {
+                let got: Option<PeerTip> = h.peer_view(holder, &ps.pr).await;
+                if let Some(why) = tip_diff(&view, got.as_ref()) {
+                    lines.push(format!("`{holder}`: {why}"));
+                }
             }
-        }
-        lines
-    })
+            lines
+        },
+    )
     .await
     .map_err(|m| fail("N4", format!("{what}: {m}")))?;
     for holder in &ps.holders {
@@ -124,7 +132,11 @@ pub(crate) async fn fork<'h>(
     for i in 0..2 {
         act(c0.commit_data(&ps.pr, &format!("fa{idx}x{i}")).await, what)?;
     }
-    let t0 = accepted(act(c0.push(&ps.pr, &[home.as_str()]).await, what)?, "N2", what)?;
+    let t0 = accepted(
+        act(c0.push(&ps.pr, &[home.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
     // The verdict names an abandoned branch by its first commit, the one
     // that took the forked position (S03).
     let mut abandoned = None;
@@ -133,11 +145,23 @@ pub(crate) async fn fork<'h>(
         abandoned.get_or_insert(tip);
     }
     let abandoned = abandoned.expect("two commits were made");
-    let t1 = accepted(act(c1.push(&ps.pr, &[other.as_str()]).await, what)?, "N2", what)?;
+    let t1 = accepted(
+        act(c1.push(&ps.pr, &[other.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
     heal_everything(h, names).await?;
 
     both_heads_everywhere(h, size, ps, [&t0, &t1], what).await?;
-    verdict_check(h, ps, &format!("obs-f{idx}a"), "N4", Want::Forked([&t0, &t1]), what).await?;
+    verdict_check(
+        h,
+        ps,
+        &format!("obs-f{idx}a"),
+        "N4",
+        Want::Forked([&t0, &t1]),
+        what,
+    )
+    .await?;
     n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
 
     // SPEC 15.8: one ordinary commit on the first device's head, a tied
@@ -152,7 +176,10 @@ pub(crate) async fn fork<'h>(
         ps,
         &format!("obs-f{idx}b"),
         "N4",
-        Want::Resolved { tip: &resolved, abandoned: &abandoned },
+        Want::Resolved {
+            tip: &resolved,
+            abandoned: &abandoned,
+        },
         what,
     )
     .await?;
@@ -171,9 +198,12 @@ pub(crate) async fn theft<'h>(
     idx: usize,
     what: &str,
 ) -> Result<(), Failure> {
-    let key: KeyRef = ps.dev_keys[1]
-        .clone()
-        .ok_or_else(|| fail("DRIVER", format!("{what}: the second device's key is unknown")))?;
+    let key: KeyRef = ps.dev_keys[1].clone().ok_or_else(|| {
+        fail(
+            "DRIVER",
+            format!("{what}: the second device's key is unknown"),
+        )
+    })?;
     let began = std::time::Instant::now();
     let lap = |phase: &str| eprintln!("  {what}: {phase} at {:.1?}", began.elapsed());
     refresh(ps, 0, what).await?;
@@ -185,14 +215,30 @@ pub(crate) async fn theft<'h>(
     let c0 = &ps.clients[0];
     act(c0.commit_data(&ps.pr, &format!("ta{idx}")).await, what)?;
     act(thief.commit_data(&ps.pr, &format!("tb{idx}")).await, what)?;
-    let t0 = accepted(act(c0.push(&ps.pr, &[home.as_str()]).await, what)?, "N2", what)?;
-    let t1 = accepted(act(thief.push(&ps.pr, &[other.as_str()]).await, what)?, "N2", what)?;
+    let t0 = accepted(
+        act(c0.push(&ps.pr, &[home.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
+    let t1 = accepted(
+        act(thief.push(&ps.pr, &[other.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
     heal_everything(h, names).await?;
     lap("forked");
 
     both_heads_everywhere(h, size, ps, [&t0, &t1], what).await?;
     lap("both heads everywhere");
-    verdict_check(h, ps, &format!("obs-t{idx}a"), "N4", Want::Forked([&t0, &t1]), what).await?;
+    verdict_check(
+        h,
+        ps,
+        &format!("obs-t{idx}a"),
+        "N4",
+        Want::Forked([&t0, &t1]),
+        what,
+    )
+    .await?;
     lap("verdict in Error");
     n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
     lap("sign-in refused");
@@ -207,7 +253,10 @@ pub(crate) async fn theft<'h>(
         PushOutcome::Refused(r) => {
             return Err(fail(
                 "N4",
-                format!("{what}: the owner's resolution was refused {:?}: {}", r.kind, r.detail),
+                format!(
+                    "{what}: the owner's resolution was refused {:?}: {}",
+                    r.kind, r.detail
+                ),
             ));
         },
     }
@@ -219,9 +268,20 @@ pub(crate) async fn theft<'h>(
         n5_refused(h, ps, &thief, &key, holder, what).await?;
     }
     lap("n5 probes");
-    n8_refused(h, &thief, &ps.pr, Some(&key), "with a revoked, deleted key", what).await?;
+    n8_refused(
+        h,
+        &thief,
+        &ps.pr,
+        Some(&key),
+        "with a revoked, deleted key",
+        what,
+    )
+    .await?;
 
-    ps.revoked.push(Revoked { key: key.clone(), forgotten_by: Vec::new() });
+    ps.revoked.push(Revoked {
+        key: key.clone(),
+        forgotten_by: Vec::new(),
+    });
     ps.thieves.push((thief, key));
     let tip = view.tip;
     settle(ps, tip, t1);

@@ -8,11 +8,10 @@
 //! is a failure of the step itself.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tempfile::TempDir;
-
-use std::time::Duration;
 
 use crate::actions::{ActionError, ActionResult, Refusal, RefusalKind};
 use crate::bins::Bins;
@@ -51,8 +50,7 @@ impl Device {
     pub async fn run(&self, bins: &Bins, args: &[&str]) -> ActionResult<Value> {
         let peer_wait = PEER_TIMEOUT_SECS.load(std::sync::atomic::Ordering::Relaxed);
         let mut cmd = tokio::process::Command::new(&bins.cli);
-        cmd
-            .arg("--store")
+        cmd.arg("--store")
             .arg(format!("file:{}", self.store.display()))
             .arg("--keystore")
             .arg(&self.keystore)

@@ -287,7 +287,10 @@ async fn exec_op<'h>(
                 .pop_front()
                 .ok_or_else(|| fail("DRIVER", format!("{what}: no backup key to revoke")))?;
             if holder != *d {
-                return Err(fail("DRIVER", format!("{what}: device {holder} holds the key")));
+                return Err(fail(
+                    "DRIVER",
+                    format!("{what}: device {holder} holds the key"),
+                ));
             }
             let c = &ps.clients[*d];
             // Sent to the peers this device knows; the others learn of it
@@ -295,10 +298,21 @@ async fn exec_op<'h>(
             act(c.naked_revoke(&ps.pr, &key).await, &what)?;
             act(c.remove_key(&ps.pr, &key).await, &what)?;
             push_honest(ps, *d, stale, &what).await?;
-            ps.revoked.push(Revoked { key: key.clone(), forgotten_by: Vec::new() });
+            ps.revoked.push(Revoked {
+                key: key.clone(),
+                forgotten_by: Vec::new(),
+            });
             let c = &ps.clients[*d];
             check::n5_refused(h, ps, c, &key, &ps.home, &what).await?;
-            check::n8_refused(h, c, &ps.pr, Some(&key), "with a revoked, deleted key", &what).await
+            check::n8_refused(
+                h,
+                c,
+                &ps.pr,
+                Some(&key),
+                "with a revoked, deleted key",
+                &what,
+            )
+            .await
         },
         Op::Concurrent { .. } => {
             refresh(ps, 0, &what).await?;
@@ -363,7 +377,7 @@ pub async fn run(h: &Harness, size: &Size, ops: &[Op]) -> Result<Outcome, Failur
     let mut model = Model::new(size.peers);
     let mut states: Vec<Slot<'_>> = Vec::new();
     let stale = AtomicUsize::new(0);
-    let witness = size.witness.then(|| Size::WITNESS);
+    let witness = size.witness.then_some(Size::WITNESS);
     let mut marks: Vec<Op> = Vec::new();
     let mut backup: Option<Backup> = None;
     let mut barriers = 0;

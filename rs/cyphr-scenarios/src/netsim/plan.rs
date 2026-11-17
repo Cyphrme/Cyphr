@@ -469,8 +469,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
         // they can act.
         let live: Vec<usize> = (0..model.principals.len())
             .filter(|&p| {
-                !model.down.contains(&model.principals[p].holders[0])
-                    && !model.principals[p].spent
+                !model.down.contains(&model.principals[p].holders[0]) && !model.principals[p].spent
             })
             .collect();
         let pick = |rng: &mut ChaCha8Rng, ok: &dyn Fn(usize) -> bool| -> Option<usize> {
@@ -503,16 +502,16 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
             .into_iter()
             .filter(|k| match k {
                 Kind::Commit | Kind::Record | Kind::AddKey | Kind::Replace => !live.is_empty(),
-                Kind::Pair => live
+                Kind::Pair => live.iter().any(|&p| {
+                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
+                }),
+                Kind::DelKey => live
                     .iter()
-                    .any(|&p| (model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey)),
-                Kind::DelKey => live.iter().any(|&p| !model.principals[p].backups.is_empty()),
+                    .any(|&p| !model.principals[p].backups.is_empty()),
                 Kind::Concurrent => live.iter().any(|&p| model.principals[p].devices == 2),
                 Kind::NakedRevoke => live.iter().any(|&p| revocable(p)),
                 Kind::Fork | Kind::Theft => live.iter().any(|&p| episodic(p)),
-                Kind::Backup => {
-                    model.backed_up.is_none() && model.down.len() < size.peers
-                },
+                Kind::Backup => model.backed_up.is_none() && model.down.len() < size.peers,
                 Kind::Restore => model
                     .backed_up
                     .is_some_and(|peer| !model.down.contains(&peer)),
@@ -552,8 +551,10 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 }
             },
             Kind::Pair => {
-                let p = pick(&mut rng, &|p| (model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey))
-                    .expect("enabled implies one");
+                let p = pick(&mut rng, &|p| {
+                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
+                })
+                .expect("enabled implies one");
                 Op::Pair {
                     p,
                     d: rng.gen_range(0..model.principals[p].devices),

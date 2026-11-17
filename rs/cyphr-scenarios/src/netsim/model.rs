@@ -97,7 +97,9 @@ impl Model {
             return Err(format!("`{op}`: principal {p} has {} devices", pm.devices));
         }
         if pm.spent {
-            return Err(format!("`{op}`: principal {p} is spent: its store cannot commit past a deleted paired key"));
+            return Err(format!(
+                "`{op}`: principal {p} is spent: its store cannot commit past a deleted paired key"
+            ));
         }
         Ok(pm)
     }
@@ -177,7 +179,9 @@ impl Model {
             Op::Pair { p, d } => {
                 let pm = self.principal(op, *p, *d)?;
                 if pm.multikey {
-                    return Err(format!("`{op}`: a multikey principal takes no second device"));
+                    return Err(format!(
+                        "`{op}`: a multikey principal takes no second device"
+                    ));
                 }
                 if pm.devices >= MAX_DEVICES {
                     return Err(format!(
@@ -210,7 +214,9 @@ impl Model {
                     return Err(format!("`{op}`: every holder must be running"));
                 }
                 if pm.backups.front() != Some(d) {
-                    return Err(format!("`{op}`: device {d} does not hold the oldest backup"));
+                    return Err(format!(
+                        "`{op}`: device {d} does not hold the oldest backup"
+                    ));
                 }
                 pm.backups.pop_front();
                 pm.height += 1;
