@@ -40,6 +40,7 @@ use cyphr::{Commit, Key, Principal, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
+use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
@@ -80,6 +81,9 @@ pub struct Record {
     anchor: Anchor,
     clock: Clock,
     patch_cap: usize,
+    /// Ask a peer for the proof that its tip extends the held one before
+    /// fetching its commits ([`Record::with_extension_proofs`]).
+    extension_proofs: bool,
     held: Option<Held>,
     /// Where the commits a [`resume`](Record::resume)d record holds only as
     /// verified state are stored.
@@ -143,6 +147,7 @@ impl Record {
             anchor,
             clock: system_clock,
             patch_cap: DEFAULT_PATCH_CAP,
+            extension_proofs: false,
             held: None,
             source: None,
             dead: BTreeMap::new(),
@@ -237,6 +242,20 @@ impl Record {
     #[must_use]
     pub fn with_patch_cap(mut self, cap: usize) -> Self {
         self.patch_cap = cap;
+        self
+    }
+
+    /// Before fetching a peer's commits, ask it for the proof that its tip
+    /// extends the record's, and fetch nothing from a peer whose proof
+    /// does not verify ([`PeerStanding::Diverged`]). A peer that serves no
+    /// proofs is pulled as before.
+    ///
+    /// Off by default: a refused peer leaves no [`ForkFinding`], since a
+    /// proof shows that a log diverged but not the commits to prove it
+    /// with, and a holder that must enter `Error` on a fork needs those.
+    #[must_use]
+    pub fn with_extension_proofs(mut self) -> Self {
+        self.extension_proofs = true;
         self
     }
 
@@ -683,6 +702,11 @@ pub enum PeerStanding {
     /// The peer's chain diverges from the record's; the [`ForkFinding`] is
     /// in [`PullReport::forks`].
     Forked,
+    /// The peer's tip does not extend the record's, by the peer's own
+    /// consistency proof ([`Record::with_extension_proofs`]): no commit
+    /// was fetched and there is no [`ForkFinding`], for the proof alone is
+    /// no evidence of a fork.
+    Diverged,
     /// The peer could not be used; nothing it served changed the record.
     Failed(PeerFailure),
 }
@@ -1012,6 +1036,15 @@ async fn reach<C: Connector>(
         ),
         None => None,
     };
+    let offered = if record.extension_proofs {
+        match offered_extension(record, connector).await? {
+            Offer::Extends(offer) => Some(offer),
+            Offer::Diverged => return Ok((PeerStanding::Diverged, Vec::new())),
+            Offer::Unavailable => None,
+        }
+    } else {
+        None
+    };
     if let Some(tip) = tip {
         let request = PatchRequest {
             principal_id: &record.id,
@@ -1024,6 +1057,9 @@ async fn reach<C: Connector>(
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
                 record.extend(&patch.entries, &patch.actions).await?;
+                if let (Some(offer), Some(held)) = (&offered, &record.held) {
+                    confirm_extension(&held.principal, offer)?;
+                }
                 return Ok((
                     PeerStanding::Extended {
                         added: patch.entries.len(),
@@ -1038,6 +1074,46 @@ async fn reach<C: Connector>(
         }
     }
     compare_whole_chain(record, connector).await
+}
+
+/// What a peer's answer to a request for the proof that its tip extends
+/// the record's comes to.
+enum Offer {
+    Extends(Extension),
+    Diverged,
+    /// The peer cannot say (it serves no such route, or has nothing the
+    /// record can be judged against): the pull goes on without a proof.
+    Unavailable,
+}
+
+/// Ask the peer for the proof that its tip extends the record's, and
+/// judge it against the record's own log.
+async fn offered_extension<C: Connector>(
+    record: &Record,
+    connector: &C,
+) -> Result<Offer, PeerFailure> {
+    let Some(held) = &record.held else {
+        return Ok(Offer::Unavailable);
+    };
+    let alg_id = cyphr::commit_root::hash_alg_to_u64(held.principal.hash_alg());
+    let Ok(held_size) = held.principal.commit_trees().tree_size(alg_id) else {
+        return Ok(Offer::Unavailable);
+    };
+    let target = format!(
+        "/consistency?pr={}&from={held_size}",
+        percent_encode_query_value(&record.id)
+    );
+    let payload = match fetch_payload(connector, &target).await {
+        Ok(payload) => payload,
+        Err(PatchFailure::NonSuccess(_)) => return Ok(Offer::Unavailable),
+        Err(other) => return Err(other.into()),
+    };
+    let offer = Extension::from_payload(&payload)?;
+    match verify_extension(&held.principal, &offer) {
+        Ok(()) => Ok(Offer::Extends(offer)),
+        Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => Ok(Offer::Diverged),
+        Err(_) => Ok(Offer::Unavailable),
+    }
 }
 
 /// How a peer's whole chain relates to the record's.

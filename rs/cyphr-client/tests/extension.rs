@@ -13,7 +13,7 @@ use common::*;
 use cyphr::Principal;
 use cyphr::commit_root::hash_alg_to_u64;
 use cyphr::eml::MemoryStorage;
-use cyphr_client::{Extension, ExtensionFailure, verify_extension};
+use cyphr_client::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 use serde_json::json;
 
 const T0: i64 = 1_700_000_000;
@@ -22,12 +22,12 @@ const LONGEST: usize = 24;
 /// A chain of `n` commits after genesis built from `keys`, the first
 /// `shared` of them on `keys`, the rest on `rival` keys, one snapshot of
 /// the principal per tree size on the way.
-async fn grown(
-    g: &Kp,
+async fn grown<'a>(
+    g: &'a Kp,
     keys: &[Kp],
     rival: &[Kp],
     shared: usize,
-) -> (Chain<'_>, Vec<Principal<MemoryStorage>>) {
+) -> (Chain<'a>, Vec<Principal<MemoryStorage>>) {
     let mut chain = Chain::new(g).await;
     let mut at_size = vec![chain.principal.fork().await.expect("fork")];
     for i in 0..keys.len() {
@@ -44,8 +44,11 @@ fn tree_size(p: &Principal<MemoryStorage>) -> u64 {
 }
 
 /// Backs: for every older size the held principal can stand at, the proof a
-/// longer chain serves verifies, and holds at most ceil(log2 m) + 1 hashes
-/// for a log of m commits (an arity-2 mountain range).
+/// longer chain serves verifies, and holds at most 2 * (floor(log2 m) + 1)
+/// hashes for a log of m commits: the boundary peak, the path lifting it
+/// into the peak that absorbed it (at most floor(log2 m) siblings), and the
+/// new frontier (at most floor(log2 m) + 1 peaks). A tighter
+/// ceil(log2 m) + 1 does not hold of this proof shape (1 -> 25 takes 8).
 #[tokio::test]
 async fn an_honest_extension_verifies_with_a_logarithmic_proof() {
     let g = kp();
@@ -68,7 +71,7 @@ async fn an_honest_extension_verifies_with_a_logarithmic_proof() {
                 .map(|s| s.siblings.len())
                 .sum::<usize>()
             + ext.proof.new_peaks.len();
-        let bound = (m as f64).log2().ceil() as usize + 1;
+        let bound = 2 * (m.ilog2() as usize + 1);
         assert!(nodes <= bound, "{n} -> {m}: {nodes} hashes > {bound}");
     }
 }
@@ -105,8 +108,11 @@ async fn a_forked_pair_fails_exactly_past_the_shared_prefix() {
 
 /// Backs: the verifier takes the older size and root from the principal it
 /// holds and the newer size and root from the offer, never from the proof.
-/// An offer that states another size or another root than the log the proof
-/// was made over is refused, though the proof is untouched.
+/// An offer that states another root than the log the proof was made over,
+/// or a size with another frontier shape, is refused, though the proof is
+/// untouched. A Commit Root does not commit to its size (a size with the
+/// same frontier shape, one more commit here, verifies), so the stated size
+/// is held to the replayed log by `confirm_extension` instead.
 #[tokio::test]
 async fn sizes_and_roots_come_from_outside_the_proof() {
     let g = kp();
@@ -118,11 +124,21 @@ async fn sizes_and_roots_come_from_outside_the_proof() {
         .expect("proof");
     assert_eq!(verify_extension(held, &ext), Ok(()));
 
-    let mut wrong_size = ext.clone();
-    wrong_size.size += 1;
+    let mut wrong_shape = ext.clone();
+    wrong_shape.size = ext.size.next_power_of_two() * 2;
     assert_eq!(
-        verify_extension(held, &wrong_size),
+        verify_extension(held, &wrong_shape),
         Err(ExtensionFailure::NotAnExtension)
+    );
+
+    let mut same_shape = ext.clone();
+    same_shape.size += 1;
+    assert_eq!(verify_extension(held, &same_shape), Ok(()));
+    let replayed = &chain.principal;
+    assert_eq!(confirm_extension(replayed, &ext), Ok(()));
+    assert_eq!(
+        confirm_extension(replayed, &same_shape),
+        Err(ExtensionFailure::Unconfirmed)
     );
 
     // Another root of the same width (the held principal's own tip commit
@@ -148,7 +164,6 @@ async fn sizes_and_roots_come_from_outside_the_proof() {
 }
 
 fn cr_bytes(cr: &cyphr::CommitRoot, held: &Principal<MemoryStorage>) -> Vec<u8> {
-    use cyphr::StateDigest;
     cr.as_multihash()
         .get(held.hash_alg())
         .expect("variant")

@@ -91,6 +91,10 @@ pub enum PeerFailure {
     /// The `/patch` fetch failed or its envelope was refused.
     #[error("patch: {0}")]
     Patch(#[from] PatchFailure),
+    /// The peer's extension proof was not the wire shape, or the commits it
+    /// covered replayed to another log than it stated.
+    #[error("extension proof: {0}")]
+    Extension(#[from] crate::extension::ExtensionFailure),
     /// A patch entry could not be decoded.
     #[error("patch entry {index} is undecodable: {defect:?}")]
     Entry {

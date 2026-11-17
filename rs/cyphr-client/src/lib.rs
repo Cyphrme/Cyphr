@@ -12,6 +12,7 @@ mod connector;
 mod embedded;
 pub mod evidence;
 mod exchange;
+mod extension;
 mod patch;
 mod peer;
 mod relying_party;
@@ -19,6 +20,7 @@ mod report;
 mod revoke;
 mod sync;
 
+pub use extension::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 pub use embedded::{FollowReport, GossipTips, PeerPull};
 pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
 pub use relying_party::{
