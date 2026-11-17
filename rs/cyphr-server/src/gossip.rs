@@ -2,14 +2,16 @@
 //! step against the peers the operator chose (GOSSIP-MIN section 2).
 //!
 //! The timer is not a second protocol. Each round, for every principal the
-//! server holds, it brings a [`cyphr_client::Record`] up to the principal's
-//! stored chain and calls the same [`cyphr_client::pull`] a verifying
-//! client calls, then stores what verified:
+//! server holds, it opens a [`cyphr_client::Record`] over the engine's
+//! kept state of the principal and calls the same [`cyphr_client::pull`] a
+//! verifying client calls, then stores what verified:
 //!
-//! - the record is kept between rounds, so a round replays the commits past the record's tip (a
-//!   client's push since, or what the last pull took), not the chain; a record the stored chain no
-//!   longer extends (a resolved fork re-pointed it, an evicted record) is rebuilt from the stored
-//!   genesis commit;
+//! - the record starts from the verified state the engine already keeps, so a round verifies the
+//!   commits past that state (a peer's new head), not the chain. A principal the engine keeps no
+//!   current state for (evicted, not written since a restart, or one whose history embeds another
+//!   principal's pin or Key Tree digest, which are always replayed) is replayed once from its
+//!   stored genesis commit. A fork a peer proves needs the commits below it, which the record reads
+//!   from the store then;
 //! - commits past the stored tip go through the engine, which verifies them again before
 //!   persisting;
 //! - a rival branch the pull proved is handed to the engine, which keeps it (G1) so `/branches` and
@@ -30,31 +32,28 @@
 //!
 //! Limits, stated rather than hidden: only principals the server already
 //! holds are pulled (a peer learns a new principal from its owner's `/push`;
-//! discovery is not part of this), and the records kept between rounds are
-//! the most recently pulled [`KEPT_RECORDS`], so a server holding more
-//! principals than that rebuilds the rest when they change. The gate reads heads only, so it is as
+//! discovery is not part of this), and a peer serves every action bundle it
+//! holds with each patch, so a pull reads them all (an action already held
+//! is not verified again). The gate reads heads only, so it is as
 //! blind to data actions that move no head as the pull step is; that is
 //! the open action question (GitHub #211), not something the gate adds.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ActionBundle, Anchor, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, peer_heads,
+    ActionBundle, Anchor, ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, peer_heads,
     pull, verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, info, warn};
 
 use crate::AppState;
-
-/// Most records kept between rounds. A record holds its principal's whole
-/// verified chain in memory, so the bound is what keeps the timer from
-/// holding every principal the server has.
-pub const KEPT_RECORDS: usize = 64;
 
 /// Why one principal's gossip round could not run.
 #[derive(Debug, thiserror::Error)]
@@ -116,39 +115,9 @@ pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
 /// the chain is not replayed to learn them. The set is a function of the
 /// tip commit id alone; it only ever lets a round skip work, is never
 /// persisted, and a restart costs one replay per principal.
-///
-/// It also keeps the records of the last [`KEPT_RECORDS`] principals pulled,
-/// each the verified chain at the stored tip the round left it at.
 #[derive(Default)]
 pub struct Gossip {
     keys: HashMap<String, KeyMemo>,
-    records: KeptRecords,
-}
-
-/// Records by principal, the oldest insertion dropped when full.
-#[derive(Default)]
-struct KeptRecords {
-    held: HashMap<String, Record>,
-    order: VecDeque<String>,
-}
-
-impl KeptRecords {
-    fn take(&mut self, id: &str) -> Option<Record> {
-        let record = self.held.remove(id)?;
-        self.order.retain(|k| k != id);
-        Some(record)
-    }
-
-    fn keep(&mut self, id: &str, record: Record) {
-        self.take(id);
-        if self.order.len() >= KEPT_RECORDS
-            && let Some(oldest) = self.order.pop_front()
-        {
-            self.held.remove(&oldest);
-        }
-        self.order.push_back(id.to_owned());
-        self.held.insert(id.to_owned(), record);
-    }
 }
 
 struct KeyMemo {
@@ -174,11 +143,9 @@ impl Gossip {
                 probe_revokes(state, peers, &keys).await;
                 continue;
             }
-            let kept = self.records.take(id);
-            match round_principal(state, peers, id, kept).await {
-                Ok((memo, record)) => {
+            match round_principal(state, peers, id).await {
+                Ok(memo) => {
                     self.keys.insert(id.clone(), memo);
-                    self.records.keep(id, record);
                 },
                 Err(err) => warn!(principal = %id, %err, "gossip: round skipped"),
             }
@@ -240,57 +207,54 @@ async fn probe_revokes(
     record_revokes(state, &revoked).await;
 }
 
-/// A record of `principal_id` at the engine's stored tip: the `kept` one
-/// brought up to it by the commits past its own tip, or, when the stored
-/// chain does not extend it, one rebuilt from the stored genesis commit.
-/// With the number of commits the record had already replayed, so a round
-/// can count only the work it did.
-async fn open_record(
-    state: &Arc<AppState>,
-    principal_id: &str,
-    kept: Option<Record>,
-) -> Result<(Record, u64), RoundError> {
-    if let Some(record) = kept
-        && let Some(base) = resume(state, principal_id, record).await
-    {
-        return Ok(base);
+/// The chain the engine stores, as a resumed record's store.
+struct StoredChain {
+    state: Arc<AppState>,
+    principal_id: String,
+}
+
+impl ChainSource for StoredChain {
+    fn first(
+        &self,
+        count: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchEntry>, String>> + Send + '_>> {
+        Box::pin(async move {
+            let last = u64::try_from(count.saturating_sub(1)).map_err(|e| e.to_string())?;
+            let stored = self
+                .state
+                .engine
+                .get_patch(&self.principal_id, None, Some(last))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(patch_entries(&stored))
+        })
+    }
+}
+
+/// A record of `principal_id` at the engine's tip: opened over the state
+/// the engine keeps, or, when it keeps none that is current, replayed from
+/// the stored genesis commit.
+async fn open_record(state: &Arc<AppState>, principal_id: &str) -> Result<Record, RoundError> {
+    if let Some(kept) = state.engine.kept_principal(principal_id).await {
+        let store = Arc::new(StoredChain {
+            state: Arc::clone(state),
+            principal_id: principal_id.to_owned(),
+        });
+        if let Ok(record) = Record::resume(principal_id, kept, system_clock, store) {
+            return Ok(record);
+        }
     }
     let stored = state.engine.get_patch(principal_id, None, None).await?;
     let genesis = stored.entries.first().ok_or(RoundError::Empty)?;
     let anchor = Anchor::GenesisCommit(genesis.commit.commit_id.clone());
-    let record = Record::from_entries(
+    Ok(Record::from_entries(
         principal_id,
         anchor,
         system_clock,
         &patch_entries(&stored),
         &patch_actions(&stored),
     )
-    .await?;
-    Ok((record, 0))
-}
-
-/// `record` extended by what the engine stores past its tip, if that
-/// leaves it at the engine's tip; `None` when the engine does not hold the
-/// record's tip (a re-pointed chain, a commit the engine refused) or the
-/// commits past it do not replay.
-async fn resume(
-    state: &Arc<AppState>,
-    principal_id: &str,
-    mut record: Record,
-) -> Option<(Record, u64)> {
-    let anchor = record.tip()?.pr.parse().ok()?;
-    let stored = state
-        .engine
-        .get_patch(principal_id, Some(&anchor), None)
-        .await
-        .ok()?;
-    let base = record.replayed();
-    record
-        .catch_up(&patch_entries(&stored), &patch_actions(&stored))
-        .await
-        .ok()?;
-    let tip = state.engine.get_tip(principal_id).await.ok()??;
-    (record.tip()?.commit_id == tip.commit_id).then_some((record, base))
+    .await?)
 }
 
 fn patch_entries(stored: &cyphr_storage::engine::PatchResponse) -> Vec<PatchEntry> {
@@ -318,9 +282,8 @@ async fn round_principal(
     state: &Arc<AppState>,
     peers: &[(String, HttpConnector)],
     principal_id: &str,
-    kept: Option<Record>,
-) -> Result<(KeyMemo, Record), RoundError> {
-    let (mut record, base) = open_record(state, principal_id, kept).await?;
+) -> Result<KeyMemo, RoundError> {
+    let mut record = open_record(state, principal_id).await?;
     let tip = record.tip().ok_or(RoundError::Empty)?;
     let memo = KeyMemo {
         tip: tip.commit_id,
@@ -366,8 +329,8 @@ async fn round_principal(
             Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
         }
     }
-    state.metrics.gossip_replayed(record.replayed() - base);
-    Ok((memo, record))
+    state.metrics.gossip_replayed(record.replayed());
+    Ok(memo)
 }
 
 /// Record each verified naked revoke where the server keeps deaths (SPEC
@@ -382,38 +345,5 @@ pub(crate) async fn record_revokes(state: &AppState, revoked: &[cyphr_client::Re
         {
             warn!(tmb = %revoked.tmb.to_b64(), %err, "naked revoke not recorded");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn record() -> Record {
-        Record::new("pg", Anchor::GenesisCommit("c".into()))
-    }
-
-    /// The bound on kept records is memory the server never gives back, and
-    /// a round only reaches it with more than [`KEPT_RECORDS`] changing
-    /// principals; end to end would need that many live principals, so the
-    /// eviction is pinned here on the structure alone.
-    #[test]
-    fn kept_records_never_exceed_their_bound_and_drop_the_oldest() {
-        let mut kept = KeptRecords::default();
-        for n in 0..=KEPT_RECORDS {
-            kept.keep(&format!("p{n}"), record());
-        }
-        assert_eq!(kept.held.len(), KEPT_RECORDS);
-        assert_eq!(kept.order.len(), KEPT_RECORDS);
-        assert!(kept.take("p0").is_none(), "the oldest was evicted");
-
-        // Taking one leaves the others ordered, and keeping it again does
-        // not count it twice.
-        assert!(kept.take("p1").is_some());
-        assert_eq!(kept.order.len(), KEPT_RECORDS - 1);
-        kept.keep("p1", record());
-        kept.keep("p1", record());
-        assert_eq!(kept.order.len(), KEPT_RECORDS);
-        assert_eq!(kept.held.len(), KEPT_RECORDS);
     }
 }

@@ -66,8 +66,9 @@ async fn revoked_at(app: &axum::Router, tmb: &str) -> usize {
 }
 
 /// Backs the idle gate: P1 and P2 hold one principal at the
-/// same tip. After the first round (which replays the chain once to learn
-/// its active keys) three more rounds must replay nothing and ask P2 for
+/// same tip. P1's engine keeps the principal's verified state from the
+/// pushes, so a round opens its record over that state and replays
+/// nothing, and three more rounds must replay nothing and ask P2 for
 /// nothing but `/branches` and `/revoked`; every round, idle ones included,
 /// is counted. A naked revoke of an active key posted to P2 while idle
 /// reaches P1 in one round with nothing replayed (the probe is not gated),
@@ -117,13 +118,13 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     let rounds = |s: &AppState| series(s, "cyphr_gossip_rounds_total");
 
     gossip.round(&p1, &peers).await;
-    assert_eq!(replayed(&p1), 2, "the first round replays the 2 commits");
+    assert_eq!(replayed(&p1), 0, "the engine's kept state is the record");
     seen.lock().expect("log").clear();
 
     for _ in 0..3 {
         gossip.round(&p1, &peers).await;
     }
-    assert_eq!(replayed(&p1), 2, "idle rounds replayed a chain");
+    assert_eq!(replayed(&p1), 0, "idle rounds replayed a chain");
     assert_eq!(rounds(&p1), 4, "every round counts, idle ones too");
     let asked = seen.lock().expect("log").clone();
     assert!(
@@ -147,7 +148,7 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     assert_eq!(status, StatusCode::OK, "revoke: {body:?}");
     assert_eq!(revoked_at(&app1, &eve_tmb).await, 0, "P1 starts ignorant");
     gossip.round(&p1, &peers).await;
-    assert_eq!(replayed(&p1), 2, "the probe needs no replay");
+    assert_eq!(replayed(&p1), 0, "the probe needs no replay");
     assert_eq!(revoked_at(&app1, &eve_tmb).await, 1, "P1 heard the revoke");
 
     // A new head opens the gate.
@@ -158,17 +159,29 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
         StatusCode::CREATED
     );
     gossip.round(&p1, &peers).await;
-    assert_eq!(
-        replayed(&p1),
-        3,
-        "a peer with a new head costs the one new commit, not the chain"
-    );
+    // The revoke moved what P1's engine keeps its state against, so this
+    // one round replays the chain (2) and the new commit (1); the engine
+    // keeps the state again when it writes the new commit.
+    assert_eq!(replayed(&p1), 3, "a revoke costs the engine one replay");
     let want = owner.pr_tagged().expect("pr");
     let (_, tip) = get_json(app1.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
     assert_eq!(
         envelope_payload(&tip)["pr"],
         want.as_str(),
         "P1 took the head"
+    );
+
+    let third = common::key_commit_by(&mut owner, "golden", "bob", T + 12).await;
+    let body = common::push_body(&id, &third);
+    assert_eq!(
+        post_json(app2.clone(), "/push", body).await.0,
+        StatusCode::CREATED
+    );
+    gossip.round(&p1, &peers).await;
+    assert_eq!(
+        replayed(&p1),
+        4,
+        "a peer with a new head costs the one new commit, not the chain"
     );
 }
 
@@ -196,12 +209,14 @@ fn revoke_of(name: &str, rvk: i64) -> serde_json::Value {
 /// only at the tip they were read at. P1 and
 /// P2 both take a key-add commit by direct push, so both tips move and
 /// every peer head is held (the gate would say idle), then the NEW key is
-/// naked-revoked at P2. One round on P1 must verify the added commit (and
-/// only it) to learn the new key, and P1 must hear the revoke.
+/// naked-revoked at P2. One round on P1 must learn the new key from the
+/// engine's kept state, which the push moved to the new tip with no replay,
+/// and P1 must hear the revoke.
 ///
 /// Turns red if: the memo is used at a tip it was not read at, so the
 /// probe asks only about the old keys and the revoke of the new one is
-/// never heard, or learning the new key replays more than the new commit. End to end over two
+/// never heard, or learning the new key replays commits the kept state
+/// already covers. End to end over two
 /// servers on real sockets: yes.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_added_while_idle_is_probed_for_revokes() {
@@ -260,8 +275,8 @@ async fn a_key_added_while_idle_is_probed_for_revokes() {
 
     assert_eq!(
         series(&p1, "cyphr_gossip_commits_replayed_total"),
-        replayed + 1,
-        "a moved tip costs exactly the added commit"
+        replayed,
+        "the kept state already covers the added commit"
     );
     assert_eq!(
         revoked_at(&app1, &carol).await,
