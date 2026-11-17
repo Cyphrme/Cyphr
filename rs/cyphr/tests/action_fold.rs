@@ -238,6 +238,31 @@ async fn the_data_root_a_signer_would_name_follows_the_view() {
     assert!(named(&mut p).is_some(), "restored");
 }
 
+/// SPEC 11.4 ("no transactions or actions are possible on a closed
+/// account") and 14.9: a new submission is refused on a frozen or deleted
+/// principal whatever its own `now`, even one dated before the freeze or
+/// the delete. Held history is another matter: the view judges it at its
+/// own `now` (see the tests above).
+#[tokio::test]
+async fn a_new_action_is_refused_on_a_frozen_or_deleted_principal_whatever_its_now() {
+    let (g, a) = (k(), k());
+    let backdated = act(&g, T + 10);
+    let mut p = genesis(&g, &a).await;
+    let id = p.pr_tagged().expect("pr");
+    assert!(commit(&mut p, &g, "freeze/create", Some(id), None, T + 50).await);
+    let frozen = p.verify_and_record_action(&backdated.pay, &backdated.sig, backdated.czd.clone());
+    assert!(matches!(frozen, Err(cyphr::Error::Frozen)), "{frozen:?}");
+    let id = p.pr_tagged().expect("pr");
+    assert!(commit(&mut p, &g, "freeze/delete", Some(id), None, T + 60).await);
+    let id = p.pr_tagged().expect("pr");
+    assert!(commit(&mut p, &g, "principal/delete", Some(id), None, T + 70).await);
+    let deleted = p.verify_and_record_action(&backdated.pay, &backdated.sig, backdated.czd.clone());
+    assert!(
+        matches!(deleted, Err(cyphr::Error::AlreadyDeleted)),
+        "{deleted:?}"
+    );
+}
+
 /// A commit already held, dated T+50; an action dated T+10 by a key active
 /// then arrives afterwards: it counts (its verdict is final), and the state
 /// equals the one where it arrived first.

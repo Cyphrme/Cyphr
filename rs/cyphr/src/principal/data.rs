@@ -26,6 +26,10 @@ impl PrincipalState {
     /// before `now` can change the answer, in either direction, so it is
     /// never stored.
     ///
+    /// Likewise a new submission is refused outright while the principal is
+    /// frozen or deleted, by its state now; held history is judged at its
+    /// own `now` against the frozen spans and the delete.
+    ///
     /// A naked revoke gates admission only: it cuts off what is submitted
     /// after it was noted and re-judges nothing already held (SPEC 14.12;
     /// the spec author on #203, "Retrospection isn't supported"). So what DT
@@ -54,10 +58,18 @@ impl PrincipalState {
         if self.pg().is_none() {
             return Err(Error::GenesisIncomplete);
         }
-        self.key_timeline.open_at(now)?;
         let verdict = match arrival {
+            // SPEC 11.4: "no transactions or actions are possible on a
+            // closed account", and a frozen principal changes only by being
+            // unfrozen (SPEC 14.9): a new submission is refused by the
+            // principal's state now, whatever the action's own `now`.
+            Arrival::Submitted if self.deleted => return Err(Error::AlreadyDeleted),
+            Arrival::Submitted if self.frozen => return Err(Error::Frozen),
             Arrival::Submitted => self.key_timeline.authorize(tmb, now),
-            Arrival::Held => self.key_timeline.authorize_by_commits(tmb, now),
+            Arrival::Held => {
+                self.key_timeline.open_at(now)?;
+                self.key_timeline.authorize_by_commits(tmb, now)
+            },
         };
         if let Some(verdict) = verdict {
             return verdict;

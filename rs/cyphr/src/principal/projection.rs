@@ -12,6 +12,15 @@ use crate::state::{AuthRoot, DataRoot, KeyRoot, PrincipalRoot, StateRoot};
 /// the key timeline, every held action and the ones DT shows, and the
 /// lifecycle. Two states of one record (a kept state and a replay of the
 /// stored chain) are equal exactly when their projections are.
+///
+/// It leaves out the Principal Genesis, the nonce sets, the embedded
+/// principals' views and the per-key latest-signed map of the data ledger.
+/// The genesis is fixed by the first commit, which the roots and the commit
+/// count already cover; the nonces are hashed into the roots; the latest-
+/// signed map is read only through each key's `last_used`, which is
+/// compared. The embedded views are verifier knowledge that no root
+/// covers, and a state that holds any (a pin or a Key Tree digest) is never
+/// kept, so no two states of such a principal are ever compared.
 #[derive(Debug, PartialEq, Eq)]
 pub struct StateProjection<'a> {
     pr: &'a PrincipalRoot,
