@@ -1130,7 +1130,7 @@ pub(crate) struct StagedBuild<'p, T: cyphr::eml::Storage> {
 /// What a verified bundle forms ([`StorageEngine::build_staged`]).
 pub(crate) enum Built<'p, T: cyphr::eml::Storage> {
     /// A commit, its log append not yet made.
-    Commit(StagedBuild<'p, T>),
+    Commit(Box<StagedBuild<'p, T>>),
     /// Actions alone, verified and not yet held.
     Actions(cyphr::replay::StagedBundle<'p, T>),
 }
@@ -3625,15 +3625,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .follow_held(principal_id, &mut principal, bundle, &mut HeldCache::new())
                 .await?;
             changed |= !embedded.is_empty();
-            let mut build = match Self::build_staged(
-                &mut principal,
-                bundle,
-                principal_id,
-                next_seq,
-            )
-            .await
+            let mut build = match Self::build_staged(&mut principal, bundle, principal_id, next_seq)
+                .await
             {
-                Ok(Built::Commit(build)) if errored.is_some_and(|e| stays_errored(e, &build.commit)) => {
+                Ok(Built::Commit(build))
+                    if errored.is_some_and(|e| stays_errored(e, &build.commit)) =>
+                {
                     // Refused, and kept as evidence: it verifies on the chain.
                     self.keep_evidence(bundle, build.commit, &embedded).await;
                     return Err(EngineError::Errored {
@@ -3770,7 +3767,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let remembered = embedded.is_empty();
             build.embedded = embedded;
             changed = true;
-            let result = self.ingest_commit(bundle, build).await?;
+            let result = self.ingest_commit(bundle, *build).await?;
             Ok((result, remembered))
         }
         .await;
@@ -4161,7 +4158,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<Option<StagedBuild<'p, T>>, EngineError> {
         Ok(
             match Self::build_staged(principal, bundle, principal_id, next_seq).await? {
-                Built::Commit(build) => Some(build),
+                Built::Commit(build) => Some(*build),
                 Built::Actions(_) => None,
             },
         )
@@ -4269,11 +4266,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             pg,
         };
 
-        Ok(Built::Commit(StagedBuild {
+        Ok(Built::Commit(Box::new(StagedBuild {
             commit,
             staged,
             embedded: Vec::new(),
-        }))
+        })))
     }
 
     /// Retain a refused bundle as a non-canonical branch if it is a fork:
