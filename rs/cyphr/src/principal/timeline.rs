@@ -21,7 +21,7 @@ use crate::key::Key;
 /// same whether a revoke arrived before a later commit (a live
 /// principal) or after every commit (a replay), and a state kept past a
 /// revoke equals the replay of its history.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct KeyTimeline {
     periods: Vec<Period>,
     /// Naked revokes by key: each takes effect from the cutoff it was
@@ -33,7 +33,7 @@ pub(crate) struct KeyTimeline {
     deleted_at: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Period {
     key: Key,
     from: i64,
@@ -88,11 +88,13 @@ impl KeyTimeline {
         *at = (*at).min(cutoff);
     }
 
-    /// `p` as a naked revoke leaves it: ended at the revoke's cutoff, no
-    /// earlier than it began, if it would run past it.
-    fn effective(&self, p: &Period) -> (Option<i64>, bool) {
+    /// `p` as a naked revoke leaves it, if `cut` applies them: ended at the
+    /// revoke's cutoff, no earlier than it began, if it would run past it.
+    fn effective(&self, p: &Period, cut: bool) -> (Option<i64>, bool) {
         match self.revoked_from.get(&p.key.tmb().to_b64()) {
-            Some(&cutoff) if p.until.is_none_or(|u| u > cutoff) => (Some(cutoff.max(p.from)), true),
+            Some(&cutoff) if cut && p.until.is_none_or(|u| u > cutoff) => {
+                (Some(cutoff.max(p.from)), true)
+            },
             _ => (p.until, p.revoked),
         }
     }
@@ -108,6 +110,15 @@ impl KeyTimeline {
     /// `KeyRevoked` if a revoke took the key out at or before `now`;
     /// `UnknownKey` if it was not active at `now` otherwise.
     pub(crate) fn authorize(&self, tmb: &Thumbprint, now: i64) -> Option<Result<&Key>> {
+        self.authorize_with(tmb, now, true)
+    }
+
+    /// [`Self::authorize`] by the commits alone, naked revokes left out.
+    pub(crate) fn authorize_by_commits(&self, tmb: &Thumbprint, now: i64) -> Option<Result<&Key>> {
+        self.authorize_with(tmb, now, false)
+    }
+
+    fn authorize_with(&self, tmb: &Thumbprint, now: i64, cut: bool) -> Option<Result<&Key>> {
         let mut periods = self
             .periods
             .iter()
@@ -116,7 +127,7 @@ impl KeyTimeline {
         periods.peek()?;
         let mut refusal = Error::UnknownKey;
         for p in periods {
-            let (until, revoked) = self.effective(p);
+            let (until, revoked) = self.effective(p, cut);
             if p.from <= now && until.is_none_or(|u| now < u) {
                 return Some(Ok(&p.key));
             }
@@ -125,6 +136,15 @@ impl KeyTimeline {
             }
         }
         Some(Err(refusal))
+    }
+
+    /// The key `tmb` named in any period of this principal, whether or not
+    /// the key was active at any particular time.
+    pub(crate) fn key_of(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.periods
+            .iter()
+            .find(|p| p.key.tmb() == tmb)
+            .map(|p| &p.key)
     }
 
     /// Whether `tmb` was ever a key of this principal.

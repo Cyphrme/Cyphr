@@ -12,14 +12,17 @@
 mod accessors;
 mod apply;
 mod data;
+pub(crate) use data::Arrival;
+pub use projection::StateProjection;
 mod embedded;
 mod genesis;
+mod projection;
 mod proofs;
 #[cfg(test)]
 mod tests;
 mod timeline;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use coz::Thumbprint;
 use indexmap::IndexMap;
@@ -88,19 +91,20 @@ pub struct AuthLedger {
 /// A data action is recorded in DT and nowhere else: DT is a point-in-time
 /// snapshot with no chain (SPEC 2.3.3), and DR enters the Principal Tree
 /// only as the `id` a `ds/create` signs (SPEC 4.8.2).
+///
+/// The ledger is a grow-only set of the actions this principal holds, with
+/// no verdict stored beside them: whether one counts is read from the key
+/// timeline when DT is read ([`PrincipalState::actions`]), so the ledger is
+/// the same whatever order commits and actions arrived in.
 #[derive(Debug, Clone, Default)]
 pub struct DataLedger {
-    /// All recorded actions, in recording order.
-    pub actions: Vec<Action>,
-}
-
-impl DataLedger {
-    /// MR over every held action: the `id` a `ds/create` signed now would
-    /// name.
-    pub(crate) fn tree_root(&self, algs: &[HashAlg]) -> Result<Option<DataRoot>> {
-        let actions: Vec<&Action> = self.actions.iter().collect();
-        crate::state::compute_dr(&actions, None, algs)
-    }
+    /// Every held action, in the order SPEC 4.8.1 gives DT: by `now`, then
+    /// by `czd`.
+    pub(crate) actions: BTreeMap<(i64, Vec<u8>), Action>,
+    /// The latest `now` any held action of a key carries, by thumbprint:
+    /// `last_used` of a key follows it however the key came to be held, so
+    /// a key removed and added again reads as the history says.
+    pub(crate) last_signed: BTreeMap<String, i64>,
 }
 
 // ============================================================================
@@ -553,6 +557,13 @@ impl PrincipalCore {
 }
 
 impl<S: eml::Storage> Principal<S> {
+    /// The principal's state, without its log: the other half of
+    /// [`Principal::resume`], for a caller that keeps the state between
+    /// writes.
+    pub fn into_state(self) -> PrincipalState {
+        self.state
+    }
+
     fn core_mut(&mut self) -> &mut PrincipalCore {
         self.state.core_mut()
     }

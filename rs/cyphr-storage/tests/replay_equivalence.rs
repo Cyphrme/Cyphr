@@ -1745,11 +1745,11 @@ async fn stored_actions_are_judged_at_their_own_now() {
 /// for a verdict that flips: `key_a`, added at t=100, signs an action dated
 /// t=400 that the engine accepts; a commit dated t=300 then deletes
 /// `key_a`. On the full history the action's signer was not active at its
-/// `now`, so a load ignores it (it is not in DT) and a scratch rebuild
-/// files its manifest as `SignerInactive`, never as `Unreplayable`
-/// corruption, while the chain stays whole. Turns red if a load fails or
-/// keeps the action, or the rebuild calls it unreplayable. End to end:
-/// engine ingest, load, scratch rebuild.
+/// `now`, so a load does not show it in DT, and a scratch rebuild holds
+/// its manifest like any other (a later commit may restore the key), never
+/// as `Unreplayable` corruption, while the chain stays whole. Turns red if
+/// a load fails or shows the action, or the rebuild quarantines it. End to
+/// end: engine ingest, load, scratch rebuild.
 #[tokio::test]
 async fn an_action_whose_signer_a_later_commit_removed_is_ignored() {
     let golden = signer("golden");
@@ -1816,11 +1816,7 @@ async fn an_action_whose_signer_a_later_commit_removed_is_ignored() {
         .rebuild_index_from_scratch_with_report()
         .await
         .expect("rebuild");
-    let reasons: Vec<_> = report.quarantined.iter().map(|q| &q.reason).collect();
-    assert!(
-        matches!(reasons.as_slice(), [QuarantineReason::SignerInactive(_)]),
-        "{reasons:?}"
-    );
+    assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
     let tip = engine.get_tip(&id).await.expect("tip").expect("a tip");
     assert_eq!(tip.commit_count, 3, "the rebuilt chain is whole");
 }

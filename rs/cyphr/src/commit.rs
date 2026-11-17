@@ -383,6 +383,21 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         }
     }
 
+    /// Hold the data actions a bundle carries on the projected state,
+    /// before its transactions, so a refused commit holds none of them.
+    pub(crate) fn hold_action(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        arrival: crate::principal::Arrival,
+    ) -> crate::error::Result<()> {
+        if let Some(action) = self.projected.prepare_action(pay_json, sig, czd, arrival)? {
+            self.projected.insert_action(action);
+        }
+        Ok(())
+    }
+
     /// Apply a verified coz within this commit scope.
     ///
     /// The coz is applied to the projected principal state.
@@ -901,7 +916,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let algs = self.projected.active_algs();
-        let Some(dt) = self.projected.data.tree_root(&algs)? else {
+        let Some(dt) = self.projected.data_root_of_view(&algs)? else {
             return Ok(None);
         };
         let alg = algs

@@ -503,7 +503,6 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         // What the vector's bundles carry, to hold the replay to: no action
         // may be ignored or lost on the way into DT, whichever way it fails.
         let mut carried: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
-        let mut ignored = 0usize;
         for (ci, commit) in commits.iter().enumerate() {
             // The lines are held history, judged as a replay is; an error
             // vector's last line is the submission it pins, judged as
@@ -525,7 +524,7 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                     );
                     cyphr::replay::replay_held(&mut principal, &bundle)
                         .await
-                        .map(|r| ignored += r.ignored.len())
+                        .map(|_| ())
                         .map_err(|e| e.source)
                 },
                 Ok(Err(e)) => Err(match e.error {
@@ -577,7 +576,6 @@ async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
 
         // Actions move no root of their own (SPEC 4.8.1), so a dropped one
         // is invisible to the expected roots below: count them.
-        assert_eq!(ignored, 0, "{}: a replay ignored actions", fixture.name);
         assert_eq!(
             principal.action_count(),
             carried.len(),

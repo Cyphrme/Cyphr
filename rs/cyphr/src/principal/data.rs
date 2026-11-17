@@ -5,40 +5,83 @@ use crate::action::Action;
 use crate::error::{Error, Result};
 use crate::state::PrincipalRoot;
 
-/// When the lifecycle gates judge a data action.
-#[derive(Clone, Copy)]
-enum Judged {
-    /// A new submission: refused while the principal is deleted or frozen
-    /// at its tip.
-    AtTip,
-    /// Held history: against the commit timeline at the action's `now`.
-    AtNow,
+/// How an action reached this principal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Arrival {
+    /// A new submission: refused unless its signer authorizes it now.
+    Submitted,
+    /// History already admitted elsewhere (a store, a peer, an export): the
+    /// signature is checked, and whether the action counts is left to
+    /// the view ([`PrincipalState::actions`]).
+    Held,
 }
 
 impl PrincipalState {
-    /// The key that authorizes a data action signed by `tmb` and dated
-    /// `now`: the key active at `now` in the principal's key history
-    /// (SPEC 6.2, 6.5), not the key set at the tip. A principal with no
-    /// genesis commit has no history to authorize from.
+    /// Whether the action of `tmb` dated `now` counts: the key that
+    /// authorizes it, or why none does. This is the one judgment of a data
+    /// action, for admission and for every read of DT alike: the signer's key
+    /// active at `now` in the principal's key history (SPEC 6.2, 6.5), the
+    /// principal not frozen (SPEC 14.9) or deleted (SPEC 11.4) at `now`, and
+    /// the key not cut off by a naked revoke (SPEC 6.4). A commit dated
+    /// before `now` can change the answer, in either direction, so it is
+    /// never stored.
+    ///
+    /// Likewise a new submission is refused outright while the principal is
+    /// frozen or deleted, by its state now; held history is judged at its
+    /// own `now` against the frozen spans and the delete.
+    ///
+    /// A naked revoke gates admission only: it cuts off what is submitted
+    /// after it was noted and re-judges nothing already held (SPEC 14.12;
+    /// the spec author on #203, "Retrospection isn't supported"). So what DT
+    /// shows ([`Arrival::Held`]) is a function of the commits and the held
+    /// actions alone.
+    ///
+    /// Pending the spec author's ruling on the same-second tie (forge #214),
+    /// an action dated exactly at a removal is judged after it.
     ///
     /// A key of an embedded principal is judged the same way, by that
-    /// principal's key history at `now` (SPEC 10.3).
+    /// principal's key history at `now` (SPEC 10.3). A principal with no
+    /// genesis commit has no history to authorize from.
     ///
     /// # Errors
     ///
-    /// `GenesisIncomplete` before the genesis commit; `KeyRevoked` for a
-    /// key revoked at or before `now`; `EmbeddedErrored` for a key of an
-    /// embedded principal in Error; `UnknownKey` otherwise.
-    fn action_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
+    /// `GenesisIncomplete` before the genesis commit; `AlreadyDeleted` or
+    /// `Frozen` when the principal was not taking actions at `now`;
+    /// `KeyRevoked` for a key revoked at or before `now`; `EmbeddedErrored`
+    /// for a key of an embedded principal in Error; `UnknownKey` otherwise.
+    pub(super) fn judge(
+        &self,
+        tmb: &coz::Thumbprint,
+        now: i64,
+        arrival: Arrival,
+    ) -> Result<&crate::key::Key> {
         if self.pg().is_none() {
             return Err(Error::GenesisIncomplete);
         }
-        if let Some(verdict) = self.key_timeline.authorize(tmb, now) {
+        let verdict = match arrival {
+            // SPEC 11.4: "no transactions or actions are possible on a
+            // closed account", and a frozen principal changes only by being
+            // unfrozen (SPEC 14.9): a new submission is refused by the
+            // principal's state now, whatever the action's own `now`.
+            Arrival::Submitted if self.deleted => return Err(Error::AlreadyDeleted),
+            Arrival::Submitted if self.frozen => return Err(Error::Frozen),
+            Arrival::Submitted => self.key_timeline.authorize(tmb, now),
+            Arrival::Held => {
+                self.key_timeline.open_at(now)?;
+                self.key_timeline.authorize_by_commits(tmb, now)
+            },
+        };
+        if let Some(verdict) = verdict {
             return verdict;
         }
         if self.auth.revoked.contains_key(&tmb.to_b64()) {
             return Err(Error::KeyRevoked);
         }
+        self.embedded_signer(tmb, now)
+    }
+
+    /// The key of an embedded principal that signs for `tmb` at `now`.
+    fn embedded_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
         self.embedded
             .signer_at(tmb, now, |d| {
                 self.nonces.holds(crate::nonce::NonceLevel::Kt, d)
@@ -46,33 +89,73 @@ impl PrincipalState {
             .unwrap_or(Err(Error::UnknownKey))
     }
 
-    /// Record an action in the Data Tree (Level 4+).
+    /// The key whose signature a held action of `tmb` is checked against:
+    /// any key this principal has held under that thumbprint. Whether the
+    /// action counts is [`Self::judge`]'s, at read.
+    fn held_signer(&self, tmb: &coz::Thumbprint, now: i64) -> Result<&crate::key::Key> {
+        if self.pg().is_none() {
+            return Err(Error::GenesisIncomplete);
+        }
+        if let Some(key) = self.key_timeline.key_of(tmb) {
+            return Ok(key);
+        }
+        if let Some(key) = self.auth.revoked.get(&tmb.to_b64()) {
+            return Ok(key);
+        }
+        self.embedded_signer(tmb, now)
+    }
+
+    /// Hold `action`: the one insertion into DT, for a submission and for
+    /// held history alike. Idempotent (SPEC 7.6), and commutative with
+    /// every other insertion and with every commit.
+    pub(crate) fn insert_action(&mut self, action: Action) {
+        let tmb = action.signer.to_b64();
+        let core = self.core_mut();
+        core.included_czds.insert(action.czd.as_bytes().to_vec());
+        let latest = core
+            .data
+            .last_signed
+            .entry(tmb.clone())
+            .or_insert(action.now);
+        *latest = (*latest).max(action.now);
+        for key in core
+            .auth
+            .keys
+            .get_mut(&tmb)
+            .into_iter()
+            .chain(core.auth.revoked.get_mut(&tmb))
+        {
+            key.set_last_used(action.now);
+        }
+        core.data
+            .actions
+            .insert((action.now, action.czd.as_bytes().to_vec()), action);
+    }
+
+    /// Record an action in the Data Tree (Level 4+), judged as a new
+    /// submission.
     ///
     /// The action enters DT only: DR, and so SR and PR, change only by a
     /// `ds/create` (SPEC 4.8.2), and the action is no part of the chain.
     ///
-    /// This is internal-only. External code must use `verify_and_record_action`
-    /// which enforces signature verification.
+    /// For unit tests that drive the state's transitions with a prepared
+    /// action; every other path goes through `verify_and_record_action`,
+    /// which verifies the signature.
     ///
     /// # Errors
     ///
     /// - `TimestampFuture`: Action timestamp is too far in the future
-    /// - as [`Self::action_signer`]
+    /// - as [`Self::judge`]
+    #[cfg(test)]
     pub(crate) fn record_action(&mut self, action: Action) -> Result<&PrincipalRoot> {
         self.check_now(action.now)?;
-        self.action_signer(&action.signer, action.now)?;
-
-        // Update signer's last_used timestamp
-        self.update_last_used(&action.signer, action.now);
-
-        let core = self.core_mut();
-        core.included_czds.insert(action.czd.as_bytes().to_vec());
-        core.data.actions.push(action);
-
+        self.judge(&action.signer, action.now, Arrival::Submitted)?;
+        self.insert_action(action);
         Ok(&self.pr)
     }
 
-    /// Verify signature and record an action in one step.
+    /// Verify signature and record an action in one step, as a new
+    /// submission.
     ///
     /// This is the primary method for processing incoming actions.
     /// It verifies the signature, parses the action, and records it.
@@ -86,8 +169,8 @@ impl PrincipalState {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`: the signer did not authorize the action
-    ///   at its `now` (SPEC 6.5)
+    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`, `AlreadyDeleted`, `Frozen`: the signer
+    ///   did not authorize the action at its `now` (SPEC 6.5)
     /// - `TimestampFuture`: Action timestamp is too far in the future
     pub(crate) fn verify_and_record_action(
         &mut self,
@@ -95,20 +178,29 @@ impl PrincipalState {
         sig: &[u8],
         czd: coz::Czd,
     ) -> Result<&PrincipalRoot> {
-        self.verify_and_record(pay_json, sig, czd, Judged::AtTip)
+        if let Some(action) = self.prepare_action(pay_json, sig, czd, Arrival::Submitted)? {
+            self.insert_action(action);
+        }
+        Ok(&self.pr)
     }
 
-    /// [`Self::verify_and_record_action`] judged as `when` says.
-    fn verify_and_record(
-        &mut self,
+    /// The action `pay_json` and `sig` carry, verified and ready to insert
+    /// ([`Self::insert_action`]), or `None` if this principal already holds
+    /// it (SPEC 7.6). Nothing is changed, so a bundle of actions can be
+    /// prepared whole before any of it is held.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_and_record_action`], the authorization of a
+    /// [`Arrival::Held`] action excepted.
+    pub(crate) fn prepare_action(
+        &self,
         pay_json: &[u8],
         sig: &[u8],
         czd: coz::Czd,
-        when: Judged,
-    ) -> Result<&PrincipalRoot> {
+        arrival: Arrival,
+    ) -> Result<Option<Action>> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-        use crate::action::Action;
 
         // Parse as Value and extract only what we need (avoids requiring all coz::Pay fields)
         let pay_value: serde_json::Value =
@@ -133,22 +225,7 @@ impl PrincipalState {
         if crate::parsed_coz::typ::is_transaction(&typ) {
             return Err(Error::MalformedPayload);
         }
-
-        match when {
-            // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
-            // actions are possible on a closed account". Data actions have no
-            // same-commit-finalizer exemption analogous to CommitCreate's, so
-            // this is an unconditional gate. SPEC §2.3.2, §11: a frozen
-            // principal changes only by being unfrozen, and a data action
-            // changes DT.
-            Judged::AtTip if self.deleted => return Err(Error::AlreadyDeleted),
-            Judged::AtTip if self.frozen => return Err(Error::Frozen),
-            Judged::AtTip => {},
-            // Held history: the same gates at the action's own `now`, as for
-            // its signer (SPEC 6.5), so a later freeze or delete does not
-            // void an action taken before it.
-            Judged::AtNow => self.key_timeline.open_at(now)?,
-        }
+        self.check_now(now)?;
 
         // SPEC §7.6: replaying an applied data action is ignored. Decided
         // before the signer is resolved, since a commit dated the same
@@ -161,10 +238,13 @@ impl PrincipalState {
             .and_then(|alg| crate::parsed_coz::compute_czd(pay_json, sig, alg))
             && self.included_czds.contains(own.as_bytes())
         {
-            return Ok(&self.pr);
+            return Ok(None);
         }
 
-        let signer_key = self.action_signer(&signer_tmb, now)?;
+        let signer_key = match arrival {
+            Arrival::Submitted => self.judge(&signer_tmb, now, Arrival::Submitted)?,
+            Arrival::Held => self.held_signer(&signer_tmb, now)?,
+        };
 
         // The signed pay must name the key that actually verifies it.
         // An absent `alg` is malformed (SPEC 2.3.1), as `verify_coz` rules.
@@ -193,34 +273,35 @@ impl PrincipalState {
             pay: pay_value,
             sig: sig.to_vec(),
         };
-
-        // Construct Action directly from extracted values
-        let action = Action::new(typ, signer_tmb, now, czd, signer_key.hash_alg(), raw);
-
-        // Record the action
-        self.record_action(action)
+        Ok(Some(Action::new(
+            typ,
+            signer_tmb,
+            now,
+            czd,
+            signer_key.hash_alg(),
+            raw,
+        )))
     }
 }
 
 impl<S: eml::Storage> Principal<S> {
-    /// Record an action of held history (an admitted store, a peer, an
-    /// export): every gate, the lifecycle ones included, judged at the
-    /// action's own `now`.
-    pub(crate) fn record_held_action(
-        &mut self,
-        pay_json: &[u8],
-        sig: &[u8],
-        czd: coz::Czd,
-    ) -> Result<()> {
-        self.state
-            .verify_and_record(pay_json, sig, czd, Judged::AtNow)
-            .map(|_| ())
+    /// Hold actions [`PrincipalState::prepare_action`] prepared.
+    pub(crate) fn hold_actions(&mut self, actions: Vec<Action>) {
+        for action in actions {
+            self.state.insert_action(action);
+        }
     }
 
     /// Whether `tmb` was ever a key of this principal: in its key history,
     /// or revoked.
     pub fn held_key(&self, tmb: &coz::Thumbprint) -> bool {
         self.key_timeline.knows(tmb) || self.auth.revoked.contains_key(&tmb.to_b64())
+    }
+
+    /// Whether this principal has included the coz with digest `czd`, a data
+    /// action it holds or a transaction it applied (SPEC 7.6).
+    pub fn has_included(&self, czd: &[u8]) -> bool {
+        self.included_czds.contains(czd)
     }
 
     /// Take in a naked revoke of `tmb` that the caller has verified (SPEC
@@ -241,8 +322,8 @@ impl<S: eml::Storage> Principal<S> {
     /// # Errors
     ///
     /// - `InvalidSignature`: Signature doesn't verify
-    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`: the signer did not authorize the action
-    ///   at its `now` (SPEC 6.5)
+    /// - `GenesisIncomplete`, `UnknownKey`, `KeyRevoked`, `AlreadyDeleted`, `Frozen`: the signer
+    ///   did not authorize the action at its `now` (SPEC 6.5)
     /// - `TimestampFuture`: Action timestamp is too far in the future
     pub fn verify_and_record_action(
         &mut self,
