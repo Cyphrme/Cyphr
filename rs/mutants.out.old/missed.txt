@@ -1,7 +1,0 @@
-cyphr/src/grown.rs:23:9: replace <impl Absorb for Vec<T>>::is_blank -> bool with true
-cyphr/src/grown.rs:23:9: replace <impl Absorb for Vec<T>>::is_blank -> bool with false
-cyphr/src/grown.rs:33:9: replace <impl Absorb for BTreeSet<T>>::is_blank -> bool with true
-cyphr/src/grown.rs:33:9: replace <impl Absorb for BTreeSet<T>>::is_blank -> bool with false
-cyphr/src/grown.rs:37:9: replace <impl Absorb for BTreeSet<T>>::absorb with ()
-cyphr/src/grown.rs:43:9: replace <impl Absorb for BTreeMap<K, V>>::is_blank -> bool with false
-cyphr/src/grown.rs:71:9: replace Grown<Vec<T>>::from_vec -> Self with Default::default()

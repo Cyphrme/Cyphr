@@ -1,6 +1,0 @@
-cyphr/src/grown.rs:27:9: replace <impl Absorb for Vec<T>>::absorb with ()
-cyphr/src/grown.rs:43:9: replace <impl Absorb for BTreeMap<K, V>>::is_blank -> bool with true
-cyphr/src/grown.rs:47:9: replace <impl Absorb for BTreeMap<K, V>>::absorb with ()
-cyphr/src/grown.rs:63:9: replace Grown<C>::settle with ()
-cyphr/src/grown.rs:63:12: delete ! in Grown<C>::settle
-cyphr/src/grown.rs:78:9: replace Grown<Vec<T>>::len -> usize with 0
