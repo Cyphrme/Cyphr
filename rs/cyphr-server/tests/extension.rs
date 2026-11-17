@@ -40,6 +40,9 @@ struct Watched {
     lie: Option<fn(&mut serde_json::Value)>,
     /// An edit of the `/inclusion` answers.
     inclusion_lie: Option<fn(&mut serde_json::Value)>,
+    /// Entries appended to a whole-chain `/patch` answer, each a copy of
+    /// its last at the next position: a peer claiming a longer chain.
+    padding: usize,
 }
 
 impl Watched {
@@ -50,6 +53,7 @@ impl Watched {
             fetched: Mutex::default(),
             lie: None,
             inclusion_lie: None,
+            padding: 0,
         }
     }
 
@@ -73,7 +77,22 @@ impl Connector for Watched {
             .lock()
             .expect("asked")
             .push(request.target.clone());
-        let body = self.inner.exchange(request).await?;
+        let mut body = self.inner.exchange(request).await?;
+        if self.padding > 0
+            && request.target.starts_with("/patch")
+            && !request.target.contains("&from=")
+        {
+            let mut json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            let entries = json["payload"]["entries"].as_array_mut().expect("entries");
+            let last = entries.last().expect("an entry").clone();
+            let at = last["sequence"].as_u64().expect("sequence");
+            for k in 1..=self.padding as u64 {
+                let mut junk = last.clone();
+                junk["sequence"] = (at + k).into();
+                entries.push(junk);
+            }
+            body = serde_json::to_vec(&json).expect("json");
+        }
         if request.target.starts_with("/patch") {
             let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
             let entries = json["payload"]["entries"].as_array().map_or(0, Vec::len);
@@ -250,6 +269,45 @@ async fn a_fork_is_found_with_one_commit_fetched() {
         before,
         "the record did not move"
     );
+}
+
+/// Backs: what a forked peer makes the holder do is bounded by the
+/// holder's own chain. The peer's branch can change the holder's canonical
+/// chain only by out-extending the holder's own branch, so no more of it is
+/// handed on than that takes; the rest arrives as an ordinary extension once
+/// the branch is taken. A peer that has proved one fork and then serves any
+/// number of entries past it gets the same bounded hand-off, where each
+/// entry would otherwise be one submission to the engine.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
+    let (w, _) = world(&["key_a", "key_b", "alice", "bob"]).await;
+    let (_, mine) = line(&w.shared, &["key_a", "key_b", "carol"], T + 1).await;
+    let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
+    let mut handed = Vec::new();
+    for padding in [0, 500] {
+        let mut record = follower(&w.id, &held).await;
+        let mut c = connector(&w);
+        c.padding = padding;
+        let peers = [PullPeer {
+            name: "b",
+            connector: &c,
+        }];
+        let report = pull(&mut record, &peers).await;
+        assert!(
+            matches!(only_standing(&report), PeerStanding::Forked),
+            "{:?}",
+            only_standing(&report)
+        );
+        assert_eq!(report.forks.first().expect("a fork").height, 3);
+        handed.push(
+            cyphr_client::branch_bundles(&record, &report, &peers)
+                .await
+                .len(),
+        );
+    }
+    // The fork is at position 3 and the holder has one commit there: the
+    // rival, and the one commit past it that out-extends the holder.
+    assert_eq!(handed, [2, 2], "bundles handed on, unpadded and padded");
 }
 
 /// Backs: an honest extension still pulls exactly the new commits, after
