@@ -1,5 +1,5 @@
-//! U3: a write checks the extension, not the history (the anchor verifier:
-//! keep what was verified, apply only what arrives).
+//! U3: a write checks the extension, not the history (keep what was
+//! verified, apply only what arrives).
 //!
 //! The engine keeps each principal's verified state between its writes,
 //! used only when it matches what the index, the held action bundles and
@@ -289,7 +289,7 @@ async fn replayed_by_next_write(e: &Engine, n: usize) -> u64 {
 /// U3, the cost: the commits one write replays do not depend on how many
 /// the principal already has. Today a write replays them all (O(n)
 /// signature checks per write, so O(n^2) to build a history), where the
-/// anchor verifier checks only the extension. Red with `with_kept_states(0)`
+/// kept state checks only the extension. Red with `with_kept_states(0)`
 /// (every write replays: 8 and 40), green with the default.
 #[tokio::test]
 async fn u3_a_write_replays_a_bounded_number_of_commits() {
@@ -509,4 +509,39 @@ async fn u3_an_engine_over_in_memory_logs_keeps_nothing() {
     }
     assert!(e.kept_state(&w.id).await.is_none());
     assert_eq!(e.kept_hits(), 0);
+}
+
+/// A data action signed by `k` at `now`, as the wire blob a push carries.
+fn action_blob(k: &Kp, now: i64) -> Vec<u8> {
+    let pay = serde_json::json!({
+        "alg": k.alg, "now": now, "tmb": k.tmb.to_b64(), "typ": "cyphr.me/app/post/create",
+    });
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) = coz::sign_json(&bytes, &k.alg, &k.prv, &k.pubb).expect("sign");
+    serde_json::to_vec(&serde_json::json!({
+        "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("blob")
+}
+
+/// U3 merge-gate case, SPEC 6.2/6.5: a held action signed by `key_a` at
+/// T+100, then a commit dated T+50 that deletes `key_a`. A replay judges
+/// the action against the whole key timeline and leaves it out of DT; a
+/// state kept after the action must not answer otherwise. Until the core
+/// holds actions as an order-independent set with a read-time view, a
+/// principal with held actions is replayed, not kept. Red at 1a9338c1: the
+/// shadow check fails the second write.
+#[tokio::test]
+async fn u3_a_held_action_then_a_commit_that_removes_its_signer_before_it() {
+    let (e, _dir) = engine(8, true);
+    let mut w = history(&e, 2).await;
+    let action = WireBundle::actions(vec![action_blob(&kp("key_a"), NOW + 100)]);
+    w.submit(&e, &action).await.expect("the action is held");
+    let (next, bundle) = w.toggle("key_a", NOW + 50).await.expect("delete key_a");
+    w.submit(&e, &bundle).await.expect("the removing commit");
+    w.adopt(next);
+    let (next, bundle) = w.toggle("alice", NOW + 60).await.expect("toggle");
+    w.submit(&e, &bundle).await.expect("a later write");
+    w.adopt(next);
+    assert_eq!(e.kept_divergences(), 0);
 }

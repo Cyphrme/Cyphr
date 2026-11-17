@@ -6,12 +6,11 @@
 //! Scenario: `key_a` is a key of the principal and stays in its Key Tree
 //! through two later commits. A principal that took in a naked revoke of
 //! `key_a` between the two commits (a live one) and one that replayed both
-//! commits and then took it in (a rebuild) hold the same state, and judge
-//! `key_a`'s data actions the same way. Red before: the live principal
-//! opened a second, empty period for `key_a` at every commit after the
-//! revoke, so the two states differed, and a commit that removed the key
-//! at a time before the revoke's cutoff left it authorized until the
-//! cutoff.
+//! commits and then took it in (a rebuild) hold the same state. Red before:
+//! the live principal opened a second, empty period for `key_a` at every
+//! commit after the revoke, so the two states differed. Not covered here:
+//! a commit that removes the key before the revoke's cutoff, and the
+//! verdicts on `key_a`'s data actions.
 //! End to end: yes (signed commits replayed through the public entry
 //! point).
 

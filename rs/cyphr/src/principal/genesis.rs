@@ -98,10 +98,8 @@ impl<S: eml::Storage> Principal<S> {
     /// durable `storage` that is its commit log: no commit is replayed.
     ///
     /// The state is the fold of every commit already verified, so a holder
-    /// that kept it applies only what arrives after it (the anchor
-    /// verifier of the paper: retain the earlier record, check the
-    /// extension). The check that the log is the one the state was folded
-    /// from is constant-size: the log holds as many commits as the state
+    /// that kept it applies only what arrives after it. The check that the log is the one the state
+    /// was folded from is constant-size: the log holds as many commits as the state
     /// and its Commit Root is the state's.
     ///
     /// # Errors

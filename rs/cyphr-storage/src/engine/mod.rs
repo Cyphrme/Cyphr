@@ -991,10 +991,9 @@ struct KeptKey {
     revoked: Revoked,
 }
 
-/// A principal's verified state kept between its writes (the anchor
-/// verifier: retain the earlier record, check only the extension). A
-/// cache of what a replay of the blob store derives (I1), never
-/// authoritative and never persisted: losing it costs one replay.
+/// A principal's verified state kept between its writes, so a write checks
+/// only what arrives, not the history before it. A cache of what a replay of the blob store derives
+/// (I1), never authoritative and never persisted: losing it costs one replay.
 #[derive(Debug, Clone)]
 struct Kept {
     state: cyphr::PrincipalState,
@@ -1022,8 +1021,20 @@ type ResumeFuture<'a, S> = std::pin::Pin<
     >,
 >;
 
-/// Proof that the caller holds the principal's write lock.
-type WriteLock<'a> = tokio::sync::MutexGuard<'a, ()>;
+/// Proof that the caller holds the write lock of one named principal:
+/// built only by [`StorageEngine::lock_writes`] from that principal's own
+/// lock, and checked against the id on every access, so another keyed lock
+/// (revoke, log generation, alias) cannot stand for it.
+struct WriteLock<'a> {
+    principal: String,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl WriteLock<'_> {
+    fn covers(&self, principal_id: &str) -> bool {
+        self.principal == principal_id
+    }
+}
 
 impl KeptStates {
     fn new(capacity: usize) -> Self {
@@ -1035,7 +1046,10 @@ impl KeptStates {
 
     /// A copy of the entry for `principal_id`: the writer applies a bundle
     /// to the copy, so a refused bundle leaves the entry as it was.
-    fn copy(&self, principal_id: &str, _write: &WriteLock<'_>) -> Option<Kept> {
+    fn copy(&self, principal_id: &str, write: &WriteLock<'_>) -> Option<Kept> {
+        if !write.covers(principal_id) {
+            return None;
+        }
         self.entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1044,8 +1058,8 @@ impl KeptStates {
             .cloned()
     }
 
-    fn put(&self, principal_id: &str, kept: Kept, _write: &WriteLock<'_>) {
-        if self.capacity == 0 {
+    fn put(&self, principal_id: &str, kept: Kept, write: &WriteLock<'_>) {
+        if self.capacity == 0 || !write.covers(principal_id) {
             return;
         }
         let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
@@ -1064,7 +1078,10 @@ impl KeptStates {
         }
     }
 
-    fn drop_entry(&self, principal_id: &str, _write: &WriteLock<'_>) {
+    fn drop_entry(&self, principal_id: &str, write: &WriteLock<'_>) {
+        if !write.covers(principal_id) {
+            return;
+        }
         let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         guard.0.remove(principal_id);
         guard.1.retain(|id| id != principal_id);
@@ -1308,7 +1325,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let key = self.resolve_key(principal_id).await.ok()?;
         let stored = key.as_deref().unwrap_or(principal_id);
         let lock = self.principal_lock(stored);
-        let write = lock.lock().await;
+        let write = Self::lock_writes(&lock, stored).await;
         let tip = self.indexer.get_tip(stored).await.ok()??;
         let kept = self.kept.copy(stored, &write)?;
         (kept.key == self.kept_key(stored, &tip, self.revoked())).then_some(kept.state)
@@ -1352,6 +1369,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .entry(principal_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    /// Take `principal_id`'s write lock, `lock` being its own entry of
+    /// [`Self::principal_lock`].
+    async fn lock_writes<'a>(
+        lock: &'a Arc<tokio::sync::Mutex<()>>,
+        principal_id: &str,
+    ) -> WriteLock<'a> {
+        WriteLock {
+            principal: principal_id.to_string(),
+            _guard: lock.lock().await,
+        }
     }
 
     /// Get a reference to the underlying blob store.
@@ -3547,7 +3576,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // ingested. Held for the remainder of this function; a concurrent
         // caller for a DIFFERENT principal_id never contends on this lock.
         let lock = self.principal_lock(principal_id);
-        let write = lock.lock().await;
+        let write = Self::lock_writes(&lock, principal_id).await;
 
         // 2. Determine the tip this write extends, then load (or
         // construct) the principal at it: from the state kept after the
@@ -3857,7 +3886,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // A resumed principal's history was checked when it was first kept.
         let embeds = principal.has_kt_digests()
             || (!resumed && self.history_has_pins(principal_id).await.unwrap_or(true));
-        if !at_tip || embeds {
+        // Held actions are judged against the whole key timeline, so a
+        // later commit dated before one can void it; a state that applied
+        // the commit on top of the action does not know that. Until the
+        // core holds actions as a set with a read-time view, such a
+        // principal replays.
+        let holds_actions = !self.action_manifests(principal_id).is_empty();
+        if !at_tip || embeds || holds_actions {
             self.kept.drop_entry(principal_id, write);
             return;
         }
