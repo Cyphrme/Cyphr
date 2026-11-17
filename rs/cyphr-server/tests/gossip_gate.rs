@@ -159,10 +159,9 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
         StatusCode::CREATED
     );
     gossip.round(&p1, &peers).await;
-    // The revoke moved what P1's engine keeps its state against, so this
-    // one round replays the chain (2) and the new commit (1); the engine
-    // keeps the state again when it writes the new commit.
-    assert_eq!(replayed(&p1), 3, "a revoke costs the engine one replay");
+    // The revoke is no part of what P1's engine keeps its state against:
+    // the round verifies the new commit and nothing else.
+    assert_eq!(replayed(&p1), 1, "a revoke costs no replay");
     let want = owner.pr_tagged().expect("pr");
     let (_, tip) = get_json(app1.clone(), &format!("/tip?pr={}", id.replace(':', "%3A"))).await;
     assert_eq!(
@@ -180,7 +179,7 @@ async fn an_idle_pair_replays_nothing_and_still_hears_revokes() {
     gossip.round(&p1, &peers).await;
     assert_eq!(
         replayed(&p1),
-        4,
+        2,
         "a peer with a new head costs the one new commit, not the chain"
     );
 }

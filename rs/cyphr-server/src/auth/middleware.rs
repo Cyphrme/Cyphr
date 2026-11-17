@@ -105,9 +105,10 @@ pub fn check_channel(claims: &Claims, channel: Option<&[u8]>) -> Result<(), Sess
 /// the naked-revoke death-set, that the key which logged in is still
 /// active (#162).
 ///
-/// The principal is replayed from storage on each call (replay-cost
-/// caching is deferred, root U3), so the answer is as current as the
-/// server's own view -- not a claim about other views of the principal.
+/// The principal is read at its tip from the engine
+/// (`StorageEngine::at_tip`), serialized with its writes, so the answer is
+/// as current as the server's own view -- not a claim about other views of
+/// the principal -- and costs no replay while the engine keeps its state.
 pub async fn check_session_key(
     engine: &Engine,
     observations: &ObservationStore,
@@ -117,14 +118,11 @@ pub async fn check_session_key(
         EngineError::NotFound(_) => SessionError::UnknownPrincipal,
         other => SessionError::Storage(other),
     };
-    let genesis = engine
-        .resolve_genesis(&claims.pr, &[])
-        .await
-        .map_err(load_error)?;
     let principal = engine
-        .load_principal(&claims.pr, genesis)
+        .at_tip(&claims.pr)
         .await
-        .map_err(load_error)?;
+        .map_err(load_error)?
+        .ok_or(SessionError::UnknownPrincipal)?;
 
     let login_tmb = claims
         .login_tmb

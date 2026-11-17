@@ -885,3 +885,66 @@ proptest::proptest! {
     }
 }
 mod pgk;
+
+mod fork_state_from_the_fork_down {
+    use proptest::prelude::*;
+
+    use super::super::{Held, assessed_from, assessment};
+
+    fn commit(id: String, sequence: u64, pre: Option<String>) -> Held {
+        Held {
+            sequence,
+            pr: format!("pr-{id}"),
+            id,
+            pre,
+            signed: vec!["signer".to_owned()],
+        }
+    }
+
+    proptest! {
+        /// The engine reads a principal's fork state from its retained
+        /// commits and the canonical chain from just below the lowest of
+        /// them, never the whole chain. That is sound only if the fork rule
+        /// answers the same over that part as over every held commit:
+        /// consensus, heads, fork point and every contest. Held here over
+        /// chains with rivals of canonical commits, rivals extending rivals
+        /// (past the canonical head too), a rival genesis, and rivals whose
+        /// `pre` names nothing held.
+        ///
+        /// A unit test of the pure rule: an engine holds only one of the
+        /// two readings, so no route can compare them.
+        #[test]
+        fn the_fork_rule_answers_alike(
+            len in 1u64..10,
+            rivals in proptest::collection::vec((0usize..64, 0u8..8), 0..6),
+        ) {
+            let mut canonical = Vec::new();
+            for sequence in 0..len {
+                let pre = sequence.checked_sub(1).map(|below| format!("pr-c{below}"));
+                canonical.push(commit(format!("c{sequence}"), sequence, pre));
+            }
+            let mut retained: Vec<Held> = Vec::new();
+            for (n, (pick, kind)) in rivals.into_iter().enumerate() {
+                let id = format!("r{n}");
+                retained.push(match kind {
+                    0 => commit(id, 0, None),
+                    1 => commit(id, pick as u64 % (len + 1), Some("pr-unheld".to_owned())),
+                    _ => {
+                        let all: Vec<&Held> = canonical.iter().chain(&retained).collect();
+                        let parent = all[pick % all.len()];
+                        commit(id, parent.sequence + 1, Some(parent.pr.clone()))
+                    },
+                });
+            }
+            let from = assessed_from(retained.iter().map(|r| r.sequence).min(), len - 1);
+            let whole: Vec<Held> = canonical.iter().chain(&retained).cloned().collect();
+            let read: Vec<Held> = canonical
+                .iter()
+                .filter(|c| c.sequence >= from)
+                .chain(&retained)
+                .cloned()
+                .collect();
+            prop_assert_eq!(assessment(&read), assessment(&whole));
+        }
+    }
+}

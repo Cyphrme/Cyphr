@@ -40,6 +40,9 @@ struct Watched {
     lie: Option<fn(&mut serde_json::Value)>,
     /// An edit of the `/inclusion` answers.
     inclusion_lie: Option<fn(&mut serde_json::Value)>,
+    /// Entries appended to a whole-chain `/patch` answer, each a copy of
+    /// its last at the next position: a peer claiming a longer chain.
+    padding: usize,
 }
 
 impl Watched {
@@ -50,6 +53,7 @@ impl Watched {
             fetched: Mutex::default(),
             lie: None,
             inclusion_lie: None,
+            padding: 0,
         }
     }
 
@@ -73,7 +77,22 @@ impl Connector for Watched {
             .lock()
             .expect("asked")
             .push(request.target.clone());
-        let body = self.inner.exchange(request).await?;
+        let mut body = self.inner.exchange(request).await?;
+        if self.padding > 0
+            && request.target.starts_with("/patch")
+            && !request.target.contains("&from=")
+        {
+            let mut json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            let entries = json["payload"]["entries"].as_array_mut().expect("entries");
+            let last = entries.last().expect("an entry").clone();
+            let at = last["sequence"].as_u64().expect("sequence");
+            for k in 1..=self.padding as u64 {
+                let mut junk = last.clone();
+                junk["sequence"] = (at + k).into();
+                entries.push(junk);
+            }
+            body = serde_json::to_vec(&json).expect("json");
+        }
         if request.target.starts_with("/patch") {
             let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
             let entries = json["payload"]["entries"].as_array().map_or(0, Vec::len);
@@ -252,6 +271,90 @@ async fn a_fork_is_found_with_one_commit_fetched() {
     );
 }
 
+/// Backs: what a forked peer makes the holder do is bounded by the
+/// holder's own chain. The peer's branch can change the holder's canonical
+/// chain only by out-extending the holder's own branch, so no more of it is
+/// handed on than that takes; the rest arrives as an ordinary extension once
+/// the branch is taken. A peer that has proved one fork and then serves any
+/// number of entries past it gets the same bounded hand-off, where each
+/// entry would otherwise be one submission to the engine.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
+    let (w, _) = world(&["key_a", "key_b", "alice", "bob"]).await;
+    let (_, mine) = line(&w.shared, &["key_a", "key_b", "carol"], T + 1).await;
+    let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
+    let mut handed = Vec::new();
+    for padding in [0, 500] {
+        let mut record = follower(&w.id, &held).await;
+        let mut c = connector(&w);
+        c.padding = padding;
+        let peers = [PullPeer {
+            name: "b",
+            connector: &c,
+        }];
+        let report = pull(&mut record, &peers).await;
+        assert!(
+            matches!(only_standing(&report), PeerStanding::Forked),
+            "{:?}",
+            only_standing(&report)
+        );
+        assert_eq!(report.forks.first().expect("a fork").height, 3);
+        handed.push(
+            cyphr_client::branch_bundles(&record, &report, &peers)
+                .await
+                .len(),
+        );
+    }
+    // The fork is at position 3 and the holder has one commit there: the
+    // rival, and the one commit past it that out-extends the holder.
+    assert_eq!(handed, [2, 2], "bundles handed on, unpadded and padded");
+}
+
+/// Backs: serving `/tip`, `/consistency` and `/inclusion`, and admitting a
+/// push, read a number of commit records from the index that does not grow
+/// with the principal's history. Each asks whether the principal is in
+/// Error first; answered by walking the whole chain, a proof of logarithmic
+/// size costs a linear read, on every request, to anyone who asks.
+///
+/// Counted at the engine's one chain read, on a history of 2 commits and
+/// one of 6: the answers are the same either way, so only the count shows
+/// a walk, and the replay count sees no signature checked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_reads_no_more_of_the_index_as_history_grows() {
+    let mut rows = Vec::new();
+    for peer_line in [
+        &["key_a"][..],
+        &["key_a", "key_b", "alice", "bob", "carol"][..],
+    ] {
+        let (w, bundles) = world(peer_line).await;
+        let mut tip = w.shared.fork().await.expect("fork");
+        for b in &bundles {
+            cyphr::replay::replay_held(&mut tip, &b.decode().expect("decodes"))
+                .await
+                .expect("replays");
+        }
+        let next = key_commit_by(&mut tip, "golden", "eve_ed25519", T + 50).await;
+        let app = build_router(w.peer.clone());
+        let id = w.id.replace(':', "%3A");
+        let before = w.peer.engine.chain_rows_read();
+        for route in [
+            format!("/tip?pr={id}"),
+            format!("/consistency?pr={id}&from=1"),
+            format!("/inclusion?pr={id}&index=0"),
+        ] {
+            let (status, body) = get_json(app.clone(), &route).await;
+            assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
+        }
+        let (status, body) = post_json(app, "/push", common::push_body(&w.id, &next)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body:?}");
+        rows.push(w.peer.engine.chain_rows_read() - before);
+    }
+    assert_eq!(
+        rows[0], rows[1],
+        "index commit records read over a history of 2 commits and of 6"
+    );
+}
+
 /// Backs: an honest extension still pulls exactly the new commits, after
 /// one proof.
 #[tokio::test(flavor = "multi_thread")]
@@ -397,11 +500,11 @@ async fn a_forked_peer_cannot_hide_behind_a_fabricated_proof() {
 }
 
 /// Backs: a principal whose state the engine does not keep (after a restart)
-/// is not proved from: each proof request would replay its chain, which a
-/// peer could ask for over and over. The routes refuse with a 503 and replay
-/// nothing, and a follower falls back to the no-proof pull.
+/// is replayed once for the first proof asked of it and kept: asking over
+/// and over, which any peer can, replays nothing more, and a follower pulls
+/// with a proof as from any other principal.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_unkept_principal_is_not_replayed_for_a_proof() {
+async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
     let pool = load_pool();
     let g = pool.get("golden").expect("golden");
     let mut shared = cyphr::Principal::implicit(g.key().expect("golden"))
@@ -428,14 +531,20 @@ async fn an_unkept_principal_is_not_replayed_for_a_proof() {
     let app = build_router(again.clone());
     let q = id.replace(':', "%3A");
     let before = again.engine.commits_replayed();
-    for route in [
-        format!("/consistency?pr={q}&from=2"),
-        format!("/inclusion?pr={q}&index=1"),
-    ] {
-        let (status, body) = get_json(app.clone(), &route).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{route}: {body:?}");
+    for _ in 0..3 {
+        for route in [
+            format!("/consistency?pr={q}&from=2"),
+            format!("/inclusion?pr={q}&index=1"),
+        ] {
+            let (status, body) = get_json(app.clone(), &route).await;
+            assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
+        }
     }
-    assert_eq!(again.engine.commits_replayed(), before, "nothing replayed");
+    assert_eq!(
+        again.engine.commits_replayed() - before,
+        4,
+        "the chain of 4 commits replayed once for six proofs"
+    );
 
     let url = serve(&again).await;
     let c = Watched::new(
