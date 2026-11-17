@@ -140,14 +140,27 @@ impl<K: Clone + Ord, V: Clone> Grown<BTreeMap<K, V>> {
 
     /// In key order.
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        let mut settled = self.settled.iter().peekable();
-        let mut added = self.added.iter().peekable();
-        std::iter::from_fn(move || match (settled.peek(), added.peek()) {
-            (Some((a, _)), Some((b, _))) if b < a => added.next(),
-            (Some(_), _) => settled.next(),
-            (None, _) => added.next(),
-        })
+        merged(self.settled.iter(), self.added.iter())
     }
+
+    /// In key order, from `from` on.
+    pub fn iter_from(&self, from: &K) -> impl Iterator<Item = (&K, &V)> {
+        merged(self.settled.range(from..), self.added.range(from..))
+    }
+}
+
+/// Two ascending runs of disjoint keys, as one.
+fn merged<'a, K: Ord + 'a, V: 'a>(
+    settled: impl Iterator<Item = (&'a K, &'a V)>,
+    added: impl Iterator<Item = (&'a K, &'a V)>,
+) -> impl Iterator<Item = (&'a K, &'a V)> {
+    let mut settled = settled.peekable();
+    let mut added = added.peekable();
+    std::iter::from_fn(move || match (settled.peek(), added.peek()) {
+        (Some((a, _)), Some((b, _))) if b < a => added.next(),
+        (Some(_), _) => settled.next(),
+        (None, _) => added.next(),
+    })
 }
 
 // Unit tests: a `Grown` is a cost structure whose reads must not depend on
@@ -201,6 +214,7 @@ mod tests {
             |m: &Grown<BTreeMap<u8, char>>| m.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>();
         let expected = [(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')];
         assert_eq!(read(&m), expected);
+        assert_eq!(m.iter_from(&3).map(|(k, _)| *k).collect::<Vec<_>>(), [3, 4]);
         assert_eq!((m.len(), m.is_empty()), (4, false));
         assert!(m.contains_key(&1) && m.contains_key(&4) && !m.contains_key(&5));
         assert!(Grown::<BTreeMap<u8, u8>>::default().is_empty());

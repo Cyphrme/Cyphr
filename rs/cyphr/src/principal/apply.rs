@@ -478,7 +478,7 @@ impl PrincipalState {
                     if self.auth.keys.get(&tmb).map(Key::pub_key) != Some(key.pub_key()) {
                         return Err(Error::UnknownKey);
                     }
-                    self.core_mut().genesis_created = true;
+                    self.core_unjudged_mut().genesis_created = true;
                 } else if self.auth.keys.contains_key(&tmb) {
                     return Err(Error::DuplicateKey);
                 } else {
@@ -509,7 +509,10 @@ impl PrincipalState {
                 self.add_key(key, cz.now)?;
                 // The signer is removed outright: it is not a delete of a key
                 // (a key was just added, so the set cannot empty)
-                self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
+                self.core_unjudged_mut()
+                    .auth
+                    .keys
+                    .shift_remove(&cz.signer.to_b64());
             },
             CozKind::SelfRevoke { rvk } => {
                 self.revoke_key(&cz.signer, *rvk, None)?;
@@ -519,10 +522,10 @@ impl PrincipalState {
             // gives a reused authentication component its own PG). Roots
             // are recomputed at finalize from the nonce sets.
             CozKind::NonceCreate { level, nonce } => {
-                self.core_mut().nonces.insert(*level, nonce)?;
+                self.nonces_mut(*level).insert(*level, nonce)?;
             },
             CozKind::NonceDelete { level, nonce } => {
-                self.core_mut().nonces.remove(*level, nonce)?;
+                self.nonces_mut(*level).remove(*level, nonce)?;
             },
             CozKind::PrincipalCreate { id } => {
                 // Genesis finalization (SPEC 5.1): signed by the genesis key
@@ -543,7 +546,7 @@ impl PrincipalState {
                 // establish_pg() is the ONLY code path that transitions
                 // Nascent → Established.
                 self.establish_pg(PrincipalGenesis::from_initial(&pg))?;
-                self.core_mut().genesis_pending = true;
+                self.core_unjudged_mut().genesis_pending = true;
             },
             // SPEC 11.5.1: a merge and its ack are each the signer's own
             // statement, accepted into the signer's chain alone. Neither
@@ -575,7 +578,7 @@ impl PrincipalState {
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
-                let core = self.core_mut();
+                let core = self.core_unjudged_mut();
                 core.deleted = true;
                 core.deleted_pending = true;
                 // Deleted subsumes Frozen (SPEC.md:1974-1978 mutual
@@ -595,7 +598,7 @@ impl PrincipalState {
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
-                self.core_mut().frozen = true;
+                self.core_unjudged_mut().frozen = true;
             },
             CozKind::FreezeDelete { id } => {
                 // Thaw (SPEC §14.9.3, R1/F5 ruling): requires currently
@@ -606,14 +609,14 @@ impl PrincipalState {
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
-                self.core_mut().frozen = false;
+                self.core_unjudged_mut().frozen = false;
             },
             CozKind::DataRootCreate { id } => {
                 // SPEC 4.8.2: the DR transaction updates DR to its `id`.
                 // DT is a point-in-time snapshot (2.3.3): the `id` is the
                 // signer's commitment to DT as it saw it, never matched
                 // against the actions held here.
-                self.core_mut().dr = Some(id.clone());
+                self.core_unjudged_mut().dr = Some(id.clone());
             },
         }
 
@@ -621,7 +624,7 @@ impl PrincipalState {
         self.update_last_used(&cz.signer, cz.now);
 
         // Update latest timestamp
-        let core = self.core_mut();
+        let core = self.core_unjudged_mut();
         core.included_czds.insert(cz.czd.as_bytes().to_vec());
         if cz.now > core.latest_timestamp {
             core.latest_timestamp = cz.now;
@@ -671,7 +674,8 @@ impl PrincipalState {
             }
         }
 
-        let core = self.core_mut();
+        // The key timeline is the one input to a verdict this changes, below.
+        let core = &mut self.core;
 
         // Re-derive active algorithms from post-mutation key set.
         // Per [alg-set-evolution], state digests for this commit use the
@@ -813,6 +817,9 @@ impl PrincipalState {
         let lifecycle = (core.frozen, core.deleted);
         core.key_timeline
             .record_commit(&core.auth.keys, &core.auth.revoked, lifecycle, now);
+        // Every period, frozen span and delete it records takes effect at
+        // `now`, so no action dated before it is judged differently.
+        self.hidden.invalidate_from(now);
 
         // This commit is finalized on this state: any principal/delete it
         // carried is no longer "this commit's own pending delete" for a
@@ -821,6 +828,15 @@ impl PrincipalState {
         core.genesis_pending = false;
 
         Ok(staged)
+    }
+
+    /// The nonce sets, for a change to one level: only a Key Tree nonce
+    /// feeds a verdict (the key of an embedded principal is judged by it).
+    fn nonces_mut(&mut self, level: crate::nonce::NonceLevel) -> &mut crate::nonce::NonceSets {
+        if level == crate::nonce::NonceLevel::Kt {
+            self.hidden.clear();
+        }
+        &mut self.core.nonces
     }
 
     /// Add a key to the active key set.
@@ -844,7 +860,7 @@ impl PrincipalState {
         if let Some(&signed) = self.data.last_signed.get(&tmb_b64) {
             key.set_last_used(signed);
         }
-        self.core_mut().auth.keys.insert(tmb_b64, key);
+        self.core_unjudged_mut().auth.keys.insert(tmb_b64, key);
         Ok(())
     }
 
@@ -853,7 +869,7 @@ impl PrincipalState {
     /// Dead is a consequence of any condition that leaves no keys).
     fn remove_key(&mut self, tmb: &Thumbprint) -> Result<()> {
         let tmb_b64 = tmb.to_b64();
-        let core = self.core_mut();
+        let core = self.core_unjudged_mut();
         if core.auth.keys.shift_remove(&tmb_b64).is_none() {
             return Err(Error::UnknownKey);
         }
@@ -898,7 +914,7 @@ impl PrincipalState {
     /// Called after successful coz or action signing.
     pub(super) fn update_last_used(&mut self, tmb: &Thumbprint, timestamp: i64) {
         let tmb_b64 = tmb.to_b64();
-        if let Some(key) = self.core_mut().auth.keys.get_mut(&tmb_b64) {
+        if let Some(key) = self.core_unjudged_mut().auth.keys.get_mut(&tmb_b64) {
             key.set_last_used(timestamp);
         }
     }

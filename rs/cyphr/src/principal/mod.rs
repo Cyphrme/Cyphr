@@ -271,6 +271,16 @@ impl PrincipalState {
         &mut self.core
     }
 
+    /// The core, for a change no verdict of [`Self::judge`] on held history
+    /// reads: the cache of verdicts stays. `judge` reads the key timeline
+    /// (changed only where [`data::Hidden::invalidate_from`] is called),
+    /// the revoked keys, the Key Tree nonces, the embedded principals and
+    /// the genesis; every site that changes one of those takes
+    /// [`Self::core_mut`].
+    fn core_unjudged_mut(&mut self) -> &mut PrincipalCore {
+        &mut self.core
+    }
+
     /// Fold what a write added into what the state shares. Called by the
     /// holder of the state once the write is adopted, when nothing else
     /// shares it; until then the additions are held beside the shared part,
@@ -582,6 +592,7 @@ impl<S: eml::Storage> Principal<S> {
         self.state
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     fn core_mut(&mut self) -> &mut PrincipalCore {
         self.state.core_mut()
     }

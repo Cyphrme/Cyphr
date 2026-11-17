@@ -8,6 +8,7 @@ use std::cell::Cell;
 
 thread_local! {
     static ACTION_CLONES: Cell<u64> = const { Cell::new(0) };
+    static COMMIT_CLONES: Cell<u64> = const { Cell::new(0) };
     static VIEW_JUDGMENTS: Cell<u64> = const { Cell::new(0) };
     static SIGNATURES_CHECKED: Cell<u64> = const { Cell::new(0) };
 }
@@ -16,6 +17,12 @@ thread_local! {
 /// action it holds).
 pub fn action_clones() -> u64 {
     ACTION_CLONES.with(Cell::get)
+}
+
+/// Finalized commits copied by a clone of one (a state clone copies every
+/// commit it holds).
+pub fn commit_clones() -> u64 {
+    COMMIT_CLONES.with(Cell::get)
 }
 
 /// Held actions judged for DT's view of them ([`crate::PrincipalState::actions`]).
@@ -30,6 +37,10 @@ pub fn signatures_checked() -> u64 {
 
 pub(crate) fn action_cloned() {
     ACTION_CLONES.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn commit_cloned() {
+    COMMIT_CLONES.with(|c| c.set(c.get() + 1));
 }
 
 pub(crate) fn view_judged() {

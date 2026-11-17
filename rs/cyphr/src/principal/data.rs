@@ -21,13 +21,22 @@ pub(crate) enum Arrival {
 
 /// The held actions DT does not show: those [`PrincipalState::judge`]
 /// refuses, by `(now, czd)`. A cache of the view, never a record: it is
-/// read from the key timeline and the held actions, and it is dropped by
-/// anything that can change a verdict ([`PrincipalState::core_mut`]), so
-/// the state that holds it is the one a replay builds. Kept up to date by
-/// [`PrincipalState::insert_action`] alone, since a held action changes no
-/// verdict but its own.
+/// read from the key timeline and the held actions, so the state that holds
+/// it is the one a replay builds. What may change a verdict drops it
+/// ([`PrincipalState::core_mut`]) or, for a change to the key timeline
+/// effective at time `t`, marks the verdicts of actions dated `t` or later
+/// stale ([`Hidden::invalidate_from`]): only those can differ, and the next
+/// read judges just them. A held action changes no verdict but its own, so
+/// [`PrincipalState::insert_action`] judges it and nothing else.
 #[derive(Default)]
-pub(super) struct Hidden(Mutex<Option<Arc<HiddenSet>>>);
+pub(super) struct Hidden(Mutex<Option<Memo>>);
+
+#[derive(Clone)]
+struct Memo {
+    hidden: Arc<HiddenSet>,
+    /// Verdicts of actions dated at or after this are not read yet.
+    stale_from: Option<i64>,
+}
 
 /// The `(now, czd)` of each action in a [`Hidden`].
 type HiddenSet = BTreeSet<(i64, Vec<u8>)>;
@@ -47,35 +56,68 @@ impl Clone for Hidden {
 }
 
 impl Hidden {
-    fn get(&self) -> Option<Arc<HiddenSet>> {
+    fn get(&self) -> Option<Memo> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    fn set(&self, hidden: Arc<HiddenSet>) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(hidden);
+    fn set(&self, memo: Memo) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(memo);
     }
 
     pub(super) fn clear(&mut self) {
         *self.0.get_mut().unwrap_or_else(|p| p.into_inner()) = None;
     }
+
+    /// A change to the key timeline effective at `t`: no verdict of an
+    /// action dated before `t` can differ.
+    pub(super) fn invalidate_from(&mut self, t: i64) {
+        if let Some(memo) = self.0.get_mut().unwrap_or_else(|p| p.into_inner()) {
+            memo.stale_from = Some(memo.stale_from.map_or(t, |s| s.min(t)));
+        }
+    }
 }
 
 impl PrincipalState {
-    /// The held actions DT does not show, read once and kept until a change
-    /// that can alter a verdict.
+    /// The held actions DT does not show, read once and kept; a read after a
+    /// change judges only the actions it can have changed the verdict of.
     pub(super) fn hidden(&self) -> Arc<HiddenSet> {
-        if let Some(hidden) = self.hidden.get() {
-            return hidden;
-        }
-        let hidden: Arc<HiddenSet> = Arc::new(
-            self.data
+        let refused = |(_, a): &(&(i64, Vec<u8>), &Action)| {
+            self.judge(&a.signer, a.now, Arrival::Held).is_err()
+        };
+        let memo = match self.hidden.get() {
+            Some(Memo {
+                hidden,
+                stale_from: None,
+            }) => return hidden,
+            Some(Memo {
+                hidden,
+                stale_from: Some(t),
+            }) => {
+                let from = (t, Vec::new());
+                let mut kept = (*hidden).clone();
+                kept.split_off(&from);
+                kept.extend(
+                    self.data
+                        .actions
+                        .iter_from(&from)
+                        .filter(refused)
+                        .map(|(key, _)| key.clone()),
+                );
+                kept
+            },
+            None => self
+                .data
                 .actions
                 .iter()
-                .filter(|(_, a)| self.judge(&a.signer, a.now, Arrival::Held).is_err())
+                .filter(refused)
                 .map(|(key, _)| key.clone())
                 .collect(),
-        );
-        self.hidden.set(hidden.clone());
+        };
+        let hidden = Arc::new(memo);
+        self.hidden.set(Memo {
+            hidden: hidden.clone(),
+            stale_from: None,
+        });
         hidden
     }
 
@@ -178,11 +220,11 @@ impl PrincipalState {
             return;
         }
         // The one verdict a held action can change is its own.
-        let judged = self.hidden.get().map(|hidden| {
+        let judged = self.hidden.get().map(|memo| {
             let refused = self
                 .judge(&action.signer, action.now, Arrival::Held)
                 .is_err();
-            (hidden, refused)
+            (memo, refused)
         });
         let tmb = action.signer.to_b64();
         let core = &mut self.core;
@@ -203,11 +245,11 @@ impl PrincipalState {
             key.set_last_used(action.now);
         }
         core.data.actions.insert(key.clone(), action);
-        if let Some((mut hidden, refused)) = judged {
+        if let Some((mut memo, refused)) = judged {
             if refused {
-                Arc::make_mut(&mut hidden).insert(key);
+                Arc::make_mut(&mut memo.hidden).insert(key);
             }
-            self.hidden.set(hidden);
+            self.hidden.set(memo);
         }
     }
 
@@ -392,7 +434,11 @@ impl<S: eml::Storage> Principal<S> {
     /// `rvk` (the spec author on #203). It changes no root: a naked revoke
     /// does not mutate PR.
     pub fn note_naked_revoke(&mut self, tmb: &coz::Thumbprint, cutoff: i64) {
-        self.state.core_mut().key_timeline.revoke(tmb, cutoff);
+        // A naked revoke gates admission only; no held verdict reads it.
+        self.state
+            .core_unjudged_mut()
+            .key_timeline
+            .revoke(tmb, cutoff);
     }
 
     /// Verify signature and record an action in one step.

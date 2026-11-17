@@ -295,7 +295,7 @@ impl<S: eml::Storage> Principal<S> {
     /// copy that believes otherwise and pushes it to the real chain.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn pretend_held(&mut self, pr: PrincipalRoot) {
-        self.core_mut().held_prs.push(pr);
+        self.state.core_unjudged_mut().held_prs.push(pr);
     }
 
     /// Get a reference to the per-algorithm MALT trees.
@@ -313,7 +313,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Unsigned, so a skew that would refuse a `now` at or before the
     /// verifier clock cannot be expressed.
     pub fn set_max_clock_skew(&mut self, seconds: u64) {
-        self.core_mut().max_clock_skew = seconds;
+        self.state.core_unjudged_mut().max_clock_skew = seconds;
     }
 
     /// Install the verifier's time source (Unix seconds).
@@ -325,6 +325,6 @@ impl<S: eml::Storage> Principal<S> {
     /// cannot replay a peer chain either, since replay applies each coz
     /// through the same bound.
     pub fn set_clock(&mut self, clock: Clock) {
-        self.core_mut().clock = clock;
+        self.state.core_unjudged_mut().clock = clock;
     }
 }
