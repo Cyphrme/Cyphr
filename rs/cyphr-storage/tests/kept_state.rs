@@ -1,12 +1,12 @@
 //! U3: a write checks the extension, not the history (keep what was
 //! verified, apply only what arrives).
 //!
-//! The engine keeps each principal's verified state between its writes,
-//! used only when it matches what the index, the held action bundles and
-//! the revoke set say now. These tests hold that to the replay of the
-//! stored chain, which is the truth (root `AGENTS.md` I1): the cost
-//! of a write does not grow with the history, and the kept path answers
-//! exactly as a replay does, over refused bundles and revokes too.
+//! The engine keeps each principal's verified state between its uses,
+//! used only while the index names the tip it stands at. These tests hold
+//! that to the replay of the stored chain, which is the truth (root
+//! `AGENTS.md` I1): the cost of a write does not grow with the history, and
+//! the kept path answers exactly as a replay does, over refused bundles and
+//! revokes too.
 //!
 //! Every engine here keeps its commit logs in fjall, as the server does:
 //! over the in-memory logs a log never outlives its principal's replay,
@@ -125,23 +125,47 @@ fn engine_with_logs(
     kept: usize,
     shadow: bool,
 ) -> (Engine, cyphr_blob_fjall::EmlLogs, tempfile::TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = fjall::Database::builder(dir.path().join("db"))
-        .open()
-        .expect("open db");
-    let e = StorageEngine::with_log_factory(
-        MemoryBlobStore::new(),
-        MemoryIndexer::new(),
-        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
-    )
-    .with_kept_states(kept)
-    .with_kept_shadow(shadow);
-    (e, cyphr_blob_fjall::EmlLogs::new(db).expect("logs"), dir)
+    let stores = Stores::new();
+    let logs = cyphr_blob_fjall::EmlLogs::new(stores.db.clone()).expect("logs");
+    (stores.engine(kept, shadow), logs, stores.dir)
 }
 
 fn engine(kept: usize, shadow: bool) -> (Engine, tempfile::TempDir) {
     let (e, _logs, dir) = engine_with_logs(kept, shadow);
     (e, dir)
+}
+
+/// What outlives an engine: the blobs and the commit logs. An engine opened
+/// over them again is the process restarted: it holds no kept state and
+/// rebuilds its index from the blobs.
+struct Stores {
+    blobs: MemoryBlobStore,
+    db: fjall::Database,
+    dir: tempfile::TempDir,
+}
+
+impl Stores {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fjall::Database::builder(dir.path().join("db"))
+            .open()
+            .expect("open db");
+        Self {
+            blobs: MemoryBlobStore::new(),
+            db,
+            dir,
+        }
+    }
+
+    fn engine(&self, kept: usize, shadow: bool) -> Engine {
+        StorageEngine::with_log_factory(
+            self.blobs.clone(),
+            MemoryIndexer::new(),
+            cyphr_blob_fjall::EmlLogs::new(self.db.clone()).expect("logs"),
+        )
+        .with_kept_states(kept)
+        .with_kept_shadow(shadow)
+    }
 }
 
 /// A principal of genesis keys `golden`, `key_a` after its genesis commit,
@@ -322,6 +346,9 @@ enum Op {
     /// A rival of the chain's second commit: a fork that puts the
     /// principal in Error (SPEC 15.5) until a commit extends the head.
     Rival,
+    /// The keeping engine restarted over its blobs and logs: nothing kept,
+    /// the index rebuilt.
+    Restart,
 }
 
 const TOGGLED: [&str; 3] = ["key_b", "alice", "bob"];
@@ -351,6 +378,7 @@ fn steps() -> impl Strategy<Value = Vec<Op>> {
             1 => (0..REVOKED.len()).prop_map(Op::Revoke),
             3 => (0..ACTORS.len(), 1..80i64).prop_map(|(k, off)| Op::Act(k, off)),
             1 => Just(Op::Rival),
+            1 => Just(Op::Restart),
         ],
         0..7,
     )
@@ -368,7 +396,8 @@ fn damaged(mut bundle: WireBundle) -> WireBundle {
 }
 
 async fn run(ops: Vec<Op>) {
-    let (kept, _d1) = engine(8, true);
+    let stores = Stores::new();
+    let mut kept = stores.engine(8, true);
     let (cold, _d2) = engine(0, false);
     let mut w = World::new().await;
     for e in [&kept, &cold] {
@@ -401,6 +430,10 @@ async fn run(ops: Vec<Op>) {
                 None,
             ),
             Op::Damage => (damaged(w.last()), None),
+            Op::Restart => {
+                kept = stores.engine(8, true);
+                continue;
+            },
             Op::Revoke(k) => {
                 // Received between this op's time and the next's.
                 let evidence = naked_revoke(&kp(REVOKED[k]), now);
@@ -426,13 +459,22 @@ async fn run(ops: Vec<Op>) {
             cold.get_tip(&w.id).await.expect("tip"),
         ];
         assert_eq!(tips[0], tips[1], "op {i}: tips differ");
+        let cold_replay = replayed(&kept, &w).await;
         if let Some(state) = kept.kept_state(&w.id).await {
             assert_same_state(
                 &format!("{state:#?}"),
-                &replayed(&kept, &w).await,
+                &cold_replay,
                 &format!("op {i}: the kept state is not the replay of the stored chain"),
             );
         }
+        // A reader gets the same state, kept or replayed, and leaves it
+        // kept for the next write.
+        let read = kept.at_tip(&w.id).await.expect("read").expect("stored");
+        assert_same_state(
+            &format!("{:#?}", **read),
+            &cold_replay,
+            &format!("op {i}: a reader's state is not the replay of the stored chain"),
+        );
     }
     assert_eq!(
         kept.kept_divergences(),
@@ -446,8 +488,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     /// U3, I1: a state the engine keeps is a cache of the replay of the stored
     /// chain, never another answer. Over arbitrary histories of key toggles,
-    /// refused bundles (a reused commit, a damaged signature) and naked
-    /// revokes, an engine that keeps states and one that replays every write
+    /// refused bundles (a reused commit, a damaged signature), naked
+    /// revokes, restarts and reads, an engine that keeps states and one that
+    /// replays every write
     /// give the same verdict on every bundle and hold the same tip, and the
     /// state the first keeps is the state the replay of its blobs builds
     /// (the engine's shadow check, on, replays cold at every use and fails the
@@ -464,10 +507,9 @@ proptest! {
 
 /// U3, refusal leaves no trace: bad bundles must not be a way to make the
 /// next write replay. A reused commit and a damaged signature are refused
-/// and the next honest write is still served from the kept state. A revoke
-/// is read fresh: the write after it replays once, then is kept again.
+/// and the next honest write is still served from the kept state.
 #[tokio::test]
-async fn u3_a_refusal_costs_the_kept_state_nothing_and_a_revoke_costs_one_replay() {
+async fn u3_a_refusal_costs_the_kept_state_nothing() {
     let (e, _dir) = engine(8, false);
     let mut w = history(&e, 3).await;
     let (hits, misses) = (e.kept_hits(), e.kept_misses());
@@ -484,24 +526,171 @@ async fn u3_a_refusal_costs_the_kept_state_nothing_and_a_revoke_costs_one_replay
         "a refused bundle, or the write after two, was not served from the kept state"
     );
 
-    e.record_revoke(&naked_revoke(&kp("key_a"), NOW + 110), NOW + 115)
-        .await
-        .expect("revoke");
-    let before = e.commits_replayed();
-    for (i, expected_replayed) in [(0, true), (1, false)] {
-        let now = NOW + 200 + 10 * i;
-        let (next, bundle) = w.toggle("bob", now).await.expect("toggle");
+    assert_eq!(e.kept_divergences(), 0);
+}
+
+/// A naked revoke gates what arrives after it and judges nothing held
+/// (SPEC 6.4, 14.12), so it is no part of what a kept state was folded
+/// from: a revoke of a key the principal never held, and one of its own
+/// key, each leave the state kept and the next write replaying nothing.
+/// One revoke of any key otherwise makes every principal of the server
+/// replay its history, and anyone can sign one. The gate itself holds: an
+/// action the revoked key signs at or after the cutoff is refused, one
+/// dated before it admitted.
+#[tokio::test]
+async fn a_naked_revoke_leaves_every_kept_state_kept() {
+    let (e, _dir) = engine(8, false);
+    let mut w = history(&e, 3).await;
+    for (i, name) in ["bob", "key_a"].into_iter().enumerate() {
+        e.record_revoke(&naked_revoke(&kp(name), NOW + 110), NOW + 115)
+            .await
+            .expect("revoke");
+        assert!(
+            e.kept_state(&w.id).await.is_some(),
+            "a revoke of {name} dropped the kept state"
+        );
         let at = e.commits_replayed();
+        let (next, bundle) = w
+            .toggle("alice", NOW + 200 + 10 * i as i64)
+            .await
+            .expect("toggle");
         w.submit(&e, &bundle).await.expect("write");
         w.adopt(next);
         assert_eq!(
-            e.commits_replayed() > at,
-            expected_replayed,
-            "write {i} after the revoke"
+            e.commits_replayed() - at,
+            0,
+            "the write after a revoke of {name} replayed the chain"
         );
     }
-    assert!(e.commits_replayed() > before);
+    let by_key_a = |now| WireBundle::actions(vec![action_blob(&kp("key_a"), now)]);
+    assert!(
+        w.submit(&e, &by_key_a(NOW + 115)).await.is_err(),
+        "an action dated at the cutoff is refused"
+    );
+    w.submit(&e, &by_key_a(NOW + 114))
+        .await
+        .expect("an action dated before the cutoff is admitted");
     assert_eq!(e.kept_divergences(), 0);
+}
+
+/// A refused write leaves the principal's verified state kept, whether the
+/// write resumed it or replayed it: after a restart nothing is kept, and a
+/// refused bundle is free to send, so a refusal that dropped the replayed
+/// state would cost a whole replay per bundle, for every principal. The
+/// first refusal after the restart replays the chain once; the second
+/// replays nothing.
+///
+/// The replay count is the engine's own: both refusals answer alike, so no
+/// response can tell them apart.
+#[tokio::test]
+async fn a_refused_write_to_an_unkept_principal_replays_once() {
+    let stores = Stores::new();
+    let mut w = history(&stores.engine(8, false), 5).await;
+    let e = stores.engine(8, false);
+    assert!(e.get_tip(&w.id).await.expect("tip").is_some(), "rebuilt");
+    assert!(e.kept_state(&w.id).await.is_none(), "nothing kept yet");
+    let mut replayed = Vec::new();
+    for _ in 0..2 {
+        let at = e.commits_replayed();
+        assert!(w.submit(&e, &damaged(w.last())).await.is_err(), "refused");
+        replayed.push(e.commits_replayed() - at);
+    }
+    assert_eq!(replayed, [5, 0], "commits replayed by each refusal");
+    assert!(e.kept_state(&w.id).await.is_some(), "kept by the refusal");
+
+    // The replayed state is kept as any other: the writes after it are
+    // served from it, each leaving its own state kept.
+    let at = e.commits_replayed();
+    for i in 0..2 {
+        let (next, bundle) = w.toggle("alice", NOW + 500 + i).await.expect("toggle");
+        w.submit(&e, &bundle).await.expect("honest write");
+        w.adopt(next);
+    }
+    assert_eq!(e.commits_replayed() - at, 0, "writes after the refusals");
+}
+
+/// A refused bundle that is no rival costs index reads bounded by the
+/// bundle, whatever the principal's history: a commit whose signature does
+/// not verify, and a commit the chain already holds pushed again. Both are
+/// free to send (the second is served by `/patch` to anyone), so a refusal
+/// that read the chain to decide would let anyone make the store read a
+/// principal's whole history per request.
+///
+/// Counted at the engine's one chain read, over histories of 4 and of 24
+/// commits: the refusals are the same either way, and no signature is
+/// replayed, so only the count shows the read.
+#[tokio::test]
+async fn a_refused_bundle_that_is_no_rival_reads_no_more_as_history_grows() {
+    let mut rows = Vec::new();
+    for n in [4, 24] {
+        let (e, _dir) = engine(8, false);
+        let w = history(&e, n).await;
+        let before = e.chain_rows_read();
+        for refused in [damaged(w.last()), bundle_at(&w.shadow, 1)] {
+            assert!(w.submit(&e, &refused).await.is_err(), "refused");
+        }
+        rows.push(e.chain_rows_read() - before);
+    }
+    assert_eq!(
+        rows[0], rows[1],
+        "index commit records read by two refusals, over 4 commits and over 24"
+    );
+}
+
+/// A stranger cannot make the store read or replay another principal's
+/// history. The stranger stores a principal of its own, so the store knows
+/// its key, then pushes a commit signed by that key to the victim. The
+/// victim never held the key and embeds no principal, so the bundle is no
+/// rival of it at any position, and that is settled from the bundle and the
+/// victim's verified state: nothing of the victim's chain is read and none
+/// of it is replayed, whatever its length.
+///
+/// Counted at the engine's chain read and its retention replays, over
+/// victims of 4 and of 24 commits: the refusal is the same either way.
+#[tokio::test]
+async fn a_strangers_key_buys_no_read_of_a_victims_history() {
+    let alice = kp("alice");
+    let mut stranger = cyphr::Principal::implicit(key_of(&alice))
+        .await
+        .expect("genesis");
+    stranger
+        .commit_genesis(&signer_of(&alice), &[key_of(&kp("bob"))], NOW, "cyphr.me")
+        .await
+        .expect("genesis commit");
+    let own = bundle_at(&stranger, 0);
+    let own_id = test_fixtures::bundle::genesis_id(&own).expect("id");
+    let carol = kp("carol");
+    assert!(
+        try_apply(
+            &mut stranger,
+            &alice,
+            pay("key/create", &alice, Some(&carol), NOW + 1_000),
+            Some(key_of(&carol)),
+            NOW + 1_000,
+        )
+        .await
+    );
+    let pushed = bundle_at(&stranger, 1);
+
+    let mut cost = Vec::new();
+    for n in [4, 24] {
+        let (e, _dir) = engine(8, false);
+        let w = history(&e, n).await;
+        e.submit_commit(&own_id, None, &own)
+            .await
+            .expect("the stranger's own principal");
+        let before = (e.chain_rows_read(), e.retention_replays());
+        assert!(w.submit(&e, &pushed).await.is_err(), "refused");
+        cost.push((
+            e.chain_rows_read() - before.0,
+            e.retention_replays() - before.1,
+        ));
+    }
+    assert_eq!(
+        cost[0], cost[1],
+        "(index commit records read, commits replayed) over 4 commits and over 24"
+    );
+    assert_eq!(cost[0].1, 0, "a stranger's bundle replayed the victim");
 }
 
 /// U3: a state resumes only over the commit log it was folded from, so a
@@ -733,8 +922,7 @@ async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
 /// A holder that verifies against the engine's kept state (a gossip pull)
 /// gets the principal as the next write would start from, checks the next
 /// commit on it, and leaves the engine's store untouched until the engine
-/// itself admits the commit; both then hold the same state. Nothing is
-/// handed out when no current state is kept.
+/// itself admits the commit; both then hold the same state.
 ///
 /// Turns red if: the detached principal differs from the kept state, refuses
 /// the commit the engine accepts, writes to the engine's log or tip, or
@@ -744,7 +932,8 @@ async fn an_errored_refusal_of_actions_leaves_the_kept_state_unchanged() {
 async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it() {
     let (e, _dir) = engine(128, false);
     let w = history(&e, 6).await;
-    let mut detached = e.kept_principal(&w.id).await.expect("a kept principal");
+    let at_tip = e.at_tip(&w.id).await.expect("read").expect("stored");
+    let mut detached = at_tip.detach().await.expect("detaches");
     let kept = e.kept_state(&w.id).await.expect("kept state");
     assert_eq!(detached.projection(), kept.projection());
     let tip = e.get_tip(&w.id).await.expect("tip").expect("held");
@@ -757,7 +946,7 @@ async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it()
     let after = e.get_tip(&w.id).await.expect("tip").expect("held");
     assert_eq!(after.commit_id, tip.commit_id, "the engine stored nothing");
     assert!(
-        e.kept_principal(&w.id).await.is_some(),
+        e.kept_state(&w.id).await.is_some(),
         "its state is still kept"
     );
 
@@ -766,7 +955,11 @@ async fn a_detached_kept_principal_verifies_the_next_commit_without_storing_it()
     assert_eq!(detached.projection(), admitted.projection());
     drop(next);
 
+    // An engine that keeps nothing serves the same principal, by a replay.
     let (cold, _dir) = engine(0, false);
     let w = history(&cold, 3).await;
-    assert!(cold.kept_principal(&w.id).await.is_none());
+    let before = cold.commits_replayed();
+    let read = cold.at_tip(&w.id).await.expect("read").expect("stored");
+    assert_eq!(cold.commits_replayed() - before, 3);
+    assert_eq!(format!("{:#?}", **read), replayed(&cold, &w).await);
 }

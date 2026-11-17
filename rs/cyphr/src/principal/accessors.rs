@@ -98,6 +98,28 @@ impl PrincipalState {
             .or_else(|| self.auth.revoked.get(&key))
     }
 
+    /// A key this principal has held under `tmb` at any commit, whether or
+    /// not it is a key of the principal now: one a later commit deleted or
+    /// replaced is still found. For checking that a signature is by a key
+    /// of this principal before asking where in its history it could
+    /// stand; whether the key authorized anything at a given time is
+    /// another question.
+    pub fn key_ever_held(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.key_timeline
+            .key_of(tmb)
+            .or_else(|| self.auth.revoked.get(&tmb.to_b64()))
+    }
+
+    /// A key that a principal this one embeds has ever held under `tmb`,
+    /// by the views of embedded principals this state holds (SPEC 10.3):
+    /// the ones a verifier revealed or followed. `None` for a state that
+    /// holds no such view, whatever keys exist elsewhere. As
+    /// [`Self::key_ever_held`], it says whose key a signature is, not that
+    /// the key authorized anything.
+    pub fn embedded_key_ever_held(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.embedded.key_ever_held(tmb)
+    }
+
     /// Check if a key is currently active.
     pub fn is_key_active(&self, tmb: &Thumbprint) -> bool {
         self.auth.keys.contains_key(&tmb.to_b64())

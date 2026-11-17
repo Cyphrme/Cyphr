@@ -615,8 +615,10 @@ impl<S: eml::Storage> Principal<S> {
         self.state.core_mut()
     }
 
-    /// The principal's state, without its log.
-    pub(crate) fn state(&self) -> &PrincipalState {
+    /// The principal's state, without its log: what [`Principal::resume`]
+    /// takes, for a caller that keeps a copy while it goes on using the
+    /// principal.
+    pub fn state(&self) -> &PrincipalState {
         &self.state
     }
 

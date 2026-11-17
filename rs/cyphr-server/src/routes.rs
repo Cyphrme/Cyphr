@@ -531,20 +531,20 @@ async fn provable_tip(state: &Arc<AppState>, pr: &str) -> Result<TipState, AppEr
     Ok(t)
 }
 
-/// The log of `t`, read from the kept state. A principal whose state is not
-/// kept (after a restart, evicted, or one whose history is always replayed)
-/// is not proved from: each request would replay its chain, and a peer can
-/// ask over and over. It is a 503, and the asker pulls without a proof.
+/// The principal of `t` at its tip, over the engine's own commit log, to
+/// prove from. Read from the state the engine keeps; a principal with none
+/// (after a restart or an eviction) is replayed once and kept, so asking
+/// over and over costs one replay, not one each.
 async fn proving_log(
     state: &Arc<AppState>,
     t: &TipState,
-) -> Result<cyphr_storage::engine::LogReader<LogStorage>, AppError> {
-    state.engine.kept_log(&t.principal_id).await.ok_or_else(|| {
-        AppError::unavailable(format!(
-            "no proof of {} is at hand; pull without one",
-            t.principal_id
-        ))
-    })
+) -> Result<cyphr_storage::engine::AtTip<LogStorage>, AppError> {
+    state
+        .engine
+        .at_tip(&t.principal_id)
+        .await
+        .map_err(AppError::engine)?
+        .ok_or_else(|| AppError::not_found(format!("principal {} not found", t.principal_id)))
 }
 
 /// A bound on a count in a proof request, parsed from `raw`.
@@ -590,7 +590,7 @@ pub async fn consistency(
         )));
     }
     let log = proving_log(&state, &t).await?;
-    let extension = cyphr_client::Extension::of(log.principal(), from)
+    let extension = cyphr_client::Extension::of(&log, from)
         .await
         .map_err(|e| AppError::internal(format!("consistency proof not made: {e}")))?;
     if extension.size != t.commit_count {
@@ -625,7 +625,7 @@ pub async fn inclusion(
         )));
     }
     let log = proving_log(&state, &t).await?;
-    let stated = cyphr_client::Inclusion::of(log.principal(), index)
+    let stated = cyphr_client::Inclusion::of(&log, index)
         .await
         .map_err(|e| AppError::internal(format!("inclusion proof not made: {e}")))?;
     if stated.size != t.commit_count {

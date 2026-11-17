@@ -858,6 +858,14 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
 /// on the other side of a fork may have extended its branch or resolved
 /// the fork; only its commits past the fork show which.
 ///
+/// Of a forked peer's chain, no more is handed on than the record itself
+/// holds from the fork up: a branch changes the holder's chain only by
+/// out-extending the holder's own, and the rival with that many commits
+/// past it does. Once the holder is on the peer's branch, the rest of it
+/// is an ordinary extension, verified by the next pull. So what a peer can
+/// make the holder submit is bounded by the holder's own chain, however
+/// long a chain the peer serves.
+///
 /// Nothing here is verified past what the pull verified: the holder admits
 /// or retains each commit only if it verifies, and refuses what it holds.
 pub async fn branch_bundles<C: Connector>(
@@ -870,6 +878,11 @@ pub async fn branch_bundles<C: Connector>(
     let Some(height) = report.forks.iter().map(|f| f.height).min() else {
         return bundles;
     };
+    let own_past_fork = record
+        .held
+        .as_ref()
+        .map_or(0, |held| held.principal.commit_count())
+        .saturating_sub(height);
     let forked = report
         .peers
         .iter()
@@ -889,7 +902,7 @@ pub async fn branch_bundles<C: Connector>(
         else {
             continue;
         };
-        for entry in patch.entries.iter().skip(height + 1) {
+        for entry in patch.entries.iter().skip(height + 1).take(own_past_fork) {
             let Ok(bundle) = entry.bundle.clone() else {
                 break;
             };

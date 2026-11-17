@@ -162,8 +162,9 @@ async fn data_actions_reach_this_server_with_the_next_commit_by_gossip() {
     assert_eq!(held_actions(&app1, &id).await, 1, "held once");
     assert_eq!(replayed(&p1), 1);
 
-    // A restarted P1 keeps no state: the next round replays the stored
-    // chain once, and the action it lacks still comes.
+    // A restarted P1 keeps no state: its engine replays the stored chain
+    // once for the next round, which verifies only the new commit, and the
+    // action it lacks still comes.
     drop((gossip, app1));
     drop(p1);
     let p1 = open(dir1.path());
@@ -179,8 +180,8 @@ async fn data_actions_reach_this_server_with_the_next_commit_by_gossip() {
     );
     assert_eq!(held_actions(&app1, &id).await, 2, "P1 took the second");
     assert_eq!(
-        replayed(&p1),
-        4,
-        "the 3 stored commits once, then the new one"
+        (replayed(&p1), p1.engine.commits_replayed()),
+        (1, 3),
+        "the round verified the new commit; the engine replayed its 3 stored commits once"
     );
 }
