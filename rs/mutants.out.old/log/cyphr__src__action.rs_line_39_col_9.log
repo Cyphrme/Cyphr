@@ -1,0 +1,218 @@
+
+*** cyphr/src/action.rs:39:9: replace <impl Clone for Action>::clone -> Self with Default::default()
+
+*** mutation diff:
+--- cyphr/src/action.rs
++++ replace <impl Clone for Action>::clone -> Self with Default::default()
+@@ -31,25 +31,17 @@
+     /// Raw Coz message: the signed payload (including application-specific
+     /// fields) and signature, for storage/export.
+     pub(crate) raw: coz::CozJson,
+ }
+ 
+ #[cfg(any(test, feature = "test-utils"))]
+ impl Clone for Action {
+     fn clone(&self) -> Self {
+-        crate::probe::action_cloned();
+-        Self {
+-            typ: self.typ.clone(),
+-            signer: self.signer.clone(),
+-            now: self.now,
+-            czd: self.czd.clone(),
+-            hash_alg: self.hash_alg,
+-            raw: self.raw.clone(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl Action {
+     /// Create an action from already-verified, extracted values (internal).
+     ///
+     /// Used when we extract fields from raw JSON rather than parsing into coz::Pay.
+     /// The raw CozJson preserves the original message for storage/export.
+
+
+*** cargo test --no-run --verbose --package=cyphr@0.1.0
+       Fresh unicode-ident v1.0.22
+       Fresh cfg-if v1.0.4
+       Fresh typenum v1.20.1
+       Fresh subtle v2.6.1
+       Fresh zeroize v1.8.2
+       Fresh rand_core v0.10.1
+       Fresh cmov v0.5.4
+       Fresh const-oid v0.10.3
+       Fresh autocfg v1.5.1
+       Fresh libc v0.2.186
+       Fresh hybrid-array v0.4.15
+       Fresh ctutils v0.4.8
+       Fresh base64ct v1.8.3
+       Fresh cpubits v0.1.1
+       Fresh ff v0.14.0
+       Fresh version_check v0.9.5
+       Fresh equivalent v1.0.2
+       Fresh base16ct v1.0.0
+       Fresh proc-macro2 v1.0.105
+       Fresh getrandom v0.4.1
+       Fresh serde_core v1.0.228
+       Fresh block-buffer v0.12.1
+       Fresh pem-rfc7468 v1.0.0
+       Fresh hashbrown v0.16.1
+       Fresh group v0.14.0
+       Fresh once_cell v1.21.4
+       Fresh cpufeatures v0.3.0
+       Fresh semver v1.0.27
+       Fresh getrandom v0.2.17
+       Fresh memchr v2.7.6
+       Fresh quote v1.0.43
+       Fresh crypto-common v0.2.2
+       Fresh num-traits v0.2.19
+       Fresh der v0.8.3
+       Fresh rustc_version v0.4.1
+       Fresh merkle-spine v0.1.1
+       Fresh rand_core v0.6.4
+       Fresh indexmap v2.13.0
+       Fresh pin-project-lite v0.2.17
+       Fresh cpufeatures v0.2.17
+       Fresh syn v2.0.114
+       Fresh digest v0.11.3
+       Fresh crypto-bigint v0.7.11
+       Fresh spki v0.8.1
+       Fresh generic-array v0.14.9
+       Fresh zerocopy v0.8.33
+       Fresh canonical-mt v0.1.0
+       Fresh canonical-ml v0.1.0
+       Fresh find-msvc-tools v0.1.9
+       Fresh scopeguard v1.2.0
+       Fresh signature v2.2.0
+       Fresh serde_derive v1.0.228
+       Fresh pkcs8 v0.11.0
+       Fresh hmac v0.13.0
+       Fresh primefield v0.14.0
+       Fresh crypto-common v0.1.6
+       Fresh ppv-lite86 v0.2.21
+       Fresh block-buffer v0.10.4
+       Fresh signature v3.0.0
+       Fresh sha2 v0.11.1
+       Fresh crossbeam-utils v0.8.22
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh shlex v2.0.1
+       Fresh serde v1.0.228
+       Fresh rfc6979 v0.6.0
+       Fresh wnaf v0.14.1
+       Fresh digest v0.10.7
+       Fresh bitflags v2.11.0
+       Fresh rand_chacha v0.3.1
+       Fresh cc v1.4.0
+       Fresh thiserror-impl v1.0.69
+       Fresh getrandom v0.3.4
+       Fresh thiserror-impl v2.0.17
+       Fresh serdect v0.4.3
+       Fresh ed25519 v2.2.3
+       Fresh curve25519-dalek v4.1.3
+       Fresh sha2 v0.10.9
+       Fresh zmij v1.0.14
+       Fresh lock_api v0.4.14
+       Fresh polydigest v0.2.0
+       Fresh itoa v1.0.17
+       Fresh linux-raw-sys v0.11.0
+       Fresh rand_core v0.9.5
+       Fresh rand v0.8.5
+       Fresh sec1 v0.8.1
+       Fresh serde_json v1.0.149
+       Fresh thiserror v2.0.17
+       Fresh thiserror v1.0.69
+       Fresh ed25519-dalek v2.2.0
+       Fresh rustix v1.1.3
+       Fresh crossbeam-epoch v0.9.20
+       Fresh errno v0.3.14
+       Fresh futures-sink v0.3.33
+       Fresh twox-hash v2.1.3
+       Fresh compare v0.0.6
+       Fresh fastrand v2.3.0
+       Fresh xxhash-rust v0.8.18
+       Fresh elliptic-curve v0.14.3
+       Fresh futures-core v0.3.33
+       Fresh log v0.4.29
+       Fresh byteorder-lite v0.1.0
+       Fresh smallvec v1.15.2
+       Fresh tempfile v3.25.0
+       Fresh crossbeam-skiplist v0.1.3
+       Fresh interval-heap v0.0.5
+       Fresh signal-hook-registry v1.4.8
+       Fresh lz4_flex v0.13.1
+       Fresh eml v0.12.0
+       Fresh spin v0.9.9
+       Fresh serde_spanned v0.6.9
+       Fresh toml_datetime v0.6.11
+       Fresh ecdsa v0.17.0
+       Fresh primeorder v0.14.0
+       Fresh parking_lot_core v0.9.12
+       Fresh sfa v1.0.0
+       Fresh futures-channel v0.3.33
+       Fresh enum_dispatch v0.3.13
+       Fresh tokio-macros v2.7.1
+       Fresh futures-macro v0.3.33
+       Fresh tracing-attributes v0.1.31
+       Fresh quick_cache v0.6.24
+       Fresh tracing-core v0.1.36
+       Fresh mio v1.2.2
+       Fresh winnow v0.7.14
+       Fresh futures-io v0.3.33
+       Fresh bytes v1.12.1
+       Fresh p384 v0.14.0
+       Fresh p521 v0.14.0
+       Fresh p256 v0.14.0
+       Fresh varint-rs v2.2.1
+       Fresh slab v0.4.12
+       Fresh byteview v0.10.1
+       Fresh hashbrown v0.14.5
+       Fresh rustc-hash v2.1.3
+       Fresh arrayref v0.3.9
+       Fresh futures-task v0.3.33
+       Fresh self_cell v1.3.0
+       Fresh arrayvec v0.7.8
+       Fresh toml_write v0.1.2
+       Fresh constant_time_eq v0.4.2
+       Fresh tokio v1.53.1
+       Fresh coz-rs v0.5.0
+       Fresh lsm-tree v3.1.8
+       Fresh blake3 v1.8.5
+       Fresh futures-util v0.3.33
+       Fresh toml_edit v0.22.27
+       Fresh dashmap v6.2.1
+       Fresh tracing v0.1.44
+       Fresh flume v0.12.0
+       Fresh rand v0.9.5
+       Fresh rand_xorshift v0.4.0
+       Fresh rand_chacha v0.9.0
+       Fresh unarray v0.1.4
+       Fresh regex-syntax v0.8.11
+       Dirty cyphr v0.1.0 (/var/home/nrd/git/github.com/Cyphrme/Cyphr/.scratch/worktrees/node-u3-share/rs/cyphr): the file `cyphr/src/action.rs` has changed (1794898202.460614026s, 54s after last build at 1794898148.978189742s)
+   Compiling cyphr v0.1.0 (/var/home/nrd/git/github.com/Cyphrme/Cyphr/.scratch/worktrees/node-u3-share/rs/cyphr)
+       Fresh futures-executor v0.3.33
+       Fresh toml v0.8.23
+       Fresh fjall v3.1.8
+       Fresh proptest v1.11.0
+       Fresh polydigest-storage-fjall v0.2.0
+       Fresh futures v0.3.33
+     Running `rustc --crate-name cyphr --edition=2024 cyphr/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat,unused-externs-silent --crate-type lib --emit=dep-info,metadata,link -Z embed-metadata=no -C embed-bitcode=no --cfg 'feature="test-utils"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("test-utils"))' -C metadata=3e68181dbfcc545b -C extra-filename=-7025886238b7458b --out-dir /var/home/nrd/.cache/u3share-tgt/debug/build/cyphr/7025886238b7458b/out -C strip=debuginfo -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/base16ct/45100af077cc875f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/base64ct/38e1f18f5fa4f56f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/block-buffer/082dd3fd6c59afdc/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/block-buffer/e8880817a778f033/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/canonical-ml/0fa2f41d3e2ad56b/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/canonical-mt/c1a1716f4e8cfcbc/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cfg-if/3a59cb13c66426e2/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cmov/87ab86fe4175c293/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/const-oid/d60ce4fe9caa2c89/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cpubits/c0398c9866cdb624/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cpufeatures/0a8d451f66156f48/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cpufeatures/6cdfab3644d3392f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/crypto-bigint/3ce310b1aa63364c/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/crypto-common/0825fabbdbc08006/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/crypto-common/57ad360f551806b0/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ctutils/d0e438101f4d6abd/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/curve25519-dalek-derive/30bf7b905b23c077/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/curve25519-dalek/9b7142dbad7338f0/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/der/6e00d353c9f870e4/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/digest/3eeedaecfd4e9112/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/digest/794ecf5474d1e5f1/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ecdsa/5bec4508995862ce/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ed25519-dalek/8e40d09e15a73c4c/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ed25519/bfc54d5b2bc2de80/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/elliptic-curve/69389a0ca98721c7/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/equivalent/c58573821d784ac1/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ff/0e733e755c45345d/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/generic-array/98998e447b669226/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/getrandom/01240ec3ef5aab6f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/getrandom/e429fa8693836915/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/group/9cf6f073c794eba7/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/hashbrown/eb3d77350ef9d99c/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/hmac/8a1754a477cb04ce/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/hybrid-array/406820d81de65d71/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/indexmap/2cb7ca4d792d6fc0/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/itoa/3d73f2fa6c2ae16f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/libc/cebedd59bd94c337/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/memchr/5567e8978a8c0a5d/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/merkle-spine/783fa4704b755558/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/num-traits/b94e0ea76b2f85ea/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/p256/0bc129505d251b61/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/p384/214cbd858fdda275/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/p521/4d1b6ad6a4f667a1/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/pem-rfc7468/d9403794835d30f3/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/pkcs8/0d8395d4686a7f6f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/polydigest/a9d02201c2e68a53/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ppv-lite86/4010951653c9fda3/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/primefield/6db15178d162225e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/primeorder/70fe82769a400942/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand/e8438869c76df04e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand_chacha/a2307657fc0e9b93/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand_core/1642241525acee01/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand_core/614a201fea9be628/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rfc6979/4da099e50eca9d4e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/sec1/1c18419f9b06b9fb/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde/c7018c6c660306d3/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_core/b36c92edb0e4c853/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_derive/49b6cd1a2ccb8aac/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_json/89cb8075eae79850/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serdect/2ca200e21befcf7b/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/sha2/abd9e4da929df154/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/sha2/d43d072b3b84c305/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/signature/26eddf69ff217b2d/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/signature/5161a569a78f3b21/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/spki/2ce6f96d2f7e10df/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/subtle/8fb241536177a412/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror-impl/16c9c7644b27845b/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror-impl/63e8678fc51b9b4e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror/a760fe7980f191f5/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/typenum/f8505dba18979860/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/wnaf/e052b14585aaa4ea/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/zerocopy/a88cac0a2b5fcb1f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/zeroize/0efbfd985c921b2a/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/zmij/8df3859a291798b9/out --extern coz=/var/home/nrd/.cache/u3share-tgt/debug/build/coz-rs/c921718b3656c25c/out/libcoz_rs-c921718b3656c25c.rmeta --extern eml=/var/home/nrd/.cache/u3share-tgt/debug/build/eml/82d9f430fcb258e1/out/libeml-82d9f430fcb258e1.rmeta --extern indexmap=/var/home/nrd/.cache/u3share-tgt/debug/build/indexmap/2cb7ca4d792d6fc0/out/libindexmap-2cb7ca4d792d6fc0.rmeta --extern polydigest=/var/home/nrd/.cache/u3share-tgt/debug/build/polydigest/a9d02201c2e68a53/out/libpolydigest-a9d02201c2e68a53.rmeta --extern serde=/var/home/nrd/.cache/u3share-tgt/debug/build/serde/c7018c6c660306d3/out/libserde-c7018c6c660306d3.rmeta --extern serde_json=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_json/89cb8075eae79850/out/libserde_json-89cb8075eae79850.rmeta --extern thiserror=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror/7e926cf330b15a0e/out/libthiserror-7e926cf330b15a0e.rmeta --force-warn=unused_crate_dependencies`
+error[E0277]: the trait bound `Action: Default` is not satisfied
+  --> cyphr/src/action.rs:39:9
+   |
+39 |         Default::default() /* ~ changed by cargo-mutants ~ */
+   |         ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Default` is not implemented for `Action`
+  --> cyphr/src/action.rs:20:1
+   |
+20 | pub struct Action {
+   | ^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `cyphr` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `rustc --crate-name cyphr --edition=2024 cyphr/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat,unused-externs-silent --crate-type lib --emit=dep-info,metadata,link -Z embed-metadata=no -C embed-bitcode=no --cfg 'feature="test-utils"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("test-utils"))' -C metadata=3e68181dbfcc545b -C extra-filename=-7025886238b7458b --out-dir /var/home/nrd/.cache/u3share-tgt/debug/build/cyphr/7025886238b7458b/out -C strip=debuginfo -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/base16ct/45100af077cc875f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/base64ct/38e1f18f5fa4f56f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/block-buffer/082dd3fd6c59afdc/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/block-buffer/e8880817a778f033/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/canonical-ml/0fa2f41d3e2ad56b/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/canonical-mt/c1a1716f4e8cfcbc/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cfg-if/3a59cb13c66426e2/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cmov/87ab86fe4175c293/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/const-oid/d60ce4fe9caa2c89/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cpubits/c0398c9866cdb624/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cpufeatures/0a8d451f66156f48/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/cpufeatures/6cdfab3644d3392f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/crypto-bigint/3ce310b1aa63364c/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/crypto-common/0825fabbdbc08006/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/crypto-common/57ad360f551806b0/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ctutils/d0e438101f4d6abd/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/curve25519-dalek-derive/30bf7b905b23c077/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/curve25519-dalek/9b7142dbad7338f0/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/der/6e00d353c9f870e4/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/digest/3eeedaecfd4e9112/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/digest/794ecf5474d1e5f1/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ecdsa/5bec4508995862ce/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ed25519-dalek/8e40d09e15a73c4c/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ed25519/bfc54d5b2bc2de80/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/elliptic-curve/69389a0ca98721c7/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/equivalent/c58573821d784ac1/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ff/0e733e755c45345d/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/generic-array/98998e447b669226/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/getrandom/01240ec3ef5aab6f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/getrandom/e429fa8693836915/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/group/9cf6f073c794eba7/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/hashbrown/eb3d77350ef9d99c/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/hmac/8a1754a477cb04ce/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/hybrid-array/406820d81de65d71/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/indexmap/2cb7ca4d792d6fc0/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/itoa/3d73f2fa6c2ae16f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/libc/cebedd59bd94c337/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/memchr/5567e8978a8c0a5d/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/merkle-spine/783fa4704b755558/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/num-traits/b94e0ea76b2f85ea/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/p256/0bc129505d251b61/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/p384/214cbd858fdda275/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/p521/4d1b6ad6a4f667a1/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/pem-rfc7468/d9403794835d30f3/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/pkcs8/0d8395d4686a7f6f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/polydigest/a9d02201c2e68a53/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/ppv-lite86/4010951653c9fda3/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/primefield/6db15178d162225e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/primeorder/70fe82769a400942/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand/e8438869c76df04e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand_chacha/a2307657fc0e9b93/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand_core/1642241525acee01/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rand_core/614a201fea9be628/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/rfc6979/4da099e50eca9d4e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/sec1/1c18419f9b06b9fb/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde/c7018c6c660306d3/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_core/b36c92edb0e4c853/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_derive/49b6cd1a2ccb8aac/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_json/89cb8075eae79850/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/serdect/2ca200e21befcf7b/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/sha2/abd9e4da929df154/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/sha2/d43d072b3b84c305/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/signature/26eddf69ff217b2d/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/signature/5161a569a78f3b21/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/spki/2ce6f96d2f7e10df/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/subtle/8fb241536177a412/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror-impl/16c9c7644b27845b/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror-impl/63e8678fc51b9b4e/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror/a760fe7980f191f5/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/typenum/f8505dba18979860/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/wnaf/e052b14585aaa4ea/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/zerocopy/a88cac0a2b5fcb1f/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/zeroize/0efbfd985c921b2a/out -L dependency=/var/home/nrd/.cache/u3share-tgt/debug/build/zmij/8df3859a291798b9/out --extern coz=/var/home/nrd/.cache/u3share-tgt/debug/build/coz-rs/c921718b3656c25c/out/libcoz_rs-c921718b3656c25c.rmeta --extern eml=/var/home/nrd/.cache/u3share-tgt/debug/build/eml/82d9f430fcb258e1/out/libeml-82d9f430fcb258e1.rmeta --extern indexmap=/var/home/nrd/.cache/u3share-tgt/debug/build/indexmap/2cb7ca4d792d6fc0/out/libindexmap-2cb7ca4d792d6fc0.rmeta --extern polydigest=/var/home/nrd/.cache/u3share-tgt/debug/build/polydigest/a9d02201c2e68a53/out/libpolydigest-a9d02201c2e68a53.rmeta --extern serde=/var/home/nrd/.cache/u3share-tgt/debug/build/serde/c7018c6c660306d3/out/libserde-c7018c6c660306d3.rmeta --extern serde_json=/var/home/nrd/.cache/u3share-tgt/debug/build/serde_json/89cb8075eae79850/out/libserde_json-89cb8075eae79850.rmeta --extern thiserror=/var/home/nrd/.cache/u3share-tgt/debug/build/thiserror/7e926cf330b15a0e/out/libthiserror-7e926cf330b15a0e.rmeta --force-warn=unused_crate_dependencies` (exit status: 1)
+
+*** result: Failure(101)

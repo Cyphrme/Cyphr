@@ -149,3 +149,76 @@ impl<K: Clone + Ord, V: Clone> Grown<BTreeMap<K, V>> {
         })
     }
 }
+
+// Unit tests: a `Grown` is a cost structure whose reads must not depend on
+// how its content is split between the settled and the added part, and no
+// scenario can observe the split.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads answer the same before and after the additions settle, and
+    /// what was settled is kept by the next settle.
+    #[test]
+    fn a_vec_reads_the_same_whether_or_not_it_is_settled() {
+        let mut v = Grown::from_vec(vec![1, 2]);
+        v.push(3);
+        let before: Vec<_> = v.iter().copied().collect();
+        assert_eq!((v.len(), v.is_empty()), (3, false));
+        assert!(Grown::<Vec<u8>>::default().is_empty());
+        v.settle();
+        v.push(4);
+        v.settle();
+        assert_eq!(before, [1, 2, 3]);
+        assert_eq!(v.iter().copied().collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert_eq!((v.len(), v.last()), (4, Some(&4)));
+    }
+
+    #[test]
+    fn a_set_holds_every_member_whether_or_not_it_is_settled() {
+        let mut s = Grown::<BTreeSet<u8>>::default();
+        s.insert(1);
+        s.settle();
+        s.insert(2);
+        assert!(s.contains(&1) && s.contains(&2));
+        assert_eq!(s.iter().count(), 2);
+        s.settle();
+        assert!(s.contains(&1) && s.contains(&2) && !s.contains(&3));
+    }
+
+    /// A map reads in key order across both parts, holds a key once, and
+    /// keeps what it settled.
+    #[test]
+    fn a_map_reads_in_key_order_across_both_parts() {
+        let mut m = Grown::<BTreeMap<u8, char>>::default();
+        m.insert(2, 'b');
+        m.insert(4, 'd');
+        m.settle();
+        m.insert(1, 'a');
+        m.insert(3, 'c');
+        m.insert(2, 'x');
+        let read =
+            |m: &Grown<BTreeMap<u8, char>>| m.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>();
+        let expected = [(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')];
+        assert_eq!(read(&m), expected);
+        assert_eq!((m.len(), m.is_empty()), (4, false));
+        assert!(m.contains_key(&1) && m.contains_key(&4) && !m.contains_key(&5));
+        assert!(Grown::<BTreeMap<u8, u8>>::default().is_empty());
+        m.settle();
+        assert_eq!(read(&m), expected);
+        assert_eq!(m.len(), 4);
+    }
+
+    /// A copy shares the settled part: settling the copy leaves the
+    /// original as it was.
+    #[test]
+    fn settling_a_copy_leaves_the_original_alone() {
+        let mut original = Grown::from_vec(vec![1]);
+        let mut copy = original.clone();
+        copy.push(2);
+        copy.settle();
+        assert_eq!(original.iter().count(), 1);
+        original.push(9);
+        assert_eq!(copy.iter().copied().collect::<Vec<_>>(), [1, 2]);
+    }
+}

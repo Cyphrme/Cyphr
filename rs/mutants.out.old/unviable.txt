@@ -1,0 +1,1 @@
+cyphr/src/action.rs:39:9: replace <impl Clone for Action>::clone -> Self with Default::default()

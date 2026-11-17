@@ -1,0 +1,21 @@
+--- cyphr/src/grown.rs
++++ replace <impl Absorb for BTreeSet<T>>::is_blank -> bool with false
+@@ -25,17 +25,17 @@
+ 
+     fn absorb(&mut self, mut tail: Self) {
+         self.append(&mut tail);
+     }
+ }
+ 
+ impl<T: Clone + Ord> Absorb for BTreeSet<T> {
+     fn is_blank(&self) -> bool {
+-        self.is_empty()
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn absorb(&mut self, mut tail: Self) {
+         self.append(&mut tail);
+     }
+ }
+ 
+ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {

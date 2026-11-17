@@ -1,0 +1,21 @@
+--- cyphr/src/grown.rs
++++ replace <impl Absorb for Vec<T>>::absorb with ()
+@@ -19,17 +19,17 @@
+ }
+ 
+ impl<T: Clone> Absorb for Vec<T> {
+     fn is_blank(&self) -> bool {
+         self.is_empty()
+     }
+ 
+     fn absorb(&mut self, mut tail: Self) {
+-        self.append(&mut tail);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<T: Clone + Ord> Absorb for BTreeSet<T> {
+     fn is_blank(&self) -> bool {
+         self.is_empty()
+     }
+ 

@@ -1,0 +1,23 @@
+--- cyphr/src/grown.rs
++++ replace Grown<C>::settle with ()
+@@ -55,19 +55,17 @@
+     settled: Arc<C>,
+     added: C,
+ }
+ 
+ impl<C: Absorb> Grown<C> {
+     /// Fold the additions into the settled part. Free when the additions
+     /// are none; copies the settled part only if another state shares it.
+     pub fn settle(&mut self) {
+-        if !self.added.is_blank() {
+-            Arc::make_mut(&mut self.settled).absorb(std::mem::take(&mut self.added));
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<T: Clone> Grown<Vec<T>> {
+     pub fn from_vec(items: Vec<T>) -> Self {
+         Self {
+             settled: Arc::new(items),
+             added: Vec::new(),

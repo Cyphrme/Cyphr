@@ -1,0 +1,21 @@
+--- cyphr/src/grown.rs
++++ replace <impl Absorb for BTreeMap<K, V>>::is_blank -> bool with false
+@@ -35,17 +35,17 @@
+ 
+     fn absorb(&mut self, mut tail: Self) {
+         self.append(&mut tail);
+     }
+ }
+ 
+ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
+     fn is_blank(&self) -> bool {
+-        self.is_empty()
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn absorb(&mut self, mut tail: Self) {
+         self.append(&mut tail);
+     }
+ }
+ 
+ /// A grow-only collection: the settled part, shared, and the part added

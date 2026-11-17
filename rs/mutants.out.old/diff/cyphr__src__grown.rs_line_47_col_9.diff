@@ -1,0 +1,21 @@
+--- cyphr/src/grown.rs
++++ replace <impl Absorb for BTreeMap<K, V>>::absorb with ()
+@@ -39,17 +39,17 @@
+ }
+ 
+ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
+     fn is_blank(&self) -> bool {
+         self.is_empty()
+     }
+ 
+     fn absorb(&mut self, mut tail: Self) {
+-        self.append(&mut tail);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// A grow-only collection: the settled part, shared, and the part added
+ /// since. Cloning copies the additions only.
+ #[derive(Debug, Clone, Default)]
+ pub struct Grown<C: Absorb> {
+     settled: Arc<C>,
