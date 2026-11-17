@@ -493,6 +493,9 @@ pub async fn run(h: &Harness, size: &Size, ops: &[Op]) -> Result<Outcome, Failur
 /// The network a run needs: `size.peers` gossiping attestors named `p0..`
 /// at the servers' default limits, and the witness the size asks for.
 pub async fn start(size: &Size, seed: u64) -> Result<Harness, String> {
+    if size.peers > 5 {
+        crate::cli::set_peer_timeout_secs(30);
+    }
     let names = size.peer_names();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let h = Harness::start_gossiping_seeded(&names, 1, Limits::default(), seed)

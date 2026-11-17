@@ -15,6 +15,15 @@ use tempfile::TempDir;
 use crate::actions::{ActionError, ActionResult, Refusal, RefusalKind};
 use crate::bins::Bins;
 
+/// How long a `cyphr` call waits on a peer, in seconds. A loaded host (the
+/// large network scenario runs ten servers and eight clients at once) needs
+/// longer than the scenarios' usual bound before a slow peer is a dead one.
+static PEER_TIMEOUT_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
+
+pub fn set_peer_timeout_secs(secs: u64) {
+    PEER_TIMEOUT_SECS.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub struct Device {
     pub store: PathBuf,
     pub keystore: PathBuf,
@@ -43,7 +52,8 @@ impl Device {
             .arg(format!("file:{}", self.store.display()))
             .arg("--keystore")
             .arg(&self.keystore)
-            .args(["--output", "json", "--peer-timeout-secs", "5"])
+            .args(["--output", "json", "--peer-timeout-secs"])
+            .arg(PEER_TIMEOUT_SECS.load(std::sync::atomic::Ordering::Relaxed).to_string())
             .args(bind_values(args))
             .output()
             .await
