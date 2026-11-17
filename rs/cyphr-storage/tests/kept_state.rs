@@ -329,7 +329,20 @@ const TOGGLED: [&str; 3] = ["key_b", "alice", "bob"];
 const REVOKED: [&str; 3] = ["key_a", "alice", "bob"];
 const ACTORS: [&str; 2] = ["key_a", "golden"];
 
+/// A history of generated steps behind the two that reach the fork path:
+/// a toggle (so the chain has a second commit) and a rival of it. Left to
+/// chance the rival came up in too few of 16 cases to catch a defect that
+/// only a rival exposes (the merge gate found one at 128 cases and not at
+/// 16), so every case reaches it and the steps after it are free.
 fn ops() -> impl Strategy<Value = Vec<Op>> {
+    steps().prop_map(|rest| {
+        let mut ops = vec![Op::Toggle(0), Op::Rival];
+        ops.extend(rest);
+        ops
+    })
+}
+
+fn steps() -> impl Strategy<Value = Vec<Op>> {
     proptest::collection::vec(
         prop_oneof![
             4 => (0..TOGGLED.len()).prop_map(Op::Toggle),
@@ -339,7 +352,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
             3 => (0..ACTORS.len(), 1..80i64).prop_map(|(k, off)| Op::Act(k, off)),
             1 => Just(Op::Rival),
         ],
-        1..9,
+        0..7,
     )
 }
 
