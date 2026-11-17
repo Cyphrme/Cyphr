@@ -97,6 +97,11 @@ struct Fake {
     rival: Option<Line>,
     evidence: Vec<Value>,
     revoked: Vec<Value>,
+    /// Action-only bundles, each a list of blobs, served with every patch.
+    actions: Vec<Vec<String>>,
+    /// Answers 404 to a patch from an anchor, as a peer that does not hold
+    /// the anchor does, so only the whole chain can be compared.
+    whole_only: bool,
     served: Mutex<Vec<String>>,
 }
 
@@ -108,6 +113,8 @@ impl Fake {
             rival: None,
             evidence: Vec::new(),
             revoked: Vec::new(),
+            actions: Vec::new(),
+            whole_only: false,
             served: Mutex::default(),
         }
     }
@@ -163,6 +170,9 @@ impl Connector for Fake {
                 Self::envelope(&json!({ "branches": heads }))
             },
             "/patch" => {
+                if self.whole_only && q.contains_key("from") {
+                    return Err(ConnectError::NonSuccess(404));
+                }
                 let from = match q.get("from") {
                     None => 0,
                     Some(anchor) => match self.line.prs.iter().position(|pr| pr == anchor) {
@@ -175,7 +185,12 @@ impl Connector for Fake {
                     .enumerate()
                     .map(|(i, blobs)| entry_bundle(from + i, blobs))
                     .collect();
-                Self::envelope(&json!({ "entries": entries }))
+                let actions: Vec<Value> = self
+                    .actions
+                    .iter()
+                    .map(|blobs| json!({ "blobs": blobs }))
+                    .collect();
+                Self::envelope(&json!({ "entries": entries, "actions": actions }))
             },
             "/evidence" => Self::envelope(&json!({ "items": self.evidence })),
             "/revoked" => Self::envelope(&json!({ "revoked": self.revoked })),
@@ -777,4 +792,93 @@ async fn a_record_resumed_from_a_verified_state_pulls_as_a_replayed_one_does() {
     assert!(matches!(standing(&report, "rival"), PeerStanding::Forked));
     assert_eq!(report.forks[0].height, 2);
     assert_eq!(rec.tip().expect("tip").commit_id, main.tip());
+}
+
+/// Claim: a peer serves every action bundle it holds with each patch, and a
+/// verifier replays an action once: a pull that brings one commit and
+/// the actions already held replays and logs that commit only; a peer that lists a head the
+/// verifier already holds has no rival branch to prove, so its evidence is not fetched; and a peer
+/// that cannot be asked from the verifier's tip but serves a longer chain extends the
+/// record by exactly the commits past it.
+///
+/// Turns red if: an action is held twice or dropped, a pull of held
+/// actions logs them again or replays more than the new commit, evidence is
+/// fetched from a peer whose heads are all held, or the whole-chain path
+/// reports the wrong number of added commits.
+/// End-to-end scenario: yes (real chains over a carrier that plays peers).
+#[tokio::test]
+async fn held_actions_are_not_replayed_and_the_whole_chain_path_counts_what_it_adds() {
+    let (g, k1, k2, k3) = (kp(), kp(), kp(), kp());
+    let pg = g.tmb.to_b64();
+
+    let mut chain = Chain::new(&g).await;
+    let mut main = Line::of_genesis(&chain);
+    let note = chain.action("cyphr.me/comment/create", T0 + 50);
+    let blobs = chain.commit(&k1, T0 + 100).await;
+    main.push(&chain, blobs);
+    let mut peer_with_note = Fake::new(&pg, &main);
+    peer_with_note.actions = vec![vec![note]];
+
+    let mut rec = record(&pg, &g);
+    pull(&mut rec, &[peer("p", &peer_with_note)]).await;
+    let held = |r: &Record| r.principal().expect("held").actions().count();
+    assert_eq!(held(&rec), 1, "the action is replayed once");
+
+    // A peer one commit ahead serves the same action again.
+    let blobs = chain.commit(&k2, T0 + 200).await;
+    main.push(&chain, blobs);
+    let mut ahead = Fake::new(&pg, &main);
+    ahead.actions = peer_with_note.actions.clone();
+    let (mark, replayed) = (rec.log_len(), rec.replayed());
+    let report = pull(&mut rec, &[peer("ahead", &ahead)]).await;
+    assert!(matches!(
+        standing(&report, "ahead"),
+        PeerStanding::Extended { added: 1 }
+    ));
+    assert_eq!(held(&rec), 1, "held once");
+    assert_eq!(
+        rec.bundles_since(mark).len(),
+        1,
+        "only the commit is logged"
+    );
+    assert_eq!(rec.replayed(), replayed + 1);
+
+    // A rival head the verifier already holds: nothing to prove.
+    let mut shallow = Fake::new(&pg, &main);
+    shallow.rival = Some(line(&g, &[]).await);
+    pull(&mut rec, &[peer("shallow", &shallow)]).await;
+    assert_eq!(shallow.served("/evidence"), 0);
+
+    let k4 = kp();
+    let longer = line(
+        &g,
+        &[
+            (&k1, T0 + 100),
+            (&k2, T0 + 200),
+            (&k3, T0 + 300),
+            (&k4, T0 + 400),
+        ],
+    )
+    .await;
+    let mut whole = Fake::new(&pg, &longer);
+    whole.whole_only = true;
+    let mut rec = record(&pg, &g);
+    pull(
+        &mut rec,
+        &[peer(
+            "short",
+            &Fake::new(&pg, &line(&g, &[(&k1, T0 + 100)]).await),
+        )],
+    )
+    .await;
+    let report = pull(&mut rec, &[peer("whole", &whole)]).await;
+    assert!(
+        matches!(
+            standing(&report, "whole"),
+            PeerStanding::Extended { added: 3 }
+        ),
+        "{:?}",
+        standing(&report, "whole")
+    );
+    assert_eq!(rec.tip().expect("tip").commit_id, longer.tip());
 }

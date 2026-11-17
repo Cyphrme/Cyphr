@@ -416,18 +416,15 @@ impl Record {
         Ok(entries)
     }
 
-    /// Extend the held chain by `entries` and `actions`, all or nothing,
-    /// and say how many bundles that added to the log.
+    /// Extend the held chain by `entries` and `actions`, all or nothing.
     async fn extend(
         &mut self,
         entries: &[PatchEntry],
         actions: &[ActionBundle],
-    ) -> Result<usize, PeerFailure> {
+    ) -> Result<(), PeerFailure> {
         let Some(held) = &mut self.held else {
-            let held = self.replay_full(entries, actions).await?;
-            let logged = held.log.len();
-            self.held = Some(held);
-            return Ok(logged);
+            self.held = Some(self.replay_full(entries, actions).await?);
+            return Ok(());
         };
         held.extend(entries, actions, self.clock, &self.replayed)
             .await
@@ -566,19 +563,7 @@ impl Held {
         actions: &[ActionBundle],
         clock: Clock,
         tally: &AtomicU64,
-    ) -> Result<usize, PeerFailure> {
-        // A peer serves every action it holds with each patch: when they
-        // are all held and no commit is new, there is nothing to replay
-        // and no copy to make.
-        if entries.is_empty()
-            && actions.iter().all(|a| {
-                a.blobs
-                    .as_ref()
-                    .is_ok_and(|b| self.holds_actions(&WireBundle::actions(b.clone())))
-            })
-        {
-            return Ok(0);
-        }
+    ) -> Result<(), PeerFailure> {
         let mut principal = self
             .principal
             .fork()
@@ -596,7 +581,7 @@ impl Held {
             self.entries.truncate(before.0);
             self.log.truncate(before.1);
         }
-        replayed.map(|()| self.log.len() - before.1)
+        replayed
     }
 }
 
@@ -1038,10 +1023,7 @@ async fn reach<C: Connector>(
                 if patch.entries.is_empty() && patch.actions.is_empty() {
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
-                let logged = record.extend(&patch.entries, &patch.actions).await?;
-                if patch.entries.is_empty() && logged == 0 {
-                    return Ok((PeerStanding::Current, Vec::new()));
-                }
+                record.extend(&patch.entries, &patch.actions).await?;
                 return Ok((
                     PeerStanding::Extended {
                         added: patch.entries.len(),
