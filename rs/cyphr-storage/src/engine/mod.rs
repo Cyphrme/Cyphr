@@ -898,6 +898,14 @@ pub trait LogFactory<S>: Send + Sync {
     ///
     /// Why the record cannot be written.
     fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String>;
+
+    /// Whether a log outlives the principal that wrote it, so that opening
+    /// it again finds the leaves it was given. Only then can a kept
+    /// [`cyphr::PrincipalState`] resume over it; for a log that does not,
+    /// the engine keeps no state.
+    fn durable(&self) -> bool {
+        true
+    }
 }
 
 /// The [`LogFactory`] of in-memory logs: every open is a fresh, empty
@@ -920,6 +928,10 @@ impl LogFactory<cyphr::eml::MemoryStorage> for MemoryLogs {
 
     fn retire_below(&self, _principal_id: &str, _generation: u64) -> Result<(), String> {
         Ok(())
+    }
+
+    fn durable(&self) -> bool {
+        false
     }
 }
 
@@ -1174,6 +1186,9 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     log_append_failures: std::sync::atomic::AtomicU64,
     /// Each principal's verified state between its writes ([`Kept`]).
     kept: KeptStates,
+    /// Whether the log factory's logs outlive a replay: states are kept
+    /// only over logs that do.
+    logs_durable: bool,
     /// Check every kept-state use against a cold replay
     /// ([`Self::with_kept_shadow`]).
     kept_shadow: bool,
@@ -1209,6 +1224,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// generation ([`LogFactory`]). See [`Self`]'s `logs` field docs for why
     /// this is a factory rather than a single shared `S` instance.
     pub fn with_log_factory(blob_store: B, indexer: I, logs: impl LogFactory<S> + 'static) -> Self {
+        let logs_durable = logs.durable();
         Self {
             blob_store,
             indexer,
@@ -1222,7 +1238,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             retention_replays: std::sync::atomic::AtomicU64::new(0),
             retention_trials: std::sync::atomic::AtomicU64::new(0),
             log_append_failures: std::sync::atomic::AtomicU64::new(0),
-            kept: KeptStates::new(DEFAULT_KEPT_CAPACITY),
+            kept: KeptStates::new(if logs_durable {
+                DEFAULT_KEPT_CAPACITY
+            } else {
+                0
+            }),
+            logs_durable,
             kept_shadow: std::env::var_os("CYPHR_KEPT_SHADOW").is_some_and(|v| v != "0"),
             kept_hits: std::sync::atomic::AtomicU64::new(0),
             kept_misses: std::sync::atomic::AtomicU64::new(0),
@@ -1234,10 +1255,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// Keep at most `capacity` principals' verified states between their
     /// writes; 0 keeps none, so every write replays the principal's
-    /// history from the blob store.
+    /// history from the blob store. An engine over logs that do not outlive
+    /// a replay ([`LogFactory::durable`]) keeps none whatever this says.
     #[must_use]
     pub fn with_kept_states(mut self, capacity: usize) -> Self {
-        self.kept = KeptStates::new(capacity);
+        self.kept = KeptStates::new(if self.logs_durable { capacity } else { 0 });
         self
     }
 

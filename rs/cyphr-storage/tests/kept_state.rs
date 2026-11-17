@@ -490,3 +490,23 @@ async fn u3_resume_refuses_a_log_that_is_not_the_states() {
     let fresh = cyphr::Principal::resume(current, open()).await;
     assert!(fresh.is_ok(), "the control: the state of the log resumes");
 }
+
+/// U3: over logs that do not outlive a replay (the default in-memory
+/// logs) a kept state could never resume, so the engine keeps none rather
+/// than copy every principal's state at every write for nothing.
+#[tokio::test]
+async fn u3_an_engine_over_in_memory_logs_keeps_nothing() {
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let mut w = World::new().await;
+    for bundle in [w.last(), {
+        let (next, bundle) = w.toggle("key_b", NOW + 10).await.expect("toggle");
+        w.adopt(next);
+        bundle
+    }] {
+        e.submit_commit(&w.id, Some(w.genesis.clone()), &bundle)
+            .await
+            .expect("write");
+    }
+    assert!(e.kept_state(&w.id).await.is_none());
+    assert_eq!(e.kept_hits(), 0);
+}
