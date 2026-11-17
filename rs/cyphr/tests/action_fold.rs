@@ -220,6 +220,24 @@ async fn a_readded_key_restores_the_action_the_delete_voided() {
     assert_rebuilt_equals_live(&g, &p, &[&late], "delete, void, re-add").await;
 }
 
+/// SPEC 4.8.2: the `id` a `ds/create` names is the DR of the actions DT
+/// shows, so it follows the view: none while the only action is voided,
+/// the action's czd (singleton promotion) once the re-add restores it.
+#[tokio::test]
+async fn the_data_root_a_signer_would_name_follows_the_view() {
+    let (g, a) = (k(), k());
+    let late = act(&a, T + 100);
+    let mut p = genesis(&g, &a).await;
+    p.verify_and_record_action(&late.pay, &late.sig, late.czd.clone())
+        .expect("arrives while a is active");
+    let named = |p: &mut Principal| p.begin_commit().data_tree_id().expect("id");
+    assert!(named(&mut p).is_some(), "premise: the action is shown");
+    assert!(delete_key(&mut p, &g, &a, T + 50).await);
+    assert_eq!(named(&mut p), None, "voided: DT is empty");
+    assert!(create_key(&mut p, &g, &a, T + 60).await);
+    assert!(named(&mut p).is_some(), "restored");
+}
+
 /// A commit already held, dated T+50; an action dated T+10 by a key active
 /// then arrives afterwards: it counts (its verdict is final), and the state
 /// equals the one where it arrived first.
