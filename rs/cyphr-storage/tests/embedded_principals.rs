@@ -1144,10 +1144,29 @@ async fn an_embedding_principals_kept_state_is_its_replay() {
     for bundle in &b.bundles {
         push(&engine, &b, bundle).await.expect("B's commit");
     }
-    for (i, bundle) in a.bundles.iter().enumerate() {
+    for (i, bundle) in a.bundles.iter().take(2).enumerate() {
         push(&engine, &a, bundle).await.expect("A's commit");
         assert_kept_is_the_replay(&engine, &a, &format!("after A's commit {i}")).await;
     }
+
+    // Restarted while A names B and no commit of A has yet been admitted
+    // through it: a refused write signed by B's key follows B all the same.
+    drop(engine);
+    let engine = durable(&blobs, &db);
+    assert_kept_is_the_replay(&engine, &a, "after a restart, B not yet used").await;
+    let mut forged = through_b.clone();
+    let mut coz: serde_json::Value = serde_json::from_slice(&forged.txs[0][0]).expect("coz");
+    let sig = coz["sig"].as_str().expect("sig").to_owned();
+    let flipped = if sig.starts_with('A') { "B" } else { "A" };
+    coz["sig"] = format!("{flipped}{}", &sig[1..]).into();
+    forged.txs[0][0] = serde_json::to_vec(&coz).expect("coz bytes");
+    assert!(push(&engine, &a, &forged).await.is_err(), "refused");
+    assert_kept_is_the_replay(&engine, &a, "after a refused write, B not yet used").await;
+
+    push(&engine, &a, &through_b)
+        .await
+        .expect("A's commit through B");
+    assert_kept_is_the_replay(&engine, &a, "after A's commit through B").await;
 
     // Restarted: nothing kept, and B moves on, so the tip a write follows
     // is no longer the state A's commits were admitted against.
