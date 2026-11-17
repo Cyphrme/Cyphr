@@ -1056,3 +1056,137 @@ async fn pin_deep_on_a_displaced_line_survives() {
     assert_eq!(a.roots(&engine).await, before, "live");
     assert_eq!(a.roots(&restart(&blobs).await).await, before, "rebuilt");
 }
+
+/// An engine over durable (fjall) commit logs, as the server runs: the only
+/// kind that keeps a principal's verified state between uses.
+type DurableEngine =
+    StorageEngine<MemoryBlobStore, MemoryIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>;
+
+fn durable(blobs: &MemoryBlobStore, db: &fjall::Database) -> DurableEngine {
+    StorageEngine::with_log_factory(
+        blobs.clone(),
+        MemoryIndexer::new(),
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    )
+    .with_kept_states(8)
+}
+
+async fn push(engine: &DurableEngine, line: &Line, bundle: &WireBundle) -> Result<(), EngineError> {
+    engine
+        .submit_commit(&line.id, Some(line.genesis.clone()), bundle)
+        .await
+        .map(|_| ())
+}
+
+/// A's state as a cold replay of the store builds it, printed: every field,
+/// the view of each embedded principal included.
+async fn replayed(engine: &DurableEngine, a: &Line) -> String {
+    // From the genesis the store holds, as the engine reads it: the
+    // line's own carries a first-seen time no stored coz states.
+    let genesis = engine.resolve_genesis(&a.id, &[]).await.expect("genesis");
+    let cold = engine
+        .load_principal(&a.id, genesis)
+        .await
+        .expect("A replays");
+    format!("{:#?}", *cold)
+}
+
+/// What a reader is handed for A, and what the engine keeps for it when it
+/// keeps anything, are the cold replay.
+async fn assert_kept_is_the_replay(engine: &DurableEngine, a: &Line, when: &str) {
+    let cold = replayed(engine, a).await;
+    if let Some(kept) = engine.kept_state(&a.id).await {
+        let k = format!("{kept:#?}");
+        if let Some((a, b)) = k.lines().zip(cold.lines()).find(|(a, b)| a != b) {
+            panic!("{when}: the kept state\n kept: {a}\n cold: {b}");
+        }
+        assert!(k == cold, "{when}: the kept state");
+    }
+    let read = engine.at_tip(&a.id).await.expect("read").expect("stored");
+    assert!(format!("{:#?}", **read) == cold, "{when}: a reader's state");
+}
+
+/// Claim (I1): the state the engine keeps for a principal that embeds
+/// another is the one a replay of the store builds, the view of the
+/// embedded principal included. A replay pins B at the state each commit
+/// was admitted against; a write follows B to the tip held now. So a state
+/// a write has followed B through is never the one kept, whether the write
+/// was admitted or refused, and after a restart too, where the engine must
+/// learn again from the store that A embeds.
+///
+/// Turns red if the engine keeps a state that followed B's tip: the kept
+/// view of B then names B's later state where the replay names the pinned
+/// one. Over durable commit logs, since no state is kept over any other.
+/// End to end: yes (two real chains through the engine, and a restart over
+/// the same blobs and logs).
+#[tokio::test]
+async fn an_embedding_principals_kept_state_is_its_replay() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = fjall::Database::builder(dir.path().join("db"))
+        .open()
+        .expect("open db");
+    let blobs = MemoryBlobStore::new();
+    let (alice, bob, carol, dave, erin, frank) = (kp(), kp(), kp(), kp(), kp(), kp());
+    let (mut b, b_pr) = b_with_carol(&bob, &carol).await;
+    let mut a = a_embedding(&alice, &b_pr, &b.state).await;
+    let through_b = a
+        .commit(
+            &carol,
+            "key/create",
+            &dave.tmb.to_b64(),
+            Some(&dave),
+            T0 + 20,
+        )
+        .await
+        .expect("carol signs for A");
+
+    let engine = durable(&blobs, &db);
+    for bundle in &b.bundles {
+        push(&engine, &b, bundle).await.expect("B's commit");
+    }
+    for (i, bundle) in a.bundles.iter().enumerate() {
+        push(&engine, &a, bundle).await.expect("A's commit");
+        assert_kept_is_the_replay(&engine, &a, &format!("after A's commit {i}")).await;
+    }
+
+    // Restarted: nothing kept, and B moves on, so the tip a write follows
+    // is no longer the state A's commits were admitted against.
+    drop(engine);
+    let engine = durable(&blobs, &db);
+    assert_kept_is_the_replay(&engine, &a, "after a restart").await;
+    let moved = b
+        .commit(&bob, "key/create", &erin.tmb.to_b64(), Some(&erin), T0 + 30)
+        .await
+        .expect("B creates erin");
+    push(&engine, &b, &moved).await.expect("B's new commit");
+
+    // A refused write that followed B's tip: carol's commit pushed again.
+    assert!(push(&engine, &a, &through_b).await.is_err(), "refused");
+    assert!(
+        engine.kept_state(&a.id).await.is_some(),
+        "a refusal leaves A's state kept"
+    );
+    assert_kept_is_the_replay(&engine, &a, "after a refused write through B").await;
+
+    // An admitted write that followed B's tip, then one by A's own key.
+    let second = a
+        .commit(
+            &carol,
+            "key/create",
+            &frank.tmb.to_b64(),
+            Some(&frank),
+            T0 + 40,
+        )
+        .await
+        .expect("carol signs for A again");
+    push(&engine, &a, &second)
+        .await
+        .expect("admitted through B");
+    assert_kept_is_the_replay(&engine, &a, "after an admitted write through B").await;
+    let own = a
+        .commit(&alice, "key/delete", &dave.tmb.to_b64(), None, T0 + 50)
+        .await
+        .expect("alice deletes dave");
+    push(&engine, &a, &own).await.expect("A's own commit");
+    assert_kept_is_the_replay(&engine, &a, "after A's own write").await;
+}

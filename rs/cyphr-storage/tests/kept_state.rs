@@ -585,7 +585,7 @@ async fn a_naked_revoke_leaves_every_kept_state_kept() {
 #[tokio::test]
 async fn a_refused_write_to_an_unkept_principal_replays_once() {
     let stores = Stores::new();
-    let w = history(&stores.engine(8, false), 5).await;
+    let mut w = history(&stores.engine(8, false), 5).await;
     let e = stores.engine(8, false);
     assert!(e.get_tip(&w.id).await.expect("tip").is_some(), "rebuilt");
     assert!(e.kept_state(&w.id).await.is_none(), "nothing kept yet");
@@ -597,6 +597,16 @@ async fn a_refused_write_to_an_unkept_principal_replays_once() {
     }
     assert_eq!(replayed, [5, 0], "commits replayed by each refusal");
     assert!(e.kept_state(&w.id).await.is_some(), "kept by the refusal");
+
+    // The replayed state is kept as any other: the writes after it are
+    // served from it, each leaving its own state kept.
+    let at = e.commits_replayed();
+    for i in 0..2 {
+        let (next, bundle) = w.toggle("alice", NOW + 500 + i).await.expect("toggle");
+        w.submit(&e, &bundle).await.expect("honest write");
+        w.adopt(next);
+    }
+    assert_eq!(e.commits_replayed() - at, 0, "writes after the refusals");
 }
 
 /// A refused bundle that is no rival costs index reads bounded by the

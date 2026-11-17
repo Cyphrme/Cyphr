@@ -4407,8 +4407,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// The refusal is attacker-reachable, so the search is bounded:
     ///
-    /// 1. **Authenticate first, reading none of the chain.** Every coz of the bundle must name a key
-    ///    this principal has ever held, by the key history of `tip` (its verified state at its
+    /// 1. **Authenticate first, reading none of the chain.** Every coz of the bundle must name a
+    ///    key this principal has ever held, by the key history of `tip` (its verified state at its
     ///    tip), and verify under that key's public key. Anyone else costs the bundle's own size.
     /// 2. **One forward pass.** The stored chain is replayed once onto a private in-memory Commit
     ///    Tree. At each position where the bundle's transaction signers are active, a clone of that
@@ -4519,7 +4519,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// `Ok(None)` is a bundle extending no retained rival. Authenticated
     /// first, like [`Self::retain_rival`], against the key history of
-    /// `tip`, so an unauthenticated bundle reads nothing of the chain. Caller holds the principal's write lock.
+    /// `tip`, so an unauthenticated bundle reads nothing of the chain. Caller holds the principal's
+    /// write lock.
     ///
     /// Known cost: the canonical prefix is replayed once per retained
     /// rival, because a retained commit's `pre` is bound only inside its
@@ -6067,7 +6068,9 @@ fn authenticated_signers(
     for blob in bundle.cozies() {
         let value: serde_json::Value = serde_json::from_slice(blob).ok()?;
         for named in ["tmb", "id"] {
-            let Some(tmb) = value.pointer(&format!("/pay/{named}")).and_then(|v| v.as_str())
+            let Some(tmb) = value
+                .pointer(&format!("/pay/{named}"))
+                .and_then(|v| v.as_str())
             else {
                 continue;
             };
