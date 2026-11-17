@@ -3892,7 +3892,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     && let Some(count) = tip.sequence.checked_add(1)
                 {
                     let embeds = principal.has_kt_digests();
-                    self.keep(principal.into_state(), &tip.commit_id, count, embeds, &write);
+                    self.keep(
+                        principal.into_state(),
+                        &tip.commit_id,
+                        count,
+                        embeds,
+                        &write,
+                    );
                 }
                 Ok(result)
             },
@@ -3932,9 +3938,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 Some(genesis) => genesis.clone(),
                 None => self.genesis_of_stored(principal_id).await?,
             };
-            if let Some((principal, embeds)) = self
-                .resume_kept(principal_id, &genesis, tip, write)
-                .await?
+            if let Some((principal, embeds)) =
+                self.resume_kept(principal_id, &genesis, tip, write).await?
             {
                 return Ok(Verified { principal, embeds });
             }
