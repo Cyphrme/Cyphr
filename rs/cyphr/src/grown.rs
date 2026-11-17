@@ -6,9 +6,9 @@
 //! added beside them, so a copy of the state costs what the write adds, not
 //! what the principal holds. [`Grown::settle`] takes the additions in once
 //! the state is adopted, as a new segment merged into the older ones in
-//! size tiers (see [`Grown`]): a write copies a shared segment only when
-//! it is no larger than twice what the write added, never the history it
-//! extends.
+//! size tiers (see [`Grown`]): a shared segment is copied by a merge, so
+//! the cost is amortised O(log n) copies per item added, and a single write
+//! may cascade through the tiers and copy O(n) once.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::iter::Peekable;
@@ -477,6 +477,7 @@ mod tests {
         for n in 0..300u32 {
             s.insert(n);
             s.settle();
+            assert!(s.segments() >= 1, "n={n}: the insert did not settle");
             s.settle();
             let bound = f64::from(n + 1).log2() as usize + 1;
             assert!(s.segments() <= bound, "n={n}: {} segments", s.segments());
