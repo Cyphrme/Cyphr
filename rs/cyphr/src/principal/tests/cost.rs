@@ -89,7 +89,10 @@ async fn extending_a_forked_or_detached_principal_copies_no_held_history() {
             raw: dummy_coz_json(),
         };
         let (actions, commits) = (probe::action_clones(), probe::commit_clones());
-        extended.apply_transaction_test(cz, Some(key2)).await.unwrap();
+        extended
+            .apply_transaction_test(cz, Some(key2))
+            .await
+            .unwrap();
         assert_eq!(probe::action_clones() - actions, 0, "{name}: actions");
         assert_eq!(probe::commit_clones() - commits, 0, "{name}: commits");
         assert_eq!(extended.action_count(), 40);

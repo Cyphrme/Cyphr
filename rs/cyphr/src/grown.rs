@@ -2,12 +2,16 @@
 //!
 //! A commit scope projects the principal's state, and a held action set,
 //! a chain of commits and a set of included czds only ever grow. A
-//! [`Grown`] holds what was settled behind an `Arc` and what a write added
-//! beside it, so a copy of the state costs what the write adds, not what
-//! the principal holds. [`Grown::settle`] folds the additions in once the
-//! state is adopted, where the principal is the one holder.
+//! [`Grown`] holds what was settled as shared segments and what a write
+//! added beside them, so a copy of the state costs what the write adds, not
+//! what the principal holds. [`Grown::settle`] takes the additions in once
+//! the state is adopted. It never copies a shared segment: it folds into
+//! the last segment when nothing else holds it, and otherwise starts a new
+//! one, which a fork or detach of the principal leaves for the next write
+//! to extend.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
+use std::iter::Peekable;
 use std::sync::Arc;
 
 /// A collection a [`Grown`] folds additions into.
@@ -48,20 +52,67 @@ impl<K: Clone + Ord, V: Clone> Absorb for BTreeMap<K, V> {
     }
 }
 
-/// A grow-only collection: the settled part, shared, and the part added
-/// since. Cloning copies the additions only.
-#[derive(Debug, Clone, Default)]
+/// A grow-only collection: the settled segments, shared, and the part added
+/// since. Cloning copies the additions and one pointer per segment.
+///
+/// Segments are in order, and a key of a map or set is held in one at most.
+/// A segment is added only when the last is shared with another state, so
+/// their number is the depth of forks over the principal's history; a read
+/// pays it as a factor (a point read walks the segments, a range read merges
+/// them), and [`Self::settle`] folds them back into one once they are
+/// unshared.
+#[derive(Debug, Clone)]
 pub struct Grown<C: Absorb> {
-    settled: Arc<C>,
+    settled: Vec<Arc<C>>,
     added: C,
 }
 
+impl<C: Absorb> Default for Grown<C> {
+    fn default() -> Self {
+        Self {
+            settled: Vec::new(),
+            added: C::default(),
+        }
+    }
+}
+
 impl<C: Absorb> Grown<C> {
-    /// Fold the additions into the settled part. Free when the additions
-    /// are none; copies the settled part only if another state shares it.
+    /// Take the additions into the settled segments. Free when the
+    /// additions are none, and copies no held item: the additions fold into
+    /// the last segment if nothing else shares it, and become a new segment
+    /// if something does.
     pub fn settle(&mut self) {
         if !self.added.is_blank() {
-            Arc::make_mut(&mut self.settled).absorb(std::mem::take(&mut self.added));
+            let tail = std::mem::take(&mut self.added);
+            match self.settled.last_mut().and_then(Arc::get_mut) {
+                Some(last) => last.absorb(tail),
+                None => self.settled.push(Arc::new(tail)),
+            }
+        }
+        self.compact();
+    }
+
+    /// Merge the last segment into the one before it while neither is
+    /// shared, so segments left by a fork are gone once the fork is.
+    fn compact(&mut self) {
+        while self.settled.len() >= 2 {
+            let Some(last) = self.settled.pop() else {
+                return;
+            };
+            let tail = match Arc::try_unwrap(last) {
+                Ok(tail) => tail,
+                Err(shared) => {
+                    self.settled.push(shared);
+                    return;
+                },
+            };
+            match self.settled.last_mut().and_then(Arc::get_mut) {
+                Some(prev) => prev.absorb(tail),
+                None => {
+                    self.settled.push(Arc::new(tail));
+                    return;
+                },
+            }
         }
     }
 }
@@ -69,13 +120,13 @@ impl<C: Absorb> Grown<C> {
 impl<T: Clone> Grown<Vec<T>> {
     pub fn from_vec(items: Vec<T>) -> Self {
         Self {
-            settled: Arc::new(items),
+            settled: vec![Arc::new(items)],
             added: Vec::new(),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.settled.len() + self.added.len()
+        self.settled.iter().map(|s| s.len()).sum::<usize>() + self.added.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -87,19 +138,28 @@ impl<T: Clone> Grown<Vec<T>> {
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {
-        match index.checked_sub(self.settled.len()) {
-            Some(i) => self.added.get(i),
-            None => self.settled.get(index),
+        let mut rest = index;
+        for segment in &self.settled {
+            if rest < segment.len() {
+                return segment.get(rest);
+            }
+            rest -= segment.len();
         }
+        self.added.get(rest)
     }
 
     pub fn last(&self) -> Option<&T> {
-        self.added.last().or_else(|| self.settled.last())
+        self.added
+            .last()
+            .or_else(|| self.settled.iter().rev().find_map(|s| s.last()))
     }
 
     /// Oldest first.
     pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.settled.iter().chain(&self.added)
+        self.settled
+            .iter()
+            .flat_map(|s| s.iter())
+            .chain(&self.added)
     }
 }
 
@@ -109,24 +169,27 @@ impl<T: Clone + Ord> Grown<BTreeSet<T>> {
         T: std::borrow::Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.settled.contains(item) || self.added.contains(item)
+        self.added.contains(item) || self.settled.iter().any(|s| s.contains(item))
     }
 
     pub fn insert(&mut self, item: T) {
-        if !self.settled.contains(&item) {
+        if !self.settled.iter().any(|s| s.contains(&item)) {
             self.added.insert(item);
         }
     }
 
-    /// In no particular order: the two parts are each in order.
+    /// In no particular order: the parts are each in order.
     pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.settled.iter().chain(&self.added)
+        self.settled
+            .iter()
+            .flat_map(|s| s.iter())
+            .chain(&self.added)
     }
 }
 
 impl<K: Clone + Ord, V: Clone> Grown<BTreeMap<K, V>> {
     pub fn len(&self) -> usize {
-        self.settled.len() + self.added.len()
+        self.settled.iter().map(|s| s.len()).sum::<usize>() + self.added.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -134,39 +197,54 @@ impl<K: Clone + Ord, V: Clone> Grown<BTreeMap<K, V>> {
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
-        self.settled.contains_key(key) || self.added.contains_key(key)
+        self.added.contains_key(key) || self.settled.iter().any(|s| s.contains_key(key))
     }
 
-    /// Hold `value` under `key` unless something is held under it: the
-    /// settled part is never rewritten, so a key is held once.
+    /// Hold `value` under `key` unless something is held under it: a
+    /// settled segment is never rewritten, so a key is held once.
     pub fn insert(&mut self, key: K, value: V) {
-        if !self.settled.contains_key(&key) {
+        if !self.settled.iter().any(|s| s.contains_key(&key)) {
             self.added.insert(key, value);
         }
     }
 
     /// In key order.
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        merged(self.settled.iter(), self.added.iter())
+        merged(self.runs(|m| m.range::<K, _>(..)))
     }
 
     /// In key order, from `from` on.
     pub fn iter_from(&self, from: &K) -> impl Iterator<Item = (&K, &V)> {
-        merged(self.settled.range(from..), self.added.range(from..))
+        merged(self.runs(|m| m.range(from..)))
+    }
+
+    fn runs<'a>(
+        &'a self,
+        run: impl Fn(&'a BTreeMap<K, V>) -> btree_map::Range<'a, K, V>,
+    ) -> Vec<Peekable<btree_map::Range<'a, K, V>>> {
+        self.settled
+            .iter()
+            .map(|s| run(s))
+            .chain(std::iter::once(run(&self.added)))
+            .map(Iterator::peekable)
+            .collect()
     }
 }
 
-/// Two ascending runs of disjoint keys, as one.
+/// Ascending runs of disjoint keys, as one.
 fn merged<'a, K: Ord + 'a, V: 'a>(
-    settled: impl Iterator<Item = (&'a K, &'a V)>,
-    added: impl Iterator<Item = (&'a K, &'a V)>,
+    mut runs: Vec<Peekable<btree_map::Range<'a, K, V>>>,
 ) -> impl Iterator<Item = (&'a K, &'a V)> {
-    let mut settled = settled.peekable();
-    let mut added = added.peekable();
-    std::iter::from_fn(move || match (settled.peek(), added.peek()) {
-        (Some((a, _)), Some((b, _))) if b < a => added.next(),
-        (Some(_), _) => settled.next(),
-        (None, _) => added.next(),
+    std::iter::from_fn(move || {
+        let mut least: Option<(usize, &'a K)> = None;
+        for (i, run) in runs.iter_mut().enumerate() {
+            if let Some(&(k, _)) = run.peek()
+                && least.is_none_or(|(_, best)| k < best)
+            {
+                least = Some((i, k));
+            }
+        }
+        least.and_then(|(i, _)| runs[i].next())
     })
 }
 
@@ -242,5 +320,76 @@ mod tests {
         assert_eq!(original.iter().count(), 1);
         original.push(9);
         assert_eq!(copy.iter().copied().collect::<Vec<_>>(), [1, 2]);
+    }
+
+    thread_local! {
+        static CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// An item that counts its clones, to see a segment copied.
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    struct Counted(u8);
+
+    impl Clone for Counted {
+        fn clone(&self) -> Self {
+            CLONES.with(|c| c.set(c.get() + 1));
+            Self(self.0)
+        }
+    }
+
+    /// Settling a copy of each collection kind copies no held item, reads
+    /// cover the segments the copy left, and once the original is gone the
+    /// segments fold back into one. A count is the one evaluator for a
+    /// copy that no read can tell from a share.
+    #[test]
+    fn settling_a_shared_part_copies_nothing_and_reads_across_segments() {
+        let v = Grown::from_vec(vec![Counted(1), Counted(2)]);
+        let mut s = Grown::<BTreeSet<Counted>>::default();
+        let mut m = Grown::<BTreeMap<u8, Counted>>::default();
+        s.insert(Counted(1));
+        m.insert(2, Counted(2));
+        m.insert(4, Counted(4));
+        s.settle();
+        m.settle();
+        let (mut v2, mut s2, mut m2) = (v.clone(), s.clone(), m.clone());
+        let before = CLONES.with(|c| c.get());
+        v2.push(Counted(3));
+        s2.insert(Counted(2));
+        m2.insert(3, Counted(3));
+        m2.insert(1, Counted(1));
+        m2.insert(2, Counted(9));
+        v2.settle();
+        s2.settle();
+        m2.settle();
+        assert_eq!(CLONES.with(|c| c.get()) - before, 0);
+        assert_eq!(v2.iter().map(|c| c.0).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(
+            (v2.get(2).map(|c| c.0), v2.last().map(|c| c.0)),
+            (Some(3), Some(3))
+        );
+        assert_eq!((v2.get(1).map(|c| c.0), v2.get(3)), (Some(2), None));
+        assert!(s2.contains(&Counted(1)) && s2.contains(&Counted(2)));
+        assert_eq!(s2.iter().count(), 2);
+        assert_eq!(
+            m2.iter().map(|(k, c)| (*k, c.0)).collect::<Vec<_>>(),
+            [(1, 1), (2, 2), (3, 3), (4, 4)]
+        );
+        assert_eq!(
+            m2.iter_from(&3).map(|(k, _)| *k).collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(m2.len(), 4);
+        // The original is untouched, and with it gone the copy is one segment.
+        assert_eq!((v.len(), s.iter().count(), m.len()), (2, 1, 2));
+        drop((v, s, m));
+        v2.push(Counted(4));
+        v2.settle();
+        s2.settle();
+        m2.settle();
+        assert_eq!(
+            (v2.settled.len(), s2.settled.len(), m2.settled.len()),
+            (1, 1, 1)
+        );
+        assert_eq!(v2.iter().map(|c| c.0).collect::<Vec<_>>(), [1, 2, 3, 4]);
     }
 }
