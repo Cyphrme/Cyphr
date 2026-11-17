@@ -50,3 +50,20 @@ pub(crate) fn view_judged() {
 pub(crate) fn signature_checked() {
     SIGNATURES_CHECKED.with(|c| c.set(c.get() + 1));
 }
+
+/// Run `f` with the counters as they were: work that checks the core is not
+/// work the core did.
+pub(crate) fn uncounted<T>(f: impl FnOnce() -> T) -> T {
+    let saved = (
+        ACTION_CLONES.with(Cell::get),
+        COMMIT_CLONES.with(Cell::get),
+        VIEW_JUDGMENTS.with(Cell::get),
+        SIGNATURES_CHECKED.with(Cell::get),
+    );
+    let out = f();
+    ACTION_CLONES.with(|c| c.set(saved.0));
+    COMMIT_CLONES.with(|c| c.set(saved.1));
+    VIEW_JUDGMENTS.with(|c| c.set(saved.2));
+    SIGNATURES_CHECKED.with(|c| c.set(saved.3));
+    out
+}

@@ -81,6 +81,28 @@ impl PrincipalState {
     /// The held actions DT does not show, read once and kept; a read after a
     /// change judges only the actions it can have changed the verdict of.
     pub(super) fn hidden(&self) -> Arc<HiddenSet> {
+        let hidden = self.hidden_cached();
+        // The cache is a cache of the view: under test every read of it is
+        // held to a full judgment of every held action (I1). Fails the
+        // read of any history whose invalidation missed a verdict.
+        #[cfg(any(test, feature = "test-utils"))]
+        crate::probe::uncounted(|| {
+            let full: HiddenSet = self
+                .data
+                .actions
+                .iter()
+                .filter(|(_, a)| self.judge(&a.signer, a.now, Arrival::Held).is_err())
+                .map(|(key, _)| key.clone())
+                .collect();
+            assert_eq!(
+                *hidden, full,
+                "the memoized view of held actions differs from a full re-judge"
+            );
+        });
+        hidden
+    }
+
+    fn hidden_cached(&self) -> Arc<HiddenSet> {
         let refused = |(_, a): &(&(i64, Vec<u8>), &Action)| {
             self.judge(&a.signer, a.now, Arrival::Held).is_err()
         };
