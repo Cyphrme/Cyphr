@@ -1,12 +1,12 @@
 //! U3: a write checks the extension, not the history (keep what was
 //! verified, apply only what arrives).
 //!
-//! The engine keeps each principal's verified state between its writes,
-//! used only when it matches what the index, the held action bundles and
-//! the revoke set say now. These tests hold that to the replay of the
-//! stored chain, which is the truth (root `AGENTS.md` I1): the cost
-//! of a write does not grow with the history, and the kept path answers
-//! exactly as a replay does, over refused bundles and revokes too.
+//! The engine keeps each principal's verified state between its uses,
+//! used only while the index names the tip it stands at. These tests hold
+//! that to the replay of the stored chain, which is the truth (root
+//! `AGENTS.md` I1): the cost of a write does not grow with the history, and
+//! the kept path answers exactly as a replay does, over refused bundles and
+//! revokes too.
 //!
 //! Every engine here keeps its commit logs in fjall, as the server does:
 //! over the in-memory logs a log never outlives its principal's replay,
@@ -488,10 +488,9 @@ proptest! {
 
 /// U3, refusal leaves no trace: bad bundles must not be a way to make the
 /// next write replay. A reused commit and a damaged signature are refused
-/// and the next honest write is still served from the kept state. A revoke
-/// is read fresh: the write after it replays once, then is kept again.
+/// and the next honest write is still served from the kept state.
 #[tokio::test]
-async fn u3_a_refusal_costs_the_kept_state_nothing_and_a_revoke_costs_one_replay() {
+async fn u3_a_refusal_costs_the_kept_state_nothing() {
     let (e, _dir) = engine(8, false);
     let mut w = history(&e, 3).await;
     let (hits, misses) = (e.kept_hits(), e.kept_misses());
@@ -508,23 +507,6 @@ async fn u3_a_refusal_costs_the_kept_state_nothing_and_a_revoke_costs_one_replay
         "a refused bundle, or the write after two, was not served from the kept state"
     );
 
-    e.record_revoke(&naked_revoke(&kp("key_a"), NOW + 110), NOW + 115)
-        .await
-        .expect("revoke");
-    let before = e.commits_replayed();
-    for (i, expected_replayed) in [(0, true), (1, false)] {
-        let now = NOW + 200 + 10 * i;
-        let (next, bundle) = w.toggle("bob", now).await.expect("toggle");
-        let at = e.commits_replayed();
-        w.submit(&e, &bundle).await.expect("write");
-        w.adopt(next);
-        assert_eq!(
-            e.commits_replayed() > at,
-            expected_replayed,
-            "write {i} after the revoke"
-        );
-    }
-    assert!(e.commits_replayed() > before);
     assert_eq!(e.kept_divergences(), 0);
 }
 

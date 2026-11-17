@@ -974,37 +974,24 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedCache<K, V> {
     }
 }
 
-/// What a kept [`cyphr::PrincipalState`] was folded from beyond the chain:
-/// the tip it stands at and the naked revokes noted into it. Both are read
-/// fresh under the principal's write lock on every write, and the state is
-/// used only when both equal what is read now; any difference is a miss.
+/// A principal's verified state kept between its uses, so a write checks
+/// only what arrives and a read checks nothing, not the history before it.
+/// A cache of what a replay of the blob store derives (I1), never
+/// authoritative and never persisted: losing it costs one replay.
 ///
-/// The held actions are no part of the key: every one is stored by a write
-/// that holds the state under the same lock, so a state kept after it holds
-/// it too.
-#[derive(Debug, Clone, PartialEq)]
-struct KeptKey {
-    tip: String,
-    revoked: Revoked,
-}
-
-impl KeptKey {
-    /// What a state at the commit `tip` was folded from, with `revoked`.
-    fn at(tip: &str, revoked: Revoked) -> Self {
-        Self {
-            tip: tip.to_string(),
-            revoked,
-        }
-    }
-}
-
-/// A principal's verified state kept between its writes, so a write checks
-/// only what arrives, not the history before it. A cache of what a replay of the blob store derives
-/// (I1), never authoritative and never persisted: losing it costs one replay.
+/// It is the state at the commit `tip`, and is used only while the index
+/// names that commit as the principal's tip, read fresh under the
+/// principal's write lock. Nothing else is part of what it was folded
+/// from. Every held action is stored by a write that holds the state under
+/// the same lock, so a state kept after it holds it too. A naked revoke
+/// gates what arrives after it and judges nothing held (SPEC 6.4, 14.12),
+/// so it is checked against each arriving bundle ([`dead_key_in`]) and
+/// never folded into a state: one revoke, of any key, leaves every kept
+/// state as good as it was.
 #[derive(Debug, Clone)]
 struct Kept {
     state: cyphr::PrincipalState,
-    key: KeptKey,
+    tip: String,
 }
 
 /// A principal over its engine's durable commit log, for reading proofs
@@ -1367,9 +1354,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// The state the next write of `principal_id` would start from if it
-    /// is kept and current (the tip and revokes it was folded from are what
-    /// they are now). A cache of the replay of the
-    /// stored chain, exposed so a test can hold it to that.
+    /// is kept and current (the tip it stands at is the principal's tip
+    /// now). A cache of the replay of the stored chain, exposed so a test
+    /// can hold it to that.
     pub async fn kept_state(&self, principal_id: &str) -> Option<cyphr::PrincipalState> {
         let key = self.resolve_key(principal_id).await.ok()?;
         let stored = key.as_deref().unwrap_or(principal_id);
@@ -1377,7 +1364,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let write = Self::lock_writes(&lock, stored).await;
         let tip = self.indexer.get_tip(stored).await.ok()??;
         let kept = self.kept.copy(&write)?;
-        (kept.key == KeptKey::at(&tip.commit_id, self.revoked())).then_some(kept.state)
+        (kept.tip == tip.commit_id).then_some(kept.state)
     }
 
     /// The principal `principal_id` as its next write would start from, if
@@ -1403,7 +1390,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let write = Self::lock_writes(&lock, stored).await;
         let tip = self.indexer.get_tip(stored).await.ok()??;
         let kept = self.kept.copy(&write)?;
-        if kept.key != KeptKey::at(&tip.commit_id, self.revoked()) {
+        if kept.tip != tip.commit_id {
             return None;
         }
         self.resume_over_log(stored, kept.state)
@@ -1425,7 +1412,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let write = Self::lock_writes(&lock, stored).await;
         let tip = self.indexer.get_tip(stored).await.ok()??;
         let kept = self.kept.copy(&write)?;
-        if kept.key != KeptKey::at(&tip.commit_id, self.revoked()) {
+        if kept.tip != tip.commit_id {
             return None;
         }
         self.resume_over_log(stored, kept.state)
@@ -3050,7 +3037,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// 6.5), as when a commit dated before it removes its key, is held but
     /// not shown in DT, and shown again if a later commit restores its key;
     /// its blobs stay stored (I1). The naked revokes the engine holds are
-    /// taken in with them.
+    /// no part of the state: they gate each arriving bundle
+    /// ([`dead_key_in`]).
     async fn replay_onto<T: cyphr::eml::Storage>(
         &self,
         principal_id: &str,
@@ -3071,8 +3059,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .await?;
         }
         // Held actions are held as they are, with no verdict: whether one
-        // counts is read from the key timeline, the naked revokes included,
-        // whatever order they are taken in.
+        // counts is read from the key timeline, whatever order they are
+        // taken in.
         for held in self.action_history(principal_id).await? {
             if let Err(why) = self
                 .apply_pins(&mut principal, &source, &held.embedded, EMBED_DEPTH)
@@ -3097,7 +3085,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             }
         }
 
-        note_revokes(&mut principal, &self.revoked());
         Ok(principal)
     }
 
@@ -3658,27 +3645,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // else by replaying the stored chain.
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
-        // Taken before the load, so a revoke recorded during it can only
-        // make the kept key differ, never match a state that lacks it.
-        let revoked_at_load = self.revoked();
         let kept = self
-            .resume_kept(
-                principal_id,
-                &genesis,
-                tip_before.as_ref(),
-                &revoked_at_load,
-                &write,
-            )
+            .resume_kept(principal_id, &genesis, tip_before.as_ref(), &write)
             .await?;
         let resumed = kept.is_some();
         let mut principal = match kept {
             Some(principal) => principal,
             None => self.replay_stored(principal_id, genesis.clone()).await?,
         };
-        // The key a resumed state goes back under if the bundle is refused.
-        let restore = tip_before
-            .as_ref()
-            .map(|tip| KeptKey::at(&tip.commit_id, revoked_at_load.clone()));
+        // The tip a resumed state goes back under if the bundle is refused.
+        let restore = tip_before.as_ref().map(|tip| tip.commit_id.clone());
         // Set once the write has changed the state past what a refusal can
         // leave as it was (a stored bundle, an embedded principal followed).
         let mut changed = false;
@@ -3863,22 +3839,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         match written {
             Ok((result, remember)) => {
                 if remember && let Some(tip) = &result.tip {
-                    self.remember(
-                        principal_id,
-                        principal,
-                        tip,
-                        revoked_at_load,
-                        resumed,
-                        &write,
-                    )
-                    .await;
+                    self.remember(principal_id, principal, tip, resumed, &write)
+                        .await;
                 }
                 Ok(result)
             },
             Err(refused) => {
-                if let (true, false, Some(key)) = (resumed, changed, restore) {
+                if let (true, false, Some(tip)) = (resumed, changed, restore) {
                     let state = principal.into_state();
-                    self.kept.put(Kept { state, key }, &write);
+                    self.kept.put(Kept { state, tip }, &write);
                 }
                 Err(refused)
             },
@@ -3904,10 +3873,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &'a str,
         genesis: &'a crate::Genesis,
         tip: Option<&'a TipState>,
-        revoked: &'a Revoked,
         write: &'a WriteLock<'_>,
     ) -> ResumeFuture<'a, S> {
-        Box::pin(self.resume_kept_unboxed(principal_id, genesis, tip, revoked, write))
+        Box::pin(self.resume_kept_unboxed(principal_id, genesis, tip, write))
     }
 
     async fn resume_kept_unboxed(
@@ -3915,7 +3883,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: &crate::Genesis,
         tip: Option<&TipState>,
-        revoked: &Revoked,
         write: &WriteLock<'_>,
     ) -> Result<Option<cyphr::Principal<S>>, EngineError> {
         use std::sync::atomic::Ordering::Relaxed;
@@ -3923,9 +3890,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let Some(tip) = tip else {
             return Ok(None);
         };
-        let fresh = KeptKey::at(&tip.commit_id, revoked.clone());
         let resumed = match self.kept.take(write) {
-            Some(kept) if kept.key == fresh => self.resume_over_log(principal_id, kept.state).await,
+            Some(kept) if kept.tip == tip.commit_id => {
+                self.resume_over_log(principal_id, kept.state).await
+            },
             _ => None,
         };
         let Some(resumed) = resumed else {
@@ -3991,7 +3959,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         principal: cyphr::Principal<S>,
         tip: &CommittedTip,
-        revoked: Revoked,
         resumed: bool,
         write: &WriteLock<'_>,
     ) {
@@ -4010,7 +3977,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         let kept = Kept {
             state: principal.into_state(),
-            key: KeptKey::at(&tip.commit_id, revoked),
+            tip: tip.commit_id.clone(),
         };
         self.kept.put(kept, write);
     }
@@ -4424,11 +4391,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Verified on a fork and never committed: the staged build
                 // is dropped, and only its manifest is kept. The bundle is
-                // an arrival, so the held revokes gate it as on the
-                // canonical path (SPEC 6.4); the held history below it was
-                // replayed without them and is not judged again.
+                // an arrival, and passed the revoke gate as one
+                // ([`dead_key_in`], SPEC 6.4); the held history below it is
+                // not judged again.
                 let mut candidate = principal.fork().await?;
-                note_revokes(&mut candidate, &self.revoked());
                 // The rival is authenticated against the tips held now (R3),
                 // and its manifest records them.
                 let Ok(embedded) = self
@@ -4572,10 +4538,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             if !built {
                 continue;
             }
-            // `bundle` is an arrival: the held revokes gate it as on the
-            // canonical path (SPEC 6.4); the held line above was replayed
-            // without them and is not judged again.
-            note_revokes(&mut principal, &self.revoked());
+            // `bundle` is an arrival, and passed the revoke gate as one
+            // ([`dead_key_in`], SPEC 6.4); the held line above is not
+            // judged again.
             let Ok(embedded) = self
                 .follow_held(principal_id, &mut principal, bundle, &mut held)
                 .await
@@ -4750,8 +4715,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// (#203: "honor it from the witness's own receipt time"; SPEC 14.12).
     /// A revoke is an admission gate and nothing else: a message the key
     /// signs that arrives after it is refused iff its own `now` is at or
-    /// after the cutoff ([`dead_key_in`]; data actions through the key
-    /// timeline). A held message is never judged again, live or on
+    /// after the cutoff ([`dead_key_in`], transactions and data actions
+    /// alike). A held message is never judged again, live or on
     /// rebuild (SPEC 14.12: "Principals must explicitly mutate their state
     /// forward"), so recording a revoke changes no answer about what is
     /// held. A relayed
@@ -5559,14 +5524,18 @@ type Revoked = HashMap<String, Death>;
 
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
-/// store): the refusal for `bundle` if a transaction coz in it is signed by
-/// a revoked key, or introduces one, and is dated at or after the key's
-/// cutoff, this node's receipt time of its revoke ([`Death::wrt`]; a coz
-/// with no readable `now` is judged dated after it). Not retroactive:
-/// history a key signed before the cutoff stands, so a node that learned
-/// the revoke first still syncs it. A coz that revokes its own signer is
-/// never refused: it can only end the key (SPEC 6.4: "sign a standard
-/// revoke, a subsequent `key/delete` ... and commit").
+/// store): the refusal for `bundle` if a coz in it is signed by a revoked
+/// key, or a transaction coz introduces one, and the coz is dated at or
+/// after the key's cutoff, this node's receipt time of its revoke
+/// ([`Death::wrt`]; a coz with no readable `now` is judged dated after it).
+/// Not retroactive: history a key signed before the cutoff stands, so a
+/// node that learned the revoke first still syncs it. A coz that revokes
+/// its own signer is never refused: it can only end the key (SPEC 6.4:
+/// "sign a standard revoke, a subsequent `key/delete` ... and commit").
+///
+/// The revokes are read here, against what arrives, and held in no
+/// principal's state: a revoke judges nothing already held (SPEC 14.12), so
+/// no verified state changes when one is recorded.
 ///
 /// The key's holder chooses `now`, so a holder of a compromised key can
 /// date a commit below the cutoff. That is not prevented here: the owner
@@ -5581,22 +5550,30 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
     if revoked.is_empty() {
         return None;
     }
-    // A data action is judged by the core at its own `now` against the key
-    // timeline, which holds the naked revokes ([`note_revokes`]); only the
-    // transactions are gated here.
+    let dead_at = |pay: &serde_json::Value, tmb: &str| {
+        revoked
+            .get(tmb)
+            .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.wrt))
+    };
+    // A data action a dead key signs is refused as the core refuses one
+    // signed by a key revoked in the chain.
+    for raw in &bundle.actions {
+        let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
+            continue;
+        };
+        let pay = &coz["pay"];
+        if pay["tmb"].as_str().is_some_and(|tmb| dead_at(pay, tmb)) {
+            return Some(EngineError::Protocol(cyphr::Error::KeyRevoked));
+        }
+    }
     for raw in bundle.txs.iter().flatten() {
         let Ok(coz) = serde_json::from_slice::<serde_json::Value>(raw) else {
             continue;
         };
         let pay = &coz["pay"];
-        let dead_at = |tmb: &str| {
-            revoked
-                .get(tmb)
-                .is_some_and(|death| pay["now"].as_i64().is_none_or(|now| now >= death.wrt))
-        };
         let typ = pay["typ"].as_str().unwrap_or_default();
         if cyphr::parsed_coz::typ::is_key_introducing(typ)
-            && let Some(id) = pay["id"].as_str().filter(|id| dead_at(id))
+            && let Some(id) = pay["id"].as_str().filter(|id| dead_at(pay, id))
         {
             return Some(EngineError::DeadKey {
                 key: id.to_owned(),
@@ -5605,7 +5582,7 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         }
         let self_revoke =
             cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
-        if let Some(tmb) = pay["tmb"].as_str().filter(|t| dead_at(t))
+        if let Some(tmb) = pay["tmb"].as_str().filter(|t| dead_at(pay, t))
             && !self_revoke
         {
             return Some(EngineError::DeadKey {
@@ -6050,23 +6027,6 @@ fn bundle_signer(bundle: &WireBundle) -> Result<String, EngineError> {
 /// merely contains `/commit/create` is an ordinary coz.
 fn is_commit_create_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::COMMIT_CREATE)
-}
-
-/// Take the naked revokes the engine holds into `principal`'s key
-/// history, after its held history is replayed: each gates the data
-/// actions that arrive next from this node's receipt time of it (SPEC 6.4;
-/// #203), and judges none already held. A revoke of a key the principal
-/// never held changes nothing.
-fn note_revokes<T: cyphr::eml::Storage>(principal: &mut cyphr::Principal<T>, revoked: &Revoked) {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    // The thumbprints come from verified revokes ([`verify_revoke`]), so
-    // they decode.
-    for (tmb, death) in revoked {
-        if let Ok(bytes) = Base64UrlUnpadded::decode_vec(tmb) {
-            principal.note_naked_revoke(&coz::Thumbprint::from_bytes(bytes), death.wrt);
-        }
-    }
 }
 
 /// The four roots of `principal`'s state.
