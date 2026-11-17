@@ -1,7 +1,7 @@
 name: NETSIM
 
 # The large randomized network scenario: 9 attestors and a witness, 60
-# principals, 2000 seeded operations in 20 epochs, at the servers' default
+# principals, 600 seeded operations in 6 epochs, at the servers' default
 # limits. Too long for the pull-request gate, which runs the small size on one
 # pinned seed inside `cargo test --workspace`. Not gating: a red run is a
 # finding to read, and its seed is added to the gate or filed.

@@ -66,13 +66,15 @@ impl Size {
     }
 
     /// The manual size. Every pair of peers shares well over 50 principals'
-    /// worth of gossip traffic only here, which is what it measures.
+    /// worth of gossip traffic only here, which is what it measures. About
+    /// ten minutes per hundred operations on a 14-core host, so 600 is about
+    /// an hour.
     pub fn large() -> Size {
         Size {
             peers: 9,
             principals: 60,
-            ops: 2000,
-            epochs: 20,
+            ops: 600,
+            epochs: 6,
             concurrency: 8,
             holders: (7, 9),
             converge: Duration::from_secs(600),

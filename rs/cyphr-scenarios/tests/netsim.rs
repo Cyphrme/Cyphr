@@ -20,7 +20,7 @@
 //
 // Size and replay:
 //   CYPHR_SCENARIO_SEED=n       another seed (the pinned one is the gate)
-//   CYPHR_NETSIM_SIZE=large     9 peers + a witness, 60 principals, 2000 ops
+//   CYPHR_NETSIM_SIZE=large     9 peers + a witness, 60 principals, 600 ops
 //   CYPHR_NETSIM_OPS=n          only the first n ops of the log
 //   CYPHR_NETSIM_REPLAY=file    run a recorded op log instead of generating
 // A failing run prints the seed and keeps its op log; replaying that file
