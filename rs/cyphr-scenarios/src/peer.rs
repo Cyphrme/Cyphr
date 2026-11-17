@@ -433,6 +433,17 @@ impl Peer {
     /// Put a backup back with `cyphr-server restore`; returns the command's
     /// report, which states the window the restore lost.
     pub async fn restore(&self, bins: &Bins, from: &Path) -> Result<String, PeerError> {
+        // A restore keeps the record it replaced beside the data and refuses
+        // to run while one is left from an earlier restore: the operator
+        // removes it first, as the command says.
+        let kept = self.data_dir.join("record.pre-restore");
+        if kept.exists() {
+            std::fs::remove_dir_all(&kept).map_err(|e| PeerError::Command {
+                name: self.name.clone(),
+                what: "restore",
+                reason: format!("removing {}: {e}", kept.display()),
+            })?;
+        }
         self.offline(bins, "restore", &[from.as_os_str()]).await
     }
 
