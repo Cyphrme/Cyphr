@@ -6,8 +6,8 @@
 //! The timed counterpart is `cargo bench -p cyphr-storage --bench
 //! u3_engine`.
 //!
-//! A test marked `#[ignore]` names a bound the engine does not yet meet;
-//! the change that meets it removes the ignore.
+//! A red test is a bound the engine does not yet meet: the finding, not a
+//! defect of the test.
 
 #[path = "../benches/common/mod.rs"]
 mod common;
@@ -153,7 +153,6 @@ async fn write_blob_reads_do_not_grow() {
 
 /// Bound: a write reads O(1) index rows, independent of n.
 #[tokio::test]
-#[ignore = "bound not yet met: a write reads O(n) index rows (grows with history)"]
 async fn write_index_rows_do_not_grow() {
     let o = obs().await;
     assert_eq!(o[0].write.idx_rows, o[1].write.idx_rows, "{o:?}");
@@ -171,7 +170,6 @@ async fn tip_read_is_constant() {
 /// Bound: serving a patch from the tip replays 0 commits and reads O(1)
 /// index rows, independent of n.
 #[tokio::test]
-#[ignore = "bound not yet met: a patch from the tip reads O(n) index rows"]
 async fn patch_from_tip_is_constant() {
     let o = obs().await;
     same("get_served_patch from tip", |o| o.patch, o);
@@ -181,7 +179,6 @@ async fn patch_from_tip_is_constant() {
 /// /consistency and /inclusion before they answer) reads O(1) index rows,
 /// independent of n.
 #[tokio::test]
-#[ignore = "bound not yet met: error_state reads the whole chain (held, engine/mod.rs:5213)"]
 async fn error_state_is_constant() {
     let o = obs().await;
     same("error_state", |o| o.error_state, o);
@@ -190,7 +187,6 @@ async fn error_state_is_constant() {
 /// Bound: asking whether the engine holds a commit (the gossip idle gate
 /// asks it per peer head) reads O(1) index rows, independent of n.
 #[tokio::test]
-#[ignore = "bound not yet met: holds_commit reads the whole chain (held, engine/mod.rs:5213)"]
 async fn holds_commit_is_constant() {
     let o = obs().await;
     same("holds_commit", |o| o.holds_commit, o);
@@ -200,7 +196,6 @@ async fn holds_commit_is_constant() {
 /// does not hold) costs O(bundle): replays, index rows and blobs read are
 /// independent of n.
 #[tokio::test]
-#[ignore = "bound not yet met: a refused push reads O(n) index rows and blobs"]
 async fn refused_push_cost_is_independent_of_history() {
     let o = obs().await;
     same("bad signature", |o| o.bad_signature, o);

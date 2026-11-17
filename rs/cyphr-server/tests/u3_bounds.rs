@@ -5,8 +5,8 @@
 //! and on one of 40. The timed counterpart is `cargo bench -p
 //! cyphr-server --bench u3_server`.
 //!
-//! A test marked `#[ignore]` names a bound the server does not yet meet;
-//! the change that meets it removes the ignore.
+//! A red test is a bound the server does not yet meet: the finding, not a
+//! defect of the test.
 
 #[path = "../../cyphr-storage/benches/common/mod.rs"]
 mod common;
@@ -184,7 +184,6 @@ async fn proofs_carry_logarithmically_many_hashes() {
 
 /// Bound: a login replays 0 commits, at any n.
 #[tokio::test]
-#[ignore = "bound not yet met: POST /auth/login replays the whole chain (load_principal)"]
 async fn login_replays_nothing() {
     for o in obs().await {
         assert_eq!(o.login_replayed, 0, "{o:?}");
@@ -194,7 +193,6 @@ async fn login_replays_nothing() {
 /// Bound: presenting a bearer token (POST /auth/session) replays 0
 /// commits, at any n.
 #[tokio::test]
-#[ignore = "bound not yet met: POST /auth/session replays the whole chain (check_session_key)"]
 async fn token_check_replays_nothing() {
     for o in obs().await {
         assert_eq!(o.session_replayed, 0, "{o:?}");
