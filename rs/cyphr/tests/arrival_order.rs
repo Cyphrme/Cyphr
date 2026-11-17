@@ -134,7 +134,7 @@ async fn a_naked_revoke_taken_in_before_a_commit_leaves_the_state_a_replay_build
     rebuilt.note_naked_revoke(&tmb_a, T + 20);
 
     assert!(
-        format!("{:#?}", &*live) == format!("{:#?}", &*rebuilt),
+        format!("{:#?}", *live) == format!("{:#?}", *rebuilt),
         "the state of a principal that took the revoke in between its commits is not the state of \
          the replay"
     );
