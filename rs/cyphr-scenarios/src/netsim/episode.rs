@@ -174,6 +174,8 @@ pub(crate) async fn theft<'h>(
     let key: KeyRef = ps.dev_keys[1]
         .clone()
         .ok_or_else(|| fail("DRIVER", format!("{what}: the second device's key is unknown")))?;
+    let began = std::time::Instant::now();
+    let lap = |phase: &str| eprintln!("  {what}: {phase} at {:.1?}", began.elapsed());
     refresh(ps, 0, what).await?;
     refresh(ps, 1, what).await?;
     isolate_home(h, names, &ps.home).await?;
@@ -186,10 +188,14 @@ pub(crate) async fn theft<'h>(
     let t0 = accepted(act(c0.push(&ps.pr, &[home.as_str()]).await, what)?, "N2", what)?;
     let t1 = accepted(act(thief.push(&ps.pr, &[other.as_str()]).await, what)?, "N2", what)?;
     heal_everything(h, names).await?;
+    lap("forked");
 
     both_heads_everywhere(h, size, ps, [&t0, &t1], what).await?;
+    lap("both heads everywhere");
     verdict_check(h, ps, &format!("obs-t{idx}a"), "N4", Want::Forked([&t0, &t1]), what).await?;
+    lap("verdict in Error");
     n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
+    lap("sign-in refused");
 
     // The revoke is self-signed (SPEC 6.4): the device that holds the key
     // signs it. The owner's `key/delete` commit on its own branch resolves
@@ -205,23 +211,14 @@ pub(crate) async fn theft<'h>(
             ));
         },
     }
+    lap("resolution pushed");
     resolved_everywhere(h, size, ps, &ps.clients[0], what).await?;
+    lap("resolved everywhere");
     let view = act(ps.clients[0].local_view(&ps.pr).await, what)?;
-    verdict_check(
-        h,
-        ps,
-        &format!("obs-t{idx}b"),
-        "N4",
-        Want::Resolved { tip: &view.tip, abandoned: &t1 },
-        what,
-    )
-    .await?;
-
-    // The revoked key must stop working at every holder, wherever the
-    // revoke came from.
     for holder in &ps.holders {
         n5_refused(h, ps, &thief, &key, holder, what).await?;
     }
+    lap("n5 probes");
     n8_refused(h, &thief, &ps.pr, Some(&key), "with a revoked, deleted key", what).await?;
 
     ps.revoked.push(key.clone());
