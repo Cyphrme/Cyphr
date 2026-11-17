@@ -7,7 +7,7 @@
 //! follows tokio's `select!` pattern for tearing down on a state change.
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,6 +44,7 @@ pub struct Proxy {
     rng: Arc<Mutex<ChaCha8Rng>>,
     stats: Stats,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    sources: Mutex<std::collections::BTreeMap<String, IpAddr>>,
 }
 
 impl Proxy {
@@ -56,7 +57,25 @@ impl Proxy {
             rng: Arc::new(Mutex::new(ChaCha8Rng::seed_from_u64(seed))),
             stats: Stats::default(),
             tasks: Mutex::default(),
+            sources: Mutex::default(),
         }
+    }
+
+    /// The loopback source address `from`'s forwarded connections leave
+    /// from, so each node is its own client to the rate limiter, as in a
+    /// real network. All of 127.0.0.0/8 is local on Linux; elsewhere only
+    /// 127.0.0.1 exists, so every node shares it.
+    fn source_of(&self, from: &str) -> Option<IpAddr> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        let mut sources = self.sources.lock().expect("proxy sources");
+        let n = sources.len() + 2;
+        // 127.0.0.2 upward; 127.0.0.1 stays the harness's own address.
+        let ip = *sources
+            .entry(from.to_owned())
+            .or_insert_with(|| IpAddr::from([127, 0, ((n >> 8) & 0xff) as u8, (n & 0xff) as u8]));
+        Some(ip)
     }
 
     /// Open the route by which `from` reaches `to`, whose real address is
@@ -80,7 +99,10 @@ impl Proxy {
             acceptor,
             Link::new(from, to),
             upstream,
-            Arc::clone(&self.carrier),
+            Egress {
+                carrier: Arc::clone(&self.carrier),
+                src: self.source_of(from),
+            },
             Arc::clone(&self.world),
             Arc::clone(&self.rng),
             Arc::clone(&self.stats),
@@ -157,19 +179,27 @@ impl Drop for Proxy {
     }
 }
 
+/// How a route's forwarded connections leave: over which carrier, from
+/// which source address.
+#[derive(Clone)]
+struct Egress {
+    carrier: Arc<dyn Carrier>,
+    src: Option<IpAddr>,
+}
+
 async fn accept_loop(
     mut acceptor: Box<dyn Accept>,
     link: Link,
     upstream: Upstream,
-    carrier: Arc<dyn Carrier>,
+    egress: Egress,
     world: Shared,
     rng: Arc<Mutex<ChaCha8Rng>>,
     stats: Stats,
 ) {
     while let Ok((client, _)) = acceptor.accept().await {
-        let (link, carrier, world, rng, stats, upstream) = (
+        let (link, egress, world, rng, stats, upstream) = (
             link.clone(),
-            Arc::clone(&carrier),
+            egress.clone(),
             Arc::clone(&world),
             Arc::clone(&rng),
             Arc::clone(&stats),
@@ -204,7 +234,7 @@ async fn accept_loop(
                 return;
             }
             let target = *upstream.lock().expect("proxy upstream");
-            let Ok(up) = carrier.connect(target).await else {
+            let Ok(up) = egress.carrier.connect(target, egress.src).await else {
                 return;
             };
             let (cr, cw) = tokio::io::split(client);

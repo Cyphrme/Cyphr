@@ -7,11 +7,11 @@
 //! transport-erased connections.
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket};
 
 /// A bidirectional byte stream. Blanket-implemented so any suitable
 /// stream (TCP today, a Noise session later) is a `Duplex`.
@@ -31,11 +31,16 @@ pub enum CarrierKind {
     Udp,
 }
 
-/// A transport: bind a listener, or connect to an address.
+/// A transport: bind a listener, or connect to an address, optionally from
+/// a chosen local source IP so the far side sees one address per node.
 pub trait Carrier: Send + Sync + 'static {
     fn kind(&self) -> CarrierKind;
     fn bind(&self) -> BoxFuture<'_, io::Result<Box<dyn Accept>>>;
-    fn connect(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>>;
+    fn connect(
+        &self,
+        addr: SocketAddr,
+        src: Option<IpAddr>,
+    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>>;
 }
 
 /// Plain TCP on the loopback interface; the OS assigns the port.
@@ -73,8 +78,21 @@ impl Carrier for TcpCarrier {
         })
     }
 
-    fn connect(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
-        Box::pin(async move { Ok(Box::new(TcpStream::connect(addr).await?) as Box<dyn Duplex>) })
+    fn connect(
+        &self,
+        addr: SocketAddr,
+        src: Option<IpAddr>,
+    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
+        Box::pin(async move {
+            let socket = TcpSocket::new_v4()?;
+            if let Some(ip) = src {
+                // Without this, bind(port 0) reserves a port per source IP
+                // regardless of destination, and TIME_WAIT strands the range.
+                socket.set_reuseaddr(true)?;
+                socket.bind(SocketAddr::new(ip, 0))?;
+            }
+            Ok(Box::new(socket.connect(addr).await?) as Box<dyn Duplex>)
+        })
     }
 }
 
@@ -100,7 +118,35 @@ impl Carrier for UdpCarrier {
         Box::pin(async { unsupported() })
     }
 
-    fn connect(&self, _addr: SocketAddr) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
+    fn connect(
+        &self,
+        _addr: SocketAddr,
+        _src: Option<IpAddr>,
+    ) -> BoxFuture<'_, io::Result<Box<dyn Duplex>>> {
         Box::pin(async { unsupported() })
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    // A node under gossip opens far more short connections than one source
+    // IP has ephemeral ports; binding before connect must not strand them in
+    // TIME_WAIT.
+    #[tokio::test]
+    async fn one_source_ip_survives_more_connections_than_ports() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let dst = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                drop(s);
+            }
+        });
+        let src = Some(IpAddr::from([127, 0, 0, 2]));
+        for i in 0..35_000 {
+            let c = TcpCarrier.connect(dst, src).await;
+            assert!(c.is_ok(), "connect {i} failed: {:?}", c.err());
+        }
     }
 }
