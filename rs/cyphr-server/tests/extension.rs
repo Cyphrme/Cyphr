@@ -270,15 +270,15 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
     assert_eq!(record.tip().expect("tip").commits, 4);
 }
 
-/// Backs: a lying proof fails closed, with no commit fetched. A flipped
-/// byte in the proof of a log that does extend ours is refused with nothing
-/// to locate; a root stated other than the log's own, which the peer's
-/// later answers contradict, fails the peer; a payload that is not the wire shape
-/// is pulled as a peer that serves no proofs; and a size the proof cannot tell from
-/// the true one (a Commit Root does not commit to its size) is caught when
-/// the commits it covered replay, and fails the peer.
+/// Backs: what a peer says about its tree decides what is fetched and never
+/// what is believed. A flipped proof byte, a stated root other than the
+/// log's, and a payload that is not the wire shape each leave the pull to
+/// the no-proof path, which replays every commit it takes; a size the proof
+/// cannot tell from the true one (a Commit Root does not commit to its
+/// size) is held to the replay before the record takes the commits, so the
+/// record does not move and the peer fails.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lying_proof_fails_closed() {
+async fn a_lying_proof_never_changes_what_is_believed() {
     let flip = |v: &mut serde_json::Value| {
         let h = v["proof"]["boundary_hash"]
             .as_str()
@@ -292,13 +292,12 @@ async fn a_lying_proof_fails_closed() {
         let last = if cr.ends_with('A') { 'B' } else { 'A' };
         v["cr"] = format!("{}{last}", &cr[..cr.len() - 1]).into();
     };
-    for (what, lie, want_diverged) in [
-        (
-            "a flipped proof byte",
-            flip as fn(&mut serde_json::Value),
-            true,
-        ),
-        ("a stated root", wrong_root, false),
+    for (what, lie) in [
+        ("a flipped proof byte", flip as fn(&mut serde_json::Value)),
+        ("a stated root", wrong_root),
+        ("a payload of no shape", |v| {
+            *v = serde_json::json!({"size": "many"});
+        }),
     ] {
         let (w, bundles) = world(&["key_a", "carol", "key_b"]).await;
         let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
@@ -314,15 +313,11 @@ async fn a_lying_proof_fails_closed() {
         .await;
         let standing = only_standing(&report);
         assert!(
-            if want_diverged {
-                matches!(standing, PeerStanding::Diverged)
-            } else {
-                matches!(standing, PeerStanding::Failed(PeerFailure::Extension(_)))
-            },
+            matches!(standing, PeerStanding::Extended { added: 2 }),
             "{what}: {standing:?}"
         );
-        assert_eq!(c.asked("/patch"), 0, "{what}: nothing fetched");
-        assert_eq!(record.tip().expect("tip").commits, 2, "{what}");
+        assert_eq!(c.fetched(), 2, "{what}: only the new commits");
+        assert_eq!(record.tip().expect("tip").commits, 4, "{what}");
     }
 
     let (w, bundles) = world(&["key_a", "carol", "key_b", "alice"]).await;
@@ -345,11 +340,98 @@ async fn a_lying_proof_fails_closed() {
         "a stated size: {:?}",
         only_standing(&report)
     );
+    assert_eq!(
+        record.tip().expect("tip").commits,
+        2,
+        "a claim the replay contradicts leaves the record where it was"
+    );
+}
 
-    let (w, bundles) = world(&["key_a", "carol"]).await;
-    let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
-    let mut c = connector(&w);
-    c.lie = Some(|v| *v = serde_json::json!({"size": "many"}));
+/// Backs: a peer on a fork cannot hide it by lying about its tree. Its
+/// proof is fabricated (a one-leaf log, or a root nothing contradicts
+/// cheaply), so no fork can be located from its answers; the pull then
+/// compares the whole chain, as before proofs, and still finds the fork.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forked_peer_cannot_hide_behind_a_fabricated_proof() {
+    for lie in [
+        (|v: &mut serde_json::Value| v["size"] = 1.into()) as fn(&mut serde_json::Value),
+        |v| v["size"] = 99.into(),
+    ] {
+        let (w, _) = world(&["key_a", "key_b", "alice", "bob", "carol", "eve_ed25519"]).await;
+        let (_, mine) = line(
+            &w.shared,
+            &["key_a", "key_b", "alice", "bob", "diana_es384"],
+            T + 1,
+        )
+        .await;
+        let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
+        let mut record = follower(&w.id, &held).await;
+        let mut c = connector(&w);
+        c.lie = Some(lie);
+        let report = pull(
+            &mut record,
+            &[PullPeer {
+                name: "b",
+                connector: &c,
+            }],
+        )
+        .await;
+        assert!(
+            matches!(only_standing(&report), PeerStanding::Forked),
+            "{:?}",
+            only_standing(&report)
+        );
+        assert_eq!(report.forks.len(), 1);
+        assert_eq!(report.forks[0].height, 5);
+    }
+}
+
+/// Backs: a principal whose state the engine does not keep (after a restart)
+/// is not proved from: each proof request would replay its chain, which a
+/// peer could ask for over and over. The routes refuse with a 503 and replay
+/// nothing, and a follower falls back to the no-proof pull.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unkept_principal_is_not_replayed_for_a_proof() {
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let mut shared = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut shared, g, &[], T)
+        .await
+        .expect("genesis");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
+    let (_, bundles) = line(&shared, &["key_a", "carol", "key_b"], T + 1).await;
+    let (first, dir) = keyless_server();
+    let app = build_router(first.clone());
+    for b in std::iter::once(&genesis).chain(&bundles) {
+        let (status, body) = post_json(app.clone(), "/push", common::push_body(&id, b)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body:?}");
+    }
+    drop(app);
+    drop(first);
+    let config = cyphr_server::config::ServerConfig {
+        data_dir: dir.path().to_path_buf(),
+        ..Default::default()
+    };
+    let again = Arc::new(AppState::new(config).expect("reopens"));
+    let app = build_router(again.clone());
+    let q = id.replace(':', "%3A");
+    let before = again.engine.commits_replayed();
+    for route in [
+        format!("/consistency?pr={q}&from=2"),
+        format!("/inclusion?pr={q}&index=1"),
+    ] {
+        let (status, body) = get_json(app.clone(), &route).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{route}: {body:?}");
+    }
+    assert_eq!(again.engine.commits_replayed(), before, "nothing replayed");
+
+    let url = serve(&again).await;
+    let c = Watched::new(
+        HttpConnector::with_client(again.http_client.clone(), &url, true).expect("connector"),
+    );
+    let mut record = follower(&id, &[&genesis, &bundles[0]]).await;
     let report = pull(
         &mut record,
         &[PullPeer {
@@ -359,14 +441,9 @@ async fn a_lying_proof_fails_closed() {
     )
     .await;
     assert!(
-        matches!(only_standing(&report), PeerStanding::Extended { added: 1 }),
+        matches!(only_standing(&report), PeerStanding::Extended { added: 2 }),
         "{:?}",
         only_standing(&report)
-    );
-    assert_eq!(
-        c.fetched(),
-        1,
-        "pulled as a peer without proofs, and replayed"
     );
 }
 
