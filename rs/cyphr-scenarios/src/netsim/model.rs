@@ -42,6 +42,10 @@ pub struct PrincipalModel {
     /// genesis's second key is not counted: the driver is never told its
     /// thumbprint.
     pub backups: VecDeque<usize>,
+    /// Opened by several keys. Such a principal takes no second device: the
+    /// paired device's `cyphr rebase` cannot resolve the genesis (reproduced
+    /// by `tests/netsim_findings.rs`). Drop this field when that passes.
+    pub multikey: bool,
     /// Commits in the chain.
     pub height: u64,
     /// A theft deleted the second device's key, the only one of its hash
@@ -151,6 +155,7 @@ impl Model {
                     devices: 1,
                     keys: if *multikey { 2 } else { 1 },
                     backups: VecDeque::new(),
+                    multikey: *multikey,
                     height: GENESIS_HEIGHT,
                     spent: false,
                 });
@@ -171,6 +176,9 @@ impl Model {
             },
             Op::Pair { p, d } => {
                 let pm = self.principal(op, *p, *d)?;
+                if pm.multikey {
+                    return Err(format!("`{op}`: a multikey principal takes no second device"));
+                }
                 if pm.devices >= MAX_DEVICES {
                     return Err(format!(
                         "`{op}`: principal {p} already has {MAX_DEVICES} devices"

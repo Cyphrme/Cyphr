@@ -179,3 +179,31 @@ async fn a_principal_signs_in_after_its_fork_is_resolved() {
         .await
         .unwrap_or_else(|f| panic!("{f}"));
 }
+
+// Found by the large run (seed 20261117): a device paired into a principal
+// opened by several keys fails `cyphr rebase` with "cannot resolve genesis for
+// identity ...: no stored commits or keystore key", so two devices of such a
+// principal cannot reconcile a Stale refusal (SPEC 15.9). Pairing itself, and
+// the paired device's first commit, work. NETSIM pairs only single-key
+// principals until this is fixed.
+//
+// Must hold: the second of two devices committing from one tip rebases and
+// both commits reach the chain, for a multikey principal as for any other.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(multikey-rebase): a device paired into a multikey principal cannot rebase"]
+async fn a_paired_device_of_a_multikey_principal_rebases() {
+    let h = Harness::start(&["p1"]).await.expect("start peers");
+    let (alice, phone) = (h.client("alice"), h.client("phone"));
+    let pr = h.ok(alice.create_multikey_principal().await);
+    h.ok(alice.push(&pr, &["p1"]).await).accepted("publish");
+    h.ok(alice.pair_device(&pr, &phone).await);
+    h.ok(alice.push(&pr, &["p1"]).await).accepted("pairing");
+    h.ok(phone.sync(&pr, &["p1"]).await);
+    h.ok(alice.commit_data(&pr, "first").await);
+    h.ok(alice.push(&pr, &["p1"]).await).accepted("alice");
+    h.ok(phone.commit_data(&pr, "second").await);
+    let stale = h.ok(phone.push(&pr, &["p1"]).await).refused("stale push");
+    assert_eq!(stale, cyphr_scenarios::actions::RefusalKind::Stale);
+    h.ok(phone.rebase(&pr).await);
+    h.ok(phone.push(&pr, &["p1"]).await).accepted("rebased");
+}

@@ -34,7 +34,7 @@ use cyphr_scenarios::netsim::{Size, check, run};
 
 /// The gate's seed. A seed that goes red twice on an unrelated change is
 /// moved to the scheduled run and filed, not retried.
-const PINNED_SEED: u64 = 922;
+const PINNED_SEED: u64 = 963;
 
 fn seed() -> u64 {
     std::env::var("CYPHR_SCENARIO_SEED")

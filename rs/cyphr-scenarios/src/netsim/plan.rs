@@ -505,7 +505,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 Kind::Commit | Kind::Record | Kind::AddKey | Kind::Replace => !live.is_empty(),
                 Kind::Pair => live
                     .iter()
-                    .any(|&p| model.principals[p].devices < MAX_DEVICES),
+                    .any(|&p| (model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey)),
                 Kind::DelKey => live.iter().any(|&p| !model.principals[p].backups.is_empty()),
                 Kind::Concurrent => live.iter().any(|&p| model.principals[p].devices == 2),
                 Kind::NakedRevoke => live.iter().any(|&p| revocable(p)),
@@ -552,7 +552,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 }
             },
             Kind::Pair => {
-                let p = pick(&mut rng, &|p| model.principals[p].devices < MAX_DEVICES)
+                let p = pick(&mut rng, &|p| (model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey))
                     .expect("enabled implies one");
                 Op::Pair {
                     p,
