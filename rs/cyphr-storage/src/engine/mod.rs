@@ -2971,6 +2971,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// [`import::replay_commits`] infrastructure, with the action-only
     /// bundles accepted between commits recorded where they were accepted.
     ///
+    /// Always a replay, whatever state the engine keeps: for a caller that
+    /// wants the replay itself (a store check, a one-shot tool). A reader
+    /// that wants the principal's state takes [`Self::at_tip`].
+    ///
     /// # Arguments
     ///
     /// * `principal_id` — The tagged-digest identifier for the principal.
@@ -3568,7 +3572,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// # Flow
     ///
     /// 1. Resolve genesis (from argument, storage, or submitted blobs)
-    /// 2. Load existing principal from storage (or construct from genesis)
+    /// 2. Take the verified principal at its tip, from the kept state or a replay
+    ///    ([`Self::verified`]), or construct a new one from genesis
     /// 3. Open a `CommitScope`
     /// 4. Record the bundle's actions; for each transaction, verify its cozies (`{pay, sig}`, the
     ///    key a coz introduces taken from the bundle's `keys`) and apply them as one transaction
@@ -3677,10 +3682,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let lock = self.principal_lock(principal_id);
         let write = Self::lock_writes(&lock, principal_id).await;
 
-        // 2. Determine the tip this write extends, then load (or
-        // construct) the principal at it: from the state kept after the
-        // last write when everything it was folded from is unchanged,
-        // else by replaying the stored chain.
+        // 2. Determine the tip this write extends, then take the verified
+        // principal at it ([`Self::verified`]), or construct a new one
+        // from its genesis.
         let tip_before = self.indexer.get_tip(principal_id).await?;
         let next_seq = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
         let (mut principal, embeds) = match &tip_before {
