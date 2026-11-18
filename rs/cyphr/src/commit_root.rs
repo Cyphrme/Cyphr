@@ -261,21 +261,17 @@ impl<S: eml::Storage> CommitTrees<S> {
     /// seed cannot be reopened.
     pub(crate) async fn detach(self) -> crate::error::Result<CommitTrees<eml::MemoryStorage>> {
         let storage = |e: String| crate::error::Error::Storage(e);
-        let size = self.log.count();
-        let timeline = self.log.committed_epochs_at(size);
-        let closed =
-            |epochs: &Vec<(u64, u64)>| epochs.last().is_none_or(|&(_, end)| end != u64::MAX);
-        // A seal carries the frontier of each algorithm active at the sealed
-        // size and nothing of one that left (its last key deleted): the
-        // detached log would not know it, and its return would register it
-        // afresh over a history of nulls, a different root from the one the
-        // owner's log gives. A log holding one is copied leaf by leaf.
-        if timeline.iter().any(|(_, epochs)| closed(epochs)) {
-            return self.detach_by_replay(size, &timeline).await;
-        }
         let sealed = self.log.seal().await.map_err(|e| storage(e.to_string()))?;
         let mut hashers: Vec<(u64, Box<dyn eml::Hasher>)> = Vec::new();
-        for (alg_id, _) in sealed.frontiers() {
+        // Every registered algorithm, one that left included: the seal
+        // carries a closed algorithm's frontier at its close, and resume
+        // restores it so its return is the same algorithm.
+        let registered = sealed
+            .frontiers()
+            .iter()
+            .map(|(id, _)| id)
+            .chain(sealed.dormant_frontiers().iter().map(|(id, _)| id));
+        for alg_id in registered {
             let alg = u64_to_hash_alg(*alg_id)?;
             hashers.push((*alg_id, Box::new(MaltHasher::new(alg))));
         }
@@ -283,71 +279,6 @@ impl<S: eml::Storage> CommitTrees<S> {
             .await
             .map_err(|e| storage(e.to_string()))?;
         Ok(CommitTrees { log })
-    }
-
-    /// [`Self::detach`] for a log with an algorithm that left: the same
-    /// leaves appended to an in-memory log with every algorithm's epochs
-    /// replayed at the positions they changed, so each root, the closed
-    /// algorithm's included, is the original's. O(size), where a seal is
-    /// O(log size); only a log that has had an algorithm leave pays it.
-    async fn detach_by_replay(
-        self,
-        size: u64,
-        timeline: &[(u64, Vec<(u64, u64)>)],
-    ) -> crate::error::Result<CommitTrees<eml::MemoryStorage>> {
-        let storage = |e: String| crate::error::Error::Storage(e);
-        // Each algorithm's changes in order: its epochs' starts and stops.
-        let mut events: Vec<(u64, u64, bool)> = Vec::new();
-        for (alg_id, epochs) in timeline {
-            for &(start, end) in epochs {
-                events.push((start, *alg_id, true));
-                if end != u64::MAX {
-                    events.push((end, *alg_id, false));
-                }
-            }
-        }
-        // Stable by position, so one algorithm's start precedes its own stop
-        // at the same position and algorithms keep their order.
-        events.sort_by_key(|&(at, ..)| at);
-
-        let mut copy = CommitTrees::open(eml::MemoryStorage::new())
-            .await
-            .map_err(|e| storage(e.to_string()))?;
-        let mut next = 0;
-        for at in 0..=size {
-            while let Some(&(_, alg_id, start)) = events.get(next).filter(|e| e.0 == at) {
-                next += 1;
-                let registered = copy.has_algorithm(alg_id);
-                if !start {
-                    copy.log
-                        .remove_algorithm(alg_id)
-                        .await
-                        .map_err(|e| storage(e.to_string()))?;
-                } else if registered {
-                    copy.log
-                        .resume_algorithm(alg_id)
-                        .await
-                        .map_err(|e| storage(e.to_string()))?;
-                } else {
-                    let alg = u64_to_hash_alg(alg_id)?;
-                    copy.log
-                        .add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
-                        .await
-                        .map_err(|e| storage(e.to_string()))?;
-                }
-            }
-            if at < size {
-                let leaf = self
-                    .get_leaf(at)
-                    .await
-                    .map_err(|e| storage(e.to_string()))?;
-                copy.log
-                    .append_leaf(&leaf)
-                    .await
-                    .map_err(|e| storage(e.to_string()))?;
-            }
-        }
-        Ok(copy)
     }
 
     /// An independent copy of this log over a forked store.
