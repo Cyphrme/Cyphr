@@ -263,7 +263,8 @@ impl<S: eml::Storage> CommitTrees<S> {
         let storage = |e: String| crate::error::Error::Storage(e);
         let size = self.log.count();
         let timeline = self.log.committed_epochs_at(size);
-        let closed = |epochs: &Vec<(u64, u64)>| epochs.last().is_none_or(|&(_, end)| end != u64::MAX);
+        let closed =
+            |epochs: &Vec<(u64, u64)>| epochs.last().is_none_or(|&(_, end)| end != u64::MAX);
         // A seal carries the frontier of each algorithm active at the sealed
         // size and nothing of one that left (its last key deleted): the
         // detached log would not know it, and its return would register it
@@ -318,9 +319,15 @@ impl<S: eml::Storage> CommitTrees<S> {
                 next += 1;
                 let registered = copy.has_algorithm(alg_id);
                 if !start {
-                    copy.log.remove_algorithm(alg_id).await.map_err(|e| storage(e.to_string()))?;
+                    copy.log
+                        .remove_algorithm(alg_id)
+                        .await
+                        .map_err(|e| storage(e.to_string()))?;
                 } else if registered {
-                    copy.log.resume_algorithm(alg_id).await.map_err(|e| storage(e.to_string()))?;
+                    copy.log
+                        .resume_algorithm(alg_id)
+                        .await
+                        .map_err(|e| storage(e.to_string()))?;
                 } else {
                     let alg = u64_to_hash_alg(alg_id)?;
                     copy.log
@@ -330,7 +337,10 @@ impl<S: eml::Storage> CommitTrees<S> {
                 }
             }
             if at < size {
-                let leaf = self.get_leaf(at).await.map_err(|e| storage(e.to_string()))?;
+                let leaf = self
+                    .get_leaf(at)
+                    .await
+                    .map_err(|e| storage(e.to_string()))?;
                 copy.log
                     .append_leaf(&leaf)
                     .await

@@ -69,7 +69,8 @@ async fn data_commit(p: &mut Principal, by: &Kp, now: i64) -> (Vec<u8>, Vec<u8>,
     let v = serde_json::to_vec(&pay).expect("serialize pay");
     let (sig, cad) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
     let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
-    p.verify_and_record_action(&v, &sig, czd.clone()).expect("record");
+    p.verify_and_record_action(&v, &sig, czd.clone())
+        .expect("record");
     let action = (v.clone(), sig.clone(), czd);
 
     let mut scope = p.begin_commit();
@@ -80,7 +81,9 @@ async fn data_commit(p: &mut Principal, by: &Kp, now: i64) -> (Vec<u8>, Vec<u8>,
     let v = serde_json::to_vec(&pay).expect("serialize pay");
     let (sig, cad) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
     let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
-    scope.verify_and_apply(&v, &sig, czd, None).expect("ds/create");
+    scope
+        .verify_and_apply(&v, &sig, czd, None)
+        .expect("ds/create");
     scope
         .finalize_with_software(&signer(by), now + 1, AUTHORITY)
         .await
@@ -181,6 +184,7 @@ async fn a_chain_whose_algorithm_returns_replays_on_a_copy() {
         bad.is_empty(),
         "{} of 40 runs disagree: {:?}",
         bad.len(),
-        bad.first().map(|(draw, data, copy, (at, ..))| (draw, data, copy, at))
+        bad.first()
+            .map(|(draw, data, copy, (at, ..))| (draw, data, copy, at))
     );
 }
