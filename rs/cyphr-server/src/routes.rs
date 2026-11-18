@@ -493,6 +493,9 @@ pub struct ConsistencyQuery {
     /// parsed in the handler so a malformed value is refused with the
     /// app's JSON error envelope, as `GET /patch`'s anchor is.
     pub from: String,
+    /// The size of the log the asker wants shown to extend it, as
+    /// [`Self::from`]. Asked for, never defaulted to the tip.
+    pub to: String,
 }
 
 /// Query parameters for `GET /inclusion`.
@@ -503,6 +506,9 @@ pub struct InclusionQuery {
     /// The commit's position in the log, from 0. Raw string, as
     /// [`ConsistencyQuery::from`].
     pub index: String,
+    /// The size of the log the commit is shown to be in. Asked for, never
+    /// defaulted to the tip.
+    pub size: String,
 }
 
 type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
@@ -553,100 +559,109 @@ fn proof_count(what: &str, raw: &str) -> Result<u64, AppError> {
         .map_err(|_| AppError::bad_request(format!("{what} must be a commit count, got {raw:?}")))
 }
 
-/// The proof's answer, as an unsigned envelope naming the principal.
-fn proof_answer(t: &TipState, mut payload: serde_json::Value) -> impl IntoResponse + use<> {
-    payload["principal_id"] = cyphr_storage::engine::bare_digest(&t.principal_id)
-        .to_string()
-        .into();
-    Json(Envelope::unsigned(payload))
+/// A certificate answer: `{certificate}` and nothing else. A certificate
+/// is time-free plain data, so nothing here names the tip it was made at.
+fn certificate_answer(
+    certificate: &cyphr::proof::Certificate,
+) -> Result<impl IntoResponse + use<>, AppError> {
+    let certificate = serde_json::to_value(certificate)
+        .map_err(|e| AppError::internal(format!("certificate not encoded: {e}")))?;
+    Ok(Json(Envelope::unsigned(
+        serde_json::json!({ "certificate": certificate }),
+    )))
 }
 
-/// `GET /consistency?pr=<PG>&from=<n>` -- the proof that the principal's
-/// commit log, as it stands, extends the log of its first `n` commits
-/// (SPEC 4.4).
+/// A size asked for that the log has not reached.
+fn past_the_log(what: &str, size: u64, held: usize) -> AppError {
+    AppError::bad_request(format!(
+        "{what} must be at most the log's size {held}, got {size}"
+    ))
+}
+
+/// `GET /head?pr=<PG>` -- the principal's root at the last commit it holds:
+/// a [`cyphr::proof::Root`], `{size, pr}`. Plain data, the server's claim:
+/// an asker that does not already trust it by other means checks nothing
+/// against it but a certificate's consistency with itself.
+#[tracing::instrument(skip(state))]
+pub async fn head(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TipQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let t = provable_tip(&state, &query.pr).await?;
+    let log = proving_log(&state, &t).await?;
+    let root = log.root_at(log.commit_count() as u64).ok_or_else(|| {
+        AppError::internal(format!("principal {} holds no commit", t.principal_id))
+    })?;
+    Ok(Json(Envelope::unsigned(root)))
+}
+
+/// `GET /consistency?pr=<PG>&from=<n>&to=<m>` -- the certificate that the
+/// log of the principal's first `m` commits extends the log of its first
+/// `n` (SPEC 4.4), across any hash-algorithm rotation between them.
 ///
-/// The payload is `{principal_id, size, cr, proof}`: the log's size and
-/// Commit Root (in the family the proof starts in) as of the answer, and
-/// the extension proof from `n` to it, which crosses any algorithm rotation
-/// in between. They are the server's claim, for the asker to check against the
-/// log it holds (`cyphr_client::verify_extension`) and, once the commits
-/// they cover replay, against what replayed; the server signs nothing
-/// here and the proof asks to be believed no further than it verifies.
-///
-/// `n` must be at least 1 and below the log's size: an asker that holds
-/// the whole log, or none of it, has nothing to ask. A principal in Error
-/// has no single log (SPEC 15.5) and is a 409, as is a commit landing
-/// between reading the tip and proving against it.
+/// The payload is `{certificate}`. The asker checks it against an anchor it
+/// built itself (`cyphr::proof::verify_extension`), with `m`'s root as
+/// `GET /head` or its own source reports it; the server signs nothing
+/// here. Both sizes are asked for. `n` must be at least 1 and at most `m`,
+/// and `m` at most the log's size. A principal in Error has no single log
+/// (SPEC 15.5) and is a 409.
 #[tracing::instrument(skip(state))]
 pub async fn consistency(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ConsistencyQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let from = proof_count("from", &query.from)?;
+    let to = proof_count("to", &query.to)?;
     let t = provable_tip(&state, &query.pr).await?;
-    if from == 0 || from >= t.commit_count {
-        return Err(AppError::bad_request(format!(
-            "from must be between 1 and {} (the log's size less one), got {from}",
-            t.commit_count.saturating_sub(1)
-        )));
-    }
     let log = proving_log(&state, &t).await?;
-    let extension = cyphr_client::Extension::of(&log, from)
-        .await
-        .map_err(|e| AppError::internal(format!("consistency proof not made: {e}")))?;
-    if extension.size != t.commit_count {
-        return Err(AppError::conflict(format!(
-            "the log of {} moved from {} to {} commits: read the tip again",
-            t.principal_id, t.commit_count, extension.size
+    if from == 0 || from > to {
+        return Err(AppError::bad_request(format!(
+            "from must be between 1 and to, got from={from} to={to}"
         )));
     }
-    Ok(proof_answer(&t, extension.to_payload()))
+    if to > log.commit_count() as u64 {
+        return Err(past_the_log("to", to, log.commit_count()));
+    }
+    let certificate = log
+        .prove_extension(from, to)
+        .await
+        .map_err(|e| AppError::internal(format!("consistency certificate not made: {e}")))?;
+    certificate_answer(&certificate)
 }
 
-/// `GET /inclusion?pr=<PG>&index=<i>` -- the commit the principal's log
-/// holds at position `i`, with the proof that it is in the log (SPEC 4.4).
-/// How an asker that holds a different log finds where the two part,
-/// without being sent either.
+/// `GET /inclusion?pr=<PG>&index=<i>&size=<n>` -- the certificate that the
+/// commit at position `i` is in the log of the principal's first `n`
+/// commits (SPEC 4.4), whatever algorithm it was made under.
 ///
-/// The payload is `{principal_id, index, size, stitches, terminal}`: the
-/// tip-anchored membership proof (`cyphr::proof::MembershipProof`), one
-/// stitch per hash-algorithm rotation between the commit and the tip, for
-/// an asker to check against a tip it holds (`cyphr::proof::verify_membership`).
-/// `i` must be below the log's size; the answers of 409 are `/consistency`'s.
+/// The payload is `{certificate}`, for an asker to check against an anchor
+/// it built itself (`cyphr::proof::verify_membership`). Both are asked for;
+/// `i` must be below `n` and `n` at most the log's size. The answers of 409
+/// are `/consistency`'s.
 #[tracing::instrument(skip(state))]
 pub async fn inclusion(
     State(state): State<Arc<AppState>>,
     Query(query): Query<InclusionQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let index = proof_count("index", &query.index)?;
+    let size = proof_count("size", &query.size)?;
     let t = provable_tip(&state, &query.pr).await?;
-    if index >= t.commit_count {
-        return Err(AppError::bad_request(format!(
-            "index must be below the log's size {}, got {index}",
-            t.commit_count
-        )));
-    }
     let log = proving_log(&state, &t).await?;
-    // Every held commit is provable from the tip, whatever algorithm it
-    // was made under: there is nothing to choose. A store that cannot be
-    // read, or a held commit that proves nothing, is the server's, a 5xx.
-    let proof = log
-        .legacy_prove_membership(index)
-        .await
-        .map_err(|e| AppError::internal(format!("inclusion proof not made: {e}")))?;
-    if log.commit_count() as u64 != t.commit_count {
-        return Err(AppError::conflict(format!(
-            "the log of {} moved from {} to {} commits: read the tip again",
-            t.principal_id,
-            t.commit_count,
-            log.commit_count()
+    if index >= size {
+        return Err(AppError::bad_request(format!(
+            "index must be below size, got index={index} size={size}"
         )));
     }
-    let mut payload = serde_json::to_value(&proof)
-        .map_err(|e| AppError::internal(format!("inclusion proof not encoded: {e}")))?;
-    payload["index"] = index.into();
-    payload["size"] = t.commit_count.into();
-    Ok(proof_answer(&t, payload))
+    if size > log.commit_count() as u64 {
+        return Err(past_the_log("size", size, log.commit_count()));
+    }
+    // Every held commit is provable, whatever algorithm it was made under:
+    // there is nothing to choose. A store that cannot be read, or a held
+    // commit that proves nothing, is the server's, a 5xx.
+    let certificate = log
+        .prove_membership(index, size)
+        .await
+        .map_err(|e| AppError::internal(format!("inclusion certificate not made: {e}")))?;
+    certificate_answer(&certificate)
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds

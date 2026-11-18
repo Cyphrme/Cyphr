@@ -701,8 +701,8 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     );
 }
 
-/// A peer that also proves its log, as a real server does: `/consistency`
-/// and `/inclusion` come from its chain's own commit trees. It records the
+/// A peer that also proves its log, as a real server does: `/head`,
+/// `/consistency` and `/inclusion` come from its chain's own commit trees. It records the
 /// paths asked, so a test can pin which route a pull took.
 struct ProofMirror {
     mirror: Mirror,
@@ -734,13 +734,20 @@ impl Connector for ProofMirror {
                 .and_then(|(_, v)| v.parse::<u64>().ok())
         };
         let payload = match path {
+            "/head" => {
+                let size = self.principal.commit_count() as u64;
+                serde_json::to_value(self.principal.root_at(size).expect("a root")).expect("root")
+            },
             "/consistency" => {
                 let from = number("from").ok_or(ConnectError::NonSuccess(400))?;
-                let payload = cyphr_client::Extension::of(&self.principal, from)
+                let to = number("to").ok_or(ConnectError::NonSuccess(400))?;
+                let certificate = self
+                    .principal
+                    .prove_extension(from, to)
                     .await
-                    .map_err(|_| ConnectError::NonSuccess(404))?
-                    .to_payload();
-                if payload["proof"]["stitches"]
+                    .map_err(|_| ConnectError::NonSuccess(404))?;
+                let payload = json!({ "certificate": certificate });
+                if payload["certificate"]["stitches"]
                     .as_array()
                     .is_some_and(|s| !s.is_empty())
                 {
@@ -750,12 +757,13 @@ impl Connector for ProofMirror {
             },
             "/inclusion" => {
                 let index = number("index").ok_or(ConnectError::NonSuccess(400))?;
-                let proof = self
+                let size = number("size").ok_or(ConnectError::NonSuccess(400))?;
+                let certificate = self
                     .principal
-                    .legacy_prove_membership(index)
+                    .prove_membership(index, size)
                     .await
                     .map_err(|_| ConnectError::NonSuccess(404))?;
-                serde_json::to_value(&proof).expect("proof")
+                json!({ "certificate": certificate })
             },
             _ => return self.mirror.exchange(request).await,
         };

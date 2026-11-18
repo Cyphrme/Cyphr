@@ -78,10 +78,11 @@ async fn observe(n: usize) -> Obs {
     // rotated an algorithm has no stitch, so each is its terminal alone.
     let len = |v: &serde_json::Value| v.as_array().expect("array").len();
     let consistency_hashes = |v: &serde_json::Value| {
-        let p = &v["payload"]["proof"]["terminal"];
+        let p = &v["payload"]["certificate"]["terminal"];
         1 + len(&p["peak_path"]) + len(&p["new_peaks"])
     };
-    let inclusion_hashes = |v: &serde_json::Value| len(&v["payload"]["terminal"]["steps"]);
+    let inclusion_hashes =
+        |v: &serde_json::Value| len(&v["payload"]["certificate"]["terminal"]["steps"]);
 
     let before = replayed();
     let w = chain.next().await;
@@ -110,7 +111,7 @@ async fn observe(n: usize) -> Obs {
     let c = ok(call(
         &app_a,
         "GET",
-        &format!("/consistency?pr={id}&from={}", n / 2),
+        &format!("/consistency?pr={id}&from={}&to={n}", n / 2),
         String::new(),
     )
     .await);
@@ -119,7 +120,7 @@ async fn observe(n: usize) -> Obs {
     let i = ok(call(
         &app_a,
         "GET",
-        &format!("/inclusion?pr={id}&index={}", n / 2),
+        &format!("/inclusion?pr={id}&index={}&size={n}", n / 2),
         String::new(),
     )
     .await);
@@ -320,8 +321,16 @@ async fn tip_read_rows_are_constant_with_a_rival_at_one() {
 #[tokio::test]
 async fn consistency_read_rows_are_constant_with_a_rival_at_one() {
     let (short, long) = (
-        rival_get_rows(SHORT, &format!("/consistency?pr={{id}}&from={}", SHORT / 2)).await,
-        rival_get_rows(LONG, &format!("/consistency?pr={{id}}&from={}", LONG / 2)).await,
+        rival_get_rows(
+            SHORT,
+            &format!("/consistency?pr={{id}}&from={}&to={SHORT}", SHORT / 2),
+        )
+        .await,
+        rival_get_rows(
+            LONG,
+            &format!("/consistency?pr={{id}}&from={}&to={LONG}", LONG / 2),
+        )
+        .await,
     );
     assert_eq!(
         short, long,

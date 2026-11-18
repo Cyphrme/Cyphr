@@ -1,8 +1,8 @@
-//! Extension proofs (SPEC 4.4: CR is the append-only Merkle root of all
-//! commits, and clients obtain consistency proofs over it): "the offered
-//! tip extends the tip I hold" is checked from the held, already verified
-//! commit root and the offered size and root, which are never read from the
-//! proof itself.
+//! Extension certificates (SPEC 4.4: CR is the append-only Merkle root of
+//! all commits, and clients obtain consistency proofs over it): "the
+//! offered head extends the log I hold" is checked against the held,
+//! already verified chain, and the head is the peer's claim, never read
+//! from the certificate and never pinned.
 //!
 //! Chains are real `cyphr` principals; the oracle for "extends" is equality
 //! of the two logs' roots at the older size, which the verifier never sees.
@@ -11,7 +11,6 @@ mod common;
 
 use common::*;
 use cyphr::Principal;
-use cyphr::commit_root::hash_alg_to_u64;
 use cyphr::eml::MemoryStorage;
 use cyphr_client::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 use serde_json::json;
@@ -38,51 +37,54 @@ async fn grown<'a>(
     (chain, at_size)
 }
 
-fn tree_size(p: &Principal<MemoryStorage>) -> u64 {
-    let alg = hash_alg_to_u64(p.hash_alg());
-    p.commit_trees().tree_size(alg).expect("registered")
+fn size_of(p: &Principal<MemoryStorage>) -> u64 {
+    p.commit_count() as u64
 }
 
-/// The hashes of the terminal consistency proof: the boundary peak, the
-/// path lifting it, and the new frontier.
+/// What a peer serving `p` offers a holder of `from` commits: its head and
+/// the certificate that it extends them.
+async fn offer(p: &Principal<MemoryStorage>, from: u64) -> Extension {
+    let to = size_of(p);
+    Extension::new(
+        p.root_at(to).expect("a head"),
+        p.prove_extension(from, to).await.expect("certificate"),
+    )
+}
+
+/// The hashes of the certificate's terminal consistency proof: the
+/// boundary peak, the path lifting it, and the new frontier.
 fn hashes(ext: &Extension) -> usize {
-    use cyphr::proof::legacy::AnyConsistency::{Sha256, Sha384, Sha512};
-    let proof = match &ext.proof.terminal {
-        Sha256(c) => &c.proof,
-        Sha384(c) => &c.proof,
-        Sha512(c) => &c.proof,
-    };
-    1 + proof
-        .peak_path
-        .iter()
-        .map(|s| s.siblings.len())
-        .sum::<usize>()
-        + proof.new_peaks.len()
+    let t = &serde_json::to_value(&ext.certificate).expect("certificate")["terminal"];
+    let len = |v: &serde_json::Value| v.as_array().map_or(0, Vec::len);
+    1 + t["peak_path"]
+        .as_array()
+        .map_or(0, |steps| steps.iter().map(|s| len(&s["siblings"])).sum())
+        + len(&t["new_peaks"])
 }
 
-/// Backs: for every older size the held principal can stand at, the proof a
-/// longer chain serves verifies, and holds at most 2 * (floor(log2 m) + 1)
-/// hashes for a log of m commits: the boundary peak, the path lifting it
-/// into the peak that absorbed it (at most floor(log2 m) siblings), and the
-/// new frontier (at most floor(log2 m) + 1 peaks). A tighter
-/// ceil(log2 m) + 1 does not hold of this proof shape (1 -> 25 takes 8).
+/// Backs: for every older size the held principal can stand at, the
+/// certificate a longer chain serves verifies, and its terminal holds at
+/// most 2 * (floor(log2 m) + 1) hashes for a log of m commits: the boundary
+/// peak, the path lifting it into the peak that absorbed it (at most
+/// floor(log2 m) siblings), and the new frontier (at most floor(log2 m) + 1
+/// peaks). A tighter ceil(log2 m) + 1 does not hold of this proof shape
+/// (1 -> 25 takes 8).
 #[tokio::test]
 async fn an_honest_extension_verifies_with_a_logarithmic_proof() {
     let g = kp();
     let keys: Vec<Kp> = (0..LONGEST).map(|_| kp()).collect();
     let (chain, at_size) = grown(&g, &keys, &[], LONGEST).await;
     let new = &chain.principal;
-    let m = tree_size(new);
+    let m = size_of(new);
     for held in &at_size {
-        let n = tree_size(held);
+        let n = size_of(held);
         if n == 0 || n >= m {
             continue;
         }
-        let ext = Extension::of(new, n).await.expect("proof");
+        let ext = offer(new, n).await;
         assert_eq!(verify_extension(held, &ext), Ok(()), "{n} -> {m}");
-        assert!(ext.proof.stitches.is_empty(), "no rotation, no stitch");
-        let nodes = hashes(&ext);
         let bound = 2 * (m.ilog2() as usize + 1);
+        let nodes = hashes(&ext);
         assert!(nodes <= bound, "{n} -> {m}: {nodes} hashes > {bound}");
     }
 }
@@ -98,16 +100,14 @@ async fn a_forked_pair_fails_exactly_past_the_shared_prefix() {
     for shared in [0, 1, 5, 11] {
         let (a, a_at) = grown(&g, &keys, &rival, LONGEST).await;
         let (b, _) = grown(&g, &keys, &rival, shared).await;
-        let m = tree_size(&b.principal);
+        let m = size_of(&b.principal);
         for held in &a_at {
-            let n = tree_size(held);
+            let n = size_of(held);
             if n == 0 || n >= m {
                 continue;
             }
-            let ext = Extension::of(&b.principal, n).await.expect("proof");
-            let alg = hash_alg_to_u64(a.principal.hash_alg());
-            let agree = a.principal.commit_trees().root_at(alg, n).await
-                == b.principal.commit_trees().root_at(alg, n).await;
+            let ext = offer(&b.principal, n).await;
+            let agree = a.principal.root_at(n) == b.principal.root_at(n);
             let verdict = verify_extension(held, &ext);
             assert_eq!(
                 verdict.is_ok(),
@@ -121,33 +121,37 @@ async fn a_forked_pair_fails_exactly_past_the_shared_prefix() {
     }
 }
 
-/// Backs: the verifier takes the older size and root from the principal it
-/// holds and the newer size and root from the offer, never from the proof.
-/// An offer that states another root than the log the proof was made over,
-/// or a size with another frontier shape, is refused, though the proof is
-/// untouched. A Commit Root does not commit to its size (a size with the
-/// same frontier shape, one more commit here, verifies), so the stated size
-/// is held to the replayed log by `confirm_extension` instead.
+/// Backs: the verifier takes the held log from the principal it holds and
+/// the head from the offer, never from the certificate. An offer that states
+/// another root than the log the certificate was made over is refused,
+/// though the certificate is untouched. A Commit Root does not commit to
+/// its size (a size with the same frontier shape, one more commit here,
+/// verifies), so the stated size is held to the replayed log by
+/// `confirm_extension` instead.
 #[tokio::test]
-async fn sizes_and_roots_come_from_outside_the_proof() {
+async fn heads_come_from_outside_the_certificate() {
     let g = kp();
     let keys: Vec<Kp> = (0..8).map(|_| kp()).collect();
     let (chain, at_size) = grown(&g, &keys, &[], 8).await;
     let held = &at_size[3];
-    let ext = Extension::of(&chain.principal, tree_size(held))
-        .await
-        .expect("proof");
+    let ext = offer(&chain.principal, size_of(held)).await;
     assert_eq!(verify_extension(held, &ext), Ok(()));
 
-    let mut wrong_shape = ext.clone();
-    wrong_shape.size = ext.size.next_power_of_two() * 2;
+    let mut wrong_shape = Extension::new(
+        ext.head.clone(),
+        offer(&chain.principal, 4).await.certificate,
+    );
+    wrong_shape.head.size = ext.head.size.next_power_of_two() * 2;
     assert_eq!(
         verify_extension(held, &wrong_shape),
         Err(ExtensionFailure::NotAnExtension)
     );
 
-    let mut same_shape = ext.clone();
-    same_shape.size += 1;
+    let mut same_shape = Extension::new(
+        ext.head.clone(),
+        offer(&chain.principal, 4).await.certificate,
+    );
+    same_shape.head.size += 1;
     assert_eq!(verify_extension(held, &same_shape), Ok(()));
     let replayed = &chain.principal;
     assert_eq!(confirm_extension(replayed, &ext), Ok(()));
@@ -156,95 +160,94 @@ async fn sizes_and_roots_come_from_outside_the_proof() {
         Err(ExtensionFailure::Unconfirmed)
     );
 
-    // Another root of the same width (the held principal's own tip commit
-    // root: a real digest, only not the offer's).
-    let mut wrong_root = ext.clone();
-    wrong_root.cr = at_size[2]
-        .cr()
-        .map(|cr| cyphr::state::TaggedDigest::new(held.hash_alg(), cr_bytes(cr, held)))
-        .expect("held CR")
-        .expect("tagged");
-    assert_eq!(
-        verify_extension(held, &wrong_root),
-        Err(ExtensionFailure::NotAnExtension)
+    // Another root (the held principal's own, a real one, only not the
+    // offer's).
+    let mut wrong_root = Extension::new(
+        ext.head.clone(),
+        offer(&chain.principal, 4).await.certificate,
+    );
+    wrong_root.head.pr = at_size[2].root_at(size_of(&at_size[2])).expect("root").pr;
+    assert!(
+        matches!(
+            verify_extension(held, &wrong_root),
+            Err(ExtensionFailure::Refused(_))
+        ),
+        "a head the certificate does not open is no verdict"
     );
 
     // An offer no longer than the held log proves nothing.
-    let mut not_longer = ext.clone();
-    not_longer.size = tree_size(held);
+    let mut not_longer = Extension::new(
+        ext.head.clone(),
+        offer(&chain.principal, 4).await.certificate,
+    );
+    not_longer.head.size = size_of(held);
     assert_eq!(
         verify_extension(held, &not_longer),
         Err(ExtensionFailure::NotLonger)
     );
 }
 
-fn cr_bytes(cr: &cyphr::CommitRoot, held: &Principal<MemoryStorage>) -> Vec<u8> {
-    cr.as_multihash()
-        .get(held.hash_alg())
-        .expect("variant")
-        .to_vec()
-}
-
 /// Backs: a payload that is not the wire shape, or whose lengths exceed
 /// what a log of that size can need, fails closed at the parse, before any
 /// hashing.
 #[tokio::test]
-async fn a_malformed_wire_proof_fails_closed() {
+async fn a_malformed_wire_certificate_fails_closed() {
     let g = kp();
     let keys: Vec<Kp> = (0..8).map(|_| kp()).collect();
     let (chain, at_size) = grown(&g, &keys, &[], 8).await;
-    let ext = Extension::of(&chain.principal, tree_size(&at_size[3]))
-        .await
-        .expect("proof");
-    let good = ext.to_payload();
-    assert_eq!(
-        Extension::from_payload(&good).map(|e| e.to_payload()),
-        Ok(good.clone()),
-        "the wire form round-trips"
-    );
+    let ext = offer(&chain.principal, size_of(&at_size[3])).await;
+    let good = json!({ "certificate": ext.certificate });
+    assert!(Extension::certificate_from_payload(&good).is_ok());
 
     let mut cases = Vec::new();
-    for field in ["size", "cr", "proof"] {
+    let mut missing = good.clone();
+    missing.as_object_mut().expect("object").clear();
+    cases.push(missing);
+    let mut extra = good.clone();
+    extra["principal_id"] = json!("echoed");
+    cases.push(extra);
+    for field in ["top", "stitches", "terminal"] {
         let mut v = good.clone();
-        v.as_object_mut().expect("object").remove(field);
+        v["certificate"]
+            .as_object_mut()
+            .expect("object")
+            .remove(field);
         cases.push(v);
     }
+    let boundary = good["certificate"]["terminal"]["boundary_hash"].clone();
     let mut bad_b64 = good.clone();
-    bad_b64["proof"]["terminal"]["boundary_hash"] = json!("not base64 !");
+    bad_b64["certificate"]["terminal"]["boundary_hash"] = json!("not base64 !");
     cases.push(bad_b64);
     let mut bad_width = good.clone();
-    bad_width["proof"]["terminal"]["boundary_hash"] = json!("AAAA");
+    bad_width["certificate"]["terminal"]["boundary_hash"] = json!("AAAA");
     cases.push(bad_width);
     let mut many_peaks = good.clone();
-    many_peaks["proof"]["terminal"]["new_peaks"] =
-        json!(vec![
-            good["proof"]["terminal"]["boundary_hash"].clone();
-            200
-        ]);
+    many_peaks["certificate"]["terminal"]["new_peaks"] = json!(vec![boundary; 200]);
     cases.push(many_peaks);
     let mut deep = good.clone();
-    deep["proof"]["terminal"]["peak_path"] =
+    deep["certificate"]["terminal"]["peak_path"] =
         json!(vec![json!({"position": 0, "siblings": []}); 200]);
     cases.push(deep);
     for case in cases {
         assert!(
             matches!(
-                Extension::from_payload(&case),
+                Extension::certificate_from_payload(&case),
                 Err(ExtensionFailure::Malformed(_))
             ),
             "{case}"
         );
     }
+    assert!(matches!(
+        Extension::head_from_payload(&json!({"size": "many"})),
+        Err(ExtensionFailure::Malformed(_))
+    ));
 }
 
 /// Backs: a holder whose log was reopened from a frontier (the server's
-/// gossip holds principals so) still has its own Commit Root at every size
-/// it has stood at, which locating a fork needs. The frontier-seeded log
-/// names a few sizes only; the rest are folded from the commits.
-/// Turns red if `at_size` answers only the sizes the seed names.
+/// gossip holds principals so) still has its own root at every size it has
+/// stood at, which locating a fork needs: each commit keeps its own.
 #[tokio::test]
-async fn a_detached_holder_has_its_commit_root_at_every_size() {
-    use cyphr::proof::legacy::{FullCr, Rooted, Trusted};
+async fn a_detached_holder_has_its_root_at_every_size() {
     let g = kp();
     let keys: Vec<Kp> = (0..9).map(|_| kp()).collect();
     let (chain, _) = grown(&g, &keys, &[], 9).await;
@@ -256,14 +259,8 @@ async fn a_detached_holder_has_its_commit_root_at_every_size() {
         .detach()
         .await
         .expect("detach");
-    for size in 1..=whole.commit_count() as u64 {
-        let want = Rooted::<Trusted, FullCr>::at_size(whole, size).await;
-        assert!(want.is_some(), "size {size}");
-        let got = Rooted::<Trusted, FullCr>::at_size(&detached, size).await;
-        assert_eq!(
-            got.as_ref().map(Rooted::get),
-            want.as_ref().map(Rooted::get),
-            "size {size}"
-        );
+    for size in 1..=size_of(whole) {
+        assert!(whole.root_at(size).is_some(), "size {size}");
+        assert_eq!(detached.root_at(size), whole.root_at(size), "size {size}");
     }
 }

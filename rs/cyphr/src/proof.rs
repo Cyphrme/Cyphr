@@ -43,8 +43,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{PrincipalRoot, PrincipalState, TransactionRoot};
 
-#[doc(hidden)]
-pub mod legacy;
 mod prove;
 mod verify;
 mod wire;

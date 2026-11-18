@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use axum::http::StatusCode;
 use cyphr::replay::WireBundle;
 use cyphr_client::{
-    Anchor, ChannelBinding, ConnectError, Connector, HttpConnector, PatchEntry, PeerFailure,
-    PeerStanding, PullPeer, Record, Request, pull,
+    Anchor, ChannelBinding, ConnectError, Connector, HttpConnector, PatchEntry, PeerStanding,
+    PullPeer, Record, Request, pull,
 };
 use cyphr_server::{AppState, build_router};
 
@@ -38,6 +38,8 @@ struct Watched {
     /// Commits the peer's `/patch` answers carried.
     fetched: Mutex<usize>,
     lie: Option<fn(&mut serde_json::Value)>,
+    /// An edit of the `/head` answers.
+    head_lie: Option<fn(&mut serde_json::Value)>,
     /// An edit of the `/consistency` answers after the first: those the
     /// search for where a fork parts is made of.
     search_lie: Option<fn(&mut serde_json::Value)>,
@@ -53,6 +55,7 @@ impl Watched {
             asked: Mutex::default(),
             fetched: Mutex::default(),
             lie: None,
+            head_lie: None,
             search_lie: None,
             padding: 0,
         }
@@ -99,7 +102,9 @@ impl Connector for Watched {
             let entries = json["payload"]["entries"].as_array().map_or(0, Vec::len);
             *self.fetched.lock().expect("fetched") += entries;
         }
-        let lie = if request.target.starts_with("/consistency") {
+        let lie = if request.target.starts_with("/head") {
+            self.head_lie
+        } else if request.target.starts_with("/consistency") {
             if self.asked("/consistency") > 1 {
                 self.search_lie
             } else {
@@ -344,8 +349,8 @@ async fn a_request_reads_no_more_of_the_index_as_history_grows() {
         let before = w.peer.engine.chain_rows_read();
         for route in [
             format!("/tip?pr={id}"),
-            format!("/consistency?pr={id}&from=1"),
-            format!("/inclusion?pr={id}&index=0"),
+            format!("/consistency?pr={id}&from=1&to={}", bundles.len() + 1),
+            format!("/inclusion?pr={id}&index=0&size={}", bundles.len() + 1),
         ] {
             let (status, body) = get_json(app.clone(), &route).await;
             assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
@@ -398,29 +403,45 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lying_proof_never_changes_what_is_believed() {
     let flip = |v: &mut serde_json::Value| {
-        let h = v["proof"]["terminal"]["boundary_hash"]
+        let h = v["certificate"]["terminal"]["boundary_hash"]
             .as_str()
             .expect("hash")
             .to_owned();
         let first = if h.starts_with('A') { 'B' } else { 'A' };
-        v["proof"]["terminal"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
+        v["certificate"]["terminal"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
     };
     let wrong_root = |v: &mut serde_json::Value| {
-        let cr = v["cr"].as_str().expect("cr").to_owned();
-        let last = if cr.ends_with('A') { 'B' } else { 'A' };
-        v["cr"] = format!("{}{last}", &cr[..cr.len() - 1]).into();
+        let sha = v["pr"].as_object_mut().expect("pr");
+        let (_, d) = sha.iter_mut().next().expect("a variant");
+        let s = d.as_str().expect("digest").to_owned();
+        let first = if s.starts_with('A') { 'B' } else { 'A' };
+        *d = format!("{first}{}", &s[1..]).into();
     };
-    for (what, lie) in [
-        ("a flipped proof byte", flip as fn(&mut serde_json::Value)),
-        ("a stated root", wrong_root),
-        ("a payload of no shape", |v| {
-            *v = serde_json::json!({"size": "many"});
-        }),
-    ] {
+    // (what, an edit of the certificate answer, an edit of the head answer)
+    type Lie = Option<fn(&mut serde_json::Value)>;
+    for (what, lie, head_lie) in [
+        (
+            "a flipped proof byte",
+            Some(flip as fn(&mut serde_json::Value)),
+            None,
+        ),
+        (
+            "a stated root",
+            None,
+            Some(wrong_root as fn(&mut serde_json::Value)),
+        ),
+        (
+            "a payload of no shape",
+            Some((|v| *v = serde_json::json!({"size": "many"})) as fn(&mut serde_json::Value)),
+            None,
+        ),
+    ] as [(&str, Lie, Lie); 3]
+    {
         let (w, bundles) = world(&["key_a", "carol", "key_b"]).await;
         let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
         let mut c = connector(&w);
-        c.lie = Some(lie);
+        c.lie = lie;
+        c.head_lie = head_lie;
         let report = pull(
             &mut record,
             &[PullPeer {
@@ -438,10 +459,13 @@ async fn a_lying_proof_never_changes_what_is_believed() {
         assert_eq!(record.tip().expect("tip").commits, 4, "{what}");
     }
 
+    // A head stating more commits than the log holds: the server refuses
+    // the certificate for it, so the pull goes on without one, and every
+    // commit it takes is replayed.
     let (w, bundles) = world(&["key_a", "carol", "key_b", "alice"]).await;
     let mut record = follower(&w.id, &[&w.genesis, &bundles[0]]).await;
     let mut c = connector(&w);
-    c.lie = Some(|v| v["size"] = (v["size"].as_u64().expect("size") + 1).into());
+    c.head_lie = Some(|v| v["size"] = (v["size"].as_u64().expect("size") + 1).into());
     let report = pull(
         &mut record,
         &[PullPeer {
@@ -451,18 +475,11 @@ async fn a_lying_proof_never_changes_what_is_believed() {
     )
     .await;
     assert!(
-        matches!(
-            only_standing(&report),
-            PeerStanding::Failed(PeerFailure::Extension(_))
-        ),
+        matches!(only_standing(&report), PeerStanding::Extended { added: 3 }),
         "a stated size: {:?}",
         only_standing(&report)
     );
-    assert_eq!(
-        record.tip().expect("tip").commits,
-        2,
-        "a claim the replay contradicts leaves the record where it was"
-    );
+    assert_eq!(record.tip().expect("tip").commits, 5);
 }
 
 /// Backs: a peer on a fork cannot hide it by lying about its tree. Its
@@ -485,7 +502,7 @@ async fn a_forked_peer_cannot_hide_behind_a_fabricated_proof() {
         let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
         let mut record = follower(&w.id, &held).await;
         let mut c = connector(&w);
-        c.lie = Some(lie);
+        c.head_lie = Some(lie);
         let report = pull(
             &mut record,
             &[PullPeer {
@@ -538,8 +555,8 @@ async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
     let before = again.engine.commits_replayed();
     for _ in 0..3 {
         for route in [
-            format!("/consistency?pr={q}&from=2"),
-            format!("/inclusion?pr={q}&index=1"),
+            format!("/consistency?pr={q}&from=2&to=4"),
+            format!("/inclusion?pr={q}&index=1&size=4"),
         ] {
             let (status, body) = get_json(app.clone(), &route).await;
             assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
@@ -576,39 +593,52 @@ async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
 /// is a 404, as `/tip`'s is.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_proof_request_is_bounded() {
-    let (w, _) = world(&["key_a", "carol"]).await;
+    let (w, _) = world(&["key_a", "carol"]).await; // three commits
     let app = build_router(w.peer.clone());
     let id = w.id.replace(':', "%3A");
-    for (from, want) in [
-        ("1", StatusCode::OK),
-        ("2", StatusCode::OK),
-        ("3", StatusCode::BAD_REQUEST),
-        ("0", StatusCode::BAD_REQUEST),
-        ("18446744073709551615", StatusCode::BAD_REQUEST),
-        ("-1", StatusCode::BAD_REQUEST),
-        ("x", StatusCode::BAD_REQUEST),
+    for (from, to, want) in [
+        ("1", "3", StatusCode::OK),
+        ("2", "3", StatusCode::OK),
+        ("3", "3", StatusCode::OK),
+        ("1", "2", StatusCode::OK),
+        ("4", "3", StatusCode::BAD_REQUEST),
+        ("0", "3", StatusCode::BAD_REQUEST),
+        ("1", "4", StatusCode::BAD_REQUEST),
+        ("1", "18446744073709551615", StatusCode::BAD_REQUEST),
+        ("-1", "3", StatusCode::BAD_REQUEST),
+        ("x", "3", StatusCode::BAD_REQUEST),
+        ("1", "x", StatusCode::BAD_REQUEST),
     ] {
-        let (status, body) =
-            get_json(app.clone(), &format!("/consistency?pr={id}&from={from}")).await;
-        assert_eq!(status, want, "from={from}: {body:?}");
+        let (status, body) = get_json(
+            app.clone(),
+            &format!("/consistency?pr={id}&from={from}&to={to}"),
+        )
+        .await;
+        assert_eq!(status, want, "from={from} to={to}: {body:?}");
     }
-    let (status, _) = get_json(app.clone(), "/consistency?pr=nobody&from=1").await;
+    let (status, _) = get_json(app.clone(), "/consistency?pr=nobody&from=1&to=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    for (index, want) in [
-        ("0", StatusCode::OK),
-        ("2", StatusCode::OK),
-        ("3", StatusCode::BAD_REQUEST),
-        ("-1", StatusCode::BAD_REQUEST),
-        ("x", StatusCode::BAD_REQUEST),
+    for (index, size, want) in [
+        ("0", "3", StatusCode::OK),
+        ("2", "3", StatusCode::OK),
+        ("0", "1", StatusCode::OK),
+        ("3", "3", StatusCode::BAD_REQUEST),
+        ("0", "4", StatusCode::BAD_REQUEST),
+        ("0", "0", StatusCode::BAD_REQUEST),
+        ("-1", "3", StatusCode::BAD_REQUEST),
+        ("x", "3", StatusCode::BAD_REQUEST),
     ] {
-        let (status, body) =
-            get_json(app.clone(), &format!("/inclusion?pr={id}&index={index}")).await;
-        assert_eq!(status, want, "index={index}: {body:?}");
+        let (status, body) = get_json(
+            app.clone(),
+            &format!("/inclusion?pr={id}&index={index}&size={size}"),
+        )
+        .await;
+        assert_eq!(status, want, "index={index} size={size}: {body:?}");
     }
-    let (status, _) = get_json(app.clone(), "/inclusion?pr=nobody&index=0").await;
+    let (status, _) = get_json(app.clone(), "/inclusion?pr=nobody&index=0&size=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (_, body) = get_json(app, &format!("/consistency?pr={id}&from=1")).await;
+    let (_, body) = get_json(app, &format!("/head?pr={id}")).await;
     let payload = envelope_payload(&body);
     assert_eq!(payload["size"], 3, "{body:?}");
 }
@@ -621,36 +651,32 @@ async fn a_proof_from_a_kept_principal_replays_nothing() {
     let app = build_router(w.peer.clone());
     let id = w.id.replace(':', "%3A");
     let before = w.peer.engine.commits_replayed();
-    let (status, _) = get_json(app.clone(), &format!("/consistency?pr={id}&from=2")).await;
+    let (status, _) = get_json(app.clone(), &format!("/consistency?pr={id}&from=2&to=4")).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = get_json(app, &format!("/inclusion?pr={id}&index=1")).await;
+    let (status, _) = get_json(app, &format!("/inclusion?pr={id}&index=1&size=4")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(w.peer.engine.commits_replayed(), before);
 }
 
-/// Backs: the search for where a fork parts is kept to one log. An answer
-/// that names another size or another root than the head the peer offered,
-/// or whose proof does not hold, ends the search; the pull then compares
-/// the whole chain and finds the same fork, at the price of fetching it.
+/// Backs: the search for where a fork parts is steered by the peer's
+/// answers and decided by none of them. An answer that is no certificate, or
+/// whose proof does not hold, cannot end in a fork the record did not
+/// verify: the pull compares the whole chain and finds the same fork, at the
+/// price of fetching it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_inconsistent_search_answer_ends_the_search() {
     type Lie = fn(&mut serde_json::Value);
-    let lies: [(&str, Lie); 3] = [
-        ("another size", |v| {
-            v["size"] = (v["size"].as_u64().expect("size") + 1).into();
-        }),
-        ("another root", |v| {
-            let cr = v["cr"].as_str().expect("cr").to_owned();
-            let last = if cr.ends_with('A') { 'B' } else { 'A' };
-            v["cr"] = format!("{}{last}", &cr[..cr.len() - 1]).into();
+    let lies: [(&str, Lie); 2] = [
+        ("an answer that is no certificate", |v| {
+            *v = serde_json::json!({"size": "many"});
         }),
         ("a proof that does not hold", |v| {
-            let h = v["proof"]["terminal"]["boundary_hash"]
+            let h = v["certificate"]["terminal"]["boundary_hash"]
                 .as_str()
                 .expect("hash")
                 .to_owned();
             let first = if h.starts_with('A') { 'B' } else { 'A' };
-            v["proof"]["terminal"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
+            v["certificate"]["terminal"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
         }),
     ];
     for (what, lie) in lies {
