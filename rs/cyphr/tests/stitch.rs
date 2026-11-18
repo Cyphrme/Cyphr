@@ -1089,6 +1089,86 @@ async fn an_invented_extra_variant_in_a_single_variant_pre_is_refused() {
     assert_eq!(r.map(|_| ()), Err(ProofError::Arrow));
 }
 
+// Case 3 becomes case 2: dropping a variant from the concatenated pre
+// changes the conversion (one variant is promoted as is), so the arrow no
+// longer recomputes.
+#[tokio::test]
+async fn a_variant_dropped_from_the_concatenated_pre_is_refused() {
+    let a = case_three().await;
+    let mut proof = a.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&a), &proof, tr_of(&a, 0)).expect("control");
+    assert_eq!(opening_of(&mut proof.stitches[0]).pre_variants.len(), 2);
+    opening_of(&mut proof.stitches[0]).pre_variants.remove(1);
+    let r = verify_membership(&tip(&a), &proof, tr_of(&a, 0));
+    assert_eq!(r.map(|_| ()), Err(ProofError::Arrow));
+}
+
+// Case 1 becomes case 2: PR_1 has the arrow's family (SHA-512) and
+// another (SHA-384). Supplying only the genuine SHA-384 variant presents
+// a single-variant pre, which promotes SHA-384's bytes: not what the
+// signer's arrow binds.
+#[tokio::test]
+async fn a_case_one_pre_reduced_to_a_non_signer_variant_is_refused() {
+    let p = three_families().await;
+    let mut algs = pre_algs(&p, 1);
+    algs.sort();
+    assert_eq!(
+        algs,
+        [HashAlg::Sha384, HashAlg::Sha512],
+        "setup: PR_1 has the arrow's SHA-512 and SHA-384 (case 1)"
+    );
+    let genuine = p
+        .commit_at(1)
+        .expect("commit")
+        .pr()
+        .0
+        .get(HashAlg::Sha384)
+        .expect("variant");
+    let mut proof = p.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 0)).expect("control");
+    opening_of(&mut proof.stitches[0]).pre_variants = vec![(HashAlg::Sha384, genuine.to_vec())];
+    let r = verify_membership(&tip(&p), &proof, tr_of(&p, 0));
+    assert_eq!(r.map(|_| ()), Err(ProofError::Arrow));
+}
+
+// The second path through `impl Anchor`: the TR is bound whichever
+// anchor starts the walk.
+#[tokio::test]
+async fn an_upgraded_anchor_still_binds_the_tr() {
+    let p = single(3, 3).await;
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
+        .await
+        .expect("old");
+    let ext = p.prove_extension(3).await.expect("prove");
+    let head = verify_extension(&old, claim_of(&p), &ext).expect("upgrade");
+    let proof = p.prove_membership(2).await.expect("prove");
+    verify_membership(&head, &proof, tr_of(&p, 2)).expect("control");
+    for j in [0u64, 1, 3, 5, 7] {
+        let r = verify_membership(&head, &proof, tr_of(&p, j));
+        assert!(
+            matches!(r, Err(ProofError::Mismatch(_))),
+            "tr of {j}: {r:?}"
+        );
+    }
+    let other = single(3, 3).await;
+    let r = verify_membership(&head, &proof, tr_of(&other, 2));
+    assert!(
+        matches!(r, Err(ProofError::Mismatch(_))),
+        "foreign tr: {r:?}"
+    );
+}
+
+// Variants supplied out of sorted order: refused, or the same roots and
+// so the same true proof.
+#[tokio::test]
+async fn a_reordered_concatenated_pre_proves_only_the_truth() {
+    let a = case_three().await;
+    let mut proof = a.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&a), &proof, tr_of(&a, 0)).expect("control");
+    opening_of(&mut proof.stitches[0]).pre_variants.reverse();
+    proves_only_the_truth(verify_membership(&tip(&a), &proof, tr_of(&a, 0)), 0);
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in
