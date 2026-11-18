@@ -615,7 +615,10 @@ mod tests {
     }
     /// A leaf carrying a variant for each of `ids`.
     fn leaf_of(ids: &[u64], n: u8) -> Vec<u8> {
-        let v: BTreeMap<u64, Vec<u8>> = ids.iter().map(|&i| (i, vec![n; if i == 1 { 32 } else { 64 }])).collect();
+        let v: BTreeMap<u64, Vec<u8>> = ids
+            .iter()
+            .map(|&i| (i, vec![n; if i == 1 { 32 } else { 64 }]))
+            .collect();
         serde_json::to_vec(&v).expect("leaf")
     }
 
@@ -632,7 +635,8 @@ mod tests {
             }
         }
         let mut staged = log.stage();
-        log.stage_leaf(&mut staged, &leaf_of(ids, n)).expect("stage");
+        log.stage_leaf(&mut staged, &leaf_of(ids, n))
+            .expect("stage");
         log.commit(staged).await.expect("commit");
     }
 
@@ -660,9 +664,17 @@ mod tests {
         let mut whole = log_with_a_closed_algorithm().await;
         commit_leaf_to(&mut whole, &[1, 3], 3).await;
 
-        let mut detached = log_with_a_closed_algorithm().await.detach().await.expect("detach");
+        let mut detached = log_with_a_closed_algorithm()
+            .await
+            .detach()
+            .await
+            .expect("detach");
         assert!(detached.has_algorithm(1), "the detached log forgot SHA-256");
-        let reopened_from = log_with_a_closed_algorithm().await.detach().await.expect("detach");
+        let reopened_from = log_with_a_closed_algorithm()
+            .await
+            .detach()
+            .await
+            .expect("detach");
         let mut reopened = CommitTrees::open(reopened_from.log.into_storage())
             .await
             .expect("a detached log's storage reopens with every hasher it needs");

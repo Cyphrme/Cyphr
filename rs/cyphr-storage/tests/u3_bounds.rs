@@ -460,7 +460,11 @@ async fn detach_reads(n: usize) -> u64 {
         Kp(alg, k.alg.name().to_string(), k.prv_bytes, k.pub_bytes, tmb)
     };
     let key = |k: &Kp| cyphr::Key::new(k.1.clone(), k.4.clone(), k.3.clone()).expect("key");
-    let (owner, paired, spare) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256), kp(coz::Alg::Ed25519));
+    let (owner, paired, spare) = (
+        kp(coz::Alg::Ed25519),
+        kp(coz::Alg::ES256),
+        kp(coz::Alg::Ed25519),
+    );
     let b64 = |t: &coz::Thumbprint| Base64UrlUnpadded::encode_string(t.as_bytes());
 
     let storage = Reads::default();
@@ -477,7 +481,10 @@ async fn detach_reads(n: usize) -> u64 {
     let steps: Vec<(&str, &Kp)> = ["create", "delete"]
         .into_iter()
         .map(|t| (t, &paired))
-        .chain((0..n.saturating_sub(3)).map(|i| (if i % 2 == 0 { "create" } else { "delete" }, &spare)))
+        .chain(
+            (0..n.saturating_sub(3))
+                .map(|i| (if i % 2 == 0 { "create" } else { "delete" }, &spare)),
+        )
         .collect();
     for (i, (typ, id)) in steps.into_iter().enumerate() {
         let now = 1_700_000_010 + 10 * i as i64;
