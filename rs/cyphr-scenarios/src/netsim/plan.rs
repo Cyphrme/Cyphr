@@ -465,12 +465,9 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
             push(&mut model, &mut log, op);
             continue;
         }
-        // Principals whose home peer is up and that may still commit; only
-        // they can act.
+        // Principals whose home peer is up; only they can act.
         let live: Vec<usize> = (0..model.principals.len())
-            .filter(|&p| {
-                !model.down.contains(&model.principals[p].holders[0]) && !model.principals[p].spent
-            })
+            .filter(|&p| !model.down.contains(&model.principals[p].holders[0]))
             .collect();
         let pick = |rng: &mut ChaCha8Rng, ok: &dyn Fn(usize) -> bool| -> Option<usize> {
             let c: Vec<usize> = live.iter().copied().filter(|&p| ok(p)).collect();

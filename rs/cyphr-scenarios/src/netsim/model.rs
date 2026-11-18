@@ -48,12 +48,6 @@ pub struct PrincipalModel {
     pub multikey: bool,
     /// Commits in the chain.
     pub height: u64,
-    /// A theft deleted the second device's key, the only one of its hash
-    /// algorithm, and the owner's local store then fails a later commit
-    /// (reproduced by `tests/netsim_findings.rs`). No op may commit to the
-    /// principal again; reads still apply. Delete this field and its uses
-    /// when that test passes.
-    pub spent: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -95,11 +89,6 @@ impl Model {
         }
         if d >= pm.devices {
             return Err(format!("`{op}`: principal {p} has {} devices", pm.devices));
-        }
-        if pm.spent {
-            return Err(format!(
-                "`{op}`: principal {p} is spent: its store cannot commit past a deleted paired key"
-            ));
         }
         Ok(pm)
     }
@@ -159,7 +148,6 @@ impl Model {
                     backups: VecDeque::new(),
                     multikey: *multikey,
                     height: GENESIS_HEIGHT,
-                    spent: false,
                 });
             },
             Op::Commit { p, d } => {
@@ -241,7 +229,6 @@ impl Model {
                 pm.keys -= 1;
                 pm.devices = 1;
                 pm.backups.retain(|d| *d == 0);
-                pm.spent = true;
             },
             Op::Concurrent { p } => {
                 let pm = self.principal(op, *p, 0)?;
