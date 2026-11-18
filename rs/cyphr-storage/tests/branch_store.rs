@@ -1348,6 +1348,20 @@ async fn answers(e: &Engine, f: &Fork) -> String {
     )
 }
 
+/// What an engine holds of `f`'s principal, without the wall-clock times it
+/// records when it first saw a commit: the served tip, the verdict and its
+/// heads. Two engines that hold the same chain agree on it however far apart
+/// they received it.
+async fn held_chain(e: &Engine, f: &Fork) -> String {
+    let assessed = e.assess(&f.id).await.expect("assess");
+    format!(
+        "{:?}\n{:?}\n{:?}",
+        e.get_tip(&f.id).await.expect("tip").map(|t| t.commit_id),
+        assessed.consensus,
+        assessed.heads,
+    )
+}
+
 /// The thief's `key_a` line X1..X`n` over G, dated NOW+300 on, each pushed
 /// and admitted while no revoke of `key_a` is held.
 async fn thief_line(e: &Engine, f: &Fork, n: usize) -> cyphr::Principal {
@@ -1638,8 +1652,8 @@ async fn a_revoke_and_the_commit_adding_its_key_converge_in_either_order() {
     assert!(late.is_ok(), "the introduction is admitted: {late:?}");
 
     assert_eq!(
-        answers(&revoke_first, &f).await,
-        answers(&commit_first, &f).await,
+        held_chain(&revoke_first, &f).await,
+        held_chain(&commit_first, &f).await,
         "the two engines hold the same chain"
     );
 }
@@ -1678,4 +1692,81 @@ async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
         "the revoke changed the verdict"
     );
     assert_eq!(answers(&e, &f).await, before, "and changes nothing");
+}
+
+/// Backs the theft-recovery shape (SPEC 15.8): a peer holds the thief's
+/// line as canonical, [G, C1], and the owner's rival R1 at position 1,
+/// `key/replace` of `key_a` by `alice` signed by `key_a`, is retained. R2
+/// extends R1, signed by `alice`, a key only the rival branch introduced.
+/// R2 is admitted: it out-extends the canonical line, which makes R1, R2
+/// the tallest, so the principal is Active on R2. Turns red if the signers
+/// of a resolution are read only from the canonical state, so a key the
+/// retained branch introduced is refused `UnknownKey`.
+#[tokio::test]
+async fn a_resolution_signed_by_a_key_the_rival_introduced_is_admitted() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let (key_a, alice, carol) = (kp(&pool, "key_a"), kp(&pool, "alice"), kp(&pool, "carol"));
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+
+    let mut c = f.base.fork().await.expect("fork");
+    create_key(&mut c, &f.golden, &kp(&pool, "bob"), NOW + 10).await;
+    pushed_tip(&e, &f, &blobs(&c, 1)).await.expect("C1");
+
+    let mut r = f.base.fork().await.expect("fork");
+    let replace = serde_json::json!({
+        "alg": key_a.alg, "id": alice.tmb.to_b64(), "now": NOW + 20,
+        "tmb": key_a.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/replace"
+    });
+    apply(
+        &mut r,
+        &key_a,
+        &key_a,
+        replace,
+        Some(key_of(&alice)),
+        NOW + 20,
+    )
+    .await;
+    pushed_tip(&e, &f, &blobs(&r, 1))
+        .await
+        .expect_err("R1 is a rival");
+
+    create_key(&mut r, &alice, &carol, NOW + 21).await;
+    let r2 = pushed_tip(&e, &f, &blobs(&r, 2)).await;
+    let r2 = r2.expect("R2, signed by the key R1 introduced, is admitted");
+    let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
+    assert_eq!(tip.commit_id, r2, "R2 is served");
+    assert!(!e.is_errored(&f.id).await.expect("verdict"), "Active");
+}
+
+/// Backs SPEC 14.12 for a retained rival: `golden`'s rival R at position 1
+/// is retained beside the canonical commit there. Pushed again it is
+/// answered as the fork it is, `CommitMismatch`. A naked revoke of `golden`
+/// is then received with a cutoff of NOW, before R's date, and R is pushed
+/// once more: the answer is the same, not `DeadKey`, because the revoke
+/// judges nothing already held. Turns red if the revoke gate sees a
+/// retained rival before the held-bundle check does.
+#[tokio::test]
+async fn a_retained_rival_pushed_again_after_a_revoke_gets_the_same_answer() {
+    let f = Fork::new(2).await;
+    let (e, _) = f.engine_with(&[0, 1]).await;
+    let before = f
+        .submit(&e, &f.rivals[1])
+        .await
+        .map_err(|why| format!("{why:?}"));
+    assert!(
+        before
+            .as_ref()
+            .is_err_and(|why| why.contains("CommitMismatch")),
+        "premise: a held rival is answered as a fork: {before:?}"
+    );
+    e.record_revoke(&naked_revoke(&f.golden, 1), NOW)
+        .await
+        .expect("revoke");
+    let after = f
+        .submit(&e, &f.rivals[1])
+        .await
+        .map_err(|why| format!("{why:?}"));
+    assert_eq!(after, before, "the revoke changed the answer");
 }
