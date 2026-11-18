@@ -4419,7 +4419,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
         // Authenticated before any of the stored chain is read: a bundle
         // no key of the principal signed costs its own size.
-        let Some(signers) = authenticated_signers(bundle, tip) else {
+        let retained = self.retained_keys(principal_id);
+        let Some(signers) = authenticated_signers(bundle, tip, &retained) else {
             return Ok(false);
         };
         let stored = self.stored_entries(principal_id, None).await?;
@@ -4517,7 +4518,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if rivals.is_empty() || self.is_already_stored(principal_id, bundle).await? {
             return Ok(None);
         }
-        if authenticated_signers(bundle, tip).is_none() {
+        let retained: Vec<KeyEntry> = rivals.iter().flat_map(|r| r.keys.clone()).collect();
+        if authenticated_signers(bundle, tip, &retained).is_none() {
             return Ok(None);
         }
         let stored = self.stored_entries(principal_id, None).await?;
@@ -4852,6 +4854,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         aliases.sort_unstable();
         aliases.dedup();
         aliases.iter().map(|a| self.principal_lock(a)).collect()
+    }
+
+    /// The keys the principal's retained rivals disclose: a source of
+    /// signers for a bundle extending one of them. O(retained), which
+    /// [`BRANCH_LIMIT`] caps; nothing is read from the store.
+    fn retained_keys(&self, principal_id: &str) -> Vec<KeyEntry> {
+        self.branches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(principal_id)
+            .into_iter()
+            .flatten()
+            .flat_map(|r| r.keys.clone())
+            .collect()
     }
 
     /// Whether a rival with these blobs and grouping is retained.
@@ -5895,12 +5911,15 @@ fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
 /// every principal stored, a stranger's among them.
 ///
 /// The key history is read from `tip`, the principal's
-/// verified state at its tip, so this costs the bundle and reads nothing of
-/// the stored chain: a bundle nobody of the principal signed is settled
+/// verified state at its tip, and from `retained`, the keys of the
+/// principal's own retained rivals (a resolution may be signed by a key
+/// only a rival branch introduced, SPEC 15.8), so this costs the bundle and
+/// the retained keys and reads nothing of the stored chain: a bundle nobody of the principal signed is settled
 /// here, before any of its history is read.
 fn authenticated_signers(
     bundle: &WireBundle,
     tip: &cyphr::PrincipalState,
+    retained: &[KeyEntry],
 ) -> Option<Vec<coz::Thumbprint>> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -5931,6 +5950,10 @@ fn authenticated_signers(
                     tmb.to_owned(),
                     (key.alg().to_owned(), key.pub_key().to_vec()),
                 );
+            } else if let Some(k) = retained.iter().find(|k| k.tmb == tmb)
+                && let Ok(public) = Base64UrlUnpadded::decode_vec(&k.pub_key)
+            {
+                history.insert(tmb.to_owned(), (k.alg.clone(), public));
             }
         }
     }
