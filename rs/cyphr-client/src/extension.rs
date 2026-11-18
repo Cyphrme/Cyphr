@@ -180,8 +180,12 @@ pub fn confirm_extension<S: Storage>(
 ) -> Result<(), ExtensionFailure> {
     let alg_id = cyphr::commit_root::hash_alg_to_u64(offer.cr.alg());
     let trees = held.commit_trees();
-    match (trees.tree_size(alg_id), trees.root(alg_id)) {
-        (Ok(size), Ok(root)) if size == offer.size && root == offer.cr.as_bytes() => Ok(()),
+    // The size is the chain's own count: a log reopened from a frontier
+    // ([`Principal::detach`]) holds no leaves and does not count them.
+    match trees.root(alg_id) {
+        Ok(root) if held.commit_count() as u64 == offer.size && root == offer.cr.as_bytes() => {
+            Ok(())
+        },
         _ => Err(ExtensionFailure::Unconfirmed),
     }
 }
