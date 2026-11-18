@@ -344,6 +344,15 @@ fn naked_revoke(
     Ok(())
 }
 
+/// The transaction a `commit_key_tx` signs: its `typ`, extra pay `fields`,
+/// the key it introduces, and an explicit `now` (the clock when `None`).
+struct KeyTx<'a> {
+    typ: &'a str,
+    fields: &'a [(&'a str, Value)],
+    new_key: Option<cyphr::Key>,
+    now: Option<i64>,
+}
+
 /// Commit one key transaction signed by `signer_tmb` onto `principal`:
 /// the pay is built from `typ` and `fields`, verified and applied inside one
 /// `CommitScope`, and finalized as one commit. `new_key` is the public half
@@ -353,11 +362,14 @@ fn commit_key_tx(
     keystore: &impl KeyBackend,
     signer_tmb: &str,
     authority: &str,
-    typ: &str,
-    fields: &[(&str, Value)],
-    new_key: Option<cyphr::Key>,
-    now: Option<i64>,
+    tx: KeyTx<'_>,
 ) -> crate::Result<()> {
+    let KeyTx {
+        typ,
+        fields,
+        new_key,
+        now,
+    } = tx;
     super::init::commit_genesis(principal, keystore, &[], authority)?;
     let signer = keystore.signer(signer_tmb)?;
     let now = now.unwrap_or_else(current_timestamp);
@@ -400,10 +412,12 @@ pub(crate) fn apply_key_create(
         keystore,
         signer_tmb,
         authority,
-        cyphr::parsed_coz::typ::KEY_CREATE,
-        &[("id", Value::String(new_key_tmb.to_string()))],
-        Some(new_key.clone()),
-        None,
+        KeyTx {
+            typ: cyphr::parsed_coz::typ::KEY_CREATE,
+            fields: &[("id", Value::String(new_key_tmb.to_string()))],
+            new_key: Some(new_key.clone()),
+            now: None,
+        },
     )
 }
 
@@ -421,10 +435,12 @@ pub(crate) fn apply_key_delete(
         keystore,
         signer_tmb,
         authority,
-        cyphr::parsed_coz::typ::KEY_DELETE,
-        &[("id", Value::String(key_tmb.to_string()))],
-        None,
-        None,
+        KeyTx {
+            typ: cyphr::parsed_coz::typ::KEY_DELETE,
+            fields: &[("id", Value::String(key_tmb.to_string()))],
+            new_key: None,
+            now: None,
+        },
     )
 }
 
@@ -445,10 +461,12 @@ pub(crate) fn apply_key_replace(
         keystore,
         signer_tmb,
         authority,
-        cyphr::parsed_coz::typ::KEY_REPLACE,
-        &[("id", Value::String(new_key_tmb.to_string()))],
-        Some(new_key.clone()),
-        now,
+        KeyTx {
+            typ: cyphr::parsed_coz::typ::KEY_REPLACE,
+            fields: &[("id", Value::String(new_key_tmb.to_string()))],
+            new_key: Some(new_key.clone()),
+            now,
+        },
     )
 }
 
@@ -480,10 +498,12 @@ pub(crate) fn apply_key_revoke(
         keystore,
         signer_tmb,
         authority,
-        cyphr::parsed_coz::typ::KEY_REVOKE,
-        &[("rvk", rvk)],
-        None,
-        None,
+        KeyTx {
+            typ: cyphr::parsed_coz::typ::KEY_REVOKE,
+            fields: &[("rvk", rvk)],
+            new_key: None,
+            now: None,
+        },
     )
 }
 
