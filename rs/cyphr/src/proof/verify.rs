@@ -252,11 +252,19 @@ pub(super) fn membership(
     // client has only the claim.
     let own = anchor.tr_at(index);
     let leaf = own.unwrap_or(tr).get(path.alg);
-    let hasher = MaltHasher::new(path.alg);
-    let reached = match leaf {
-        Some(l) => reaches(path.alg, l, path, root),
-        None => reaches(path.alg, &digest_leaf(&hasher), path, root),
-    };
+    let null;
+    let reached = reaches(
+        path.alg,
+        match leaf {
+            Some(l) => l,
+            None => {
+                null = digest_leaf(&MaltHasher::new(path.alg));
+                &null
+            },
+        },
+        path,
+        root,
+    );
     if !reached {
         return Err(if own.is_some() {
             ProofError::Path

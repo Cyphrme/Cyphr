@@ -19,6 +19,16 @@ fn unprovable(what: impl Into<String>) -> ProofError {
     ProofError::Unprovable(what.into())
 }
 
+/// The certificate as a verifier will read it: what the prover built is
+/// serialized and parsed back, so a certificate the parser would refuse is
+/// an error here and never an answer a client cannot read.
+fn checked(cert: Cert) -> Result<Certificate, ProofError> {
+    let built = Certificate(cert);
+    let wire = serde_json::to_value(&built).map_err(|e| unprovable(e.to_string()))?;
+    serde_json::from_value(wire)
+        .map_err(|e| unprovable(format!("the certificate does not parse back: {e}")))
+}
+
 fn storage(e: impl ToString) -> ProofError {
     ProofError::Storage(e.to_string())
 }
@@ -131,8 +141,11 @@ impl<S: eml::Storage> Principal<S> {
         }
     }
 
-    /// The Principal Tree cells of commit `i`'s Principal Root, refusing a
-    /// root with no State Root, whose cell roles the cells alone do not name.
+    /// The Principal Tree cells of commit `i`'s Principal Root. A root with
+    /// no State Root (the principal removed its last key and holds no data)
+    /// is refused: its first cell would be the Commit Root, and the cells
+    /// alone do not name which cell is which, so a verifier cannot tell a
+    /// Commit Root from a nonce there.
     fn cells_of(&self, i: u64) -> Result<Cells, ProofError> {
         let commit = self.held(i)?;
         if commit.sr().is_none() {
@@ -248,12 +261,12 @@ impl<S: eml::Storage> Principal<S> {
         let (hops, family, cur) = self.plan(size, index, false)?;
         let stitches = self.stitches(&hops).await?;
         let terminal = Terminal::Path(self.path(family, index, cur).await?);
-        Ok(Certificate(Cert {
+        checked(Cert {
             top,
             base: None,
             stitches,
             terminal,
-        }))
+        })
     }
 
     /// The certificate that the log of `to` commits extends the log of
@@ -274,12 +287,12 @@ impl<S: eml::Storage> Principal<S> {
         let (hops, family, cur) = self.plan(to, from - 1, true)?;
         let stitches = self.stitches(&hops).await?;
         let terminal = Terminal::Consistency(self.consistency(family, from, cur).await?);
-        Ok(Certificate(Cert {
+        checked(Cert {
             top,
             base: Some(base),
             stitches,
             terminal,
-        }))
+        })
     }
 
     /// Test support: a path to leaf `index` in family `alg`'s tree of `size`
