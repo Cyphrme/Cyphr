@@ -44,6 +44,8 @@ pub async fn attestor() -> (Arc<AppState>, tempfile::TempDir) {
         ..Default::default()
     };
     let mut state = AppState::new(config).expect("state");
+    // Counts are of the engine, not of the shadow check's own replays.
+    state.engine.set_kept_shadow(false);
     let identity = state.identity.clone().expect("identity");
     let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key, &state.config.data_dir)
         .await
@@ -58,7 +60,9 @@ pub fn keyless() -> (Arc<AppState>, tempfile::TempDir) {
         data_dir: dir.path().to_path_buf(),
         ..Default::default()
     };
-    (Arc::new(AppState::new(config).expect("state")), dir)
+    let mut state = AppState::new(config).expect("state");
+    state.engine.set_kept_shadow(false);
+    (Arc::new(state), dir)
 }
 
 pub fn push_body(id: &str, b: &WireBundle) -> String {

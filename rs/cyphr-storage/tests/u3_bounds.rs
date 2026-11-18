@@ -6,6 +6,11 @@
 //! The timed counterpart is `cargo bench -p cyphr-storage --bench
 //! u3_engine`.
 //!
+//! The engines these tests build have the kept-state shadow check
+//! (`CYPHR_KEPT_SHADOW`) off: it replays cold on every use and those
+//! replays and reads are counted too, so with it on the counts would measure
+//! the check and not the engine.
+//!
 //! A red test is a bound the engine does not yet meet: the finding, not a
 //! defect of the test.
 //!

@@ -1359,6 +1359,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self
     }
 
+    /// [`Self::with_kept_shadow`] on an engine already built, such as one a
+    /// server state owns.
+    pub fn set_kept_shadow(&mut self, on: bool) {
+        self.kept_shadow = on;
+    }
+
     /// Uses of a principal, by a write or a reader, served from a kept
     /// state, over this engine's lifetime.
     pub fn kept_hits(&self) -> u64 {
