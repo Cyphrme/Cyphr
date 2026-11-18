@@ -646,7 +646,10 @@ async fn a_refused_bundle_that_is_no_rival_reads_no_more_as_history_grows() {
 /// of it is replayed, whatever its length.
 ///
 /// Counted at the engine's chain read and its retention replays, over
-/// victims of 4 and of 24 commits: the refusal is the same either way.
+/// victims of 4 and of 24 commits: the refusal is the same either way. The
+/// victim also holds a retained rival that introduces a key (`key_a`
+/// replaced by `diana_es384`): the keys of its own retained commits are a source
+/// of signers, and the stranger's key is still none of them.
 #[tokio::test]
 async fn a_strangers_key_buys_no_read_of_a_victims_history() {
     let alice = kp("alice");
@@ -675,7 +678,33 @@ async fn a_strangers_key_buys_no_read_of_a_victims_history() {
     let mut cost = Vec::new();
     for n in [4, 24] {
         let (e, _dir) = engine(8, false);
-        let w = history(&e, n).await;
+        // The victim's rival at the head position: `key_a` replaced by
+        // `diana_es384`, retained beside the canonical commit that takes the
+        // same position. The engine reads a held fork from its depth down,
+        // so a rival at the head keeps that read independent of `n`.
+        let mut w = history(&e, n - 1).await;
+        let (key_a, diana) = (kp("key_a"), kp("diana_es384"));
+        let mut rival = w.shadow.fork().await.expect("fork");
+        assert!(
+            try_apply(
+                &mut rival,
+                &key_a,
+                pay("key/replace", &key_a, Some(&diana), NOW + 10 * n as i64 - 5),
+                Some(key_of(&diana)),
+                NOW + 10 * n as i64 - 5,
+            )
+            .await
+        );
+        let (next, head) = w.toggle("key_b", NOW + 10 * n as i64).await.expect("head");
+        w.submit(&e, &head).await.expect("the canonical head");
+        w.adopt(next);
+        let at = rival.commits().count() - 1;
+        assert!(w.submit(&e, &bundle_at(&rival, at)).await.is_err(), "a rival");
+        assert_eq!(
+            e.list_branches(&w.id).await.expect("branches").len(),
+            2,
+            "the canonical head and the retained rival"
+        );
         e.submit_commit(&own_id, None, &own)
             .await
             .expect("the stranger's own principal");
