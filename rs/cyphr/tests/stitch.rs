@@ -1491,6 +1491,43 @@ async fn a_fork_search_across_a_rotation_costs_polylog_work() {
     );
 }
 
+/// Genesis (Ed25519), a data commit, a replace to ES256 at 2, a data
+/// commit, a replace to ES384 at 4, then `n - 5` data commits by the last
+/// key: the walk from the tip to index 1 crosses two epoch starts but the
+/// last epoch is as long as the chain.
+async fn long_last_epoch(n: usize) -> Principal {
+    let (a, b, c) = (
+        kp(coz::Alg::Ed25519),
+        kp(coz::Alg::ES256),
+        kp(coz::Alg::ES384),
+    );
+    let mut p = genesis(&a).await;
+    data_commit(&mut p, &a, at(1)).await;
+    commit_key(&mut p, &a, "replace", &b, at(2)).await;
+    data_commit(&mut p, &b, at(3)).await;
+    commit_key(&mut p, &b, "replace", &c, at(4)).await;
+    for k in 0..n - 5 {
+        data_commit(&mut p, &c, at(5 + k)).await;
+    }
+    assert_eq!(p.commit_count(), n);
+    p
+}
+
+// Bound: planning the walk to an old commit reads O(log n) commits, not
+// the whole epoch of the family the tip is in (E7.2: `plan` scans it).
+#[tokio::test]
+async fn planning_a_walk_does_not_scan_the_last_epoch() {
+    for n in [8usize, 128] {
+        let p = long_last_epoch(n).await;
+        let before = cyphr::probe::commits_read();
+        let proof = p.prove_membership(1).await.expect("prove");
+        let read = cyphr::probe::commits_read() - before;
+        assert_eq!(proof.stitches.len(), 2, "n={n}: two epoch starts crossed");
+        let cap = 2 * log2_ceil(n) + 8;
+        assert!(read <= cap, "n={n}: {read} commits read, cap {cap}");
+    }
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in
