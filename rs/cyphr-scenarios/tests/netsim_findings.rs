@@ -303,8 +303,6 @@ async fn a_fork_of_data_commits_is_resolved_at_every_peer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(key-replacement-resolution): a peer holding the rival of a branch that replaced a \
-            key refuses its resolution (unknown key)"]
 async fn a_fork_with_a_key_replacement_is_resolved_at_every_peer() {
     gossip_a_fork(true).await;
 }
