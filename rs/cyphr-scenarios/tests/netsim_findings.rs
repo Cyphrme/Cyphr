@@ -65,7 +65,6 @@ async fn a_principal_keeps_committing_after_its_paired_key_is_deleted() {
 // Must hold: at quiescence every holder serves the naked revoke (SPEC 6.4,
 // 13.7: revokes travel by gossip).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(restored-peer-revoke): a peer restored from before a naked revoke never relearns it"]
 async fn a_restored_peer_relearns_a_naked_revoke() {
     use cyphr_scenarios::netsim::{Size, plan, run};
     let size = Size {
