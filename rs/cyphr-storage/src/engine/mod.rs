@@ -19,9 +19,11 @@
 
 mod error;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use cyphr::fork::{Held, assessment};
+pub use cyphr::fork::{Assessment, Consensus, Contest, ForkPoint};
 use cyphr::replay::WireBundle;
 use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
@@ -659,15 +661,6 @@ pub struct BranchTip {
     pub seen: Option<i64>,
 }
 
-/// A principal's consensus state (SPEC 15.5), as far as forks decide it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub enum Consensus {
-    /// No unresolved fork.
-    Active,
-    /// An unresolved fork: nothing that leaves it standing is admitted.
-    Error,
-}
-
 /// One fork as a viewer sees it: two commits over one `pre`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkView {
@@ -717,36 +710,6 @@ pub trait Recovery: Send + Sync {
     fn review(&self, principal_id: &str, protocol: Consensus, forks: &[ForkView]) -> Review;
 }
 
-/// A principal's forks as the protocol reads them (SPEC 15.5-15.8), from
-/// the commits and revocations a holder keeps: the one rule the engine's
-/// admission ([`StorageEngine::is_errored`]) and a verifier's verdict
-/// ([`StorageEngine::assess`]) both apply.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Assessment {
-    /// Error while two held commits share the greatest height.
-    pub consensus: Consensus,
-    /// The heads, sorted: the held commits of the greatest height. One
-    /// while Active; in Error, each tied head.
-    pub heads: Vec<String>,
-    /// Every position where two or more held commits share a `pre`, in
-    /// position order.
-    pub forks: Vec<Contest>,
-    /// Where the tied heads part: `Some` exactly in Error.
-    pub fork_point: Option<ForkPoint>,
-}
-
-/// Where tied branches part: the first position the walk cannot choose a
-/// commit at, and the Principal Root every branch shares there (SPEC
-/// 15.7.1: commits over the same `pre`).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ForkPoint {
-    /// The commit position the branches first differ at; the common chain
-    /// is the commits below it.
-    pub height: u64,
-    /// The common chain's Principal Root; `None` at position 0.
-    pub pre: Option<String>,
-}
-
 /// A tied head and when this engine first stored it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldHead {
@@ -794,25 +757,6 @@ pub struct PatchBranch {
     pub canonical: bool,
     /// The branch's commits, lowest first.
     pub entries: Vec<BranchEntry>,
-}
-
-/// Two or more held commits over one `pre`, and how the protocol reads
-/// them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Contest {
-    /// The commit position they take.
-    pub sequence: u64,
-    /// The Principal Root they share; `None` at sequence 0.
-    pub pre: Option<String>,
-    /// Their commit ids, sorted.
-    pub commits: Vec<String>,
-    /// The commit the fork rule's walk follows here; `None` where the walk
-    /// stops at a tie, or follows none of them.
-    pub kept: Option<String>,
-    /// The key that settled it: the first signer of the walked commit
-    /// extending the kept one. `None` while the fork stands, or when no
-    /// commit settled it (a revoke left the kept commit alone).
-    pub by: Option<String>,
 }
 
 /// Why a stored manifest was left out of a rebuilt index.
@@ -5670,28 +5614,6 @@ struct Walk {
     rest: Vec<(Blake3Hash, CommitManifest)>,
 }
 
-/// A commit the engine holds, canonical or retained, as [`assessment`] reads it.
-#[derive(Debug, Clone)]
-struct Held {
-    sequence: u64,
-    id: String,
-    pre: Option<String>,
-    pr: String,
-    signed: Signed,
-}
-
-impl Held {
-    fn of(commit: &IndexableCommit) -> Self {
-        Self {
-            sequence: commit.sequence,
-            id: commit.commit_ids.first().cloned().unwrap_or_default(),
-            pre: commit.pre.clone(),
-            pr: commit.prs.first().cloned().unwrap_or_default(),
-            signed: signed_of(commit),
-        }
-    }
-}
-
 /// A naked revoke the engine keeps for one key: this node's receipt time
 /// of it, the key's cutoff, and the hash of its revoke record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -5782,110 +5704,20 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
     None
 }
 
-/// The forks of a principal as the protocol reads them (SPEC 15.5-15.8):
-/// walk from genesis over the held commits and, where a position has more
-/// than one child, follow the child whose
-/// subtree is tallest; two equally tall subtrees are Error, and the walk
-/// stops there. That is the spec's "the commit resolves the fork" made
-/// deterministic: a fork is settled by out-extending the other branch,
-/// and a malicious settlement is undone only by recovery (SPEC 14).
-///
-/// The walk ends at a commit of the greatest height, and two commits of
-/// that height tie at the fork where their lines part, so the principal
-/// is Active exactly when one held commit is the highest: the heads are
-/// the held commits of the greatest height.
-///
-/// Every held commit counts: each was admitted when it arrived, a
-/// revoke only gates what arrives after it ([`dead_key_in`]), and a held
-/// message is never judged again (SPEC 14.12: "Cyphr does not use
-/// reversion"; the spec author on #203: "Retrospection isn't
-/// supported"). A signature from a key's active period stands after the
-/// key is deleted or replaced too (SPEC 6.2), and a revoke inside a commit
-/// is state of its own branch only (SPEC 6.4, 15.8).
-///
-/// A pure function of the held commits, so a live
-/// engine and one rebuilt from the blobs answer alike (I1), whether a
-/// candidate commit would leave Error is this function over the held
-/// commits plus the candidate, and a verifier holding the same commits
-/// reaches the same verdict, heads and settlements as a peer. "Tallest"
-/// is a statement about what is held now; the forks are what stays true.
-fn assessment(held: &[Held]) -> Assessment {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let top = held.iter().map(|h| h.sequence).max();
-    let heads: Vec<&Held> = held.iter().filter(|h| Some(h.sequence) == top).collect();
-
-    // The walked line: the commits every head descends from (each head's
-    // own line while Active).
-    let by_pr: HashMap<(u64, &str), &Held> = held
-        .iter()
-        .map(|h| ((h.sequence, h.pr.as_str()), h))
-        .collect();
-    fn line_of<'a>(h: &'a Held, by_pr: &HashMap<(u64, &str), &'a Held>) -> HashSet<&'a str> {
-        let mut line = HashSet::new();
-        let mut at = Some(h);
-        while let Some(h) = at {
-            line.insert(h.id.as_str());
-            at = h
-                .pre
-                .as_deref()
-                .zip(h.sequence.checked_sub(1))
-                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
-        }
-        line
+/// The commit as [`assessment`] reads it.
+fn held_of(commit: &IndexableCommit) -> Held {
+    Held {
+        sequence: commit.sequence,
+        id: commit.commit_ids.first().cloned().unwrap_or_default(),
+        pre: commit.pre.clone(),
+        pr: commit.prs.first().cloned().unwrap_or_default(),
+        signed: signed_of(commit),
     }
-    let mut lines = heads.iter().map(|h| line_of(h, &by_pr));
-    let first = lines.next().unwrap_or_default();
-    let walked: HashSet<&str> = lines.fold(first, |acc, line| &acc & &line);
+}
 
-    // The distinct held commits over each (position, pre).
-    type Over<'a> = (u64, Option<&'a str>);
-    let mut over: BTreeMap<Over<'_>, BTreeMap<&str, &Held>> = BTreeMap::new();
-    for h in held {
-        over.entry((h.sequence, h.pre.as_deref()))
-            .or_default()
-            .entry(h.id.as_str())
-            .or_insert(h);
-    }
-    let forks = over
-        .iter()
-        .filter(|(_, c)| c.len() > 1)
-        .map(|(&(sequence, pre), commits)| {
-            let kept = commits
-                .values()
-                .copied()
-                .find(|h| walked.contains(h.id.as_str()));
-            Contest {
-                sequence,
-                pre: pre.map(str::to_owned),
-                commits: commits.keys().map(|id| (*id).to_owned()).collect(),
-                kept: kept.map(|k| k.id.clone()),
-                by: kept.and_then(|k| settled_by_extension(held, k, &walked)),
-            }
-        })
-        .collect();
-    let heads: BTreeSet<String> = heads.iter().map(|h| h.id.clone()).collect();
-    let fork_point = (heads.len() > 1).then(|| {
-        // The common chain's last commit; the branches part just above it.
-        let last = held
-            .iter()
-            .filter(|h| walked.contains(h.id.as_str()))
-            .max_by_key(|h| h.sequence);
-        ForkPoint {
-            height: last.map_or(0, |h| h.sequence + 1),
-            pre: last.map(|h| h.pr.clone()),
-        }
-    });
-    Assessment {
-        consensus: if heads.len() > 1 {
-            Consensus::Error
-        } else {
-            Consensus::Active
-        },
-        heads: heads.into_iter().collect(),
-        forks,
-        fork_point,
-    }
+/// Whether a principal is in Error: [`assessment`]'s consensus.
+fn in_error(held: &[Held]) -> bool {
+    assessment(held).consensus == Consensus::Error
 }
 
 /// The lowest canonical position [`assessment`] must read to answer as it
@@ -5895,30 +5727,13 @@ fn assessed_from(lowest_retained: Option<u64>, last: u64) -> u64 {
     lowest_retained.map_or(last, |low| low.saturating_sub(1).min(last))
 }
 
-/// Whether a principal is in Error: [`assessment`]'s consensus.
-fn in_error(held: &[Held]) -> bool {
-    assessment(held).consensus == Consensus::Error
-}
-
-/// The key that settled a fork by extending `kept`: the first signer of
-/// the walked commit whose `pre` is `kept`'s PR.
-fn settled_by_extension(held: &[Held], kept: &Held, walked: &HashSet<&str>) -> Option<String> {
-    held.iter()
-        .find(|c| {
-            walked.contains(c.id.as_str())
-                && c.sequence == kept.sequence + 1
-                && c.pre.as_deref() == Some(kept.pr.as_str())
-        })
-        .and_then(|c| c.signed.first().cloned())
-}
-
 /// Whether the principal `held` describes, in Error, stays in Error once
 /// `candidate` is held too as the new canonical head: the Error gate,
 /// which admits a commit only if it extends one of the tied heads
 /// ([`assessment`]).
 fn stays_errored(held: &[Held], candidate: &IndexableCommit) -> bool {
     let mut after = held.to_vec();
-    after.push(Held::of(candidate));
+    after.push(held_of(candidate));
     in_error(&after)
 }
 
