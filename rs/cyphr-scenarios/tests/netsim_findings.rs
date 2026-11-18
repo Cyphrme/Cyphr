@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use coz::base64ct::Encoding;
+use cyphr::proof::{FullCr, MembershipProof, Rooted, Trusted, verify_membership};
 use cyphr_scenarios::actions::{KeyRef, Principal, Standing};
 use cyphr_scenarios::{Capability, Harness};
 
@@ -365,9 +367,7 @@ async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
 // Frame NETSIM-FIX E4: after a full rotation (Ed25519 -> ES256) every
 // commit of the chain must be provable from the tip alone. `/inclusion`
 // takes no algorithm choice and answers 200 for every index; each answer
-// parses as the typed membership proof and crosses at most the one epoch
-// boundary the chain has. (Verifying it against a trusted tip is pinned by
-// `cyphr/tests/stitch.rs`; this pins the server contract.)
+// verifies against the tip of the chain a client pulled.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "RED(NETSIM-FIX E4): /inclusion refuses or fails for commits of the retired algorithm"]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
@@ -388,6 +388,34 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
         .accepted("rotated chain");
     let height = h.peer_view("p1", &pr).await.expect("p1 holds it").height;
     assert!(height >= 8, "height {height}");
+
+    // The verifier's side: pull the chain into a record and anchor on its
+    // verified tip, as a client holding only the tip would.
+    let entry = h.genesis_of(&pr).expect("genesis entry");
+    let public =
+        coz::base64ct::Base64UrlUnpadded::decode_vec(entry["pub_key"].as_str().expect("pub_key"))
+            .expect("base64url");
+    let alg = entry["alg"].as_str().expect("alg");
+    let tmb = coz::compute_thumbprint_for_alg(alg, &public).expect("thumbprint");
+    let genesis = cyphr::Key::new(alg.to_owned(), tmb, public).expect("genesis key");
+    let mut record =
+        cyphr_client::Record::new(pr.bare(), cyphr_client::Anchor::GenesisKey(genesis));
+    let connector = cyphr_client::HttpConnector::connect(
+        &format!("http://{}", h.peer("p1").addr()),
+        &cyphr_client::HttpOptions::new(Duration::from_secs(5)),
+    )
+    .expect("connector");
+    cyphr_client::pull(
+        &mut record,
+        &[cyphr_client::PullPeer {
+            name: "p1",
+            connector: &connector,
+        }],
+    )
+    .await;
+    let held = record.principal().expect("the record holds the chain");
+    let anchor = Rooted::<Trusted, FullCr>::of_principal(held).expect("tip commit root");
+
     for index in 0..height {
         let resp = h
             .http
@@ -398,11 +426,11 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
             .expect("inclusion request");
         assert_eq!(resp.status(), 200, "index {index} of {height}");
         let body: serde_json::Value = resp.json().await.expect("json");
-        let proof = cyphr::proof::MembershipProof::from_payload(&body["payload"])
+        let proof = MembershipProof::from_payload(&body["payload"])
             .unwrap_or_else(|e| panic!("index {index}: {e}"));
-        assert!(
-            proof.stitches.len() <= 1,
-            "index {index}: one boundary only"
-        );
+        let tr = held.commit_at(index as usize).expect("commit").tr();
+        let verified = verify_membership(&anchor, &proof, tr)
+            .unwrap_or_else(|e| panic!("index {index} does not verify: {e}"));
+        assert_eq!(verified.get().index, index);
     }
 }
