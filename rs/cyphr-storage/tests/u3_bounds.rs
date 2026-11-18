@@ -6,6 +6,11 @@
 //! The timed counterpart is `cargo bench -p cyphr-storage --bench
 //! u3_engine`.
 //!
+//! The engines these tests build have the kept-state shadow check
+//! (`CYPHR_KEPT_SHADOW`) off: it replays cold on every use and those
+//! replays and reads are counted too, so with it on the counts would measure
+//! the check and not the engine.
+//!
 //! A red test is a bound the engine does not yet meet: the finding, not a
 //! defect of the test.
 //!
@@ -229,12 +234,18 @@ async fn restart_replays_once_then_nothing() {
     }
 }
 
-/// What a stranger's refused push cost a principal whose retained rival
-/// sits at position 1, the shape theft recovery leaves for good. Measured
-/// apart from [`observe`]: with a rival held, the engine reads a fork from
-/// its depth down on every verified write, by design, so the other counts
-/// would differ with n for that reason.
-async fn rival_stranger(n: usize) -> Counts {
+/// What operations cost a principal whose retained rival sits at position
+/// 1, the shape theft recovery leaves for good. Measured apart from
+/// [`observe`]: the other counts there are of a principal with no fork.
+#[derive(Debug)]
+struct RivalObs {
+    n: u64,
+    stranger: Counts,
+    error_state: Counts,
+    write: Counts,
+}
+
+async fn rival_observe(n: usize) -> RivalObs {
     use std::sync::atomic::Ordering::Relaxed;
     let d = Disk::new();
     let e = d.engine();
@@ -255,22 +266,56 @@ async fn rival_stranger(n: usize) -> Counts {
         .await
         .expect_err("a rival at position 1 is retained, not served");
 
+    macro_rules! counted {
+        ($e:expr) => {{
+            let before = (
+                e.commits_replayed(),
+                d.ctr.idx_rows.load(Relaxed),
+                d.ctr.blob_gets.load(Relaxed),
+            );
+            let _ = $e.await;
+            Counts {
+                replayed: e.commits_replayed() - before.0,
+                idx_rows: d.ctr.idx_rows.load(Relaxed) - before.1,
+                blobs: d.ctr.blob_gets.load(Relaxed) - before.2,
+            }
+        }};
+    }
     let mut other = Chain::new("alice", "key_a", "key_b").await;
     let _ = other.next().await;
-    let stranger = other.next().await;
-    let before = (
-        e.commits_replayed(),
-        d.ctr.idx_rows.load(Relaxed),
-        d.ctr.blob_gets.load(Relaxed),
-    );
-    e.submit_commit(&id, g.clone(), &stranger)
-        .await
-        .expect_err("a stranger's commit refused");
-    Counts {
-        replayed: e.commits_replayed() - before.0,
-        idx_rows: d.ctr.idx_rows.load(Relaxed) - before.1,
-        blobs: d.ctr.blob_gets.load(Relaxed) - before.2,
+    let stranger_bundle = other.next().await;
+    let stranger = counted!(async {
+        e.submit_commit(&id, g.clone(), &stranger_bundle)
+            .await
+            .expect_err("a stranger's commit refused")
+    });
+    let error_state = counted!(e.error_state(&id));
+    let next = chain.next().await;
+    let write = counted!(async { e.submit_commit(&id, g.clone(), &next).await.expect("write") });
+    RivalObs {
+        n: chain.commits as u64,
+        stranger,
+        error_state,
+        write,
     }
+}
+
+static RIVAL_OBS: OnceCell<[RivalObs; 2]> = OnceCell::const_new();
+
+async fn rival_obs() -> &'static [RivalObs; 2] {
+    RIVAL_OBS
+        .get_or_init(|| async { [rival_observe(SHORT).await, rival_observe(LONG).await] })
+        .await
+}
+
+async fn rival_same(what: &str, pick: impl Fn(&RivalObs) -> Counts) {
+    let o = rival_obs().await;
+    let (s, l) = (pick(&o[0]), pick(&o[1]));
+    assert_eq!(
+        s, l,
+        "{what}: counts at n={} and n={} differ (short {s:?}, long {l:?})",
+        o[0].n, o[1].n
+    );
 }
 
 /// Bound: a stranger's refused push to a principal holding a retained rival
@@ -279,10 +324,71 @@ async fn rival_stranger(n: usize) -> Counts {
 /// bundle is authenticated, makes it O(n).
 #[tokio::test]
 async fn refused_push_cost_is_independent_of_history_with_a_rival_at_one() {
-    let (s, l) = (rival_stranger(SHORT).await, rival_stranger(LONG).await);
-    assert_eq!(
-        s, l,
-        "counts at n={SHORT} and n={LONG} (short {s:?}, long {l:?})"
+    rival_same("stranger", |o| o.stranger).await;
+    for o in rival_obs().await {
+        assert_eq!(o.stranger.replayed, 0, "{o:?}");
+    }
+}
+
+/// Bound: `error_state` of a principal holding a retained rival at position
+/// 1 reads the same rows at any n. The fork assessment is read for every
+/// reader (`/tip`, `/consistency`, `/inclusion`), so a read of the canonical
+/// chain from the rival down is O(n) for anyone, unauthenticated.
+#[tokio::test]
+async fn error_state_is_constant_with_a_rival_at_one() {
+    rival_same("error_state", |o| o.error_state).await;
+}
+
+/// Bound: an honest write to a principal holding a retained rival at
+/// position 1 reads the same rows at any n.
+#[tokio::test]
+async fn write_cost_is_independent_of_history_with_a_rival_at_one() {
+    rival_same("write", |o| o.write).await;
+}
+
+/// Principals `(signer, added)` of the pool, each with its own id.
+const PAIRS: [(&str, &str); 3] = [("golden", "key_a"), ("alice", "bob"), ("carol", "key_b")];
+
+/// Bound: the fork reads kept between uses are bounded. Reading the tip of
+/// more principals than the capacity leaves the map at or under it, and a
+/// principal with no rival, whose fork read is one row, is not kept at all
+/// (an anonymous walk of `GET /tip` over every principal must not fill it).
+#[tokio::test]
+async fn kept_fork_reads_are_bounded_and_only_for_rivals() {
+    const CAPACITY: usize = 1;
+    let d = common::Disk::new();
+    let e = d.engine().with_kept_states(CAPACITY);
+    let mut ids = Vec::new();
+    for (signer, added) in PAIRS {
+        let mut chain = Chain::new(signer, added, "diana_es384").await;
+        let g = Some(chain.genesis.clone());
+        let id = chain.id.clone();
+        e.submit_commit(&id, g.clone(), &chain.first())
+            .await
+            .expect("genesis");
+        let b = chain.next().await;
+        e.submit_commit(&id, g, &b).await.expect("history");
+        ids.push((id, signer, added, chain));
+    }
+    for (id, ..) in &ids {
+        e.get_tip(id).await.expect("tip");
+    }
+    assert_eq!(e.forks_cached(), 0, "principals with no rival are not kept");
+
+    for (id, signer, added, chain) in &ids {
+        let mut rival = Chain::new(signer, added, "diana_es384").await;
+        rival.diverge("eve_ed25519");
+        let at_one = rival.next().await;
+        e.submit_commit(id, Some(chain.genesis.clone()), &at_one)
+            .await
+            .expect_err("a rival at position 1 is retained");
+    }
+    for (id, ..) in &ids {
+        e.get_tip(id).await.expect("tip");
+    }
+    assert!(
+        e.forks_cached() <= CAPACITY,
+        "{} fork reads kept over a capacity of {CAPACITY}",
+        e.forks_cached()
     );
-    assert_eq!(s.replayed, 0, "{s:?}");
 }

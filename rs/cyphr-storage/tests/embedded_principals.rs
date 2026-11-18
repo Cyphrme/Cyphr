@@ -1248,7 +1248,10 @@ async fn an_unsigned_push_to_an_embedding_principal_replays_nothing_twice() {
     coz["sig"] = format!("{flipped}{}", &sig[1..]).into();
     forged.txs[0][0] = serde_json::to_vec(&coz).expect("coz bytes");
 
-    let engine = durable(&blobs, &db);
+    // The kept-state shadow check replays cold on every use, and those
+    // replays are counted too: with it on (`CYPHR_KEPT_SHADOW`) this count
+    // would measure the check, not the engine.
+    let engine = durable(&blobs, &db).with_kept_shadow(false);
     for bundle in &b.bundles {
         push(&engine, &b, bundle).await.expect("B's commit");
     }

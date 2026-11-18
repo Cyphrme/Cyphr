@@ -338,11 +338,16 @@ impl Disk {
         }
     }
 
+    /// An engine over this disk with the kept-state shadow check off
+    /// whatever `CYPHR_KEPT_SHADOW` says: the check replays cold on every
+    /// use, and those replays and reads are counted, so with it on the
+    /// counts would measure the check, not the engine.
     pub fn engine(&self) -> Engine {
         StorageEngine::with_log_factory(
             CBlob(self.blobs.clone(), self.ctr.clone()),
             CIdx(self.index.clone(), self.ctr.clone()),
             EmlLogs::new(self.db.clone()).expect("logs"),
         )
+        .with_kept_shadow(false)
     }
 }
