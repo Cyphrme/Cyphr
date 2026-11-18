@@ -189,7 +189,7 @@ impl PrincipalState {
     /// shows ([`Arrival::Held`]) is a function of the commits and the held
     /// actions alone.
     ///
-    /// Pending the spec author's ruling on the same-second tie (forge #214),
+    /// Pending the spec author's ruling on the same-second tie (forge #213),
     /// an action dated exactly at a removal is judged after it.
     ///
     /// A key of an embedded principal is judged the same way, by that
