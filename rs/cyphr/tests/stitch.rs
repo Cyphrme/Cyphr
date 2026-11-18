@@ -1378,6 +1378,106 @@ async fn first_and_last_of_the_commit_transaction_coincide_on_every_admitted_com
     }
 }
 
+// ---- E7.2/E7.3: compute bounds, at n = 8 against n = 40 (u3_bounds style) ----
+
+/// `n` commits with the rotation late (at `n - 4`), so a scan of history
+/// before the stitch is as long as the chain.
+async fn late(n: usize) -> Principal {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    let p = single_with((&a, &b), (0, n - 5, 3), None).await;
+    assert_eq!(p.commit_count(), n);
+    p
+}
+
+/// The principal as a client's record holds it: its log reopened from a
+/// frontier, with the nodes of the last size only.
+async fn detached(p: &Principal) -> Principal {
+    p.fork()
+        .await
+        .expect("fork")
+        .detach()
+        .await
+        .expect("detach")
+}
+
+fn log2_ceil(n: usize) -> u64 {
+    u64::from(n.next_power_of_two().trailing_zeros())
+}
+
+// Bound: the holder's root at an earlier size, on a detached record, is
+// read from what the record keeps in O(log n) hashes, not a refold of
+// the commits (E7.2: the record keeps no CR per commit).
+#[tokio::test]
+async fn at_size_on_a_detached_record_hashes_logarithmically() {
+    for n in [8usize, 40] {
+        let d = detached(&late(n).await).await;
+        let before = cyphr::probe::hashes();
+        Rooted::<Trusted, FullCr>::at_size(&d, (n / 2) as u64)
+            .await
+            .expect("a root at n / 2");
+        let hashes = cyphr::probe::hashes() - before;
+        let cap = 4 * log2_ceil(n) + 4;
+        assert!(hashes <= cap, "n={n}: {hashes} hashes, cap {cap}");
+    }
+}
+
+// Bound: the server's proof of an old commit across the rotation reads
+// O(log n) commits, not every earlier one (E7.2: the PR-level nonce cell
+// is rebuilt by scanning history).
+#[tokio::test]
+async fn a_stitch_opening_does_not_scan_history() {
+    for n in [8usize, 40] {
+        let p = late(n).await;
+        let before = cyphr::probe::commits_read();
+        p.prove_membership(0).await.expect("prove");
+        let read = cyphr::probe::commits_read() - before;
+        let cap = 2 * log2_ceil(n) + 8;
+        assert!(read <= cap, "n={n}: {read} commits read, cap {cap}");
+    }
+}
+
+// Bound: a fork search across the rotation, run as locate_fork runs it
+// (cyphr-client sync.rs: a bisection over the overlap, each probe a root
+// of the record's own at that size, the peer's extension proof from
+// there, and its verification), costs hashes and commit reads, client and
+// server together, that grow as log^2 n: 40 against 8 commits at most 4x
+// (O(n) work per probe is about 10x).
+#[tokio::test]
+async fn a_fork_search_across_a_rotation_costs_polylog_work() {
+    let mut work = Vec::new();
+    for n in [8usize, 40] {
+        let peer = late(n).await;
+        let record = detached(&peer).await;
+        let fork = n / 2;
+        let before = (cyphr::probe::hashes(), cyphr::probe::commits_read());
+        let (mut low, mut high) = (0usize, n);
+        while high - low > 1 {
+            let mid = low + (high - low) / 2;
+            let old = Rooted::<Trusted, FullCr>::at_size(&record, mid as u64)
+                .await
+                .expect("the record's root at mid");
+            let proof = peer
+                .prove_extension(mid as u64)
+                .await
+                .expect("the peer's proof");
+            let extends = verify_extension(&old, claim_of(&peer), &proof).is_ok();
+            assert!(extends, "the genuine chain extends every prefix");
+            if mid <= fork {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        work.push(cyphr::probe::hashes() - before.0 + cyphr::probe::commits_read() - before.1);
+    }
+    assert!(
+        work[1] <= 4 * work[0],
+        "work at n=8: {}, at n=40: {}",
+        work[0],
+        work[1]
+    );
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in

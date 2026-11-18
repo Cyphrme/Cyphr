@@ -153,7 +153,10 @@ impl PrincipalState {
 
     /// Get all finalized commits.
     pub fn commits(&self) -> impl Iterator<Item = &Commit> {
-        self.auth.commits.iter()
+        self.auth.commits.iter().inspect(|_| {
+            #[cfg(any(test, feature = "test-utils"))]
+            crate::probe::commit_read();
+        })
     }
 
     /// How many shared segments the chain's commits are held in.
@@ -169,6 +172,8 @@ impl PrincipalState {
 
     /// The commit at chain position `index`, from 0.
     pub fn commit_at(&self, index: usize) -> Option<&Commit> {
+        #[cfg(any(test, feature = "test-utils"))]
+        crate::probe::commit_read();
         self.auth.commits.get(index)
     }
 

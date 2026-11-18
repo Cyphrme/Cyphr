@@ -11,6 +11,8 @@ thread_local! {
     static COMMIT_CLONES: Cell<u64> = const { Cell::new(0) };
     static VIEW_JUDGMENTS: Cell<u64> = const { Cell::new(0) };
     static SIGNATURES_CHECKED: Cell<u64> = const { Cell::new(0) };
+    static HASHES: Cell<u64> = const { Cell::new(0) };
+    static COMMITS_READ: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Held actions copied by a clone of one (a state clone copies every
@@ -33,6 +35,26 @@ pub fn view_judgments() -> u64 {
 /// Data-action signatures checked.
 pub fn signatures_checked() -> u64 {
     SIGNATURES_CHECKED.with(Cell::get)
+}
+
+/// Digests computed (every hash the core takes of a node, leaf or
+/// concatenation): the unit of "reads or hashes" in a cost bound.
+pub fn hashes() -> u64 {
+    HASHES.with(Cell::get)
+}
+
+/// Commits read out of a principal's chain by position or by iteration:
+/// what a scan of history costs.
+pub fn commits_read() -> u64 {
+    COMMITS_READ.with(Cell::get)
+}
+
+pub(crate) fn hashed() {
+    HASHES.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn commit_read() {
+    COMMITS_READ.with(|c| c.set(c.get() + 1));
 }
 
 pub(crate) fn action_cloned() {
