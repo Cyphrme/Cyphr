@@ -261,6 +261,9 @@ impl RelyingParty {
     /// Keep the commits a pull verified off the record's chain.
     fn keep_branches(&mut self, found: &[cyphr::fork::Held]) {
         for held in found {
+            if self.branches.len() >= BRANCH_COMMIT_LIMIT && !self.branches.contains_key(&held.id) {
+                continue;
+            }
             self.branches
                 .entry(held.id.clone())
                 .or_insert_with(|| held.clone());
