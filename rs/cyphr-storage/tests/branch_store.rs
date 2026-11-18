@@ -1566,3 +1566,33 @@ async fn an_extension_carrying_a_dead_keys_action_is_refused_and_not_kept() {
     e.rebuild_index_from_scratch().await.expect("rebuild");
     assert_eq!(answers(&e, &f).await, before, "a rebuild agrees");
 }
+
+/// Backs SPEC 7.6 (a replayed action is ignored) against SPEC 6.4: `key_a`'s
+/// data action, dated NOW+100, is admitted while no revoke is held. A naked
+/// revoke of `key_a` is then received with a cutoff of NOW+5, which is
+/// before the action's date, and the same bundle is pushed again (a client
+/// cannot tell which actions a peer holds, so a push repeats them). The
+/// repeat is a no-op, not a refusal: the revoke judges nothing already
+/// held (SPEC 14.12). Turns red if the revoke gate sees the repeat before
+/// the held-action check does.
+#[tokio::test]
+async fn a_repeat_of_a_held_action_is_a_no_op_after_its_signer_is_revoked() {
+    let f = Fork::new(0).await;
+    let key_a = kp(&load_pool(), "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut a = f.base.fork().await.expect("fork");
+    let action = WireBundle {
+        actions: vec![action_by(&mut a, &key_a, NOW + 100)],
+        ..WireBundle::default()
+    };
+    pushed_tip(&e, &f, &action).await.expect("held: no revoke yet");
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 5)
+        .await
+        .expect("revoke");
+    let before = answers(&e, &f).await;
+
+    let repeated = pushed_tip(&e, &f, &action).await;
+    assert!(repeated.is_ok(), "a repeat is ignored: {repeated:?}");
+    assert_eq!(answers(&e, &f).await, before, "and changes nothing");
+}
