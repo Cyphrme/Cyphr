@@ -261,21 +261,17 @@ impl<S: eml::Storage> CommitTrees<S> {
     /// seed cannot be reopened.
     pub(crate) async fn detach(self) -> crate::error::Result<CommitTrees<eml::MemoryStorage>> {
         let storage = |e: String| crate::error::Error::Storage(e);
-        let size = self.log.count();
-        let timeline = self.log.committed_epochs_at(size);
-        let closed =
-            |epochs: &Vec<(u64, u64)>| epochs.last().is_none_or(|&(_, end)| end != u64::MAX);
-        // A seal carries the frontier of each algorithm active at the sealed
-        // size and nothing of one that left (its last key deleted): the
-        // detached log would not know it, and its return would register it
-        // afresh over a history of nulls, a different root from the one the
-        // owner's log gives. A log holding one is copied leaf by leaf.
-        if timeline.iter().any(|(_, epochs)| closed(epochs)) {
-            return self.detach_by_replay(size, &timeline).await;
-        }
         let sealed = self.log.seal().await.map_err(|e| storage(e.to_string()))?;
         let mut hashers: Vec<(u64, Box<dyn eml::Hasher>)> = Vec::new();
-        for (alg_id, _) in sealed.frontiers() {
+        // Every registered algorithm, one that left included: the seal
+        // carries a closed algorithm's frontier at its close, and resume
+        // restores it so its return is the same algorithm.
+        let registered = sealed
+            .frontiers()
+            .iter()
+            .map(|(id, _)| id)
+            .chain(sealed.dormant_frontiers().iter().map(|(id, _)| id));
+        for alg_id in registered {
             let alg = u64_to_hash_alg(*alg_id)?;
             hashers.push((*alg_id, Box::new(MaltHasher::new(alg))));
         }
@@ -283,71 +279,6 @@ impl<S: eml::Storage> CommitTrees<S> {
             .await
             .map_err(|e| storage(e.to_string()))?;
         Ok(CommitTrees { log })
-    }
-
-    /// [`Self::detach`] for a log with an algorithm that left: the same
-    /// leaves appended to an in-memory log with every algorithm's epochs
-    /// replayed at the positions they changed, so each root, the closed
-    /// algorithm's included, is the original's. O(size), where a seal is
-    /// O(log size); only a log that has had an algorithm leave pays it.
-    async fn detach_by_replay(
-        self,
-        size: u64,
-        timeline: &[(u64, Vec<(u64, u64)>)],
-    ) -> crate::error::Result<CommitTrees<eml::MemoryStorage>> {
-        let storage = |e: String| crate::error::Error::Storage(e);
-        // Each algorithm's changes in order: its epochs' starts and stops.
-        let mut events: Vec<(u64, u64, bool)> = Vec::new();
-        for (alg_id, epochs) in timeline {
-            for &(start, end) in epochs {
-                events.push((start, *alg_id, true));
-                if end != u64::MAX {
-                    events.push((end, *alg_id, false));
-                }
-            }
-        }
-        // Stable by position, so one algorithm's start precedes its own stop
-        // at the same position and algorithms keep their order.
-        events.sort_by_key(|&(at, ..)| at);
-
-        let mut copy = CommitTrees::open(eml::MemoryStorage::new())
-            .await
-            .map_err(|e| storage(e.to_string()))?;
-        let mut next = 0;
-        for at in 0..=size {
-            while let Some(&(_, alg_id, start)) = events.get(next).filter(|e| e.0 == at) {
-                next += 1;
-                let registered = copy.has_algorithm(alg_id);
-                if !start {
-                    copy.log
-                        .remove_algorithm(alg_id)
-                        .await
-                        .map_err(|e| storage(e.to_string()))?;
-                } else if registered {
-                    copy.log
-                        .resume_algorithm(alg_id)
-                        .await
-                        .map_err(|e| storage(e.to_string()))?;
-                } else {
-                    let alg = u64_to_hash_alg(alg_id)?;
-                    copy.log
-                        .add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
-                        .await
-                        .map_err(|e| storage(e.to_string()))?;
-                }
-            }
-            if at < size {
-                let leaf = self
-                    .get_leaf(at)
-                    .await
-                    .map_err(|e| storage(e.to_string()))?;
-                copy.log
-                    .append_leaf(&leaf)
-                    .await
-                    .map_err(|e| storage(e.to_string()))?;
-            }
-        }
-        Ok(copy)
     }
 
     /// An independent copy of this log over a forked store.
@@ -681,5 +612,80 @@ mod tests {
             log.is_empty(),
             "a log with a registered algorithm but zero leaves must still report empty"
         );
+    }
+    /// A leaf carrying a variant for each of `ids`.
+    fn leaf_of(ids: &[u64], n: u8) -> Vec<u8> {
+        let v: BTreeMap<u64, Vec<u8>> = ids
+            .iter()
+            .map(|&i| (i, vec![n; if i == 1 { 32 } else { 64 }]))
+            .collect();
+        serde_json::to_vec(&v).expect("leaf")
+    }
+
+    /// Append `leaf` the way a commit does: set the active algorithms, stage
+    /// the leaf, commit it.
+    async fn commit_leaf_to<S: eml::Storage>(log: &mut CommitTrees<S>, ids: &[u64], n: u8) {
+        log.set_active_algorithms(ids).await.expect("set active");
+        for &id in ids {
+            if !log.has_algorithm(id) {
+                let alg = u64_to_hash_alg(id).expect("alg");
+                log.add_algorithm(id, Box::new(MaltHasher::new(alg)))
+                    .await
+                    .expect("add");
+            }
+        }
+        let mut staged = log.stage();
+        log.stage_leaf(&mut staged, &leaf_of(ids, n))
+            .expect("stage");
+        log.commit(staged).await.expect("commit");
+    }
+
+    /// SHA-512 (3) from the start, SHA-256 (1) from leaf 1 to leaf 2: a log
+    /// holding an algorithm that left.
+    async fn log_with_a_closed_algorithm() -> CommitTrees<eml::MemoryStorage> {
+        let mut log = CommitTrees::open(eml::MemoryStorage::new())
+            .await
+            .expect("open");
+        commit_leaf_to(&mut log, &[3], 0).await;
+        commit_leaf_to(&mut log, &[1, 3], 1).await;
+        commit_leaf_to(&mut log, &[3], 2).await;
+        log
+    }
+
+    /// Claim: a log detached to its frontier, and the same log reopened from
+    /// the detached copy's own storage, each still knows an algorithm that
+    /// left, so its return is the same algorithm over the same history: the
+    /// roots after the return equal those of the log that was never
+    /// detached. Turns red if a detached log forgets the closed algorithm
+    /// (its return registers it afresh over nulls) or a reopen cannot find
+    /// a hasher it needs.
+    #[tokio::test]
+    async fn a_detached_log_keeps_and_reopens_an_algorithm_that_left() {
+        let mut whole = log_with_a_closed_algorithm().await;
+        commit_leaf_to(&mut whole, &[1, 3], 3).await;
+
+        let mut detached = log_with_a_closed_algorithm()
+            .await
+            .detach()
+            .await
+            .expect("detach");
+        assert!(detached.has_algorithm(1), "the detached log forgot SHA-256");
+        let reopened_from = log_with_a_closed_algorithm()
+            .await
+            .detach()
+            .await
+            .expect("detach");
+        let mut reopened = CommitTrees::open(reopened_from.log.into_storage())
+            .await
+            .expect("a detached log's storage reopens with every hasher it needs");
+        assert!(reopened.has_algorithm(1), "the reopened log forgot SHA-256");
+
+        commit_leaf_to(&mut detached, &[1, 3], 3).await;
+        commit_leaf_to(&mut reopened, &[1, 3], 3).await;
+        for id in [1, 3] {
+            let want = whole.root(id).expect("root");
+            assert_eq!(detached.root(id).expect("root"), want, "detached, alg {id}");
+            assert_eq!(reopened.root(id).expect("root"), want, "reopened, alg {id}");
+        }
     }
 }

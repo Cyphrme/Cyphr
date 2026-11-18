@@ -30,7 +30,7 @@ coz = { package = "coz-rs", version = "0.5" }
 blake3        = "1"
 eml           = "0.12"
 fjall         = "3"
-polydigest    = "0.2"
+polydigest    = "0.2.1"
 storage-fjall = { package = "polydigest-storage-fjall", version = "0.2" }
 
 # Serialization
