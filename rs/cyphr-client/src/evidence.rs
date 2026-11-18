@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use cyphr::eml::MemoryStorage;
 use cyphr::replay::WireBundle;
-use cyphr::{Commit, Principal};
+use cyphr::{Commit, Principal, StateDigest as _};
 use serde::Deserialize as _;
 use serde_json::Value;
 
@@ -179,6 +179,9 @@ pub struct ForkProof {
     pub pre: Option<String>,
     /// The ids of the two commits, in the order the item named them.
     pub commits: [String; 2],
+    /// The Principal Root each of the two commits reaches, in the same
+    /// order.
+    pub prs: [String; 2],
 }
 
 /// Replay `entries` onto `base` (a principal at its genesis state) and
@@ -329,11 +332,19 @@ pub async fn verify_principal_fork(
             .map(|d| d.to_string())
             .map_err(|source| EvidenceFailure::Replay { commit: at, source })
     };
+    let pr = |c: &Commit| {
+        c.pr()
+            .as_multihash()
+            .tagged_first()
+            .map(|d| d.to_string())
+            .map_err(|source| EvidenceFailure::Replay { commit: at, source })
+    };
     Ok(ForkProof {
         pg: item_pg,
         height,
         pre,
         commits: [id(&ca)?, id(&cb)?],
+        prs: [pr(&ca)?, pr(&cb)?],
     })
 }
 
@@ -348,6 +359,10 @@ pub struct Extension {
     pub id: String,
     /// The id of the commit it extends: a fork's rival, or an extension.
     pub parent: String,
+    /// The Principal Root of the commit it extends.
+    pub pre: String,
+    /// The Principal Root it reaches.
+    pub pr: String,
 }
 
 /// What a holder's chain proves of a set of served `principal-fork` items.
@@ -453,11 +468,11 @@ pub async fn verify_fork_items(
     }
     pending.sort_by_key(|(height, ..)| *height);
     for (height, pre, item) in pending {
-        let parent = pre.and_then(|pre| {
+        let parent = pre.clone().and_then(|pre| {
             let below = height.checked_sub(1)?;
             tips.get(&(below, pre))
         });
-        let Some((state, parent)) = parent else {
+        let (Some((state, parent)), Some(pre)) = (parent, pre) else {
             set.rejected.push(EvidenceFailure::PreMismatch);
             continue;
         };
@@ -465,23 +480,36 @@ pub async fn verify_fork_items(
         match extend(item, state, height).await {
             Ok(applied) => {
                 for (bundle, id, next) in applied {
+                    let Ok(pr) = next.pr_tagged() else {
+                        continue;
+                    };
                     if !set.extensions.iter().any(|e| e.id == id) {
                         set.extensions.push(Extension {
                             height: height as u64,
                             bundle,
                             id: id.clone(),
                             parent: parent.clone(),
+                            pre: pre.clone(),
+                            pr: pr.clone(),
                         });
                     }
-                    if let Ok(pr) = next.pr_tagged() {
-                        tips.insert((height, pr), (next, id));
-                    }
+                    tips.insert((height, pr), (next, id));
                 }
             },
             Err(failure) => set.rejected.push(failure),
         }
     }
     set
+}
+
+impl ForkProof {
+    /// The id and Principal Root of the proved fork's rival: its commit
+    /// that is not the chain's.
+    pub(crate) fn rival(&self, chain_ids: &[Option<String>]) -> Option<(String, String)> {
+        let id = rival_id(self, chain_ids)?;
+        let at = self.commits.iter().position(|c| *c == id)?;
+        Some((id, self.prs[at].clone()))
+    }
 }
 
 /// The id of a proved fork's rival: its commit that is not the chain's.

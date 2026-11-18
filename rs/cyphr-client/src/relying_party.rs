@@ -176,8 +176,12 @@ pub struct RelyingParty {
     clock: Clock,
     /// Clock reading at the newest successful pull.
     last_pull: Option<i64>,
-    /// Some pull showed a fork; never cleared by a later pull.
-    forked: bool,
+    /// The commits pulls verified off the record's chain, by commit id: the
+    /// rivals of every fork shown and the commits past them. Kept across
+    /// pulls, so a pull the rival peer misses forgets nothing; whether
+    /// they leave the principal in `Error` is the protocol's rule over
+    /// them and the record's chain.
+    branches: BTreeMap<String, cyphr::fork::Held>,
     /// Issued challenges, by value, with their issue time.
     challenges: BTreeMap<String, i64>,
     sessions: BTreeMap<String, (Thumbprint, SessionBinding)>,
@@ -193,7 +197,7 @@ impl RelyingParty {
             config,
             clock,
             last_pull: None,
-            forked: false,
+            branches: BTreeMap::new(),
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
         }
@@ -231,11 +235,15 @@ impl RelyingParty {
             .any(|p| !matches!(p.standing, PeerStanding::Failed(_)));
         if answered && self.record.tip().is_some() {
             self.last_pull = Some((self.clock)());
-            // Sticky: a proved fork is the witness's proof of error (SPEC
-            // 15.7.1) and stays until a verified resolution, which this
-            // relying party has no path to yet; a pull the rival peer
-            // misses must not clear it.
-            self.forked |= !report.forks.is_empty();
+            // A proved fork is the witness's proof of error (SPEC 15.7.1)
+            // and stays recorded: a pull the rival peer misses must not
+            // clear it. Only a commit that out-extends a branch resolves
+            // it (SPEC 15.8), which `in_error` reads from what is kept.
+            for held in &report.branches {
+                self.branches
+                    .entry(held.id.clone())
+                    .or_insert_with(|| held.clone());
+            }
         }
         report
     }
@@ -420,10 +428,24 @@ impl RelyingParty {
         Ok(age)
     }
 
+    /// Whether the protocol's fork rule (SPEC 15.5-15.8) leaves the
+    /// principal in `Error` over the record's chain and the branches the
+    /// pulls verified. It reads the chain from one position below the
+    /// lowest rival, which holds the same fork state as the whole chain.
+    fn in_error(&self) -> bool {
+        let Some(lowest) = self.branches.values().map(|h| h.sequence).min() else {
+            return false;
+        };
+        let from = usize::try_from(lowest.saturating_sub(1)).unwrap_or(usize::MAX);
+        let mut held = self.record.commits_from(from);
+        held.extend(self.branches.values().cloned());
+        cyphr::fork::assessment(&held).consensus == cyphr::fork::Consensus::Error
+    }
+
     /// Whether the relying party trusts `key` for the principal now.
     fn trust(&self, key: &Thumbprint, now: i64) -> Result<Trust, Refusal> {
         let pull_age = self.require_current(now)?;
-        if self.forked || !self.record.is_principal_active() {
+        if self.in_error() || !self.record.is_principal_active() {
             return Err(Refusal::Forked);
         }
         if !self.record.is_key_active(key) {
