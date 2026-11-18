@@ -165,7 +165,10 @@ async fn harness_partition_cuts_an_open_connection() {
 
     h.proxy.partition("bob", "p1");
     let _ = conn.write_all(REQ).await; // may fail outright once cut
-    let cut = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut buf)).await;
+    // The cut is event-driven, so the read ends the moment the proxy acts;
+    // the bound only ends a test whose cut never comes, and is long enough
+    // that a starved machine cannot trip it first.
+    let cut = tokio::time::timeout(Duration::from_secs(20), conn.read(&mut buf)).await;
     assert!(
         matches!(cut, Ok(Ok(0) | Err(_))),
         "an open connection must be cut by a partition, got {cut:?}"

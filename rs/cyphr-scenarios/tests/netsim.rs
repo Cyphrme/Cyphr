@@ -126,19 +126,20 @@ fn every_seed_generates_a_valid_log_that_covers_the_mix() {
 fn n6_names_every_kind_of_violation() {
     let counters = |s: &str| cyphr_scenarios::harness::counters(s);
     let clean = counters("cyphr_refusals_total{kind=\"stale\"} 4\n");
-    assert_eq!(check::n6_diff("p0", &clean, 0, &[]), None);
+    assert_eq!(check::n6_diff("p0", &clean, &[]), None);
     let bad = counters(
         "cyphr_refusals_total{kind=\"server_error\"} \
          1\ncyphr_refusals_total{kind=\"rate_limited\"} 2\n",
     );
-    let why = check::n6_diff("p0", &bad, 0, &["thread 'x' panicked at".into()]).expect("red");
+    let why = check::n6_diff("p0", &bad, &["thread 'x' panicked at".into()]).expect("red");
     for part in ["server_error", "rate_limited", "panic"] {
         assert!(why.contains(part), "{why}");
     }
-    // A designed 503 is not a defect, but one more than designed is.
-    let once = counters("cyphr_refusals_total{kind=\"server_error\"} 3\n");
-    assert_eq!(check::n6_diff("p0", &once, 3, &[]), None);
-    assert!(check::n6_diff("p0", &once, 2, &[]).is_some());
+    // One server_error alone is red: no answer of a correct server is
+    // excused.
+    let once = counters("cyphr_refusals_total{kind=\"server_error\"} 1\n");
+    let why = check::n6_diff("p0", &once, &[]).expect("red");
+    assert!(why.contains("server_error"), "{why}");
 }
 
 // ---- the network ----
