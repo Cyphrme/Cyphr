@@ -1596,3 +1596,46 @@ async fn a_repeat_of_a_held_action_is_a_no_op_after_its_signer_is_revoked() {
     assert!(repeated.is_ok(), "a repeat is ignored: {repeated:?}");
     assert_eq!(answers(&e, &f).await, before, "and changes nothing");
 }
+
+/// Backs convergence (honest holders of the same messages hold the same
+/// chain) for a key introduced by a live key. `golden` adds `bob` in
+/// commit 1, dated NOW+10; `bob`'s holder posts a naked revoke of `bob`.
+/// One engine receives the commit and then the revoke, another the revoke
+/// (cutoff NOW+5) and then the commit. A naked revoke is in no commit's
+/// causal past, so nothing orders the two arrivals, and the introduction
+/// is not `bob`'s own act: both engines hold the commit. Turns red if an
+/// engine refuses a commit for introducing a key it already holds a
+/// revoke of.
+#[tokio::test]
+async fn a_revoke_and_the_commit_adding_its_key_converge_in_either_order() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let bob = kp(&pool, "bob");
+    let mut c = f.base.fork().await.expect("fork");
+    create_key(&mut c, &f.golden, &bob, NOW + 10).await;
+    let commit = blobs(&c, 1);
+    let revoke = naked_revoke(&bob, 1);
+
+    let commit_first = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&commit_first, &f, &f.first).await.expect("G");
+    pushed_tip(&commit_first, &f, &commit).await.expect("commit");
+    commit_first
+        .record_revoke(&revoke, NOW + 5)
+        .await
+        .expect("revoke");
+
+    let revoke_first = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&revoke_first, &f, &f.first).await.expect("G");
+    revoke_first
+        .record_revoke(&revoke, NOW + 5)
+        .await
+        .expect("revoke");
+    let late = pushed_tip(&revoke_first, &f, &commit).await;
+    assert!(late.is_ok(), "the introduction is admitted: {late:?}");
+
+    assert_eq!(
+        answers(&revoke_first, &f).await,
+        answers(&commit_first, &f).await,
+        "the two engines hold the same chain"
+    );
+}
