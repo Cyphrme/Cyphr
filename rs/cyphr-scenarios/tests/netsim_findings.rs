@@ -186,7 +186,6 @@ async fn a_principal_signs_in_after_its_fork_is_resolved() {
 // Must hold: the second of two devices committing from one tip rebases and
 // both commits reach the chain, for a multikey principal as for any other.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(multikey-rebase): a device paired into a multikey principal cannot rebase"]
 async fn a_paired_device_of_a_multikey_principal_rebases() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (alice, phone) = (h.client("alice"), h.client("phone"));
