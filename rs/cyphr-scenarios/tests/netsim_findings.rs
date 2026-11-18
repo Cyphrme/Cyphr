@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use cyphr_scenarios::Harness;
-use cyphr_scenarios::actions::KeyRef;
+use cyphr_scenarios::actions::{KeyRef, Principal, Standing};
+use cyphr_scenarios::{Capability, Harness};
 
 // Found by NETSIM at the gating size, seed 772, whose theft episode on
 // principal 1 left its owner unable to commit. Reduced op log (replayable
@@ -109,7 +109,6 @@ async fn lists_revoke(h: &Harness, peer: &str, key: &KeyRef) -> bool {
 // holders list it, and the stopped holder lists it after it restarts, by
 // gossip.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(revoke-with-a-holder-down): naked-revoke fails when one known peer is stopped"]
 async fn a_naked_revoke_survives_a_stopped_holder() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
         .await
@@ -196,4 +195,116 @@ async fn a_paired_device_of_a_multikey_principal_rebases() {
     assert_eq!(stale, cyphr_scenarios::actions::RefusalKind::Stale);
     h.ok(phone.rebase(&pr).await);
     h.ok(phone.push(&pr, &["p1"]).await).accepted("rebased");
+}
+
+// Found while pinning NETSIM's oracle: a fork whose kept branch ends in a key
+// replacement (`cyphr key replace`, signed by the key it retires) cannot be
+// resolved at the peer that holds the rival branch. Two servers, one
+// principal, partitioned:
+//
+//   base (laptop and phone paired, pushed to both)
+//   laptop: one data commit, pushed to p2
+//   phone:  one commit, pushed to p1 (`replace` is the commit when asked)
+//   the link heals; both peers serve the fork as evidence (Error)
+//   phone:  one more commit on its branch, signed by its current key,
+//           pushed to p1: SPEC 15.8's resolution by extension
+//
+// With data commits p2 takes the resolution and both peers read Active. With
+// the replacement as the phone's commit p2 refuses the resolution in gossip
+// with "protocol: unknown key": the resolution is signed by the key the rival
+// branch introduced, which p2's canonical state has never held, and p2 stays
+// in Error. ("state root mismatch" lines in its log are the rival answered
+// as a held fork, which is expected.) That is the theft-recovery shape: the
+// owner replaces a key on the branch that rivals the thief's, then resolves.
+//
+// Must hold: the owner resolves a fork on a branch that replaced a key, and
+// every peer follows (SPEC 15.8 item 1).
+async fn gossip_a_fork(replace: bool) {
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
+    h.require(&[
+        Capability::Transport,
+        Capability::CliNetwork,
+        Capability::BranchStore,
+        Capability::Evidence,
+        Capability::PeerGossip,
+        Capability::DataCommit,
+    ])
+    .await;
+    let (laptop, phone) = (h.client("alice-laptop"), h.client("alice-phone"));
+    let observer = h.client("bob");
+    let both = ["p1", "p2"];
+    let pr = h.ok(laptop.create_principal().await);
+    h.ok(laptop.pair_device(&pr, &phone).await);
+    h.ok(laptop.push(&pr, &both).await).accepted("base push");
+
+    h.proxy.partition("p1", "p2");
+    h.proxy.partition("alice-laptop", "p1");
+    h.proxy.partition("alice-phone", "p2");
+    h.ok(laptop.commit_data(&pr, "laptop branch").await);
+    h.ok(laptop.push(&pr, &["p2"]).await)
+        .accepted("laptop branch");
+    if replace {
+        h.ok(phone.rotate_key(&pr).await);
+    } else {
+        h.ok(phone.commit_data(&pr, "phone branch").await);
+    }
+    let kept = h
+        .ok(phone.push(&pr, &["p1"]).await)
+        .accepted("phone branch");
+    h.proxy.heal("p1", "p2");
+
+    h.eventually(
+        "each peer to serve the fork as evidence",
+        Duration::from_secs(20),
+        || async {
+            Ok(fork_items(&h, "p1", &pr).await >= 1 && fork_items(&h, "p2", &pr).await >= 1)
+        },
+    )
+    .await;
+    let v = h.ok(observer.verdict(&pr, &both).await);
+    assert_eq!(v.standing, Standing::Error, "two unextended branches");
+
+    let resolved = h.ok(phone.resolve_fork(&pr, &kept).await);
+    h.eventually(
+        "both peers to hold the resolution",
+        Duration::from_secs(20),
+        || async {
+            Ok(
+                h.peer_view("p1", &pr).await.map(|v| v.tip) == Some(resolved.clone())
+                    && h.peer_view("p2", &pr).await.map(|v| v.tip) == Some(resolved.clone()),
+            )
+        },
+    )
+    .await;
+    let v = h.ok(observer.verdict(&pr, &both).await);
+    assert_eq!(v.standing, Standing::Active, "resolved by extension");
+}
+
+async fn fork_items(h: &Harness, peer: &str, p: &Principal) -> usize {
+    let body: serde_json::Value = h
+        .http
+        .get(format!("http://{}/evidence", h.peer(peer).addr()))
+        .query(&[("pr", p.0.as_str())])
+        .send()
+        .await
+        .expect("evidence request")
+        .json()
+        .await
+        .expect("evidence json");
+    body["payload"]["items"].as_array().map_or(0, Vec::len)
+}
+
+// The control: the same fork and resolution with data commits only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_of_data_commits_is_resolved_at_every_peer() {
+    gossip_a_fork(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(key-replacement-resolution): a peer holding the rival of a branch that replaced a \
+            key refuses its resolution (unknown key)"]
+async fn a_fork_with_a_key_replacement_is_resolved_at_every_peer() {
+    gossip_a_fork(true).await;
 }

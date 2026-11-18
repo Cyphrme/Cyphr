@@ -602,6 +602,10 @@ pub enum KeyCommands {
         /// Thumbprint of the key to replace, which signs
         #[arg(long, allow_hyphen_values = true)]
         signer: String,
+
+        /// Sign with this `now` (unix seconds) instead of the clock
+        #[arg(long)]
+        now: Option<i64>,
     },
 
     /// Sign a naked revoke with the key itself, outside any commit (SPEC 6.4)
