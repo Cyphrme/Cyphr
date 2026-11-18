@@ -606,12 +606,7 @@ async fn sampled(b: &Barrier<'_, '_>) -> Result<(), Failure> {
                 };
                 let rp = act(b.h.start_relying_party().await, &what)?;
                 let c = &ps.clients[0];
-                let skip = b.size.forgive_forked_sign_in && ps.abandoned.is_some();
-                match if skip {
-                    Ok(None)
-                } else {
-                    c.sign_in(&rp).await.map(Some)
-                } {
+                match c.sign_in(&rp).await {
                     Ok(_) => {},
                     Err(ActionError::Refused(r)) => {
                         return Err(fail(
