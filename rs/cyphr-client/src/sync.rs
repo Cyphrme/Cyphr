@@ -36,6 +36,7 @@ use coz::Thumbprint;
 use cyphr::eml::MemoryStorage;
 use cyphr::fork::Held as HeldCommit;
 use cyphr::principal::{Clock, system_clock};
+use cyphr::proof::{FullCr, Rooted, Trusted};
 use cyphr::replay::WireBundle;
 use cyphr::{Commit, Key, Principal, StateDigest as _};
 use serde_json::Value;
@@ -43,7 +44,7 @@ use serde_json::Value;
 use crate::connector::{BindingPolicy, Connector, Request};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
 use crate::extension::{
-    Extension, ExtensionFailure, Inclusion, confirm_extension, verify_extension,
+    Extension, ExtensionFailure, confirm_extension, verify_extension, verify_extension_from,
 };
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
@@ -1190,10 +1191,7 @@ async fn offered_extension<C: Connector>(
     let Some(held) = &record.held else {
         return Ok(Offer::Unavailable);
     };
-    let alg_id = cyphr::commit_root::hash_alg_to_u64(held.principal.hash_alg());
-    let Ok(held_size) = held.principal.commit_trees().tree_size(alg_id) else {
-        return Ok(Offer::Unavailable);
-    };
+    let held_size = held.principal.commit_count();
     let target = format!(
         "/consistency?pr={}&from={held_size}",
         percent_encode_query_value(&record.id)
@@ -1218,15 +1216,18 @@ async fn offered_extension<C: Connector>(
     }
 }
 
-/// Where the peer's log leaves the record's, by inclusion proofs, and the
+/// Where the peer's log leaves the record's, by extension proofs, and the
 /// one commit the peer holds there, proved a fork by its signatures.
 ///
-/// A commit commits to the one before it, so the two logs agree at a
-/// position only if they agree below it, and the first position at which
-/// they differ is found in O(log n) asks. The peer's answers only steer the
-/// search: what is returned is verified from the record's own chain and the
-/// peer's one commit, the way a served fork item is, so a peer's word is
-/// never the evidence. `None` when no position within both logs differs.
+/// A commit commits to the one before it, so the peer's log extends the
+/// record's first `k` commits exactly when the two agree below position
+/// `k`, and the first position at which they differ is found in O(log n)
+/// asks, each answered by an extension proof (which crosses any algorithm
+/// rotation on the way) checked against the record's own log at that size.
+/// The peer's answers only steer; what is returned is verified from the
+/// record's own chain and the peer's one commit, the way a served fork
+/// item is, so a peer's word is never the evidence. `None` when no
+/// position within both logs differs.
 async fn locate_fork<C: Connector>(
     record: &Record,
     connector: &C,
@@ -1236,7 +1237,6 @@ async fn locate_fork<C: Connector>(
     let Some(held) = &record.held else {
         return Ok(None);
     };
-    let alg = offer.cr.alg();
     let unlocatable = |what: &str| {
         PeerFailure::Extension(ExtensionFailure::Malformed(format!(
             "fork location: {what}"
@@ -1246,40 +1246,45 @@ async fn locate_fork<C: Connector>(
         .principal
         .commit_count()
         .min(usize::try_from(offer.size).unwrap_or(usize::MAX));
-    // Whether the peer's commit at `index` is not the record's.
-    let differs = async |index: usize| -> Result<bool, PeerFailure> {
+    // Whether the peer's log extends the record's first `k` commits.
+    let extends = async |k: usize| -> Result<bool, PeerFailure> {
+        let old = Rooted::<Trusted, FullCr>::at_size(&held.principal, k as u64)
+            .await
+            .ok_or_else(|| unlocatable("the record has no commit root at that size"))?;
+        if k as u64 == offer.size {
+            // The same size: the logs are the same exactly when the roots
+            // are, in the family the offer states.
+            return Ok(old
+                .get()
+                .variants
+                .iter()
+                .any(|v| v.alg() == offer.cr.alg() && v.bytes() == offer.cr.as_bytes()));
+        }
         let target = format!(
-            "/inclusion?pr={}&index={index}",
+            "/consistency?pr={}&from={k}",
             percent_encode_query_value(&record.id)
         );
         let payload = fetch_payload(connector, &target).await?;
-        let stated = Inclusion::from_payload(&payload)?;
-        if stated.index != index as u64
-            || stated.size != offer.size
-            || stated.cr != offer.cr
-            || !stated.holds()
-        {
-            return Err(unlocatable("the peer's inclusion proof does not hold"));
+        let stated = Extension::from_payload(&payload)?;
+        if !stated.same_head(offer) {
+            return Err(unlocatable("the peer's answer is for another head"));
         }
-        let ours = held
-            .principal
-            .commit_at(index)
-            .and_then(|c| c.tr().0.get(alg).map(<[u8]>::to_vec));
-        Ok(ours.as_deref() != Some(stated.leaf.as_bytes()))
+        match verify_extension_from(&old, &stated) {
+            Ok(()) => Ok(true),
+            Err(ExtensionFailure::NotAnExtension) => Ok(false),
+            Err(other) => Err(other.into()),
+        }
     };
-    let Some(last) = overlap.checked_sub(1) else {
-        return Ok(None);
-    };
-    if !differs(last).await? {
+    if overlap == 0 || extends(overlap).await? {
         return Ok(None);
     }
-    let (mut low, mut high) = (0, last);
-    while low < high {
+    let (mut low, mut high) = (0, overlap);
+    while high - low > 1 {
         let mid = low + (high - low) / 2;
-        if differs(mid).await? {
-            high = mid;
+        if extends(mid).await? {
+            low = mid;
         } else {
-            low = mid + 1;
+            high = mid;
         }
     }
     let height = low;

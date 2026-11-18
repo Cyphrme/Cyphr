@@ -308,7 +308,12 @@ impl<M: Trust, T> Rooted<M, T> {
 }
 
 impl AnyFamilyRoot {
-    fn from_parts(alg: HashAlg, size: u64, bytes: &[u8]) -> Result<Self, ProofError> {
+    /// A root of `alg`'s family over `size` leaves.
+    ///
+    /// # Errors
+    ///
+    /// [`ProofError::Width`] if `bytes` is not the family's digest width.
+    pub fn new(alg: HashAlg, size: u64, bytes: &[u8]) -> Result<Self, ProofError> {
         let digest = bytes;
         Ok(match alg {
             HashAlg::Sha256 => Self::Sha256(FamilyRoot {
@@ -326,7 +331,9 @@ impl AnyFamilyRoot {
         })
     }
 
-    fn bytes(&self) -> &[u8] {
+    /// The digest bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
         match self {
             Self::Sha256(r) => r.digest.as_bytes(),
             Self::Sha384(r) => r.digest.as_bytes(),
@@ -334,7 +341,9 @@ impl AnyFamilyRoot {
         }
     }
 
-    fn size(&self) -> u64 {
+    /// The leaves covered.
+    #[must_use]
+    pub fn size(&self) -> u64 {
         match self {
             Self::Sha256(r) => r.size,
             Self::Sha384(r) => r.size,
@@ -353,7 +362,9 @@ impl AnyFamilyRoot {
         })
     }
 
-    fn alg(&self) -> HashAlg {
+    /// The hash algorithm of the family.
+    #[must_use]
+    pub fn alg(&self) -> HashAlg {
         match self {
             Self::Sha256(_) => HashAlg::Sha256,
             Self::Sha384(_) => HashAlg::Sha384,
@@ -377,7 +388,7 @@ impl Rooted<Trusted, FullCr> {
             .as_multihash()
             .variants()
             .iter()
-            .map(|(&alg, d)| AnyFamilyRoot::from_parts(alg, size, d))
+            .map(|(&alg, d)| AnyFamilyRoot::new(alg, size, d))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         Some(Rooted(FullCr { size, variants }, PhantomData))
@@ -396,7 +407,7 @@ impl Rooted<Trusted, FullCr> {
             }
             let alg = u64_to_hash_alg(alg_id).ok()?;
             let root = log.root_at(alg_id, size).await.ok()?;
-            variants.push(AnyFamilyRoot::from_parts(alg, size, &root).ok()?);
+            variants.push(AnyFamilyRoot::new(alg, size, &root).ok()?);
         }
         (!variants.is_empty()).then_some(Rooted(FullCr { size, variants }, PhantomData))
     }
@@ -650,7 +661,7 @@ impl<M: Trust, F: HashFamily> Rooted<M, FamilyRoot<F>> {
         for (x, _) in &o.pre_variants {
             let digest = cr.get(&hash_alg_to_u64(*x)).ok_or(ProofError::PtCell)?;
             roots.push(Rooted(
-                AnyFamilyRoot::from_parts(*x, leaf.index, digest)?,
+                AnyFamilyRoot::new(*x, leaf.index, digest)?,
                 PhantomData,
             ));
         }
@@ -1440,6 +1451,23 @@ fn enc(b: &[u8]) -> String {
     Base64UrlUnpadded::encode_string(b)
 }
 
+/// Most levels a path climbs, peaks a frontier holds, stitches a proof
+/// crosses, and the like: what a log of `u64` size can need, so a payload
+/// past them is refused at the parse, before any hashing.
+const MAX_STEPS: usize = 64;
+const MAX_SIBLINGS: usize = 256;
+const MAX_PEAKS: usize = 64;
+const MAX_STITCHES: usize = 64;
+const MAX_CELLS: usize = 258;
+const MAX_PRE: usize = 3;
+
+fn bounded<T>(items: &[T], max: usize, what: &str) -> Result<(), ProofError> {
+    if items.len() > max {
+        return Err(ProofError::Mismatch(format!("too many {what}")));
+    }
+    Ok(())
+}
+
 fn dec(s: &str) -> Result<Vec<u8>, ProofError> {
     Base64UrlUnpadded::decode_vec(s)
         .map_err(|_| ProofError::Mismatch("a byte string is not base64url".into()))
@@ -1455,19 +1483,34 @@ fn wire_steps(steps: &[eml::ProofStep]) -> Vec<WireStep> {
         .collect()
 }
 
-fn steps_of(wire: &[WireStep]) -> Result<Vec<eml::ProofStep>, ProofError> {
+/// The steps of a path under a family of digest width `width`.
+fn steps_of(wire: &[WireStep], width: usize) -> Result<Vec<eml::ProofStep>, ProofError> {
+    bounded(wire, MAX_STEPS, "path steps")?;
     wire.iter()
         .map(|s| {
+            bounded(&s.siblings, MAX_SIBLINGS, "siblings")?;
             Ok(eml::ProofStep {
                 position: s.position,
                 siblings: s
                     .siblings
                     .iter()
-                    .map(|x| dec(x))
+                    .map(|x| hash_of(x, width))
                     .collect::<Result<_, _>>()?,
             })
         })
         .collect()
+}
+
+/// A digest of exactly `width` bytes.
+fn hash_of(s: &str, width: usize) -> Result<Vec<u8>, ProofError> {
+    let bytes = dec(s)?;
+    if bytes.len() != width {
+        return Err(ProofError::Width {
+            want: width,
+            got: bytes.len(),
+        });
+    }
+    Ok(bytes)
 }
 
 fn wire_path<H: HashFamily>(p: &LogPath<H>) -> WirePath {
@@ -1482,7 +1525,7 @@ fn path_of<H: HashFamily>(w: &WirePath) -> Result<LogPath<H>, ProofError> {
     Ok(LogPath {
         index: w.index,
         size: w.size,
-        steps: steps_of(&w.steps)?,
+        steps: steps_of(&w.steps, H::LEN)?,
         family: PhantomData,
     })
 }
@@ -1514,11 +1557,13 @@ fn alg_of(name: &str) -> Result<HashAlg, ProofError> {
 
 fn stitch_of<H: HashFamily>(w: &WireStitch) -> Result<Stitch<H>, ProofError> {
     let o = &w.opening;
+    bounded(&o.pre_variants, MAX_PRE, "pre variants")?;
+    bounded(&o.pt_cells, MAX_CELLS, "principal tree cells")?;
     Ok(Stitch {
         leaf: path_of(&w.leaf)?,
         opening: CommitOpening {
             tr_map: dec(&o.tr_map)?,
-            tr_path: steps_of(&o.tr_path)?,
+            tr_path: steps_of(&o.tr_path, H::LEN)?,
             coz: dec(&o.coz)?,
             arrow_preimage: dec(&o.arrow_preimage)?,
             pre_variants: o
@@ -1583,6 +1628,7 @@ impl MembershipProof {
     pub fn from_payload(payload: &serde_json::Value) -> Result<Self, ProofError> {
         let w: WireMembership = serde_json::from_value(payload.clone())
             .map_err(|e| ProofError::Mismatch(format!("not a membership proof: {e}")))?;
+        bounded(&w.stitches, MAX_STITCHES, "stitches")?;
         let terminal = match alg_of(&w.terminal.alg)? {
             HashAlg::Sha256 => AnyPath::Sha256(path_of(&w.terminal.path)?),
             HashAlg::Sha384 => AnyPath::Sha384(path_of(&w.terminal.path)?),
@@ -1618,14 +1664,25 @@ fn wire_consistency<H: HashFamily>(c: &Consistency<H>) -> WireTerminalConsistenc
 fn consistency_of<H: HashFamily>(
     w: &WireTerminalConsistency,
 ) -> Result<Consistency<H>, ProofError> {
+    bounded(&w.new_peaks, MAX_PEAKS, "peaks")?;
+    // The split names one of the peaks, except in the proofless same-size
+    // case, which has none.
+    let proofless = w.new_peaks.is_empty() && w.split_index == 0;
+    if w.split_index >= w.new_peaks.len() && !proofless {
+        return Err(ProofError::Mismatch("split outside the peaks".into()));
+    }
     Ok(Consistency {
         proof: eml::ConsistencyProof {
-            boundary_hash: dec(&w.boundary_hash)?,
-            peak_path: steps_of(&w.peak_path)?,
+            boundary_hash: if proofless && w.boundary_hash.is_empty() {
+                Vec::new()
+            } else {
+                hash_of(&w.boundary_hash, H::LEN)?
+            },
+            peak_path: steps_of(&w.peak_path, H::LEN)?,
             new_peaks: w
                 .new_peaks
                 .iter()
-                .map(|p| dec(p))
+                .map(|p| hash_of(p, H::LEN))
                 .collect::<Result<_, _>>()?,
             split_index: w.split_index,
         },
@@ -1660,6 +1717,7 @@ impl ExtensionProof {
     pub fn from_payload(payload: &serde_json::Value) -> Result<Self, ProofError> {
         let w: WireExtension = serde_json::from_value(payload.clone())
             .map_err(|e| ProofError::Mismatch(format!("not an extension proof: {e}")))?;
+        bounded(&w.stitches, MAX_STITCHES, "stitches")?;
         let terminal = match alg_of(&w.terminal.alg)? {
             HashAlg::Sha256 => AnyConsistency::Sha256(consistency_of(&w.terminal)?),
             HashAlg::Sha384 => AnyConsistency::Sha384(consistency_of(&w.terminal)?),

@@ -38,8 +38,9 @@ struct Watched {
     /// Commits the peer's `/patch` answers carried.
     fetched: Mutex<usize>,
     lie: Option<fn(&mut serde_json::Value)>,
-    /// An edit of the `/inclusion` answers.
-    inclusion_lie: Option<fn(&mut serde_json::Value)>,
+    /// An edit of the `/consistency` answers after the first: those the
+    /// search for where a fork parts is made of.
+    search_lie: Option<fn(&mut serde_json::Value)>,
     /// Entries appended to a whole-chain `/patch` answer, each a copy of
     /// its last at the next position: a peer claiming a longer chain.
     padding: usize,
@@ -52,7 +53,7 @@ impl Watched {
             asked: Mutex::default(),
             fetched: Mutex::default(),
             lie: None,
-            inclusion_lie: None,
+            search_lie: None,
             padding: 0,
         }
     }
@@ -99,9 +100,11 @@ impl Connector for Watched {
             *self.fetched.lock().expect("fetched") += entries;
         }
         let lie = if request.target.starts_with("/consistency") {
-            self.lie
-        } else if request.target.starts_with("/inclusion") {
-            self.inclusion_lie
+            if self.asked("/consistency") > 1 {
+                self.search_lie
+            } else {
+                self.lie
+            }
         } else {
             None
         };
@@ -257,12 +260,14 @@ async fn a_fork_is_found_with_one_commit_fetched() {
     let fork = report.forks.first().expect("a fork finding");
     assert_eq!(fork.height, 5, "the logs part after genesis and four keys");
     assert_ne!(fork.commits[0], fork.commits[1]);
-    assert_eq!(c.asked("/consistency"), 1);
+    // One ask for the pull itself, then a binary search over the six
+    // commits the record holds: at most ceil(log2 7) + 1 more.
     assert!(
-        c.asked("/inclusion") <= 4,
+        c.asked("/consistency") <= 1 + 4,
         "O(log n) asks: {}",
-        c.asked("/inclusion")
+        c.asked("/consistency")
     );
+    assert_eq!(c.asked("/inclusion"), 0, "the proofs are extension proofs");
     assert_eq!(c.fetched(), 1, "one commit, not the chain");
     assert_eq!(
         record.tip().expect("tip"),
@@ -393,12 +398,12 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lying_proof_never_changes_what_is_believed() {
     let flip = |v: &mut serde_json::Value| {
-        let h = v["proof"]["boundary_hash"]
+        let h = v["proof"]["terminal"]["boundary_hash"]
             .as_str()
             .expect("hash")
             .to_owned();
         let first = if h.starts_with('A') { 'B' } else { 'A' };
-        v["proof"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
+        v["proof"]["terminal"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
     };
     let wrong_root = |v: &mut serde_json::Value| {
         let cr = v["cr"].as_str().expect("cr").to_owned();
@@ -623,18 +628,14 @@ async fn a_proof_from_a_kept_principal_replays_nothing() {
     assert_eq!(w.peer.engine.commits_replayed(), before);
 }
 
-/// Backs: the search for where a fork parts is kept to one log. An
-/// inclusion answer that names another position, another size or another
-/// root than the one asked, or whose proof does not hold, ends the search;
-/// the pull then compares the whole chain and finds the same fork, at the
-/// price of fetching it.
+/// Backs: the search for where a fork parts is kept to one log. An answer
+/// that names another size or another root than the head the peer offered,
+/// or whose proof does not hold, ends the search; the pull then compares
+/// the whole chain and finds the same fork, at the price of fetching it.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_inconsistent_inclusion_answer_ends_the_search() {
+async fn an_inconsistent_search_answer_ends_the_search() {
     type Lie = fn(&mut serde_json::Value);
-    let lies: [(&str, Lie); 4] = [
-        ("another position", |v| {
-            v["index"] = (v["index"].as_u64().expect("index") + 1).into();
-        }),
+    let lies: [(&str, Lie); 3] = [
         ("another size", |v| {
             v["size"] = (v["size"].as_u64().expect("size") + 1).into();
         }),
@@ -644,15 +645,12 @@ async fn an_inconsistent_inclusion_answer_ends_the_search() {
             v["cr"] = format!("{}{last}", &cr[..cr.len() - 1]).into();
         }),
         ("a proof that does not hold", |v| {
-            let h = v["proof"]["path"][0]["siblings"][0]
+            let h = v["proof"]["terminal"]["boundary_hash"]
                 .as_str()
-                .map(str::to_owned);
-            if let Some(h) = h {
-                let first = if h.starts_with('A') { 'B' } else { 'A' };
-                v["proof"]["path"][0]["siblings"][0] = format!("{first}{}", &h[1..]).into();
-            } else {
-                v["leaf"] = v["cr"].clone();
-            }
+                .expect("hash")
+                .to_owned();
+            let first = if h.starts_with('A') { 'B' } else { 'A' };
+            v["proof"]["terminal"]["boundary_hash"] = format!("{first}{}", &h[1..]).into();
         }),
     ];
     for (what, lie) in lies {
@@ -666,7 +664,7 @@ async fn an_inconsistent_inclusion_answer_ends_the_search() {
         let held: Vec<&WireBundle> = std::iter::once(&w.genesis).chain(&mine).collect();
         let mut record = follower(&w.id, &held).await;
         let mut c = connector(&w);
-        c.inclusion_lie = Some(lie);
+        c.search_lie = Some(lie);
         let report = pull(
             &mut record,
             &[PullPeer {

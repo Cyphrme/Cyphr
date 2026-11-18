@@ -735,10 +735,12 @@ impl Connector for ProofMirror {
             },
             "/inclusion" => {
                 let index = number("index").ok_or(ConnectError::NonSuccess(400))?;
-                cyphr_client::Inclusion::of(&self.principal, index)
+                let proof = self
+                    .principal
+                    .prove_membership(index)
                     .await
-                    .map_err(|_| ConnectError::NonSuccess(404))?
-                    .to_payload()
+                    .map_err(|_| ConnectError::NonSuccess(404))?;
+                serde_json::to_value(&proof).expect("proof")
             },
             _ => return self.mirror.exchange(request).await,
         };
@@ -769,7 +771,7 @@ fn located_clock() -> i64 {
 }
 
 /// The lost-branch scenario over peers that serve proofs, so the pull
-/// finds the fork by consistency and inclusion proofs (`locate_fork`)
+/// finds the fork by extension proofs (`locate_fork`)
 /// instead of comparing whole chains. Pins that the same refusal holds on
 /// the route real servers take.
 ///
@@ -803,12 +805,10 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
     assert_eq!(report.forks.len(), 1, "the fork is found");
 
     let asked = second.asked.lock().expect("asked");
-    for route in ["/consistency", "/inclusion"] {
-        assert!(
-            asked.iter().any(|p| p == route),
-            "{route} not asked: {asked:?}"
-        );
-    }
+    assert!(
+        asked.iter().any(|p| p == "/consistency"),
+        "/consistency not asked: {asked:?}"
+    );
     // The locate path proves the one rival commit at the fork and fetches
     // nothing past it, so a tie at the fork's height reads as `Forked`:
     // still a refusal, as the record's key set is an abandoned branch's,

@@ -566,8 +566,9 @@ fn proof_answer(t: &TipState, mut payload: serde_json::Value) -> impl IntoRespon
 /// (SPEC 4.4).
 ///
 /// The payload is `{principal_id, size, cr, proof}`: the log's size and
-/// Commit Root as of the answer, and the consistency proof from `n` to
-/// it. They are the server's claim, for the asker to check against the
+/// Commit Root (in the family the proof starts in) as of the answer, and
+/// the extension proof from `n` to it, which crosses any algorithm rotation
+/// in between. They are the server's claim, for the asker to check against the
 /// log it holds (`cyphr_client::verify_extension`) and, once the commits
 /// they cover replay, against what replayed; the server signs nothing
 /// here and the proof asks to be believed no further than it verifies.
@@ -607,10 +608,11 @@ pub async fn consistency(
 /// How an asker that holds a different log finds where the two part,
 /// without being sent either.
 ///
-/// The payload is `{principal_id, index, size, cr, leaf, proof}`, the
-/// asker's to check (`cyphr_client::Inclusion::holds`) and no more than a
-/// claim: a fork it points at is proved by the commits' signatures. `i`
-/// must be below the log's size; the answers of 409 are `/consistency`'s.
+/// The payload is `{principal_id, index, size, stitches, terminal}`: the
+/// tip-anchored membership proof (`cyphr::proof::MembershipProof`), one
+/// stitch per hash-algorithm rotation between the commit and the tip, for
+/// an asker to check against a tip it holds (`cyphr::proof::verify_membership`).
+/// `i` must be below the log's size; the answers of 409 are `/consistency`'s.
 #[tracing::instrument(skip(state))]
 pub async fn inclusion(
     State(state): State<Arc<AppState>>,
@@ -625,16 +627,26 @@ pub async fn inclusion(
         )));
     }
     let log = proving_log(&state, &t).await?;
-    let stated = cyphr_client::Inclusion::of(&log, index)
+    // Every held commit is provable from the tip, whatever algorithm it
+    // was made under: there is nothing to choose. A store that cannot be
+    // read, or a held commit that proves nothing, is the server's, a 5xx.
+    let proof = log
+        .prove_membership(index)
         .await
         .map_err(|e| AppError::internal(format!("inclusion proof not made: {e}")))?;
-    if stated.size != t.commit_count {
+    if log.commit_count() as u64 != t.commit_count {
         return Err(AppError::conflict(format!(
             "the log of {} moved from {} to {} commits: read the tip again",
-            t.principal_id, t.commit_count, stated.size
+            t.principal_id,
+            t.commit_count,
+            log.commit_count()
         )));
     }
-    Ok(proof_answer(&t, stated.to_payload()))
+    let mut payload = serde_json::to_value(&proof)
+        .map_err(|e| AppError::internal(format!("inclusion proof not encoded: {e}")))?;
+    payload["index"] = index.into();
+    payload["size"] = t.commit_count.into();
+    Ok(proof_answer(&t, payload))
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds

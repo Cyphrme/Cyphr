@@ -22,7 +22,9 @@ mod sync;
 
 pub use embedded::{FollowReport, GossipTips, PeerPull};
 pub use exchange::{Bundle, BundleActions, BundleChain, BundleConnector, BundleError};
-pub use extension::{Extension, ExtensionFailure, Inclusion, confirm_extension, verify_extension};
+pub use extension::{
+    Extension, ExtensionFailure, confirm_extension, verify_extension, verify_extension_from,
+};
 pub use relying_party::{
     LOGIN_TYP_SUFFIX, Refusal, RelyingParty, RpConfig, Session, SessionBinding, Trust,
     UnmetCurrency,

@@ -43,6 +43,23 @@ fn tree_size(p: &Principal<MemoryStorage>) -> u64 {
     p.commit_trees().tree_size(alg).expect("registered")
 }
 
+/// The hashes of the terminal consistency proof: the boundary peak, the
+/// path lifting it, and the new frontier.
+fn hashes(ext: &Extension) -> usize {
+    use cyphr::proof::AnyConsistency::{Sha256, Sha384, Sha512};
+    let proof = match &ext.proof.terminal {
+        Sha256(c) => &c.proof,
+        Sha384(c) => &c.proof,
+        Sha512(c) => &c.proof,
+    };
+    1 + proof
+        .peak_path
+        .iter()
+        .map(|s| s.siblings.len())
+        .sum::<usize>()
+        + proof.new_peaks.len()
+}
+
 /// Backs: for every older size the held principal can stand at, the proof a
 /// longer chain serves verifies, and holds at most 2 * (floor(log2 m) + 1)
 /// hashes for a log of m commits: the boundary peak, the path lifting it
@@ -63,14 +80,8 @@ async fn an_honest_extension_verifies_with_a_logarithmic_proof() {
         }
         let ext = Extension::of(new, n).await.expect("proof");
         assert_eq!(verify_extension(held, &ext), Ok(()), "{n} -> {m}");
-        let nodes = 1
-            + ext
-                .proof
-                .peak_path
-                .iter()
-                .map(|s| s.siblings.len())
-                .sum::<usize>()
-            + ext.proof.new_peaks.len();
+        assert!(ext.proof.stitches.is_empty(), "no rotation, no stitch");
+        let nodes = hashes(&ext);
         let bound = 2 * (m.ilog2() as usize + 1);
         assert!(nodes <= bound, "{n} -> {m}: {nodes} hashes > {bound}");
     }
@@ -186,7 +197,11 @@ async fn a_malformed_wire_proof_fails_closed() {
         .await
         .expect("proof");
     let good = ext.to_payload();
-    assert_eq!(Extension::from_payload(&good).as_ref(), Ok(&ext));
+    assert_eq!(
+        Extension::from_payload(&good).map(|e| e.to_payload()),
+        Ok(good.clone()),
+        "the wire form round-trips"
+    );
 
     let mut cases = Vec::new();
     for field in ["size", "cr", "proof"] {
@@ -195,16 +210,21 @@ async fn a_malformed_wire_proof_fails_closed() {
         cases.push(v);
     }
     let mut bad_b64 = good.clone();
-    bad_b64["proof"]["boundary_hash"] = json!("not base64 !");
+    bad_b64["proof"]["terminal"]["boundary_hash"] = json!("not base64 !");
     cases.push(bad_b64);
     let mut bad_width = good.clone();
-    bad_width["proof"]["boundary_hash"] = json!("AAAA");
+    bad_width["proof"]["terminal"]["boundary_hash"] = json!("AAAA");
     cases.push(bad_width);
     let mut many_peaks = good.clone();
-    many_peaks["proof"]["new_peaks"] = json!(vec![good["proof"]["boundary_hash"].clone(); 200]);
+    many_peaks["proof"]["terminal"]["new_peaks"] =
+        json!(vec![
+            good["proof"]["terminal"]["boundary_hash"].clone();
+            200
+        ]);
     cases.push(many_peaks);
     let mut deep = good.clone();
-    deep["proof"]["peak_path"] = json!(vec![json!({"position": 0, "siblings": []}); 200]);
+    deep["proof"]["terminal"]["peak_path"] =
+        json!(vec![json!({"position": 0, "siblings": []}); 200]);
     cases.push(deep);
     for case in cases {
         assert!(
