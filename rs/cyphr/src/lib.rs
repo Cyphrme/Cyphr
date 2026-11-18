@@ -25,6 +25,8 @@ pub mod commit_root;
 /// Embedded principals at default weight (SPEC §10.3, §10.5, §10.7).
 pub mod embedded;
 pub mod error;
+/// Fork resolution (SPEC 15.5-15.8): the one rule over held commits.
+pub mod fork;
 mod grown;
 /// Portable inclusion-proof verification (F9) — free functions taking proof
 /// material and a trusted root as plain parameters, with no `Principal`

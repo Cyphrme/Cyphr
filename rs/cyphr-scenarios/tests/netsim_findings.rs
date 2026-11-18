@@ -155,8 +155,6 @@ async fn a_naked_revoke_survives_a_stopped_holder() {
 // Must hold, if the spec's reading stands: an active key of a principal whose
 // fork was resolved signs in.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(resolved-fork-sign-in): the relying party refuses an active key of a principal \
-            whose fork was resolved"]
 async fn a_principal_signs_in_after_its_fork_is_resolved() {
     use cyphr_scenarios::netsim::{Size, plan, run};
     let size = Size {

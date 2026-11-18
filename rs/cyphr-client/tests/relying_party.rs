@@ -69,6 +69,20 @@ impl Line {
 /// A peer serving one line as its canonical branch.
 struct Mirror {
     line: Line,
+    /// A retained branch the peer lists beside its canonical one.
+    rival: Option<Line>,
+    /// The fork evidence the peer serves.
+    evidence: Vec<Value>,
+}
+
+impl Mirror {
+    fn of(line: Line) -> Self {
+        Self {
+            line,
+            rival: None,
+            evidence: Vec::new(),
+        }
+    }
 }
 
 impl Connector for Mirror {
@@ -86,13 +100,18 @@ impl Connector for Mirror {
             .collect();
         let payload = match path {
             "/branches" => {
-                let n = self.line.ids.len();
-                json!({ "branches": [{
-                    "tip": self.line.ids[n - 1],
-                    "pre": n.checked_sub(2).map(|i| self.line.prs[i].clone()),
-                    "sequence": n - 1,
-                    "canonical": true,
-                }] })
+                let head = |line: &Line, canonical| {
+                    let n = line.ids.len();
+                    json!({
+                        "tip": line.ids[n - 1],
+                        "pre": n.checked_sub(2).map(|i| line.prs[i].clone()),
+                        "sequence": n - 1,
+                        "canonical": canonical,
+                    })
+                };
+                let mut heads = vec![head(&self.line, true)];
+                heads.extend(self.rival.iter().map(|r| head(r, false)));
+                json!({ "branches": heads })
             },
             "/patch" => {
                 let from = match q.get("from") {
@@ -109,7 +128,7 @@ impl Connector for Mirror {
                     .collect();
                 json!({ "entries": entries })
             },
-            "/evidence" => json!({ "items": [] }),
+            "/evidence" => json!({ "items": self.evidence }),
             "/revoked" => json!({ "revoked": [] }),
             other => return Err(ConnectError::Unreachable(format!("no route {other}"))),
         };
@@ -186,7 +205,7 @@ async fn pin_decides_which_chain_the_relying_party_trusts() {
     let (by_a, pg) = genesis_over(&a, &[&b]).await;
     let (by_b, pg_b) = genesis_over(&b, &[&a]).await;
     assert_eq!(pg, pg_b, "one key set, one PG");
-    let (pinned, impostor) = (Mirror { line: by_a }, Mirror { line: by_b });
+    let (pinned, impostor) = (Mirror::of(by_a), Mirror::of(by_b));
     PIN_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
     // The PG is not a pin: handed over as a genesis commit id it matches no
@@ -266,7 +285,7 @@ async fn session_ends_on_stale_view_and_on_replayed_removal() {
     let mut line = Line::of(&chain);
     let blobs = chain.commit(&device, T0 + 50).await;
     line.push(&chain, blobs);
-    let mut mirror = Mirror { line: line.clone() };
+    let mut mirror = Mirror::of(line.clone());
     LIFE_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
     let mut rp = RelyingParty::new(
@@ -347,7 +366,7 @@ async fn anchor_is_reported_and_subject_is_the_replayed_pg() {
         a.tmb.to_b64(),
         "the fixture's PG must differ from the anchor"
     );
-    let mirror = Mirror { line };
+    let mirror = Mirror::of(line);
     ANCHOR_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
     let mut rp = RelyingParty::new(
@@ -431,9 +450,7 @@ async fn login_commits_to_its_channel_and_the_token_stays_on_it() {
     let g = kp();
     let pg = g.tmb.to_b64();
     let chain = Chain::new(&g).await;
-    let mirror = Mirror {
-        line: Line::of(&chain),
-    };
+    let mirror = Mirror::of(Line::of(&chain));
     BIND_CLOCK.store(T0 + 100, Ordering::SeqCst);
     let mut rp = RelyingParty::new(
         &pg,
@@ -527,8 +544,8 @@ async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
     let mut rival_line = Line::of(&rival);
     let blobs = rival.commit(&rival_key, T0 + 60).await;
     rival_line.push(&rival, blobs);
-    let honest_peer = Mirror { line: honest_line };
-    let rival_peer = Mirror { line: rival_line };
+    let honest_peer = Mirror::of(honest_line);
+    let rival_peer = Mirror::of(rival_line);
     FORK_CLOCK.store(T0 + 100, Ordering::SeqCst);
 
     let mut rp = RelyingParty::new(
@@ -555,5 +572,127 @@ async fn archrev_b1_proved_fork_survives_a_pull_the_rival_peer_misses() {
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
         Err(Refusal::Forked),
         "a proved fork stays recorded until a verified resolution"
+    );
+}
+
+static RESOLVED_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn resolved_clock() -> i64 {
+    RESOLVED_CLOCK.load(Ordering::SeqCst)
+}
+
+/// The genesis commit of `g`, then one `key/create` commit per `(key, now)`.
+/// Ed25519 signs deterministically, so two lines built from one prefix
+/// share it exactly and differ only where the caller makes them differ.
+async fn grown(g: &Kp, grow: &[(&Kp, i64)]) -> Line {
+    let mut chain = Chain::new(g).await;
+    let mut line = Line::of(&chain);
+    for (key, now) in grow {
+        let blobs = chain.commit(key, *now).await;
+        line.push(&chain, blobs);
+    }
+    line
+}
+
+/// A peer holding both branches of the fork at `height`, and proving it.
+fn forked_peer(pg: &str, canonical: &Line, rival: &Line, height: usize) -> Mirror {
+    let mut peer = Mirror::of(canonical.clone());
+    peer.rival = Some(rival.clone());
+    peer.evidence = vec![json!({
+        "kind": "principal-fork",
+        "pg": pg,
+        "height": height,
+        "pre": height.checked_sub(1).map(|i| canonical.prs[i].clone()),
+        "a": entry_bundle(height, &canonical.entries[height]),
+        "b": entry_bundle(height, &rival.entries[height]),
+    })];
+    peer
+}
+
+/// SPEC 15.6, 15.8: a fork is resolved by a commit that extends one
+/// branch, and the principal is Active again. The relying party holds the
+/// fork's commits from every pull and asks the protocol's own rule
+/// (`cyphr::fork::assessment`), so it refuses while two branches tie and
+/// signs the principal in once one branch out-extends the other, though it
+/// proved the fork earlier.
+///
+/// Turns red if the fork is remembered as a flag no later pull can clear.
+/// End-to-end scenario: yes (the same peer, first with the fork standing,
+/// then with one branch extended).
+#[tokio::test]
+async fn a_relying_party_signs_in_after_the_fork_it_proved_is_resolved() {
+    let (g, device, k2, k3, k4) = (kp(), kp(), kp(), kp(), kp());
+    let pg = g.tmb.to_b64();
+    let c1 = (&device, T0 + 50);
+    let standing = grown(&g, &[c1, (&k2, T0 + 60)]).await;
+    let abandoned = grown(&g, &[c1, (&k3, T0 + 61)]).await;
+    let resolved = grown(&g, &[c1, (&k2, T0 + 60), (&k4, T0 + 70)]).await;
+    assert_eq!(standing.prs[1], abandoned.prs[1], "one shared pre");
+    RESOLVED_CLOCK.store(T0 + 100, Ordering::SeqCst);
+
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        resolved_clock,
+    );
+    let tied = forked_peer(&pg, &standing, &abandoned, 2);
+    let report = rp.refresh(&[peer("p1", &tied)]).await;
+    assert_eq!(report.forks.len(), 1, "the fork is proved");
+    let c = rp.challenge();
+    assert_eq!(
+        rp.sign_in(&login(&device, &pg, AUDIENCE, &c)),
+        Err(Refusal::Forked),
+        "two tied branches are an unresolved fork"
+    );
+
+    let settled = forked_peer(&pg, &resolved, &abandoned, 2);
+    rp.refresh(&[peer("p1", &settled)]).await;
+    let c = rp.challenge();
+    assert!(
+        rp.sign_in(&login(&device, &pg, AUDIENCE, &c)).is_ok(),
+        "one branch out-extends the other: the principal is Active"
+    );
+}
+
+static LOST_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn lost_clock() -> i64 {
+    LOST_CLOCK.load(Ordering::SeqCst)
+}
+
+/// SPEC 15.8: the abandoned branch's transactions become permanently
+/// invalid, and a key only that branch added is not part of the key set. A
+/// relying party whose own chain is the branch that lost the fork must not
+/// sign in a key that branch alone added, though the protocol's rule now
+/// reads the principal as Active.
+///
+/// Turns red if sign-in reads keys from a chain the fork rule discarded.
+/// End-to-end scenario: yes (the record follows one peer onto the branch
+/// another peer's longer chain then abandons).
+#[tokio::test]
+async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
+    let (g, device, k2, thief, k4) = (kp(), kp(), kp(), kp(), kp());
+    let pg = g.tmb.to_b64();
+    let c1 = (&device, T0 + 50);
+    let abandoned = grown(&g, &[c1, (&thief, T0 + 61)]).await;
+    let kept = grown(&g, &[c1, (&k2, T0 + 60), (&k4, T0 + 70)]).await;
+    LOST_CLOCK.store(T0 + 100, Ordering::SeqCst);
+
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        lost_clock,
+    );
+    let first = Mirror::of(abandoned);
+    rp.refresh(&[peer("first", &first)]).await;
+    let second = Mirror::of(kept);
+    let report = rp.refresh(&[peer("second", &second)]).await;
+    assert_eq!(report.forks.len(), 1, "the longer chain shows the fork");
+
+    let c = rp.challenge();
+    assert_eq!(
+        rp.sign_in(&login(&thief, &pg, AUDIENCE, &c)),
+        Err(Refusal::LostBranch),
+        "a key only the abandoned branch added"
     );
 }

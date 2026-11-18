@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use coz::Thumbprint;
 use cyphr::eml::MemoryStorage;
+use cyphr::fork::Held as HeldCommit;
 use cyphr::principal::{Clock, system_clock};
 use cyphr::replay::WireBundle;
 use cyphr::{Commit, Key, Principal, StateDigest as _};
@@ -296,6 +297,38 @@ impl Record {
     #[must_use]
     pub fn commit_id_at(&self, index: usize) -> Option<String> {
         self.held.as_ref()?.commit_id_at(index)
+    }
+
+    /// The commits of the record's chain from position `from` up, as the
+    /// protocol's fork rule reads them ([`cyphr::fork::assessment`]). A
+    /// commit the record holds only as verified state has no signers here.
+    #[must_use]
+    pub fn commits_from(&self, from: usize) -> Vec<HeldCommit> {
+        let Some(held) = &self.held else {
+            return Vec::new();
+        };
+        let pr_of = |index: usize| {
+            held.principal
+                .commit_at(index)
+                .and_then(|c| c.pr().as_multihash().tagged_first().ok())
+                .map(|d| d.to_string())
+        };
+        (from..held.principal.commit_count())
+            .filter_map(|index| {
+                let signed = index
+                    .checked_sub(held.base)
+                    .and_then(|i| held.entries.get(i))
+                    .and_then(|e| e.bundle.as_ref().ok())
+                    .map_or_else(Vec::new, signers);
+                Some(HeldCommit {
+                    sequence: index as u64,
+                    id: held.commit_id_at(index)?,
+                    pre: index.checked_sub(1).and_then(pr_of),
+                    pr: pr_of(index)?,
+                    signed,
+                })
+            })
+            .collect()
     }
 
     /// The entries of the commits this record replayed, in chain order: all
@@ -768,6 +801,10 @@ pub struct PullReport {
     /// Commits a peer serves as evidence that extend a fork's rival,
     /// each verified on the rival's branch, lowest first per branch.
     pub extensions: Vec<WireBundle>,
+    /// The commits the pull verified off the record's chain: each fork's
+    /// rival and the commits past it, as the protocol's fork rule reads
+    /// them ([`cyphr::fork::assessment`]).
+    pub branches: Vec<HeldCommit>,
 }
 
 /// A peer's branch head, as it claims it. A hint, never evidence.
@@ -845,7 +882,11 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
             rejected_revokes: Vec::new(),
             revoke_fetch: None,
         };
-        match pull_commits(record, peer.connector, &mut outcome, &mut report.extensions).await {
+        let mut sink = Sink {
+            extensions: &mut report.extensions,
+            branches: &mut report.branches,
+        };
+        match pull_commits(record, peer.connector, &mut outcome, &mut sink).await {
             Ok((standing, forks)) => {
                 outcome.standing = standing;
                 for fork in forks {
@@ -979,12 +1020,44 @@ fn parse_heads(payload: &Value) -> Result<Vec<Head>, PatchFailure> {
         .collect()
 }
 
+/// Where one peer's pull puts the commits it verified off the record's
+/// chain.
+struct Sink<'a> {
+    extensions: &'a mut Vec<WireBundle>,
+    branches: &'a mut Vec<HeldCommit>,
+}
+
+/// A verified commit as the protocol's fork rule reads it. The signers are
+/// those of the bundle's cozies, in bundle order.
+fn held_commit(
+    sequence: usize,
+    id: String,
+    pre: Option<String>,
+    pr: String,
+    bundle: &WireBundle,
+) -> HeldCommit {
+    HeldCommit {
+        sequence: sequence as u64,
+        id,
+        pre,
+        pr,
+        signed: signers(bundle),
+    }
+}
+
+fn signers(bundle: &WireBundle) -> Vec<String> {
+    bundle.decode().map_or_else(
+        |_| Vec::new(),
+        |b| b.cozies().map(|c| c.header().tmb.to_b64()).collect(),
+    )
+}
+
 /// Fetch and classify one peer's chain against the record.
 async fn pull_commits<C: Connector>(
     record: &mut Record,
     connector: &C,
     outcome: &mut PeerOutcome,
-    extensions: &mut Vec<WireBundle>,
+    sink: &mut Sink<'_>,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
     // The gate treats a peer that lacks the principal as idle; a pull
     // still reports it as the failure it is, so callers that read
@@ -1008,7 +1081,7 @@ async fn pull_commits<C: Connector>(
             };
             (standing, Vec::new())
         },
-        _ => reach(record, connector).await?,
+        _ => reach(record, connector, sink.branches).await?,
     };
     // A peer whose every head is a commit the record holds has no rival
     // branch to prove.
@@ -1017,7 +1090,7 @@ async fn pull_commits<C: Connector>(
         .as_ref()
         .is_some_and(|held| held.holds_all(&heads));
     if heads.len() > 1 && !idle {
-        evidence(record, connector, outcome, &mut forks, extensions).await;
+        evidence(record, connector, outcome, &mut forks, sink).await;
     }
     Ok((standing, forks))
 }
@@ -1037,6 +1110,7 @@ fn check_cap(record: &Record, offered: usize) -> Result<(), PeerFailure> {
 async fn reach<C: Connector>(
     record: &mut Record,
     connector: &C,
+    branches: &mut Vec<HeldCommit>,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
     let tip = match &record.held {
         Some(held) => Some(
@@ -1056,9 +1130,11 @@ async fn reach<C: Connector>(
             // it (it is fabricated, or the log does extend), the pull goes
             // on without it, so a fork never hides behind what the peer
             // says of its tree.
-            Offer::Diverged(offer) => match locate_fork(record, connector, &offer).await {
-                Ok(Some(finding)) => return Ok((PeerStanding::Forked, vec![finding])),
-                Ok(None) | Err(_) => None,
+            Offer::Diverged(offer) => {
+                match locate_fork(record, connector, &offer, branches).await {
+                    Ok(Some(finding)) => return Ok((PeerStanding::Forked, vec![finding])),
+                    Ok(None) | Err(_) => None,
+                }
             },
             Offer::Unavailable => None,
         }
@@ -1092,7 +1168,7 @@ async fn reach<C: Connector>(
             Err(other) => return Err(other.into()),
         }
     }
-    compare_whole_chain(record, connector).await
+    compare_whole_chain(record, connector, branches).await
 }
 
 /// What a peer's answer to a request for the proof that its tip extends
@@ -1155,6 +1231,7 @@ async fn locate_fork<C: Connector>(
     record: &Record,
     connector: &C,
     offer: &Extension,
+    branches: &mut Vec<HeldCommit>,
 ) -> Result<Option<ForkFinding>, PeerFailure> {
     let Some(held) = &record.held else {
         return Ok(None);
@@ -1283,6 +1360,10 @@ async fn locate_fork<C: Connector>(
         },
         Err(_) => return Err(unlocatable("the peer's commit is no fork of the record's")),
     };
+    // The item named the record's commit `a` and the peer's `b`.
+    let [_, id] = proof.0.commits.clone();
+    let [_, pr] = proof.0.prs.clone();
+    branches.push(held_commit(height, id, proof.0.pre.clone(), pr, &proof.1));
     Ok(Some(ForkFinding {
         height,
         pre: proof.0.pre,
@@ -1321,6 +1402,7 @@ fn relate(mine: &[Link], theirs: &[Link]) -> Relation {
 async fn compare_whole_chain<C: Connector>(
     record: &mut Record,
     connector: &C,
+    branches: &mut Vec<HeldCommit>,
 ) -> Result<(PeerStanding, Vec<ForkFinding>), PeerFailure> {
     let request = PatchRequest {
         principal_id: &record.id,
@@ -1376,6 +1458,22 @@ async fn compare_whole_chain<C: Connector>(
                 .bundle
                 .clone()
                 .map_err(|defect| PeerFailure::Entry { index: at, defect })?;
+            // The peer's whole chain was replayed: its commits from the
+            // fork up are a branch the record does not hold.
+            for (index, entry) in theirs.entries.iter().enumerate().skip(at) {
+                let (Some(id), Some(pr), Ok(bundle)) = (
+                    theirs.commit_id_at(index),
+                    their_links.get(index).and_then(pr_id_of),
+                    entry.bundle.as_ref(),
+                ) else {
+                    continue;
+                };
+                let pre = index
+                    .checked_sub(1)
+                    .and_then(|i| their_links.get(i))
+                    .and_then(pr_id_of);
+                branches.push(held_commit(index, id, pre, pr, bundle));
+            }
             let finding = ForkFinding {
                 height: at,
                 pre: at.checked_sub(1).and_then(|i| pr_id_of(&mine_links[i])),
@@ -1411,7 +1509,7 @@ async fn evidence<C: Connector>(
     connector: &C,
     outcome: &mut PeerOutcome,
     forks: &mut Vec<ForkFinding>,
-    extensions: &mut Vec<WireBundle>,
+    sink: &mut Sink<'_>,
 ) {
     let Some(held) = &record.held else { return };
     let target = format!("/evidence?pr={}", percent_encode_query_value(&record.id));
@@ -1439,13 +1537,25 @@ async fn evidence<C: Connector>(
     let items: Vec<&Value> = items.iter().take(MAX_EVIDENCE_ITEMS).collect();
     let chain_ids: Vec<Option<String>> = held.principal.commits().map(commit_id_of).collect();
     let set = verify_fork_items(&items, record.bare_id(), &base, &prefix, &chain_ids).await;
-    forks.extend(set.forks.into_iter().map(|(proof, rival)| ForkFinding {
-        height: usize::try_from(proof.height).unwrap_or(usize::MAX),
-        pre: proof.pre,
-        commits: proof.commits,
-        rival,
-    }));
-    extensions.extend(set.extensions.into_iter().map(|e| e.bundle));
+    for (proof, rival) in set.forks {
+        let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
+        if let Some((id, pr)) = proof.rival(&chain_ids) {
+            sink.branches
+                .push(held_commit(height, id, proof.pre.clone(), pr, &rival));
+        }
+        forks.push(ForkFinding {
+            height,
+            pre: proof.pre,
+            commits: proof.commits,
+            rival,
+        });
+    }
+    for e in set.extensions {
+        let height = usize::try_from(e.height).unwrap_or(usize::MAX);
+        sink.branches
+            .push(held_commit(height, e.id, Some(e.pre), e.pr, &e.bundle));
+        sink.extensions.push(e.bundle);
+    }
     outcome.rejected_evidence.extend(set.rejected);
 }
 

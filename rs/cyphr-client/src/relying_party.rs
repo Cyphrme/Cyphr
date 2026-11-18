@@ -93,6 +93,13 @@ pub enum Refusal {
     /// is in `Error` (SPEC 15.8) and nobody signs in.
     #[error("the principal forked; its lifecycle state is not Active")]
     Forked,
+    /// A fork was resolved against the branch the relying party's own chain
+    /// is on (SPEC 15.8): that branch's transactions are permanently
+    /// invalid and its keys are not the principal's. Moving the record
+    /// onto the kept branch is not done here, so nobody signs in until a
+    /// fresh view follows it.
+    #[error("the relying party's chain is a branch the principal's fork abandoned")]
+    LostBranch,
     /// The login is not a login for this service and principal, or is not
     /// the shape a login has.
     #[error("malformed login: {0}")]
@@ -176,8 +183,12 @@ pub struct RelyingParty {
     clock: Clock,
     /// Clock reading at the newest successful pull.
     last_pull: Option<i64>,
-    /// Some pull showed a fork; never cleared by a later pull.
-    forked: bool,
+    /// The commits pulls verified off the record's chain, by commit id: the
+    /// rivals of every fork shown and the commits past them. Kept across
+    /// pulls, so a pull the rival peer misses forgets nothing; whether
+    /// they leave the principal in `Error` is the protocol's rule over
+    /// them and the record's chain.
+    branches: BTreeMap<String, cyphr::fork::Held>,
     /// Issued challenges, by value, with their issue time.
     challenges: BTreeMap<String, i64>,
     sessions: BTreeMap<String, (Thumbprint, SessionBinding)>,
@@ -193,7 +204,7 @@ impl RelyingParty {
             config,
             clock,
             last_pull: None,
-            forked: false,
+            branches: BTreeMap::new(),
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
         }
@@ -231,11 +242,15 @@ impl RelyingParty {
             .any(|p| !matches!(p.standing, PeerStanding::Failed(_)));
         if answered && self.record.tip().is_some() {
             self.last_pull = Some((self.clock)());
-            // Sticky: a proved fork is the witness's proof of error (SPEC
-            // 15.7.1) and stays until a verified resolution, which this
-            // relying party has no path to yet; a pull the rival peer
-            // misses must not clear it.
-            self.forked |= !report.forks.is_empty();
+            // A proved fork is the witness's proof of error (SPEC 15.7.1)
+            // and stays recorded: a pull the rival peer misses must not
+            // clear it. Only a commit that out-extends a branch resolves
+            // it (SPEC 15.8), which `fork_refusal` reads from what is kept.
+            for held in &report.branches {
+                self.branches
+                    .entry(held.id.clone())
+                    .or_insert_with(|| held.clone());
+            }
         }
         report
     }
@@ -420,10 +435,42 @@ impl RelyingParty {
         Ok(age)
     }
 
+    /// What the protocol's fork rule (SPEC 15.5-15.8) says against signing
+    /// in, over the record's chain and the branches the pulls verified:
+    /// [`Refusal::Forked`] while two branches tie, [`Refusal::LostBranch`]
+    /// when the kept line passes through a commit the record's chain does
+    /// not hold, so its keys are those of an abandoned branch. It reads
+    /// the chain from one position below the lowest rival, which holds the
+    /// same fork state as the whole chain.
+    fn fork_refusal(&self) -> Option<Refusal> {
+        let lowest = self.branches.values().map(|h| h.sequence).min()?;
+        let last = (self.record.tip()?.commits as u64).saturating_sub(1);
+        let from =
+            usize::try_from(cyphr::fork::assessed_from(Some(lowest), last)).unwrap_or(usize::MAX);
+        let mut held = self.record.commits_from(from);
+        held.extend(self.branches.values().cloned());
+        let assessed = cyphr::fork::assessment(&held);
+        if assessed.consensus == cyphr::fork::Consensus::Error {
+            return Some(Refusal::Forked);
+        }
+        assessed
+            .forks
+            .iter()
+            .filter_map(|c| Some((c.sequence, c.kept.as_ref()?)))
+            .any(|(at, kept)| {
+                let at = usize::try_from(at).unwrap_or(usize::MAX);
+                self.record.commit_id_at(at).as_ref() != Some(kept)
+            })
+            .then_some(Refusal::LostBranch)
+    }
+
     /// Whether the relying party trusts `key` for the principal now.
     fn trust(&self, key: &Thumbprint, now: i64) -> Result<Trust, Refusal> {
         let pull_age = self.require_current(now)?;
-        if self.forked || !self.record.is_principal_active() {
+        if let Some(refusal) = self.fork_refusal() {
+            return Err(refusal);
+        }
+        if !self.record.is_principal_active() {
             return Err(Refusal::Forked);
         }
         if !self.record.is_key_active(key) {
