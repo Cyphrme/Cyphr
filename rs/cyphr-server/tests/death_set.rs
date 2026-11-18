@@ -255,16 +255,35 @@ async fn genesis_push(
 }
 
 async fn push(state: &Arc<AppState>, body: String) -> StatusCode {
-    common::post_json(build_router(state.clone()), "/push", body)
-        .await
-        .0
+    push_answer(state, body).await.0
 }
 
-async fn assert_refused_and_unwritten(state: &Arc<AppState>, status: StatusCode, pid: &str) {
-    assert!(
-        status.is_client_error(),
-        "a dead key must be refused with a 4xx, got {status}"
-    );
+/// The status and the refusal text of a push (`DeadKey` answers 401 "push
+/// signing key was revoked", apart from a malformed body or a failed
+/// verification, which answer 4xx of their own).
+async fn push_answer(state: &Arc<AppState>, body: String) -> (StatusCode, String) {
+    let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
+    let said = json["payload"]["error"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    (status, said)
+}
+
+/// The refusal a dead signer gets: 401 and the revoked-key text, not any
+/// other 4xx.
+fn assert_dead_key_refusal(status: StatusCode, said: &str) {
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{status}: {said}");
+    assert!(said.contains("revoked"), "not the DeadKey refusal: {said}");
+}
+
+async fn assert_refused_and_unwritten(
+    state: &Arc<AppState>,
+    refusal: (StatusCode, String),
+    pid: &str,
+) {
+    assert_dead_key_refusal(refusal.0, &refusal.1);
     assert!(
         state.engine.get_tip(pid).await.expect("tip").is_none(),
         "a refused push left the principal behind"
@@ -288,11 +307,8 @@ async fn assert_dead_key_cannot_sign(
         CREATE,
     )
     .await;
-    let status = push(state, body(pid, &blobs)).await;
-    assert!(
-        status.is_client_error(),
-        "a commit signed by the dead key was admitted: {status}"
-    );
+    let (status, said) = push_answer(state, body(pid, &blobs)).await;
+    assert_dead_key_refusal(status, &said);
     let after = state.engine.get_tip(pid).await.unwrap().expect("tip");
     assert_eq!(after.commit_count, before.commit_count, "the chain moved");
 }
@@ -362,8 +378,8 @@ async fn dead_key_cannot_sign_its_own_genesis() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
     let (body, pid, _) = genesis_push(&pool, "key_a", "key_b", CREATE).await;
-    let status = push(&state, body).await;
-    assert_refused_and_unwritten(&state, status, &pid).await;
+    let refusal = push_answer(&state, body).await;
+    assert_refused_and_unwritten(&state, refusal, &pid).await;
 }
 
 /// Control (green on the base): a key that is NOT dead is introduced by
