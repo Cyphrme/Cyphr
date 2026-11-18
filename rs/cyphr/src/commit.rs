@@ -36,13 +36,12 @@ pub struct Commit {
     sr: Option<StateRoot>,
     /// Principal Root at the end of this commit.
     pr: PrincipalRoot,
-    /// Commit Root at the end of this commit: a component of `pr`
-    /// (SPEC 3.7.1), kept so a root at an earlier size is read, not
-    /// refolded from the log.
-    cr: crate::commit_root::CommitRoot,
-    /// The PR-level nonce cells of the Principal Tree at the end of this
-    /// commit, as serialized, for the same reason.
-    nonce_cells: Vec<Vec<u8>>,
+    /// The Principal Tree's cells at the end of this commit as serialized
+    /// (SR when there is one, CR, then the PR-level nonces), each carrying
+    /// a variant for every family active then: the components `pr` folds
+    /// (SPEC 3.7.1), kept so a proof opens `pr` by reading them, not by
+    /// rebuilding them from the log or the history.
+    pt_cells: Vec<Vec<u8>>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -55,8 +54,7 @@ impl Clone for Commit {
             ar: self.ar.clone(),
             sr: self.sr.clone(),
             pr: self.pr.clone(),
-            cr: self.cr.clone(),
-            nonce_cells: self.nonce_cells.clone(),
+            pt_cells: self.pt_cells.clone(),
         }
     }
 }
@@ -73,8 +71,7 @@ impl Commit {
         ar: Option<AuthRoot>,
         sr: Option<StateRoot>,
         pr: PrincipalRoot,
-        cr: crate::commit_root::CommitRoot,
-        nonce_cells: Vec<Vec<u8>>,
+        pt_cells: Vec<Vec<u8>>,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -85,20 +82,13 @@ impl Commit {
             ar,
             sr,
             pr,
-            cr,
-            nonce_cells,
+            pt_cells,
         })
     }
 
-    /// Get the Commit Root at the end of this commit.
-    pub fn cr(&self) -> &crate::commit_root::CommitRoot {
-        &self.cr
-    }
-
-    /// The PR-level nonce cells of the Principal Tree at the end of this
-    /// commit.
-    pub(crate) fn nonce_cells(&self) -> &[Vec<u8>] {
-        &self.nonce_cells
+    /// The Principal Tree's cells at the end of this commit, as serialized.
+    pub(crate) fn pt_cells(&self) -> &[Vec<u8>] {
+        &self.pt_cells
     }
 
     /// Get the cozies in this commit.
@@ -286,8 +276,8 @@ impl PendingCommit {
     /// * `ar` - The computed Auth Root after all cozies (`None` if no key remains)
     /// * `sr` - The computed State Root: MR(AR?, DR?, embedding?) (`None` if neither exists)
     /// * `pr` - The computed Principal Root after all cozies
-    /// * `cr` - The Commit Root after this commit's leaf, a component of `pr`
-    /// * `nonce_cells` - The PR-level nonce cells of the Principal Tree, as serialized
+    /// * `pt` - The Principal Tree `pr` was folded from, whose cells the commit keeps
+    /// * `active_algs` - The algorithms active after this commit, one variant of each cell apiece
     /// * `tx_algs` - Explicit transaction algorithm set footprint (extracted from Arrow)
     ///
     /// # Errors
@@ -299,8 +289,8 @@ impl PendingCommit {
         ar: Option<AuthRoot>,
         sr: Option<StateRoot>,
         pr: PrincipalRoot,
-        cr: crate::commit_root::CommitRoot,
-        nonce_cells: Vec<Vec<u8>>,
+        pt: &crate::principal_tree::PrincipalTree,
+        active_algs: &[crate::state::HashAlg],
         tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
         if self.is_finalizer_only() {
@@ -320,7 +310,7 @@ impl PendingCommit {
             .compute_tr(tx_algs)
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, tr, ar, sr, pr, cr, nonce_cells)
+        Commit::new(self.transactions, tr, ar, sr, pr, pt.cells(active_algs)?)
     }
 
     /// Consume the pending commit and return the cozies.
@@ -1316,15 +1306,13 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let cr = crate::commit_root::CommitRoot(
-            MultihashDigest::from_single(HashAlg::Sha256, vec![0xDD; 32]).unwrap(),
-        );
+        let pt = crate::principal_tree::PrincipalTree::new();
         let result = pending.finalize(
             Some(auth_root),
             Some(sr),
             pr,
-            cr,
-            Vec::new(),
+            &pt,
+            &[HashAlg::Sha256],
             &[coz::HashAlg::Sha256],
         );
         assert!(

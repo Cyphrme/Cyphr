@@ -111,6 +111,24 @@ impl PrincipalTree {
         }
     }
 
+    /// The held cells as serialized, in fold order (SR when set, CR, then
+    /// the nonces), each carrying a variant for every one of `algs` and no
+    /// other: what a proof must show to open the Principal Root.
+    ///
+    /// # Errors
+    ///
+    /// `MalformedPayload` if a nonce cell cannot be serialized.
+    pub(crate) fn cells(&self, algs: &[HashAlg]) -> Result<Vec<Vec<u8>>> {
+        let mut cells: Vec<Vec<u8>> = self.sr.iter().chain(&self.cr).cloned().collect();
+        for (nonce, alg) in &self.nonces {
+            cells.push(crate::semantic_tree::serialize_converted(
+                (nonce, *alg),
+                algs,
+            )?);
+        }
+        Ok(cells)
+    }
+
     /// Register `alg` if it is not already registered.
     fn ensure_algorithm(&mut self, alg: HashAlg) {
         if !self.algs.contains(&alg) {

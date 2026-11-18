@@ -414,14 +414,11 @@ impl Rooted<Trusted, FullCr> {
     /// costs O(1) whatever the log's store holds.
     pub async fn at_size<S: eml::Storage>(p: &Principal<S>, size: u64) -> Option<Self> {
         let commit = p.commit_at(usize::try_from(size.checked_sub(1)?).ok()?)?;
-        let variants = commit
-            .cr()
-            .as_multihash()
-            .variants()
+        let cr: BTreeMap<u64, Vec<u8>> = serde_json::from_slice(commit.pt_cells().get(1)?).ok()?;
+        let variants = cr
             .iter()
-            .map(|(&alg, d)| AnyFamilyRoot::new(alg, size, d))
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
+            .map(|(&id, d)| AnyFamilyRoot::new(u64_to_hash_alg(id).ok()?, size, d).ok())
+            .collect::<Option<Vec<_>>>()?;
         Some(Rooted(FullCr { size, variants }, PhantomData))
     }
 
@@ -1202,15 +1199,7 @@ impl<S: eml::Storage> Principal<S> {
                 .collect(),
         };
 
-        let sr = prev
-            .sr()
-            .ok_or_else(|| unprovable("no state root before"))?;
-        let mut cells = vec![
-            crate::principal_tree::PrincipalTree::serialize(&sr.0).map_err(to_err)?,
-            crate::principal_tree::PrincipalTree::serialize(prev.cr().as_multihash())
-                .map_err(to_err)?,
-        ];
-        cells.extend_from_slice(prev.nonce_cells());
+        let cells = prev.pt_cells().to_vec();
         for (x, bound) in &pre_variants {
             let folded = crate::principal_tree::fold_cells(*x, &cells).map_err(to_err)?;
             if &folded != bound {
