@@ -288,6 +288,69 @@ async fn s03_extension_settles_extended_fork() {
     );
 }
 
+/// A fork the owner resolved stays in the record as an abandoned branch
+/// (SPEC 15.8), never as a live head: when the principal forks a second
+/// time, the verdict names the two new branches and the oracle must count
+/// exactly those, not the first fork's abandoned tip as a third.
+#[tokio::test(flavor = "multi_thread")]
+async fn s03_resolved_fork_is_not_a_live_head() {
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
+    h.require(&[
+        Capability::Transport,
+        Capability::CliNetwork,
+        Capability::BranchStore,
+        Capability::Evidence,
+        Capability::PeerGossip,
+        Capability::DataCommit,
+    ])
+    .await;
+    let (laptop, phone) = (h.client("alice-laptop"), h.client("alice-phone"));
+    let observer = h.client("bob");
+    let both = ["p1", "p2"];
+    let pr = h.ok(laptop.create_principal().await);
+    h.ok(laptop.pair_device(&pr, &phone).await);
+    h.ok(laptop.push(&pr, &both).await).accepted("base push");
+
+    // First fork, resolved on the phone's branch.
+    let (_, phone_branch) = extend_both(&h, &laptop, &phone, &pr).await;
+    h.proxy.heal("p1", "p2");
+    h.eventually("each peer to hold the rival branch", CONVERGE, || async {
+        Ok(evidence(&h, "p1", &pr).await >= 2 && evidence(&h, "p2", &pr).await >= 2)
+    })
+    .await;
+    let resolved = resolve_by_extension(&h, &phone, &pr, &phone_branch[1]).await;
+    let seen = [
+        evidence(&h, "p1", &pr).await,
+        evidence(&h, "p2", &pr).await,
+    ];
+
+    // Second fork from the resolved tip, the first one's abandoned tip
+    // still retained.
+    // The laptop holds the abandoned branch, so a fresh device takes its
+    // place at the proxy.
+    h.proxy.heal("alice-laptop", "p1");
+    h.proxy.heal("alice-phone", "p2");
+    let tablet = h.client("alice-laptop");
+    h.ok(phone.pair_device(&pr, &tablet).await);
+    let (laptop2, phone2) = extend_both(&h, &tablet, &phone, &pr).await;
+    h.proxy.heal("p1", "p2");
+    h.eventually("each peer to hold the second rival", CONVERGE, || async {
+        Ok(evidence(&h, "p1", &pr).await >= seen[0] + 2
+            && evidence(&h, "p2", &pr).await >= seen[1] + 2)
+    })
+    .await;
+    let forked = h.ok(observer.verdict(&pr, &both).await);
+    assert_eq!(
+        sorted(&forked.branches),
+        sorted(&[laptop2[1].clone(), phone2[1].clone()]),
+        "exactly the second fork's extended heads (after {resolved:?})"
+    );
+    h.check_verdict(&forked, &pr, &Expect::new(&both, &pr.0))
+        .await;
+}
+
 /// Partition the laptop with P2 and the phone with P1, then have each
 /// commit and push twice on its side: two branches over one `pre`, both
 /// extended past the fork point. The commits of each branch, in order.
