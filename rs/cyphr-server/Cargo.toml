@@ -49,6 +49,7 @@ uuid.workspace               = true
 [dev-dependencies]
 blake3 = { workspace = true }
 coz = { workspace = true }
+cyphr = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
 cyphr-storage = { path = "../cyphr-storage", version = "0.1.0", features = [
   "conformance-tests",
 ] }
@@ -60,3 +61,7 @@ tempfile = "3"
 test-fixtures = { path = "../test-fixtures" }
 tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+
+[[bench]]
+harness = false
+name    = "u3_server"

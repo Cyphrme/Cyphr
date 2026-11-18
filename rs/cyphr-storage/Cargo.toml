@@ -40,3 +40,7 @@ serde             = { workspace = true }
 serde_json        = { workspace = true }
 tempfile          = "3"
 test-fixtures     = { path = "../test-fixtures" }
+
+[[bench]]
+harness = false
+name    = "u3_engine"
