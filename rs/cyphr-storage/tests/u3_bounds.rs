@@ -280,6 +280,9 @@ async fn rival_stranger(n: usize) -> Counts {
 #[tokio::test]
 async fn refused_push_cost_is_independent_of_history_with_a_rival_at_one() {
     let (s, l) = (rival_stranger(SHORT).await, rival_stranger(LONG).await);
-    assert_eq!(s, l, "counts at n={SHORT} and n={LONG} (short {s:?}, long {l:?})");
+    assert_eq!(
+        s, l,
+        "counts at n={SHORT} and n={LONG} (short {s:?}, long {l:?})"
+    );
     assert_eq!(s.replayed, 0, "{s:?}");
 }
