@@ -369,7 +369,6 @@ async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
 // takes no algorithm choice and answers 200 for every index; each answer
 // verifies against the tip of the chain a client pulled.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(NETSIM-FIX E4): /inclusion refuses or fails for commits of the retired algorithm"]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (laptop, phone) = (h.client("laptop"), h.client("phone"));
