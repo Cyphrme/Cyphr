@@ -34,13 +34,13 @@ async fn s02_partition() {
 
     let (alice, bob) = (h.client("alice"), h.client("bob"));
 
+    // A view's age counts from the peer's last update, which the first push
+    // makes, so no view can be older than the time since that push began.
+    let watch_began = Instant::now();
     let pr = h.ok(alice.create_principal().await);
     let before = h
         .ok(alice.push(&pr, &["p1", "p2"]).await)
         .accepted("initial push");
-    // Bob's view is stamped when the watch pulls, somewhere inside it, so a
-    // view cannot be older than the time since the watch began.
-    let watch_began = Instant::now();
     h.ok(bob.trust_genesis(&pr, &["p2"]).await);
     h.ok(bob.watch(&pr).await);
     let last_update = Instant::now();
@@ -78,7 +78,12 @@ async fn s02_partition() {
         "a partitioned P2 must not learn the rotation"
     );
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Wait for the view to have aged, rather than for a fixed time that a
+    // loaded machine may stretch or shrink.
+    h.eventually("Bob's view of P2 to age a second", CONVERGE, || async {
+        Ok(bob.verdict(&pr, &["p2"]).await?.freshness.age >= Duration::from_secs(1))
+    })
+    .await;
     let read_at = unix_now();
     let during = h.ok(bob.verdict(&pr, &["p2"]).await);
     assert_eq!(during.tip, before, "Bob can only see P2's old tip");
@@ -89,8 +94,8 @@ async fn s02_partition() {
     );
     assert!(
         during.freshness.age <= watch_began.elapsed() + Duration::from_secs(2),
-        "a view cannot be older than the time since the watch began (whole-second clocks at both \
-         ends add up to 2s), got {:?}",
+        "a view cannot be older than the time since the first push began (whole-second clocks at \
+         both ends add up to 2s), got {:?}",
         during.freshness.age
     );
 
