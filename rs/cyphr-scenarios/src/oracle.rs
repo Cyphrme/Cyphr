@@ -101,7 +101,7 @@ impl Harness {
             // The live heads: each peer's own head, and each rival branch's
             // tip the peers prove by evidence, less any commit a peer's
             // chain or a proved extension continues past.
-            let (_, rival_tips) = self.verified_evidence(&live, p).await;
+            let (_, rival_tips, _) = self.verified_evidence(&live, p).await;
             let mut inner = BTreeSet::new();
             for name in &live {
                 let chain = self.chain_read(name, p).await;
@@ -130,7 +130,7 @@ impl Harness {
         // evidence: re-verified offline from signed items a peer serves.
         // With no such route, even "no evidence" would be an unchecked claim.
         self.require_route(Capability::Evidence).await;
-        let (proven, _) = self.verified_evidence(&live, p).await;
+        let (proven, ..) = self.verified_evidence(&live, p).await;
         let claimed: BTreeSet<Proven> = v
             .evidence
             .iter()
@@ -195,20 +195,30 @@ impl Harness {
             }
         }
 
-        // resolved_by: the key that signed the resolution commit, on every
-        // live chosen peer's chain.
+        // resolved_by: the first signer of the commit that settled the
+        // latest resolved fork. A fork is settled by one ordinary commit
+        // extending the kept head (SPEC 15.8 item 1), which sits one above
+        // the abandoned rival's tip, so that commit is found by position on
+        // every live peer's chain, not by being the chain's last.
         if let Some(k) = &v.resolved_by {
+            let (_, _, resolved) = self.verified_evidence(&live, p).await;
+            let Some(at) = resolved.last().copied() else {
+                panic!(
+                    "verdict names resolved_by {}, but no resolved fork is proven",
+                    k.0
+                )
+            };
             for name in &live {
                 let signers = self.chain_read(name, p).await.signers;
                 if signers.is_empty() {
                     self.red(Capability::BranchStore)
                 }
-                // The resolution is not always the chain's last commit: a
-                // later fork, or an ordinary commit, follows it.
-                assert!(
-                    signers.contains(&k.0),
-                    "`{name}`: resolved_by {} signed no commit of its chain",
-                    k.0
+                let signer = usize::try_from(at).ok().and_then(|i| signers.get(i));
+                assert_eq!(
+                    signer,
+                    Some(&k.0),
+                    "`{name}`: resolved_by is not the signer of the resolving commit at position \
+                     {at}"
                 );
             }
         }
@@ -231,7 +241,7 @@ impl Harness {
         &self,
         peers: &[&str],
         p: &Principal,
-    ) -> (BTreeSet<Proven>, BTreeSet<String>) {
+    ) -> (BTreeSet<Proven>, BTreeSet<String>, BTreeSet<u64>) {
         let mut keys = Keys::new();
         let mut by_peer = BTreeMap::new();
         let mut chains = BTreeMap::new();
@@ -244,6 +254,7 @@ impl Harness {
         }
         let mut out = BTreeSet::new();
         let mut tips = BTreeSet::new();
+        let mut resolved = BTreeSet::new();
         for name in peers {
             let Some(addr) = self
                 .peers
@@ -275,11 +286,12 @@ impl Harness {
                 Ok(set) => {
                     out.extend(set.proven);
                     tips.extend(set.rival_tips);
+                    resolved.extend(set.resolved_at);
                 },
                 Err(why) => panic!("peer `{name}` served evidence that does not verify: {why}"),
             }
         }
-        (out, tips)
+        (out, tips, resolved)
     }
 
     /// A peer's identity, algorithm, public key and key thumbprint, from its
