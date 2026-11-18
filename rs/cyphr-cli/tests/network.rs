@@ -561,7 +561,7 @@ fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
 
 /// Claim: a held data action whose signer a peer later reports naked-revoked
 /// does not stop the principal from saving again. Every save re-sends the
-/// store's trailing action-only lines; the revoke is dated before the
+/// store's trailing action-only lines; the revoke is recorded before the
 /// action's `now`, so the store refuses the action as `key revoked`, and
 /// that refusal must not fail the save. End-to-end: yes (CLI processes, one
 /// real server). Turns red on: a save that propagates the refusal, exiting
@@ -582,38 +582,29 @@ fn a_save_survives_a_held_action_whose_signer_was_revoked() {
         .to_owned();
     accepted(&a.push(&id, &server.url), "publish");
 
-    // A store never dates an action in the future, so the revoke lands in the
-    // action's own second: a signature dated at the revoke is judged after
-    // it. Start at the top of a second so both commands can share it.
-    let wall = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_secs()
-    };
-    let start = wall();
-    while wall() == start {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    let second = wall();
+    // The store judges a revoke by the clock of the verifier that records it,
+    // and admits an action up to 360 s ahead of that clock. An action dated a
+    // minute ahead is therefore always at or after the revoke's recording
+    // time, however slowly the steps below run, so the re-send is refused.
+    let ahead = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs()
+        + 60;
     a.setup(&[
         "data",
         "action",
         &format!("--identity={id}"),
         &format!("--signer={k1}"),
         "--msg=held",
-        &format!("--now={second}"),
+        &format!("--now={ahead}"),
     ]);
-    let revoked = a.setup(&[
+    a.setup(&[
         "key",
         "naked-revoke",
         &format!("--key={k1}"),
         &format!("--peer={}", server.url),
     ]);
-    assert_eq!(
-        revoked["revoke"]["pay"]["rvk"], second,
-        "the revoke must land in the action's second; rerun on a slow machine"
-    );
     // The pull step records the peer's revoke in the local store.
     let v = a.run(&verify_args(
         &format!("--identity={id}"),
