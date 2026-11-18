@@ -44,6 +44,8 @@ pub mod parsed_coz;
 pub mod principal;
 /// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.
 pub mod principal_tree;
+/// Tip-anchored membership and extension proofs across epochs (stub).
+pub mod proof;
 /// Work counters for tests that pin cost (U3).
 #[cfg(any(test, feature = "test-utils"))]
 pub mod probe;
