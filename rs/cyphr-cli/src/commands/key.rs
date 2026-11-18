@@ -34,7 +34,8 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             identity,
             key,
             signer,
-        } => replace(cli, identity, key.as_deref(), signer, &cli.authority),
+            now,
+        } => replace(cli, identity, key.as_deref(), signer, *now, &cli.authority),
         KeyCommands::NakedRevoke { key, msg, peer } => naked_revoke(cli, key, msg.as_deref(), peer),
         KeyCommands::Request {
             identity,
@@ -215,6 +216,7 @@ fn replace(
     identity: &str,
     key_tmb: Option<&str>,
     signer_tmb: &str,
+    now: Option<i64>,
     authority: &str,
 ) -> crate::Result<()> {
     let mut keystore = super::common::open_backend(cli)?;
@@ -236,6 +238,7 @@ fn replace(
         &new_key,
         signer_tmb,
         authority,
+        now,
     )?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
@@ -353,10 +356,11 @@ fn commit_key_tx(
     typ: &str,
     fields: &[(&str, Value)],
     new_key: Option<cyphr::Key>,
+    now: Option<i64>,
 ) -> crate::Result<()> {
     super::init::commit_genesis(principal, keystore, &[], authority)?;
     let signer = keystore.signer(signer_tmb)?;
-    let now = current_timestamp();
+    let now = now.unwrap_or_else(current_timestamp);
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer.alg().to_string()));
@@ -399,6 +403,7 @@ pub(crate) fn apply_key_create(
         cyphr::parsed_coz::typ::KEY_CREATE,
         &[("id", Value::String(new_key_tmb.to_string()))],
         Some(new_key.clone()),
+        None,
     )
 }
 
@@ -419,6 +424,7 @@ pub(crate) fn apply_key_delete(
         cyphr::parsed_coz::typ::KEY_DELETE,
         &[("id", Value::String(key_tmb.to_string()))],
         None,
+        None,
     )
 }
 
@@ -432,6 +438,7 @@ pub(crate) fn apply_key_replace(
     new_key: &cyphr::Key,
     signer_tmb: &str,
     authority: &str,
+    now: Option<i64>,
 ) -> crate::Result<()> {
     commit_key_tx(
         principal,
@@ -441,6 +448,7 @@ pub(crate) fn apply_key_replace(
         cyphr::parsed_coz::typ::KEY_REPLACE,
         &[("id", Value::String(new_key_tmb.to_string()))],
         Some(new_key.clone()),
+        now,
     )
 }
 
@@ -474,6 +482,7 @@ pub(crate) fn apply_key_revoke(
         authority,
         cyphr::parsed_coz::typ::KEY_REVOKE,
         &[("rvk", rvk)],
+        None,
         None,
     )
 }
