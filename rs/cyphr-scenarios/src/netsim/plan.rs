@@ -487,14 +487,7 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 && model.principals[p].devices == 2
                 && model.principals[p].holders.len() >= 2
         };
-        // A naked revoke reaches every holder, so none may be stopped.
-        let revocable = |p: usize| {
-            !model.principals[p].backups.is_empty()
-                && !model.principals[p]
-                    .holders
-                    .iter()
-                    .any(|h| model.down.contains(h))
-        };
+        let revocable = |p: usize| !model.principals[p].backups.is_empty();
         let enabled: Vec<Kind> = KINDS
             .into_iter()
             .filter(|k| match k {
