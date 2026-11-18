@@ -30,7 +30,19 @@
 //! step        := { "position", "siblings": [bytes] }
 //! consistency := { "alg", "boundary_hash", "peak_path": [step],
 //!                  "new_peaks": [bytes], "split_index" }
+//!
+//! key certificate := {
+//!   "top": { "pt_cells": [bytes] },     // PR at the size -> SR (cell 0)
+//!   "key": { "alg", "hops": [path] }    // key leaf in KT (root KR); KR in the
+//!                                       // AR node; AR in the SR node (SR is the
+//!                                       // cell's variant); empty steps where
+//!                                       // a single child is promoted
+//! }
 //! ```
+//!
+//! A certificate of one kind is refused as malformed by the verifier of
+//! another: a key certificate has no `stitches` or `terminal`, a
+//! membership or extension certificate no `key`.
 //!
 //! The arrow is `H_G(pre || fwd? || TMR)` in SPEC 4.2 order. TMR is
 //! recomputed from the czds the opening carries (the same czds the leaf's

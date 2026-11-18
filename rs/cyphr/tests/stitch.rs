@@ -2265,6 +2265,189 @@ async fn a_key_in_the_key_set_at_a_pinned_size_verifies() {
     assert!(matches!(r, Err(ProofError::Question(_))), "{r:?}");
 }
 
+// A bundle with one coz's pay altered and its signature left as is: its
+// czd, derived from the coz's own bytes, changes, so the transaction root
+// is no longer the leaf's. Refused under a pin and under a chain anchor.
+#[tokio::test]
+async fn a_tampered_bundle_is_refused() {
+    let (p, w) = genuine().await;
+    let mut bundle = bundle_of(&p, 2);
+    assert_eq!(
+        chain_member(&p, &w, 2),
+        Ok(()),
+        "control: the honest bundle"
+    );
+    assert_eq!(pin_member(&p, &w, 2), Ok(()), "control: under a pin");
+    let blob = &mut bundle.txs[0][0];
+    let mut coz: Value = serde_json::from_slice(blob).expect("a coz blob");
+    let now = coz["pay"]["now"].as_i64().expect("a now");
+    coz["pay"]["now"] = json!(now + 1);
+    *blob = serde_json::to_vec(&coz).expect("blob");
+    let n = n_of(&p);
+    for (what, anchor) in [
+        ("chain", Anchor::of_chain(p.state())),
+        ("pin", Anchor::pin(p.root_at(n).expect("root"))),
+    ] {
+        let r = member_with(&anchor, n, &w, 2, &bundle);
+        assert!(
+            matches!(r, Err(Why::Mismatch | Why::Path)),
+            "a bundle with an altered pay was accepted under a {what} anchor: {r:?}"
+        );
+    }
+}
+
+// ---- key certificates ----
+
+/// Genesis, an AT-level nonce (so the AR node has two children and the KR
+/// step is not a promotion), data commits (so SR has a Data Root beside AR),
+/// then a replace to ES256 and more data: 9 commits.
+async fn key_chain() -> (Principal, Kp, Kp) {
+    let (a, b) = keys();
+    let mut p = genesis(&a).await;
+    let id = format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[5u8; 32]));
+    commit_as(&mut p, &a, "AT/nonce/create", &id, None, at(1))
+        .await
+        .expect("an AT-level nonce");
+    for k in 2..4 {
+        data_commit(&mut p, &a, at(k)).await;
+    }
+    commit_key(&mut p, &a, "replace", &b, at(4)).await;
+    for k in 5..9 {
+        data_commit(&mut p, &b, at(k)).await;
+    }
+    (p, a, b)
+}
+
+async fn cert_k(p: &Principal, tmb: &coz::Thumbprint) -> Wire {
+    Wire::of(&p.prove_key(tmb, n_of(p)).await.expect("a key certificate"))
+}
+
+fn hop(w: &mut Wire, i: usize) -> &mut Value {
+    &mut w.0["key"]["hops"][i]
+}
+
+fn key_with(
+    anchor: &Anchor<'_>,
+    w: &Wire,
+    size: u64,
+    tmb: &coz::Thumbprint,
+) -> Result<(), ProofError> {
+    let cert: Certificate =
+        serde_json::from_value(w.0.clone()).map_err(|e| ProofError::Malformed(e.to_string()))?;
+    verify_key(anchor, &cert, size, tmb)
+}
+
+fn refuted(r: &Result<(), ProofError>) -> bool {
+    matches!(r, Err(ProofError::Refuted(_)))
+}
+
+// A tampered KR step (KR in the AR node) or AR step (AR in the SR node) is
+// refused, under a chain anchor and under a pin.
+#[tokio::test]
+async fn a_tampered_key_certificate_step_is_refused() {
+    let (p, _, b) = key_chain().await;
+    let n = n_of(&p);
+    let (chain, pin) = (
+        Anchor::of_chain(p.state()),
+        Anchor::pin(p.root_at(n).expect("root")),
+    );
+    let genuine = cert_k(&p, &b.tmb).await;
+    assert_eq!(
+        key_with(&chain, &genuine, n, &b.tmb),
+        Ok(()),
+        "control: chain"
+    );
+    assert_eq!(key_with(&pin, &genuine, n, &b.tmb), Ok(()), "control: pin");
+    for (what, i) in [("the KR step", 1), ("the AR step", 2)] {
+        let mut w = genuine.clone();
+        assert!(
+            !hop(&mut w, i)["steps"]
+                .as_array()
+                .expect("steps")
+                .is_empty(),
+            "setup: {what} is not a promotion"
+        );
+        flip(&mut hop(&mut w, i)["steps"][0]["siblings"][0]);
+        for (anchor_name, anchor) in [("chain", &chain), ("pin", &pin)] {
+            let r = key_with(anchor, &w, n, &b.tmb);
+            assert!(refuted(&r), "{what} tampered, {anchor_name}: {r:?}");
+        }
+    }
+}
+
+// SR and AR sort their children (SPEC 3.7 step 2), so a position says
+// nothing of a role. Presenting the Data Root where the AR belongs is the
+// swap: the AR step is re-aimed at the DR's position, with the AR as its
+// sibling. It is refused, and the role binding is why: each hop's leaf is
+// the root the hop below computed, never a value the certificate names, so
+// the leaf at that position is the real AR whatever slot it is claimed
+// in, and a Data Root (an MR of signed actions' czds) cannot hold a chosen
+// key root as a child. The swap therefore cannot be built to verify, only
+// attempted.
+#[tokio::test]
+async fn a_data_root_in_the_auth_root_role_is_refused() {
+    let (p, _, b) = key_chain().await;
+    let n = n_of(&p);
+    let family = HashAlg::Sha256;
+    let ar = p
+        .commit_at(n as usize - 1)
+        .expect("commit")
+        .auth_root()
+        .expect("an auth root")
+        .0
+        .get(family)
+        .expect("the family's AR")
+        .to_vec();
+    let mut w = cert_k(&p, &b.tmb).await;
+    let (index, dr) = (
+        w.0["key"]["hops"][2]["index"].as_u64().expect("index"),
+        bytes_of(&w.0["key"]["hops"][2]["steps"][0]["siblings"][0]),
+    );
+    assert_ne!(dr, ar, "setup: the sibling is the Data Root, not the AR");
+    let h = hop(&mut w, 2);
+    h["index"] = json!(1 - index);
+    h["steps"][0]["position"] = json!(1 - index);
+    set_bytes(&mut h["steps"][0]["siblings"][0], &ar);
+    for (what, anchor) in [
+        ("chain", Anchor::of_chain(p.state())),
+        ("pin", Anchor::pin(p.root_at(n).expect("root"))),
+    ] {
+        let r = key_with(&anchor, &w, n, &b.tmb);
+        assert!(refuted(&r), "a Data Root in the AR role, {what}: {r:?}");
+    }
+}
+
+// A certificate of one kind is refused as malformed by the verifier of
+// another.
+#[tokio::test]
+async fn a_certificate_of_another_kind_is_malformed() {
+    let (p, a, b) = key_chain().await;
+    let n = n_of(&p);
+    let pin = Anchor::pin(p.root_at(n).expect("root"));
+    let key = cert_k(&p, &b.tmb).await.cert().expect("parses");
+    let membership = Wire::of(&p.prove_membership(n, 2).await.expect("prove"))
+        .cert()
+        .expect("parses");
+    let r = verify_key(&pin, &membership, n, &b.tmb);
+    assert!(
+        matches!(r, Err(ProofError::Malformed(_))),
+        "membership to verify_key: {r:?}"
+    );
+    let bundle = bundle_of(&p, 2);
+    let r = verify_membership(&pin, &key, n, 2, &bundle);
+    assert!(
+        matches!(r, Err(ProofError::Malformed(_))),
+        "key to verify_membership: {r:?}"
+    );
+    let holder = prefix(&a, 3).await;
+    let head = p.root_at(n).expect("head");
+    let r = verify_extension(&Anchor::of_chain(holder.state()), &key, 3, &head);
+    assert!(
+        matches!(r, Err(ProofError::Malformed(_))),
+        "key to verify_extension: {r:?}"
+    );
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in

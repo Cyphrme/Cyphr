@@ -31,7 +31,10 @@ fn framing(what: impl Into<String>) -> ProofError {
 /// `alg` alone (all a walk in `alg` needs): each transaction's cozies'
 /// czds converted to `alg`, grouped as the transactions group them, the
 /// commit transaction last. A bundle suffices; the family set the commit
-/// was stored with is not needed.
+/// was stored with is not needed. Each czd is derived from the coz's own
+/// bytes (its pay and signature), never taken from a value the bundle
+/// carries, so a coz altered with its signature left as is changes the
+/// root and is refused.
 fn tr_of_bundle(
     _bundle: &crate::replay::WireBundle,
     _alg: HashAlg,
