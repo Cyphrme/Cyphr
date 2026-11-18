@@ -121,7 +121,11 @@ impl Connector for Mirror {
                         None => return Err(ConnectError::NonSuccess(404)),
                     },
                 };
-                let entries: Vec<Value> = self.line.entries[from..]
+                let upto = q
+                    .get("to")
+                    .and_then(|t| t.parse::<usize>().ok())
+                    .map_or(self.line.entries.len(), |t| t + 1);
+                let entries: Vec<Value> = self.line.entries[from..upto]
                     .iter()
                     .enumerate()
                     .map(|(i, blobs)| entry_bundle(from + i, blobs))
@@ -694,5 +698,125 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
         rp.sign_in(&login(&thief, &pg, AUDIENCE, &c)),
         Err(Refusal::LostBranch),
         "a key only the abandoned branch added"
+    );
+}
+
+/// A peer that also proves its log, as a real server does: `/consistency`
+/// and `/inclusion` come from its chain's own commit trees. It records the
+/// paths asked, so a test can pin which route a pull took.
+struct ProofMirror {
+    mirror: Mirror,
+    principal: cyphr::Principal<cyphr::eml::MemoryStorage>,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl Connector for ProofMirror {
+    fn channel_binding(&self) -> Option<&ChannelBinding> {
+        None
+    }
+
+    async fn exchange(&self, request: &Request) -> Result<Vec<u8>, ConnectError> {
+        let target = request.target.as_str();
+        let (path, q) = target.split_once('?').unwrap_or((target, ""));
+        self.asked.lock().expect("asked").push(path.to_owned());
+        let number = |name: &str| {
+            q.split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .find(|(k, _)| *k == name)
+                .and_then(|(_, v)| v.parse::<u64>().ok())
+        };
+        let payload = match path {
+            "/consistency" => {
+                let from = number("from").ok_or(ConnectError::NonSuccess(400))?;
+                cyphr_client::Extension::of(&self.principal, from)
+                    .await
+                    .map_err(|_| ConnectError::NonSuccess(404))?
+                    .to_payload()
+            },
+            "/inclusion" => {
+                let index = number("index").ok_or(ConnectError::NonSuccess(400))?;
+                cyphr_client::Inclusion::of(&self.principal, index)
+                    .await
+                    .map_err(|_| ConnectError::NonSuccess(404))?
+                    .to_payload()
+            },
+            _ => return self.mirror.exchange(request).await,
+        };
+        Ok(serde_json::to_vec(
+            &json!({ "v": 1, "payload": payload, "statement": { "kind": "unsigned" } }),
+        )
+        .expect("json"))
+    }
+}
+
+/// `grown`, with the chain's principal for a peer that proves its log.
+async fn grown_proving(
+    g: &Kp,
+    grow: &[(&Kp, i64)],
+) -> (Line, cyphr::Principal<cyphr::eml::MemoryStorage>) {
+    let mut chain = Chain::new(g).await;
+    let mut line = Line::of(&chain);
+    for (key, now) in grow {
+        let blobs = chain.commit(key, *now).await;
+        line.push(&chain, blobs);
+    }
+    (line, chain.principal)
+}
+
+static LOCATED_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn located_clock() -> i64 {
+    LOCATED_CLOCK.load(Ordering::SeqCst)
+}
+
+/// The lost-branch scenario over peers that serve proofs, so the pull
+/// finds the fork by consistency and inclusion proofs (`locate_fork`)
+/// instead of comparing whole chains. Pins that the same refusal holds on
+/// the route real servers take.
+///
+/// Turns red if `fork_refusal` is bypassed (the key signs in), or if the pull falls back to
+/// the whole-chain path (the route assertions).
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
+    let (g, device, k2, thief, k4) = (kp(), kp(), kp(), kp(), kp());
+    let pg = g.tmb.to_b64();
+    let c1 = (&device, T0 + 50);
+    let (abandoned, abandoned_log) = grown_proving(&g, &[c1, (&thief, T0 + 61)]).await;
+    let (kept, kept_log) = grown_proving(&g, &[c1, (&k2, T0 + 60), (&k4, T0 + 70)]).await;
+    LOCATED_CLOCK.store(T0 + 100, Ordering::SeqCst);
+    let proving = |line, principal| ProofMirror {
+        mirror: Mirror::of(line),
+        principal,
+        asked: std::sync::Mutex::default(),
+    };
+    let (first, second) = (proving(abandoned, abandoned_log), proving(kept, kept_log));
+
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        located_clock,
+    );
+    let on = |name, p| PullPeer { name, connector: p };
+    rp.refresh(&[on("first", &first)]).await;
+    let report = rp.refresh(&[on("second", &second)]).await;
+    assert_eq!(report.forks.len(), 1, "the fork is found");
+
+    let asked = second.asked.lock().expect("asked");
+    for route in ["/consistency", "/inclusion"] {
+        assert!(
+            asked.iter().any(|p| p == route),
+            "{route} not asked: {asked:?}"
+        );
+    }
+    // The locate path proves the one rival commit at the fork and fetches
+    // nothing past it, so a tie at the fork's height reads as `Forked`:
+    // still a refusal, as the record's key set is an abandoned branch's,
+    // but not yet the exact `LostBranch`.
+    let c = rp.challenge();
+    let got = rp.sign_in(&login(&thief, &pg, AUDIENCE, &c));
+    assert!(
+        matches!(got, Err(Refusal::Forked | Refusal::LostBranch)),
+        "a key only the abandoned branch added: {got:?}"
     );
 }
