@@ -348,6 +348,68 @@ async fn s03_resolved_fork_is_not_a_live_head() {
         .await;
 }
 
+/// The commit that resolves a fork is signed by a different key than the
+/// commit below it: a third device, which holds none of the phone's keys,
+/// takes the phone's branch from P1 and signs the resolution on it. Then
+/// `resolved_by` names the tablet's key, and an oracle that read the signer
+/// of the wrong position would name the phone's.
+#[tokio::test(flavor = "multi_thread")]
+async fn s03_resolver_differs_from_the_commit_below() {
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
+    h.require(&[
+        Capability::Transport,
+        Capability::CliNetwork,
+        Capability::BranchStore,
+        Capability::Evidence,
+        Capability::PeerGossip,
+        Capability::DataCommit,
+    ])
+    .await;
+    let (laptop, phone) = (h.client("alice-laptop"), h.client("alice-phone"));
+    let tablet = h.client("alice-tablet");
+    let observer = h.client("bob");
+    let both = ["p1", "p2"];
+    let pr = h.ok(laptop.create_principal().await);
+    let tablet_key = h.ok(laptop.pair_device(&pr, &tablet).await);
+    h.ok(laptop.pair_device(&pr, &phone).await);
+    h.ok(laptop.push(&pr, &both).await).accepted("base push");
+
+    h.proxy.partition("p1", "p2");
+    h.proxy.partition("alice-laptop", "p1");
+    h.proxy.partition("alice-phone", "p2");
+    assert!(!h.reach("alice-laptop", "p1").await && !h.reach("alice-phone", "p2").await);
+    h.ok(laptop.commit_data(&pr, "laptop branch").await);
+    h.ok(laptop.push(&pr, &["p2"]).await)
+        .accepted("laptop branch");
+    h.ok(phone.commit_data(&pr, "phone branch").await);
+    let kept = h
+        .ok(phone.push(&pr, &["p1"]).await)
+        .accepted("phone branch");
+
+    // The tablet reads the phone's branch while P1 holds only that one.
+    assert_eq!(h.ok(tablet.sync(&pr, &["p1"]).await), kept);
+
+    h.proxy.heal("p1", "p2");
+    h.eventually("each peer to hold the rival branch", CONVERGE, || async {
+        Ok(evidence(&h, "p1", &pr).await >= 1 && evidence(&h, "p2", &pr).await >= 1)
+    })
+    .await;
+    // The tablet resolves on the phone's branch: the signer of the commit
+    // below is the phone, the resolver's is not.
+    let resolved = resolve_by_extension(&h, &tablet, &pr, &kept).await;
+    let healed = h.ok(observer.verdict(&pr, &both).await);
+    assert_eq!(healed.branches, vec![resolved]);
+    assert_eq!(
+        healed.resolved_by,
+        Some(tablet_key),
+        "the resolution is signed by the tablet's key"
+    );
+    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
+        .await;
+}
+
 /// Partition the laptop with P2 and the phone with P1, then have each
 /// commit and push twice on its side: two branches over one `pre`, both
 /// extended past the fork point. The commits of each branch, in order.
