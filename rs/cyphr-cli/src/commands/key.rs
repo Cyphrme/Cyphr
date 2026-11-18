@@ -299,23 +299,41 @@ fn naked_revoke(
         },
     });
 
+    // An emergency revoke goes to every peer: one that is down must not
+    // keep the rest from hearing it (SPEC 6.4). It fails only when peers
+    // were named and none accepted, with the last peer's error.
+    let mut accepted: Vec<&String> = Vec::new();
+    let mut last_err = None;
     for url in peers {
-        let peer = Peer::new(url, cli.peer_timeout_secs, cli.allow_cleartext)?;
-        block_on(peer.post_revoke(&envelope))??;
+        let sent = Peer::new(url, cli.peer_timeout_secs, cli.allow_cleartext)
+            .map_err(crate::Error::from)
+            .and_then(|peer| block_on(peer.post_revoke(&envelope))?.map_err(crate::Error::from));
+        match sent {
+            Ok(()) => accepted.push(url),
+            Err(e) => {
+                eprintln!("warning: naked revoke not accepted by {url}: {e}");
+                last_err = Some(e);
+            },
+        }
+    }
+    if accepted.is_empty()
+        && let Some(e) = last_err
+    {
+        return Err(e);
     }
 
     match cli.output {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "revoked_key": key_tmb,
-                "peers": peers,
+                "peers": accepted,
                 "revoke": envelope,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
             println!("Signed a naked revoke of {key_tmb}");
-            for url in peers {
+            for url in &accepted {
                 println!("  accepted by: {url}");
             }
         },

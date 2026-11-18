@@ -109,7 +109,6 @@ async fn lists_revoke(h: &Harness, peer: &str, key: &KeyRef) -> bool {
 // holders list it, and the stopped holder lists it after it restarts, by
 // gossip.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(revoke-with-a-holder-down): naked-revoke fails when one known peer is stopped"]
 async fn a_naked_revoke_survives_a_stopped_holder() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
         .await
