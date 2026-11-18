@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use coz::base64ct::Encoding;
-use cyphr::proof::{FullCr, MembershipProof, Rooted, Trusted, verify_membership};
+use cyphr::proof::{Anchor, Certificate, Root, verify_membership};
 use cyphr_scenarios::actions::{KeyRef, Principal, Standing};
 use cyphr_scenarios::{Capability, Harness};
 
@@ -364,11 +364,27 @@ async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
     .await;
 }
 
-// Frame NETSIM-FIX E4: after a full rotation (Ed25519 -> ES256) every
-// commit of the chain must be provable from the tip alone. `/inclusion`
-// takes no algorithm choice and answers 200 for every index; each answer
-// verifies against the tip of the chain a client pulled.
+async fn get(
+    h: &Harness,
+    peer: std::net::SocketAddr,
+    path: &str,
+    query: &[(&str, &str)],
+) -> reqwest::Response {
+    h.http
+        .get(format!("http://{peer}{path}"))
+        .query(query)
+        .send()
+        .await
+        .expect("request")
+}
+
+// Frame NETSIM-FIX E10: after a full rotation (Ed25519 -> ES256) every
+// commit of the chain must be provable from the head alone. `/head` gives
+// the Root, `/inclusion?pr&index&size` answers 200 for every index with a
+// certificate, and each verifies against an anchor on the chain a client
+// pulled and against a pin of the head.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(NETSIM-FIX E10): /head, /inclusion?size and {certificate} do not exist yet"]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (laptop, phone) = (h.client("laptop"), h.client("phone"));
@@ -413,23 +429,46 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     )
     .await;
     let held = record.principal().expect("the record holds the chain");
-    let anchor = Rooted::<Trusted, FullCr>::of_principal(held).expect("tip commit root");
 
-    for index in 0..height {
-        let resp = h
-            .http
-            .get(format!("http://{}/inclusion", h.peer("p1").addr()))
-            .query(&[("pr", pr.0.as_str()), ("index", &index.to_string())])
-            .send()
-            .await
-            .expect("inclusion request");
-        assert_eq!(resp.status(), 200, "index {index} of {height}");
+    // E10 shapes: `GET /head?pr` is a Root (in the envelope's payload),
+    // `GET /inclusion?pr&index&size` is `{certificate}`; nothing echoed,
+    // no default to the tip.
+    let peer = h.peer("p1").addr();
+    let resp = get(
+        &h,
+        peer,
+        "/head",
+        &[("pr", pr.0.as_str()), ("index", ""), ("size", "")][..1],
+    )
+    .await;
+    assert_eq!(resp.status(), 200, "/head");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    let head: Root = serde_json::from_value(body["payload"].clone()).expect("a Root");
+    assert_eq!(head.size, height, "the head is the last commit's");
+    assert_eq!(
+        Some(head.clone()),
+        held.root_at(head.size),
+        "and the record agrees"
+    );
+
+    let (chain, pin) = (Anchor::of_chain(held.state()), Anchor::pin(head.clone()));
+    for index in 0..head.size {
+        let (i, n) = (index.to_string(), head.size.to_string());
+        let resp = get(
+            &h,
+            peer,
+            "/inclusion",
+            &[("pr", pr.0.as_str()), ("index", &i), ("size", &n)],
+        )
+        .await;
+        assert_eq!(resp.status(), 200, "index {index} of {}", head.size);
         let body: serde_json::Value = resp.json().await.expect("json");
-        let proof = MembershipProof::from_payload(&body["payload"])
-            .unwrap_or_else(|e| panic!("index {index}: {e}"));
+        let cert: Certificate = serde_json::from_value(body["payload"]["certificate"].clone())
+            .unwrap_or_else(|e| panic!("index {index}: not a certificate: {e}"));
         let tr = held.commit_at(index as usize).expect("commit").tr();
-        let verified = verify_membership(&anchor, &proof, tr)
-            .unwrap_or_else(|e| panic!("index {index} does not verify: {e}"));
-        assert_eq!(verified.get().index, index);
+        for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
+            verify_membership(anchor, &cert, head.size, index, tr)
+                .unwrap_or_else(|e| panic!("index {index} does not verify ({what}): {e}"));
+        }
     }
 }
