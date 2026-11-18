@@ -28,7 +28,7 @@ use serde_json::Value;
 use super::Size;
 use super::model::Model;
 use super::plan::Op;
-use super::run::{Failure, PState, Revoked, act, fail};
+use super::run::{Failure, PState, act, fail};
 use crate::actions::{
     ActionError, Client, Evidence, KeyRef, LocalView, PeerTip, Principal, PushOutcome, RefusalKind,
     Standing, Tip, Verdict,
@@ -333,13 +333,13 @@ pub(crate) async fn n5_listed(
         .enumerate()
         .filter_map(|(p, s)| Some((p, s.as_ref()?)))
     {
-        for Revoked { key, forgotten_by } in &ps.revoked {
+        for key in &ps.revoked {
             until(
                 size,
                 &format!("principal {p}'s revoked key listed"),
                 || async {
                     let mut lines = Vec::new();
-                    for holder in ps.holders.iter().filter(|x| !forgotten_by.contains(x)) {
+                    for holder in &ps.holders {
                         match lists_revoked(h, holder, key).await {
                             Ok(true) => {},
                             Ok(false) => lines.push(format!("`{holder}` does not list {}", key.0)),
@@ -606,12 +606,7 @@ async fn sampled(b: &Barrier<'_, '_>) -> Result<(), Failure> {
                 };
                 let rp = act(b.h.start_relying_party().await, &what)?;
                 let c = &ps.clients[0];
-                let skip = b.size.forgive_forked_sign_in && ps.abandoned.is_some();
-                match if skip {
-                    Ok(None)
-                } else {
-                    c.sign_in(&rp).await.map(Some)
-                } {
+                match c.sign_in(&rp).await {
                     Ok(_) => {},
                     Err(ActionError::Refused(r)) => {
                         return Err(fail(
@@ -681,7 +676,7 @@ async fn snapshot(
             let tmbs = ps
                 .revoked
                 .iter()
-                .map(|k| k.key.0.as_str())
+                .map(|k| k.0.as_str())
                 .collect::<Vec<_>>()
                 .join(",");
             out.push((

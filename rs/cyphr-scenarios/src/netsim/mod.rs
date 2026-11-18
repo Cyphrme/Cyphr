@@ -41,14 +41,6 @@ pub struct Size {
     pub converge: Duration,
     /// One witness of `p0`, checked by N9.
     pub witness: bool,
-    /// N5 does not ask a peer restored after a revoke to list it (see
-    /// `run::Revoked`). Only the findings test turns this off.
-    pub forgive_restored_peers: bool,
-    /// N8 does not ask the relying party to sign in a principal whose fork
-    /// was resolved: it refuses one that ever forked, which SPEC 15.6
-    /// (Error becomes Active on resolution) does not say. An open question
-    /// for the spec author; only the findings test turns this off.
-    pub forgive_forked_sign_in: bool,
 }
 
 impl Size {
@@ -66,8 +58,6 @@ impl Size {
             holders: (3, 5),
             converge: Duration::from_secs(120),
             witness: false,
-            forgive_restored_peers: true,
-            forgive_forked_sign_in: true,
         }
     }
 
@@ -85,8 +75,6 @@ impl Size {
             holders: (7, 9),
             converge: Duration::from_secs(600),
             witness: true,
-            forgive_restored_peers: true,
-            forgive_forked_sign_in: true,
         }
     }
 

@@ -42,18 +42,8 @@ pub struct PrincipalModel {
     /// genesis's second key is not counted: the driver is never told its
     /// thumbprint.
     pub backups: VecDeque<usize>,
-    /// Opened by several keys. Such a principal takes no second device: the
-    /// paired device's `cyphr rebase` cannot resolve the genesis (reproduced
-    /// by `tests/netsim_findings.rs`). Drop this field when that passes.
-    pub multikey: bool,
     /// Commits in the chain.
     pub height: u64,
-    /// A theft deleted the second device's key, the only one of its hash
-    /// algorithm, and the owner's local store then fails a later commit
-    /// (reproduced by `tests/netsim_findings.rs`). No op may commit to the
-    /// principal again; reads still apply. Delete this field and its uses
-    /// when that test passes.
-    pub spent: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -95,11 +85,6 @@ impl Model {
         }
         if d >= pm.devices {
             return Err(format!("`{op}`: principal {p} has {} devices", pm.devices));
-        }
-        if pm.spent {
-            return Err(format!(
-                "`{op}`: principal {p} is spent: its store cannot commit past a deleted paired key"
-            ));
         }
         Ok(pm)
     }
@@ -157,9 +142,7 @@ impl Model {
                     devices: 1,
                     keys: if *multikey { 2 } else { 1 },
                     backups: VecDeque::new(),
-                    multikey: *multikey,
                     height: GENESIS_HEIGHT,
-                    spent: false,
                 });
             },
             Op::Commit { p, d } => {
@@ -178,11 +161,6 @@ impl Model {
             },
             Op::Pair { p, d } => {
                 let pm = self.principal(op, *p, *d)?;
-                if pm.multikey {
-                    return Err(format!(
-                        "`{op}`: a multikey principal takes no second device"
-                    ));
-                }
                 if pm.devices >= MAX_DEVICES {
                     return Err(format!(
                         "`{op}`: principal {p} already has {MAX_DEVICES} devices"
@@ -205,14 +183,7 @@ impl Model {
             // The key's own device signs the revoke, then the owner's
             // `key/delete` commit retires it (SPEC 6.4).
             Op::NakedRevoke { p, d } => {
-                let peers_down = self.down.clone();
                 let pm = self.principal(op, *p, *d)?;
-                // The CLI sends the revoke to every peer it knows for the
-                // principal, which after publication is every holder; one
-                // stopped holder makes the whole send fail.
-                if pm.holders.iter().any(|h| peers_down.contains(h)) {
-                    return Err(format!("`{op}`: every holder must be running"));
-                }
                 if pm.backups.front() != Some(d) {
                     return Err(format!(
                         "`{op}`: device {d} does not hold the oldest backup"
@@ -241,7 +212,6 @@ impl Model {
                 pm.keys -= 1;
                 pm.devices = 1;
                 pm.backups.retain(|d| *d == 0);
-                pm.spent = true;
             },
             Op::Concurrent { p } => {
                 let pm = self.principal(op, *p, 0)?;

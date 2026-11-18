@@ -65,17 +65,14 @@ async fn a_principal_keeps_committing_after_its_paired_key_is_deleted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restored_peer_relearns_a_naked_revoke() {
     use cyphr_scenarios::netsim::{Size, plan, run};
-    let size = Size {
-        forgive_restored_peers: false,
-        ..Size::ci()
-    };
+    let size = Size::ci();
     let ops = plan::parse(
         "create p=0 multikey=false holders=0,1,2\naddkey p=0 d=0\nbackup peer=2\nnakedrevoke p=0 \
          d=0\nrestore peer=2\nbarrier\n",
     )
     .expect("op log");
     let h = run::start(&size, 20_261_117).await.expect("start peers");
-    // With no exemption for restored peers, N5 asks p2 too.
+    // N5 asks the restored p2 to list the revoke too.
     run::run(&h, &size, &ops)
         .await
         .unwrap_or_else(|f| panic!("{f}"));
@@ -148,18 +145,14 @@ async fn a_naked_revoke_survives_a_stopped_holder() {
 // SPEC 15.6 returns a principal from Error to Active "upon observing a valid
 // resolution" and says nothing of a lasting mark. Either the relying party's
 // sticky refusal is intended and the spec should say so, or it is a defect:
-// for the spec author to rule, not for the harness to pick. NETSIM does not
-// ask for this sign-in until it is ruled on.
+// for the spec author to rule, not for the harness to pick.
 //
 // Must hold, if the spec's reading stands: an active key of a principal whose
 // fork was resolved signs in.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_principal_signs_in_after_its_fork_is_resolved() {
     use cyphr_scenarios::netsim::{Size, plan, run};
-    let size = Size {
-        forgive_forked_sign_in: false,
-        ..Size::ci()
-    };
+    let size = Size::ci();
     let ops = plan::parse(
         "create p=0 multikey=false holders=0,1,2\npair p=0 d=0\nfork p=0\nsignin p=0\nbarrier\n",
     )
@@ -305,4 +298,68 @@ async fn a_fork_of_data_commits_is_resolved_at_every_peer() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fork_with_a_key_replacement_is_resolved_at_every_peer() {
     gossip_a_fork(true).await;
+}
+
+// Found by NETSIM at the large size, seed 20261117 (principal 22). Seven of
+// its eight holders stayed two commits behind the owner for ever, each pull
+// from the home failing with `Replay { commit: 17, source: CommitMismatch }`
+// ("state root mismatch"), while the home, which took the commits as the owner
+// pushed them, held the whole chain. About one chain in five fails here, and
+// which one varies with the random keys, so the test builds twelve.
+//
+// The chain, by commit:
+//   Ed25519 genesis; an ES256 key paired in, the only SHA-256 key
+//   key/delete of that ES256 key: SHA-256 has no key left, so the log closes
+//     the algorithm (c291afe1)
+//   a second ES256 key paired in: SHA-256 returns
+//   a commit signed by the second ES256 key (its arrow is a SHA-256 digest)
+// A holder replaying the chain from genesis refuses the return of SHA-256.
+//
+// Must hold: a holder that replays a chain from genesis reaches the root the
+// owner's store reached, however the chain's hash algorithms came and went.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(algorithm-returns): a holder replaying a chain in which a hash algorithm left with \
+            its last key and came back cannot reach the owner's commit (state root mismatch)"]
+async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
+    let h = Harness::start_gossiping(&["p1", "p2"], 1)
+        .await
+        .expect("start peers");
+    let both = ["p1", "p2"];
+    let mut chains = Vec::new();
+    for n in 0..12 {
+        let (alice, first, second) = (
+            h.client(&format!("alice{n}")),
+            h.client(&format!("phone-one{n}")),
+            h.client(&format!("phone-two{n}")),
+        );
+        let pr = h.ok(alice.create_principal().await);
+        let key = h.ok(alice.pair_device(&pr, &first).await);
+        h.ok(alice.push(&pr, &both).await).accepted("base push");
+        h.ok(alice.remove_key(&pr, &key).await);
+        h.ok(alice.push(&pr, &both).await)
+            .accepted("after the delete");
+        h.ok(alice.pair_device(&pr, &second).await);
+        h.ok(alice.push(&pr, &["p1"]).await)
+            .accepted("after the return");
+        h.ok(second
+            .commit_data(&pr, "signed by the returned algorithm")
+            .await);
+        let tip = h
+            .ok(second.push(&pr, &["p1"]).await)
+            .accepted("late commit");
+        chains.push((pr, tip));
+    }
+    h.eventually(
+        "p2 to replay every chain to its owner's tip",
+        Duration::from_secs(60),
+        || async {
+            for (pr, tip) in &chains {
+                if h.peer_view("p2", pr).await.map(|v| v.tip).as_ref() != Some(tip) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+    )
+    .await;
 }

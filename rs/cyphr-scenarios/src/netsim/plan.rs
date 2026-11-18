@@ -465,12 +465,9 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
             push(&mut model, &mut log, op);
             continue;
         }
-        // Principals whose home peer is up and that may still commit; only
-        // they can act.
+        // Principals whose home peer is up; only they can act.
         let live: Vec<usize> = (0..model.principals.len())
-            .filter(|&p| {
-                !model.down.contains(&model.principals[p].holders[0]) && !model.principals[p].spent
-            })
+            .filter(|&p| !model.down.contains(&model.principals[p].holders[0]))
             .collect();
         let pick = |rng: &mut ChaCha8Rng, ok: &dyn Fn(usize) -> bool| -> Option<usize> {
             let c: Vec<usize> = live.iter().copied().filter(|&p| ok(p)).collect();
@@ -490,21 +487,14 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 && model.principals[p].devices == 2
                 && model.principals[p].holders.len() >= 2
         };
-        // A naked revoke reaches every holder, so none may be stopped.
-        let revocable = |p: usize| {
-            !model.principals[p].backups.is_empty()
-                && !model.principals[p]
-                    .holders
-                    .iter()
-                    .any(|h| model.down.contains(h))
-        };
+        let revocable = |p: usize| !model.principals[p].backups.is_empty();
         let enabled: Vec<Kind> = KINDS
             .into_iter()
             .filter(|k| match k {
                 Kind::Commit | Kind::Record | Kind::AddKey | Kind::Replace => !live.is_empty(),
-                Kind::Pair => live.iter().any(|&p| {
-                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
-                }),
+                Kind::Pair => live
+                    .iter()
+                    .any(|&p| model.principals[p].devices < MAX_DEVICES),
                 Kind::DelKey => live
                     .iter()
                     .any(|&p| !model.principals[p].backups.is_empty()),
@@ -551,10 +541,8 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 }
             },
             Kind::Pair => {
-                let p = pick(&mut rng, &|p| {
-                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
-                })
-                .expect("enabled implies one");
+                let p = pick(&mut rng, &|p| model.principals[p].devices < MAX_DEVICES)
+                    .expect("enabled implies one");
                 Op::Pair {
                     p,
                     d: rng.gen_range(0..model.principals[p].devices),
