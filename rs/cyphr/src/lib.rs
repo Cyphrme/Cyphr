@@ -48,7 +48,7 @@ pub mod principal_tree;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod probe;
 /// Pinned roots and certificates: membership and extension across
-/// epochs (E10 surface; stubs).
+/// hash-algorithm epochs.
 pub mod proof;
 /// Replay of stored commit bundles: one entry point for every consumer.
 pub mod replay;

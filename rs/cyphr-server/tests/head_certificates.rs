@@ -20,7 +20,7 @@ use common::{
 const NOW: i64 = 1_700_000_000;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn head_and_certificates_have_the_e10_shapes() {
+async fn head_and_certificate_answers_are_bare_and_verify() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
