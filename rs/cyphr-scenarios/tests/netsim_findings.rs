@@ -65,17 +65,14 @@ async fn a_principal_keeps_committing_after_its_paired_key_is_deleted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restored_peer_relearns_a_naked_revoke() {
     use cyphr_scenarios::netsim::{Size, plan, run};
-    let size = Size {
-        forgive_restored_peers: false,
-        ..Size::ci()
-    };
+    let size = Size::ci();
     let ops = plan::parse(
         "create p=0 multikey=false holders=0,1,2\naddkey p=0 d=0\nbackup peer=2\nnakedrevoke p=0 \
          d=0\nrestore peer=2\nbarrier\n",
     )
     .expect("op log");
     let h = run::start(&size, 20_261_117).await.expect("start peers");
-    // With no exemption for restored peers, N5 asks p2 too.
+    // N5 asks the restored p2 to list the revoke too.
     run::run(&h, &size, &ops)
         .await
         .unwrap_or_else(|f| panic!("{f}"));
