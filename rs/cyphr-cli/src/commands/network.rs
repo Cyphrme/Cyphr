@@ -553,6 +553,7 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                         &key,
                         signer,
                         &authority,
+                        None,
                     )?;
                 },
                 Intent::DsCreate { signer } => {
