@@ -298,7 +298,10 @@ async fn rival_get_rows(n: usize, path: &str) -> u64 {
 #[tokio::test]
 async fn tip_read_rows_are_constant_with_a_rival_at_one() {
     let path = "/tip?pr={id}";
-    let (short, long) = (rival_get_rows(SHORT, path).await, rival_get_rows(LONG, path).await);
+    let (short, long) = (
+        rival_get_rows(SHORT, path).await,
+        rival_get_rows(LONG, path).await,
+    );
     assert_eq!(
         short, long,
         "index rows read by GET /tip at n={SHORT} and n={LONG}"

@@ -5461,8 +5461,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// The canonical commits of `principal_id` from position `from` to its
     /// tip (`count` commits, the last `tip_id`), from the [`ForkCache`] where
-    /// it still holds them (only for a principal with a retained rival, `keep`): the tip itself, or a prefix the new commits link
-    /// to, which then reads only those. Anything else is read whole.
+    /// it still holds them (only for a principal with a retained rival, `keep`): the tip itself, or
+    /// a prefix the new commits link to, which then reads only those. Anything else is read whole.
     async fn canonical_held(
         &self,
         principal_id: &str,
