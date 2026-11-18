@@ -1251,6 +1251,133 @@ async fn a_stitch_at_a_multi_coz_commit_is_provable() {
     }
 }
 
+// ---- E7: the commit transaction ----
+
+/// A one-commit chain after genesis (`key/create` of an ES256 key) and
+/// its honest wire bundle, with the keys.
+async fn one_commit() -> (Kp, cyphr::replay::WireBundle) {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    let mut x = genesis(&a).await;
+    commit_key(&mut x, &a, "create", &b, at(1)).await;
+    (
+        a,
+        cyphr::replay::WireBundle::of_commit(x.commit_at(1).expect("commit")).expect("bundle"),
+    )
+}
+
+/// `pay` signed by `by`, as a wire coz blob.
+fn blob(by: &Kp, mut pay: serde_json::Value) -> Vec<u8> {
+    pay.as_object_mut().expect("object").sort_keys();
+    let v = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
+    serde_json::to_vec(&json!({"pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig)}))
+        .expect("blob")
+}
+
+// SPEC 4.3 allows a commit transaction of several cozies (then `seq` is
+// required), and the stitch prover refuses one (proof.rs `let [closing]`).
+// Such a commit cannot be built, because admission refuses every shape:
+// a non-last commit/create coz has no arrow and is a malformed payload
+// (with or without `seq`), and one that has an arrow is not last. So the
+// prover's refusal is unreachable, and `seq` is never the reason for a
+// refusal. Green characterization of today's admission, for the
+// downstream-vs-SPEC 4.3 question: revise it if admission changes.
+#[tokio::test]
+async fn a_commit_transaction_of_several_cozies_is_refused_at_admission() {
+    let (a, honest) = one_commit().await;
+    let closing: serde_json::Value = serde_json::from_slice(
+        honest
+            .txs
+            .last()
+            .and_then(|t| t.last())
+            .expect("closing coz"),
+    )
+    .expect("blob");
+    for (shape, seq, first_arrow, want) in [
+        (
+            "two cozies, no seq",
+            false,
+            false,
+            cyphr::Error::MalformedPayload,
+        ),
+        (
+            "two cozies with seq 0/1 and 1/1",
+            true,
+            false,
+            cyphr::Error::MalformedPayload,
+        ),
+        (
+            "two cozies each with an arrow",
+            true,
+            true,
+            cyphr::Error::CommitNotLast,
+        ),
+    ] {
+        let (mut first, mut last) = (closing["pay"].clone(), closing["pay"].clone());
+        if !first_arrow {
+            first.as_object_mut().expect("object").remove("arrow");
+        }
+        if seq {
+            first["seq"] = json!("0/1");
+            last["seq"] = json!("1/1");
+        }
+        let mut bundle = honest.clone();
+        *bundle.txs.last_mut().expect("tx") = vec![blob(&a, first), blob(&a, last)];
+        let mut y = genesis(&a).await;
+        let r = cyphr::replay::replay_bundle(&mut y, &bundle.decode().expect("decodes")).await;
+        let e = r.expect_err(shape);
+        assert_eq!(format!("{:?}", e.source), format!("{want:?}"), "{shape}");
+    }
+}
+
+// What apply.rs uses of the commit transaction: `commit_genesis` returns
+// `commit_tx().0.first()` as the closing coz, and `stage_commit` checks the
+// arrow on the last coz of all. On a multi-coz commit transaction they
+// would name different cozies; they do not disagree observably today,
+// because every admitted commit transaction is exactly one coz, the one
+// carrying the arrow. This pins that (no choice between the two is made).
+#[tokio::test]
+async fn first_and_last_of_the_commit_transaction_coincide_on_every_admitted_commit() {
+    let a = kp(coz::Alg::Ed25519);
+    let mut g = Principal::implicit(key_of(&a)).await.expect("open");
+    let cozies = g
+        .commit_genesis(&signer(&a), &[], T, AUTHORITY)
+        .await
+        .expect("genesis");
+    let tx = &g.commit_at(0).expect("genesis commit").commit_tx().0;
+    assert_eq!(
+        cozies.last().expect("closing"),
+        &serde_json::to_value(tx[0].raw()).expect("raw"),
+        "commit_genesis returns the commit transaction's first coz as the closing one"
+    );
+    let chains = [single(3, 3).await, double().await, multi_coz(true).await, g];
+    for p in &chains {
+        for i in 0..p.commit_count() {
+            let tx = &p.commit_at(i).expect("commit").commit_tx().0;
+            let last = p
+                .commit_at(i)
+                .expect("commit")
+                .iter_all_cozies()
+                .last()
+                .expect("a coz");
+            assert_eq!(tx.len(), 1, "commit {i}: the commit transaction is one coz");
+            assert_eq!(
+                tx.first().expect("coz").czd(),
+                tx.last().expect("coz").czd()
+            );
+            assert_eq!(
+                tx[0].czd(),
+                last.czd(),
+                "commit {i}: it is the last coz of all"
+            );
+            assert!(
+                tx[0].arrow().is_some(),
+                "commit {i}: and it carries the arrow"
+            );
+        }
+    }
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in
