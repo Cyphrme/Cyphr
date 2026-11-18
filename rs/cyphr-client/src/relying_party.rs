@@ -462,7 +462,13 @@ impl RelyingParty {
         let last = (self.record.tip()?.commits as u64).saturating_sub(1);
         let from =
             usize::try_from(cyphr::fork::assessed_from(Some(lowest), last)).unwrap_or(usize::MAX);
-        let mut held = self.record.commits_from(from);
+        self.refusal_over(self.record.commits_from(from))
+    }
+
+    /// [`fork_refusal`](Self::fork_refusal) over `chain`, the record's
+    /// commits from the window's start.
+    fn refusal_over(&self, chain: Vec<cyphr::fork::Held>) -> Option<Refusal> {
+        let mut held = chain.clone();
         held.extend(self.branches.values().cloned());
         let assessed = cyphr::fork::assessment(&held);
         if assessed.consensus == cyphr::fork::Consensus::Error {
@@ -472,10 +478,7 @@ impl RelyingParty {
             .forks
             .iter()
             .filter_map(|c| Some((c.sequence, c.kept.as_ref()?)))
-            .any(|(at, kept)| {
-                let at = usize::try_from(at).unwrap_or(usize::MAX);
-                self.record.commit_id_at(at).as_ref() != Some(kept)
-            })
+            .any(|(at, kept)| chain.iter().find(|c| c.sequence == at).map(|c| &c.id) != Some(kept))
             .then_some(Refusal::LostBranch)
     }
 
@@ -553,5 +556,54 @@ mod tests {
             BRANCH_COMMIT_LIMIT,
             "a known one is a no-op"
         );
+    }
+
+    /// A tie at the tip is a live fork whatever else is kept. One key's
+    /// rivals at old positions, resolved long ago, fill the relying party's
+    /// budget; a second key then forks at the tip, and the relying party
+    /// must still refuse (SPEC 15.5): a rival it cannot keep is a fork it
+    /// cannot see, and the principal is in Error.
+    ///
+    /// Turns red if a full budget lets a live fork go unrecorded.
+    #[test]
+    fn a_full_budget_does_not_hide_a_live_fork() {
+        let top = BRANCH_COMMIT_LIMIT as u64 + 2;
+        let at = |i: u64| cyphr::fork::Held {
+            sequence: i,
+            id: format!("c{i}"),
+            pre: i.checked_sub(1).map(|j| format!("p{j}")),
+            pr: format!("p{i}"),
+            signed: vec!["owner".to_owned()],
+        };
+        let chain: Vec<_> = (0..=top).map(at).collect();
+        let old_rival = |i: u64| cyphr::fork::Held {
+            sequence: i,
+            id: format!("a{i}"),
+            pre: i.checked_sub(1).map(|j| format!("p{j}")),
+            pr: format!("q{i}"),
+            signed: vec![format!("thief-{i}")],
+        };
+        let mut rp = RelyingParty::new(
+            "pg",
+            Anchor::GenesisCommit("SHA-256:genesis".to_owned()),
+            RpConfig {
+                audience: "rp.example".to_owned(),
+                pull_age_bound: Duration::from_secs(30),
+                refresh_interval: Duration::from_secs(10),
+            },
+            || 0,
+        );
+        let old: Vec<_> = (1..=BRANCH_COMMIT_LIMIT as u64).map(old_rival).collect();
+        rp.keep_branches(&old);
+        assert_eq!(rp.refusal_over(chain.clone()), None, "resolved long ago");
+
+        rp.keep_branches(&[cyphr::fork::Held {
+            sequence: top,
+            id: "b".to_owned(),
+            pre: Some(format!("p{}", top - 1)),
+            pr: "qb".to_owned(),
+            signed: vec!["second".to_owned()],
+        }]);
+        assert_eq!(rp.refusal_over(chain), Some(Refusal::Forked));
     }
 }
