@@ -97,7 +97,7 @@ pub struct Held {
 /// the held commits of the greatest height.
 ///
 /// Every held commit counts: each was admitted when it arrived, a
-/// revoke only gates what arrives after it , and a held
+/// revoke only gates what arrives after it, and a held
 /// message is never judged again (SPEC 14.12: "Cyphr does not use
 /// reversion"; the spec author on #203: "Retrospection isn't
 /// supported"). A signature from a key's active period stands after the
