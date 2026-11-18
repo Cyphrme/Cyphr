@@ -1016,55 +1016,31 @@ impl<S: eml::Storage> Principal<S> {
             let a = self.epoch_start(family, size - 1).ok_or_else(|| {
                 ProofError::Unprovable(format!("{family} is not active at leaf {}", size - 1))
             })?;
-            let reaches = |g: HashAlg, start: u64| {
-                if one_epoch {
-                    start <= p
-                } else {
-                    self.epoch_start(g, p).is_some()
-                }
+            let reaches = if one_epoch {
+                a <= p
+            } else {
+                self.epoch_start(family, p).is_some()
             };
-            if reaches(family, a) {
+            if reaches {
                 return Ok((hops, family, size));
             }
-            // A stitch at s lands in what commit s's arrow binds. Take the
-            // first s whose landing covers p, else the farthest back.
-            let lands = |s: u64| -> Result<Option<HashAlg>, ProofError> {
-                let mut best: Option<(u64, HashAlg)> = None;
-                for g in self.yields(s)? {
-                    let start = self.epoch_start(g, s - 1).ok_or_else(|| {
-                        ProofError::Unprovable(format!("{g} is not active at leaf {}", s - 1))
-                    })?;
-                    if best.is_none_or(|(b, _)| start < b) {
-                        best = Some((start, g));
-                    }
-                }
-                Ok(best.filter(|&(start, g)| reaches(g, start)).map(|(_, g)| g))
-            };
-            let mut chosen = None;
-            for s in a..size {
-                if let Some(g) = lands(s)? {
-                    chosen = Some((s, g));
-                    break;
+            // Stitch at the start of the family's epoch: the farthest back
+            // it can go (the E5 walk rule), read from the epoch timeline
+            // without looking at any commit but the one stitched. It lands
+            // in what commit `a`'s arrow binds; take the family that
+            // reaches back furthest.
+            let s = a;
+            let mut best: Option<(u64, HashAlg)> = None;
+            for g in self.yields(s)? {
+                let start = self.epoch_start(g, s - 1).ok_or_else(|| {
+                    ProofError::Unprovable(format!("{g} is not active at leaf {}", s - 1))
+                })?;
+                if best.is_none_or(|(b, _)| start < b) {
+                    best = Some((start, g));
                 }
             }
-            let (s, next) = match chosen {
-                Some(c) => c,
-                None => {
-                    let mut best: Option<(u64, HashAlg)> = None;
-                    for g in self.yields(a)? {
-                        let start = self.epoch_start(g, a - 1).ok_or_else(|| {
-                            ProofError::Unprovable(format!("{g} is not active at leaf {}", a - 1))
-                        })?;
-                        if best.is_none_or(|(b, _)| start < b) {
-                            best = Some((start, g));
-                        }
-                    }
-                    let (_, g) = best.ok_or_else(|| {
-                        ProofError::Unprovable(format!("commit {a} binds no family"))
-                    })?;
-                    (a, g)
-                },
-            };
+            let (_, next) =
+                best.ok_or_else(|| ProofError::Unprovable(format!("commit {s} binds no family")))?;
             hops.push(Hop { family, s, size });
             family = next;
             size = s;
