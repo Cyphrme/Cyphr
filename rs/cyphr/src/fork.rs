@@ -200,4 +200,3 @@ fn settled_by_extension(held: &[Held], kept: &Held, walked: &HashSet<&str>) -> O
         })
         .and_then(|c| c.signed.first().cloned())
 }
-

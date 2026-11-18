@@ -22,8 +22,8 @@ mod error;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cyphr::fork::{Held, assessment};
 pub use cyphr::fork::{Assessment, Consensus, Contest, ForkPoint};
+use cyphr::fork::{Held, assessment};
 use cyphr::replay::WireBundle;
 use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
