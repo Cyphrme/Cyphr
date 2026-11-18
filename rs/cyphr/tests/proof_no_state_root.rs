@@ -44,23 +44,24 @@ async fn a_log_ending_with_no_key_and_no_data_has_no_certificate() {
     );
 
     // The log of one commit still has one.
-    let cert = p.prove_membership(0, 1).await.expect("the genesis log");
-    let tr = p.commit_at(0).expect("commit").tr();
+    let cert = p.prove_membership(1, 0).await.expect("the genesis log");
+    let bundle =
+        cyphr::replay::WireBundle::of_commit(p.commit_at(0).expect("commit")).expect("bundle");
     assert_eq!(
-        verify_membership(&Anchor::of_chain(p.state()), &cert, 1, 0, tr),
+        verify_membership(&Anchor::of_chain(p.state()), &cert, 1, 0, &bundle),
         Ok(())
     );
     // A log that ends in the keyless commit has none, whatever is asked.
     for (index, size) in [(0, 2), (1, 2)] {
-        let r = p.prove_membership(index, size).await;
+        let r = p.prove_membership(size, index).await;
         assert!(
-            matches!(&r, Err(ProofError::Unprovable(m)) if m.contains("no state root")),
+            matches!(&r, Err(ProofError::Question(m)) if m.contains("no state root")),
             "membership {index} of {size}: {r:?}"
         );
     }
     let r = p.prove_extension(1, 2).await;
     assert!(
-        matches!(&r, Err(ProofError::Unprovable(m)) if m.contains("no state root")),
+        matches!(&r, Err(ProofError::Question(m)) if m.contains("no state root")),
         "extension 1 to 2: {r:?}"
     );
 }

@@ -81,13 +81,14 @@ async fn head_and_certificate_answers_are_bare_and_verify() {
     );
     let cert: Certificate =
         serde_json::from_value(body["payload"]["certificate"].clone()).expect("a certificate");
-    let tr = p.commit_at(1).expect("commit").tr();
+    let bundle =
+        cyphr::replay::WireBundle::of_commit(p.commit_at(1).expect("commit")).expect("bundle");
     assert_eq!(
-        verify_membership(&Anchor::of_chain(p.state()), &cert, size, 1, tr),
+        verify_membership(&Anchor::of_chain(p.state()), &cert, size, 1, &bundle),
         Ok(())
     );
     assert_eq!(
-        verify_membership(&Anchor::pin(head.clone()), &cert, size, 1, tr),
+        verify_membership(&Anchor::pin(head.clone()), &cert, size, 1, &bundle),
         Ok(())
     );
 

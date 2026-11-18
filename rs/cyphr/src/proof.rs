@@ -41,16 +41,39 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::replay::WireBundle;
 use crate::{PrincipalRoot, PrincipalState, TransactionRoot};
 
 mod prove;
 mod verify;
 mod wire;
 
-/// Why a proof is refused. Each variant names the check that failed.
+/// Why a proof is not accepted, in the three ways a caller can act on.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProofError {
+    /// The question does not fit what is pinned: a size the anchor does not
+    /// pin, an index at or past the size, a size past the log. Nothing is
+    /// accused; ask again with a size that is pinned.
+    #[error("the question does not fit: {0}")]
+    Question(String),
+    /// A well-formed certificate (or head) that does not verify: a possible
+    /// fork or forgery. The caller should treat the peer as suspect. The
+    /// message names the check that failed and is part of the contract: it
+    /// contains "arrow", "log path", "principal tree", "requested family",
+    /// "does not extend" or "does not match the claim".
+    #[error("refuted: {0}")]
+    Refuted(String),
+    /// Not a certificate: bounds exceeded or framing wrong, refused before
+    /// any hashing.
+    #[error("malformed: {0}")]
+    Malformed(String),
+}
+
+/// The checks that fail inside the prover and the verifier, finer than the
+/// three meanings a caller acts on; [`ProofError`] is what they become.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum Cause {
     /// An EML path does not reach the root it is checked against.
     #[error("log path does not reach the root")]
     Path,
@@ -58,8 +81,7 @@ pub enum ProofError {
     /// commit: the arrow does not recompute.
     #[error("commit opening does not bind the arrow")]
     Arrow,
-    /// A Principal Tree opening does not fold to the Principal Root it must
-    /// (the anchor's pin at the top, the arrow's `pre` at a stitch).
+    /// A Principal Tree opening does not fold to the Principal Root it must.
     #[error("principal tree opening does not fold to the principal root")]
     PtCell,
     /// A root of the family the walk needs is absent.
@@ -68,16 +90,38 @@ pub enum ProofError {
     /// The consistency proof does not connect the roots.
     #[error("the head does not extend the trusted root")]
     NotAnExtension,
-    /// The certificate does not match the claim (size, index, transaction,
-    /// head) or is not the wire shape.
+    /// The certificate states something other than the claim (a size, an
+    /// index, a transaction root).
     #[error("certificate does not match the claim: {0}")]
     Mismatch(String),
+    /// The asked index, size or anchor do not fit.
+    #[error("{0}")]
+    Asked(String),
+    /// Bounds or framing.
+    #[error("{0}")]
+    Framing(String),
     /// The prover cannot build the certificate.
     #[error("no certificate: {0}")]
     Unprovable(String),
     /// The log's store failed while the certificate was built.
     #[error("store: {0}")]
     Storage(String),
+}
+
+impl From<Cause> for ProofError {
+    fn from(c: Cause) -> Self {
+        let text = c.to_string();
+        match c {
+            Cause::Path
+            | Cause::Arrow
+            | Cause::PtCell
+            | Cause::Family
+            | Cause::NotAnExtension
+            | Cause::Mismatch(_) => Self::Refuted(text),
+            Cause::Asked(_) | Cause::Unprovable(_) | Cause::Storage(_) => Self::Question(text),
+            Cause::Framing(_) => Self::Malformed(text),
+        }
+    }
 }
 
 /// The Principal Root at a size: what a holder pins and what `GET /head`
@@ -188,21 +232,20 @@ impl<'a> Anchor<'a> {
     /// The family roots of the Commit Root at `from` commits. A holder of
     /// the chain reads them from its own cells; a pin has only the root, so
     /// the certificate's `base` opening is folded to it.
-    fn old_roots(&self, from: u64, base: &wire::Cells) -> Result<verify::Roots, ProofError> {
+    fn old_roots(&self, from: u64, base: &wire::Cells) -> Result<verify::Roots, Cause> {
         match &self.0 {
             Pins::Chain(state) => {
-                let own = usize::try_from(from.checked_sub(1).ok_or(ProofError::PtCell)?)
+                let own = usize::try_from(from.checked_sub(1).ok_or(Cause::PtCell)?)
                     .ok()
                     .and_then(|i| state.commit_at(i))
                     .ok_or_else(|| {
-                        ProofError::Mismatch(format!("the anchor pins no root at size {from}"))
+                        Cause::Asked(format!("the anchor pins no root at size {from}"))
                     })?;
-                let cells =
-                    wire::Cells::parse(own.pt_cells().to_vec()).map_err(ProofError::Mismatch)?;
+                let cells = wire::Cells::parse(own.pt_cells().to_vec()).map_err(Cause::Framing)?;
                 verify::cr_roots(&cells, &cells.families)
             },
             Pins::Pin(root) if root.size == from => verify::open_pinned(base, &root.pr),
-            Pins::Pin(_) => Err(ProofError::Mismatch(format!(
+            Pins::Pin(_) => Err(Cause::Asked(format!(
                 "the anchor pins no root at size {from}"
             ))),
         }
@@ -257,21 +300,45 @@ impl std::fmt::Debug for Certificate {
     }
 }
 
-/// Check that `tr` is the transaction root of commit `index` in the log of
-/// `size` commits the anchor pins. The walk follows the signer's family
-/// from the Principal Root the anchor pins at `size`.
+/// Check that `bundle` is commit `index` of the log of `size` commits the
+/// anchor pins. The bundle is the commit as a server serves it (`/patch`,
+/// `/e/{digest}`); the transaction root is computed from its cozies, never
+/// passed in. The walk follows the signer's family from the Principal Root
+/// the anchor pins at `size`.
 ///
 /// # Errors
 ///
-/// The [`ProofError`] of the first failing step.
+/// [`ProofError::Question`] for a size the anchor does not pin or an index
+/// at or past it; [`ProofError::Refuted`] for a bundle or certificate that
+/// does not verify; [`ProofError::Malformed`] for a certificate out of
+/// bounds.
 pub fn verify_membership(
     anchor: &Anchor<'_>,
     certificate: &Certificate,
     size: u64,
     index: u64,
-    tr: &TransactionRoot,
+    bundle: &WireBundle,
 ) -> Result<(), ProofError> {
-    verify::membership(anchor, certificate, size, index, tr)
+    verify::membership(anchor, certificate, size, index, bundle).map_err(Into::into)
+}
+
+/// STUB. Check that the key with thumbprint `tmb` is in the key set (KR)
+/// of the principal at the `size` the anchor pins: the Principal Tree
+/// opening to SR, then AR, KR and the key's leaf. It answers membership
+/// in KR only; frozen, deleted and errored are not checked.
+///
+/// # Errors
+///
+/// [`ProofError::Question`] for a size not pinned; [`ProofError::Refuted`]
+/// when the key is not in KR at that size or the certificate does not
+/// verify.
+pub fn verify_key(
+    _anchor: &Anchor<'_>,
+    _certificate: &Certificate,
+    _size: u64,
+    _tmb: &coz::Thumbprint,
+) -> Result<(), ProofError> {
+    unimplemented!("stub: verify_key")
 }
 
 /// Check that `head` (a peer's claim, plain data) extends the log of
@@ -293,5 +360,5 @@ pub fn verify_extension(
     from: u64,
     head: &Root,
 ) -> Result<(), ProofError> {
-    verify::extension(anchor, certificate, from, head)
+    verify::extension(anchor, certificate, from, head).map_err(Into::into)
 }

@@ -128,18 +128,25 @@ async fn proves_and_verifies(shape: Shape) {
         Shape::Separate => assert_eq!(txs, MANY + 2, "every nonce its own transaction"),
     }
     for i in 0..n {
-        let cert = p.prove_membership(i, n).await.expect("prove");
+        let cert = p.prove_membership(n, i).await.expect("prove");
         let back: Certificate =
             serde_json::from_value(serde_json::to_value(&cert).expect("serialize"))
                 .unwrap_or_else(|e| panic!("index {i}: an honest certificate is refused: {e}"));
-        let tr = p.commit_at(i as usize).expect("commit").tr();
+        let bundle = cyphr::replay::WireBundle::of_commit(p.commit_at(i as usize).expect("commit"))
+            .expect("bundle");
         assert_eq!(
-            verify_membership(&Anchor::of_chain(p.state()), &back, n, i, tr),
+            verify_membership(&Anchor::of_chain(p.state()), &back, n, i, &bundle),
             Ok(()),
             "chain, index {i}"
         );
         assert_eq!(
-            verify_membership(&Anchor::pin(p.root_at(n).expect("root")), &back, n, i, tr),
+            verify_membership(
+                &Anchor::pin(p.root_at(n).expect("root")),
+                &back,
+                n,
+                i,
+                &bundle
+            ),
             Ok(()),
             "pin, index {i}"
         );

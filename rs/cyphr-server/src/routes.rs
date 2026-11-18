@@ -679,7 +679,7 @@ pub async fn inclusion(
     // proves nothing otherwise, is the server's, a 5xx.
     no_state_root(&log, size)?;
     let certificate = log
-        .prove_membership(index, size)
+        .prove_membership(size, index)
         .await
         .map_err(|e| AppError::internal(format!("inclusion certificate not made: {e}")))?;
     certificate_answer(&certificate)

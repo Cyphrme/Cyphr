@@ -119,7 +119,9 @@ pub fn verify_extension_at<S: Storage>(
         &offer.head,
     )
     .map_err(|e| match e {
-        ProofError::NotAnExtension => ExtensionFailure::NotAnExtension,
+        // A refusal names the check that failed; only the consistency check
+        // is the shape of a fork. Anything else is a certificate gone wrong.
+        ProofError::Refuted(m) if m.contains("does not extend") => ExtensionFailure::NotAnExtension,
         other => ExtensionFailure::Refused(other),
     })
 }

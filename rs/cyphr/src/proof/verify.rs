@@ -6,7 +6,7 @@
 //! stitch, what the arrow's `pre` binds under the conversion rule.
 
 use super::wire::{Cells, Cert, ConsW, OpeningW, PathW, StitchW, Terminal, width};
-use super::{Anchor, Certificate, ProofError, Root};
+use super::{Anchor, Cause as ProofError, Certificate, Root};
 use crate::commit_root::{MaltHasher, hash_alg_to_u64};
 use crate::multihash::MultihashDigest;
 use crate::state::{TaggedCzd, TaggedDigest, hash_concat_bytes, hash_sorted_concat_bytes};
@@ -17,6 +17,26 @@ pub(super) type Roots = Vec<(HashAlg, Vec<u8>)>;
 
 fn mismatch(what: impl Into<String>) -> ProofError {
     ProofError::Mismatch(what.into())
+}
+
+fn asked(what: impl Into<String>) -> ProofError {
+    ProofError::Asked(what.into())
+}
+
+fn framing(what: impl Into<String>) -> ProofError {
+    ProofError::Framing(what.into())
+}
+
+/// STUB. The transaction root of the commit `bundle` carries, under family
+/// `alg` alone (all a walk in `alg` needs): each transaction's cozies'
+/// czds converted to `alg`, grouped as the transactions group them, the
+/// commit transaction last. A bundle suffices; the family set the commit
+/// was stored with is not needed.
+fn tr_of_bundle(
+    _bundle: &crate::replay::WireBundle,
+    _alg: HashAlg,
+) -> Result<TransactionRoot, ProofError> {
+    unimplemented!("stub: tr_of_bundle")
 }
 
 fn root_of(roots: &Roots, alg: HashAlg) -> Result<&[u8], ProofError> {
@@ -203,7 +223,7 @@ fn walk(mut roots: Roots, mut size: u64, stitches: &[StitchW]) -> Result<(Roots,
             )));
         }
         let map: std::collections::BTreeMap<u64, Vec<u8>> =
-            serde_json::from_slice(&o.tr_map).map_err(|_| mismatch("a leaf that is no map"))?;
+            serde_json::from_slice(&o.tr_map).map_err(|_| framing("a leaf that is no map"))?;
         let digest = map
             .get(&hash_alg_to_u64(st.alg))
             .filter(|d| d.len() == width(st.alg))
@@ -227,18 +247,21 @@ pub(super) fn membership(
     certificate: &Certificate,
     size: u64,
     index: u64,
-    tr: &TransactionRoot,
+    bundle: &crate::replay::WireBundle,
 ) -> Result<(), ProofError> {
     let cert = parse(certificate);
     let Terminal::Path(path) = &cert.terminal else {
-        return Err(mismatch("a membership claim needs a path"));
+        return Err(framing("a membership claim needs a path"));
     };
-    if cert.base.is_some() || index >= size {
-        return Err(mismatch("not a certificate of membership in this log"));
+    if cert.base.is_some() {
+        return Err(framing("not a certificate of membership"));
+    }
+    if index >= size {
+        return Err(asked(format!("index {index} is not below the size {size}")));
     }
     let pr = anchor
         .pr_at(size)
-        .ok_or_else(|| mismatch(format!("the anchor pins no root at size {size}")))?;
+        .ok_or_else(|| asked(format!("the anchor pins no root at size {size}")))?;
     let (roots, cur) = walk(open_pinned(&cert.top, pr)?, size, &cert.stitches)?;
     let root = root_of(&roots, path.alg)?;
     if path.size != cur || path.index != index {
@@ -250,8 +273,9 @@ pub(super) fn membership(
     // A holder of the chain reads the leaf from it: the path must reach
     // the root, and the claim must be the commit it holds there. A thin
     // client has only the claim.
+    let tr = tr_of_bundle(bundle, path.alg)?;
     let own = anchor.tr_at(index);
-    let leaf = own.unwrap_or(tr).get(path.alg);
+    let leaf = own.unwrap_or(&tr).get(path.alg);
     let null;
     let reached = reaches(
         path.alg,
@@ -276,7 +300,7 @@ pub(super) fn membership(
         // The family had no leaf there: the path is to a null.
         return Err(ProofError::Path);
     }
-    if own.is_some_and(|own| own != tr) {
+    if own.is_some_and(|own| own.get(path.alg) != tr.get(path.alg)) {
         return Err(mismatch("not the transaction root of that commit"));
     }
     Ok(())
@@ -291,12 +315,10 @@ pub(super) fn extension(
     let cert = parse(certificate);
     let (Terminal::Consistency(ConsW { alg, proof }), Some(base)) = (&cert.terminal, &cert.base)
     else {
-        return Err(mismatch(
-            "an extension claim needs a base and a consistency",
-        ));
+        return Err(framing("an extension claim needs a base and a consistency"));
     };
     if from == 0 || head.size < from {
-        return Err(mismatch(format!(
+        return Err(asked(format!(
             "a head of {} does not follow {from}",
             head.size
         )));

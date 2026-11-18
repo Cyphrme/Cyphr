@@ -3,7 +3,7 @@
 //! for the paths and consistency proofs, from the log.
 
 use super::wire::{Cells, Cert, ConsW, OpeningW, PathW, StitchW, Terminal};
-use super::{Certificate, ProofError, Root};
+use super::{Cause as ProofError, Certificate, Root};
 use crate::commit_root::hash_alg_to_u64;
 use crate::{Commit, HashAlg, Principal};
 
@@ -250,7 +250,21 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// [`ProofError::Unprovable`] for an index or size the log lacks;
     /// [`ProofError::Storage`] when the log's store fails.
-    pub async fn prove_membership(&self, index: u64, size: u64) -> Result<Certificate, ProofError> {
+    pub async fn prove_membership(
+        &self,
+        size: u64,
+        index: u64,
+    ) -> Result<Certificate, super::ProofError> {
+        self.membership_certificate(size, index)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn membership_certificate(
+        &self,
+        size: u64,
+        index: u64,
+    ) -> Result<Certificate, ProofError> {
         if index >= size || size > self.commit_count() as u64 {
             return Err(unprovable(format!(
                 "no commit {index} in a log of {size} of the {} held",
@@ -276,7 +290,17 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// [`ProofError::Unprovable`] for sizes the log has not passed;
     /// [`ProofError::Storage`] when the log's store fails.
-    pub async fn prove_extension(&self, from: u64, to: u64) -> Result<Certificate, ProofError> {
+    pub async fn prove_extension(
+        &self,
+        from: u64,
+        to: u64,
+    ) -> Result<Certificate, super::ProofError> {
+        self.extension_certificate(from, to)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn extension_certificate(&self, from: u64, to: u64) -> Result<Certificate, ProofError> {
         if from == 0 || from > to || to > self.commit_count() as u64 {
             return Err(unprovable(format!(
                 "no extension from {from} to {to} in the {} commits held",
@@ -310,9 +334,9 @@ impl<S: eml::Storage> Principal<S> {
         alg: HashAlg,
         index: u64,
         size: u64,
-    ) -> Result<serde_json::Value, ProofError> {
+    ) -> Result<serde_json::Value, super::ProofError> {
         let p = self.path(alg, index, size).await?;
-        super::wire::terminal_json(&Terminal::Path(p)).map_err(storage)
+        Ok(super::wire::terminal_json(&Terminal::Path(p)).map_err(storage)?)
     }
 
     /// Test support: a consistency proof in family `alg`'s tree between two
@@ -329,8 +353,24 @@ impl<S: eml::Storage> Principal<S> {
         alg: HashAlg,
         from: u64,
         to: u64,
-    ) -> Result<serde_json::Value, ProofError> {
+    ) -> Result<serde_json::Value, super::ProofError> {
         let c = self.consistency(alg, from, to).await?;
-        super::wire::terminal_json(&Terminal::Consistency(c)).map_err(storage)
+        Ok(super::wire::terminal_json(&Terminal::Consistency(c)).map_err(storage)?)
+    }
+
+    /// STUB. The certificate that the key with thumbprint `tmb` is in the
+    /// key set at `size` commits: the Principal Tree opening to SR, then
+    /// AR, KR and the key's leaf (a retired key has none: this errs).
+    ///
+    /// # Errors
+    ///
+    /// [`super::ProofError::Question`] for a size the log lacks or a key
+    /// not in the key set at that size.
+    pub async fn prove_key(
+        &self,
+        _tmb: &coz::Thumbprint,
+        _size: u64,
+    ) -> Result<Certificate, super::ProofError> {
+        unimplemented!("stub: Principal::prove_key")
     }
 }

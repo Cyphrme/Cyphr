@@ -464,9 +464,11 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
         let body: serde_json::Value = resp.json().await.expect("json");
         let cert: Certificate = serde_json::from_value(body["payload"]["certificate"].clone())
             .unwrap_or_else(|e| panic!("index {index}: not a certificate: {e}"));
-        let tr = held.commit_at(index as usize).expect("commit").tr();
+        let bundle =
+            cyphr::replay::WireBundle::of_commit(held.commit_at(index as usize).expect("commit"))
+                .expect("bundle");
         for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
-            verify_membership(anchor, &cert, head.size, index, tr)
+            verify_membership(anchor, &cert, head.size, index, &bundle)
                 .unwrap_or_else(|e| panic!("index {index} does not verify ({what}): {e}"));
         }
     }
