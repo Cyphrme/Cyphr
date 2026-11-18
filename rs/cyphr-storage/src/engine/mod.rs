@@ -5716,9 +5716,13 @@ type Revoked = HashMap<String, Death>;
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
 /// store): the refusal for `bundle` if a coz in it is signed by a revoked
-/// key, or a transaction coz introduces one, and the coz is dated at or
-/// after the key's cutoff, this node's receipt time of its revoke
-/// ([`Death::wrt`]; a coz with no readable `now` is judged dated after it).
+/// key and the coz is dated at or after the key's cutoff, this node's
+/// receipt time of its revoke ([`Death::wrt`]; a coz with no readable
+/// `now` is judged dated after it). Introducing a revoked key is not
+/// refused: the introduction is the introducer's act, not the key's (SPEC
+/// 6.4 rejects "further use of the revoked key"), and a revoke is in no
+/// commit's causal past, so a rule that depends on it splits holders of
+/// the same messages.
 /// Not retroactive: history a key signed before the cutoff stands, so a
 /// node that learned the revoke first still syncs it. A coz that revokes
 /// its own signer is never refused: it can only end the key (SPEC 6.4:
@@ -5768,14 +5772,6 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         };
         let pay = &coz["pay"];
         let typ = pay["typ"].as_str().unwrap_or_default();
-        if cyphr::parsed_coz::typ::is_key_introducing(typ)
-            && let Some(id) = pay["id"].as_str().filter(|id| dead_at(pay, id))
-        {
-            return Some(EngineError::DeadKey {
-                key: id.to_owned(),
-                introduced: true,
-            });
-        }
         let self_revoke =
             cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
         if let Some(tmb) = pay["tmb"].as_str().filter(|t| dead_at(pay, t))
@@ -5783,7 +5779,6 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         {
             return Some(EngineError::DeadKey {
                 key: tmb.to_owned(),
-                introduced: false,
             });
         }
     }

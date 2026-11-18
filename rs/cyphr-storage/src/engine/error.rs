@@ -52,14 +52,12 @@ pub enum EngineError {
         hash: crate::blob::Blake3Hash,
     },
 
-    /// A coz dated at or after its key's naked revoke is signed by, or
-    /// introduces, that key (SPEC 6.4).
-    #[error("{} a revoked key: {key}", if *introduced { "introduces" } else { "signed by" })]
+    /// A coz dated at or after its key's naked revoke is signed by that
+    /// key (SPEC 6.4).
+    #[error("signed by a revoked key: {key}")]
     DeadKey {
         /// Thumbprint of the revoked key (base64url).
         key: String,
-        /// Whether the coz introduces the key rather than being signed by it.
-        introduced: bool,
     },
 
     /// A rival signed by `key` is refused and nothing of it stored: `key`
