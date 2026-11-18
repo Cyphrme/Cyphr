@@ -284,7 +284,7 @@ impl PendingCommit {
     ///
     /// Returns `EmptyCommit` if no cozies exist, or if the only cozies
     /// present are finalizers (no mutation content).
-    pub fn finalize(
+    pub(crate) fn finalize(
         self,
         ar: Option<AuthRoot>,
         sr: Option<StateRoot>,
