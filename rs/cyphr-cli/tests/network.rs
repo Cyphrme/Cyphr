@@ -626,6 +626,59 @@ fn a_save_survives_a_held_action_whose_signer_was_revoked() {
     );
 }
 
+/// A peer URL nothing listens on: the port of a server that has exited.
+fn dead_peer() -> String {
+    Server::start().url.clone()
+}
+
+/// Claim (SPEC 6.4): a naked revoke is sent to every named peer, and an
+/// unreachable one does not abort it. It succeeds when at least one peer
+/// accepted, reports each failure on stderr, and fails when none did.
+/// End-to-end: yes (CLI processes, one real server and one dead URL).
+/// Turns red on: a command that stops at the first unreachable peer, so
+/// the live peer after it never hears the revoke.
+#[test]
+fn naked_revoke_is_sent_past_an_unreachable_peer() {
+    let live = Server::start();
+    let dead = dead_peer();
+    let a = User::new();
+    let id = a.new_identity();
+    let key = a.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={id}"),
+    ])["added_key"]
+        .as_str()
+        .expect("added_key")
+        .to_owned();
+
+    let revoke = |peers: &[&str]| {
+        let mut args = vec!["key".to_owned(), "naked-revoke".to_owned()];
+        args.push(format!("--key={key}"));
+        args.extend(peers.iter().map(|p| format!("--peer={p}")));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        a.run(&args)
+    };
+
+    let none = revoke(&[&dead]);
+    assert!(!none.ok, "no peer accepted: the revoke must fail");
+
+    let r = revoke(&[&dead, &live.url]);
+    assert!(r.ok, "one peer accepted: the revoke succeeds: {}", r.stderr);
+    assert!(
+        r.stderr.contains(&dead),
+        "the unreachable peer is reported on stderr: {}",
+        r.stderr
+    );
+    assert_eq!(
+        r.json()["peers"],
+        serde_json::json!([live.url]),
+        "the output names the peers that accepted: {}",
+        r.stdout
+    );
+}
+
 // ----------------------------------------------------------------- verify
 
 fn verify_args<'a>(id: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
