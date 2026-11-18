@@ -89,9 +89,9 @@ impl Setup {
 /// rules or data, the SR is the Key Root, the hash of the two sorted
 /// thumbprints, and a lone mutation's TMR is its `czd` promoted.
 ///
-/// `pre` and TMR depend on signatures, which are not deterministic, so
-/// the byte order of the three components varies between runs.
-/// `attempt` varies `now` to draw a fresh commit.
+/// The byte order of the three components is whatever the digests give,
+/// so `attempt` varies `now` to draw a fresh commit until a test finds
+/// the order it needs.
 async fn pending_commit<R>(attempt: i64, f: impl FnOnce(&Setup, cyphr::CommitScope<'_>) -> R) -> R {
     let (golden, key_a) = (kp("golden"), kp("key_a"));
     let mut p = Principal::implicit(key_of(&golden)).await.expect("open");
