@@ -135,7 +135,7 @@ async fn intro_commit(
         .await
         .expect("finalize");
 
-    let entry = cyphr_storage::export_commits(&principal)
+    let entry = cyphr_storage::export_commits(principal)
         .expect("export")
         .pop()
         .expect("a commit");
