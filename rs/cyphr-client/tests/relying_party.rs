@@ -653,3 +653,46 @@ async fn a_relying_party_signs_in_after_the_fork_it_proved_is_resolved() {
         "one branch out-extends the other: the principal is Active"
     );
 }
+
+static LOST_CLOCK: AtomicI64 = AtomicI64::new(T0);
+fn lost_clock() -> i64 {
+    LOST_CLOCK.load(Ordering::SeqCst)
+}
+
+/// SPEC 15.8: the abandoned branch's transactions become permanently
+/// invalid, and a key only that branch added is not part of the key set. A
+/// relying party whose own chain is the branch that lost the fork must not
+/// sign in a key that branch alone added, though the protocol's rule now
+/// reads the principal as Active.
+///
+/// Turns red if sign-in reads keys from a chain the fork rule discarded.
+/// End-to-end scenario: yes (the record follows one peer onto the branch
+/// another peer's longer chain then abandons).
+#[tokio::test]
+async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
+    let (g, device, k2, thief, k4) = (kp(), kp(), kp(), kp(), kp());
+    let pg = g.tmb.to_b64();
+    let c1 = (&device, T0 + 50);
+    let abandoned = grown(&g, &[c1, (&thief, T0 + 61)]).await;
+    let kept = grown(&g, &[c1, (&k2, T0 + 60), (&k4, T0 + 70)]).await;
+    LOST_CLOCK.store(T0 + 100, Ordering::SeqCst);
+
+    let mut rp = RelyingParty::new(
+        &pg,
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        lost_clock,
+    );
+    let first = Mirror::of(abandoned);
+    rp.refresh(&[peer("first", &first)]).await;
+    let second = Mirror::of(kept);
+    let report = rp.refresh(&[peer("second", &second)]).await;
+    assert_eq!(report.forks.len(), 1, "the longer chain shows the fork");
+
+    let c = rp.challenge();
+    let got = rp.sign_in(&login(&thief, &pg, AUDIENCE, &c));
+    assert!(
+        got.is_err(),
+        "a key only the abandoned branch added signed in: {got:?}"
+    );
+}
