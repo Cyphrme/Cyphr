@@ -159,6 +159,16 @@ impl KeyTimeline {
             .map(|p| &p.key)
     }
 
+    /// Every distinct key this principal ever held, in first-held order.
+    pub(crate) fn ever_held(&self) -> Vec<&Thumbprint> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.periods
+            .iter()
+            .map(|p| p.key.tmb())
+            .filter(|t| seen.insert(t.to_b64()))
+            .collect()
+    }
+
     /// Whether `tmb` was ever a key of this principal.
     pub(crate) fn knows(&self, tmb: &Thumbprint) -> bool {
         self.periods.iter().any(|p| p.key.tmb() == tmb)
