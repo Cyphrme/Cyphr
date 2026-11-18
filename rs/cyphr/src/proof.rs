@@ -1,12 +1,6 @@
 //! Pinned roots and certificates: membership and extension across hash
 //! algorithm epochs.
 //!
-//! **THIS MODULE IS A STUB.** It declares the surface the acceptance
-//! tests (`tests/stitch.rs`) are written against; every function that
-//! needs logic is `unimplemented!()`. The previous implementation lives in
-//! [`legacy`] (to reuse, then delete); it still hashes the arrow sorted
-//! and is broken against the ordered arrow.
-//!
 //! A [`Root`] is what a holder pins: the Principal Root at a size. An
 //! [`Anchor`] says which roots the verifier trusts. A [`Certificate`] is
 //! time-free plain data a prover builds and a verifier checks against an
@@ -15,8 +9,7 @@
 //! Tree opening at `s - 1`) into the arrow's family. The Principal Tree
 //! opening is carried at each end.
 //!
-//! # Wire form (the tests tamper through it; the implementer may reshape
-//! # it and then adapts the tests' accessors in one place)
+//! # Wire form
 //!
 //! JSON, every byte string base64url without padding, every family named
 //! by its Coz name:
@@ -29,7 +22,8 @@
 //!   "terminal": path | consistency
 //! }
 //! stitch   := { "alg", "leaf": path, "opening": {
-//!   "tr_map", "tr_path": [step], "coz",
+//!   "tr_map", "coz",
+//!   "tr_path": [step],                  // one per mutation transaction: its czds as siblings, position 0
 //!   "fwd_variants": [[alg, bytes]],     // the forward State Root's variants, empty when absent
 //!   "pt_cells": [bytes] } }             // SR, CR, nonces of PR_{s-1}: every family's variant
 //! path        := { "alg", "index", "size", "steps": [step] }
@@ -39,17 +33,21 @@
 //! ```
 //!
 //! The arrow is `H_G(pre || fwd? || TMR)` in SPEC 4.2 order. TMR is
-//! recomputed from the opened TR, never carried; `pre` is derived from the
+//! recomputed from the czds the opening carries (the same czds the leaf's
+//! transaction root is made of), never carried; `pre` is derived from the
 //! Principal Tree cells (each family's variant folds to `PR_{s-1}`'s), not
 //! carried either. Every variant on the wire (the cells', `fwd_variants`)
 //! has the width of its declared family, checked at parse.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{Principal, PrincipalRoot, PrincipalState, TransactionRoot};
+use crate::{PrincipalRoot, PrincipalState, TransactionRoot};
 
 #[doc(hidden)]
 pub mod legacy;
+mod prove;
+mod verify;
+mod wire;
 
 /// Why a proof is refused. Each variant names the check that failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -99,19 +97,49 @@ pub struct Root {
     pub pr: PrincipalRoot,
 }
 
+#[derive(Serialize, Deserialize)]
+struct RawRoot {
+    size: u64,
+    pr: std::collections::BTreeMap<String, wire::Capped<64>>,
+}
+
 impl Serialize for Root {
-    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
-        unimplemented!("stub: Root::serialize")
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        RawRoot {
+            size: self.size,
+            pr: self
+                .pr
+                .0
+                .variants()
+                .iter()
+                .map(|(a, d)| (a.to_string(), wire::Capped(d.to_vec())))
+                .collect(),
+        }
+        .serialize(s)
     }
 }
 
 impl<'de> Deserialize<'de> for Root {
-    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
-        unimplemented!("stub: Root::deserialize")
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = RawRoot::deserialize(d)?;
+        let variants = raw
+            .pr
+            .into_iter()
+            .map(|(name, digest)| {
+                let alg = crate::state::hash_alg_named(&name)
+                    .map_err(|_| serde::de::Error::custom(format!("unknown family {name:?}")))?;
+                Ok((alg, digest.0.into_boxed_slice()))
+            })
+            .collect::<Result<_, D::Error>>()?;
+        let pr = crate::multihash::MultihashDigest::new(variants)
+            .map_err(|e| serde::de::Error::custom(e.to_string()))?;
+        Ok(Self {
+            size: raw.size,
+            pr: PrincipalRoot(pr),
+        })
     }
 }
 
-#[allow(dead_code)]
 enum Pins<'a> {
     Chain(&'a PrincipalState),
     Pin(Root),
@@ -130,88 +158,68 @@ enum Pins<'a> {
 ///     Anchor(root)
 /// }
 /// ```
-pub struct Anchor<'a>(#[allow(dead_code)] Pins<'a>);
+pub struct Anchor<'a>(Pins<'a>);
 
 impl<'a> Anchor<'a> {
-    /// STUB. Trust every size of `state`'s chain. O(1), copies nothing.
+    /// Trust every size of `state`'s chain. O(1), copies nothing.
     #[must_use]
-    pub fn of_chain(_state: &'a PrincipalState) -> Self {
-        unimplemented!("stub: Anchor::of_chain")
+    pub fn of_chain(state: &'a PrincipalState) -> Self {
+        Self(Pins::Chain(state))
     }
 
-    /// STUB. Trust one root: the caller's own choice of anchor.
+    /// Trust one root, the caller's own choice of anchor. Pin only a root
+    /// trusted by other means (SPEC 13.2): a root a peer reports, or the
+    /// head a certificate was made for, is the peer's word and nothing
+    /// more, and a certificate checked against such a pin proves only that
+    /// the peer is consistent with itself.
     #[must_use]
-    pub fn pin(_root: Root) -> Anchor<'static> {
-        unimplemented!("stub: Anchor::pin")
+    pub fn pin(root: Root) -> Anchor<'static> {
+        Anchor(Pins::Pin(root))
     }
-}
 
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct Step {
-    position: usize,
-    siblings: Vec<String>,
-}
+    /// The Principal Root this anchor pins at `size` commits.
+    fn pr_at(&self, size: u64) -> Option<&PrincipalRoot> {
+        match &self.0 {
+            Pins::Chain(state) => state
+                .commit_at(usize::try_from(size.checked_sub(1)?).ok()?)
+                .map(crate::Commit::pr),
+            Pins::Pin(root) => (root.size == size).then_some(&root.pr),
+        }
+    }
 
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct Path {
-    alg: String,
-    index: u64,
-    size: u64,
-    steps: Vec<Step>,
-}
+    /// The family roots of the Commit Root at `from` commits. A holder of
+    /// the chain reads them from its own cells; a pin has only the root, so
+    /// the certificate's `base` opening is folded to it.
+    fn old_roots(&self, from: u64, base: &wire::Cells) -> Result<verify::Roots, ProofError> {
+        match &self.0 {
+            Pins::Chain(state) => {
+                let own = usize::try_from(from.checked_sub(1).ok_or(ProofError::PtCell)?)
+                    .ok()
+                    .and_then(|i| state.commit_at(i))
+                    .ok_or_else(|| {
+                        ProofError::Mismatch(format!("the anchor pins no root at size {from}"))
+                    })?;
+                let cells =
+                    wire::Cells::parse(own.pt_cells().to_vec()).map_err(ProofError::Mismatch)?;
+                verify::cr_roots(&cells, &cells.families)
+            },
+            Pins::Pin(root) if root.size == from => verify::open_pinned(base, &root.pr),
+            Pins::Pin(_) => Err(ProofError::Mismatch(format!(
+                "the anchor pins no root at size {from}"
+            ))),
+        }
+    }
 
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct Opening {
-    tr_map: String,
-    tr_path: Vec<Step>,
-    coz: String,
-    fwd_variants: Vec<(String, String)>,
-    pt_cells: Vec<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct Stitch {
-    alg: String,
-    leaf: Path,
-    opening: Opening,
-}
-
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct Ends {
-    pt_cells: Vec<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct Consistency {
-    alg: String,
-    boundary_hash: String,
-    peak_path: Vec<Step>,
-    new_peaks: Vec<String>,
-    split_index: usize,
-}
-
-#[allow(dead_code)]
-#[derive(Serialize)]
-#[serde(untagged)]
-enum Terminal {
-    Path(Path),
-    Consistency(Consistency),
-}
-
-#[allow(dead_code)]
-#[derive(Serialize)]
-struct Wire {
-    top: Ends,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    base: Option<Ends>,
-    stitches: Vec<Stitch>,
-    terminal: Terminal,
+    /// The transaction root of commit `index`, when the anchor holds the
+    /// chain.
+    fn tr_at(&self, index: u64) -> Option<&TransactionRoot> {
+        match &self.0 {
+            Pins::Chain(state) => state
+                .commit_at(usize::try_from(index).ok()?)
+                .map(crate::Commit::tr),
+            Pins::Pin(_) => None,
+        }
+    }
 }
 
 /// Opaque proof material: built by `prove_*`, parsed by a bounded
@@ -228,12 +236,20 @@ struct Wire {
 ///     Certificate(todo!())
 /// }
 /// ```
-#[derive(Serialize)]
-pub struct Certificate(#[allow(dead_code)] Wire);
+pub struct Certificate(wire::Cert);
+
+impl Serialize for Certificate {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        wire::RawCert::from(&self.0).serialize(s)
+    }
+}
 
 impl<'de> Deserialize<'de> for Certificate {
-    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
-        unimplemented!("stub: Certificate::deserialize (bounded)")
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = wire::RawCert::deserialize(d)?;
+        wire::Cert::try_from(raw)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -243,105 +259,41 @@ impl std::fmt::Debug for Certificate {
     }
 }
 
-/// STUB. Check that `tr` is the transaction root of commit `index` in the
-/// log of `size` commits the anchor pins. The walk follows the signer's
-/// family from the Principal Root the anchor pins at `size`.
+/// Check that `tr` is the transaction root of commit `index` in the log of
+/// `size` commits the anchor pins. The walk follows the signer's family
+/// from the Principal Root the anchor pins at `size`.
 ///
 /// # Errors
 ///
 /// The [`ProofError`] of the first failing step.
 pub fn verify_membership(
-    _anchor: &Anchor<'_>,
-    _certificate: &Certificate,
-    _size: u64,
-    _index: u64,
-    _tr: &TransactionRoot,
+    anchor: &Anchor<'_>,
+    certificate: &Certificate,
+    size: u64,
+    index: u64,
+    tr: &TransactionRoot,
 ) -> Result<(), ProofError> {
-    unimplemented!("stub: verify_membership")
+    verify::membership(anchor, certificate, size, index, tr)
 }
 
-/// STUB. Check that `head` (a peer's claim, plain data) extends the log of
-/// `from` commits the anchor pins. A verdict only: it returns no root and
-/// grants no trust, so nothing the peer added is vouched for.
+/// Check that `head` (a peer's claim, plain data) extends the log of
+/// `from` commits the anchor pins.
+///
+/// `Ok` is a verdict that steers and does not vouch: it returns no root and
+/// grants no trust, so nothing the peer added past `from` is believed. A
+/// caller may act on it to decide what to fetch, never to accept the head;
+/// the commits themselves, replayed and signature-checked, are what make a
+/// head trusted. Pin (see [`Anchor::pin`]) only a root trusted by other
+/// means.
 ///
 /// # Errors
 ///
 /// The [`ProofError`] of the first failing step.
 pub fn verify_extension(
-    _anchor: &Anchor<'_>,
-    _certificate: &Certificate,
-    _from: u64,
-    _head: &Root,
+    anchor: &Anchor<'_>,
+    certificate: &Certificate,
+    from: u64,
+    head: &Root,
 ) -> Result<(), ProofError> {
-    unimplemented!("stub: verify_extension")
-}
-
-impl<S: eml::Storage> Principal<S> {
-    /// STUB. The principal's root at `size` commits (the Principal Root of
-    /// commit `size - 1`); `None` for 0 or a size past the log.
-    #[must_use]
-    pub fn root_at(&self, _size: u64) -> Option<Root> {
-        unimplemented!("stub: Principal::root_at")
-    }
-
-    /// STUB. The certificate that commit `index` is in the log of `size`
-    /// commits.
-    ///
-    /// # Errors
-    ///
-    /// [`ProofError::Unprovable`] for an index or size the log lacks.
-    pub async fn prove_membership(
-        &self,
-        _index: u64,
-        _size: u64,
-    ) -> Result<Certificate, ProofError> {
-        unimplemented!("stub: Principal::prove_membership")
-    }
-
-    /// STUB. The certificate that the log of `to` commits extends the log
-    /// of `from`.
-    ///
-    /// # Errors
-    ///
-    /// [`ProofError::Unprovable`] for sizes the log has not passed.
-    pub async fn prove_extension(&self, _from: u64, _to: u64) -> Result<Certificate, ProofError> {
-        unimplemented!("stub: Principal::prove_extension")
-    }
-
-    /// STUB (test support). A path to leaf `index` in family `alg`'s tree of
-    /// `size` leaves, as the wire's terminal object. It builds what a forger
-    /// would too: for an index at which `alg` was inactive, the path to
-    /// that position's null leaf. Errs only if `alg` never had a tree.
-    ///
-    /// # Errors
-    ///
-    /// [`ProofError::Unprovable`].
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub async fn log_path(
-        &self,
-        _alg: crate::HashAlg,
-        _index: u64,
-        _size: u64,
-    ) -> Result<serde_json::Value, ProofError> {
-        unimplemented!("stub: Principal::log_path")
-    }
-
-    /// STUB (test support). A consistency proof in family `alg`'s tree
-    /// between two sizes, as the wire's terminal object, including sizes
-    /// at which `alg` had no tree yet (nulls), as a forger would build.
-    ///
-    /// # Errors
-    ///
-    /// [`ProofError::Unprovable`].
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub async fn family_consistency(
-        &self,
-        _alg: crate::HashAlg,
-        _from: u64,
-        _to: u64,
-    ) -> Result<serde_json::Value, ProofError> {
-        unimplemented!("stub: Principal::family_consistency")
-    }
+    verify::extension(anchor, certificate, from, head)
 }

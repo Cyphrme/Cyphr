@@ -491,7 +491,7 @@ pub struct CommitOpening {
     /// Path from `TR_s[F]` to the closing coz's czd.
     pub tr_path: Vec<eml::ProofStep>,
     /// The closing coz (the last coz of the commit, the one carrying the
-    /// arrow), in the wire blob form `WireBundle::cozies` yields: names
+    /// arrow), in the wire blob form `WireBundle::cozies` legacy_yields: names
     /// the arrow's algorithm.
     pub coz: Vec<u8>,
     /// The arrow's other components: the mutation root under the arrow's
@@ -990,7 +990,7 @@ fn old_in<H: HashFamily>(
     old.family_impl().ok_or(ProofError::Family)
 }
 
-/// One hop of a prover's plan: the stitch at leaf `s` in `family`'s tree of
+/// One hop of a prover's legacy_plan: the stitch at leaf `s` in `family`'s tree of
 /// `size` leaves.
 struct Hop {
     family: HashAlg,
@@ -1001,7 +1001,7 @@ struct Hop {
 impl<S: eml::Storage> Principal<S> {
     /// The epochs of `alg`: `[start, end)` leaf ranges, `end` open as
     /// `u64::MAX`.
-    fn epochs_of(&self, alg: HashAlg) -> Vec<(u64, u64)> {
+    fn legacy_epochs_of(&self, alg: HashAlg) -> Vec<(u64, u64)> {
         let id = hash_alg_to_u64(alg);
         self.commit_trees()
             .epochs()
@@ -1011,8 +1011,8 @@ impl<S: eml::Storage> Principal<S> {
     }
 
     /// The start of `alg`'s epoch containing leaf `i`.
-    fn epoch_start(&self, alg: HashAlg, i: u64) -> Option<u64> {
-        self.epochs_of(alg)
+    fn legacy_epoch_start(&self, alg: HashAlg, i: u64) -> Option<u64> {
+        self.legacy_epochs_of(alg)
             .into_iter()
             .find_map(|(a, e)| (a <= i && i < e).then_some(a))
     }
@@ -1024,19 +1024,19 @@ impl<S: eml::Storage> Principal<S> {
             .checked_sub(1)
             .ok_or_else(|| ProofError::Unprovable("the log is empty".into()))?;
         let own = self.hash_alg();
-        if self.epoch_start(own, last).is_some() {
+        if self.legacy_epoch_start(own, last).is_some() {
             return Ok(own);
         }
         self.commit_trees()
             .epochs()
             .into_iter()
             .filter_map(|(id, _)| u64_to_hash_alg(id).ok())
-            .find(|&alg| self.epoch_start(alg, last).is_some())
+            .find(|&alg| self.legacy_epoch_start(alg, last).is_some())
             .ok_or_else(|| ProofError::Unprovable("no family is active at the tip".into()))
     }
 
-    /// The families a stitch at commit `s` yields: what `pre` binds.
-    fn yields(&self, s: u64) -> Result<Vec<HashAlg>, ProofError> {
+    /// The families a stitch at commit `s` legacy_yields: what `pre` binds.
+    fn legacy_yields(&self, s: u64) -> Result<Vec<HashAlg>, ProofError> {
         let unprovable = |what: &str| ProofError::Unprovable(format!("commit {s}: {what}"));
         let at = |i: u64| {
             usize::try_from(i)
@@ -1063,7 +1063,7 @@ impl<S: eml::Storage> Principal<S> {
     /// active at leaf `p` (for a membership proof; `one_epoch` asks for one
     /// epoch from `p` through the end, for a consistency proof, which does
     /// not cross a gap); and that family and size.
-    fn plan(
+    fn legacy_plan(
         &self,
         start: HashAlg,
         p: u64,
@@ -1072,13 +1072,13 @@ impl<S: eml::Storage> Principal<S> {
         let mut hops = Vec::new();
         let (mut family, mut size) = (start, self.commit_count() as u64);
         loop {
-            let a = self.epoch_start(family, size - 1).ok_or_else(|| {
+            let a = self.legacy_epoch_start(family, size - 1).ok_or_else(|| {
                 ProofError::Unprovable(format!("{family} is not active at leaf {}", size - 1))
             })?;
             let reaches = if one_epoch {
                 a <= p
             } else {
-                self.epoch_start(family, p).is_some()
+                self.legacy_epoch_start(family, p).is_some()
             };
             if reaches {
                 return Ok((hops, family, size));
@@ -1090,8 +1090,8 @@ impl<S: eml::Storage> Principal<S> {
             // reaches back furthest.
             let s = a;
             let mut best: Option<(u64, HashAlg)> = None;
-            for g in self.yields(s)? {
-                let start = self.epoch_start(g, s - 1).ok_or_else(|| {
+            for g in self.legacy_yields(s)? {
+                let start = self.legacy_epoch_start(g, s - 1).ok_or_else(|| {
                     ProofError::Unprovable(format!("{g} is not active at leaf {}", s - 1))
                 })?;
                 if best.is_none_or(|(b, _)| start < b) {
@@ -1107,7 +1107,7 @@ impl<S: eml::Storage> Principal<S> {
     }
 
     async fn stitch_for(&self, hop: &Hop) -> Result<AnyStitch, ProofError> {
-        let opening = self.opening_at(hop.s, hop.family).await?;
+        let opening = self.legacy_opening_at(hop.s, hop.family).await?;
         with_family!(hop.family, F => {
             let leaf = self.log_path_impl::<F>(hop.s, hop.size).await?;
             Ok(F::wrap_stitch(Stitch { leaf, opening }))
@@ -1117,7 +1117,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Commit `s` opened for a stitch under `f`'s tree: its closing coz,
     /// the arrow's components, and the Principal Tree cells of `PR_{s-1}`.
     /// Each part is checked against what the verifier will check.
-    async fn opening_at(&self, s: u64, f: HashAlg) -> Result<CommitOpening, ProofError> {
+    async fn legacy_opening_at(&self, s: u64, f: HashAlg) -> Result<CommitOpening, ProofError> {
         let unprovable = |what: &str| ProofError::Unprovable(format!("commit {s}: {what}"));
         let idx = usize::try_from(s).map_err(|_| unprovable("index out of range"))?;
         let commit = self.commit_at(idx).ok_or_else(|| unprovable("not held"))?;
@@ -1230,7 +1230,7 @@ impl<S: eml::Storage> Principal<S> {
         // The tree needs a root at `size` (active at its last leaf) and the
         // leaf; a closed stretch between them is null leaves, which a path
         // carries.
-        let epochs = self.epochs_of(H::ALG);
+        let epochs = self.legacy_epochs_of(H::ALG);
         let covered = index < size
             && size <= self.commit_count() as u64
             && covers(&epochs, index)
@@ -1283,7 +1283,7 @@ impl<S: eml::Storage> Principal<S> {
             && from <= to
             && to <= self.commit_count() as u64
             && self
-                .epochs_of(H::ALG)
+                .legacy_epochs_of(H::ALG)
                 .iter()
                 .any(|&(a, e)| a < from && to <= e);
         if !covered {
@@ -1342,7 +1342,7 @@ impl<S: eml::Storage> Principal<S> {
                 self.commit_count()
             )));
         }
-        let (hops, family, size) = self.plan(self.proof_family()?, index, false)?;
+        let (hops, family, size) = self.legacy_plan(self.proof_family()?, index, false)?;
         let mut stitches = Vec::with_capacity(hops.len());
         for hop in &hops {
             stitches.push(self.stitch_for(hop).await?);
@@ -1367,7 +1367,7 @@ impl<S: eml::Storage> Principal<S> {
                 self.commit_count()
             )));
         }
-        let (hops, family, size) = self.plan(self.proof_family()?, from - 1, true)?;
+        let (hops, family, size) = self.legacy_plan(self.proof_family()?, from - 1, true)?;
         let mut stitches = Vec::with_capacity(hops.len());
         for hop in &hops {
             stitches.push(self.stitch_for(hop).await?);
