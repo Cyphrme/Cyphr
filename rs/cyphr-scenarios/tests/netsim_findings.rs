@@ -212,9 +212,11 @@ async fn a_paired_device_of_a_multikey_principal_rebases() {
 //
 // With data commits p2 takes the resolution and both peers read Active. With
 // the replacement as the phone's commit p2 refuses the resolution in gossip
-// ("protocol: state root mismatch", then "unknown key" for what follows) and
-// stays in Error. That is the theft-recovery shape: the owner replaces a key
-// on the branch that rivals the thief's, then resolves.
+// with "protocol: unknown key": the resolution is signed by the key the rival
+// branch introduced, which p2's canonical state has never held, and p2 stays
+// in Error. ("state root mismatch" lines in its log are the rival answered
+// as a held fork, which is expected.) That is the theft-recovery shape: the
+// owner replaces a key on the branch that rivals the thief's, then resolves.
 //
 // Must hold: the owner resolves a fork on a branch that replaced a key, and
 // every peer follows (SPEC 15.8 item 1).
@@ -303,7 +305,7 @@ async fn a_fork_of_data_commits_is_resolved_at_every_peer() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "RED(key-replacement-resolution): a peer holding the rival of a branch that replaced a \
-            key refuses its resolution (state root mismatch)"]
+            key refuses its resolution (unknown key)"]
 async fn a_fork_with_a_key_replacement_is_resolved_at_every_peer() {
     gossip_a_fork(true).await;
 }
