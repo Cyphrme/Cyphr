@@ -236,3 +236,34 @@ async fn a_malformed_wire_proof_fails_closed() {
         );
     }
 }
+
+/// Backs: a holder whose log was reopened from a frontier (the server's
+/// gossip holds principals so) still has its own Commit Root at every size
+/// it has stood at, which locating a fork needs. The frontier-seeded log
+/// names a few sizes only; the rest are folded from the commits.
+/// Turns red if `at_size` answers only the sizes the seed names.
+#[tokio::test]
+async fn a_detached_holder_has_its_commit_root_at_every_size() {
+    use cyphr::proof::{FullCr, Rooted, Trusted};
+    let g = kp();
+    let keys: Vec<Kp> = (0..9).map(|_| kp()).collect();
+    let (chain, _) = grown(&g, &keys, &[], 9).await;
+    let whole = &chain.principal;
+    let detached = whole
+        .fork()
+        .await
+        .expect("fork")
+        .detach()
+        .await
+        .expect("detach");
+    for size in 1..=whole.commit_count() as u64 {
+        let want = Rooted::<Trusted, FullCr>::at_size(whole, size).await;
+        assert!(want.is_some(), "size {size}");
+        let got = Rooted::<Trusted, FullCr>::at_size(&detached, size).await;
+        assert_eq!(
+            got.as_ref().map(Rooted::get),
+            want.as_ref().map(Rooted::get),
+            "size {size}"
+        );
+    }
+}

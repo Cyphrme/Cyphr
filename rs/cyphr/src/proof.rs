@@ -378,6 +378,37 @@ fn covers(epochs: &[(u64, u64)], i: u64) -> bool {
     epochs.iter().any(|&(a, e)| a <= i && i < e)
 }
 
+/// A log of `p`'s commits folded again, one leaf per commit under the
+/// algorithms its Principal Root names, as the commit that made each
+/// would have; `None` if that does not give the principal's own tip root.
+async fn replayed_log<S: eml::Storage>(
+    p: &Principal<S>,
+) -> Option<crate::commit_root::CommitTrees<eml::MemoryStorage>> {
+    let mut log = crate::commit_root::CommitTrees::open(eml::MemoryStorage::new())
+        .await
+        .ok()?;
+    for i in 0..p.commit_count() {
+        let commit = p.commit_at(i)?;
+        let algs: Vec<HashAlg> = commit.pr().0.algorithms().collect();
+        let wanted: Vec<u64> = algs.iter().map(|&a| hash_alg_to_u64(a)).collect();
+        log.set_active_algorithms(&wanted).await.ok()?;
+        let mut staged = log.stage();
+        for &alg in &algs {
+            if !log.has_algorithm(hash_alg_to_u64(alg)) {
+                staged
+                    .add_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
+                    .ok()?;
+            }
+        }
+        let leaf = crate::commit_root::commit_leaf(&commit.tr().0, &algs).ok()?;
+        log.stage_leaf(&mut staged, &leaf).ok()?;
+        log.commit(staged).await.ok()?;
+    }
+    let tip = Rooted::<Trusted, FullCr>::of_principal(p)?;
+    let rebuilt = Rooted::<Trusted, FullCr>::in_log(&log, p.commit_count() as u64).await?;
+    (rebuilt.0 == tip.0).then_some(log)
+}
+
 impl Rooted<Trusted, FullCr> {
     /// The holder's own whole Commit Root at its tip.
     #[must_use]
@@ -394,12 +425,26 @@ impl Rooted<Trusted, FullCr> {
         Some(Rooted(FullCr { size, variants }, PhantomData))
     }
 
-    /// The holder's own whole Commit Root as it stood at `size`.
+    /// The holder's own whole Commit Root as it stood at `size`. A log
+    /// reopened from a frontier ([`Principal::detach`]) holds the nodes of
+    /// a few sizes only; for the rest the commits are folded again into a
+    /// log of their own, which costs one hash per commit and family.
     pub async fn at_size<S: eml::Storage>(p: &Principal<S>, size: u64) -> Option<Self> {
         if size == 0 || size > p.commit_count() as u64 {
             return None;
         }
-        let log = p.commit_trees();
+        if let Some(own) = Self::in_log(p.commit_trees(), size).await {
+            return Some(own);
+        }
+        Self::in_log(&replayed_log(p).await?, size).await
+    }
+
+    /// The Commit Root of `log` as of `size`, `None` when the log cannot
+    /// say.
+    async fn in_log<L: eml::Storage>(
+        log: &crate::commit_root::CommitTrees<L>,
+        size: u64,
+    ) -> Option<Self> {
         let mut variants = Vec::new();
         for (alg_id, epochs) in log.epochs() {
             if !covers(&epochs, size - 1) {
