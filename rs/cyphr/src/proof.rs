@@ -378,37 +378,6 @@ fn covers(epochs: &[(u64, u64)], i: u64) -> bool {
     epochs.iter().any(|&(a, e)| a <= i && i < e)
 }
 
-/// A log of `p`'s commits folded again, one leaf per commit under the
-/// algorithms its Principal Root names, as the commit that made each
-/// would have; `None` if that does not give the principal's own tip root.
-async fn replayed_log<S: eml::Storage>(
-    p: &Principal<S>,
-) -> Option<crate::commit_root::CommitTrees<eml::MemoryStorage>> {
-    let mut log = crate::commit_root::CommitTrees::open(eml::MemoryStorage::new())
-        .await
-        .ok()?;
-    for i in 0..p.commit_count() {
-        let commit = p.commit_at(i)?;
-        let algs: Vec<HashAlg> = commit.pr().0.algorithms().collect();
-        let wanted: Vec<u64> = algs.iter().map(|&a| hash_alg_to_u64(a)).collect();
-        log.set_active_algorithms(&wanted).await.ok()?;
-        let mut staged = log.stage();
-        for &alg in &algs {
-            if !log.has_algorithm(hash_alg_to_u64(alg)) {
-                staged
-                    .add_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
-                    .ok()?;
-            }
-        }
-        let leaf = crate::commit_root::commit_leaf(&commit.tr().0, &algs).ok()?;
-        log.stage_leaf(&mut staged, &leaf).ok()?;
-        log.commit(staged).await.ok()?;
-    }
-    let tip = Rooted::<Trusted, FullCr>::of_principal(p)?;
-    let rebuilt = Rooted::<Trusted, FullCr>::in_log(&log, p.commit_count() as u64).await?;
-    (rebuilt.0 == tip.0).then_some(log)
-}
-
 impl Rooted<Trusted, FullCr> {
     /// The holder's own whole Commit Root at its tip.
     #[must_use]
@@ -425,36 +394,20 @@ impl Rooted<Trusted, FullCr> {
         Some(Rooted(FullCr { size, variants }, PhantomData))
     }
 
-    /// The holder's own whole Commit Root as it stood at `size`. A log
-    /// reopened from a frontier ([`Principal::detach`]) holds the nodes of
-    /// a few sizes only; for the rest the commits are folded again into a
-    /// log of their own, which costs one hash per commit and family.
+    /// The holder's own whole Commit Root as it stood at `size`, read
+    /// from the commit that made it (each commit keeps its own), so it
+    /// costs O(1) whatever the log's store holds.
     pub async fn at_size<S: eml::Storage>(p: &Principal<S>, size: u64) -> Option<Self> {
-        if size == 0 || size > p.commit_count() as u64 {
-            return None;
-        }
-        if let Some(own) = Self::in_log(p.commit_trees(), size).await {
-            return Some(own);
-        }
-        Self::in_log(&replayed_log(p).await?, size).await
-    }
-
-    /// The Commit Root of `log` as of `size`, `None` when the log cannot
-    /// say.
-    async fn in_log<L: eml::Storage>(
-        log: &crate::commit_root::CommitTrees<L>,
-        size: u64,
-    ) -> Option<Self> {
-        let mut variants = Vec::new();
-        for (alg_id, epochs) in log.epochs() {
-            if !covers(&epochs, size - 1) {
-                continue;
-            }
-            let alg = u64_to_hash_alg(alg_id).ok()?;
-            let root = log.root_at(alg_id, size).await.ok()?;
-            variants.push(AnyFamilyRoot::new(alg, size, &root).ok()?);
-        }
-        (!variants.is_empty()).then_some(Rooted(FullCr { size, variants }, PhantomData))
+        let commit = p.commit_at(usize::try_from(size.checked_sub(1)?).ok()?)?;
+        let variants = commit
+            .cr()
+            .as_multihash()
+            .variants()
+            .iter()
+            .map(|(&alg, d)| AnyFamilyRoot::new(alg, size, d))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        Some(Rooted(FullCr { size, variants }, PhantomData))
     }
 
     /// The member root of family `H`, `None` if `H` is not in this Commit
@@ -1148,6 +1101,9 @@ impl<S: eml::Storage> Principal<S> {
             .split_last()
             .ok_or_else(|| unprovable("no transactions"))?;
         let [closing] = commit_tx.0.as_slice() else {
+            // Admission refuses every commit transaction of several cozies
+            // (issue #217), so this is unreachable today; if admission
+            // changes, the opening needs a step through that transaction.
             return Err(unprovable("its commit transaction has several cozies"));
         };
         let arrow = closing.arrow().ok_or_else(|| unprovable("no arrow"))?;
@@ -1208,34 +1164,15 @@ impl<S: eml::Storage> Principal<S> {
                 .collect(),
         };
 
-        let algs: Vec<HashAlg> = pre_md.algorithms().collect();
         let sr = prev
             .sr()
             .ok_or_else(|| unprovable("no state root before"))?;
-        let cr = crate::commit_root::commit_root_from_trees_at(self.commit_trees(), &algs, s)
-            .await
-            .map_err(to_err)?;
         let mut cells = vec![
             crate::principal_tree::PrincipalTree::serialize(&sr.0).map_err(to_err)?,
-            crate::principal_tree::PrincipalTree::serialize(cr.as_multihash()).map_err(to_err)?,
+            crate::principal_tree::PrincipalTree::serialize(prev.cr().as_multihash())
+                .map_err(to_err)?,
         ];
-        let mut nonces = crate::nonce::NonceSets::default();
-        for c in (0..idx).filter_map(|i| self.commit_at(i)) {
-            for z in c.iter_all_cozies() {
-                match z.kind() {
-                    crate::CozKind::NonceCreate { level, nonce } => {
-                        nonces.insert(*level, nonce).map_err(to_err)?;
-                    },
-                    crate::CozKind::NonceDelete { level, nonce } => {
-                        nonces.remove(*level, nonce).map_err(to_err)?;
-                    },
-                    _ => {},
-                }
-            }
-        }
-        for leaf in nonces.at_level(crate::nonce::NonceLevel::Pr) {
-            cells.push(crate::semantic_tree::serialize_converted(leaf, &algs).map_err(to_err)?);
-        }
+        cells.extend_from_slice(prev.nonce_cells());
         for (x, bound) in &pre_variants {
             let folded = crate::principal_tree::fold_cells(*x, &cells).map_err(to_err)?;
             if &folded != bound {

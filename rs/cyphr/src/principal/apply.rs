@@ -816,7 +816,20 @@ impl PrincipalState {
         core.held_prs.push(core.pr.clone());
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;
+        let nonce_cells = core
+            .nonces
+            .at_level(crate::nonce::NonceLevel::Pr)
+            .into_iter()
+            .map(|leaf| crate::semantic_tree::serialize_converted(leaf, &active_algs))
+            .collect::<Result<Vec<_>>>()?;
+        let commit = pending.finalize(
+            core.ar.clone(),
+            sr,
+            core.pr.clone(),
+            cr,
+            nonce_cells,
+            &tr_algs,
+        )?;
 
         core.auth.commits.push(commit);
         let now = core.latest_timestamp;
