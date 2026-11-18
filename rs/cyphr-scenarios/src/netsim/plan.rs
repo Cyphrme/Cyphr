@@ -499,9 +499,9 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
             .into_iter()
             .filter(|k| match k {
                 Kind::Commit | Kind::Record | Kind::AddKey | Kind::Replace => !live.is_empty(),
-                Kind::Pair => live.iter().any(|&p| {
-                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
-                }),
+                Kind::Pair => live
+                    .iter()
+                    .any(|&p| model.principals[p].devices < MAX_DEVICES),
                 Kind::DelKey => live
                     .iter()
                     .any(|&p| !model.principals[p].backups.is_empty()),
@@ -548,10 +548,8 @@ pub fn generate(seed: u64, size: &Size) -> Vec<Op> {
                 }
             },
             Kind::Pair => {
-                let p = pick(&mut rng, &|p| {
-                    model.principals[p].devices < MAX_DEVICES && !model.principals[p].multikey
-                })
-                .expect("enabled implies one");
+                let p = pick(&mut rng, &|p| model.principals[p].devices < MAX_DEVICES)
+                    .expect("enabled implies one");
                 Op::Pair {
                     p,
                     d: rng.gen_range(0..model.principals[p].devices),
