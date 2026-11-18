@@ -1436,17 +1436,29 @@ async fn a_stitch_opening_does_not_scan_history() {
     }
 }
 
+/// `n` commits with the replace as the last one (index `n - 1`): every
+/// probe of a bisection below it crosses exactly one stitch, at any n.
+async fn replace_last(n: usize) -> Principal {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    let p = single_with((&a, &b), (0, n - 2, 0), None).await;
+    assert_eq!(p.commit_count(), n);
+    p
+}
+
 // Bound: a fork search across the rotation, run as locate_fork runs it
 // (cyphr-client sync.rs: a bisection over the overlap, each probe a root
 // of the record's own at that size, the peer's extension proof from
 // there, and its verification), costs hashes and commit reads, client and
-// server together, that grow as log^2 n: 40 against 8 commits at most 4x
-// (O(n) work per probe is about 10x).
+// server together, that grow as log^2 n. With the replace last, every
+// probe needs one stitch at every n, so the work is probes x per-probe
+// cost: 128 against 8 commits is (7/3)^2 = 5.4x for log^2, capped at 11x
+// (2x slack). Linear per-probe work is (128 x 7) / (8 x 3) = 37x, so it
+// trips the cap.
 #[tokio::test]
 async fn a_fork_search_across_a_rotation_costs_polylog_work() {
     let mut work = Vec::new();
-    for n in [8usize, 40] {
-        let peer = late(n).await;
+    for n in [8usize, 128] {
+        let peer = replace_last(n).await;
         let record = detached(&peer).await;
         let fork = n / 2;
         let before = (cyphr::probe::hashes(), cyphr::probe::commits_read());
@@ -1460,6 +1472,7 @@ async fn a_fork_search_across_a_rotation_costs_polylog_work() {
                 .prove_extension(mid as u64)
                 .await
                 .expect("the peer's proof");
+            assert_eq!(proof.stitches.len(), 1, "n={n}, probe {mid}: one stitch");
             let extends = verify_extension(&old, claim_of(&peer), &proof).is_ok();
             assert!(extends, "the genuine chain extends every prefix");
             if mid <= fork {
@@ -1471,8 +1484,8 @@ async fn a_fork_search_across_a_rotation_costs_polylog_work() {
         work.push(cyphr::probe::hashes() - before.0 + cyphr::probe::commits_read() - before.1);
     }
     assert!(
-        work[1] <= 4 * work[0],
-        "work at n=8: {}, at n=40: {}",
+        work[1] <= 11 * work[0],
+        "work at n=8: {}, at n=128: {}",
         work[0],
         work[1]
     );
