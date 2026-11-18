@@ -1348,6 +1348,20 @@ async fn answers(e: &Engine, f: &Fork) -> String {
     )
 }
 
+/// What an engine holds of `f`'s principal, without the wall-clock times it
+/// records when it first saw a commit: the served tip, the verdict and its
+/// heads. Two engines that hold the same chain agree on it however far apart
+/// they received it.
+async fn held_chain(e: &Engine, f: &Fork) -> String {
+    let assessed = e.assess(&f.id).await.expect("assess");
+    format!(
+        "{:?}\n{:?}\n{:?}",
+        e.get_tip(&f.id).await.expect("tip").map(|t| t.commit_id),
+        assessed.consensus,
+        assessed.heads,
+    )
+}
+
 /// The thief's `key_a` line X1..X`n` over G, dated NOW+300 on, each pushed
 /// and admitted while no revoke of `key_a` is held.
 async fn thief_line(e: &Engine, f: &Fork, n: usize) -> cyphr::Principal {
@@ -1638,8 +1652,8 @@ async fn a_revoke_and_the_commit_adding_its_key_converge_in_either_order() {
     assert!(late.is_ok(), "the introduction is admitted: {late:?}");
 
     assert_eq!(
-        answers(&revoke_first, &f).await,
-        answers(&commit_first, &f).await,
+        held_chain(&revoke_first, &f).await,
+        held_chain(&commit_first, &f).await,
         "the two engines hold the same chain"
     );
 }
