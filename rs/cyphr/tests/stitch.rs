@@ -108,20 +108,58 @@ async fn genesis(owner: &Kp) -> Principal {
     p
 }
 
-/// Genesis (Ed25519, SHA-512), `pre` data commits, a `key/replace` to an
-/// ES256 key (SHA-256) at index `pre + 1`, then `post` data commits by the
-/// new key: `pre + post + 2` commits.
-async fn single(pre: usize, post: usize) -> Principal {
-    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
-    let mut p = genesis(&a).await;
-    for k in 0..pre {
-        data_commit(&mut p, &a, at(k + 1)).await;
+/// A PR-level nonce create by `by`, as its own commit.
+async fn commit_nonce(p: &mut Principal, by: &Kp, seed: u8, now: i64) {
+    let id = format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[seed; 32]));
+    let mut pay = json!({"alg": by.alg, "id": id, "now": now,
+                         "tmb": Base64UrlUnpadded::encode_string(by.tmb.as_bytes()),
+                         "typ": format!("{AUTHORITY}/cyphr/nonce/create")});
+    pay.as_object_mut().expect("pay object").sort_keys();
+    let v = serde_json::to_vec(&pay).expect("serialize pay");
+    let (sig, cad) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope.verify_and_apply(&v, &sig, czd, None).expect("nonce");
+    scope
+        .finalize_with_software(&signer(by), now + 1, AUTHORITY)
+        .await
+        .expect("commit");
+}
+
+/// Genesis (Ed25519, SHA-512), `nonces` PR-level nonce commits, `pre` data
+/// commits, a `key/replace` to an ES256 key (SHA-256), then `post` data
+/// commits by the new key. Ed25519 signs deterministically, so two builds
+/// with the same keys agree commit for commit until `skew` (a commit
+/// index from which every `now` is one second later), which forks them.
+async fn single_with(
+    (a, b): (&Kp, &Kp),
+    (nonces, pre, post): (usize, usize, usize),
+    skew: Option<usize>,
+) -> Principal {
+    let t = |i: usize| at(i) + i64::from(skew.is_some_and(|f| i >= f));
+    let mut p = genesis(a).await;
+    let mut i = 1;
+    for k in 0..nonces {
+        commit_nonce(&mut p, a, k as u8 + 1, t(i)).await;
+        i += 1;
     }
-    commit_key(&mut p, &a, "replace", &b, at(pre + 1)).await;
-    for k in 0..post {
-        data_commit(&mut p, &b, at(pre + 2 + k)).await;
+    for _ in 0..pre {
+        data_commit(&mut p, a, t(i)).await;
+        i += 1;
+    }
+    commit_key(&mut p, a, "replace", b, t(i)).await;
+    i += 1;
+    for _ in 0..post {
+        data_commit(&mut p, b, t(i)).await;
+        i += 1;
     }
     p
+}
+
+/// `pre + post + 2` commits, the replace at index `pre + 1`.
+async fn single(pre: usize, post: usize) -> Principal {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    single_with((&a, &b), (0, pre, post), None).await
 }
 
 /// Ed25519 -> ES256 at index 3 -> ES384 (SHA-384) at index 6; nine
@@ -317,22 +355,34 @@ async fn without_a_rotation_there_is_no_stitch() {
     verify_extension(&old, claim_of(&p), &ext).expect("direct extension");
 }
 
-// ---- 7 (claims 2 and 5): the opening is bounded ----
+// ---- 7 (claims 2 and 5): the opening is independent of n ----
 
-// The frame says the PT has exactly three cells. principal_tree.rs builds
-// SR, CR and one cell per nonce, so a nonce-less principal has two. This
-// pins what matters, that the count is bounded and independent of n.
+// The frame says the PT has exactly three cells; principal_tree.rs builds
+// SR, CR and one cell per nonce (two for a nonce-less principal). What
+// the cost argument needs is independence from n: with k nonces the same
+// opening at n = 8 and n = 64. (Claim 5, the bound by the transaction
+// limits, is not settled here.)
 #[tokio::test]
-async fn the_opening_does_not_grow_with_the_log() {
-    let mut shape = Vec::new();
-    for post in [3, 59] {
-        let p = single(3, post).await;
-        let mut proof = p.prove_membership(2).await.expect("prove");
-        let o = opening_of(&mut proof.stitches[0]);
-        shape.push((o.pt_cells.len(), o.tr_path.len()));
+async fn the_opening_is_independent_of_the_log_length() {
+    for k in [0usize, 3] {
+        let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+        let mut shape = Vec::new();
+        for n in [8usize, 64] {
+            let p = single_with((&a, &b), (k, 2, n - k - 4), None).await;
+            assert_eq!(p.commit_count(), n);
+            let mut proof = p.prove_membership(1).await.expect("prove");
+            let o = opening_of(&mut proof.stitches[0]);
+            let bytes: usize = o.pt_cells.iter().map(Vec::len).sum();
+            shape.push((
+                o.pt_cells.len(),
+                bytes,
+                o.tr_path.len(),
+                o.arrow_preimage.len(),
+            ));
+        }
+        assert_eq!(shape[0], shape[1], "k = {k}: opening at n = 8 vs 64");
+        assert_eq!(shape[0].0, 2 + k, "SR, CR and one cell per nonce");
     }
-    assert_eq!(shape[0], shape[1], "same opening at n = 8 and n = 64");
-    assert!(shape[0].0 <= 3, "PT cells: {}", shape[0].0);
 }
 
 // ---- 8: negatives, all through the two entry points ----
@@ -470,6 +520,178 @@ async fn the_forgers_alternate_history_is_refused() {
         verify_extension(&old, head, &proof).map(|_| ()),
         Err(ProofError::NotAnExtension)
     );
+}
+
+// ---- binding: what the proof must tie together ----
+
+// Every test above hands the verifier the matching TR, so a verifier that
+// never hashes `tr` into the leaf would pass them all.
+#[tokio::test]
+async fn a_proof_does_not_vouch_for_another_commits_tr() {
+    let p = single(3, 3).await;
+    let proof = p.prove_membership(2).await.expect("prove");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 2)).expect("control");
+    for j in [0u64, 1, 3, 5, 7] {
+        let r = verify_membership(&tip(&p), &proof, tr_of(&p, j));
+        assert!(
+            matches!(r, Err(ProofError::Mismatch(_))),
+            "tr of {j}: {r:?}"
+        );
+    }
+    // The same position of another principal's chain.
+    let other = single(3, 3).await;
+    let r = verify_membership(&tip(&p), &proof, tr_of(&other, 2));
+    assert!(
+        matches!(r, Err(ProofError::Mismatch(_))),
+        "foreign tr: {r:?}"
+    );
+}
+
+// The genuine leaf path for one commit with the genuine opening of
+// another: each part checks alone, only the binding refuses it.
+#[tokio::test]
+async fn a_spliced_opening_is_refused() {
+    let p = double().await;
+    let mut proof = p.prove_membership(1).await.expect("prove");
+    assert_eq!(proof.stitches.len(), 2);
+    verify_membership(&tip(&p), &proof, tr_of(&p, 1)).expect("control");
+    let (first, second) = (
+        opening_of(&mut proof.stitches[0]).clone(),
+        opening_of(&mut proof.stitches[1]).clone(),
+    );
+    *opening_of(&mut proof.stitches[0]) = second;
+    *opening_of(&mut proof.stitches[1]) = first;
+    let r = verify_membership(&tip(&p), &proof, tr_of(&p, 1));
+    assert!(
+        matches!(r, Err(ProofError::Path | ProofError::Arrow)),
+        "{r:?}"
+    );
+}
+
+// A commit's arrow is on its last coz; the replace coz before it carries
+// none and is a genuine coz of the same commit.
+#[tokio::test]
+async fn an_opening_through_a_coz_other_than_the_closing_one_is_refused() {
+    let p = single(3, 3).await; // replace at 4
+    let blobs: Vec<Vec<u8>> = cyphr::replay::WireBundle::of_commit(p.commit_at(4).expect("commit"))
+        .expect("bundle")
+        .cozies()
+        .map(<[u8]>::to_vec)
+        .collect();
+    assert!(
+        blobs.len() >= 2,
+        "a replace commit has its coz and a closing coz"
+    );
+    let mut proof = p.prove_membership(2).await.expect("prove");
+    assert_eq!(
+        opening_of(&mut proof.stitches[0]).coz,
+        blobs[blobs.len() - 1]
+    );
+    opening_of(&mut proof.stitches[0]).coz = blobs[0].clone();
+    let r = verify_membership(&tip(&p), &proof, tr_of(&p, 2));
+    assert!(matches!(r, Err(ProofError::Arrow)), "{r:?}");
+}
+
+// A genuine, signed fork that diverges at f = 2, below the trusted size
+// m = 3, and its own honest proof. Every signature and stitch is real; the
+// trusted CR_3 is simply not a prefix of it.
+#[tokio::test]
+async fn a_real_fork_below_the_trusted_size_is_refused() {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    let x = single_with((&a, &b), (0, 3, 3), None).await;
+    let y = single_with((&a, &b), (0, 3, 3), Some(2)).await;
+    assert_eq!(
+        tr_of(&x, 1),
+        tr_of(&y, 1),
+        "they share the first two commits"
+    );
+    assert_ne!(tr_of(&x, 2), tr_of(&y, 2), "and part at commit 2");
+    let old = Rooted::<Trusted, FullCr>::at_size(&x, 3)
+        .await
+        .expect("old");
+    let honest = x.prove_extension(3).await.expect("prove");
+    verify_extension(&old, claim_of(&x), &honest).expect("control: its own chain");
+    let forked = y.prove_extension(3).await.expect("the fork's honest proof");
+    let r = verify_extension(&old, claim_of(&y), &forked);
+    assert_eq!(r.map(|_| ()), Err(ProofError::NotAnExtension));
+}
+
+fn leaf_size_mut(s: &mut AnyStitch) -> &mut u64 {
+    match s {
+        AnyStitch::Sha256(s) => &mut s.leaf.size,
+        AnyStitch::Sha384(s) => &mut s.leaf.size,
+        AnyStitch::Sha512(s) => &mut s.leaf.size,
+    }
+}
+
+fn path_size_mut(p: &mut AnyPath) -> &mut u64 {
+    match p {
+        AnyPath::Sha256(p) => &mut p.size,
+        AnyPath::Sha384(p) => &mut p.size,
+        AnyPath::Sha512(p) => &mut p.size,
+    }
+}
+
+// The API derives the sizes (the anchor's, and CR_{s-1}'s from s) and
+// never trusts a size the proof states: a stated size other than the
+// implied one is refused.
+#[tokio::test]
+async fn a_size_the_proof_states_wrongly_is_refused() {
+    let p = single(3, 3).await; // tip 8; the SHA-512 tree closes at 4
+    let genuine = p.prove_membership(2).await.expect("prove");
+    verify_membership(&tip(&p), &genuine, tr_of(&p, 2)).expect("control");
+    let mut at_anchor = genuine.clone();
+    *leaf_size_mut(&mut at_anchor.stitches[0]) = 9;
+    let mut at_cr = genuine;
+    *path_size_mut(&mut at_cr.terminal) = 5;
+    for (what, bad) in [("anchor size", at_anchor), ("CR size", at_cr)] {
+        let r = verify_membership(&tip(&p), &bad, tr_of(&p, 2));
+        assert!(
+            matches!(r, Err(ProofError::Mismatch(_) | ProofError::Path)),
+            "{what}: {r:?}"
+        );
+    }
+}
+
+/// The property: whatever the verifier accepts proves the true index.
+fn proves_only_the_truth(
+    r: Result<cyphr::proof::Verified<cyphr::proof::Membership>, ProofError>,
+    i: u64,
+) {
+    if let Ok(v) = r {
+        assert_eq!(
+            v.get().index,
+            i,
+            "accepted, so it must prove the true index"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_stitch_list_cannot_be_edited_into_a_false_proof() {
+    // Dropping the only stitch of an index only the retired family covers.
+    let p = single(3, 3).await;
+    let mut dropped = p.prove_membership(2).await.expect("prove");
+    verify_membership(&tip(&p), &dropped, tr_of(&p, 2)).expect("control");
+    dropped.stitches.clear();
+    let r = verify_membership(&tip(&p), &dropped, tr_of(&p, 2));
+    assert!(r.is_err(), "the tip has no SHA-512 root: {r:?}");
+
+    // Inserting a genuine extra stitch (taken from a longer proof).
+    let d = double().await;
+    let long = d.prove_membership(1).await.expect("prove");
+    for i in [1u64, 4, 7] {
+        let mut proof = d.prove_membership(i).await.expect("prove");
+        verify_membership(&tip(&d), &proof, tr_of(&d, i)).expect("control");
+        for extra in &long.stitches {
+            proof.stitches.insert(0, extra.clone());
+            proves_only_the_truth(verify_membership(&tip(&d), &proof, tr_of(&d, i)), i);
+            proof.stitches.remove(0);
+            proof.stitches.push(extra.clone());
+            proves_only_the_truth(verify_membership(&tip(&d), &proof, tr_of(&d, i)), i);
+            proof.stitches.pop();
+        }
+    }
 }
 
 // Setup guard, green by design: the forger's tree is built faithfully

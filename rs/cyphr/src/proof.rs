@@ -165,27 +165,20 @@ impl Trust for Trusted {}
 impl Trust for Claimed {}
 
 /// A root `T` at trust level `M`. The field is private and the only
-/// `Trusted` constructors read the holder's own state; [`upgrade`] is the
-/// only `Claimed` -> `Trusted` path.
+/// `Trusted` constructors read the holder's own state; the extension
+/// verifier is the only `Claimed` -> `Trusted` path.
 ///
-/// Control: the typed flow compiles, and builds a digest first (red until
-/// [`Digest::from_bytes`] exists).
+/// Control: the public flow compiles, and builds a digest first (red
+/// until [`Digest::from_bytes`] exists).
 ///
 /// ```
 /// use cyphr::proof::*;
 /// let d = Digest::<Sha512>::from_bytes(&[0; 64]).unwrap();
-/// let new = Rooted::<Claimed, FamilyRoot<Sha512>>::claim(FamilyRoot { size: 2, digest: d });
-/// fn extend(
-///     old: &Rooted<Trusted, FamilyRoot<Sha512>>,
-///     new: Rooted<Claimed, FamilyRoot<Sha512>>,
-///     c: &Consistency<Sha512>,
-/// ) -> Rooted<Trusted, FamilyRoot<Sha512>> {
-///     upgrade(old, new, c).unwrap()
-/// }
-/// # let _ = (new, extend);
+/// let claim = Rooted::<Claimed, FamilyRoot<Sha512>>::claim(FamilyRoot { size: 2, digest: d });
+/// # let _ = claim;
 /// ```
 ///
-/// A claim is not a trusted root without `upgrade`:
+/// A claim is not a trusted root:
 ///
 /// ```compile_fail,E0308
 /// use cyphr::proof::*;
@@ -203,12 +196,16 @@ impl Trust for Claimed {}
 /// }
 /// ```
 ///
-/// A stitch of one family does not open a root of another:
+/// A claimed root cannot anchor a membership proof:
 ///
 /// ```compile_fail,E0308
 /// use cyphr::proof::*;
-/// fn mix(r: &Rooted<Trusted, FamilyRoot<Sha512>>, s: &Stitch<Sha256>) {
-///     let _ = r.stitch(s);
+/// fn anchor(
+///     claimed: &Rooted<Claimed, FullCr>,
+///     proof: &MembershipProof,
+///     tr: &cyphr::TransactionRoot,
+/// ) {
+///     let _ = verify_membership(claimed, proof, tr);
 /// }
 /// ```
 #[derive(Debug)]
@@ -281,7 +278,9 @@ pub struct CommitOpening {
     pub tr_map: Vec<u8>,
     /// Path from `TR_s[F]` to the closing coz's czd.
     pub tr_path: Vec<eml::ProofStep>,
-    /// The closing coz (pay and sig): names the arrow's algorithm.
+    /// The closing coz (the last coz of the commit, the one carrying the
+    /// arrow), in the wire blob form `WireBundle::cozies` yields: names
+    /// the arrow's algorithm.
     pub coz: Vec<u8>,
     /// The arrow preimage: `pre`, `fwd`, TMR under the coz's algorithm.
     pub arrow_preimage: Vec<u8>,
@@ -306,7 +305,8 @@ impl<M: Trust, F: HashFamily> Rooted<M, FamilyRoot<F>> {
     /// # Errors
     ///
     /// [`ProofError::Path`], [`ProofError::Arrow`], [`ProofError::PtCell`].
-    pub fn stitch(&self, _s: &Stitch<F>) -> Result<Rooted<M, FullCr>, ProofError> {
+    #[allow(dead_code)]
+    pub(crate) fn stitch(&self, _s: &Stitch<F>) -> Result<Rooted<M, FullCr>, ProofError> {
         unimplemented!("stub: Rooted::stitch")
     }
 }
@@ -315,8 +315,17 @@ impl<M: Trust> Rooted<M, FullCr> {
     /// STUB. The member root of family `H`, `None` if `H` is not in this
     /// Commit Root.
     #[must_use]
-    pub fn family<H: HashFamily>(&self) -> Option<Rooted<M, FamilyRoot<H>>> {
+    #[allow(dead_code)]
+    pub(crate) fn family_impl<H: HashFamily>(&self) -> Option<Rooted<M, FamilyRoot<H>>> {
         unimplemented!("stub: Rooted::family")
+    }
+
+    /// Test support for [`Self::family_impl`].
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn family<H: HashFamily>(&self) -> Option<Rooted<M, FamilyRoot<H>>> {
+        self.family_impl()
     }
 }
 
@@ -331,6 +340,14 @@ pub struct Membership {
 #[derive(Debug)]
 pub struct Verified<T>(T);
 
+impl<T> Verified<T> {
+    /// STUB. What was verified.
+    #[must_use]
+    pub fn get(&self) -> &T {
+        unimplemented!("stub: Verified::get")
+    }
+}
+
 /// STUB. Terminal step of a membership proof, internal to
 /// [`verify_membership`]: `tr` is the leaf at `path.index` under `root`.
 ///
@@ -338,7 +355,8 @@ pub struct Verified<T>(T);
 ///
 /// [`ProofError::Path`] if the leaf does not reach the root;
 /// [`ProofError::Mismatch`] if `tr` is not the leaf's content.
-pub fn verify_terminal<H: HashFamily>(
+#[allow(dead_code)]
+pub(crate) fn verify_terminal<H: HashFamily>(
     _root: &Rooted<Trusted, FamilyRoot<H>>,
     _path: &LogPath<H>,
     _tr: &TransactionRoot,
@@ -351,7 +369,8 @@ pub fn verify_terminal<H: HashFamily>(
 /// # Errors
 ///
 /// [`ProofError::NotAnExtension`].
-pub fn upgrade<H: HashFamily>(
+#[allow(dead_code)]
+pub(crate) fn upgrade<H: HashFamily>(
     _old: &Rooted<Trusted, FamilyRoot<H>>,
     _new: Rooted<Claimed, FamilyRoot<H>>,
     _c: &Consistency<H>,
@@ -473,7 +492,8 @@ impl<S: eml::Storage> Principal<S> {
     /// # Errors
     ///
     /// [`ProofError::Unprovable`].
-    pub async fn log_path<H: HashFamily>(
+    #[allow(dead_code)]
+    pub(crate) async fn log_path_impl<H: HashFamily>(
         &self,
         _index: u64,
         _size: u64,
@@ -481,17 +501,40 @@ impl<S: eml::Storage> Principal<S> {
         unimplemented!("stub: Principal::log_path")
     }
 
+    /// Test support for the prover's `log_path_impl`.
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn log_path<H: HashFamily>(
+        &self,
+        index: u64,
+        size: u64,
+    ) -> Result<LogPath<H>, ProofError> {
+        self.log_path_impl::<H>(index, size).await
+    }
+
     /// STUB. Consistency of family `H`'s tree from `from` to `to`.
     ///
     /// # Errors
     ///
     /// [`ProofError::Unprovable`].
-    pub async fn family_consistency<H: HashFamily>(
+    #[allow(dead_code)]
+    pub(crate) async fn family_consistency_impl<H: HashFamily>(
         &self,
         _from: u64,
         _to: u64,
     ) -> Result<Consistency<H>, ProofError> {
         unimplemented!("stub: Principal::family_consistency")
+    }
+
+    /// Test support for the prover's `family_consistency_impl`.
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn family_consistency<H: HashFamily>(
+        &self,
+        from: u64,
+        to: u64,
+    ) -> Result<Consistency<H>, ProofError> {
+        self.family_consistency_impl::<H>(from, to).await
     }
 
     /// STUB. The tip-anchored membership proof for the commit at `index`:
