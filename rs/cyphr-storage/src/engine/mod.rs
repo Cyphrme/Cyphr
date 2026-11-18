@@ -3689,13 +3689,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 return Err(dead);
             }
 
-            // SPEC 15.5: while the principal is in Error, only a bundle that
-            // leaves Error is processed; what it would leave is `in_error` of
-            // the held commits plus the candidate. A fixed protocol rule, never
-            // a recovery strategy's.
-            let held = self.held(principal_id).await?;
-            let errored = in_error(&held).then_some(held.as_slice());
-
             // Whether every action the bundle carries is one the principal
             // already holds, before the bundle is applied to it: a client
             // cannot tell which actions a peer holds, so a push repeats them.
@@ -3707,9 +3700,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             let embedded = self
                 .follow_held(principal_id, &mut principal, bundle, &mut HeldCache::new())
                 .await?;
-            let mut build = match Self::build_staged(&mut principal, bundle, principal_id, next_seq)
-                .await
-            {
+            let built = Self::build_staged(&mut principal, bundle, principal_id, next_seq).await;
+            // SPEC 15.5: while the principal is in Error, only a bundle that
+            // leaves Error is processed; what it would leave is `in_error` of
+            // the held commits plus the candidate. A fixed protocol rule, never
+            // a recovery strategy's. The fork state is read only for a bundle
+            // that verified on the chain: it costs the depth of the fork (the
+            // canonical chain from one below the lowest retained commit), and
+            // a bundle no key of the principal signed is refused before it,
+            // so a stranger's push costs the victim nothing of its length.
+            let held = if built.is_ok() {
+                self.held(principal_id).await?
+            } else {
+                Vec::new()
+            };
+            let errored = (built.is_ok() && in_error(&held)).then_some(held.as_slice());
+            let mut build = match built {
                 Ok(Built::Commit(build))
                     if errored.is_some_and(|e| stays_errored(e, &build.commit)) =>
                 {
