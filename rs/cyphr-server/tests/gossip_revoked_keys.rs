@@ -20,12 +20,7 @@ use common::{envelope_payload, get_json, keyless_server, load_pool, post_json};
 const T: i64 = 1_700_600_000;
 
 /// One commit on `p` in which pool key `signer` deletes pool key `name`.
-async fn key_delete_by(
-    p: &mut cyphr::Principal,
-    signer: &str,
-    name: &str,
-    now: i64,
-) -> WireBundle {
+async fn key_delete_by(p: &mut cyphr::Principal, signer: &str, name: &str, now: i64) -> WireBundle {
     let pool = load_pool();
     let s = pool.get(signer).expect("signer");
     let target = pool.get(name).expect("pool key").key().expect("key");
