@@ -1,9 +1,9 @@
 //! Pinned roots and certificates: membership and extension across hash
-//! algorithm epochs (frame NETSIM-FIX, E10).
+//! algorithm epochs.
 //!
-//! **THIS MODULE IS A STUB.** It declares the E10 surface the acceptance
+//! **THIS MODULE IS A STUB.** It declares the surface the acceptance
 //! tests (`tests/stitch.rs`) are written against; every function that
-//! needs logic is `unimplemented!()`. The pre-E10 implementation lives in
+//! needs logic is `unimplemented!()`. The previous implementation lives in
 //! [`legacy`] (to reuse, then delete); it still hashes the arrow sorted
 //! and is broken against the ordered arrow.
 //!
@@ -30,9 +30,8 @@
 //! }
 //! stitch   := { "alg", "leaf": path, "opening": {
 //!   "tr_map", "tr_path": [step], "coz",
-//!   "pre_variants": [[alg, bytes]],     // the variants of PR_{s-1} the arrow binds
-//!   "fwd": [alg, bytes] | null,         // the forward State Root, as the arrow takes it
-//!   "pt_cells": [bytes] } }
+//!   "fwd_variants": [[alg, bytes]],     // the forward State Root's variants, empty when absent
+//!   "pt_cells": [bytes] } }             // SR, CR, nonces of PR_{s-1}: every family's variant
 //! path        := { "alg", "index", "size", "steps": [step] }
 //! step        := { "position", "siblings": [bytes] }
 //! consistency := { "alg", "boundary_hash", "peak_path": [step],
@@ -40,8 +39,10 @@
 //! ```
 //!
 //! The arrow is `H_G(pre || fwd? || TMR)` in SPEC 4.2 order. TMR is
-//! recomputed from the opened TR, never carried; `pre` and `fwd` widths
-//! come from their declared families, never from lengths.
+//! recomputed from the opened TR, never carried; `pre` is derived from the
+//! Principal Tree cells (each family's variant folds to `PR_{s-1}`'s), not
+//! carried either. Every variant on the wire (the cells', `fwd_variants`)
+//! has the width of its declared family, checked at parse.
 
 use serde::{Deserialize, Serialize};
 
@@ -167,8 +168,7 @@ struct Opening {
     tr_map: String,
     tr_path: Vec<Step>,
     coz: String,
-    pre_variants: Vec<(String, String)>,
-    fwd: Option<(String, String)>,
+    fwd_variants: Vec<(String, String)>,
     pt_cells: Vec<String>,
 }
 
@@ -215,8 +215,8 @@ struct Wire {
 }
 
 /// Opaque proof material: built by `prove_*`, parsed by a bounded
-/// `Deserialize` that refuses oversized fields (F4), mis-framed Principal
-/// Tree cells (F1) and implausible lengths before any hashing. It carries
+/// `Deserialize` that refuses oversized fields, mis-framed Principal
+/// Tree cells and implausible lengths before any hashing. It carries
 /// no trust: only [`verify_membership`] and [`verify_extension`] against
 /// an [`Anchor`] judge it.
 ///
@@ -306,5 +306,42 @@ impl<S: eml::Storage> Principal<S> {
     /// [`ProofError::Unprovable`] for sizes the log has not passed.
     pub async fn prove_extension(&self, _from: u64, _to: u64) -> Result<Certificate, ProofError> {
         unimplemented!("stub: Principal::prove_extension")
+    }
+
+    /// STUB (test support). A path to leaf `index` in family `alg`'s tree of
+    /// `size` leaves, as the wire's terminal object. It builds what a forger
+    /// would too: for an index at which `alg` was inactive, the path to
+    /// that position's null leaf. Errs only if `alg` never had a tree.
+    ///
+    /// # Errors
+    ///
+    /// [`ProofError::Unprovable`].
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn log_path(
+        &self,
+        _alg: crate::HashAlg,
+        _index: u64,
+        _size: u64,
+    ) -> Result<serde_json::Value, ProofError> {
+        unimplemented!("stub: Principal::log_path")
+    }
+
+    /// STUB (test support). A consistency proof in family `alg`'s tree
+    /// between two sizes, as the wire's terminal object, including sizes
+    /// at which `alg` had no tree yet (nulls), as a forger would build.
+    ///
+    /// # Errors
+    ///
+    /// [`ProofError::Unprovable`].
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn family_consistency(
+        &self,
+        _alg: crate::HashAlg,
+        _from: u64,
+        _to: u64,
+    ) -> Result<serde_json::Value, ProofError> {
+        unimplemented!("stub: Principal::family_consistency")
     }
 }

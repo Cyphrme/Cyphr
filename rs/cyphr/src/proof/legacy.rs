@@ -1,6 +1,6 @@
-//! LEGACY: the pre-E10 proof API (typed roots, one membership proof per
+//! LEGACY: the previous proof API (typed roots, one membership proof per
 //! tip), kept only so `cyphr-client` and `cyphr-server` still compile until
-//! they are ported to the E10 surface in `cyphr::proof`; its arrow check
+//! they are ported to the surface in `cyphr::proof`; its arrow check
 //! still hashes sorted components, so it is broken against the ordered
 //! arrow. The implementer deletes this module with the port.
 //!
@@ -1087,7 +1087,7 @@ impl<S: eml::Storage> Principal<S> {
                 return Ok((hops, family, size));
             }
             // Stitch at the start of the family's epoch: the farthest back
-            // it can go (the E5 walk rule), read from the epoch timeline
+            // it can go (the walk rule), read from the epoch timeline
             // without looking at any commit but the one stitched. It lands
             // in what commit `a`'s arrow binds; take the family that
             // reaches back furthest.
@@ -1271,7 +1271,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Test support for the prover's `log_path_impl`.
     #[cfg(feature = "test-utils")]
     #[doc(hidden)]
-    pub async fn log_path<H: HashFamily>(
+    pub async fn legacy_log_path<H: HashFamily>(
         &self,
         index: u64,
         size: u64,
@@ -1329,7 +1329,7 @@ impl<S: eml::Storage> Principal<S> {
     /// Test support for the prover's `family_consistency_impl`.
     #[cfg(feature = "test-utils")]
     #[doc(hidden)]
-    pub async fn family_consistency<H: HashFamily>(
+    pub async fn legacy_family_consistency<H: HashFamily>(
         &self,
         from: u64,
         to: u64,
