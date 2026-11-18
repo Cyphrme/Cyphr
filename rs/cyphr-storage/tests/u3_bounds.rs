@@ -8,6 +8,9 @@
 //!
 //! A red test is a bound the engine does not yet meet: the finding, not a
 //! defect of the test.
+//!
+//! "Index rows" counts only the engine's `chain()` rows, so an O(n) read
+//! through any other indexer call is not seen by these tests.
 
 #[path = "../benches/common/mod.rs"]
 mod common;
@@ -224,4 +227,59 @@ async fn restart_replays_once_then_nothing() {
         );
         assert_eq!(o.restart_second.replayed, 0, "n={}: {:?}", o.n, o);
     }
+}
+
+/// What a stranger's refused push cost a principal whose retained rival
+/// sits at position 1, the shape theft recovery leaves for good. Measured
+/// apart from [`observe`]: with a rival held, the engine reads a fork from
+/// its depth down on every verified write, by design, so the other counts
+/// would differ with n for that reason.
+async fn rival_stranger(n: usize) -> Counts {
+    use std::sync::atomic::Ordering::Relaxed;
+    let d = Disk::new();
+    let e = d.engine();
+    let mut chain = Chain::new("golden", "key_a", "key_b").await;
+    let g = Some(chain.genesis.clone());
+    let id = chain.id.clone();
+    e.submit_commit(&id, g.clone(), &chain.first())
+        .await
+        .expect("genesis");
+    while chain.commits < n {
+        let b = chain.next().await;
+        e.submit_commit(&id, g.clone(), &b).await.expect("history");
+    }
+    let mut rival = Chain::new("golden", "key_a", "key_b").await;
+    rival.diverge("diana_es384");
+    let at_one = rival.next().await;
+    e.submit_commit(&id, g.clone(), &at_one)
+        .await
+        .expect_err("a rival at position 1 is retained, not served");
+
+    let mut other = Chain::new("alice", "key_a", "key_b").await;
+    let _ = other.next().await;
+    let stranger = other.next().await;
+    let before = (
+        e.commits_replayed(),
+        d.ctr.idx_rows.load(Relaxed),
+        d.ctr.blob_gets.load(Relaxed),
+    );
+    e.submit_commit(&id, g.clone(), &stranger)
+        .await
+        .expect_err("a stranger's commit refused");
+    Counts {
+        replayed: e.commits_replayed() - before.0,
+        idx_rows: d.ctr.idx_rows.load(Relaxed) - before.1,
+        blobs: d.ctr.blob_gets.load(Relaxed) - before.2,
+    }
+}
+
+/// Bound: a stranger's refused push to a principal holding a retained rival
+/// at position 1 costs O(bundle): the same replays, index rows and blobs at
+/// any n, and no replay. A fork-state read made for every write, before the
+/// bundle is authenticated, makes it O(n).
+#[tokio::test]
+async fn refused_push_cost_is_independent_of_history_with_a_rival_at_one() {
+    let (s, l) = (rival_stranger(SHORT).await, rival_stranger(LONG).await);
+    assert_eq!(s, l, "counts at n={SHORT} and n={LONG} (short {s:?}, long {l:?})");
+    assert_eq!(s.replayed, 0, "{s:?}");
 }
