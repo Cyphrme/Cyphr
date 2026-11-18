@@ -1632,6 +1632,172 @@ async fn planning_a_walk_does_not_scan_the_last_epoch() {
     }
 }
 
+// ---- security review: F1 (framing), role residual, F3 and F4 (bounds) ----
+
+/// A PR-level nonce create of `id` (a tagged string) by `by`, as a commit.
+async fn commit_nonce_id(p: &mut Principal, by: &Kp, id: &str, now: i64) {
+    let mut pay = json!({"alg": by.alg, "id": id, "now": now,
+                         "tmb": Base64UrlUnpadded::encode_string(by.tmb.as_bytes()),
+                         "typ": format!("{AUTHORITY}/cyphr/nonce/create")});
+    pay.as_object_mut().expect("pay object").sort_keys();
+    let v = serde_json::to_vec(&pay).expect("serialize pay");
+    let (sig, cad) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope.verify_and_apply(&v, &sig, czd, None).expect("nonce");
+    scope
+        .finalize_with_software(&signer(by), now + 1, AUTHORITY)
+        .await
+        .expect("commit");
+}
+
+/// The cells of a stitch's opening, each a map of per-family variants.
+fn cell_maps(o: &cyphr::proof::CommitOpening) -> Vec<std::collections::BTreeMap<u64, Vec<u8>>> {
+    o.pt_cells
+        .iter()
+        .map(|c| serde_json::from_slice(c).expect("a cell is a map of variants"))
+        .collect()
+}
+
+fn cell_of(variants: &[(u64, Vec<u8>)]) -> Vec<u8> {
+    let m: std::collections::BTreeMap<u64, Vec<u8>> = variants.iter().cloned().collect();
+    serde_json::to_vec(&m).expect("cell")
+}
+
+/// F1's chain: Ed25519 genesis, a PR-level SHA-512 nonce `N` (the root of
+/// a tree of two chosen fake leaves `l0`, `l1`), a replace to ES256, two
+/// data commits. The stitch at the replace (commit 2) opens `PR_1`, whose
+/// cells are `[SR, CR, N]`.
+async fn nonce_chain(n: &[u8]) -> Principal {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    let mut p = genesis(&a).await;
+    let id = format!("SHA-512:{}", Base64UrlUnpadded::encode_string(n));
+    commit_nonce_id(&mut p, &a, &id, at(1)).await;
+    commit_key(&mut p, &a, "replace", &b, at(2)).await;
+    for k in 3..5 {
+        data_commit(&mut p, &b, at(k)).await;
+    }
+    p
+}
+
+/// The fake leaves and `N = H_512(l0 || l1)`.
+fn fake_leaves() -> ([u8; 64], [u8; 64], Vec<u8>) {
+    let (l0, l1) = ([0x11u8; 64], [0x22u8; 64]);
+    let n = HashAlg::Sha512.hash_bytes(&[l0.as_slice(), l1.as_slice()].concat());
+    (l0, l1, n)
+}
+
+fn sha512_id() -> u64 {
+    hash_alg_to_u64(HashAlg::Sha512)
+}
+
+// F1, the cell re-partition forgery: the PT fold concatenates the cells'
+// variants with no framing, so `[SR, CR, N]` and `[SR||CR, N, ""]` fold to
+// the same PR. The forged stitch reads N as `CR_1[SHA-512]`; N is the root
+// of two leaves the forger chose, so it forges membership of a TR that no
+// commit holds at index 0. The verifier must frame the cells.
+#[tokio::test]
+async fn a_repartitioned_pt_opening_forges_nothing() {
+    let (l0, l1, n) = fake_leaves();
+    let p = nonce_chain(&n).await;
+    let mut proof = p.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 0)).expect("control: the genuine proof");
+
+    let o = opening_of(&mut proof.stitches[0]);
+    let cells = cell_maps(o);
+    assert_eq!(cells.len(), 3, "setup: SR, CR and the nonce");
+    assert_eq!(cells[2][&sha512_id()], n, "setup: the nonce cell holds N");
+    let (sr, cr) = (&cells[0][&sha512_id()], &cells[1][&sha512_id()]);
+    o.pt_cells = vec![
+        cell_of(&[(sha512_id(), [sr.as_slice(), cr.as_slice()].concat())]),
+        cell_of(&[(sha512_id(), n.clone())]),
+        cell_of(&[(sha512_id(), Vec::new())]),
+    ];
+    match &mut proof.terminal {
+        AnyPath::Sha512(path) => {
+            assert_eq!((path.index, path.size), (0, 2), "setup: leaf 0 of CR_1");
+            path.steps[0].siblings[0] = l1.to_vec();
+        },
+        _ => panic!("the terminal is in the SHA-512 tree"),
+    }
+    let forged = cyphr::TransactionRoot(
+        cyphr::multihash::MultihashDigest::from_single(HashAlg::Sha512, l0.to_vec())
+            .expect("digest"),
+    );
+    let r = verify_membership(&tip(&p), &proof, &forged).map(|_| ());
+    assert_eq!(
+        r,
+        Err(ProofError::PtCell),
+        "a TR nobody committed was accepted"
+    );
+}
+
+// Every cell must carry exactly the family's width, and the cell count
+// must be what the PR implies (SR, CR and one per nonce): an extra empty
+// cell, or a nonce cut in two, fold to the same PR and must be refused.
+#[tokio::test]
+async fn cells_of_the_wrong_count_or_width_are_refused() {
+    let (_, _, n) = fake_leaves();
+    let p = nonce_chain(&n).await;
+    let genuine = p.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&p), &genuine, tr_of(&p, 0)).expect("control");
+    let nonce = cell_maps(match &genuine.stitches[0] {
+        AnyStitch::Sha256(s) => &s.opening,
+        AnyStitch::Sha384(s) => &s.opening,
+        AnyStitch::Sha512(s) => &s.opening,
+    })
+    .remove(2);
+    let n = nonce[&sha512_id()].clone();
+    for (what, keep, extra) in [
+        (
+            "an extra empty cell",
+            3,
+            vec![cell_of(&[(sha512_id(), Vec::new())])],
+        ),
+        (
+            "the nonce cut in two",
+            2,
+            vec![
+                cell_of(&[(sha512_id(), n[..30].to_vec())]),
+                cell_of(&[(sha512_id(), n[30..].to_vec())]),
+            ],
+        ),
+    ] {
+        let mut proof = genuine.clone();
+        let o = opening_of(&mut proof.stitches[0]);
+        o.pt_cells.truncate(keep);
+        o.pt_cells.extend(extra);
+        let r = verify_membership(&tip(&p), &proof, tr_of(&p, 0)).map(|_| ());
+        assert_eq!(r, Err(ProofError::PtCell), "{what}");
+    }
+}
+
+// The arrow's sorted concatenation does not bind roles, so a stitch can
+// supply the mutation root (TMR) as `pre` and `pre` in TMR's place: the
+// same arrow recomputes. The commit has two mutation transactions and the
+// arrow family (SHA-512) matches every width. The principal tree cells
+// still have to fold to the supplied `pre`, so a hash-preimage-free
+// forger is refused there; this reports whether the verifier refuses it.
+#[tokio::test]
+async fn a_mutation_root_supplied_as_pre_is_refused() {
+    let p = multi_coz(false).await; // commit 1: two mutation transactions
+    let mut proof = p.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 0)).expect("control");
+    let o = opening_of(&mut proof.stitches[0]);
+    assert_eq!(o.pre_variants.len(), 1, "setup: case 1");
+    let len = o.pre_variants[0].1.len();
+    let (tmr, fwd) = o.arrow_preimage.split_at(len);
+    let pre = o.pre_variants[0].1.clone();
+    let (new_pre, new_preimage) = (tmr.to_vec(), [pre.as_slice(), fwd].concat());
+    o.pre_variants[0].1 = new_pre;
+    o.arrow_preimage = new_preimage;
+    let r = verify_membership(&tip(&p), &proof, tr_of(&p, 0)).map(|_| ());
+    assert!(
+        matches!(r, Err(ProofError::PtCell | ProofError::Arrow)),
+        "the swap was accepted: {r:?}"
+    );
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in
