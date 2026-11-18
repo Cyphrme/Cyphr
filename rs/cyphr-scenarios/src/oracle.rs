@@ -199,12 +199,16 @@ impl Harness {
         // live chosen peer's chain.
         if let Some(k) = &v.resolved_by {
             for name in &live {
-                let Some(signer) = self.last_commit_signer(name, p).await else {
+                let signers = self.chain_read(name, p).await.signers;
+                if signers.is_empty() {
                     self.red(Capability::BranchStore)
-                };
-                assert_eq!(
-                    signer, k.0,
-                    "`{name}`: resolved_by is not the key that signed the resolution"
+                }
+                // The resolution is not always the chain's last commit: a
+                // later fork, or an ordinary commit, follows it.
+                assert!(
+                    signers.contains(&k.0),
+                    "`{name}`: resolved_by {} signed no commit of its chain",
+                    k.0
                 );
             }
         }
@@ -338,13 +342,5 @@ impl Harness {
             .ok()?;
         let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
         Some(v["payload"]["now"].as_i64()? - v["payload"]["last_updated"].as_i64()?)
-    }
-
-    /// The thumbprint that signed the peer's last `commit/create`, read from
-    /// the replayed chain (so every signature up to it verified). `None`
-    /// when the patch route cannot answer; a patch that does not replay
-    /// fails the scenario.
-    async fn last_commit_signer(&self, peer: &str, p: &Principal) -> Option<String> {
-        self.chain_read(peer, p).await.last_signer
     }
 }

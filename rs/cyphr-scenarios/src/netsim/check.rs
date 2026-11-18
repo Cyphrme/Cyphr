@@ -528,20 +528,9 @@ pub(crate) async fn verdict_check(
     // The verdict's anchor is the genesis key, which is the principal's PG
     // only for one opened by a single key.
     let anchor = act(h.genesis_tmb(&ps.pr), what)?;
-    //
-    // The oracle reads every retained rival tip as live unless a peer's
-    // chain continues past it, so a principal whose earlier fork was
-    // resolved (its abandoned tip is no one's ancestor) is judged by the
-    // expectation below alone: a limit of `Harness::check_verdict`, seen at
-    // the large size, where the verdict named the two live branches and the
-    // oracle counted a third.
-    let checked = if ps.abandoned.is_some() {
-        Ok(())
-    } else {
-        AssertUnwindSafe(h.check_verdict(&v, &ps.pr, &Expect::new(&holders, &anchor)))
-            .catch_unwind()
-            .await
-    };
+    let checked = AssertUnwindSafe(h.check_verdict(&v, &ps.pr, &Expect::new(&holders, &anchor)))
+        .catch_unwind()
+        .await;
     if let Err(panic) = checked {
         let msg = panic
             .downcast_ref::<String>()

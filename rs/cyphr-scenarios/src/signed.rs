@@ -83,8 +83,8 @@ pub struct ChainView {
     pub prs: Vec<String>,
     /// The commit id of each commit, tagged.
     pub commit_ids: Vec<String>,
-    /// The key that signed the last commit's closing `commit/create`.
-    pub last_signer: Option<String>,
+    /// The key that signed each commit's closing `commit/create`, in order.
+    pub signers: Vec<String>,
 }
 
 /// The chain a `GET /patch` body serves: the body itself while Active; in
@@ -261,11 +261,12 @@ impl ChainView {
             prs.push(pr);
             commit_ids.push(id);
         }
-        let last_signer = entries
-            .last()
-            .and_then(|e| e.bundle.as_ref().ok())
-            .and_then(|bundle| {
-                bundle
+        let signers = entries
+            .iter()
+            .filter_map(|e| {
+                e.bundle
+                    .as_ref()
+                    .ok()?
                     .txs
                     .iter()
                     .flatten()
@@ -276,14 +277,15 @@ impl ChainView {
                             .is_some_and(|t| t.ends_with("/cyphr/commit/create"))
                     })
                     .and_then(|c| c["pay"]["tmb"].as_str().map(str::to_owned))
-            });
+            })
+            .collect();
         Ok(Self {
             genesis: Some(genesis),
             genesis_key: Some(key),
             entries,
             prs,
             commit_ids,
-            last_signer,
+            signers,
         })
     }
 }
@@ -405,15 +407,21 @@ pub async fn verify_evidence_set(
     }
     let extended: std::collections::BTreeSet<&String> =
         set.extensions.iter().map(|e| &e.parent).collect();
+    // A rival the chain has since out-extended is a resolved fork's
+    // abandoned branch (SPEC 15.8): evidence, not a live head. A tie, or a
+    // rival the chain does not pass, is still live.
+    let top = u64::try_from(chain.commit_ids.len()).map_or(0, |n| n.saturating_sub(1));
     let rival_tips = set
         .forks
         .iter()
         .filter_map(|(proof, _)| {
             let mine = chain.commit_ids.get(usize::try_from(proof.height).ok()?);
-            proof.commits.iter().find(|c| Some(*c) != mine).cloned()
+            let id = proof.commits.iter().find(|c| Some(*c) != mine).cloned()?;
+            Some((id, proof.height))
         })
-        .chain(set.extensions.iter().map(|e| e.id.clone()))
-        .filter(|id| !extended.contains(id))
+        .chain(set.extensions.iter().map(|e| (e.id.clone(), e.height)))
+        .filter(|(id, height)| !extended.contains(id) && *height >= top)
+        .map(|(id, _)| id)
         .collect();
     Ok(VerifiedSet { proven, rival_tips })
 }
