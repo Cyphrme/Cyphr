@@ -141,6 +141,15 @@ pub enum ProofError {
     /// The proof does not match the claimed size, index, or transaction.
     #[error("proof does not match the claim: {0}")]
     Mismatch(String),
+    /// The index is not below the size the head was extended from: an
+    /// extension-verified head vouches for the old prefix only.
+    #[error("index {index} is not below the extended-from size {old}")]
+    BeyondPrefix {
+        /// The index asked for.
+        index: u64,
+        /// The trusted size the head was verified to extend.
+        old: u64,
+    },
     /// The prover cannot build the proof.
     #[error("no proof: {0}")]
     Unprovable(String),
@@ -826,22 +835,26 @@ mod anchor {
     }
 }
 
-/// A trusted root a membership proof can start from: the holder's own
-/// whole Commit Root, or a head upgraded by [`verify_extension`] in one
-/// family. Sealed.
+/// A trusted root a membership proof can start from for any index: the
+/// holder's own verified state. A head only [`verify_extension`] has
+/// checked is an [`Extended`], not an `Anchor`: it vouches for the old
+/// prefix alone. Sealed.
+///
+/// An `Extended` is not an `Anchor`:
+///
+/// ```compile_fail,E0277
+/// use cyphr::proof::*;
+/// fn anchor(e: &Extended, proof: &MembershipProof, tr: &cyphr::TransactionRoot) {
+///     let _ = verify_membership(e, proof, tr);
+/// }
+/// ```
 pub trait Anchor: anchor::Sealed {}
 impl anchor::Sealed for Rooted<Trusted, FullCr> {
     fn roots(&self) -> Vec<AnyFamilyRoot> {
         self.0.variants.clone()
     }
 }
-impl anchor::Sealed for Rooted<Trusted, AnyFamilyRoot> {
-    fn roots(&self) -> Vec<AnyFamilyRoot> {
-        vec![self.0.clone()]
-    }
-}
 impl Anchor for Rooted<Trusted, FullCr> {}
-impl Anchor for Rooted<Trusted, AnyFamilyRoot> {}
 
 /// The root of family `H` among `roots`.
 fn pick<M: Trust, H: HashFamily>(
@@ -897,9 +910,9 @@ pub fn verify_membership(
     }
 }
 
-/// The one entry point for an extension proof: upgrades `head`, a claim in
-/// one family, to trusted in that family only, and only if it extends the
-/// trusted `old`.
+/// The one entry point for an extension proof: checks that `head`, a claim
+/// in one family, extends the trusted `old`, and returns it as an
+/// [`Extended`] head, good for the old prefix only.
 ///
 /// # Errors
 ///
@@ -908,7 +921,7 @@ pub fn verify_extension(
     old: &Rooted<Trusted, FullCr>,
     head: Rooted<Claimed, AnyFamilyRoot>,
     proof: &ExtensionProof,
-) -> Result<Rooted<Trusted, AnyFamilyRoot>, ProofError> {
+) -> Result<Extended, ProofError> {
     let claimed = head.0.clone();
     let roots = walk(vec![head], &proof.stitches)?;
     match &proof.terminal {
@@ -922,7 +935,50 @@ pub fn verify_extension(
             upgrade(&old_in::<Sha512>(old)?, pick::<Claimed, Sha512>(&roots)?, c)?;
         },
     }
-    Ok(Rooted(claimed, PhantomData))
+    Ok(Extended {
+        head: claimed,
+        old: old.0.size,
+    })
+}
+
+/// A head [`verify_extension`] found consistent with a trusted older one.
+/// It vouches for the old prefix only: consistency certifies any append,
+/// so entries at or past `old` are not fixed by what the holder retained.
+/// Not an [`Anchor`]; see [`verify_prefix_membership`].
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct Extended {
+    head: AnyFamilyRoot,
+    old: u64,
+}
+
+impl Extended {
+    /// The head, in the one family it was claimed in.
+    #[must_use]
+    pub fn head(&self) -> &AnyFamilyRoot {
+        &self.head
+    }
+
+    /// The size of the trusted root the head was verified to extend.
+    #[must_use]
+    pub fn old_size(&self) -> u64 {
+        self.old
+    }
+}
+
+/// STUB. Membership through an [`Extended`] head, for an index below the
+/// size it was extended from.
+///
+/// # Errors
+///
+/// [`ProofError::BeyondPrefix`] for an index at or past that size, else
+/// the [`ProofError`] of the first failing step.
+pub fn verify_prefix_membership(
+    _from: &Extended,
+    _proof: &MembershipProof,
+    _tr: &TransactionRoot,
+) -> Result<Verified<Membership>, ProofError> {
+    unimplemented!("stub: verify_prefix_membership")
 }
 
 fn old_in<H: HashFamily>(

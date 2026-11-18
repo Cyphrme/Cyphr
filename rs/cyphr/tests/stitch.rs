@@ -14,6 +14,7 @@ use cyphr::commit_root::{CommitTrees, MaltHasher, hash_alg_to_u64};
 use cyphr::proof::{
     AnyConsistency, AnyFamilyRoot, AnyPath, AnyStitch, Claimed, Consistency, FullCr, ProofError,
     Rooted, Sha256, Sha384, Sha512, Trusted, verify_extension, verify_membership,
+    verify_prefix_membership,
 };
 use cyphr::signer::SoftwareSigner;
 use cyphr::{HashAlg, Key, Principal};
@@ -276,7 +277,7 @@ async fn extension_across_a_replace_is_one_stitch() {
     assert_eq!(proof.stitches.len(), 1, "one boundary crossed");
     let upgraded = verify_extension(&old, head, &proof).expect("extension verifies");
     assert_eq!(
-        upgraded.get(),
+        upgraded.head(),
         &tip_variant(&p),
         "the head is upgraded, in its own family"
     );
@@ -771,21 +772,124 @@ async fn a_stitch_trusts_only_the_signers_family() {
     assert_eq!(r.map(|_| ()), Err(ProofError::Family));
 }
 
-// A head upgraded in one family anchors membership of any commit, by
-// the walk, with no other family trusted.
+// F2 (E8.5): a head extension-verified in one family vouches for the old
+// prefix only: consistency certifies any append, so entries at or past
+// the size it was extended from are not fixed by what the holder
+// retained. Below that size the walk anchors membership with no other
+// family trusted.
 #[tokio::test]
-async fn an_upgraded_single_family_head_anchors_any_membership() {
+async fn an_extended_head_vouches_for_the_old_prefix_only() {
     let p = single(3, 3).await;
     let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
         .await
         .expect("old");
     let ext = p.prove_extension(3).await.expect("prove");
-    let head = verify_extension(&old, claim_of(&p), &ext).expect("upgrade");
+    let head = verify_extension(&old, claim_of(&p), &ext).expect("extended");
     for i in 0..8u64 {
         let proof = p.prove_membership(i).await.expect("prove");
-        verify_membership(&head, &proof, tr_of(&p, i)).expect("anchored in the upgraded head");
-        assert_eq!(proof.stitches.len(), usize::from(i < 4));
+        let r = verify_prefix_membership(&head, &proof, tr_of(&p, i)).map(|_| ());
+        if i < 3 {
+            assert_eq!(r, Ok(()), "index {i} is in the old prefix");
+        } else {
+            assert_eq!(
+                r,
+                Err(ProofError::BeyondPrefix { index: i, old: 3 }),
+                "index {i}"
+            );
+        }
     }
+}
+
+/// A keyless forger's SHA-256 tree of `n` leaves around the genuine leaf
+/// `s` of `p`: SHA-256 starts at `s`, leaf `s` is genuine and every leaf
+/// after it invented (`{sha256: [i + 1; 32]}`). Returns its root and a
+/// path for each index at or past `s`.
+async fn fabricated_tree(
+    p: &Principal,
+    s: u64,
+    n: u64,
+) -> (AnyFamilyRoot, Vec<cyphr::proof::LogPath<Sha256>>) {
+    let (a_id, b_id) = (
+        hash_alg_to_u64(HashAlg::Sha512),
+        hash_alg_to_u64(HashAlg::Sha256),
+    );
+    let mut t = CommitTrees::open(cyphr::eml::MemoryStorage::new())
+        .await
+        .expect("open");
+    t.add_algorithm(a_id, Box::new(MaltHasher::new(HashAlg::Sha512)))
+        .await
+        .expect("register");
+    for i in 0..s {
+        t.append(&p.commit_trees().get_leaf(i).await.expect("leaf"))
+            .await
+            .expect("append");
+    }
+    t.add_algorithm(b_id, Box::new(MaltHasher::new(HashAlg::Sha256)))
+        .await
+        .expect("register");
+    for i in s..n {
+        let leaf = if i == s {
+            p.commit_trees().get_leaf(i).await.expect("leaf")
+        } else {
+            let v = std::collections::BTreeMap::from([(b_id, vec![i as u8 + 1; 32])]);
+            serde_json::to_vec(&v).expect("invented leaf")
+        };
+        t.append(&leaf).await.expect("append");
+    }
+    let root = AnyFamilyRoot::new(HashAlg::Sha256, n, &t.root(b_id).expect("root")).expect("root");
+    let mut paths = Vec::new();
+    for i in s..n {
+        paths.push(cyphr::proof::LogPath {
+            index: i,
+            size: n,
+            steps: t.inclusion_proof(b_id, i).await.expect("path").path,
+            family: PhantomData,
+        });
+    }
+    (root, paths)
+}
+
+// F2's PoC: the forger holds no key. It builds a SHA-256 tree around the
+// one genuine leaf s = 4 and invents the leaves after it; the genuine
+// stitch at s opens to the genuine prefix, so the head verifies as an
+// extension of the holder's size-3 root. It must vouch for the old prefix
+// and nothing the forger invented.
+#[tokio::test]
+async fn a_fabricated_head_vouches_for_nothing_it_added() {
+    let p = single(3, 3).await; // the replace is commit 4; 8 commits
+    let (root, paths) = fabricated_tree(&p, 4, 8).await;
+    let at_leaf = |i: u64| paths[(i - 4) as usize].clone();
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
+        .await
+        .expect("old");
+    let mut forged = p.prove_extension(3).await.expect("prove");
+    match &mut forged.stitches[0] {
+        AnyStitch::Sha256(s) => s.leaf = at_leaf(4),
+        _ => panic!("the stitch is in the SHA-256 tree"),
+    }
+    let head = Rooted::<Claimed, AnyFamilyRoot>::claim(root);
+    let ext = verify_extension(&old, head, &forged)
+        .expect("the old prefix is genuinely extended: that much is true");
+
+    // Below the old size: genuine, and accepted through the forged head.
+    let mut below = p.prove_membership(2).await.expect("prove");
+    match &mut below.stitches[0] {
+        AnyStitch::Sha256(s) => s.leaf = at_leaf(4),
+        _ => panic!("the stitch is in the SHA-256 tree"),
+    }
+    verify_prefix_membership(&ext, &below, tr_of(&p, 2)).expect("index 2 is fixed by the old root");
+
+    // At or past it: the forger's invented leaf, with a valid path.
+    let invented = cyphr::TransactionRoot(
+        cyphr::multihash::MultihashDigest::from_single(HashAlg::Sha256, vec![7u8; 32])
+            .expect("digest"),
+    );
+    let beyond = cyphr::proof::MembershipProof {
+        stitches: Vec::new(),
+        terminal: AnyPath::Sha256(at_leaf(6)),
+    };
+    let r = verify_prefix_membership(&ext, &beyond, &invented).map(|_| ());
+    assert_eq!(r, Err(ProofError::BeyondPrefix { index: 6, old: 3 }));
 }
 
 // The implementer's probe, green: two CR cells equal in one variant give
@@ -1135,27 +1239,27 @@ async fn a_case_one_pre_reduced_to_a_non_signer_variant_is_refused() {
     assert_eq!(r.map(|_| ()), Err(ProofError::Arrow));
 }
 
-// The second path through `impl Anchor`: the TR is bound whichever
-// anchor starts the walk.
+// The second path, through an extended head: the TR is bound whichever
+// way the walk starts.
 #[tokio::test]
-async fn an_upgraded_anchor_still_binds_the_tr() {
+async fn an_extended_head_still_binds_the_tr() {
     let p = single(3, 3).await;
     let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
         .await
         .expect("old");
     let ext = p.prove_extension(3).await.expect("prove");
-    let head = verify_extension(&old, claim_of(&p), &ext).expect("upgrade");
+    let head = verify_extension(&old, claim_of(&p), &ext).expect("extended");
     let proof = p.prove_membership(2).await.expect("prove");
-    verify_membership(&head, &proof, tr_of(&p, 2)).expect("control");
+    verify_prefix_membership(&head, &proof, tr_of(&p, 2)).expect("control");
     for j in [0u64, 1, 3, 5, 7] {
-        let r = verify_membership(&head, &proof, tr_of(&p, j));
+        let r = verify_prefix_membership(&head, &proof, tr_of(&p, j));
         assert!(
             matches!(r, Err(ProofError::Mismatch(_))),
             "tr of {j}: {r:?}"
         );
     }
     let other = single(3, 3).await;
-    let r = verify_membership(&head, &proof, tr_of(&other, 2));
+    let r = verify_prefix_membership(&head, &proof, tr_of(&other, 2));
     assert!(
         matches!(r, Err(ProofError::Mismatch(_))),
         "foreign tr: {r:?}"
