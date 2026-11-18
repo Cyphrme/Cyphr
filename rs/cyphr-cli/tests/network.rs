@@ -268,6 +268,82 @@ fn multi_key_genesis_is_published_with_every_key_created() {
     );
 }
 
+/// Claim: a device paired into a multi-key principal can rebase. The
+/// identity is the principal genesis, not a thumbprint in the device's
+/// keystore, so rebase must read the genesis from the stored history.
+/// End-to-end: yes (two devices, one real server).
+/// Turns red on: a rebase that resolves genesis only from the keystore,
+/// failing with "cannot resolve genesis ... no stored commits or keystore
+/// key".
+#[test]
+fn paired_device_of_multi_key_principal_rebases() {
+    let server = Server::start();
+    let a = User::new();
+    let k0 = a.setup(&["key", "generate", "--algo", "ES256"])["tmb"]
+        .as_str()
+        .expect("tmb")
+        .to_owned();
+    let k1 = a.setup(&["key", "generate", "--algo", "Ed25519"])["tmb"]
+        .as_str()
+        .expect("tmb")
+        .to_owned();
+    let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
+    let id = init["pr"].as_str().expect("identity").to_owned();
+    accepted(&a.push(&id, &server.url), "publish");
+
+    // The phone enrolls its own key; the identity is not a phone key.
+    let phone = User::new();
+    let request = a.dir.path().join("request.json");
+    let req = phone.setup(&[
+        "key",
+        "request",
+        &format!("--identity={id}"),
+        &format!("--file={}", request.display()),
+    ]);
+    let phone_tmb = req["tmb"].as_str().expect("tmb").to_owned();
+    a.setup(&[
+        "key",
+        "accept",
+        &format!("--identity={id}"),
+        &format!("--signer={k0}"),
+        &format!("--file={}", request.display()),
+    ]);
+    accepted(&a.push(&id, &server.url), "pairing");
+    let f = phone.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "phone fetch: {}", f.stderr);
+
+    // The owner moves on; the phone commits on the old tip.
+    a.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={k0}"),
+    ]);
+    accepted(&a.push(&id, &server.url), "owner's commit");
+    phone.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={phone_tmb}"),
+    ]);
+    assert!(
+        !phone.push(&id, &server.url).ok,
+        "the phone is stale before it rebases"
+    );
+
+    let r = phone.run(&[
+        "rebase",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(r.ok, "rebase of a multi-key principal: {}", r.stderr);
+    accepted(&phone.push(&id, &server.url), "push after rebase");
+}
+
 /// Claim: fetch brings a peer's verified commits into an empty local store.
 /// End-to-end: yes. Turns red on: a fetch that exits 0 without storing, or
 /// stores unverified/partial history (commit count differs from the peer's).
