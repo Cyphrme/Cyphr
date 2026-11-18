@@ -3724,10 +3724,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Key death (SPEC 6.4), read under the lock. A revoke recorded
             // concurrently is not serialized with it (it takes no principal
             // lock), so it acts as one that arrived just after this bundle.
-            // A bundle the principal already holds is a repeat, which SPEC
-            // 7.6 ignores: it is judged by nothing that arrived since (SPEC
-            // 14.12), so a revoke received after the first push cannot
-            // refuse it. Held means every action's czd is included (an
+            // A bundle the principal already holds is a repeat, judged by
+            // nothing that arrived since (SPEC 14.12), so a revoke received
+            // after the first push cannot change the answer to it: an
+            // action repeat is ignored (SPEC 7.6), a commit repeat is
+            // refused as the reuse it is. Held means every action's czd is included (an
             // action-only bundle) or the bundle is, blob for blob and in its
             // grouping, a commit already stored; anything else, or a bundle
             // that does not decode, runs the gate.
@@ -5730,7 +5731,13 @@ type Revoked = HashMap<String, Death>;
 /// refused: the introduction is the introducer's act, not the key's (SPEC
 /// 6.4 rejects "further use of the revoked key"), and a revoke is in no
 /// commit's causal past, so a rule that depends on it splits holders of
-/// the same messages.
+/// the same messages. That convergence is guaranteed for introductions
+/// only: a coz the revoked key itself signs, dated within the window
+/// between two holders' receipt times of its revoke, is still admitted by
+/// one and refused by the other, and nothing re-joins them (no
+/// retrospection, SPEC 14.12). That split waits on the spec author's
+/// answer (forge #203).
+///
 /// Not retroactive: history a key signed before the cutoff stands, so a
 /// node that learned the revoke first still syncs it. A coz that revokes
 /// its own signer is never refused: it can only end the key (SPEC 6.4:
@@ -5745,8 +5752,8 @@ type Revoked = HashMap<String, Death>;
 /// recovers by mutating the principal forward (SPEC 14.12), since Cyphr
 /// does not use reversion.
 ///
-/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.id`,
-/// `pay.typ` and `pay.now` before any signature is checked, so a forgery
+/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.typ` and
+/// `pay.now` before any signature is checked, so a forgery
 /// can at worst refuse the bundle it travels in. It must never admit or
 /// authorize on these fields.
 fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {

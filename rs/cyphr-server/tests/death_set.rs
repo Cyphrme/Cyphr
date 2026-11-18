@@ -6,10 +6,13 @@
 //! Introducing a dead key is not a use of it. A `key/create` or
 //! `key/replace` is signed by the introducing key, and a naked revoke is in
 //! no commit's causal past, so a holder that has the revoke could not agree
-//! with one that has not yet seen it if admission depended on it. The
-//! introduction is therefore admitted when its signer is live, and the dead
-//! key's own later signatures are what stay refused. A genesis in which the
-//! dead key signs its own `key/create` is a use of it, and is refused.
+//! with one that has not yet seen it if admission of an introduction
+//! depended on it. The introduction is therefore admitted when its signer
+//! is live, and the dead key's own later signatures are what stay refused.
+//! Convergence is guaranteed for introductions only: a coz the dead key
+//! signs, dated inside the window between two holders' receipt times of the
+//! revoke, can still split them (forge #203). A genesis in which the dead
+//! key signs its own `key/create` is a use of it, and is refused.
 //!
 //! The tests are end-to-end scenarios over the live `/revoke` and `/push`
 //! routes. The `live_key_*` control shows the refusals are about the dead
