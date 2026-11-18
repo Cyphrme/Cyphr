@@ -699,7 +699,10 @@ async fn a_strangers_key_buys_no_read_of_a_victims_history() {
         w.submit(&e, &head).await.expect("the canonical head");
         w.adopt(next);
         let at = rival.commits().count() - 1;
-        assert!(w.submit(&e, &bundle_at(&rival, at)).await.is_err(), "a rival");
+        assert!(
+            w.submit(&e, &bundle_at(&rival, at)).await.is_err(),
+            "a rival"
+        );
         assert_eq!(
             e.list_branches(&w.id).await.expect("branches").len(),
             2,

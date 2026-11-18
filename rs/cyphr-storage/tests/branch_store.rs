@@ -1719,8 +1719,18 @@ async fn a_resolution_signed_by_a_key_the_rival_introduced_is_admitted() {
         "alg": key_a.alg, "id": alice.tmb.to_b64(), "now": NOW + 20,
         "tmb": key_a.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/replace"
     });
-    apply(&mut r, &key_a, &key_a, replace, Some(key_of(&alice)), NOW + 20).await;
-    pushed_tip(&e, &f, &blobs(&r, 1)).await.expect_err("R1 is a rival");
+    apply(
+        &mut r,
+        &key_a,
+        &key_a,
+        replace,
+        Some(key_of(&alice)),
+        NOW + 20,
+    )
+    .await;
+    pushed_tip(&e, &f, &blobs(&r, 1))
+        .await
+        .expect_err("R1 is a rival");
 
     create_key(&mut r, &alice, &carol, NOW + 21).await;
     let r2 = pushed_tip(&e, &f, &blobs(&r, 2)).await;
@@ -1741,14 +1751,22 @@ async fn a_resolution_signed_by_a_key_the_rival_introduced_is_admitted() {
 async fn a_retained_rival_pushed_again_after_a_revoke_gets_the_same_answer() {
     let f = Fork::new(2).await;
     let (e, _) = f.engine_with(&[0, 1]).await;
-    let before = f.submit(&e, &f.rivals[1]).await.map_err(|why| format!("{why:?}"));
+    let before = f
+        .submit(&e, &f.rivals[1])
+        .await
+        .map_err(|why| format!("{why:?}"));
     assert!(
-        before.as_ref().is_err_and(|why| why.contains("CommitMismatch")),
+        before
+            .as_ref()
+            .is_err_and(|why| why.contains("CommitMismatch")),
         "premise: a held rival is answered as a fork: {before:?}"
     );
     e.record_revoke(&naked_revoke(&f.golden, 1), NOW)
         .await
         .expect("revoke");
-    let after = f.submit(&e, &f.rivals[1]).await.map_err(|why| format!("{why:?}"));
+    let after = f
+        .submit(&e, &f.rivals[1])
+        .await
+        .map_err(|why| format!("{why:?}"));
     assert_eq!(after, before, "the revoke changed the answer");
 }

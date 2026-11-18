@@ -5914,8 +5914,8 @@ fn manifest_principal(source: &PinSource<'_>, member: &str) -> Option<String> {
 /// verified state at its tip, and from `retained`, the keys of the
 /// principal's own retained rivals (a resolution may be signed by a key
 /// only a rival branch introduced, SPEC 15.8), so this costs the bundle and
-/// the retained keys and reads nothing of the stored chain: a bundle nobody of the principal signed is settled
-/// here, before any of its history is read.
+/// the retained keys and reads nothing of the stored chain: a bundle nobody of the principal signed
+/// is settled here, before any of its history is read.
 fn authenticated_signers(
     bundle: &WireBundle,
     tip: &cyphr::PrincipalState,
