@@ -3668,7 +3668,24 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Key death (SPEC 6.4), read under the lock. A revoke recorded
             // concurrently is not serialized with it (it takes no principal
             // lock), so it acts as one that arrived just after this bundle.
-            if let Some(dead) = dead_key_in(bundle, &self.revoked()) {
+            // A bundle the principal already holds is a repeat, judged by
+            // nothing that arrived since (SPEC 14.12), so a revoke received
+            // after the first push cannot change the answer to it: an
+            // action repeat is ignored (SPEC 7.6), a commit repeat is
+            // refused as the reuse it is. Held means every action's czd is included (an
+            // action-only bundle) or the bundle is, blob for blob and in its
+            // grouping, a commit already stored; anything else, or a bundle
+            // that does not decode, runs the gate.
+            let repeat = if bundle.txs.is_empty() {
+                !bundle.actions.is_empty()
+                    && bundle_czds(bundle)
+                        .is_ok_and(|czds| czds.iter().all(|c| principal.has_included(c)))
+            } else {
+                self.is_already_stored(principal_id, bundle)
+                    .await
+                    .unwrap_or(false)
+            };
+            if !repeat && let Some(dead) = dead_key_in(bundle, &self.revoked()) {
                 return Err(dead);
             }
 
@@ -5630,9 +5647,19 @@ type Revoked = HashMap<String, Death>;
 /// Key death at admission (SPEC 6.4), the one check every path that hands
 /// the engine a bundle passes (`/push`, gossip, witness sync, a verifier's
 /// store): the refusal for `bundle` if a coz in it is signed by a revoked
-/// key, or a transaction coz introduces one, and the coz is dated at or
-/// after the key's cutoff, this node's receipt time of its revoke
-/// ([`Death::wrt`]; a coz with no readable `now` is judged dated after it).
+/// key and the coz is dated at or after the key's cutoff, this node's
+/// receipt time of its revoke ([`Death::wrt`]; a coz with no readable
+/// `now` is judged dated after it). Introducing a revoked key is not
+/// refused: the introduction is the introducer's act, not the key's (SPEC
+/// 6.4 rejects "further use of the revoked key"), and a revoke is in no
+/// commit's causal past, so a rule that depends on it splits holders of
+/// the same messages. That convergence is guaranteed for introductions
+/// only: a coz the revoked key itself signs, dated within the window
+/// between two holders' receipt times of its revoke, is still admitted by
+/// one and refused by the other, and nothing re-joins them (no
+/// retrospection, SPEC 14.12). That split waits on the spec author's
+/// answer (forge #203).
+///
 /// Not retroactive: history a key signed before the cutoff stands, so a
 /// node that learned the revoke first still syncs it. A coz that revokes
 /// its own signer is never refused: it can only end the key (SPEC 6.4:
@@ -5647,8 +5674,8 @@ type Revoked = HashMap<String, Death>;
 /// recovers by mutating the principal forward (SPEC 14.12), since Cyphr
 /// does not use reversion.
 ///
-/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.id`,
-/// `pay.typ` and `pay.now` before any signature is checked, so a forgery
+/// Refusal-only: it reads each coz's declared `pay.tmb`, `pay.typ` and
+/// `pay.now` before any signature is checked, so a forgery
 /// can at worst refuse the bundle it travels in. It must never admit or
 /// authorize on these fields.
 fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
@@ -5682,14 +5709,6 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         };
         let pay = &coz["pay"];
         let typ = pay["typ"].as_str().unwrap_or_default();
-        if cyphr::parsed_coz::typ::is_key_introducing(typ)
-            && let Some(id) = pay["id"].as_str().filter(|id| dead_at(pay, id))
-        {
-            return Some(EngineError::DeadKey {
-                key: id.to_owned(),
-                introduced: true,
-            });
-        }
         let self_revoke =
             cyphr::parsed_coz::typ::has_suffix(typ, cyphr::parsed_coz::typ::KEY_REVOKE);
         if let Some(tmb) = pay["tmb"].as_str().filter(|t| dead_at(pay, t))
@@ -5697,7 +5716,6 @@ fn dead_key_in(bundle: &WireBundle, revoked: &Revoked) -> Option<EngineError> {
         {
             return Some(EngineError::DeadKey {
                 key: tmb.to_owned(),
-                introduced: false,
             });
         }
     }

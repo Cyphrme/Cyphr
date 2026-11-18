@@ -1566,3 +1566,116 @@ async fn an_extension_carrying_a_dead_keys_action_is_refused_and_not_kept() {
     e.rebuild_index_from_scratch().await.expect("rebuild");
     assert_eq!(answers(&e, &f).await, before, "a rebuild agrees");
 }
+
+/// Backs SPEC 7.6 (a replayed action is ignored) against SPEC 6.4: `key_a`'s
+/// data action, dated NOW+100, is admitted while no revoke is held. A naked
+/// revoke of `key_a` is then received with a cutoff of NOW+5, which is
+/// before the action's date, and the same bundle is pushed again (a client
+/// cannot tell which actions a peer holds, so a push repeats them). The
+/// repeat is a no-op, not a refusal: the revoke judges nothing already
+/// held (SPEC 14.12). Turns red if the revoke gate sees the repeat before
+/// the held-action check does.
+#[tokio::test]
+async fn a_repeat_of_a_held_action_is_a_no_op_after_its_signer_is_revoked() {
+    let f = Fork::new(0).await;
+    let key_a = kp(&load_pool(), "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let mut a = f.base.fork().await.expect("fork");
+    let action = WireBundle {
+        actions: vec![action_by(&mut a, &key_a, NOW + 100)],
+        ..WireBundle::default()
+    };
+    pushed_tip(&e, &f, &action)
+        .await
+        .expect("held: no revoke yet");
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 5)
+        .await
+        .expect("revoke");
+    let before = answers(&e, &f).await;
+
+    let repeated = pushed_tip(&e, &f, &action).await;
+    assert!(repeated.is_ok(), "a repeat is ignored: {repeated:?}");
+    assert_eq!(answers(&e, &f).await, before, "and changes nothing");
+}
+
+/// Backs convergence (honest holders of the same messages hold the same
+/// chain) for a key introduced by a live key. `golden` adds `bob` in
+/// commit 1, dated NOW+10; `bob`'s holder posts a naked revoke of `bob`.
+/// One engine receives the commit and then the revoke, another the revoke
+/// (cutoff NOW+5) and then the commit. A naked revoke is in no commit's
+/// causal past, so nothing orders the two arrivals, and the introduction
+/// is not `bob`'s own act: both engines hold the commit. Turns red if an
+/// engine refuses a commit for introducing a key it already holds a
+/// revoke of.
+#[tokio::test]
+async fn a_revoke_and_the_commit_adding_its_key_converge_in_either_order() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let bob = kp(&pool, "bob");
+    let mut c = f.base.fork().await.expect("fork");
+    create_key(&mut c, &f.golden, &bob, NOW + 10).await;
+    let commit = blobs(&c, 1);
+    let revoke = naked_revoke(&bob, 1);
+
+    let commit_first = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&commit_first, &f, &f.first).await.expect("G");
+    pushed_tip(&commit_first, &f, &commit)
+        .await
+        .expect("commit");
+    commit_first
+        .record_revoke(&revoke, NOW + 5)
+        .await
+        .expect("revoke");
+
+    let revoke_first = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&revoke_first, &f, &f.first).await.expect("G");
+    revoke_first
+        .record_revoke(&revoke, NOW + 5)
+        .await
+        .expect("revoke");
+    let late = pushed_tip(&revoke_first, &f, &commit).await;
+    assert!(late.is_ok(), "the introduction is admitted: {late:?}");
+
+    assert_eq!(
+        answers(&revoke_first, &f).await,
+        answers(&commit_first, &f).await,
+        "the two engines hold the same chain"
+    );
+}
+
+/// Backs SPEC 14.12 for a whole commit: `key_a`'s commit X1, dated NOW+300,
+/// is admitted while no revoke is held. Pushed again, a held commit is
+/// refused as the reuse it is (SPEC 7.6; the engine's contract for a
+/// repeated commit, unlike a repeated action). A naked revoke of `key_a`
+/// is then received with a cutoff of NOW+100, and the same bundle is pushed
+/// once more: the answer is the same as before the revoke, not `DeadKey`,
+/// because the revoke judges nothing already held. Turns red if the revoke
+/// gate sees a held commit before the held-bundle check does.
+#[tokio::test]
+async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
+    let f = Fork::new(0).await;
+    let key_a = kp(&load_pool(), "key_a");
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+    let x = thief_line(&e, &f, 1).await;
+    let repeat = blobs(&x, 1);
+    let before_revoke = pushed_tip(&e, &f, &repeat).await;
+    assert!(
+        before_revoke
+            .as_ref()
+            .is_err_and(|why| why.contains("CozReuse")),
+        "premise: a held commit repeated is a reuse: {before_revoke:?}"
+    );
+    e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
+        .await
+        .expect("revoke");
+    let before = answers(&e, &f).await;
+
+    let after_revoke = pushed_tip(&e, &f, &repeat).await;
+    assert_eq!(
+        after_revoke, before_revoke,
+        "the revoke changed the verdict"
+    );
+    assert_eq!(answers(&e, &f).await, before, "and changes nothing");
+}

@@ -1,17 +1,24 @@
-//! A key in the server's death set cannot be introduced anywhere (SPEC §6.4,
-//! be0663f): a `key/create` or `key/replace` whose target thumbprint is dead
-//! is refused in ANY principal, as a genesis commit or a later one.
+//! A globally revoked key cannot sign anything after its cutoff (SPEC §6.4,
+//! be0663f): a coz signed by a key in the server's death set, dated at or
+//! after the cutoff (the server's receipt time of the revoke, #203), is
+//! refused in ANY principal, as a genesis commit or a later one.
 //!
-//! The existing gate (`naked_revoke.rs`) refuses a dead key as a SIGNER, at
-//! push and login. It does not look at the key a coz introduces, so a revoked
-//! key can be re-added to a fresh principal and used from there. Every test
-//! drives the live `/revoke` and `/push` routes, so the red baseline is a
-//! behavioral accept, never a missing symbol.
+//! Introducing a dead key is not a use of it. A `key/create` or
+//! `key/replace` is signed by the introducing key, and a naked revoke is in
+//! no commit's causal past, so a holder that has the revoke could not agree
+//! with one that has not yet seen it if admission of an introduction
+//! depended on it. The introduction is therefore admitted when its signer
+//! is live, and the dead key's own later signatures are what stay refused.
+//! Convergence is guaranteed for introductions only: a coz the dead key
+//! signs, dated inside the window between two holders' receipt times of the
+//! revoke, can still split them (forge #203). A genesis in which the dead
+//! key signs its own `key/create` is a use of it, and is refused.
 //!
-//! The tests are end-to-end scenarios. The `live_key_*` control is green on
-//! the base: it shows the refusals below are about the dead key, not about
-//! `key/create`/`key/replace` of a second key in a fresh principal at all (a
-//! gate that refuses every introduction would pass the red tests).
+//! The tests are end-to-end scenarios over the live `/revoke` and `/push`
+//! routes. The `live_key_*` control shows the refusals are about the dead
+//! key, not about `key/create`/`key/replace` of a second key in a fresh
+//! principal at all (a gate that refuses every introduction would pass the
+//! refusal tests).
 
 use std::sync::Arc;
 
@@ -96,7 +103,7 @@ fn key_of(k: &PoolKey) -> cyphr::Key {
 /// (`key/create` or `key/replace`) and introduces `target`. Returns the wire
 /// blobs (the introduced key embedded on its coz).
 async fn intro_commit(
-    mut principal: cyphr::Principal,
+    principal: &mut cyphr::Principal,
     signer: &PoolKey,
     target: &PoolKey,
     typ: &str,
@@ -131,7 +138,7 @@ async fn intro_commit(
         .await
         .expect("finalize");
 
-    let entry = cyphr_storage::export_commits(&principal)
+    let entry = cyphr_storage::export_commits(principal)
         .expect("export")
         .pop()
         .expect("a commit");
@@ -260,64 +267,103 @@ async fn assert_refused_and_unwritten(state: &Arc<AppState>, status: StatusCode,
     );
     assert!(
         state.engine.get_tip(pid).await.expect("tip").is_none(),
-        "a refused introduction left the principal behind"
+        "a refused push left the principal behind"
     );
 }
 
-/// Claim: a globally revoked key cannot be re-added anywhere: a new
-/// principal's genesis commit that `key/create`s it is refused, and nothing
-/// of that principal is written. Turns red if the death set is consulted only
-/// for signers (a dead tmb in `pay.id` accepted).
-#[tokio::test]
-async fn dead_key_refused_as_key_create_in_a_new_principal() {
-    let pool = common::load_pool();
-    let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (body, pid, _) = genesis_push(&pool, "bob", "key_a", CREATE).await;
-    let status = push(&state, body).await;
-    assert_refused_and_unwritten(&state, status, &pid).await;
+/// After a principal admitted the dead `key_a` by an introduction a live key
+/// signed: a commit signed by `key_a` itself, dated at or after the cutoff,
+/// is refused and leaves the principal at its tip.
+async fn assert_dead_key_cannot_sign(
+    state: &Arc<AppState>,
+    pool: &Pool,
+    pid: &str,
+    mut principal: cyphr::Principal,
+) {
+    let before = state.engine.get_tip(pid).await.unwrap().expect("tip");
+    let blobs = intro_commit(
+        &mut principal,
+        pool.get("key_a").unwrap(),
+        pool.get("diana_es384").unwrap(),
+        CREATE,
+    )
+    .await;
+    let status = push(state, body(pid, &blobs)).await;
+    assert!(
+        status.is_client_error(),
+        "a commit signed by the dead key was admitted: {status}"
+    );
+    let after = state.engine.get_tip(pid).await.unwrap().expect("tip");
+    assert_eq!(after.commit_count, before.commit_count, "the chain moved");
 }
 
-/// Claim: as above for `key/replace`: a principal cannot swap onto a dead
-/// key. Turns red if only `key/create` is gated.
+/// Claim: a globally revoked key cannot sign anything after its cutoff, but
+/// an introduction of it signed by a live key is admitted: a new principal
+/// whose genesis `key/create`s it is created, and a commit `key_a` then
+/// signs is refused. Turns red if the death set is consulted for the key an
+/// introduction names (holders then split on arrival order), or if the dead
+/// key's own signature is accepted.
 #[tokio::test]
-async fn dead_key_refused_as_key_replace_in_a_new_principal() {
+async fn dead_key_introduced_by_create_in_a_new_principal_cannot_sign() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (body, pid, _) = genesis_push(&pool, "alice", "key_a", REPLACE).await;
-    let status = push(&state, body).await;
-    assert_refused_and_unwritten(&state, status, &pid).await;
+    let (body, pid, principal) = genesis_push(&pool, "bob", "key_a", CREATE).await;
+    assert_eq!(push(&state, body).await, StatusCode::CREATED);
+    assert_dead_key_cannot_sign(&state, &pool, &pid, principal).await;
 }
 
-/// Claim: the refusal holds for an established principal's LATER commit, not
-/// only for a first one, and leaves that principal at its prior tip. Turns
-/// red if the gate runs only on the genesis push.
+/// Claim: as above for `key/replace`: a principal can swap onto a dead key
+/// (the swap is signed by a live key), and the dead key then signs nothing
+/// after its cutoff. Turns red if only `key/create` is admitted.
 #[tokio::test]
-async fn dead_key_refused_as_key_create_in_an_existing_principal() {
+async fn dead_key_introduced_by_replace_in_a_new_principal_cannot_sign() {
     let pool = common::load_pool();
     let (state, _dir) = server_with_key_a_dead(&pool).await;
-    let (first, pid, bob) = genesis_push(&pool, "bob", "key_b", CREATE).await;
+    let (body, pid, principal) = genesis_push(&pool, "alice", "key_a", REPLACE).await;
+    assert_eq!(push(&state, body).await, StatusCode::CREATED);
+    assert_dead_key_cannot_sign(&state, &pool, &pid, principal).await;
+}
+
+/// Claim: the same holds for an established principal's LATER commit: a live
+/// key adds the dead `key_a`, the commit is admitted, and a commit `key_a`
+/// then signs is refused. Turns red if the introduction is refused on a
+/// later commit, or the dead key's signature accepted.
+#[tokio::test]
+async fn dead_key_introduced_by_create_in_an_existing_principal_cannot_sign() {
+    let pool = common::load_pool();
+    let (state, _dir) = server_with_key_a_dead(&pool).await;
+    let (first, pid, mut bob) = genesis_push(&pool, "bob", "key_b", CREATE).await;
     assert_eq!(
         push(&state, first).await,
         StatusCode::CREATED,
         "bootstrap bob+key_b"
     );
-    let before = state.engine.get_tip(&pid).await.unwrap().expect("tip");
-
     let blobs = intro_commit(
-        bob,
+        &mut bob,
         pool.get("bob").unwrap(),
         pool.get("key_a").unwrap(),
         CREATE,
     )
     .await;
-    let status = push(&state, body(&pid, &blobs)).await;
-
-    assert!(
-        status.is_client_error(),
-        "a dead key was added to bob: {status}"
+    assert_eq!(
+        push(&state, body(&pid, &blobs)).await,
+        StatusCode::CREATED,
+        "bob adds the dead key_a"
     );
-    let after = state.engine.get_tip(&pid).await.unwrap().expect("tip");
-    assert_eq!(after.commit_count, before.commit_count, "bob's chain moved");
+    assert_dead_key_cannot_sign(&state, &pool, &pid, bob).await;
+}
+
+/// Claim: a genesis in which the dead key signs its own `key/create` is a
+/// use of the key, not an introduction by another: it is refused and
+/// nothing of the principal is written. Turns red if the signer branch of
+/// the gate is lost along with the introduction branch.
+#[tokio::test]
+async fn dead_key_cannot_sign_its_own_genesis() {
+    let pool = common::load_pool();
+    let (state, _dir) = server_with_key_a_dead(&pool).await;
+    let (body, pid, _) = genesis_push(&pool, "key_a", "key_b", CREATE).await;
+    let status = push(&state, body).await;
+    assert_refused_and_unwritten(&state, status, &pid).await;
 }
 
 /// Control (green on the base): a key that is NOT dead is introduced by

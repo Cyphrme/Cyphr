@@ -228,9 +228,6 @@ impl AppError {
             EngineError::BranchLimit { .. } => Self::conflict(err.to_string()),
             // Key death at admission (SPEC 6.4) is an auth refusal, never a
             // stale-predecessor 409.
-            EngineError::DeadKey {
-                introduced: true, ..
-            } => Self::forbidden("push introduces a revoked key"),
             EngineError::DeadKey { .. } => Self::unauthorized("push signing key was revoked"),
             EngineError::Errored { .. } => Self {
                 status: StatusCode::LOCKED,
