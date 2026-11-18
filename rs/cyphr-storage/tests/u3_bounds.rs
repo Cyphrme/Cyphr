@@ -392,3 +392,134 @@ async fn kept_fork_reads_are_bounded_and_only_for_rivals() {
         e.forks_cached()
     );
 }
+
+/// An in-memory commit log that counts the leaf and node reads made of it.
+#[derive(Clone, Default)]
+struct Reads {
+    inner: cyphr::eml::MemoryStorage,
+    reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Reads {
+    fn bump(&self) {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+type Inner = cyphr::eml::MemoryStorage;
+type InnerError = <Inner as cyphr::eml::Storage>::Error;
+
+impl cyphr::eml::Storage for Reads {
+    type Error = InnerError;
+
+    async fn get_leaf(&self, index: u64) -> Result<Vec<u8>, InnerError> {
+        self.bump();
+        self.inner.get_leaf(index).await
+    }
+
+    async fn len(&self) -> Result<u64, InnerError> {
+        self.inner.len().await
+    }
+
+    async fn get_node(
+        &self,
+        alg_id: u64,
+        left: u64,
+        height: u32,
+    ) -> Result<Option<Vec<u8>>, InnerError> {
+        self.bump();
+        self.inner.get_node(alg_id, left, height).await
+    }
+
+    async fn load_algorithm_metas(&self) -> Result<cyphr::eml::AlgorithmMetas, InnerError> {
+        self.inner.load_algorithm_metas().await
+    }
+
+    async fn append_count(&self) -> Result<u64, InnerError> {
+        self.inner.append_count().await
+    }
+
+    async fn apply(&mut self, ops: &[cyphr::eml::WriteOp<'_>]) -> Result<(), InnerError> {
+        self.inner.apply(ops).await
+    }
+}
+
+/// Leaf and node reads one `detach` of a principal of `n` commits costs, on
+/// a chain where SHA-256 joined (an ES256 key paired in) and left (that key
+/// deleted) at the start, so its log holds a closed algorithm.
+async fn detach_reads(n: usize) -> u64 {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr::signer::SoftwareSigner;
+    use serde_json::json;
+
+    struct Kp(coz::Alg, String, Vec<u8>, Vec<u8>, coz::Thumbprint);
+    let kp = |alg: coz::Alg| {
+        let k = alg.generate_keypair();
+        let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("tmb");
+        Kp(alg, k.alg.name().to_string(), k.prv_bytes, k.pub_bytes, tmb)
+    };
+    let key = |k: &Kp| cyphr::Key::new(k.1.clone(), k.4.clone(), k.3.clone()).expect("key");
+    let (owner, paired, spare) = (
+        kp(coz::Alg::Ed25519),
+        kp(coz::Alg::ES256),
+        kp(coz::Alg::Ed25519),
+    );
+    let b64 = |t: &coz::Thumbprint| Base64UrlUnpadded::encode_string(t.as_bytes());
+
+    let storage = Reads::default();
+    let reads = storage.reads.clone();
+    let mut p = cyphr::Principal::open(key(&owner), storage)
+        .await
+        .expect("open");
+    let signer = SoftwareSigner::new(&owner.1, &owner.2, &owner.3, &owner.4);
+    p.commit_genesis(&signer, &[], 1_700_000_000, "cyphr.me")
+        .await
+        .expect("genesis");
+    // Each commit creates or deletes one key; the paired ES256 key leaves
+    // for good at commit 2, the spare toggles for the rest.
+    let steps: Vec<(&str, &Kp)> = ["create", "delete"]
+        .into_iter()
+        .map(|t| (t, &paired))
+        .chain(
+            (0..n.saturating_sub(3))
+                .map(|i| (if i % 2 == 0 { "create" } else { "delete" }, &spare)),
+        )
+        .collect();
+    for (i, (typ, id)) in steps.into_iter().enumerate() {
+        let now = 1_700_000_010 + 10 * i as i64;
+        let mut pay = json!({"alg": owner.1, "id": b64(&id.4), "now": now, "tmb": b64(&owner.4),
+                             "typ": format!("cyphr.me/cyphr/key/{typ}")});
+        pay.as_object_mut().expect("object").sort_keys();
+        let v = serde_json::to_vec(&pay).expect("pay");
+        let (sig, cad) = coz::sign_json(&v, &owner.1, &owner.2, &owner.3).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, &owner.1).expect("czd");
+        let mut scope = p.begin_commit();
+        scope
+            .verify_and_apply(&v, &sig, czd, (typ == "create").then(|| key(id)))
+            .expect("apply");
+        scope
+            .finalize_with_software(&signer, now + 1, "cyphr.me")
+            .await
+            .expect("commit");
+    }
+    let _ = (&owner.0, &spare.0);
+    let before = reads.load(std::sync::atomic::Ordering::Relaxed);
+    let _detached = p.detach().await.expect("detach");
+    reads.load(std::sync::atomic::Ordering::Relaxed) - before
+}
+
+/// Bound: detaching a principal whose log holds an algorithm that left
+/// (SHA-256 closed by deleting its last key) reads O(log n) leaves and
+/// nodes, not O(n): the seal carries the closed algorithm's frontier, so
+/// nothing is copied leaf by leaf. A frontier read grows with the peaks of
+/// the size, so the bound is a small multiple, which a copy of every leaf
+/// (n reads) exceeds at once.
+#[tokio::test]
+async fn detach_with_a_closed_algorithm_is_not_linear() {
+    let (short, long) = (detach_reads(SHORT).await, detach_reads(LONG).await);
+    assert!(
+        long <= 2 * short + 2,
+        "log reads by detach: {short} at n={SHORT}, {long} at n={LONG}"
+    );
+}
