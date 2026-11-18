@@ -43,6 +43,28 @@ const CHALLENGE_TTL_SECS: i64 = 120;
 /// Challenge length: 256 bits (SPEC 17.2).
 const CHALLENGE_BYTES: usize = 32;
 
+/// How many commits off the record's chain a relying party keeps (rivals
+/// and the commits past them). It is the storage engine's `BRANCH_LIMIT`
+/// (16 retained non-canonical commits per principal, `cyphr-storage`
+/// `engine/mod.rs`), restated here because this crate does not depend on
+/// storage; the unit is the same, one per commit kept off the chain. A
+/// holder of one key can sign any number of rivals, so without a bound
+/// that key grows a relying party's memory without limit.
+///
+/// The engine refuses a rival it has no slot for and tells the sender.
+/// A relying party has no sender to tell, so its bound fails closed: when
+/// a verified commit does not fit even after the commits the kept line
+/// has passed are evicted, it refuses sign-in ([`Refusal::Forked`]) until
+/// it is rebuilt from a fresh view. A fork it could not record is never
+/// read as no fork.
+pub const BRANCH_COMMIT_LIMIT: usize = 16;
+
+/// How many of those commits one signing key may hold: the engine's
+/// `BRANCH_PER_KEY` (2). A key that forked once is already proven to
+/// equivocate, so a small quota loses no evidence, and a key that floods
+/// rivals cannot starve the rivals of the principal's other keys.
+pub const BRANCH_COMMITS_PER_KEY: usize = 2;
+
 /// A relying party's own settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpConfig {
@@ -189,6 +211,10 @@ pub struct RelyingParty {
     /// they leave the principal in `Error` is the protocol's rule over
     /// them and the record's chain.
     branches: BTreeMap<String, cyphr::fork::Held>,
+    /// A verified commit could not be kept ([`BRANCH_COMMIT_LIMIT`]): a
+    /// fork may stand that the relying party cannot see, so it refuses
+    /// sign-in. Never cleared: only a rebuilt relying party starts clean.
+    overflowed: bool,
     /// Issued challenges, by value, with their issue time.
     challenges: BTreeMap<String, i64>,
     sessions: BTreeMap<String, (Thumbprint, SessionBinding)>,
@@ -205,6 +231,7 @@ impl RelyingParty {
             clock,
             last_pull: None,
             branches: BTreeMap::new(),
+            overflowed: false,
             challenges: BTreeMap::new(),
             sessions: BTreeMap::new(),
         }
@@ -246,13 +273,104 @@ impl RelyingParty {
             // and stays recorded: a pull the rival peer misses must not
             // clear it. Only a commit that out-extends a branch resolves
             // it (SPEC 15.8), which `fork_refusal` reads from what is kept.
-            for held in &report.branches {
-                self.branches
-                    .entry(held.id.clone())
-                    .or_insert_with(|| held.clone());
-            }
+            let chain = self.chain_window(&report.branches);
+            self.keep_branches(&report.branches, &chain);
         }
         report
+    }
+
+    /// The record's commits from one position below the lowest rival, kept
+    /// or `found`: all the fork rule needs to read.
+    fn chain_window(&self, found: &[cyphr::fork::Held]) -> Vec<cyphr::fork::Held> {
+        let lowest = self
+            .branches
+            .values()
+            .chain(found)
+            .map(|h| h.sequence)
+            .min();
+        let Some(last) = self
+            .record
+            .tip()
+            .map(|t| (t.commits as u64).saturating_sub(1))
+        else {
+            return Vec::new();
+        };
+        let from = usize::try_from(cyphr::fork::assessed_from(lowest, last)).unwrap_or(usize::MAX);
+        self.record.commits_from(from)
+    }
+
+    /// Keep the commits a pull verified off the record's chain, within the
+    /// budget ([`BRANCH_COMMIT_LIMIT`], [`BRANCH_COMMITS_PER_KEY`]). A
+    /// commit that does not fit is first made room for by evicting those
+    /// the kept line has passed; one still without room is dropped only if
+    /// it is itself passed, else [`overflowed`](Self::overflowed) is set.
+    /// `chain` is the record's commits from the window's start.
+    fn keep_branches(&mut self, found: &[cyphr::fork::Held], chain: &[cyphr::fork::Held]) {
+        for held in found {
+            if self.branches.contains_key(&held.id) {
+                continue;
+            }
+            if !self.has_slot(held) {
+                let passed = self.passed(chain, Some(held));
+                self.branches.retain(|id, _| !passed.contains(id));
+                if !self.has_slot(held) {
+                    if !passed.contains(&held.id) {
+                        self.overflowed = true;
+                    }
+                    continue;
+                }
+            }
+            self.branches.insert(held.id.clone(), held.clone());
+        }
+    }
+
+    fn has_slot(&self, held: &cyphr::fork::Held) -> bool {
+        let signer = held.signed.last();
+        self.branches.len() < BRANCH_COMMIT_LIMIT
+            && self
+                .branches
+                .values()
+                .filter(|h| h.signed.last() == signer)
+                .count()
+                < BRANCH_COMMITS_PER_KEY
+    }
+
+    /// The ids of the kept commits (and `extra`) the kept line has passed:
+    /// below the greatest height held and on no head's line, so no head
+    /// they could become without out-extending the line that passed them
+    /// (SPEC 15.8 makes the abandoned branch permanently invalid).
+    fn passed(
+        &self,
+        chain: &[cyphr::fork::Held],
+        extra: Option<&cyphr::fork::Held>,
+    ) -> std::collections::BTreeSet<String> {
+        let mut all: Vec<&cyphr::fork::Held> = chain.iter().collect();
+        all.extend(self.branches.values().chain(extra));
+        let Some(top) = all.iter().map(|h| h.sequence).max() else {
+            return std::collections::BTreeSet::new();
+        };
+        let by_pr: BTreeMap<(u64, &str), &cyphr::fork::Held> = all
+            .iter()
+            .map(|h| ((h.sequence, h.pr.as_str()), *h))
+            .collect();
+        let mut live = std::collections::BTreeSet::new();
+        for head in all.iter().filter(|h| h.sequence == top) {
+            let mut at = Some(*head);
+            while let Some(h) = at {
+                live.insert(h.id.as_str());
+                at = h
+                    .pre
+                    .as_deref()
+                    .zip(h.sequence.checked_sub(1))
+                    .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+            }
+        }
+        self.branches
+            .values()
+            .chain(extra)
+            .filter(|h| h.sequence < top && !live.contains(h.id.as_str()))
+            .map(|h| h.id.clone())
+            .collect()
     }
 
     /// Issue a login challenge: a fresh single-use 256-bit nonce.
@@ -443,11 +561,22 @@ impl RelyingParty {
     /// the chain from one position below the lowest rival, which holds the
     /// same fork state as the whole chain.
     fn fork_refusal(&self) -> Option<Refusal> {
-        let lowest = self.branches.values().map(|h| h.sequence).min()?;
+        let Some(lowest) = self.branches.values().map(|h| h.sequence).min() else {
+            return self.overflowed.then_some(Refusal::Forked);
+        };
         let last = (self.record.tip()?.commits as u64).saturating_sub(1);
         let from =
             usize::try_from(cyphr::fork::assessed_from(Some(lowest), last)).unwrap_or(usize::MAX);
-        let mut held = self.record.commits_from(from);
+        self.refusal_over(self.record.commits_from(from))
+    }
+
+    /// [`fork_refusal`](Self::fork_refusal) over `chain`, the record's
+    /// commits from the window's start.
+    fn refusal_over(&self, chain: Vec<cyphr::fork::Held>) -> Option<Refusal> {
+        if self.overflowed {
+            return Some(Refusal::Forked);
+        }
+        let mut held = chain.clone();
         held.extend(self.branches.values().cloned());
         let assessed = cyphr::fork::assessment(&held);
         if assessed.consensus == cyphr::fork::Consensus::Error {
@@ -457,10 +586,7 @@ impl RelyingParty {
             .forks
             .iter()
             .filter_map(|c| Some((c.sequence, c.kept.as_ref()?)))
-            .any(|(at, kept)| {
-                let at = usize::try_from(at).unwrap_or(usize::MAX);
-                self.record.commit_id_at(at).as_ref() != Some(kept)
-            })
+            .any(|(at, kept)| chain.iter().find(|c| c.sequence == at).map(|c| &c.id) != Some(kept))
             .then_some(Refusal::LostBranch)
     }
 
@@ -493,5 +619,115 @@ impl RelyingParty {
                 .latest_now()
                 .map(|t| Duration::from_secs(u64::try_from(now - t).unwrap_or(0))),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relying_party() -> RelyingParty {
+        RelyingParty::new(
+            "pg",
+            Anchor::GenesisCommit("SHA-256:genesis".to_owned()),
+            RpConfig {
+                audience: "rp.example".to_owned(),
+                pull_age_bound: Duration::from_secs(30),
+                refresh_interval: Duration::from_secs(10),
+            },
+            || 0,
+        )
+    }
+
+    fn held(n: usize, signer: &str) -> cyphr::fork::Held {
+        cyphr::fork::Held {
+            sequence: 2,
+            id: format!("commit-{n}"),
+            pre: Some("pre".to_owned()),
+            pr: format!("pr-{n}"),
+            signed: vec![signer.to_owned()],
+        }
+    }
+
+    /// A key holder can sign endless rivals at one position. The relying
+    /// party keeps a bounded number, none it holds is dropped, and what it
+    /// cannot keep is not read as no fork: it refuses sign-in.
+    ///
+    /// Turns red if the kept set grows with what peers serve, a kept
+    /// commit is dropped, or a refused commit leaves sign-in open.
+    #[test]
+    fn kept_branch_commits_are_bounded_and_overflow_refuses() {
+        let mut rp = relying_party();
+        let flood: Vec<_> = (0..BRANCH_COMMIT_LIMIT + 50)
+            .map(|n| held(n, &format!("key-{n}")))
+            .collect();
+        rp.keep_branches(&flood, &[]);
+        assert_eq!(rp.branches.len(), BRANCH_COMMIT_LIMIT);
+        assert!(rp.branches.contains_key("commit-0"), "the first is kept");
+        assert_eq!(rp.refusal_over(Vec::new()), Some(Refusal::Forked));
+        rp.keep_branches(&flood[..1], &[]);
+        assert_eq!(
+            rp.branches.len(),
+            BRANCH_COMMIT_LIMIT,
+            "a known one is a no-op"
+        );
+    }
+
+    /// One key holds at most `BRANCH_COMMITS_PER_KEY`, so it cannot starve
+    /// another key's rivals of slots.
+    ///
+    /// Turns red if the per-key quota is not applied.
+    #[test]
+    fn one_key_cannot_fill_the_budget() {
+        let mut rp = relying_party();
+        let flood: Vec<_> = (0..BRANCH_COMMIT_LIMIT).map(|n| held(n, "thief")).collect();
+        rp.keep_branches(&flood, &[]);
+        assert_eq!(rp.branches.len(), BRANCH_COMMITS_PER_KEY);
+        rp.keep_branches(&[held(99, "owner")], &[]);
+        assert!(rp.branches.contains_key("commit-99"));
+    }
+
+    /// A tie at the tip is a live fork whatever else is kept. One key's
+    /// rivals at old positions, resolved long ago, fill the relying party's
+    /// budget; a second key then forks at the tip, and the relying party
+    /// must still refuse (SPEC 15.5): a rival it cannot keep is a fork it
+    /// cannot see, and the principal is in Error.
+    ///
+    /// Turns red if a full budget lets a live fork go unrecorded.
+    #[test]
+    fn a_full_budget_does_not_hide_a_live_fork() {
+        let top = BRANCH_COMMIT_LIMIT as u64 + 2;
+        let at = |i: u64| cyphr::fork::Held {
+            sequence: i,
+            id: format!("c{i}"),
+            pre: i.checked_sub(1).map(|j| format!("p{j}")),
+            pr: format!("p{i}"),
+            signed: vec!["owner".to_owned()],
+        };
+        let chain: Vec<_> = (0..=top).map(at).collect();
+        let old_rival = |i: u64| cyphr::fork::Held {
+            sequence: i,
+            id: format!("a{i}"),
+            pre: i.checked_sub(1).map(|j| format!("p{j}")),
+            pr: format!("q{i}"),
+            signed: vec![format!("thief-{i}")],
+        };
+        let mut rp = relying_party();
+        let old: Vec<_> = (1..=BRANCH_COMMIT_LIMIT as u64).map(old_rival).collect();
+        rp.keep_branches(&old, &chain);
+        assert_eq!(rp.refusal_over(chain.clone()), None, "resolved long ago");
+
+        rp.keep_branches(
+            &[cyphr::fork::Held {
+                sequence: top,
+                id: "b".to_owned(),
+                pre: Some(format!("p{}", top - 1)),
+                pr: "qb".to_owned(),
+                signed: vec!["second".to_owned()],
+            }],
+            &chain,
+        );
+        assert!(!rp.overflowed, "the resolved rivals made room");
+        assert_eq!(rp.refusal_over(chain), Some(Refusal::Forked));
     }
 }
