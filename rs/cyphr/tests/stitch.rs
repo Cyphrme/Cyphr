@@ -824,7 +824,7 @@ async fn the_opening_is_independent_of_the_log_length() {
             shape.push((
                 cells.len(),
                 cells.iter().map(Vec::len).sum::<usize>(),
-                o["tr_path"].as_array().expect("path").len(),
+                o["txs"].as_array().expect("path").len(),
             ));
         }
         assert_eq!(shape[0], shape[1], "k = {k}: opening at n = 8 vs 64");

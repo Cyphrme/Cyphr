@@ -28,16 +28,14 @@ use crate::commit_root::u64_to_hash_alg;
 pub(super) const MAX_CELL: usize = 2048;
 pub(super) const MAX_LEAF: usize = 2048;
 pub(super) const MAX_COZ: usize = 4096;
-/// Most digests in one list of siblings or peaks, and levels in one path.
+/// Most digests in one list of siblings or peaks, and levels in one path:
+/// what a log of `u64` size can need. Nothing else is counted: the number of
+/// cells, transactions and cozies of a commit has no bound but the commit's
+/// own size, and parsing hashes nothing, so the bytes of the input are the
+/// bound on the work it costs.
 const MAX_SIBLINGS: usize = 256;
 const MAX_STEPS: usize = 64;
 const MAX_PEAKS: usize = 64;
-/// Most mutation transactions in a commit, and cozies in one transaction.
-const MAX_TXS: usize = 1024;
-const MAX_TX_COZIES: usize = 256;
-/// Most cells of a Principal Tree: SR, CR and the nonces (SPEC 3.7.1 folds
-/// at most 256 children).
-const MAX_CELLS: usize = 256;
 
 /// A digest's width in bytes.
 pub(super) fn width(alg: HashAlg) -> usize {
@@ -136,7 +134,7 @@ pub(super) struct Cells {
 
 impl Cells {
     pub(super) fn parse(raw: Vec<Vec<u8>>) -> Result<Self, String> {
-        if !(2..=MAX_CELLS).contains(&raw.len()) {
+        if raw.len() < 2 {
             return Err(format!("{} principal tree cells", raw.len()));
         }
         let mut maps = Vec::with_capacity(raw.len());
@@ -243,10 +241,10 @@ struct RawPath {
 #[derive(Serialize, Deserialize)]
 struct RawOpening {
     tr_map: Capped<MAX_LEAF>,
-    tr_path: Lim<RawStep, MAX_TXS>,
+    txs: Vec<Vec<Capped<64>>>,
     coz: Capped<MAX_COZ>,
     fwd_variants: Lim<(String, Capped<64>), 3>,
-    pt_cells: Lim<Capped<MAX_CELL>, MAX_CELLS>,
+    pt_cells: Vec<Capped<MAX_CELL>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -258,7 +256,7 @@ struct RawStitch {
 
 #[derive(Serialize, Deserialize)]
 struct RawEnds {
-    pt_cells: Lim<Capped<MAX_CELL>, MAX_CELLS>,
+    pt_cells: Vec<Capped<MAX_CELL>>,
 }
 
 /// The terminal object: a path (`index`, `size`, `steps`) or a consistency
@@ -322,12 +320,12 @@ fn raw_steps(steps: &[eml::ProofStep]) -> Lim<RawStep, MAX_STEPS> {
         .collect())
 }
 
-fn cells_of(raw: Lim<Capped<MAX_CELL>, MAX_CELLS>) -> Result<Cells, String> {
-    Cells::parse(raw.0.into_iter().map(|c| c.0).collect())
+fn cells_of(raw: Vec<Capped<MAX_CELL>>) -> Result<Cells, String> {
+    Cells::parse(raw.into_iter().map(|c| c.0).collect())
 }
 
-fn raw_cells(c: &Cells) -> Lim<Capped<MAX_CELL>, MAX_CELLS> {
-    Lim(c.raw.iter().map(|b| Capped(b.clone())).collect())
+fn raw_cells(c: &Cells) -> Vec<Capped<MAX_CELL>> {
+    c.raw.iter().map(|b| Capped(b.clone())).collect()
 }
 
 fn path_of(raw: RawPath) -> Result<PathW, String> {
@@ -359,16 +357,13 @@ impl TryFrom<RawCert> for Cert {
             .map(|s| {
                 let o = s.opening;
                 let txs = o
-                    .tr_path
-                    .0
+                    .txs
                     .into_iter()
                     .map(|tx| {
-                        if tx.position != 0 || tx.siblings.0.is_empty() {
-                            return Err("a malformed transaction".to_owned());
+                        if tx.is_empty() {
+                            return Err("a transaction of no coz".to_owned());
                         }
-                        tx.siblings
-                            .0
-                            .into_iter()
+                        tx.into_iter()
                             .map(|c| {
                                 alg_of_width(c.0.len())
                                     .map(|_| c.0)
@@ -377,9 +372,6 @@ impl TryFrom<RawCert> for Cert {
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                if txs.iter().any(|t| t.len() > MAX_TX_COZIES) {
-                    return Err("a transaction over its cozies".to_owned());
-                }
                 let mut fwd: Vec<(HashAlg, Vec<u8>)> = Vec::new();
                 for (name, bytes) in o.fwd_variants.0 {
                     let alg = alg_named(&name)?;
@@ -499,14 +491,11 @@ impl From<&Cert> for RawCert {
                     leaf: raw_path(&s.leaf),
                     opening: RawOpening {
                         tr_map: Capped(o.tr_map.clone()),
-                        tr_path: Lim(o
+                        txs: o
                             .txs
                             .iter()
-                            .map(|tx| RawStep {
-                                position: 0,
-                                siblings: Lim(tx.iter().cloned().map(Capped).collect()),
-                            })
-                            .collect()),
+                            .map(|tx| tx.iter().cloned().map(Capped).collect())
+                            .collect(),
                         coz: Capped(o.coz.clone()),
                         fwd_variants: Lim(o
                             .fwd

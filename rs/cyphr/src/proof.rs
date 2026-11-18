@@ -23,7 +23,7 @@
 //! }
 //! stitch   := { "alg", "leaf": path, "opening": {
 //!   "tr_map", "coz",
-//!   "tr_path": [step],                  // one per mutation transaction: its czds as siblings, position 0
+//!   "txs": [[bytes]],                   // each mutation transaction's czds, in order
 //!   "fwd_variants": [[alg, bytes]],     // the forward State Root's variants, empty when absent
 //!   "pt_cells": [bytes] } }             // SR, CR, nonces of PR_{s-1}: every family's variant
 //! path        := { "alg", "index", "size", "steps": [step] }
