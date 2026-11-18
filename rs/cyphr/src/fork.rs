@@ -200,3 +200,14 @@ fn settled_by_extension(held: &[Held], kept: &Held, walked: &HashSet<&str>) -> O
         })
         .and_then(|c| c.signed.first().cloned())
 }
+
+/// The lowest position [`assessment`] must read to answer as it does over
+/// every held commit: one below the lowest commit held off the main chain
+/// (`lowest_retained`), and the chain's head position `last` alone when
+/// none is. The chain below it has one commit at each position and no
+/// rival beside or above it, so it holds no head, no fork and no point
+/// where two lines part.
+#[must_use]
+pub fn assessed_from(lowest_retained: Option<u64>, last: u64) -> u64 {
+    lowest_retained.map_or(last, |low| low.saturating_sub(1).min(last))
+}

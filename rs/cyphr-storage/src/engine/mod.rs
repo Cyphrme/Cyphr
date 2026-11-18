@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use cyphr::fork::{Assessment, Consensus, Contest, ForkPoint};
-use cyphr::fork::{Held, assessment};
+use cyphr::fork::{Held, assessed_from, assessment};
 use cyphr::replay::WireBundle;
 use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
@@ -5718,13 +5718,6 @@ fn held_of(commit: &IndexableCommit) -> Held {
 /// Whether a principal is in Error: [`assessment`]'s consensus.
 fn in_error(held: &[Held]) -> bool {
     assessment(held).consensus == Consensus::Error
-}
-
-/// The lowest canonical position [`assessment`] must read to answer as it
-/// does over the whole chain: one below the lowest retained commit, and
-/// the canonical head `last` alone when none is retained.
-fn assessed_from(lowest_retained: Option<u64>, last: u64) -> u64 {
-    lowest_retained.map_or(last, |low| low.saturating_sub(1).min(last))
 }
 
 /// Whether the principal `held` describes, in Error, stays in Error once
