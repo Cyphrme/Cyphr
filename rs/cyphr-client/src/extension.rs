@@ -12,7 +12,7 @@
 //! [`confirm_extension`] once the commits they cover replay.
 
 use cyphr::eml::Storage;
-use cyphr::proof::{AnyFamilyRoot, Claimed, ExtensionProof, FullCr, Rooted, Trusted};
+use cyphr::proof::legacy::{AnyFamilyRoot, Claimed, ExtensionProof, FullCr, Rooted, Trusted};
 use cyphr::state::TaggedDigest;
 use cyphr::{HashAlg, Principal};
 use serde_json::{Value, json};
@@ -68,10 +68,10 @@ impl Extension {
     ) -> Result<Self, ExtensionFailure> {
         let unprovable = |e: String| ExtensionFailure::Unprovable(e);
         let head = principal
-            .head_root()
+            .legacy_head_root()
             .ok_or_else(|| unprovable("the log has no commit root".into()))?;
         let proof = principal
-            .prove_extension(from)
+            .legacy_prove_extension(from)
             .await
             .map_err(|e| unprovable(e.to_string()))?;
         let cr = TaggedDigest::new(head.alg(), head.bytes().to_vec())
@@ -143,7 +143,7 @@ pub fn verify_extension_from(
     }
     let head = AnyFamilyRoot::new(offer.cr.alg(), offer.size, offer.cr.as_bytes())
         .map_err(|e| ExtensionFailure::Malformed(format!("cr: {e}")))?;
-    cyphr::proof::verify_extension(
+    cyphr::proof::legacy::verify_extension(
         old,
         Rooted::<Claimed, AnyFamilyRoot>::claim(head),
         &offer.proof,

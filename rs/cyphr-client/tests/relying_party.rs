@@ -752,7 +752,7 @@ impl Connector for ProofMirror {
                 let index = number("index").ok_or(ConnectError::NonSuccess(400))?;
                 let proof = self
                     .principal
-                    .prove_membership(index)
+                    .legacy_prove_membership(index)
                     .await
                     .map_err(|_| ConnectError::NonSuccess(404))?;
                 serde_json::to_value(&proof).expect("proof")

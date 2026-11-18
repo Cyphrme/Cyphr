@@ -47,7 +47,8 @@ pub mod principal_tree;
 /// Work counters for tests that pin cost (U3).
 #[cfg(any(test, feature = "test-utils"))]
 pub mod probe;
-/// Tip-anchored membership and extension proofs across epochs (stub).
+/// Pinned roots and certificates: membership and extension across
+/// epochs (E10 surface; stubs).
 pub mod proof;
 /// Replay of stored commit bundles: one entry point for every consumer.
 pub mod replay;

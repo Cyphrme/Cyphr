@@ -631,7 +631,7 @@ pub async fn inclusion(
     // was made under: there is nothing to choose. A store that cannot be
     // read, or a held commit that proves nothing, is the server's, a 5xx.
     let proof = log
-        .prove_membership(index)
+        .legacy_prove_membership(index)
         .await
         .map_err(|e| AppError::internal(format!("inclusion proof not made: {e}")))?;
     if log.commit_count() as u64 != t.commit_count {

@@ -46,7 +46,7 @@ fn tree_size(p: &Principal<MemoryStorage>) -> u64 {
 /// The hashes of the terminal consistency proof: the boundary peak, the
 /// path lifting it, and the new frontier.
 fn hashes(ext: &Extension) -> usize {
-    use cyphr::proof::AnyConsistency::{Sha256, Sha384, Sha512};
+    use cyphr::proof::legacy::AnyConsistency::{Sha256, Sha384, Sha512};
     let proof = match &ext.proof.terminal {
         Sha256(c) => &c.proof,
         Sha384(c) => &c.proof,
@@ -244,7 +244,7 @@ async fn a_malformed_wire_proof_fails_closed() {
 /// Turns red if `at_size` answers only the sizes the seed names.
 #[tokio::test]
 async fn a_detached_holder_has_its_commit_root_at_every_size() {
-    use cyphr::proof::{FullCr, Rooted, Trusted};
+    use cyphr::proof::legacy::{FullCr, Rooted, Trusted};
     let g = kp();
     let keys: Vec<Kp> = (0..9).map(|_| kp()).collect();
     let (chain, _) = grown(&g, &keys, &[], 9).await;

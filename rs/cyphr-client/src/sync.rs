@@ -36,7 +36,7 @@ use coz::Thumbprint;
 use cyphr::eml::MemoryStorage;
 use cyphr::fork::Held as HeldCommit;
 use cyphr::principal::{Clock, system_clock};
-use cyphr::proof::{FullCr, Rooted, Trusted};
+use cyphr::proof::legacy::{FullCr, Rooted, Trusted};
 use cyphr::replay::WireBundle;
 use cyphr::{Commit, Key, Principal, StateDigest as _};
 use serde_json::Value;
