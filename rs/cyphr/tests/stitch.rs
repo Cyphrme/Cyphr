@@ -968,6 +968,127 @@ async fn a_stitch_at_an_embedded_signers_commit_still_reaches_old_history() {
     }
 }
 
+// ---- E6: what the arrow's `pre` binds (component conversion rule) ----
+
+/// Case 2 (one variant): the embedded chain of the red pin above; the
+/// stitch at commit 2 has `PR_1 = {SHA-256}` and a SHA-512 arrow.
+async fn case_two() -> Principal {
+    let Embedded { mut a, alice, eve } = embedded().await;
+    let diana = pool_kp("diana_es384");
+    commit_as(
+        &mut a,
+        &eve,
+        "key/create",
+        &b64(&diana),
+        Some(key_of(&diana)),
+        T + 3,
+    )
+    .await
+    .expect("eve creates the ES384 key");
+    commit_as(&mut a, &diana, "key/delete", &b64(&alice), None, T + 4)
+        .await
+        .expect("the ES384 key retires alice");
+    a
+}
+
+/// Case 3 (several variants, none the arrow's): A holds ES256 and ES384,
+/// then B's Ed25519 key creates a fresh Ed25519 key (SHA-512 starts at
+/// commit 3, `PR_2 = {SHA-256, SHA-384}`), which retires both: tip SHA-512.
+async fn case_three() -> Principal {
+    let Embedded { mut a, alice, eve } = embedded().await;
+    let (diana, fresh) = (pool_kp("diana_es384"), kp(coz::Alg::Ed25519));
+    commit_as(
+        &mut a,
+        &alice,
+        "key/create",
+        &b64(&diana),
+        Some(key_of(&diana)),
+        T + 2,
+    )
+    .await
+    .expect("alice adds ES384");
+    commit_as(
+        &mut a,
+        &eve,
+        "key/create",
+        &b64(&fresh),
+        Some(key_of(&fresh)),
+        T + 3,
+    )
+    .await
+    .expect("eve adds an Ed25519 key");
+    commit_as(&mut a, &fresh, "key/delete", &b64(&alice), None, T + 4)
+        .await
+        .expect("retire ES256");
+    commit_as(&mut a, &fresh, "key/delete", &b64(&diana), None, T + 5)
+        .await
+        .expect("retire ES384");
+    a
+}
+
+fn pre_algs(p: &Principal, before: usize) -> Vec<HashAlg> {
+    p.commit_at(before)
+        .expect("commit")
+        .pr()
+        .0
+        .algorithms()
+        .collect()
+}
+
+// Case 3: the arrow binds the hash of every PR_{s-1} variant, so the
+// stitch yields both SHA-256 and SHA-384 roots, supplied whole.
+#[tokio::test]
+async fn a_stitch_through_a_concatenated_pre_yields_every_family() {
+    let a = case_three().await;
+    assert_eq!(
+        pre_algs(&a, 2),
+        [HashAlg::Sha256, HashAlg::Sha384],
+        "setup: PR_2 has two variants and no SHA-512 (case 3)"
+    );
+    let tip = tip(&a);
+    let mut proof = a.prove_membership(0).await.expect("prove");
+    assert_eq!(proof.stitches.len(), 1);
+    let supplied: Vec<HashAlg> = opening_of(&mut proof.stitches[0])
+        .pre_variants
+        .iter()
+        .map(|(alg, _)| *alg)
+        .collect();
+    assert_eq!(supplied, [HashAlg::Sha256, HashAlg::Sha384]);
+    for i in 0..a.commit_count() as u64 {
+        let proof = a.prove_membership(i).await.expect("prove");
+        verify_membership(&tip, &proof, tr_of(&a, i)).unwrap_or_else(|e| panic!("index {i}: {e}"));
+    }
+}
+
+#[tokio::test]
+async fn a_tampered_variant_in_the_concatenated_pre_is_refused() {
+    let a = case_three().await;
+    let mut proof = a.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&a), &proof, tr_of(&a, 0)).expect("control");
+    opening_of(&mut proof.stitches[0]).pre_variants[1].1[0] ^= 1;
+    let r = verify_membership(&tip(&a), &proof, tr_of(&a, 0));
+    assert_eq!(r.map(|_| ()), Err(ProofError::Arrow));
+}
+
+// Case 2 becomes case 3 when `pre` carries a second variant: the
+// conversion changes, so the arrow no longer recomputes.
+#[tokio::test]
+async fn an_invented_extra_variant_in_a_single_variant_pre_is_refused() {
+    let a = case_two().await;
+    assert_eq!(
+        pre_algs(&a, 1),
+        [HashAlg::Sha256],
+        "setup: PR_1 is single-variant (case 2)"
+    );
+    let mut proof = a.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&a), &proof, tr_of(&a, 0)).expect("control");
+    let o = opening_of(&mut proof.stitches[0]);
+    assert_eq!(o.pre_variants.len(), 1);
+    o.pre_variants.push((HashAlg::Sha384, vec![9; 48]));
+    let r = verify_membership(&tip(&a), &proof, tr_of(&a, 0));
+    assert_eq!(r.map(|_| ()), Err(ProofError::Arrow));
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in

@@ -305,6 +305,14 @@ pub struct CommitOpening {
     pub coz: Vec<u8>,
     /// The arrow preimage: `pre`, `fwd`, TMR under the coz's algorithm.
     pub arrow_preimage: Vec<u8>,
+    /// The variants of `PR_{s-1}` the arrow's `pre` binds, per Cyphr's
+    /// component conversion rule: just the signer family's when `PR` has it
+    /// (case 1) and the one variant when `PR` has exactly one (case 2),
+    /// every variant, supplied whole, when it has several and none is the
+    /// arrow's (case 3, checked by recomputing the hash of their sorted
+    /// concatenation). The verifier derives the case from the supplied
+    /// variants; the prover does not choose it.
+    pub pre_variants: Vec<(HashAlg, Vec<u8>)>,
     /// The Principal Tree's cells (SR, CR, nonce) as serialized.
     pub pt_cells: Vec<Vec<u8>>,
 }
@@ -318,18 +326,27 @@ pub struct Stitch<F: HashFamily> {
     pub opening: CommitOpening,
 }
 
+/// A vector with at least one element: a stitch always lands in some
+/// family. STUB: no constructor or accessor yet.
+#[derive(Debug)]
+pub(crate) struct NonEmpty<T>(#[allow(dead_code)] Vec<T>);
+
 impl<M: Trust, F: HashFamily> Rooted<M, FamilyRoot<F>> {
     /// STUB. Cross an epoch boundary: verify leaf `s` under this root,
-    /// open it to `PR_{s-1}[G]` and `CR_{s-1}[G]`, where `G` is the
-    /// arrow signer's family, read from the coz. Only `G`'s variant is
-    /// authenticated (`PR[G]` binds `CR[G]` alone), so only that one root
-    /// is returned, at the same trust level.
+    /// open its arrow, where `G` is the arrow's family read from the coz,
+    /// and read what `pre` binds through the component conversion rule:
+    /// one `PR_{s-1}` variant (cases 1 and 2) or all of them (case 3).
+    /// Each opens through its own PT to `CR_{s-1}[X]` (`PR[X]` binds
+    /// `CR[X]` alone), and the roots are returned at the same trust level.
     ///
     /// # Errors
     ///
     /// [`ProofError::Path`], [`ProofError::Arrow`], [`ProofError::PtCell`].
     #[allow(dead_code)]
-    pub(crate) fn stitch(&self, _s: &Stitch<F>) -> Result<Rooted<M, AnyFamilyRoot>, ProofError> {
+    pub(crate) fn stitch(
+        &self,
+        _s: &Stitch<F>,
+    ) -> Result<NonEmpty<Rooted<M, AnyFamilyRoot>>, ProofError> {
         unimplemented!("stub: Rooted::stitch")
     }
 }
