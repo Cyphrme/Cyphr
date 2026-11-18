@@ -338,7 +338,7 @@ impl<S: eml::Storage> CommitTrees<S> {
             match (active, wanted.contains(&alg_id)) {
                 (true, false) => self.log.remove_algorithm(alg_id).await?,
                 (false, true) => self.log.resume_algorithm(alg_id).await?,
-                _ => {}
+                _ => {},
             }
         }
         Ok(())

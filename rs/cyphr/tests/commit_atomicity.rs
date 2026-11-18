@@ -649,20 +649,15 @@ mod algorithm_set {
             .expect("commit with SHA-256 again");
 
         let landed = probe.landed();
-        let mut ids: Vec<u64> = landed.algorithm_metas.iter().map(|(id, _)| *id).collect();
+        let mut ids: Vec<u64> = landed.algorithm_metas.keys().copied().collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 3], "one registration per algorithm");
-        let sha256 = &landed
-            .algorithm_metas
-            .iter()
-            .find(|entry| *entry.0 == 1)
-            .expect("SHA-256 registered")
-            .1;
+        let sha256 = landed.algorithm_metas.get(&1).expect("SHA-256 registered");
         assert_eq!(
             sha256.as_slice(),
             [(1, 2), (4, u64::MAX)],
-            "SHA-256: active over leaves 1, closed at the delete's leaf 2, resumed at the re-add's \
-             leaf 4"
+            "SHA-256: active over leaves 1, closed at the delete's leaf 2, resumed at the \
+             re-add's leaf 4"
         );
         let algs = p.active_algs();
         assert_eq!(algs.len(), 2, "premise: SHA-256 is back");
