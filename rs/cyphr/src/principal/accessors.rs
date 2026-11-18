@@ -130,6 +130,16 @@ impl PrincipalState {
         self.auth.keys.values()
     }
 
+    /// The thumbprint of every key this principal ever held, active or
+    /// not, once each: the keys a naked revoke (SPEC 6.4) could name.
+    pub fn ever_held_keys(&self) -> Vec<Thumbprint> {
+        self.key_timeline
+            .ever_held()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
     /// Get number of active keys.
     pub fn active_key_count(&self) -> usize {
         self.auth.keys.len()

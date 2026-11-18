@@ -338,19 +338,31 @@ impl Record {
                 .is_some_and(|h| h.principal.is_key_active(tmb))
     }
 
-    /// The thumbprints of the keys a naked revoke could still change: the
-    /// chain's active keys with no verified revoke yet. What [`pull`]
-    /// asks each peer about, and what a holder that skips a pull must ask
-    /// about instead.
+    /// The thumbprints of the keys a naked revoke could still change:
+    /// every key the chain ever held, active or not (the owner removing a
+    /// key does not make its revoke any less news to a holder that never
+    /// heard it), less the keys with a verified revoke already. What
+    /// [`pull`] asks each peer about, and what a holder that skips a pull
+    /// must ask about instead.
     #[must_use]
     pub fn unrevoked_keys(&self) -> Vec<Thumbprint> {
         self.held.as_ref().map_or_else(Vec::new, |h| {
             h.principal
-                .active_keys()
-                .map(|k| k.tmb().clone())
+                .ever_held_keys()
+                .into_iter()
                 .filter(|t| !self.dead.contains_key(&t.to_b64()))
                 .collect()
         })
+    }
+
+    /// Note `tmb` as already revoked, on the strength of a revoke this
+    /// holder verified and keeps elsewhere, so [`Self::unrevoked_keys`]
+    /// stops asking about it. Its cutoff here is the record's own clock,
+    /// as for a revoke a pull accepts; a key already noted keeps its
+    /// first cutoff.
+    pub fn note_revoked(&mut self, tmb: &Thumbprint) {
+        let now = (self.clock)();
+        self.dead.entry(tmb.to_b64()).or_insert(now);
     }
 
     /// The record's key `tmb` as the replayed chain holds it, active or

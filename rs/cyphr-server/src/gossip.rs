@@ -183,7 +183,14 @@ impl Gossip {
                 return None;
             }
         }
-        Some(memo.keys.clone())
+        // A key revoked since the memo was read is no longer worth asking about.
+        Some(
+            memo.keys
+                .iter()
+                .filter(|t| !state.engine.is_revoked(&t.to_b64()))
+                .cloned()
+                .collect(),
+        )
     }
 }
 
@@ -270,6 +277,14 @@ async fn round_principal(
 ) -> Result<KeyMemo, RoundError> {
     let mut record = open_record(state, principal_id).await?;
     let tip = record.tip().ok_or(RoundError::Empty)?;
+    // The engine's verified revokes are not part of the state the record
+    // resumed over: a key it already holds dead is not asked about again.
+    let held = record
+        .principal()
+        .map_or_else(Vec::new, |p| p.ever_held_keys());
+    for tmb in held.iter().filter(|t| state.engine.is_revoked(&t.to_b64())) {
+        record.note_revoked(tmb);
+    }
     let memo = KeyMemo {
         tip: tip.commit_id,
         keys: record.unrevoked_keys(),
