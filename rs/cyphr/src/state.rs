@@ -360,7 +360,8 @@ pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Ve
 
 /// Compute `H(components...)` in array order (no sort).
 ///
-/// Used for CommitID where coz order is significant (SPEC §8.5).
+/// Used where the order is defined, not sorted (SPEC §3.7): CommitID, where
+/// coz order is significant (SPEC §8.5), and the Arrow (SPEC §4.2).
 pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     #[cfg(any(test, feature = "test-utils"))]
     crate::probe::hashed();

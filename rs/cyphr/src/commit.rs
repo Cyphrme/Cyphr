@@ -335,7 +335,14 @@ impl PendingCommit {
 // Arrow
 // ============================================================================
 
-/// Compute the Arrow digest `MR(pre, fwd, TMR)` (SPEC §4.4) at `alg`.
+/// Compute the Arrow digest `MR(pre, fwd, TMR)` (SPEC §4.2) at `alg`.
+///
+/// The components are hashed in that order, not sorted. SPEC §3.7 sorts
+/// an MR's children "unless sort order is otherwise defined"; §4.2
+/// defines the order by naming the three roles `pre`, `fwd` and TMR.
+/// Sorting would leave the roles unbound: `pre` and `fwd` could swap and
+/// still recompute the signed arrow. An absent `fwd` is omitted (§3.7),
+/// leaving `(pre, TMR)`.
 ///
 /// The single definition shared by the write path
 /// ([`CommitScope::prepare_commit`]), the pre-finalize check
@@ -362,11 +369,12 @@ pub(crate) fn arrow_digest(
     // The forward SR is absent when the commit leaves no key and no data;
     // an empty component is omitted from the root (SPEC 3.7).
     let sr_bytes = sr.map(|sr| sr.0.arrow_component_bytes(alg)).transpose()?;
-    let mut components = vec![pre_bytes.as_ref(), tmr_bytes.as_ref()];
+    let mut components = vec![pre_bytes.as_ref()];
     if let Some(sr_bytes) = sr_bytes.as_ref() {
         components.push(sr_bytes.as_ref());
     }
-    Ok(crate::state::hash_sorted_concat_bytes(alg, &components))
+    components.push(tmr_bytes.as_ref());
+    Ok(crate::state::hash_concat_bytes(alg, &components))
 }
 
 // ============================================================================
@@ -1817,5 +1825,38 @@ mod tests {
             "a failed finalize must not leave `deleted_pending` set on the live principal — its \
              own sibling of GitHub issue #77"
         );
+    }
+
+    /// Empty components are omitted (SPEC 3.7 step 1), so an arrow of two
+    /// components is `(pre, fwd)` or `(pre, TMR)`; both hash `pre` first.
+    /// `arrow_digest` always takes a TMR (a commit with no mutation is
+    /// `EmptyCommit`), so the shape it builds when `fwd` is absent is
+    /// `(pre, TMR)`; the verifier recomputes the TMR it checks against, so
+    /// the one digest cannot be read as the other shape.
+    #[test]
+    fn a_two_component_arrow_is_not_misread() {
+        let alg = HashAlg::Sha256;
+        let root = |b: u8| MultihashDigest::from_single(alg, vec![b; 32]).expect("digest");
+        let (pre, fwd, tmr) = (root(0x30), root(0x20), root(0x10));
+        let h = |parts: &[&[u8]]| alg.hash_bytes(&parts.concat());
+        let pre_b = pre.get(alg).expect("pre").to_vec();
+        let fwd_b = fwd.get(alg).expect("fwd").to_vec();
+        let tmr_b = tmr.get(alg).expect("tmr").to_vec();
+
+        let pr = PrincipalRoot(pre);
+        let sr = StateRoot(fwd);
+        let tmr = crate::transaction_root::TransactionMutationRoot(tmr);
+
+        // No forward SR: (pre, TMR), in that order though TMR sorts first.
+        assert_eq!(
+            arrow_digest(alg, &pr, None, &tmr).expect("arrow"),
+            h(&[&pre_b, &tmr_b]),
+        );
+        // With fwd present: (pre, fwd, TMR), though sorting would reorder.
+        let full = arrow_digest(alg, &pr, Some(&sr), &tmr).expect("arrow");
+        assert_eq!(full, h(&[&pre_b, &fwd_b, &tmr_b]));
+        // The shapes differ, and so does (pre, fwd) from (pre, TMR).
+        assert_ne!(full, h(&[&pre_b, &tmr_b]));
+        assert_ne!(h(&[&pre_b, &fwd_b]), h(&[&pre_b, &tmr_b]));
     }
 }
