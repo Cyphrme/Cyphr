@@ -198,14 +198,34 @@ impl Trust for Claimed {}
 ///
 /// A claimed root cannot anchor a membership proof:
 ///
-/// ```compile_fail,E0308
+/// ```compile_fail,E0277
 /// use cyphr::proof::*;
 /// fn anchor(
-///     claimed: &Rooted<Claimed, FullCr>,
+///     claimed: &Rooted<Claimed, AnyFamilyRoot>,
 ///     proof: &MembershipProof,
 ///     tr: &cyphr::TransactionRoot,
 /// ) {
 ///     let _ = verify_membership(claimed, proof, tr);
+/// }
+/// ```
+///
+/// Only the holder's own `FullCr` has per-family accessors; a single
+/// family's root has no `family::<H>()`:
+///
+/// ```compile_fail,E0599
+/// use cyphr::proof::*;
+/// fn pick(r: &Rooted<Trusted, AnyFamilyRoot>) {
+///     let _ = r.family::<Sha256>();
+/// }
+/// ```
+///
+/// A peer's whole Commit Root is never one claim (its variants are not
+/// bound to each other), so there is no way to claim one:
+///
+/// ```compile_fail,E0599
+/// use cyphr::proof::*;
+/// fn claim(cr: FullCr) {
+///     let _ = Rooted::<Claimed, FullCr>::claim(cr);
 /// }
 /// ```
 #[derive(Debug)]
@@ -240,11 +260,12 @@ impl<H: HashFamily> Rooted<Claimed, FamilyRoot<H>> {
     }
 }
 
-impl Rooted<Claimed, FullCr> {
-    /// STUB. Wrap a stated whole Commit Root as a claim.
+impl Rooted<Claimed, AnyFamilyRoot> {
+    /// STUB. Wrap a peer's stated head, in the one family it states, as
+    /// a claim.
     #[must_use]
-    pub fn claim(_cr: FullCr) -> Self {
-        unimplemented!("stub: Rooted::<Claimed, FullCr>::claim")
+    pub fn claim(_root: AnyFamilyRoot) -> Self {
+        unimplemented!("stub: Rooted::<Claimed, AnyFamilyRoot>::claim")
     }
 }
 
@@ -299,24 +320,26 @@ pub struct Stitch<F: HashFamily> {
 
 impl<M: Trust, F: HashFamily> Rooted<M, FamilyRoot<F>> {
     /// STUB. Cross an epoch boundary: verify leaf `s` under this root,
-    /// open it to `CR_{s-1}`, return that whole Commit Root at the same
-    /// trust level. The arrow's family is read from the coz.
+    /// open it to `PR_{s-1}[G]` and `CR_{s-1}[G]`, where `G` is the
+    /// arrow signer's family, read from the coz. Only `G`'s variant is
+    /// authenticated (`PR[G]` binds `CR[G]` alone), so only that one root
+    /// is returned, at the same trust level.
     ///
     /// # Errors
     ///
     /// [`ProofError::Path`], [`ProofError::Arrow`], [`ProofError::PtCell`].
     #[allow(dead_code)]
-    pub(crate) fn stitch(&self, _s: &Stitch<F>) -> Result<Rooted<M, FullCr>, ProofError> {
+    pub(crate) fn stitch(&self, _s: &Stitch<F>) -> Result<Rooted<M, AnyFamilyRoot>, ProofError> {
         unimplemented!("stub: Rooted::stitch")
     }
 }
 
-impl<M: Trust> Rooted<M, FullCr> {
+impl Rooted<Trusted, FullCr> {
     /// STUB. The member root of family `H`, `None` if `H` is not in this
     /// Commit Root.
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn family_impl<H: HashFamily>(&self) -> Option<Rooted<M, FamilyRoot<H>>> {
+    pub(crate) fn family_impl<H: HashFamily>(&self) -> Option<Rooted<Trusted, FamilyRoot<H>>> {
         unimplemented!("stub: Rooted::family")
     }
 
@@ -324,7 +347,7 @@ impl<M: Trust> Rooted<M, FullCr> {
     #[cfg(feature = "test-utils")]
     #[doc(hidden)]
     #[must_use]
-    pub fn family<H: HashFamily>(&self) -> Option<Rooted<M, FamilyRoot<H>>> {
+    pub fn family<H: HashFamily>(&self) -> Option<Rooted<Trusted, FamilyRoot<H>>> {
         self.family_impl()
     }
 }
@@ -457,32 +480,47 @@ impl ExtensionProof {
     }
 }
 
+mod anchor {
+    pub trait Sealed {}
+}
+
+/// A trusted root a membership proof can start from: the holder's own
+/// whole Commit Root, or a head upgraded by [`verify_extension`] in one
+/// family. Sealed.
+pub trait Anchor: anchor::Sealed {}
+impl anchor::Sealed for Rooted<Trusted, FullCr> {}
+impl anchor::Sealed for Rooted<Trusted, AnyFamilyRoot> {}
+impl Anchor for Rooted<Trusted, FullCr> {}
+impl Anchor for Rooted<Trusted, AnyFamilyRoot> {}
+
 /// STUB. The one entry point for a membership proof: `proof` is plain
-/// data, `anchor` the holder's trusted tip. Walks every stitch from the
+/// data, `anchor` a trusted root (any [`Anchor`]). The walk follows the
+/// signer's family from the anchor's own, so one family suffices. Walks every stitch from the
 /// tip, then the terminal path, checking `tr` is the leaf proven.
 ///
 /// # Errors
 ///
 /// The [`ProofError`] of the first failing step.
 pub fn verify_membership(
-    _anchor: &Rooted<Trusted, FullCr>,
+    _anchor: &impl Anchor,
     _proof: &MembershipProof,
     _tr: &TransactionRoot,
 ) -> Result<Verified<Membership>, ProofError> {
     unimplemented!("stub: verify_membership")
 }
 
-/// STUB. The one entry point for an extension proof: upgrades `head` to
-/// trusted only if it extends the trusted `old`.
+/// STUB. The one entry point for an extension proof: upgrades `head`, a
+/// claim in one family, to trusted in that family only, and only if it
+/// extends the trusted `old`.
 ///
 /// # Errors
 ///
 /// The [`ProofError`] of the first failing step.
 pub fn verify_extension(
     _old: &Rooted<Trusted, FullCr>,
-    _head: Rooted<Claimed, FullCr>,
+    _head: Rooted<Claimed, AnyFamilyRoot>,
     _proof: &ExtensionProof,
-) -> Result<Rooted<Trusted, FullCr>, ProofError> {
+) -> Result<Rooted<Trusted, AnyFamilyRoot>, ProofError> {
     unimplemented!("stub: verify_extension")
 }
 

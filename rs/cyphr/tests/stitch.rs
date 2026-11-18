@@ -12,8 +12,8 @@ use std::marker::PhantomData;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::commit_root::{CommitTrees, MaltHasher, hash_alg_to_u64};
 use cyphr::proof::{
-    AnyConsistency, AnyPath, AnyStitch, Claimed, Consistency, FullCr, ProofError, Rooted, Sha256,
-    Sha384, Sha512, Trusted, verify_extension, verify_membership,
+    AnyConsistency, AnyFamilyRoot, AnyPath, AnyStitch, Claimed, Consistency, FullCr, ProofError,
+    Rooted, Sha256, Sha384, Sha512, Trusted, verify_extension, verify_membership,
 };
 use cyphr::signer::SoftwareSigner;
 use cyphr::{HashAlg, Key, Principal};
@@ -228,8 +228,29 @@ fn tip(p: &Principal) -> Rooted<Trusted, FullCr> {
     Rooted::<Trusted, FullCr>::of_principal(p).expect("tip commit root")
 }
 
-fn claim_of(p: &Principal) -> Rooted<Claimed, FullCr> {
-    Rooted::<Claimed, FullCr>::claim(tip(p).get().clone())
+fn alg_of(r: &AnyFamilyRoot) -> HashAlg {
+    match r {
+        AnyFamilyRoot::Sha256(_) => HashAlg::Sha256,
+        AnyFamilyRoot::Sha384(_) => HashAlg::Sha384,
+        AnyFamilyRoot::Sha512(_) => HashAlg::Sha512,
+    }
+}
+
+/// The holder's own tip root in the family its tip hashes under.
+fn tip_variant(p: &Principal) -> AnyFamilyRoot {
+    tip(p)
+        .get()
+        .variants
+        .iter()
+        .find(|v| alg_of(v) == p.hash_alg())
+        .expect("the tip's family is in its commit root")
+        .clone()
+}
+
+/// What a peer states: its head in one family (a whole Commit Root is
+/// never one claim, E5.2).
+fn claim_of(p: &Principal) -> Rooted<Claimed, AnyFamilyRoot> {
+    Rooted::<Claimed, AnyFamilyRoot>::claim(tip_variant(p))
 }
 
 fn opening_of(s: &mut AnyStitch) -> &mut cyphr::proof::CommitOpening {
@@ -254,7 +275,11 @@ async fn extension_across_a_replace_is_one_stitch() {
     let proof = p.prove_extension(3).await.expect("prove");
     assert_eq!(proof.stitches.len(), 1, "one boundary crossed");
     let upgraded = verify_extension(&old, head, &proof).expect("extension verifies");
-    assert_eq!(upgraded.get(), tip(&p).get(), "the head is upgraded");
+    assert_eq!(
+        upgraded.get(),
+        &tip_variant(&p),
+        "the head is upgraded, in its own family"
+    );
 }
 
 // E4.3 cost: O(h (log n + c)); h = 1 here, so n = 8 -> 64 must grow by
@@ -691,6 +716,255 @@ async fn the_stitch_list_cannot_be_edited_into_a_false_proof() {
             proves_only_the_truth(verify_membership(&tip(&d), &proof, tr_of(&d, i)), i);
             proof.stitches.pop();
         }
+    }
+}
+
+// ---- E5: a stitch authenticates the signer's family only ----
+
+/// Ed25519 (A, SHA-512) creates ES384 (C) at 1 and ES256 (B) at 2, so
+/// the stitch at 2 opens `CR_1 = {A, C}` under A's arrow; B then deletes C
+/// (3) and A (4), and signs two data commits: seven commits, tip B alone.
+async fn three_families() -> Principal {
+    let (a, c, b) = (
+        kp(coz::Alg::Ed25519),
+        kp(coz::Alg::ES384),
+        kp(coz::Alg::ES256),
+    );
+    let mut p = genesis(&a).await;
+    commit_key(&mut p, &a, "create", &c, at(1)).await;
+    commit_key(&mut p, &a, "create", &b, at(2)).await;
+    commit_key(&mut p, &b, "delete", &c, at(3)).await;
+    commit_key(&mut p, &b, "delete", &a, at(4)).await;
+    for k in 5..7 {
+        data_commit(&mut p, &b, at(k)).await;
+    }
+    p
+}
+
+// PR_{s-1}[G] binds CR_{s-1}[G] alone, so the stitch trusts the signer's
+// family (A) and no other variant of the CR cell. Rewriting C's variant
+// in the cell changes nothing; continuing the walk in C is refused.
+#[tokio::test]
+async fn a_stitch_trusts_only_the_signers_family() {
+    let p = three_families().await;
+    let mut proof = p.prove_membership(0).await.expect("prove");
+    assert_eq!(proof.stitches.len(), 1, "B starts at 2; index 0 is A's");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 0)).expect("control");
+
+    let cell = &mut opening_of(&mut proof.stitches[0]).pt_cells[1];
+    let mut variants: std::collections::BTreeMap<u64, Vec<u8>> =
+        serde_json::from_slice(cell).expect("the CR cell is a map of variants");
+    let c_id = hash_alg_to_u64(HashAlg::Sha384);
+    variants.get_mut(&c_id).expect("CR_1 carries C").fill(7);
+    *cell = serde_json::to_vec(&variants).expect("cell");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 0))
+        .expect("a non-signer variant is ignored, not checked");
+
+    // Continue in C from the same stitch: C's tree at size 2 holds leaf 1.
+    let c_path = p.log_path::<Sha384>(1, 2).await.expect("C's path");
+    proof.terminal = AnyPath::Sha384(c_path);
+    let r = verify_membership(&tip(&p), &proof, tr_of(&p, 1));
+    assert_eq!(r.map(|_| ()), Err(ProofError::Family));
+}
+
+// A head upgraded in one family anchors membership of any commit, by
+// the walk, with no other family trusted.
+#[tokio::test]
+async fn an_upgraded_single_family_head_anchors_any_membership() {
+    let p = single(3, 3).await;
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
+        .await
+        .expect("old");
+    let ext = p.prove_extension(3).await.expect("prove");
+    let head = verify_extension(&old, claim_of(&p), &ext).expect("upgrade");
+    for i in 0..8u64 {
+        let proof = p.prove_membership(i).await.expect("prove");
+        verify_membership(&head, &proof, tr_of(&p, i)).expect("anchored in the upgraded head");
+        assert_eq!(proof.stitches.len(), usize::from(i < 4));
+    }
+}
+
+// The implementer's probe, green: two CR cells equal in one variant give
+// equal PRs in that family and different PRs in the other.
+#[test]
+fn pr_binds_only_the_matching_variant_of_the_cr_cell() {
+    use std::collections::BTreeMap;
+
+    use cyphr::StateRoot;
+    use cyphr::commit_root::CommitRoot;
+    use cyphr::multihash::MultihashDigest;
+    use cyphr::principal_tree::PrincipalTree;
+    let md = |a: u8, b: u8| {
+        MultihashDigest::new(BTreeMap::from([
+            (HashAlg::Sha256, vec![a; 32].into_boxed_slice()),
+            (HashAlg::Sha512, vec![b; 64].into_boxed_slice()),
+        ]))
+        .expect("multihash")
+    };
+    let algs = [HashAlg::Sha256, HashAlg::Sha512];
+    let pr = |cr: CommitRoot| {
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&StateRoot(md(1, 2)), &algs).expect("sr");
+        pt.set_cr(&cr, &algs).expect("cr");
+        pt.pr(&algs).expect("pr")
+    };
+    let (x, y) = (pr(CommitRoot(md(3, 4))), pr(CommitRoot(md(3, 5))));
+    assert_eq!(x.0.get(HashAlg::Sha256), y.0.get(HashAlg::Sha256));
+    assert_ne!(x.0.get(HashAlg::Sha512), y.0.get(HashAlg::Sha512));
+}
+
+/// A (`alice`, ES256, SHA-256) embeds B (`bob`, ES256, and `eve`,
+/// Ed25519, SHA-512). Returns A after its genesis and the embedding, with
+/// B followed, and the keys a test signs with.
+struct Embedded {
+    a: Principal,
+    alice: Kp,
+    eve: Kp,
+}
+
+fn pool_kp(name: &str) -> Kp {
+    let pool = test_fixtures::Pool::load(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml"),
+    )
+    .expect("pool");
+    let k = pool.get(name).expect("key in pool");
+    let d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
+    Kp {
+        alg: k.alg.clone(),
+        pubb: d(&k.pub_key),
+        prv: d(k.prv.as_ref().expect("prv")),
+        tmb: k.compute_tmb().expect("tmb"),
+    }
+}
+
+/// One commit on `p` of the single coz `typ` of `id`, signed and finalized
+/// by `by`, with `side` as the sidecar key.
+async fn commit_as(
+    p: &mut Principal,
+    by: &Kp,
+    typ: &str,
+    id: &str,
+    side: Option<Key>,
+    now: i64,
+) -> cyphr::error::Result<()> {
+    let tmb = Base64UrlUnpadded::encode_string(by.tmb.as_bytes());
+    let mut pay = json!({"alg": by.alg, "id": id, "now": now, "tmb": tmb,
+                         "typ": format!("{AUTHORITY}/cyphr/{typ}")});
+    pay.as_object_mut().expect("object").sort_keys();
+    let v = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope.verify_and_apply(&v, &sig, czd, side)?;
+    scope
+        .finalize_with_software(&signer(by), now, AUTHORITY)
+        .await
+        .map(|_| ())
+}
+
+async fn embedded() -> Embedded {
+    use cyphr::{Tip, TipSource, Tracking};
+    struct Once(Option<Tip>);
+    impl TipSource for Once {
+        async fn tip(&mut self, _: &str) -> Option<Tip> {
+            self.0.take()
+        }
+    }
+    let (alice, bob, eve) = (pool_kp("alice"), pool_kp("bob"), pool_kp("eve_ed25519"));
+    let mut b = Principal::implicit(key_of(&bob)).await.expect("B");
+    b.commit_genesis(&signer(&bob), &[key_of(&eve)], T, AUTHORITY)
+        .await
+        .expect("B genesis");
+    let mut a = genesis(&alice).await;
+    let b_pr = b.pr_tagged().expect("B PR");
+    commit_as(&mut a, &alice, "AT/KT/nonce/create", &b_pr, None, T + 1)
+        .await
+        .expect("A embeds B");
+    a.reveal_embedded(&b_pr, Tracking::Follow).expect("reveal");
+    a.follow_embedded(&mut Once(Some(Tip::new(&b, T + 50))))
+        .await;
+    Embedded { a, alice, eve }
+}
+
+fn b64(k: &Kp) -> String {
+    Base64UrlUnpadded::encode_string(k.tmb.as_bytes())
+}
+
+// REFUTES E5's claim 1 (the arrow's family is in CR_{s-1} for every
+// admitted commit): B's Ed25519 key signs a commit of A, which hashes
+// under SHA-256 only. The commit is admitted, its closing coz and arrow
+// are SHA-512, and no commit before it has a SHA-512 variant. Green
+// characterization of what the core does today.
+#[tokio::test]
+async fn an_embedded_signer_of_a_family_the_log_lacks_is_admitted() {
+    let Embedded { mut a, eve, .. } = embedded().await;
+    let golden = pool_kp("golden");
+    commit_as(
+        &mut a,
+        &eve,
+        "key/create",
+        &b64(&golden),
+        Some(key_of(&golden)),
+        T + 3,
+    )
+    .await
+    .expect("admitted");
+    let last = a.iter_all_cozies().last().expect("a coz");
+    assert_eq!(last.hash_alg(), HashAlg::Sha512, "the coz is Ed25519's");
+    assert_eq!(
+        last.arrow()
+            .expect("closing coz")
+            .algorithms()
+            .collect::<Vec<_>>(),
+        [HashAlg::Sha512],
+        "and so is its arrow"
+    );
+    let before = a.commit_at(a.commit_count() - 2).expect("previous commit");
+    assert!(
+        !before.pr().0.contains(HashAlg::Sha512),
+        "yet CR_{{s-1}} has no SHA-512 variant to stitch into"
+    );
+}
+
+// Consequence of the above, red: a stitch at a commit signed by such an
+// embedded key. eve creates an ES384 key (SHA-384 starts at commit 2), the
+// ES384 key deletes alice (SHA-256 closes), so index 0 is covered by
+// SHA-256 only and the walk from the SHA-384 tip must stitch at commit 2,
+// whose arrow family (SHA-512) is in no CR.
+#[tokio::test]
+async fn a_stitch_at_an_embedded_signers_commit_still_reaches_old_history() {
+    let Embedded { mut a, alice, eve } = embedded().await;
+    let diana = pool_kp("diana_es384");
+    commit_as(
+        &mut a,
+        &eve,
+        "key/create",
+        &b64(&diana),
+        Some(key_of(&diana)),
+        T + 3,
+    )
+    .await
+    .expect("eve creates the ES384 key");
+    commit_as(&mut a, &diana, "key/delete", &b64(&alice), None, T + 4)
+        .await
+        .expect("the ES384 key retires alice");
+    for k in 0..2 {
+        commit_as(
+            &mut a,
+            &diana,
+            "nonce/create",
+            &format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[k + 1; 32])),
+            None,
+            T + 5 + i64::from(k),
+        )
+        .await
+        .expect("a commit by the ES384 key");
+    }
+    let tip = tip(&a);
+    for i in 0..a.commit_count() as u64 {
+        let proof = a.prove_membership(i).await.expect("prove");
+        verify_membership(&tip, &proof, tr_of(&a, i))
+            .unwrap_or_else(|e| panic!("index {i} through an embedded signer's stitch: {e}"));
     }
 }
 
