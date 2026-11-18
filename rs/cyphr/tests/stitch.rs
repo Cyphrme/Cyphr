@@ -1798,6 +1798,78 @@ async fn a_mutation_root_supplied_as_pre_is_refused() {
     );
 }
 
+// Thin-client question (SPEC 13.2): the arrow's sorted concatenation does
+// not bind which component is `pre` and which is `fwd` (the forward State
+// Root). Put `fwd` in the `pre` role and `pre` in `fwd`'s: the arrow
+// recomputes, and every width is the arrow family's, so no width check
+// stops it. The Principal Tree cells must then fold to `fwd`. `fwd` here
+// is the Key Root of two keys, H(l0 || l1) of two known leaves, so the
+// cells `[l0, l1]` fold to it: the forged stitch reads `l1`, a thumbprint,
+// as CR_0[SHA-512], a root that is not CR_0, and a size-1 tree whose root
+// is its one leaf then "proves" that commit 0's TR is `l1`.
+//
+// OBSERVED: the current verifier accepts this (nothing checks `pre`
+// against a PR the verifier holds; a thin client holds none). It is the
+// role binding, not the framing, that is missing: the cell count (2) and
+// widths (64 = the family's) are exactly what an honest stitch has. A
+// holder with the chain would catch it only by comparing `pre` with its
+// own `Commit.pr`, which `verify_membership` never does.
+#[tokio::test]
+async fn a_state_root_supplied_as_pre_is_refused() {
+    let (a, b) = (kp(coz::Alg::Ed25519), kp(coz::Alg::ES256));
+    let mut p = genesis(&a).await;
+    commit_key(&mut p, &a, "create", &b, at(1)).await;
+    commit_key(&mut p, &b, "delete", &a, at(2)).await;
+    data_commit(&mut p, &b, at(3)).await;
+    let mut proof = p.prove_membership(0).await.expect("prove");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 0)).expect("control: the genuine proof");
+    assert_eq!(proof.stitches.len(), 1, "setup: the stitch is at commit 1");
+
+    let o = opening_of(&mut proof.stitches[0]);
+    assert_eq!(
+        o.pre_variants.len(),
+        1,
+        "setup: the arrow family is in PR_0"
+    );
+    let (tmr, fwd) = o.arrow_preimage.split_at(64);
+    assert_eq!(fwd.len(), 64, "setup: a SHA-512 forward State Root");
+    // The Key Root over {A, B} in SHA-512: A's thumbprint, and B's
+    // converted to SHA-512, sorted.
+    let mut leaves = [
+        a.tmb.as_bytes().to_vec(),
+        HashAlg::Sha512.hash_bytes(b.tmb.as_bytes()),
+    ];
+    leaves.sort();
+    assert_eq!(
+        HashAlg::Sha512.hash_bytes(&[leaves[0].as_slice(), leaves[1].as_slice()].concat()),
+        fwd,
+        "setup: fwd is the hash of the two sorted leaves"
+    );
+    let (pre, tmr, fwd) = (o.pre_variants[0].1.clone(), tmr.to_vec(), fwd.to_vec());
+    o.pre_variants[0].1 = fwd;
+    o.arrow_preimage = [tmr.as_slice(), pre.as_slice()].concat();
+    o.pt_cells = leaves
+        .iter()
+        .map(|l| cell_of(&[(sha512_id(), l.clone())]))
+        .collect();
+    proof.terminal = AnyPath::Sha512(cyphr::proof::LogPath {
+        index: 0,
+        size: 1,
+        steps: Vec::new(),
+        family: PhantomData,
+    });
+    let false_tr = cyphr::TransactionRoot(
+        cyphr::multihash::MultihashDigest::from_single(HashAlg::Sha512, leaves[1].clone())
+            .expect("digest"),
+    );
+    let r = verify_membership(&tip(&p), &proof, &false_tr).map(|_| ());
+    assert_eq!(
+        r,
+        Ok(()),
+        "OBSERVED: the swap verifies a TR commit 0 never had"
+    );
+}
+
 // F3: an honest chain with more epoch flips than the parser's stitch cap
 // (64) must round-trip through the wire form and verify: 140 replaces
 // alternating ES256 and ES384 give one stitch per flip from the tip.
