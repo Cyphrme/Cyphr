@@ -690,9 +690,9 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     assert_eq!(report.forks.len(), 1, "the longer chain shows the fork");
 
     let c = rp.challenge();
-    let got = rp.sign_in(&login(&thief, &pg, AUDIENCE, &c));
-    assert!(
-        got.is_err(),
-        "a key only the abandoned branch added signed in: {got:?}"
+    assert_eq!(
+        rp.sign_in(&login(&thief, &pg, AUDIENCE, &c)),
+        Err(Refusal::LostBranch),
+        "a key only the abandoned branch added"
     );
 }
