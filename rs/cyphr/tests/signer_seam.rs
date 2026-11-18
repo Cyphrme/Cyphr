@@ -310,22 +310,23 @@ fn finalize<'a, S: Signer>(
 /// commit, which changes the commit's `pre` and so its bytes, and again
 /// when TR became the flat MR of the transaction ids (SPEC 3.7.5): the
 /// genesis commit has two mutation transactions, so its TR, and with it
-/// the `pre` this commit's arrow binds, moved.
+/// the `pre` this commit's arrow binds, moved; and again when the arrow
+/// was computed in SPEC 4.2's order, (pre, fwd, TMR), rather than sorted.
 const GOLDEN: &[(&str, &str, &str)] = &[
     (
         "golden",
-        "38bmkp-QLwM-mjje3KV2Wp7kXG71KMqGv1zgl6-TjVc",
-        "KIm8vJ-WNh9z4b445FgwmFRle7Kk5fxjrLxFPnyEgJJgTcGSy3k3wsZH0JzfreI12IA7jFh1O5-qIAwp1vCu_g",
+        "3KqT7xcOorbO5c3LR6S59cFJF5aHa5IJHY19Q81R3Cg",
+        "xYCTRv6Scwl87arcfHae0OvFTPsOlz4c0NqQtNse1_V7c5jRljEooVtZUWJ6-NtQ7Hdyb9sfz97cciTKqk-mIQ",
     ),
     (
         "diana_es384",
-        "7igmbf2sUpFlz5XGkExCCrMmI7kTrkYmBnfVaSeVPPcFB4xKBEwDkOIk8CRS5MlD",
-        "1KCf9ZL0-NGvJdFTL7ecreyoEE4rNvGix2ob30rJ8jih5yTrpktzU8KFX2vrPu_eN9pl0ivhyfrxUijcelbcEPrbGg4Nb5mgdlgJ8TtadEglb1DbD8cOkmWeLVlWCMkS",
+        "beKatTOwnQ_PazCTTfHI5VgSZfZjVnVad10UgXS-CeFDhmJrrzAcAF5HmVwCRCT5",
+        "m3yYGo8sDt8sKxroGYK0pqxprO6ygBLPLEYgSF-Cvvncd3K9pdwP2GPqyvmb_9xlbSFHYtHUM1d2zqZH0LgOuE7pAf-1xUnZ_ApoZHm_rhMT64jsNKc4E2CfXSjj26ds",
     ),
     (
         "eve_ed25519",
-        "pZdvd_ySMHE8gNIrYsYJ3A5n4Eh0VJMOP6CJEluzFk4tH0UP-XV0uNeQQYT6fdp-whu68P7Hg8VZfVgxXtG6TQ",
-        "zxOONpBdFtV_x1XToPez84zT3nx3qhNQ08gmGqN3esb3qL-Gp_hc2QU95bz8C3KgZB6P8kgJL42pLrCj2U2-AQ",
+        "VEDx2ey8dxlDpkS1vs_xnJhw_j1umAuWeeX8MXz_-ihrsoGflnNC29e5D-pgmMQDAGdPI0EM9OtEjMzqO9Z_MQ",
+        "Bbp_vof3mSL7MSxAG6UgN7J3GV3QflxVF2bHUH77JDuYQO_QehM2VGAPzKAXhSdIXNHwR-Xw38iqR4CGJlPZDA",
     ),
 ];
 
