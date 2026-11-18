@@ -361,3 +361,48 @@ async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
     )
     .await;
 }
+
+// Frame NETSIM-FIX E4: after a full rotation (Ed25519 -> ES256) every
+// commit of the chain must be provable from the tip alone. `/inclusion`
+// takes no algorithm choice and answers 200 for every index; each answer
+// parses as the typed membership proof and crosses at most the one epoch
+// boundary the chain has. (Verifying it against a trusted tip is pinned by
+// `cyphr/tests/stitch.rs`; this pins the server contract.)
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(NETSIM-FIX E4): /inclusion refuses or fails for commits of the retired algorithm"]
+async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
+    let h = Harness::start(&["p1"]).await.expect("start peers");
+    let (laptop, phone) = (h.client("laptop"), h.client("phone"));
+    let pr = h.ok(laptop.create_principal().await);
+    h.ok(laptop.commit_data(&pr, "before").await);
+    let paired = h.ok(laptop.pair_device(&pr, &phone).await);
+    let genesis = KeyRef(h.genesis_tmb(&pr).expect("genesis key"));
+    // The phone's ES256 key removes the only Ed25519 key: that family
+    // closes, and everything after is ES256 alone.
+    h.ok(phone.remove_key(&pr, &genesis).await);
+    for i in 0..4 {
+        h.ok(phone.commit_data(&pr, &format!("after{i}")).await);
+    }
+    let _ = paired;
+    h.ok(phone.push(&pr, &["p1"]).await)
+        .accepted("rotated chain");
+    let height = h.peer_view("p1", &pr).await.expect("p1 holds it").height;
+    assert!(height >= 8, "height {height}");
+    for index in 0..height {
+        let resp = h
+            .http
+            .get(format!("http://{}/inclusion", h.peer("p1").addr()))
+            .query(&[("pr", pr.0.as_str()), ("index", &index.to_string())])
+            .send()
+            .await
+            .expect("inclusion request");
+        assert_eq!(resp.status(), 200, "index {index} of {height}");
+        let body: serde_json::Value = resp.json().await.expect("json");
+        let proof = cyphr::proof::MembershipProof::from_payload(&body["payload"])
+            .unwrap_or_else(|e| panic!("index {index}: {e}"));
+        assert!(
+            proof.stitches.len() <= 1,
+            "index {index}: one boundary only"
+        );
+    }
+}
