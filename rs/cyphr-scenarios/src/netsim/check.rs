@@ -74,26 +74,10 @@ pub(crate) fn tip_diff(want: &LocalView, got: Option<&PeerTip>) -> Option<String
     None
 }
 
-/// The answer a server gives for a proof it does not keep (after a restart,
-/// or an evicted principal): a 503 the asker meets by pulling without one.
-/// It is designed, and counted as `server_error` all the same, so N6 takes
-/// it off that counter by its log line.
-const NO_PROOF: &str = "pull without one";
-
-/// How many designed no-proof 503s `peer` answered, over every lifetime.
-fn designed_503s(h: &Harness, peer: &str) -> u64 {
-    h.log_lines(peer, NO_PROOF)
-        .iter()
-        .filter(|l| l.contains("server error"))
-        .count() as u64
-}
-
-/// N6 for one peer, from its lifetime counters, the designed 503s among
-/// them, and its log's panic lines.
+/// N6 for one peer, from its lifetime counters and its log's panic lines.
 pub fn n6_diff(
     peer: &str,
     counters: &HashMap<String, u64>,
-    designed: u64,
     panics: &[String],
 ) -> Option<String> {
     let get = |kind: &str| {
@@ -103,11 +87,8 @@ pub fn n6_diff(
             .unwrap_or(0)
     };
     let mut why = Vec::new();
-    let errors = get("server_error").saturating_sub(designed);
-    if errors > 0 {
-        why.push(format!(
-            "{errors} server_error answers besides {designed} designed no-proof 503s"
-        ));
+    if get("server_error") > 0 {
+        why.push(format!("{} server_error answers", get("server_error")));
     }
     if get("rate_limited") > 0 {
         why.push(format!("{} rate_limited answers", get("rate_limited")));
@@ -244,7 +225,7 @@ pub(crate) async fn barrier(b: Barrier<'_, '_>) -> Result<Duration, Failure> {
             .await
             .map_err(|e| fail("DRIVER", e))?;
         let panics = h.log_lines(name, "panicked");
-        if let Some(why) = n6_diff(name, &counters, designed_503s(h, name), &panics) {
+        if let Some(why) = n6_diff(name, &counters, &panics) {
             return Err(fail("N6", why));
         }
     }
@@ -266,10 +247,9 @@ async fn report_counters(h: &Harness, names: &[String]) -> Result<(), Failure> {
                 .unwrap_or(0)
         };
         line.push_str(&format!(
-            " {name}[rate_limited={} server_error={} (no-proof 503s {}) rounds={}]",
+            " {name}[rate_limited={} server_error={} rounds={}]",
             get("rate_limited"),
             get("server_error"),
-            designed_503s(h, name),
             c.get("cyphr_gossip_rounds_total").copied().unwrap_or(0)
         ));
     }
