@@ -1715,3 +1715,26 @@ async fn a_resolution_signed_by_a_key_the_rival_introduced_is_admitted() {
     assert_eq!(tip.commit_id, r2, "R2 is served");
     assert!(!e.is_errored(&f.id).await.expect("verdict"), "Active");
 }
+
+/// Backs SPEC 14.12 for a retained rival: `golden`'s rival R at position 1
+/// is retained beside the canonical commit there. Pushed again it is
+/// answered as the fork it is, `CommitMismatch`. A naked revoke of `golden`
+/// is then received with a cutoff of NOW, before R's date, and R is pushed
+/// once more: the answer is the same, not `DeadKey`, because the revoke
+/// judges nothing already held. Turns red if the revoke gate sees a
+/// retained rival before the held-bundle check does.
+#[tokio::test]
+async fn a_retained_rival_pushed_again_after_a_revoke_gets_the_same_answer() {
+    let f = Fork::new(2).await;
+    let (e, _) = f.engine_with(&[0, 1]).await;
+    let before = f.submit(&e, &f.rivals[1]).await.map_err(|why| format!("{why:?}"));
+    assert!(
+        before.as_ref().is_err_and(|why| why.contains("CommitMismatch")),
+        "premise: a held rival is answered as a fork: {before:?}"
+    );
+    e.record_revoke(&naked_revoke(&f.golden, 1), NOW)
+        .await
+        .expect("revoke");
+    let after = f.submit(&e, &f.rivals[1]).await.map_err(|why| format!("{why:?}"));
+    assert_eq!(after, before, "the revoke changed the answer");
+}
