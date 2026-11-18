@@ -812,7 +812,10 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
     // The locate path proves the one rival commit at the fork and fetches
     // nothing past it, so a tie at the fork's height reads as `Forked`:
     // still a refusal, as the record's key set is an abandoned branch's,
-    // but not yet the exact `LostBranch`.
+    // but not yet the exact `LostBranch`. The assertion accepts both so it
+    // pins the refusal, not the label, until the locate path also fetches
+    // the kept line's extension (the whole-chain path, which does, gives
+    // `LostBranch`: see the test above).
     let c = rp.challenge();
     let got = rp.sign_in(&login(&thief, &pg, AUDIENCE, &c));
     assert!(
