@@ -587,6 +587,21 @@ impl ActionBundle {
 /// A principal's action-only bundles, in replay order ([`replay_order`]).
 type ActionHistory = Vec<ActionBundle>;
 
+/// A principal's canonical commits as the fork rule reads them
+/// ([`StorageEngine::held`]), kept between uses: the chain from position
+/// `from` to the tip of `count` commits. Commits are immutable and a commit
+/// names its predecessor by Principal Root, so a cached prefix is still the
+/// chain's whenever the next commit read links to its last, and a cache is
+/// never trusted past that check. A cache of the index and the frames (I1):
+/// a rebuild clears it.
+struct ForkCache {
+    from: u64,
+    count: u64,
+    tip_id: String,
+    tip_pr: String,
+    canonical: Vec<Held>,
+}
+
 /// A retained rival as the engine tracks it: the listed [`BranchTip`],
 /// the key that signed its closing `commit/create`, and the stored blobs
 /// the evidence route serves back.
@@ -1161,6 +1176,10 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// rebuild scan and by retention, at most [`BRANCH_LIMIT`] per
     /// principal.
     branches: std::sync::Mutex<HashMap<String, Vec<Retained>>>,
+    /// Each principal's canonical commits as the fork rule reads them,
+    /// between uses ([`ForkCache`]): what keeps the fork read of a principal
+    /// with a retained rival from costing its length on every reader.
+    forks: std::sync::Mutex<HashMap<String, ForkCache>>,
     /// Accepted action-only bundles per principal id: a cache of the action
     /// manifests in the blob store (I1), filled by the rebuild scan and by
     /// ingest.
@@ -1233,6 +1252,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
+            forks: std::sync::Mutex::new(HashMap::new()),
             actions: std::sync::Mutex::new(HashMap::new()),
             frames: std::sync::Mutex::new(HashMap::new()),
             revoked: std::sync::Mutex::new(Revoked::new()),
@@ -2155,6 +2175,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// does not reproduce is quarantined ([`QuarantineReason::Unreplayable`]).
     async fn rebuild_pass(&self, replay: bool) -> Result<RebuildReport, EngineError> {
         self.kept.clear();
+        self.forks.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.rebuild_pass_on(&self.indexer, replay).await
     }
 
@@ -5026,7 +5047,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .entry(principal_id)
+            .entry(principal_id.clone())
             .or_default()
             .push(Retained {
                 tip: branch,
@@ -5038,6 +5059,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 signed,
                 embedded: embedded.to_vec(),
             });
+        // The retained set just changed, which can lower where the fork rule
+        // reads from: read it now, under the write lock, so no reader pays
+        // for it. A failure is the next reader's to meet.
+        let _ = self.held(&principal_id).await;
         Ok(())
     }
 
@@ -5344,13 +5369,90 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return self.held_from(principal_id, 0).await;
         };
         let last = tip.commit_count.saturating_sub(1);
-        self.held_from(principal_id, assessed_from(lowest_retained, last))
-            .await
+        let from = assessed_from(lowest_retained, last);
+        let mut held = self
+            .canonical_held(principal_id, from, tip.commit_count, &tip.commit_id)
+            .await?;
+        held.extend(self.retained_held(principal_id));
+        if self.kept_shadow {
+            let fresh = self.held_from(principal_id, from).await?;
+            if format!("{:?}", assessment(&held)) != format!("{:?}", assessment(&fresh)) {
+                self.kept_divergences
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let why = format!(
+                    "kept fork assessment of {principal_id} at {} differs from a fresh read",
+                    tip.commit_id
+                );
+                tracing::error!("{why}");
+                return Err(EngineError::Storage(why));
+            }
+        }
+        Ok(held)
     }
 
-    /// Every retained branch of `principal_id`, and its canonical chain
-    /// from position `from` up.
-    async fn held_from(&self, principal_id: &str, from: u64) -> Result<Vec<Held>, EngineError> {
+    /// The canonical commits of `principal_id` from position `from` to its
+    /// tip (`count` commits, the last `tip_id`), from the [`ForkCache`] where
+    /// it still holds them: the tip itself, or a prefix the new commits link
+    /// to, which then reads only those. Anything else is read whole.
+    async fn canonical_held(
+        &self,
+        principal_id: &str,
+        from: u64,
+        count: u64,
+        tip_id: &str,
+    ) -> Result<Vec<Held>, EngineError> {
+        let cached = {
+            let forks = self.forks.lock().unwrap_or_else(|p| p.into_inner());
+            forks
+                .get(principal_id)
+                .filter(|c| c.from <= from && c.count <= count)
+                .map(|c| (c.count, c.tip_id == tip_id, c.tip_pr.clone(), c.canonical.clone()))
+        };
+        let mut canonical = match cached {
+            Some((have, same_tip, _, canonical)) if have == count && same_tip => canonical,
+            Some((have, _, pr, mut canonical)) if have < count => {
+                let new = self.held_canonical_from(principal_id, have).await?;
+                if new
+                    .first()
+                    .is_some_and(|h| h.pre.as_deref() == Some(pr.as_str()))
+                {
+                    canonical.extend(new);
+                    canonical
+                } else {
+                    self.held_canonical_from(principal_id, from).await?
+                }
+            },
+            _ => self.held_canonical_from(principal_id, from).await?,
+        };
+        // Only what the fork rule reads is kept: a principal with no rival
+        // holds its head alone.
+        let skip = canonical
+            .iter()
+            .position(|h| h.sequence >= from)
+            .unwrap_or(canonical.len());
+        canonical.drain(..skip);
+        if let Some(last) = canonical.last() {
+            self.forks.lock().unwrap_or_else(|p| p.into_inner()).insert(
+                principal_id.to_string(),
+                ForkCache {
+                    from,
+                    count,
+                    tip_id: tip_id.to_string(),
+                    tip_pr: last.pr.clone(),
+                    canonical: canonical.clone(),
+                },
+            );
+        }
+        Ok(canonical)
+    }
+
+    /// The canonical commits from position `from` up, as read from the
+    /// index.
+    async fn held_canonical_from(
+        &self,
+        principal_id: &str,
+        from: u64,
+    ) -> Result<Vec<Held>, EngineError> {
         let chain = self.chain(principal_id, Some(from), None).await?;
         let mut held = Vec::with_capacity(chain.len());
         for c in chain {
@@ -5368,20 +5470,32 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 signed: frame.signed,
             });
         }
-        if let Some(kept) = self
-            .branches
+        Ok(held)
+    }
+
+    /// The retained rivals of `principal_id` as the fork rule reads them.
+    fn retained_held(&self, principal_id: &str) -> Vec<Held> {
+        self.branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(principal_id)
-        {
-            held.extend(kept.iter().map(|r| Held {
+            .into_iter()
+            .flatten()
+            .map(|r| Held {
                 sequence: r.tip.sequence,
                 id: r.tip.tip.clone(),
                 pre: r.tip.pre.clone(),
                 pr: r.pr.clone(),
                 signed: r.signed.clone(),
-            }));
-        }
+            })
+            .collect()
+    }
+
+    /// Every retained branch of `principal_id`, and its canonical chain
+    /// from position `from` up.
+    async fn held_from(&self, principal_id: &str, from: u64) -> Result<Vec<Held>, EngineError> {
+        let mut held = self.held_canonical_from(principal_id, from).await?;
+        held.extend(self.retained_held(principal_id));
         Ok(held)
     }
 
