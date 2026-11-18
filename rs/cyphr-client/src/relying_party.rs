@@ -43,6 +43,13 @@ const CHALLENGE_TTL_SECS: i64 = 120;
 /// Challenge length: 256 bits (SPEC 17.2).
 const CHALLENGE_BYTES: usize = 32;
 
+/// How many commits off the record's chain a relying party keeps (rivals
+/// and the commits past them), as the storage engine bounds the branches it
+/// retains per principal: past it a new commit is not kept, and nothing
+/// kept is dropped. A holder of one key can sign any number of rivals, so
+/// without a bound that key grows a relying party's memory without limit.
+pub const BRANCH_COMMIT_LIMIT: usize = 64;
+
 /// A relying party's own settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpConfig {
@@ -246,13 +253,18 @@ impl RelyingParty {
             // and stays recorded: a pull the rival peer misses must not
             // clear it. Only a commit that out-extends a branch resolves
             // it (SPEC 15.8), which `fork_refusal` reads from what is kept.
-            for held in &report.branches {
-                self.branches
-                    .entry(held.id.clone())
-                    .or_insert_with(|| held.clone());
-            }
+            self.keep_branches(&report.branches);
         }
         report
+    }
+
+    /// Keep the commits a pull verified off the record's chain.
+    fn keep_branches(&mut self, found: &[cyphr::fork::Held]) {
+        for held in found {
+            self.branches
+                .entry(held.id.clone())
+                .or_insert_with(|| held.clone());
+        }
     }
 
     /// Issue a login challenge: a fresh single-use 256-bit nonce.
@@ -493,5 +505,50 @@ impl RelyingParty {
                 .latest_now()
                 .map(|t| Duration::from_secs(u64::try_from(now - t).unwrap_or(0))),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held(n: usize) -> cyphr::fork::Held {
+        cyphr::fork::Held {
+            sequence: 2,
+            id: format!("commit-{n}"),
+            pre: Some("pre".to_owned()),
+            pr: format!("pr-{n}"),
+            signed: Vec::new(),
+        }
+    }
+
+    /// A key holder can sign endless rivals at one position; the relying
+    /// party keeps a bounded number, refuses the rest, and drops none it
+    /// holds.
+    ///
+    /// Turns red if the kept set grows with what peers serve.
+    #[test]
+    fn kept_branch_commits_are_bounded_and_none_is_dropped() {
+        let config = RpConfig {
+            audience: "rp.example".to_owned(),
+            pull_age_bound: Duration::from_secs(30),
+            refresh_interval: Duration::from_secs(10),
+        };
+        let mut rp = RelyingParty::new(
+            "pg",
+            Anchor::GenesisCommit("SHA-256:genesis".to_owned()),
+            config,
+            || 0,
+        );
+        let flood: Vec<_> = (0..BRANCH_COMMIT_LIMIT + 50).map(held).collect();
+        rp.keep_branches(&flood);
+        assert_eq!(rp.branches.len(), BRANCH_COMMIT_LIMIT);
+        assert!(rp.branches.contains_key("commit-0"), "the first is kept");
+        rp.keep_branches(&flood[..1]);
+        assert_eq!(
+            rp.branches.len(),
+            BRANCH_COMMIT_LIMIT,
+            "a known one is a no-op"
+        );
     }
 }
