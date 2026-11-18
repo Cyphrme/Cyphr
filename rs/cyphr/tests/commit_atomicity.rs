@@ -472,3 +472,238 @@ async fn cancel_at_every_await_point_leaves_nothing() {
         "the commit must suspend exactly at the store's await points"
     );
 }
+
+// ============================================================================
+// A hash algorithm leaves and returns
+// ============================================================================
+//
+// An Ed25519 principal (SHA-512) adds an ES256 key (SHA-256) and deletes
+// it, SPEC 6.2: SHA-256 leaves the active set, so no later commit-log leaf
+// carries a SHA-256 variant. Every signer is Ed25519, whose signatures are
+// deterministic, so two runs over the same keys agree on every root.
+
+mod algorithm_set {
+    use cyphr::commit_root::{CommitTrees, commit_root_from_trees};
+    use cyphr::signer::SoftwareSigner;
+    use cyphr::{HashAlg, Key, Principal};
+    use serde_json::json;
+
+    use super::*;
+
+    struct Kp {
+        alg: String,
+        pubb: Vec<u8>,
+        prv: Vec<u8>,
+        tmb: coz::Thumbprint,
+    }
+
+    fn kp(alg: coz::Alg) -> Kp {
+        let k = alg.generate_keypair();
+        let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
+        Kp {
+            alg: k.alg.name().to_string(),
+            pubb: k.pub_bytes,
+            prv: k.prv_bytes,
+            tmb,
+        }
+    }
+
+    struct Keys {
+        owner: Kp,
+        es256: Kp,
+        es256_again: Kp,
+        spare: [Kp; 4],
+    }
+
+    fn keys() -> Keys {
+        Keys {
+            owner: kp(coz::Alg::Ed25519),
+            es256: kp(coz::Alg::ES256),
+            es256_again: kp(coz::Alg::ES256),
+            spare: std::array::from_fn(|_| kp(coz::Alg::Ed25519)),
+        }
+    }
+
+    fn key_of(k: &Kp) -> Key {
+        Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
+    }
+
+    fn signer(k: &Kp) -> SoftwareSigner {
+        SoftwareSigner::new(&k.alg, &k.prv, &k.pubb, &k.tmb)
+    }
+
+    /// One commit by `by`: `typ` (`create`/`delete`) of `id`.
+    async fn commit_key<S: cyphr::eml::Storage>(
+        p: &mut Principal<S>,
+        by: &Kp,
+        typ: &str,
+        id: &Kp,
+        now: i64,
+    ) -> cyphr::error::Result<()> {
+        let b64 = |t: &coz::Thumbprint| Base64UrlUnpadded::encode_string(t.as_bytes());
+        let mut pay = json!({"alg": by.alg, "id": b64(&id.tmb), "now": now,
+                             "tmb": b64(&by.tmb), "typ": format!("{AUTHORITY}/cyphr/key/{typ}")});
+        pay.as_object_mut().expect("pay object").sort_keys();
+        let v = serde_json::to_vec(&pay).expect("serialize pay");
+        let (sig, cad) = coz::sign_json(&v, &by.alg, &by.prv, &by.pubb).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+        let sidecar = (typ == "create").then(|| key_of(id));
+        let mut scope = p.begin_commit();
+        scope.verify_and_apply(&v, &sig, czd, sidecar)?;
+        scope
+            .finalize_with_software(&signer(by), now + 1, AUTHORITY)
+            .await
+            .map(|_| ())
+    }
+
+    async fn principal(k: &Keys) -> (Principal<Recording>, Arc<Probe>) {
+        let (storage, probe) = recording();
+        let mut p = Principal::open(key_of(&k.owner), storage)
+            .await
+            .expect("open");
+        p.commit_genesis(&signer(&k.owner), &[], T, AUTHORITY)
+            .await
+            .expect("genesis commits");
+        (p, probe)
+    }
+
+    /// Reopen the store as the log a restarted process finds, and read its
+    /// commit root over `algs`.
+    async fn reopened_cr(probe: &Probe, algs: &[HashAlg]) -> cyphr::CommitRoot {
+        let trees = CommitTrees::open(probe.landed())
+            .await
+            .expect("the commit log reopens");
+        commit_root_from_trees(&trees, algs).expect("commit root from the reopened log")
+    }
+
+    /// Three commits after the delete, none carrying a SHA-256 variant.
+    async fn after(p: &mut Principal<Recording>, k: &Keys) {
+        for (i, s) in k.spare.iter().take(3).enumerate() {
+            let now = T + 5 + 2 * i as i64;
+            commit_key(p, &k.owner, "create", s, now)
+                .await
+                .expect("commit after the delete");
+        }
+    }
+
+    /// Claim: a principal keeps committing, and its commit log keeps
+    /// reopening, after the only key of one hash algorithm is deleted.
+    /// Scenario: genesis, `key/create` ES256, `key/delete` it, then three
+    /// commits that carry no SHA-256 variant: six leaves. The log reopens
+    /// from the store and its commit root equals the live principal's.
+    /// Turns red if: the log keeps SHA-256 active while its leaves carry no
+    /// SHA-256 variant, so a Merkle node over only such leaves is null,
+    /// never stored, and the reopen fails on the missing frontier node.
+    #[tokio::test]
+    async fn log_reopens_after_the_only_key_of_an_algorithm_is_deleted() {
+        let k = keys();
+        let (mut p, probe) = principal(&k).await;
+        commit_key(&mut p, &k.owner, "create", &k.es256, T + 1)
+            .await
+            .expect("create es256");
+        commit_key(&mut p, &k.owner, "delete", &k.es256, T + 3)
+            .await
+            .expect("delete es256");
+        for (i, s) in k.spare.iter().take(3).enumerate() {
+            let now = T + 5 + 2 * i as i64;
+            commit_key(&mut p, &k.owner, "create", s, now)
+                .await
+                .expect("commit after the delete");
+        }
+        assert_eq!(p.commit_trees().global_size(), 6);
+        let algs = p.active_algs();
+        assert_eq!(algs, vec![HashAlg::Sha512], "premise: SHA-256 left");
+        assert_eq!(
+            reopened_cr(&probe, &algs).await,
+            *p.cr().expect("cr"),
+            "the reopened log disagrees with the live principal"
+        );
+    }
+
+    /// Claim: an algorithm that returns after its last key was deleted is
+    /// the same algorithm resumed, not a second registration. Scenario: as
+    /// above, then a second ES256 key is added and a further commit made.
+    /// The store holds exactly two algorithms, SHA-256 with two epochs
+    /// (closed at the delete, reopened at the re-add), the log reopens and
+    /// its commit root over both algorithms equals the live principal's.
+    /// Turns red if: a returning algorithm is left frozen or registered
+    /// again, or its history across the gap is not kept.
+    #[tokio::test]
+    async fn a_returning_algorithm_resumes_the_one_registration() {
+        let k = keys();
+        let (mut p, probe) = principal(&k).await;
+        commit_key(&mut p, &k.owner, "create", &k.es256, T + 1)
+            .await
+            .expect("create es256");
+        commit_key(&mut p, &k.owner, "delete", &k.es256, T + 3)
+            .await
+            .expect("delete es256");
+        commit_key(&mut p, &k.owner, "create", &k.spare[0], T + 5)
+            .await
+            .expect("commit without SHA-256");
+        commit_key(&mut p, &k.owner, "create", &k.es256_again, T + 7)
+            .await
+            .expect("a second ES256 key");
+        commit_key(&mut p, &k.owner, "create", &k.spare[1], T + 9)
+            .await
+            .expect("commit with SHA-256 again");
+
+        let landed = probe.landed();
+        let mut ids: Vec<u64> = landed.algorithm_metas.keys().copied().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 3], "one registration per algorithm");
+        let sha256 = landed.algorithm_metas.get(&1).expect("SHA-256 registered");
+        assert_eq!(
+            sha256.as_slice(),
+            [(1, 2), (4, u64::MAX)],
+            "SHA-256: active over leaves 1, closed at the delete's leaf 2, resumed at the \
+             re-add's leaf 4"
+        );
+        let algs = p.active_algs();
+        assert_eq!(algs.len(), 2, "premise: SHA-256 is back");
+        assert_eq!(reopened_cr(&probe, &algs).await, *p.cr().expect("cr"));
+    }
+
+    /// Claim: a crash between the algorithm leaving the log and the commit's
+    /// leaf landing recovers to the same roots. Scenario: the deleting
+    /// commit's leaf write fails, as a crash after the algorithm's close
+    /// lands and before the leaf does: the store reopens. The commit is then
+    /// made again, with the same keys and times, and the commits after it;
+    /// the log reopens at the same commit root as a run that never failed.
+    /// Turns red if: the interrupted close strands the log (it does not
+    /// reopen, or the retried commit lands a different root).
+    #[tokio::test]
+    async fn a_crash_between_the_algorithm_leaving_and_the_leaf_recovers() {
+        let k = keys();
+        // Control: no failure.
+        let (mut control, control_probe) = principal(&k).await;
+        commit_key(&mut control, &k.owner, "create", &k.es256, T + 1)
+            .await
+            .expect("create es256");
+        commit_key(&mut control, &k.owner, "delete", &k.es256, T + 3)
+            .await
+            .expect("delete es256");
+        after(&mut control, &k).await;
+        let algs = control.active_algs();
+        let expected = reopened_cr(&control_probe, &algs).await;
+
+        // The run that fails once.
+        let (mut p, probe) = principal(&k).await;
+        commit_key(&mut p, &k.owner, "create", &k.es256, T + 1)
+            .await
+            .expect("create es256");
+        probe.fail_appends.store(true, Ordering::SeqCst);
+        let failed = commit_key(&mut p, &k.owner, "delete", &k.es256, T + 3).await;
+        assert!(matches!(failed, Err(Error::Storage(_))), "got {failed:?}");
+        probe.fail_appends.store(false, Ordering::SeqCst);
+        CommitTrees::open(probe.landed())
+            .await
+            .expect("the store reopens after the interrupted commit");
+        commit_key(&mut p, &k.owner, "delete", &k.es256, T + 3)
+            .await
+            .expect("the commit retried");
+        after(&mut p, &k).await;
+        assert_eq!(reopened_cr(&probe, &algs).await, expected);
+        assert_eq!(*p.cr().expect("cr"), expected);
+    }
+}

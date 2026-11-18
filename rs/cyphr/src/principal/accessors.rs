@@ -349,6 +349,12 @@ impl<S: eml::Storage> Principal<S> {
         &self.log
     }
 
+    /// The commit log, for the staging step that must set which of its
+    /// algorithms are active before it stages a leaf.
+    pub(crate) fn commit_trees_mut(&mut self) -> &mut crate::commit_root::CommitTrees<S> {
+        &mut self.log
+    }
+
     /// Configure the tolerance for a `now` ahead of the verifier clock.
     ///
     /// A `now` greater than `clock() + seconds` is refused with

@@ -31,8 +31,6 @@ use cyphr_scenarios::actions::KeyRef;
 // Must hold: a principal keeps committing after the only key of one of its
 // hash algorithms is deleted (SPEC 6.2, `key/delete` retires a key).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(paired-key-delete): the store fails the 6th commit after the only ES256 key is \
-            deleted"]
 async fn a_principal_keeps_committing_after_its_paired_key_is_deleted() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (alice, laptop) = (h.client("alice"), h.client("laptop"));

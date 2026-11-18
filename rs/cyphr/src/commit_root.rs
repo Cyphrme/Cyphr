@@ -314,6 +314,36 @@ impl<S: eml::Storage> CommitTrees<S> {
         self.log.append_leaf(data).await
     }
 
+    /// Make the log's active algorithms exactly those of `wanted` that it
+    /// already registers: close the open epoch of a registered algorithm
+    /// the next leaf carries no variant for, and reopen (not re-register) a
+    /// closed one the next leaf carries a variant for. Algorithms in
+    /// `wanted` the log does not register are left to
+    /// [`polydigest::Staged::add_algorithm`].
+    ///
+    /// The log needs this because a leaf with no variant for an algorithm
+    /// hashes to its null constant: an algorithm left active across such
+    /// leaves has null Merkle nodes the log never stores and then requires
+    /// when reopened. Each change is one durable write, landing before the
+    /// leaf it precedes; a crash between the two leaves an epoch boundary
+    /// at the size the interrupted commit would have had, which the same
+    /// call, made again for that commit, finds already in place.
+    ///
+    /// # Errors
+    ///
+    /// A storage error.
+    pub(crate) async fn set_active_algorithms(&mut self, wanted: &[u64]) -> LogResult<(), S> {
+        for (alg_id, epochs) in self.log.committed_epochs_at(self.log.count()) {
+            let active = epochs.last().is_some_and(|&(_, end)| end == u64::MAX);
+            match (active, wanted.contains(&alg_id)) {
+                (true, false) => self.log.remove_algorithm(alg_id).await?,
+                (false, true) => self.log.resume_algorithm(alg_id).await?,
+                _ => {},
+            }
+        }
+        Ok(())
+    }
+
     /// Snapshot the log into a [`polydigest::Staged`] that algorithm
     /// activations and an append are applied to in memory, written later by
     /// [`Self::commit`] in one atomic `Storage::apply`.
