@@ -1679,3 +1679,39 @@ async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
     );
     assert_eq!(answers(&e, &f).await, before, "and changes nothing");
 }
+
+/// Backs the theft-recovery shape (SPEC 15.8): a peer holds the thief's
+/// line as canonical, [G, C1], and the owner's rival R1 at position 1,
+/// `key/replace` of `key_a` by `alice` signed by `key_a`, is retained. R2
+/// extends R1, signed by `alice`, a key only the rival branch introduced.
+/// R2 is admitted: it out-extends the canonical line, which makes R1, R2
+/// the tallest, so the principal is Active on R2. Turns red if the signers
+/// of a resolution are read only from the canonical state, so a key the
+/// retained branch introduced is refused `UnknownKey`.
+#[tokio::test]
+async fn a_resolution_signed_by_a_key_the_rival_introduced_is_admitted() {
+    let f = Fork::new(0).await;
+    let pool = load_pool();
+    let (key_a, alice, carol) = (kp(&pool, "key_a"), kp(&pool, "alice"), kp(&pool, "carol"));
+    let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    pushed_tip(&e, &f, &f.first).await.expect("G");
+
+    let mut c = f.base.fork().await.expect("fork");
+    create_key(&mut c, &f.golden, &kp(&pool, "bob"), NOW + 10).await;
+    pushed_tip(&e, &f, &blobs(&c, 1)).await.expect("C1");
+
+    let mut r = f.base.fork().await.expect("fork");
+    let replace = serde_json::json!({
+        "alg": key_a.alg, "id": alice.tmb.to_b64(), "now": NOW + 20,
+        "tmb": key_a.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/replace"
+    });
+    apply(&mut r, &key_a, &key_a, replace, Some(key_of(&alice)), NOW + 20).await;
+    pushed_tip(&e, &f, &blobs(&r, 1)).await.expect_err("R1 is a rival");
+
+    create_key(&mut r, &alice, &carol, NOW + 21).await;
+    let r2 = pushed_tip(&e, &f, &blobs(&r, 2)).await;
+    let r2 = r2.expect("R2, signed by the key R1 introduced, is admitted");
+    let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
+    assert_eq!(tip.commit_id, r2, "R2 is served");
+    assert!(!e.is_errored(&f.id).await.expect("verdict"), "Active");
+}
