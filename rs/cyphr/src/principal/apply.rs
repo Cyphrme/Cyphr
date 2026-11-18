@@ -235,7 +235,7 @@ impl<S: eml::Storage> Principal<S> {
     #[cfg(test)]
     pub(crate) async fn finalize_test(&mut self, pending: PendingCommit) -> Result<&Commit> {
         let mut state = self.state.clone();
-        let staged = state.stage_commit(pending, &self.log).await?;
+        let staged = state.stage_commit(pending, &mut self.log).await?;
         self.adopt(state, staged).await
     }
 
@@ -652,7 +652,7 @@ impl PrincipalState {
     pub(crate) async fn stage_commit<S: eml::Storage>(
         &mut self,
         pending: PendingCommit,
-        log: &crate::commit_root::CommitTrees<S>,
+        log: &mut crate::commit_root::CommitTrees<S>,
     ) -> Result<Option<polydigest::Staged<S>>> {
         if pending.is_finalizer_only() {
             return Err(Error::EmptyCommit);
@@ -788,6 +788,13 @@ impl PrincipalState {
             // Stage every algorithm activation and the leaf in one batch,
             // so they reach storage together or not at all, and read CR
             // from the staged frontier before anything is written.
+            let wanted: Vec<u64> = algs
+                .iter()
+                .map(|&alg| crate::commit_root::hash_alg_to_u64(alg))
+                .collect();
+            log.set_active_algorithms(&wanted)
+                .await
+                .map_err(|e| Error::Storage(e.to_string()))?;
             let mut staged = log.stage();
             for &alg in &algs {
                 let alg_id = crate::commit_root::hash_alg_to_u64(alg);

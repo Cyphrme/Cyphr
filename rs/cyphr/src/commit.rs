@@ -488,7 +488,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             mut projected,
         } = self;
         let staged = projected
-            .stage_commit(pending, principal.commit_trees())
+            .stage_commit(pending, principal.commit_trees_mut())
             .await?;
         Ok(StagedCommit {
             principal,
