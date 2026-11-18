@@ -111,10 +111,53 @@ async fn thin_client_end_to_end() {
     let pin = || Anchor::pin(root.clone());
     assert!(n >= 6, "size {n}");
 
+    let size = n.to_string();
+    // (c) The owner commits more. The new head extends the pin; another
+    // principal's head does not.
+    for i in 0..2 {
+        h.ok(phone.commit_data(&pr, &format!("more{i}")).await);
+    }
+    h.ok(phone.push(&pr, &["p1"]).await)
+        .accepted("more commits");
+    let resp = get(&h, peer, "/head", &[("pr", id)]).await;
+    let head: Root = serde_json::from_value(payload(resp, "/head").await).expect("a Root");
+    assert!(head.size > n, "the head moved on");
+    let to = head.size.to_string();
+    let resp = get(
+        &h,
+        peer,
+        "/consistency",
+        &[("pr", id), ("from", &size), ("to", &to)],
+    )
+    .await;
+    let cert = certificate_of(&payload(resp, "/consistency").await, "/consistency");
+    assert_eq!(
+        verify_extension(&pin(), &cert, n, &head),
+        Ok(()),
+        "the new head"
+    );
+
+    let bob = h.client("bob");
+    let other = h.ok(bob.create_principal().await);
+    // As long as the owner's log, so the head is a real claim of the same
+    // size and not merely one too short to follow the pin.
+    for i in 1..head.size {
+        h.ok(bob.commit_data(&other, &format!("bob{i}")).await);
+    }
+    h.ok(bob.push(&other, &["p1"]).await)
+        .accepted("another principal");
+    let resp = get(&h, peer, "/head", &[("pr", other.0.as_str())]).await;
+    let theirs: Root =
+        serde_json::from_value(payload(resp, "/head of another").await).expect("a Root");
+    let r = verify_extension(&pin(), &cert, n, &theirs);
+    assert!(
+        matches!(r, Err(ProofError::Refuted(_))),
+        "another principal's head: {r:?}"
+    );
+
     // (a) The ES256 key is in the key set at the pin; the retired Ed25519
     // key is not.
     let (es, ed) = (thumbprint(&es256.0), thumbprint(&ed25519.0));
-    let size = n.to_string();
     let resp = get(
         &h,
         peer,
@@ -180,44 +223,6 @@ async fn thin_client_end_to_end() {
     assert!(
         matches!(r, Err(ProofError::Refuted(_))),
         "another commit's bundle: {r:?}"
-    );
-
-    // (c) The owner commits more. The new head extends the pin; another
-    // principal's head does not.
-    for i in 0..2 {
-        h.ok(phone.commit_data(&pr, &format!("more{i}")).await);
-    }
-    h.ok(phone.push(&pr, &["p1"]).await)
-        .accepted("more commits");
-    let resp = get(&h, peer, "/head", &[("pr", id)]).await;
-    let head: Root = serde_json::from_value(payload(resp, "/head").await).expect("a Root");
-    assert!(head.size > n, "the head moved on");
-    let to = head.size.to_string();
-    let resp = get(
-        &h,
-        peer,
-        "/consistency",
-        &[("pr", id), ("from", &size), ("to", &to)],
-    )
-    .await;
-    let cert = certificate_of(&payload(resp, "/consistency").await, "/consistency");
-    assert_eq!(
-        verify_extension(&pin(), &cert, n, &head),
-        Ok(()),
-        "the new head"
-    );
-
-    let bob = h.client("bob");
-    let other = h.ok(bob.create_principal().await);
-    h.ok(bob.push(&other, &["p1"]).await)
-        .accepted("another principal");
-    let resp = get(&h, peer, "/head", &[("pr", other.0.as_str())]).await;
-    let theirs: Root =
-        serde_json::from_value(payload(resp, "/head of another").await).expect("a Root");
-    let r = verify_extension(&pin(), &cert, n, &theirs);
-    assert!(
-        matches!(r, Err(ProofError::Refuted(_))),
-        "another principal's head: {r:?}"
     );
 
     // A certificate for a size the pin does not cover is a question, not
