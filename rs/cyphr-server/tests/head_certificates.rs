@@ -1,10 +1,10 @@
-//! The E10 HTTP shapes (frame NETSIM-FIX): `GET /head?pr` is a `Root`,
+//! The HTTP shapes of heads and certificates: `GET /head?pr` is a `Root`,
 //! `GET /inclusion?pr&index&size` and `GET /consistency?pr&from&to` are
 //! `{certificate}` and nothing else (no echoed fields, no default to the
 //! tip), and every certificate verifies against an anchor the asker built
 //! itself. Bodies sit in the server's envelope `payload`, as every other
 //! answer does. Red until the routes exist: today `/head` is a 404 and
-//! the other two answer the pre-E10 payloads.
+//! the other two answer the old payloads.
 
 use axum::http::StatusCode;
 use cyphr::proof::{Anchor, Certificate, Root, verify_extension, verify_membership};

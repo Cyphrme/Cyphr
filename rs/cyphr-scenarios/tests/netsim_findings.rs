@@ -378,13 +378,13 @@ async fn get(
         .expect("request")
 }
 
-// Frame NETSIM-FIX E10: after a full rotation (Ed25519 -> ES256) every
+// After a full rotation (Ed25519 -> ES256) every
 // commit of the chain must be provable from the head alone. `/head` gives
 // the Root, `/inclusion?pr&index&size` answers 200 for every index with a
 // certificate, and each verifies against an anchor on the chain a client
 // pulled and against a pin of the head.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(NETSIM-FIX E10): /head, /inclusion?size and {certificate} do not exist yet"]
+#[ignore = "RED(rotated-chain-proofs): /head, /inclusion?size and {certificate} do not exist yet"]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (laptop, phone) = (h.client("laptop"), h.client("phone"));
@@ -430,7 +430,7 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     .await;
     let held = record.principal().expect("the record holds the chain");
 
-    // E10 shapes: `GET /head?pr` is a Root (in the envelope's payload),
+    // `GET /head?pr` is a Root (in the envelope's payload),
     // `GET /inclusion?pr&index&size` is `{certificate}`; nothing echoed,
     // no default to the tip.
     let peer = h.peer("p1").addr();
