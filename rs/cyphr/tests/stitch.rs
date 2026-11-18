@@ -350,7 +350,7 @@ async fn two_rotations_cost_two_stitches() {
 async fn a_commit_in_a_closed_familys_gap_is_provable() {
     let p = resume().await;
     let tip = tip(&p);
-    for i in 0..10u64 {
+    for i in 0..p.commit_count() as u64 {
         let proof = p.prove_membership(i).await.expect("prove");
         assert!(
             proof.stitches.len() <= 2,
@@ -506,7 +506,11 @@ async fn forged_consistency(p: &Principal, m: u64, size: u64, invent: bool) -> C
         let leaf = if i < m || !invent {
             p.commit_trees().get_leaf(i).await.expect("leaf")
         } else {
-            format!("invented {i}").into_bytes()
+            // A well-formed leaf (a map with a SHA-512 variant) that is not
+            // the genuine one: a malformed leaf hashes to null, which eml
+            // cannot build a consistency proof over.
+            let variants = std::collections::BTreeMap::from([(alg, vec![i as u8 + 1; 64])]);
+            serde_json::to_vec(&variants).expect("invented leaf")
         };
         t.append(&leaf).await.expect("append");
     }
@@ -1169,6 +1173,84 @@ async fn a_reordered_concatenated_pre_proves_only_the_truth() {
     proves_only_the_truth(verify_membership(&tip(&a), &proof, tr_of(&a, 0)), 0);
 }
 
+/// Commit 1 is one transaction of two cozies (`key/create` of an ES256 and
+/// an ES384 key, SPEC 4.1 grouping); then the ES256 key retires the
+/// genesis key, so index 0 is covered by SHA-512 alone and the walk must
+/// stitch at the multi-coz commit.
+async fn multi_coz(grouped: bool) -> Principal {
+    let (a, b, c) = (
+        kp(coz::Alg::Ed25519),
+        kp(coz::Alg::ES256),
+        kp(coz::Alg::ES384),
+    );
+    let mut p = genesis(&a).await;
+    let tmb = |k: &Kp| Base64UrlUnpadded::encode_string(k.tmb.as_bytes());
+    let mut scope = p.begin_commit();
+    let sign = |typ: &str, id: String| {
+        let mut pay = json!({"alg": a.alg, "id": id, "now": at(1), "tmb": tmb(&a),
+                             "typ": format!("{AUTHORITY}/cyphr/{typ}")});
+        pay.as_object_mut().expect("object").sort_keys();
+        let v = serde_json::to_vec(&pay).expect("pay");
+        let (sig, cad) = coz::sign_json(&v, &a.alg, &a.prv, &a.pubb).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, &a.alg).expect("czd");
+        (v, sig, czd)
+    };
+    let verified = |scope: &cyphr::CommitScope<'_, _>, typ: &str, id: String, side| {
+        let (v, sig, czd) = sign(typ, id);
+        scope.verify(&v, &sig, czd, side).expect("verify")
+    };
+    if grouped {
+        let group = vec![
+            verified(&scope, "key/create", tmb(&b), Some(key_of(&b))),
+            verified(&scope, "key/create", tmb(&c), Some(key_of(&c))),
+        ];
+        scope
+            .apply_tx(group)
+            .expect("one transaction of two cozies");
+    } else {
+        let key = verified(&scope, "key/create", tmb(&b), Some(key_of(&b)));
+        scope.apply(key).expect("key/create");
+        let nonce = format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[9; 32]));
+        let nonce = verified(&scope, "nonce/create", nonce, None);
+        scope
+            .apply(nonce)
+            .expect("a second transaction, of another typ");
+    }
+    scope
+        .finalize_with_software(&signer(&a), at(1) + 1, AUTHORITY)
+        .await
+        .expect("commit");
+    commit_key(&mut p, &b, "delete", &a, at(2)).await;
+    data_commit(&mut p, &b, at(3)).await;
+    p
+}
+
+// A commit with several cozies must be provable like any other: the
+// stitch opens the TR path to the closing coz whatever the shape of the
+// commit's transactions, one grouped transaction of two cozies or
+// several transactions of one (cozies of one typ are grouped at finalize).
+#[tokio::test]
+async fn a_stitch_at_a_multi_coz_commit_is_provable() {
+    for grouped in [true, false] {
+        let p = multi_coz(grouped).await;
+        let txs = p.commit_at(1).expect("commit").transactions();
+        assert_eq!(
+            txs.iter().map(|t| t.0.len()).collect::<Vec<_>>(),
+            if grouped { vec![2, 1] } else { vec![1, 1, 1] },
+            "setup: commit 1 transactions (the last is the closing coz)"
+        );
+        let tip = tip(&p);
+        for i in 0..p.commit_count() as u64 {
+            let proof = p
+                .prove_membership(i)
+                .await
+                .unwrap_or_else(|e| panic!("grouped={grouped} index {i}: {e}"));
+            verify_membership(&tip, &proof, tr_of(&p, i))
+                .unwrap_or_else(|e| panic!("grouped={grouped} index {i}: {e}"));
+        }
+    }
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in
@@ -1189,7 +1271,11 @@ async fn the_forgery_construction_is_sound() {
         let leaf = if i < 2 {
             p.commit_trees().get_leaf(i).await.expect("leaf")
         } else {
-            format!("invented {i}").into_bytes()
+            // A well-formed leaf (a map with a SHA-512 variant) that is not
+            // the genuine one: a malformed leaf hashes to null, which eml
+            // cannot build a consistency proof over.
+            let variants = std::collections::BTreeMap::from([(alg, vec![i as u8 + 1; 64])]);
+            serde_json::to_vec(&variants).expect("invented leaf")
         };
         t.append(&leaf).await.expect("append");
     }
