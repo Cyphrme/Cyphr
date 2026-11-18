@@ -12,8 +12,8 @@ use std::marker::PhantomData;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::commit_root::{CommitTrees, MaltHasher, hash_alg_to_u64};
 use cyphr::proof::{
-    AnyConsistency, AnyStitch, Claimed, Consistency, FamilyRoot, FullCr, ProofError, Rooted, Sha256, Sha384,
-    Sha512, Stitch, Trusted, verify_membership,
+    AnyConsistency, AnyPath, AnyStitch, Claimed, Consistency, FullCr, ProofError, Rooted, Sha256,
+    Sha384, Sha512, Trusted, verify_extension, verify_membership,
 };
 use cyphr::signer::SoftwareSigner;
 use cyphr::{HashAlg, Key, Principal};
@@ -181,7 +181,9 @@ async fn direct(n: usize) -> Principal {
 }
 
 fn tr_of(p: &Principal, i: u64) -> &cyphr::TransactionRoot {
-    p.commit_at(usize::try_from(i).expect("index")).expect("commit").tr()
+    p.commit_at(usize::try_from(i).expect("index"))
+        .expect("commit")
+        .tr()
 }
 
 fn tip(p: &Principal) -> Rooted<Trusted, FullCr> {
@@ -207,11 +209,13 @@ fn opening_of(s: &mut AnyStitch) -> &mut cyphr::proof::CommitOpening {
 #[tokio::test]
 async fn extension_across_a_replace_is_one_stitch() {
     let p = single(3, 3).await; // replace at 4, n = 8
-    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3).await.expect("old");
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
+        .await
+        .expect("old");
     let head = claim_of(&p);
     let proof = p.prove_extension(3).await.expect("prove");
     assert_eq!(proof.stitches.len(), 1, "one boundary crossed");
-    let upgraded = proof.verify(&old, head).expect("extension verifies");
+    let upgraded = verify_extension(&old, head, &proof).expect("extension verifies");
     assert_eq!(upgraded.get(), tip(&p).get(), "the head is upgraded");
 }
 
@@ -227,7 +231,12 @@ async fn extension_proof_size_is_logarithmic_across_a_replace() {
         len.push(proof.encoded_len());
     }
     // Linear growth would be near 8x; one log level per doubling is ~2x.
-    assert!(len[1] < 3 * len[0], "n=8: {} bytes, n=64: {}", len[0], len[1]);
+    assert!(
+        len[1] < 3 * len[0],
+        "n=8: {} bytes, n=64: {}",
+        len[0],
+        len[1]
+    );
 }
 
 // ---- 3: tip-anchored membership, no held history ----
@@ -239,7 +248,7 @@ async fn an_old_era_commit_is_a_member_of_the_tip() {
     for i in 0..8u64 {
         let proof = p.prove_membership(i).await.expect("prove");
         assert_eq!(proof.stitches.len(), usize::from(i < 4), "index {i}");
-        proof.verify(&tip, tr_of(&p, i)).expect("member");
+        verify_membership(&tip, &proof, tr_of(&p, i)).expect("member");
     }
 }
 
@@ -256,14 +265,20 @@ async fn two_rotations_cost_two_stitches() {
             _ => 0,
         };
         let proof = p.prove_membership(i).await.expect("prove");
-        assert_eq!(proof.stitches.len(), want, "one hop per boundary, index {i}");
-        proof.verify(&tip, tr_of(&p, i)).expect("member");
+        assert_eq!(
+            proof.stitches.len(),
+            want,
+            "one hop per boundary, index {i}"
+        );
+        verify_membership(&tip, &proof, tr_of(&p, i)).expect("member");
     }
-    let old = Rooted::<Trusted, FullCr>::at_size(&p, 2).await.expect("old");
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 2)
+        .await
+        .expect("old");
     let head = claim_of(&p);
     let ext = p.prove_extension(2).await.expect("prove");
     assert_eq!(ext.stitches.len(), 2);
-    ext.verify(&old, head).expect("extension across both");
+    verify_extension(&old, head, &ext).expect("extension across both");
 }
 
 // ---- 5: a family closes and resumes ----
@@ -274,8 +289,12 @@ async fn a_commit_in_a_closed_familys_gap_is_provable() {
     let tip = tip(&p);
     for i in 0..10u64 {
         let proof = p.prove_membership(i).await.expect("prove");
-        assert!(proof.stitches.len() <= 2, "index {i}: {}", proof.stitches.len());
-        proof.verify(&tip, tr_of(&p, i)).expect("member");
+        assert!(
+            proof.stitches.len() <= 2,
+            "index {i}: {}",
+            proof.stitches.len()
+        );
+        verify_membership(&tip, &proof, tr_of(&p, i)).expect("member");
     }
 }
 
@@ -285,20 +304,17 @@ async fn a_commit_in_a_closed_familys_gap_is_provable() {
 async fn without_a_rotation_there_is_no_stitch() {
     let p = direct(8).await;
     let tip = tip(&p);
-    let root = Rooted::<Trusted, FamilyRoot<Sha512>>::of_principal(&p).expect("SHA-512 tree");
     for i in 0..8u64 {
         let proof = p.prove_membership(i).await.expect("prove");
         assert!(proof.stitches.is_empty(), "index {i}");
-        proof.verify(&tip, tr_of(&p, i)).expect("member");
-        // The same terminal step, driven directly.
-        let path = p.log_path::<Sha512>(i, 8).await.expect("path");
-        verify_membership(&root, &path, tr_of(&p, i)).expect("direct");
+        verify_membership(&tip, &proof, tr_of(&p, i)).expect("member");
     }
-    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3).await.expect("old");
-    let head = claim_of(&p);
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
+        .await
+        .expect("old");
     let ext = p.prove_extension(3).await.expect("prove");
     assert!(ext.stitches.is_empty());
-    ext.verify(&old, head).expect("direct extension");
+    verify_extension(&old, claim_of(&p), &ext).expect("direct extension");
 }
 
 // ---- 7 (claims 2 and 5): the opening is bounded ----
@@ -311,75 +327,61 @@ async fn the_opening_does_not_grow_with_the_log() {
     let mut shape = Vec::new();
     for post in [3, 59] {
         let p = single(3, post).await;
-        let n = 5 + post as u64;
-        let s = p.stitch_at::<Sha256>(4, n).await.expect("stitch");
-        shape.push((s.opening.pt_cells.len(), s.opening.tr_path.len()));
+        let mut proof = p.prove_membership(2).await.expect("prove");
+        let o = opening_of(&mut proof.stitches[0]);
+        shape.push((o.pt_cells.len(), o.tr_path.len()));
     }
     assert_eq!(shape[0], shape[1], "same opening at n = 8 and n = 64");
     assert!(shape[0].0 <= 3, "PT cells: {}", shape[0].0);
 }
 
-// ---- 8: negatives ----
+// ---- 8: negatives, all through the two entry points ----
 
-/// The typed walk of a one-rotation chain: tip family SHA-256, stitch at
-/// the replace `j`, then SHA-512's path for `idx` under the CR it opens.
-async fn walk(
-    p: &Principal,
-    root: &Rooted<Trusted, FamilyRoot<Sha256>>,
-    s: &Stitch<Sha256>,
-    j: u64,
-    idx: u64,
-) -> Result<(), ProofError> {
-    let cr = root.stitch(s)?;
-    let a = cr.family::<Sha512>().ok_or(ProofError::Family)?;
-    let path = p.log_path::<Sha512>(idx, j).await?;
-    verify_membership(&a, &path, tr_of(p, idx)).map(|_| ())
+async fn genuine() -> (Principal, cyphr::proof::MembershipProof) {
+    let p = single(3, 3).await;
+    let proof = p.prove_membership(2).await.expect("prove");
+    verify_membership(&tip(&p), &proof, tr_of(&p, 2)).expect("control: genuine proof");
+    (p, proof)
 }
 
-async fn genuine() -> (Principal, Rooted<Trusted, FamilyRoot<Sha256>>, Stitch<Sha256>) {
-    let p = single(3, 3).await;
-    let root = Rooted::<Trusted, FamilyRoot<Sha256>>::of_principal(&p).expect("SHA-256 tree");
-    let s = p.stitch_at::<Sha256>(4, 8).await.expect("stitch");
-    walk(&p, &root, &s, 4, 2).await.expect("control: genuine walk");
-    (p, root, s)
+fn refused(p: &Principal, proof: &cyphr::proof::MembershipProof) -> Result<(), ProofError> {
+    verify_membership(&tip(p), proof, tr_of(p, 2)).map(|_| ())
 }
 
 #[tokio::test]
 async fn a_tampered_arrow_preimage_is_refused() {
-    let (p, root, mut s) = genuine().await;
-    s.opening.arrow_preimage[0] ^= 1;
-    assert_eq!(walk(&p, &root, &s, 4, 2).await, Err(ProofError::Arrow));
+    let (p, mut proof) = genuine().await;
+    opening_of(&mut proof.stitches[0]).arrow_preimage[0] ^= 1;
+    assert_eq!(refused(&p, &proof), Err(ProofError::Arrow));
 }
 
 #[tokio::test]
 async fn a_tampered_pt_cell_is_refused() {
-    let (p, root, mut s) = genuine().await;
-    s.opening.pt_cells[1][0] ^= 1; // cell 1 is the CR cell
-    assert_eq!(walk(&p, &root, &s, 4, 2).await, Err(ProofError::PtCell));
+    let (p, mut proof) = genuine().await;
+    opening_of(&mut proof.stitches[0]).pt_cells[1][0] ^= 1; // the CR cell
+    assert_eq!(refused(&p, &proof), Err(ProofError::PtCell));
 }
 
 // Another principal's head: the first thing a stitch checks is that leaf
 // j reaches the root it is given.
 #[tokio::test]
 async fn another_principals_head_is_refused() {
-    let (p, _, s) = genuine().await;
-    let (other, other_root, _) = genuine().await;
-    assert_eq!(walk(&other, &other_root, &s, 4, 2).await, Err(ProofError::Path));
-    let _ = p;
+    let (_, proof) = genuine().await;
+    let (other, _) = genuine().await;
+    assert_eq!(refused(&other, &proof), Err(ProofError::Path));
 }
 
 // A path under a family that was inactive at the position: the prover
 // refuses, or its path hits a null leaf and the verifier refuses it.
 #[tokio::test]
 async fn a_path_under_an_inactive_family_is_refused() {
-    let (p, ..) = genuine().await;
-    let b = Rooted::<Trusted, FamilyRoot<Sha256>>::of_principal(&p).expect("SHA-256 tree");
+    let (p, mut proof) = genuine().await;
     match p.log_path::<Sha256>(2, 8).await {
         Err(ProofError::Unprovable(_)) => {},
-        Ok(path) => assert_eq!(
-            verify_membership(&b, &path, tr_of(&p, 2)).map(|_| ()),
-            Err(ProofError::Path)
-        ),
+        Ok(path) => {
+            proof.terminal = AnyPath::Sha256(path);
+            assert_eq!(refused(&p, &proof), Err(ProofError::Path));
+        },
         Err(e) => panic!("wrong refusal: {e}"),
     }
 }
@@ -388,19 +390,20 @@ async fn a_path_under_an_inactive_family_is_refused() {
 // compile_fail doctests); at run time the family is simply absent.
 #[tokio::test]
 async fn a_family_absent_at_the_old_size_is_refused() {
-    let (p, ..) = genuine().await;
-    assert!(
-        Rooted::<Trusted, FamilyRoot<Sha256>>::at_size(&p, 3).await.is_none(),
-        "SHA-256 had no tree at 3 commits"
-    );
+    let p = single(3, 3).await;
     assert!(tip(&p).family::<Sha384>().is_none(), "no SHA-384 anywhere");
-    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3).await.expect("old");
-    let head = claim_of(&p);
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 3)
+        .await
+        .expect("old");
+    assert!(old.family::<Sha256>().is_none(), "SHA-256 had no tree at 3");
     let mut proof = p.prove_extension(3).await.expect("prove");
-    proof.verify(&old, claim_of(&p)).expect("control");
+    verify_extension(&old, claim_of(&p), &proof).expect("control");
     if let Ok(c) = p.family_consistency::<Sha256>(3, 8).await {
         proof.terminal = AnyConsistency::Sha256(c);
-        assert_eq!(proof.verify(&old, head).map(|_| ()), Err(ProofError::Family));
+        assert_eq!(
+            verify_extension(&old, claim_of(&p), &proof).map(|_| ()),
+            Err(ProofError::Family)
+        );
     }
 }
 
@@ -434,7 +437,11 @@ async fn forged_consistency(p: &Principal, m: u64, size: u64, invent: bool) -> C
     }
     if !invent {
         let genuine = p.commit_trees().root_at(alg, size).await.expect("root");
-        assert_eq!(t.root(alg).expect("root"), genuine, "the construction is faithful");
+        assert_eq!(
+            t.root(alg).expect("root"),
+            genuine,
+            "the construction is faithful"
+        );
     }
     Consistency {
         proof: t.consistency_proof(alg, m).await.expect("consistency"),
@@ -448,32 +455,20 @@ async fn forged_consistency(p: &Principal, m: u64, size: u64, invent: bool) -> C
 #[tokio::test]
 async fn the_forgers_alternate_history_is_refused() {
     let p = single(3, 3).await; // j = 4
-    let old = Rooted::<Trusted, FullCr>::at_size(&p, 2).await.expect("old");
+    let old = Rooted::<Trusted, FullCr>::at_size(&p, 2)
+        .await
+        .expect("old");
     let head = claim_of(&p);
     let mut proof = p.prove_extension(2).await.expect("prove");
     assert_eq!(proof.stitches.len(), 1);
     // Control first: the faithful tree's proof is the genuine one.
     proof.terminal = AnyConsistency::Sha512(forged_consistency(&p, 2, 4, false).await);
-    proof.verify(&old, claim_of(&p)).expect("control: genuine leaves");
+    verify_extension(&old, claim_of(&p), &proof).expect("control: genuine leaves");
 
     proof.terminal = AnyConsistency::Sha512(forged_consistency(&p, 2, 4, true).await);
     assert_eq!(
-        proof.verify(&old, head).map(|_| ()),
+        verify_extension(&old, head, &proof).map(|_| ()),
         Err(ProofError::NotAnExtension)
-    );
-}
-
-// A tampered opening inside a whole proof is refused too, not only in the
-// typed walk.
-#[tokio::test]
-async fn a_tampered_opening_fails_the_whole_proof() {
-    let p = single(3, 3).await;
-    let mut proof = p.prove_membership(2).await.expect("prove");
-    proof.verify(&tip(&p), tr_of(&p, 2)).expect("control");
-    opening_of(&mut proof.stitches[0]).arrow_preimage[0] ^= 1;
-    assert_eq!(
-        proof.verify(&tip(&p), tr_of(&p, 2)).map(|_| ()),
-        Err(ProofError::Arrow)
     );
 }
 

@@ -222,21 +222,6 @@ impl<M: Trust, T> Rooted<M, T> {
     }
 }
 
-impl<H: HashFamily> Rooted<Trusted, FamilyRoot<H>> {
-    /// STUB. The holder's own root of family `H` at its tip size; `None`
-    /// if the principal's log has no `H` tree.
-    #[must_use]
-    pub fn of_principal<S: eml::Storage>(_p: &Principal<S>) -> Option<Self> {
-        unimplemented!("stub: Rooted::<Trusted, FamilyRoot>::of_principal")
-    }
-
-    /// STUB. The holder's own root of `H` as it stood at `size` commits.
-    /// `None` if `H` had no tree then.
-    pub async fn at_size<S: eml::Storage>(_p: &Principal<S>, _size: u64) -> Option<Self> {
-        unimplemented!("stub: Rooted::<Trusted, FamilyRoot>::at_size")
-    }
-}
-
 impl Rooted<Trusted, FullCr> {
     /// STUB. The holder's own whole Commit Root at its tip.
     #[must_use]
@@ -346,18 +331,19 @@ pub struct Membership {
 #[derive(Debug)]
 pub struct Verified<T>(T);
 
-/// STUB. Terminal step: `tr` is the leaf at `path.index` under `root`.
+/// STUB. Terminal step of a membership proof, internal to
+/// [`verify_membership`]: `tr` is the leaf at `path.index` under `root`.
 ///
 /// # Errors
 ///
 /// [`ProofError::Path`] if the leaf does not reach the root;
 /// [`ProofError::Mismatch`] if `tr` is not the leaf's content.
-pub fn verify_membership<H: HashFamily>(
+pub fn verify_terminal<H: HashFamily>(
     _root: &Rooted<Trusted, FamilyRoot<H>>,
     _path: &LogPath<H>,
     _tr: &TransactionRoot,
 ) -> Result<Verified<Membership>, ProofError> {
-    unimplemented!("stub: verify_membership")
+    unimplemented!("stub: verify_terminal")
 }
 
 /// STUB. The only `Claimed` -> `Trusted` path: `new` extends `old` by `c`.
@@ -417,20 +403,6 @@ pub struct MembershipProof {
 }
 
 impl MembershipProof {
-    /// STUB. Check the whole chain from the holder's tip, so a caller
-    /// need not drive [`Rooted::stitch`] by hand.
-    ///
-    /// # Errors
-    ///
-    /// Any [`ProofError`] of the first failing step.
-    pub fn verify(
-        &self,
-        _tip: &Rooted<Trusted, FullCr>,
-        _tr: &TransactionRoot,
-    ) -> Result<Verified<Membership>, ProofError> {
-        unimplemented!("stub: MembershipProof::verify")
-    }
-
     /// STUB. Bytes on the wire of the proof, for cost comparison.
     #[must_use]
     pub fn encoded_len(&self) -> usize {
@@ -459,24 +431,40 @@ pub struct ExtensionProof {
 }
 
 impl ExtensionProof {
-    /// STUB. Upgrade `head` to trusted if it extends `old`.
-    ///
-    /// # Errors
-    ///
-    /// Any [`ProofError`] of the first failing step.
-    pub fn verify(
-        &self,
-        _old: &Rooted<Trusted, FullCr>,
-        _head: Rooted<Claimed, FullCr>,
-    ) -> Result<Rooted<Trusted, FullCr>, ProofError> {
-        unimplemented!("stub: ExtensionProof::verify")
-    }
-
     /// STUB. Bytes on the wire of the proof, for cost comparison.
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         unimplemented!("stub: ExtensionProof::encoded_len")
     }
+}
+
+/// STUB. The one entry point for a membership proof: `proof` is plain
+/// data, `anchor` the holder's trusted tip. Walks every stitch from the
+/// tip, then the terminal path, checking `tr` is the leaf proven.
+///
+/// # Errors
+///
+/// The [`ProofError`] of the first failing step.
+pub fn verify_membership(
+    _anchor: &Rooted<Trusted, FullCr>,
+    _proof: &MembershipProof,
+    _tr: &TransactionRoot,
+) -> Result<Verified<Membership>, ProofError> {
+    unimplemented!("stub: verify_membership")
+}
+
+/// STUB. The one entry point for an extension proof: upgrades `head` to
+/// trusted only if it extends the trusted `old`.
+///
+/// # Errors
+///
+/// The [`ProofError`] of the first failing step.
+pub fn verify_extension(
+    _old: &Rooted<Trusted, FullCr>,
+    _head: Rooted<Claimed, FullCr>,
+    _proof: &ExtensionProof,
+) -> Result<Rooted<Trusted, FullCr>, ProofError> {
+    unimplemented!("stub: verify_extension")
 }
 
 impl<S: eml::Storage> Principal<S> {
@@ -491,19 +479,6 @@ impl<S: eml::Storage> Principal<S> {
         _size: u64,
     ) -> Result<LogPath<H>, ProofError> {
         unimplemented!("stub: Principal::log_path")
-    }
-
-    /// STUB. The stitch at commit `s` in family `F`'s tree of `size`.
-    ///
-    /// # Errors
-    ///
-    /// [`ProofError::Unprovable`].
-    pub async fn stitch_at<F: HashFamily>(
-        &self,
-        _s: u64,
-        _size: u64,
-    ) -> Result<Stitch<F>, ProofError> {
-        unimplemented!("stub: Principal::stitch_at")
     }
 
     /// STUB. Consistency of family `H`'s tree from `from` to `to`.
