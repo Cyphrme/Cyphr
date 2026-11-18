@@ -1150,7 +1150,7 @@ async fn reach<C: Connector>(
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
                 record
-                    .extend(&patch.entries, &patch.actions, offered.as_ref())
+                    .extend(&patch.entries, &patch.actions, offered.as_deref())
                     .await?;
                 return Ok((
                     PeerStanding::Extended {
@@ -1171,7 +1171,7 @@ async fn reach<C: Connector>(
 /// What a peer's answer to a request for the proof that its tip extends
 /// the record's comes to.
 enum Offer {
-    Extends(Extension),
+    Extends(Box<Extension>),
     /// The head the peer offered, which the held log cannot be shown to
     /// precede.
     Diverged(Root),
@@ -1224,7 +1224,7 @@ async fn offered_extension<C: Connector>(
     };
     let offer = Extension::new(head, certificate);
     match verify_extension_at(&held.principal, held_size, &offer) {
-        Ok(()) => Ok(Offer::Extends(offer)),
+        Ok(()) => Ok(Offer::Extends(Box::new(offer))),
         Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => {
             Ok(Offer::Diverged(offer.head))
         },
