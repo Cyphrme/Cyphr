@@ -1662,7 +1662,9 @@ async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
     let repeat = blobs(&x, 1);
     let before_revoke = pushed_tip(&e, &f, &repeat).await;
     assert!(
-        before_revoke.as_ref().is_err_and(|why| why.contains("CozReuse")),
+        before_revoke
+            .as_ref()
+            .is_err_and(|why| why.contains("CozReuse")),
         "premise: a held commit repeated is a reuse: {before_revoke:?}"
     );
     e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
@@ -1671,6 +1673,9 @@ async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
     let before = answers(&e, &f).await;
 
     let after_revoke = pushed_tip(&e, &f, &repeat).await;
-    assert_eq!(after_revoke, before_revoke, "the revoke changed the verdict");
+    assert_eq!(
+        after_revoke, before_revoke,
+        "the revoke changed the verdict"
+    );
     assert_eq!(answers(&e, &f).await, before, "and changes nothing");
 }
