@@ -3724,14 +3724,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Key death (SPEC 6.4), read under the lock. A revoke recorded
             // concurrently is not serialized with it (it takes no principal
             // lock), so it acts as one that arrived just after this bundle.
-            // An action-only push of actions the principal already holds
-            // is a repeat, which SPEC 7.6 ignores: it is judged by nothing
-            // that arrived since (SPEC 14.12), so a revoke received after
-            // the first push cannot refuse it.
-            let repeat = bundle.txs.is_empty()
-                && !bundle.actions.is_empty()
-                && bundle_czds(bundle)
-                    .is_ok_and(|czds| czds.iter().all(|c| principal.has_included(c)));
+            // A bundle the principal already holds is a repeat, which SPEC
+            // 7.6 ignores: it is judged by nothing that arrived since (SPEC
+            // 14.12), so a revoke received after the first push cannot
+            // refuse it. Held means every action's czd is included (an
+            // action-only bundle) or the bundle is, blob for blob and in its
+            // grouping, a commit already stored; anything else, or a bundle
+            // that does not decode, runs the gate.
+            let repeat = if bundle.txs.is_empty() {
+                !bundle.actions.is_empty()
+                    && bundle_czds(bundle)
+                        .is_ok_and(|czds| czds.iter().all(|c| principal.has_included(c)))
+            } else {
+                self.is_already_stored(principal_id, bundle)
+                    .await
+                    .unwrap_or(false)
+            };
             if !repeat && let Some(dead) = dead_key_in(bundle, &self.revoked()) {
                 return Err(dead);
             }

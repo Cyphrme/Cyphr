@@ -1644,26 +1644,33 @@ async fn a_revoke_and_the_commit_adding_its_key_converge_in_either_order() {
     );
 }
 
-/// Backs SPEC 7.6 and SPEC 14.12 for a whole commit: `key_a`'s commit X1,
-/// dated NOW+300, is admitted while no revoke is held, a naked revoke of
-/// `key_a` is then received with a cutoff of NOW+100, and the same bundle
-/// is pushed again (an honest client re-sends what it cannot tell the
-/// server already has). The repeat is a no-op, not a `DeadKey` refusal:
-/// the revoke judges nothing already held. Turns red if the revoke gate
-/// sees a held commit before the held-bundle check does.
+/// Backs SPEC 14.12 for a whole commit: `key_a`'s commit X1, dated NOW+300,
+/// is admitted while no revoke is held. Pushed again, a held commit is
+/// refused as the reuse it is (SPEC 7.6; the engine's contract for a
+/// repeated commit, unlike a repeated action). A naked revoke of `key_a`
+/// is then received with a cutoff of NOW+100, and the same bundle is pushed
+/// once more: the answer is the same as before the revoke, not `DeadKey`,
+/// because the revoke judges nothing already held. Turns red if the revoke
+/// gate sees a held commit before the held-bundle check does.
 #[tokio::test]
-async fn a_repeat_of_a_held_commit_is_a_no_op_after_its_signer_is_revoked() {
+async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
     let f = Fork::new(0).await;
     let key_a = kp(&load_pool(), "key_a");
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     pushed_tip(&e, &f, &f.first).await.expect("G");
     let x = thief_line(&e, &f, 1).await;
+    let repeat = blobs(&x, 1);
+    let before_revoke = pushed_tip(&e, &f, &repeat).await;
+    assert!(
+        before_revoke.as_ref().is_err_and(|why| why.contains("CozReuse")),
+        "premise: a held commit repeated is a reuse: {before_revoke:?}"
+    );
     e.record_revoke(&naked_revoke(&key_a, 1), NOW + 100)
         .await
         .expect("revoke");
     let before = answers(&e, &f).await;
 
-    let repeated = pushed_tip(&e, &f, &blobs(&x, 1)).await;
-    assert!(repeated.is_ok(), "a repeat is ignored: {repeated:?}");
+    let after_revoke = pushed_tip(&e, &f, &repeat).await;
+    assert_eq!(after_revoke, before_revoke, "the revoke changed the verdict");
     assert_eq!(answers(&e, &f).await, before, "and changes nothing");
 }
