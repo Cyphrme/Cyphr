@@ -35,7 +35,16 @@ jobs:
           workspaces: rs
       - name: Pick the seed
         # A new seed each scheduled run, so the weekly runs explore.
-        run: echo "CYPHR_SCENARIO_SEED=${{ inputs.seed || github.run_id }}" >> "$GITHUB_ENV"
+        env:
+          INPUT_SEED: ${{ inputs.seed }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          seed="${INPUT_SEED:-$RUN_ID}"
+          if ! [[ "$seed" =~ ^[0-9]+$ ]]; then
+            echo "seed must be decimal digits, got: $seed" >&2
+            exit 1
+          fi
+          echo "CYPHR_SCENARIO_SEED=$seed" >> "$GITHUB_ENV"
       - name: Run the large network
         env:
           CYPHR_NETSIM_SIZE: large
