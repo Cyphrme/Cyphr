@@ -365,12 +365,17 @@ pub fn rebase(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let keystore = super::common::open_backend(cli)?;
     let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
     let wire = wire_id(identity)?;
-    let genesis = local_genesis(&keystore, identity)?
-        .ok_or_else(|| Error::UnresolvableGenesis(identity.to_owned()))?;
     let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
     let path = store_path(cli)?.to_owned();
 
     let old = parse_store(cli)?;
+    // A multi-key principal's identity is its PG, not a keystore key, so
+    // its genesis comes from the stored history (as for the other
+    // principals copied below).
+    let genesis = match local_genesis(&keystore, identity)? {
+        Some(g) => g,
+        None => block_on(old.resolve_genesis(&principal_id, &[]))??,
+    };
     let (local, history) = block_on(async {
         let history = peer.chain(&wire).await?;
         let local = raw_chain(&old, &principal_id).await?;

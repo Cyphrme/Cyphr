@@ -268,6 +268,82 @@ fn multi_key_genesis_is_published_with_every_key_created() {
     );
 }
 
+/// Claim: a device paired into a multi-key principal can rebase. The
+/// identity is the principal genesis, not a thumbprint in the device's
+/// keystore, so rebase must read the genesis from the stored history.
+/// End-to-end: yes (two devices, one real server).
+/// Turns red on: a rebase that resolves genesis only from the keystore,
+/// failing with "cannot resolve genesis ... no stored commits or keystore
+/// key".
+#[test]
+fn paired_device_of_multi_key_principal_rebases() {
+    let server = Server::start();
+    let a = User::new();
+    let k0 = a.setup(&["key", "generate", "--algo", "ES256"])["tmb"]
+        .as_str()
+        .expect("tmb")
+        .to_owned();
+    let k1 = a.setup(&["key", "generate", "--algo", "Ed25519"])["tmb"]
+        .as_str()
+        .expect("tmb")
+        .to_owned();
+    let init = a.setup(&["init", &format!("--keys={k0},{k1}"), "--genesis-commit"]);
+    let id = init["pr"].as_str().expect("identity").to_owned();
+    accepted(&a.push(&id, &server.url), "publish");
+
+    // The phone enrolls its own key; the identity is not a phone key.
+    let phone = User::new();
+    let request = a.dir.path().join("request.json");
+    let req = phone.setup(&[
+        "key",
+        "request",
+        &format!("--identity={id}"),
+        &format!("--file={}", request.display()),
+    ]);
+    let phone_tmb = req["tmb"].as_str().expect("tmb").to_owned();
+    a.setup(&[
+        "key",
+        "accept",
+        &format!("--identity={id}"),
+        &format!("--signer={k0}"),
+        &format!("--file={}", request.display()),
+    ]);
+    accepted(&a.push(&id, &server.url), "pairing");
+    let f = phone.run(&[
+        "fetch",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(f.ok, "phone fetch: {}", f.stderr);
+
+    // The owner moves on; the phone commits on the old tip.
+    a.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={k0}"),
+    ]);
+    accepted(&a.push(&id, &server.url), "owner's commit");
+    phone.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={phone_tmb}"),
+    ]);
+    assert!(
+        !phone.push(&id, &server.url).ok,
+        "the phone is stale before it rebases"
+    );
+
+    let r = phone.run(&[
+        "rebase",
+        &format!("--identity={id}"),
+        &format!("--peer={}", server.url),
+    ]);
+    assert!(r.ok, "rebase of a multi-key principal: {}", r.stderr);
+    accepted(&phone.push(&id, &server.url), "push after rebase");
+}
+
 /// Claim: fetch brings a peer's verified commits into an empty local store.
 /// End-to-end: yes. Turns red on: a fetch that exits 0 without storing, or
 /// stores unverified/partial history (commit count differs from the peer's).
@@ -481,6 +557,73 @@ fn rebase_replays_a_ds_create_with_a_fresh_data_root() {
     let v = reader.setup(&["verify", &ident, &peer]);
     assert_eq!(v["verdict"], "Active");
     assert_eq!(v["tip"], pushed.json()["tip"]);
+}
+
+/// Claim: a held data action whose signer a peer later reports naked-revoked
+/// does not stop the principal from saving again. Every save re-sends the
+/// store's trailing action-only lines; the revoke is recorded before the
+/// action's `now`, so the store refuses the action as `key revoked`, and
+/// that refusal must not fail the save. End-to-end: yes (CLI processes, one
+/// real server). Turns red on: a save that propagates the refusal, exiting
+/// non-zero with "key revoked".
+#[test]
+fn a_save_survives_a_held_action_whose_signer_was_revoked() {
+    let server = Server::start();
+    let a = User::new();
+    let id = a.new_identity();
+    let k1 = a.setup(&[
+        "key",
+        "add",
+        &format!("--identity={id}"),
+        &format!("--signer={id}"),
+    ])["added_key"]
+        .as_str()
+        .expect("added_key")
+        .to_owned();
+    accepted(&a.push(&id, &server.url), "publish");
+
+    // The store judges a revoke by the clock of the verifier that records it,
+    // and admits an action up to 360 s ahead of that clock. An action dated a
+    // minute ahead is therefore always at or after the revoke's recording
+    // time, however slowly the steps below run, so the re-send is refused.
+    let ahead = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs()
+        + 60;
+    a.setup(&[
+        "data",
+        "action",
+        &format!("--identity={id}"),
+        &format!("--signer={k1}"),
+        "--msg=held",
+        &format!("--now={ahead}"),
+    ]);
+    a.setup(&[
+        "key",
+        "naked-revoke",
+        &format!("--key={k1}"),
+        &format!("--peer={}", server.url),
+    ]);
+    // The pull step records the peer's revoke in the local store.
+    let v = a.run(&verify_args(
+        &format!("--identity={id}"),
+        &[&format!("--peer={}", server.url)],
+    ));
+    assert!(v.ok, "verify must record the revoke: {}", v.stderr);
+
+    let r = a.run(&[
+        "data",
+        "action",
+        &format!("--identity={id}"),
+        &format!("--signer={id}"),
+        "--msg=next",
+    ]);
+    assert!(
+        r.ok,
+        "a save after the signer's revoke must not fail on the held action: {}",
+        r.stderr
+    );
 }
 
 // ----------------------------------------------------------------- verify
