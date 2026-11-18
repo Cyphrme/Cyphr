@@ -1798,6 +1798,64 @@ async fn a_mutation_root_supplied_as_pre_is_refused() {
     );
 }
 
+// F3: an honest chain with more epoch flips than the parser's stitch cap
+// (64) must round-trip through the wire form and verify: 140 replaces
+// alternating ES256 and ES384 give one stitch per flip from the tip.
+#[tokio::test]
+async fn a_chain_with_many_epoch_flips_round_trips_and_verifies() {
+    let mut keys = vec![kp(coz::Alg::Ed25519)];
+    let mut p = genesis(&keys[0]).await;
+    for i in 1..=140usize {
+        let next = kp(if i % 2 == 1 {
+            coz::Alg::ES256
+        } else {
+            coz::Alg::ES384
+        });
+        commit_key(&mut p, &keys[i - 1], "replace", &next, at(i)).await;
+        keys.push(next);
+    }
+    let proof = p.prove_membership(0).await.expect("prove");
+    assert!(
+        proof.stitches.len() > 64,
+        "setup: {} stitches",
+        proof.stitches.len()
+    );
+    let wire = serde_json::to_value(&proof).expect("wire form");
+    let back = cyphr::proof::MembershipProof::from_payload(&wire)
+        .unwrap_or_else(|e| panic!("an honest {}-stitch proof: {e}", proof.stitches.len()));
+    verify_membership(&tip(&p), &back, tr_of(&p, 0)).expect("verifies");
+}
+
+// F4: a field far over any honest size is refused at parse, before any
+// hashing (1 MiB in a Principal Tree cell, a coz, an arrow preimage, a
+// leaf map).
+#[tokio::test]
+async fn an_oversized_field_is_refused_before_any_hashing() {
+    let p = single(3, 3).await;
+    let genuine = p.prove_membership(2).await.expect("prove");
+    let big = vec![0u8; 1 << 20];
+    type Edit = fn(&mut cyphr::proof::CommitOpening, Vec<u8>);
+    let edits: [(&str, Edit); 4] = [
+        ("a pt cell", |o, b| o.pt_cells[0] = b),
+        ("the coz", |o, b| o.coz = b),
+        ("the arrow preimage", |o, b| o.arrow_preimage = b),
+        ("the leaf map", |o, b| o.tr_map = b),
+    ];
+    for (what, edit) in edits {
+        let mut proof = genuine.clone();
+        edit(opening_of(&mut proof.stitches[0]), big.clone());
+        let wire = serde_json::to_value(&proof).expect("wire form");
+        let before = cyphr::probe::hashes();
+        let r = cyphr::proof::MembershipProof::from_payload(&wire);
+        assert!(r.is_err(), "{what}: 1 MiB was accepted at parse");
+        assert_eq!(
+            cyphr::probe::hashes() - before,
+            0,
+            "{what}: hashed before refusing"
+        );
+    }
+}
+
 // Setup guard, green by design: the forger's tree is built faithfully
 // (the same leaves give the genuine root), and inventing leaves does
 // change it, so the forger test fails on the history and not on a bug in
