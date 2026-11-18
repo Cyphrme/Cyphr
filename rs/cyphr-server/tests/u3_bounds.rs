@@ -265,9 +265,10 @@ async fn fork_location_is_logarithmic() {
     }
 }
 
-/// Index rows an anonymous `GET /tip` reads on a principal whose retained
-/// rival sits at position 1, the shape theft recovery leaves for good.
-async fn rival_tip_rows(n: usize) -> u64 {
+/// Index rows an anonymous `GET` of `path` (with `{id}` for the principal)
+/// reads on a principal whose retained rival sits at position 1, the shape
+/// theft recovery leaves for good.
+async fn rival_get_rows(n: usize, path: &str) -> u64 {
     let (a, _da) = attestor().await;
     let app = build_router(a.clone());
     let mut chain = Chain::new("golden", "key_a", "key_b").await;
@@ -287,7 +288,7 @@ async fn rival_tip_rows(n: usize) -> u64 {
     assert_ne!(st, StatusCode::CREATED, "a rival is retained, not served");
 
     let before = a.engine.chain_rows_read();
-    let (st, ..) = call(&app, "GET", &format!("/tip?pr={id}"), String::new()).await;
+    let (st, ..) = call(&app, "GET", &path.replace("{id}", &id), String::new()).await;
     assert!(st.is_success() || st == StatusCode::LOCKED, "{st}");
     a.engine.chain_rows_read() - before
 }
@@ -296,9 +297,24 @@ async fn rival_tip_rows(n: usize) -> u64 {
 /// rival at position 1 reads the same index rows at any n.
 #[tokio::test]
 async fn tip_read_rows_are_constant_with_a_rival_at_one() {
-    let (short, long) = (rival_tip_rows(SHORT).await, rival_tip_rows(LONG).await);
+    let path = "/tip?pr={id}";
+    let (short, long) = (rival_get_rows(SHORT, path).await, rival_get_rows(LONG, path).await);
     assert_eq!(
         short, long,
         "index rows read by GET /tip at n={SHORT} and n={LONG}"
+    );
+}
+
+/// Bound: the same for `GET /consistency` from the middle of the history,
+/// the other route that reads the fork state before it serves a proof.
+#[tokio::test]
+async fn consistency_read_rows_are_constant_with_a_rival_at_one() {
+    let (short, long) = (
+        rival_get_rows(SHORT, &format!("/consistency?pr={{id}}&from={}", SHORT / 2)).await,
+        rival_get_rows(LONG, &format!("/consistency?pr={{id}}&from={}", LONG / 2)).await,
+    );
+    assert_eq!(
+        short, long,
+        "index rows read by GET /consistency at n={SHORT} and n={LONG}"
     );
 }

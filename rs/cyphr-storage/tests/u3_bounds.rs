@@ -340,3 +340,50 @@ async fn error_state_is_constant_with_a_rival_at_one() {
 async fn write_cost_is_independent_of_history_with_a_rival_at_one() {
     rival_same("write", |o| o.write).await;
 }
+
+/// Principals `(signer, added)` of the pool, each with its own id.
+const PAIRS: [(&str, &str); 3] = [("golden", "key_a"), ("alice", "bob"), ("carol", "key_b")];
+
+/// Bound: the fork reads kept between uses are bounded. Reading the tip of
+/// more principals than the capacity leaves the map at or under it, and a
+/// principal with no rival, whose fork read is one row, is not kept at all
+/// (an anonymous walk of `GET /tip` over every principal must not fill it).
+#[tokio::test]
+async fn kept_fork_reads_are_bounded_and_only_for_rivals() {
+    const CAPACITY: usize = 1;
+    let d = common::Disk::new();
+    let e = d.engine().with_kept_states(CAPACITY);
+    let mut ids = Vec::new();
+    for (signer, added) in PAIRS {
+        let mut chain = Chain::new(signer, added, "diana_es384").await;
+        let g = Some(chain.genesis.clone());
+        let id = chain.id.clone();
+        e.submit_commit(&id, g.clone(), &chain.first())
+            .await
+            .expect("genesis");
+        let b = chain.next().await;
+        e.submit_commit(&id, g, &b).await.expect("history");
+        ids.push((id, signer, added, chain));
+    }
+    for (id, ..) in &ids {
+        e.get_tip(id).await.expect("tip");
+    }
+    assert_eq!(e.forks_cached(), 0, "principals with no rival are not kept");
+
+    for (id, signer, added, chain) in &ids {
+        let mut rival = Chain::new(signer, added, "diana_es384").await;
+        rival.diverge("eve_ed25519");
+        let at_one = rival.next().await;
+        e.submit_commit(id, Some(chain.genesis.clone()), &at_one)
+            .await
+            .expect_err("a rival at position 1 is retained");
+    }
+    for (id, ..) in &ids {
+        e.get_tip(id).await.expect("tip");
+    }
+    assert!(
+        e.forks_cached() <= CAPACITY,
+        "{} fork reads kept over a capacity of {CAPACITY}",
+        e.forks_cached()
+    );
+}

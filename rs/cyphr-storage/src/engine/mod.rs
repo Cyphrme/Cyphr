@@ -1275,6 +1275,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
     }
 
+    /// How many principals' fork reads are kept ([`ForkCache`]).
+    pub fn forks_cached(&self) -> usize {
+        self.forks.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
     /// Keep at most `capacity` principals' verified states between their
     /// uses; 0 keeps none, so every write and every read replays the
     /// principal's history from the blob store. An engine over logs that do not outlive
