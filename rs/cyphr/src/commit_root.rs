@@ -324,10 +324,15 @@ impl<S: eml::Storage> CommitTrees<S> {
 
     /// Make the log's active algorithms exactly those of `wanted` that it
     /// already registers: close the open epoch of a registered algorithm
-    /// the next leaf carries no variant for, and reopen (not re-register) a
-    /// closed one the next leaf carries a variant for. Algorithms in
-    /// `wanted` the log does not register are left to
+    /// absent from `wanted`, and reopen (not re-register) a closed one in
+    /// it. Algorithms in `wanted` the log does not register are left to
     /// [`polydigest::Staged::add_algorithm`].
+    ///
+    /// `wanted` is the post-mutation key families of the commit being
+    /// appended, so an algorithm the commit's own mutation retires closes
+    /// before that commit's leaf, though the leaf (a TR carrying the
+    /// signer's variant) still has a variant for it. Its epoch ends at the
+    /// leaf's index, and the `CR` before that leaf is the last to carry it.
     ///
     /// The log needs this because a leaf with no variant for an algorithm
     /// hashes to its null constant: an algorithm left active across such
