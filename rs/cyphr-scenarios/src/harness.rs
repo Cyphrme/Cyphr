@@ -524,6 +524,20 @@ impl Drop for Harness {
                 return;
             },
         };
+        for dump in crate::cli::hang_dumps() {
+            let to = dir.join(format!(
+                "{}-{}",
+                dump.parent()
+                    .and_then(|d| d.file_name())
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                dump.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            match std::fs::copy(&dump, &to) {
+                Ok(_) => eprintln!("hung child's thread dump kept at {}", to.display()),
+                Err(e) => eprintln!("thread dump {} not kept: {e}", dump.display()),
+            }
+        }
         let extra = self.extra.get_mut().unwrap_or_else(|e| e.into_inner());
         for p in self.peers.iter().chain(extra.iter()) {
             let to = dir.join(format!("{}.server.log", p.name));

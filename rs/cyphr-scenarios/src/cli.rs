@@ -8,6 +8,7 @@
 //! is a failure of the step itself.
 
 use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -56,16 +57,18 @@ impl Device {
             .arg(&self.keystore)
             .args(["--output", "json", "--peer-timeout-secs"])
             .arg(peer_wait.to_string())
-            .args(bind_values(args))
-            .kill_on_drop(true);
+            .args(bind_values(args));
         // The CLI bounds its own peer calls; a call that outlives them many
         // times over has hung (a deadlocked process was seen once at the large
         // size), which must end the run with a name, not stall it for ever.
         let hung = Duration::from_secs(peer_wait * 6 + 60);
-        let out = tokio::time::timeout(hung, cmd.output())
-            .await
-            .map_err(|_| ActionError::Failed(format!("cyphr {args:?} hung for over {hung:?}")))?
-            .map_err(|e| ActionError::Failed(format!("spawning cyphr: {e}")))?;
+        let out = run_bounded(cmd, hung).await.map_err(|e| match e {
+            Bounded::Spawn(e) => ActionError::Failed(format!("spawning cyphr: {e}")),
+            Bounded::Hung(dump) => ActionError::Failed(format!(
+                "cyphr {args:?} hung for over {hung:?}; {}",
+                dump.describe()
+            )),
+        })?;
         if out.status.success() {
             return serde_json::from_slice(&out.stdout).map_err(|e| {
                 ActionError::Failed(format!(
@@ -89,6 +92,163 @@ impl Device {
             Some(kind) => Err(ActionError::Refused(Refusal { kind, detail })),
             None => Err(ActionError::Failed(format!("cyphr {args:?}: {detail}"))),
         }
+    }
+}
+
+/// Thread dumps taken of hung children, for the harness to keep beside the
+/// peer logs of a failing run.
+static HANG_DUMPS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// The thread dumps taken so far in this process.
+pub fn hang_dumps() -> Vec<PathBuf> {
+    HANG_DUMPS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// What was learned of a child that outlived its bound.
+pub struct Dump {
+    /// Where the dump was saved, or why it could not be taken.
+    pub outcome: Result<PathBuf, String>,
+}
+
+impl Dump {
+    fn describe(&self) -> String {
+        match &self.outcome {
+            Ok(path) => format!("thread dump at {}", path.display()),
+            Err(why) => format!("no thread dump: {why}"),
+        }
+    }
+}
+
+enum Bounded {
+    Spawn(std::io::Error),
+    Hung(Dump),
+}
+
+/// Run `cmd` to completion, but no longer than `hung`. A child still
+/// running at the bound has its threads dumped before it is killed: a
+/// deadlock leaves nothing else to read.
+async fn run_bounded(mut cmd: tokio::process::Command, hung: Duration) -> Result<Output, Bounded> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    allow_tracing(&mut cmd);
+    let mut child = cmd.spawn().map_err(Bounded::Spawn)?;
+    let out_task = drain(child.stdout.take().expect("stdout was piped"));
+    let err_task = drain(child.stderr.take().expect("stderr was piped"));
+    match tokio::time::timeout(hung, child.wait()).await {
+        Ok(status) => {
+            let status = status.map_err(Bounded::Spawn)?;
+            Ok(Output {
+                status,
+                stdout: out_task.await.unwrap_or_default(),
+                stderr: err_task.await.unwrap_or_default(),
+            })
+        },
+        Err(_) => {
+            let dump = match child.id() {
+                Some(pid) => thread_dump(pid).await,
+                None => Dump {
+                    outcome: Err("the child had already exited".into()),
+                },
+            };
+            let _ = child.kill().await;
+            Err(Bounded::Hung(dump))
+        },
+    }
+}
+
+fn drain<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+    mut pipe: R,
+) -> tokio::task::JoinHandle<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf).await;
+        buf
+    })
+}
+
+/// Let any process attach a debugger to the child (the Yama restriction
+/// otherwise confines `ptrace` to a debugger's own descendants). The
+/// setting survives `exec`.
+fn allow_tracing(cmd: &mut tokio::process::Command) {
+    #[cfg(target_os = "linux")]
+    {
+        const PR_SET_PTRACER: libc::c_int = 0x5961_6d61;
+        // SAFETY: `prctl` is async-signal-safe and touches only the
+        // calling (child) process, between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(PR_SET_PTRACER, libc::c_ulong::MAX, 0, 0, 0);
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cmd;
+}
+
+/// Save every thread's backtrace of process `pid` to a file, with `gdb`
+/// when it is on the path, else through `nix shell nixpkgs#gdb`.
+pub async fn thread_dump(pid: u32) -> Dump {
+    const GDB_ARGS: [&str; 4] = ["-batch", "-ex", "thread apply all bt", "-p"];
+    let pid_s = pid.to_string();
+    let mut attempts: Vec<Vec<&str>> = vec![vec!["gdb"]];
+    attempts.push(vec!["nix", "shell", "nixpkgs#gdb", "-c", "gdb"]);
+    let mut why = Vec::new();
+    for argv in attempts {
+        let mut cmd = tokio::process::Command::new(argv[0]);
+        cmd.args(&argv[1..])
+            .args(GDB_ARGS)
+            .arg(&pid_s)
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(180), cmd.output()).await {
+            Ok(Ok(out)) if out.status.success() => return save_dump(pid, &out.stdout, &out.stderr),
+            Ok(Ok(out)) => why.push(format!(
+                "`{}` exited {}: {}",
+                argv.join(" "),
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or_default()
+            )),
+            Ok(Err(e)) => why.push(format!("`{}`: {e}", argv[0])),
+            Err(_) => why.push(format!("`{}` timed out", argv.join(" "))),
+        }
+    }
+    Dump {
+        outcome: Err(why.join("; ")),
+    }
+}
+
+fn save_dump(pid: u32, stdout: &[u8], stderr: &[u8]) -> Dump {
+    // A fresh 0700 directory, never a predictable path in a shared temp dir.
+    let saved = tempfile::Builder::new()
+        .prefix(&format!("cyphr-hang-{pid}-"))
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .tempdir()
+        .map(tempfile::TempDir::keep)
+        .and_then(|dir| {
+            let path = dir.join("threads.txt");
+            let mut text = stdout.to_vec();
+            text.extend_from_slice(b"\n--- gdb stderr ---\n");
+            text.extend_from_slice(stderr);
+            std::fs::write(&path, text).map(|()| path)
+        });
+    match saved {
+        Ok(path) => {
+            HANG_DUMPS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(path.clone());
+            Dump { outcome: Ok(path) }
+        },
+        Err(e) => Dump {
+            outcome: Err(format!("saving the dump: {e}")),
+        },
     }
 }
 
@@ -210,5 +370,57 @@ pub(crate) fn protocol_kind(message: &str) -> RefusalKind {
         RefusalKind::KeyNotActive
     } else {
         RefusalKind::Malformed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Claim: a child that outlives its bound has its threads dumped before
+    // it is killed. Positive control: a deliberately hung `sleep` is dumped
+    // (gdb attaches to it, and a thread's backtrace is in the file).
+    // Negative control: a child that finishes in time yields its output and
+    // no dump.
+    // Turns red if: the bound kills the child without a dump, or the dump
+    // is attached to the wrong process.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hung_child_is_dumped_before_it_is_killed() {
+        let done = run_bounded(
+            {
+                let mut c = tokio::process::Command::new("echo");
+                c.arg("fine");
+                c
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(
+            done.ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()),
+            Some("fine".to_owned())
+        );
+
+        let mut hung = tokio::process::Command::new("sleep");
+        hung.arg("600");
+        let Err(Bounded::Hung(dump)) = run_bounded(hung, Duration::from_secs(1)).await else {
+            panic!("a child that sleeps for 600s must exceed a 1s bound");
+        };
+        match dump.outcome {
+            Ok(path) => {
+                let text = std::fs::read_to_string(&path).expect("read the dump");
+                assert!(text.contains("Thread 1"), "no thread backtrace in {text}");
+                assert!(
+                    text.contains("nanosleep") || text.contains("clock_nanosleep"),
+                    "{text}"
+                );
+            },
+            // A host with neither gdb nor a reachable nix cannot take it;
+            // the report must then say why.
+            Err(why) => {
+                eprintln!("no dump: {why}");
+                assert!(!why.is_empty());
+            },
+        }
     }
 }
