@@ -357,6 +357,44 @@ impl<S: eml::Storage> CommitTrees<S> {
         Ok(())
     }
 
+    /// Every registered algorithm's epochs as `[start, end)` leaf ranges,
+    /// `end` being `u64::MAX` while the epoch is open.
+    pub(crate) fn epochs(&self) -> Vec<(u64, Vec<(u64, u64)>)> {
+        self.log.committed_epochs_at(self.log.count())
+    }
+
+    /// Inclusion proof for `index` in `alg_id`'s tree as of `size` leaves;
+    /// `None` when the tree has no such proof.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm` or a storage error.
+    pub(crate) async fn inclusion_proof_at(
+        &self,
+        alg_id: u64,
+        index: u64,
+        size: u64,
+    ) -> LogResult<Option<eml::InclusionProof>, S> {
+        self.log.inclusion_proof_for(alg_id, index, size).await
+    }
+
+    /// Consistency proof for `alg_id`'s tree between two historical sizes;
+    /// `None` when the tree has no such proof.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm` or a storage error.
+    pub(crate) async fn consistency_proof_between(
+        &self,
+        alg_id: u64,
+        old_size: u64,
+        new_size: u64,
+    ) -> LogResult<Option<eml::ConsistencyProof>, S> {
+        self.log
+            .consistency_proof_for(alg_id, old_size, new_size)
+            .await
+    }
+
     /// Snapshot the log into a [`polydigest::Staged`] that algorithm
     /// activations and an append are applied to in memory, written later by
     /// [`Self::commit`] in one atomic `Storage::apply`.
