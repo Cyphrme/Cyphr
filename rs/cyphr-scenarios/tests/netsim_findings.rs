@@ -318,8 +318,6 @@ async fn a_fork_with_a_key_replacement_is_resolved_at_every_peer() {
 // Must hold: a holder that replays a chain from genesis reaches the root the
 // owner's store reached, however the chain's hash algorithms came and went.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(algorithm-returns): a holder replaying a chain in which a hash algorithm left with \
-            its last key and came back cannot reach the owner's commit (state root mismatch)"]
 async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await
