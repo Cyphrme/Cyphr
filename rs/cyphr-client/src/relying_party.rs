@@ -445,8 +445,8 @@ impl RelyingParty {
     fn fork_refusal(&self) -> Option<Refusal> {
         let lowest = self.branches.values().map(|h| h.sequence).min()?;
         let last = (self.record.tip()?.commits as u64).saturating_sub(1);
-        let from = usize::try_from(cyphr::fork::assessed_from(Some(lowest), last))
-            .unwrap_or(usize::MAX);
+        let from =
+            usize::try_from(cyphr::fork::assessed_from(Some(lowest), last)).unwrap_or(usize::MAX);
         let mut held = self.record.commits_from(from);
         held.extend(self.branches.values().cloned());
         let assessed = cyphr::fork::assessment(&held);
