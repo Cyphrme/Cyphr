@@ -5406,7 +5406,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             forks
                 .get(principal_id)
                 .filter(|c| c.from <= from && c.count <= count)
-                .map(|c| (c.count, c.tip_id == tip_id, c.tip_pr.clone(), c.canonical.clone()))
+                .map(|c| {
+                    (
+                        c.count,
+                        c.tip_id == tip_id,
+                        c.tip_pr.clone(),
+                        c.canonical.clone(),
+                    )
+                })
         };
         let mut canonical = match cached {
             Some((have, same_tip, _, canonical)) if have == count && same_tip => canonical,
