@@ -264,3 +264,41 @@ async fn fork_location_is_logarithmic() {
         );
     }
 }
+
+/// Index rows an anonymous `GET /tip` reads on a principal whose retained
+/// rival sits at position 1, the shape theft recovery leaves for good.
+async fn rival_tip_rows(n: usize) -> u64 {
+    let (a, _da) = attestor().await;
+    let app = build_router(a.clone());
+    let mut chain = Chain::new("golden", "key_a", "key_b").await;
+    let id = chain.id.clone();
+    let mut bundles = vec![chain.first()];
+    while chain.commits < n {
+        bundles.push(chain.next().await);
+    }
+    for bundle in &bundles {
+        let (st, ..) = call(&app, "POST", "/push", push_body(&id, bundle)).await;
+        assert_eq!(st, StatusCode::CREATED);
+    }
+    let mut rival = Chain::new("golden", "key_a", "key_b").await;
+    rival.diverge("diana_es384");
+    let at_one = rival.next().await;
+    let (st, ..) = call(&app, "POST", "/push", push_body(&id, &at_one)).await;
+    assert_ne!(st, StatusCode::CREATED, "a rival is retained, not served");
+
+    let before = a.engine.chain_rows_read();
+    let (st, ..) = call(&app, "GET", &format!("/tip?pr={id}"), String::new()).await;
+    assert!(st.is_success() || st == StatusCode::LOCKED, "{st}");
+    a.engine.chain_rows_read() - before
+}
+
+/// Bound: an unauthenticated `GET /tip` of a principal holding a retained
+/// rival at position 1 reads the same index rows at any n.
+#[tokio::test]
+async fn tip_read_rows_are_constant_with_a_rival_at_one() {
+    let (short, long) = (rival_tip_rows(SHORT).await, rival_tip_rows(LONG).await);
+    assert_eq!(
+        short, long,
+        "index rows read by GET /tip at n={SHORT} and n={LONG}"
+    );
+}
