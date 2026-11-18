@@ -48,11 +48,7 @@ fn new_inner(arity: u64) -> polydigest::EpochTree {
 
 /// `payloads` as consecutive cells of a tree at `arity`, registering every
 /// algorithm in `algs`.
-fn tree_of(
-    algs: &[HashAlg],
-    payloads: Vec<Vec<u8>>,
-    arity: u64,
-) -> Result<polydigest::EpochTree> {
+fn tree_of(algs: &[HashAlg], payloads: Vec<Vec<u8>>, arity: u64) -> Result<polydigest::EpochTree> {
     let mut inner = new_inner(arity);
     for &alg in algs {
         inner
