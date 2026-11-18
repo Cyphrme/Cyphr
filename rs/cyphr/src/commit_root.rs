@@ -613,4 +613,67 @@ mod tests {
             "a log with a registered algorithm but zero leaves must still report empty"
         );
     }
+    /// A leaf carrying a variant for each of `ids`.
+    fn leaf_of(ids: &[u64], n: u8) -> Vec<u8> {
+        let v: BTreeMap<u64, Vec<u8>> = ids.iter().map(|&i| (i, vec![n; if i == 1 { 32 } else { 64 }])).collect();
+        serde_json::to_vec(&v).expect("leaf")
+    }
+
+    /// Append `leaf` the way a commit does: set the active algorithms, stage
+    /// the leaf, commit it.
+    async fn commit_leaf_to<S: eml::Storage>(log: &mut CommitTrees<S>, ids: &[u64], n: u8) {
+        log.set_active_algorithms(ids).await.expect("set active");
+        for &id in ids {
+            if !log.has_algorithm(id) {
+                let alg = u64_to_hash_alg(id).expect("alg");
+                log.add_algorithm(id, Box::new(MaltHasher::new(alg)))
+                    .await
+                    .expect("add");
+            }
+        }
+        let mut staged = log.stage();
+        log.stage_leaf(&mut staged, &leaf_of(ids, n)).expect("stage");
+        log.commit(staged).await.expect("commit");
+    }
+
+    /// SHA-512 (3) from the start, SHA-256 (1) from leaf 1 to leaf 2: a log
+    /// holding an algorithm that left.
+    async fn log_with_a_closed_algorithm() -> CommitTrees<eml::MemoryStorage> {
+        let mut log = CommitTrees::open(eml::MemoryStorage::new())
+            .await
+            .expect("open");
+        commit_leaf_to(&mut log, &[3], 0).await;
+        commit_leaf_to(&mut log, &[1, 3], 1).await;
+        commit_leaf_to(&mut log, &[3], 2).await;
+        log
+    }
+
+    /// Claim: a log detached to its frontier, and the same log reopened from
+    /// the detached copy's own storage, each still knows an algorithm that
+    /// left, so its return is the same algorithm over the same history: the
+    /// roots after the return equal those of the log that was never
+    /// detached. Turns red if a detached log forgets the closed algorithm
+    /// (its return registers it afresh over nulls) or a reopen cannot find
+    /// a hasher it needs.
+    #[tokio::test]
+    async fn a_detached_log_keeps_and_reopens_an_algorithm_that_left() {
+        let mut whole = log_with_a_closed_algorithm().await;
+        commit_leaf_to(&mut whole, &[1, 3], 3).await;
+
+        let mut detached = log_with_a_closed_algorithm().await.detach().await.expect("detach");
+        assert!(detached.has_algorithm(1), "the detached log forgot SHA-256");
+        let reopened_from = log_with_a_closed_algorithm().await.detach().await.expect("detach");
+        let mut reopened = CommitTrees::open(reopened_from.log.into_storage())
+            .await
+            .expect("a detached log's storage reopens with every hasher it needs");
+        assert!(reopened.has_algorithm(1), "the reopened log forgot SHA-256");
+
+        commit_leaf_to(&mut detached, &[1, 3], 3).await;
+        commit_leaf_to(&mut reopened, &[1, 3], 3).await;
+        for id in [1, 3] {
+            let want = whole.root(id).expect("root");
+            assert_eq!(detached.root(id).expect("root"), want, "detached, alg {id}");
+            assert_eq!(reopened.root(id).expect("root"), want, "reopened, alg {id}");
+        }
+    }
 }
