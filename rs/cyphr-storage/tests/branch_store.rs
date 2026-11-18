@@ -1586,7 +1586,9 @@ async fn a_repeat_of_a_held_action_is_a_no_op_after_its_signer_is_revoked() {
         actions: vec![action_by(&mut a, &key_a, NOW + 100)],
         ..WireBundle::default()
     };
-    pushed_tip(&e, &f, &action).await.expect("held: no revoke yet");
+    pushed_tip(&e, &f, &action)
+        .await
+        .expect("held: no revoke yet");
     e.record_revoke(&naked_revoke(&key_a, 1), NOW + 5)
         .await
         .expect("revoke");
@@ -1618,7 +1620,9 @@ async fn a_revoke_and_the_commit_adding_its_key_converge_in_either_order() {
 
     let commit_first = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
     pushed_tip(&commit_first, &f, &f.first).await.expect("G");
-    pushed_tip(&commit_first, &f, &commit).await.expect("commit");
+    pushed_tip(&commit_first, &f, &commit)
+        .await
+        .expect("commit");
     commit_first
         .record_revoke(&revoke, NOW + 5)
         .await
