@@ -321,10 +321,7 @@ async fn s03_resolved_fork_is_not_a_live_head() {
     })
     .await;
     let resolved = resolve_by_extension(&h, &phone, &pr, &phone_branch[1]).await;
-    let seen = [
-        evidence(&h, "p1", &pr).await,
-        evidence(&h, "p2", &pr).await,
-    ];
+    let seen = [evidence(&h, "p1", &pr).await, evidence(&h, "p2", &pr).await];
 
     // Second fork from the resolved tip, the first one's abandoned tip
     // still retained.

@@ -75,11 +75,7 @@ pub(crate) fn tip_diff(want: &LocalView, got: Option<&PeerTip>) -> Option<String
 }
 
 /// N6 for one peer, from its lifetime counters and its log's panic lines.
-pub fn n6_diff(
-    peer: &str,
-    counters: &HashMap<String, u64>,
-    panics: &[String],
-) -> Option<String> {
+pub fn n6_diff(peer: &str, counters: &HashMap<String, u64>, panics: &[String]) -> Option<String> {
     let get = |kind: &str| {
         counters
             .get(&format!("cyphr_refusals_total{{kind=\"{kind}\"}}"))
