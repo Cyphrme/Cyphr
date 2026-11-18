@@ -602,6 +602,56 @@ struct ForkCache {
     canonical: Vec<Held>,
 }
 
+/// The [`ForkCache`]s, at most `capacity` of them, the least recently used
+/// evicted first: losing one costs its principal one fork read.
+struct ForkCaches {
+    capacity: usize,
+    entries: HashMap<String, ForkCache>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl ForkCaches {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn touch(&mut self, principal_id: &str) {
+        self.order.retain(|id| id != principal_id);
+        self.order.push_back(principal_id.to_string());
+    }
+
+    /// The entry of `principal_id`, marked as just used.
+    fn get(&mut self, principal_id: &str) -> Option<&ForkCache> {
+        if self.entries.contains_key(principal_id) {
+            self.touch(principal_id);
+        }
+        self.entries.get(principal_id)
+    }
+
+    fn put(&mut self, principal_id: &str, cache: ForkCache) {
+        if self.capacity == 0 {
+            return;
+        }
+        self.entries.insert(principal_id.to_string(), cache);
+        self.touch(principal_id);
+        while self.entries.len() > self.capacity {
+            match self.order.pop_front() {
+                Some(oldest) => self.entries.remove(&oldest),
+                None => break,
+            };
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
 /// A retained rival as the engine tracks it: the listed [`BranchTip`],
 /// the key that signed its closing `commit/create`, and the stored blobs
 /// the evidence route serves back.
@@ -1179,7 +1229,7 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// Each principal's canonical commits as the fork rule reads them,
     /// between uses ([`ForkCache`]): what keeps the fork read of a principal
     /// with a retained rival from costing its length on every reader.
-    forks: std::sync::Mutex<HashMap<String, ForkCache>>,
+    forks: std::sync::Mutex<ForkCaches>,
     /// Accepted action-only bundles per principal id: a cache of the action
     /// manifests in the blob store (I1), filled by the rebuild scan and by
     /// ingest.
@@ -1252,7 +1302,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             healed: tokio::sync::OnceCell::new(),
             branches: std::sync::Mutex::new(HashMap::new()),
-            forks: std::sync::Mutex::new(HashMap::new()),
+            forks: std::sync::Mutex::new(ForkCaches::new(DEFAULT_KEPT_CAPACITY)),
             actions: std::sync::Mutex::new(HashMap::new()),
             frames: std::sync::Mutex::new(HashMap::new()),
             revoked: std::sync::Mutex::new(Revoked::new()),
@@ -1275,9 +1325,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         }
     }
 
-    /// How many principals' fork reads are kept ([`ForkCache`]).
+    /// How many principals' fork reads are kept ([`ForkCache`]), at most
+    /// the kept-state capacity.
     pub fn forks_cached(&self) -> usize {
-        self.forks.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.forks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entries
+            .len()
     }
 
     /// Keep at most `capacity` principals' verified states between their
@@ -1287,6 +1342,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[must_use]
     pub fn with_kept_states(mut self, capacity: usize) -> Self {
         self.kept = KeptStates::new(if self.logs_durable { capacity } else { 0 });
+        // The fork reads are a cache of the index, not of the logs, so they
+        // are kept whatever the logs do.
+        self.forks = std::sync::Mutex::new(ForkCaches::new(capacity));
         self
     }
 
@@ -5376,7 +5434,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let last = tip.commit_count.saturating_sub(1);
         let from = assessed_from(lowest_retained, last);
         let mut held = self
-            .canonical_held(principal_id, from, tip.commit_count, &tip.commit_id)
+            .canonical_held(
+                principal_id,
+                from,
+                tip.commit_count,
+                &tip.commit_id,
+                lowest_retained.is_some(),
+            )
             .await?;
         held.extend(self.retained_held(principal_id));
         if self.kept_shadow {
@@ -5397,7 +5461,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// The canonical commits of `principal_id` from position `from` to its
     /// tip (`count` commits, the last `tip_id`), from the [`ForkCache`] where
-    /// it still holds them: the tip itself, or a prefix the new commits link
+    /// it still holds them (only for a principal with a retained rival, `keep`): the tip itself, or a prefix the new commits link
     /// to, which then reads only those. Anything else is read whole.
     async fn canonical_held(
         &self,
@@ -5405,9 +5469,16 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         from: u64,
         count: u64,
         tip_id: &str,
+        keep: bool,
     ) -> Result<Vec<Held>, EngineError> {
+        // With no retained rival the read is the head alone, one row: not
+        // worth an entry, which an anonymous reader of every principal could
+        // otherwise fill.
+        if !keep {
+            return self.held_canonical_from(principal_id, from).await;
+        }
         let cached = {
-            let forks = self.forks.lock().unwrap_or_else(|p| p.into_inner());
+            let mut forks = self.forks.lock().unwrap_or_else(|p| p.into_inner());
             forks
                 .get(principal_id)
                 .filter(|c| c.from <= from && c.count <= count)
@@ -5444,8 +5515,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .unwrap_or(canonical.len());
         canonical.drain(..skip);
         if let Some(last) = canonical.last() {
-            self.forks.lock().unwrap_or_else(|p| p.into_inner()).insert(
-                principal_id.to_string(),
+            self.forks.lock().unwrap_or_else(|p| p.into_inner()).put(
+                principal_id,
                 ForkCache {
                     from,
                     count,
