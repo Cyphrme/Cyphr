@@ -571,6 +571,22 @@ fn certificate_answer(
     )))
 }
 
+/// A certificate opens the Principal Root of the log's last commit, whose
+/// cells name the State Root first. A principal that removed its last key
+/// and holds no data has no State Root, so for a log of that size no
+/// certificate can be made: refuse it as a conflict with the log's state,
+/// naming why, rather than failing inside the prover.
+fn no_state_root<S: eml::Storage>(log: &cyphr::Principal<S>, size: u64) -> Result<(), AppError> {
+    let last = usize::try_from(size).ok().and_then(|n| n.checked_sub(1));
+    match last.and_then(|i| log.commit_at(i)) {
+        Some(commit) if commit.sr().is_none() => Err(AppError::conflict(format!(
+            "no certificate for a log of {size} commits: the principal had removed its last key \
+             and held no data then, so its root has no state root to open"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// A size asked for that the log has not reached.
 fn past_the_log(what: &str, size: u64, held: usize) -> AppError {
     AppError::bad_request(format!(
@@ -622,6 +638,8 @@ pub async fn consistency(
     if to > log.commit_count() as u64 {
         return Err(past_the_log("to", to, log.commit_count()));
     }
+    no_state_root(&log, to)?;
+    no_state_root(&log, from)?;
     let certificate = log
         .prove_extension(from, to)
         .await
@@ -655,8 +673,11 @@ pub async fn inclusion(
         return Err(past_the_log("size", size, log.commit_count()));
     }
     // Every held commit is provable, whatever algorithm it was made under:
-    // there is nothing to choose. A store that cannot be read, or a held
-    // commit that proves nothing, is the server's, a 5xx.
+    // there is nothing to choose. The one exception is a log whose last
+    // commit left the principal with no keys and no data; see
+    // `no_state_root`. A store that cannot be read, or a held commit that
+    // proves nothing otherwise, is the server's, a 5xx.
+    no_state_root(&log, size)?;
     let certificate = log
         .prove_membership(index, size)
         .await
@@ -1926,4 +1947,52 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         )],
         state.metrics.render(state.engine.log_append_failures()),
     )
+}
+
+#[cfg(test)]
+mod no_state_root_tests {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr::signer::SoftwareSigner;
+    use cyphr::{Key, Principal};
+
+    use super::no_state_root;
+
+    /// A principal that removed its last key and holds no data has no State
+    /// Root, so no certificate opens a log that ends there: the routes
+    /// answer a 409 that says why, and a log that ends earlier is
+    /// untouched. Unit test: pushing such a principal through the server
+    /// is refused or needs a whole fixture, and the check is the route's
+    /// own. Turns red if the check is dropped (a 500 from the prover).
+    #[tokio::test]
+    async fn a_log_ending_with_no_state_root_is_a_conflict_naming_why() {
+        let k = coz::Alg::Ed25519.generate_keypair();
+        let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
+        let key =
+            Key::new(k.alg.name().to_string(), tmb.clone(), k.pub_bytes.clone()).expect("key");
+        let signer = SoftwareSigner::new(k.alg.name(), &k.prv_bytes, &k.pub_bytes, &tmb);
+        let mut p = Principal::implicit(key).await.expect("open");
+        p.commit_genesis(&signer, &[], 1_700_000_000, "cyphr.me")
+            .await
+            .expect("genesis");
+        let id = Base64UrlUnpadded::encode_string(tmb.as_bytes());
+        let mut pay = serde_json::json!({"alg": k.alg.name(), "id": id, "now": 1_700_000_010,
+            "tmb": id, "typ": "cyphr.me/cyphr/key/delete"});
+        pay.as_object_mut().expect("object").sort_keys();
+        let v = serde_json::to_vec(&pay).expect("pay");
+        let (sig, cad) =
+            coz::sign_json(&v, k.alg.name(), &k.prv_bytes, &k.pub_bytes).expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, k.alg.name()).expect("czd");
+        let mut scope = p.begin_commit();
+        scope.verify_and_apply(&v, &sig, czd, None).expect("delete");
+        scope
+            .finalize_with_software(&signer, 1_700_000_011, "cyphr.me")
+            .await
+            .expect("commit");
+
+        assert!(no_state_root(&p, 1).is_ok(), "the genesis log has a root");
+        let refused = no_state_root(&p, 2).expect_err("no state root at 2");
+        let shown = format!("{refused:?}");
+        assert!(shown.contains("409"), "{shown}");
+        assert!(shown.contains("no state root"), "{shown}");
+    }
 }
