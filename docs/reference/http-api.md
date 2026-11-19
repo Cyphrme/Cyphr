@@ -679,9 +679,9 @@ Engine refusals while recording map as in "Engine error mapping".
 revoke message must be the key itself" and "Third parties may sign a naked
 revoke, declaring a key compromised, without any other knowledge of the
 principal." The code accepts only the self-signed form: the signature must
-verify against the disclosed key that the payload's `tmb` names, and a
-third party's signature over someone else's key is `401`. The two SPEC
-sentences are not reconciled here.
+verify against the disclosed key, which must hash to the payload's `tmb`, so a
+revoke signed by any other key is refused (`401` for a bad signature, `400` for a
+disclosed key that does not match `tmb`). The two SPEC sentences are not reconciled here.
 
 Example: `revoked_serves_the_accepted_naked_revoke_verifiably`
 (`rs/cyphr-server/tests/revoked_route.rs`) posts
