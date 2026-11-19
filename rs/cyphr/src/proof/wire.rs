@@ -36,6 +36,9 @@ pub(super) const MAX_COZ: usize = 4096;
 const MAX_SIBLINGS: usize = 256;
 const MAX_STEPS: usize = 64;
 const MAX_PEAKS: usize = 64;
+/// Most leaves a KT or AR node of a key certificate may claim: the keys and
+/// nonces of one principal, far above any real one.
+const MAX_KEY_TREE: u64 = 1 << 24;
 
 /// A digest's width in bytes.
 pub(super) fn width(alg: HashAlg) -> usize {
@@ -385,6 +388,20 @@ impl TryFrom<RawCert> for Cert {
                 .collect::<Result<Vec<_>, _>>()?;
             if hops.iter().any(|h| h.alg != alg) {
                 return Err("a key hop in another family".into());
+            }
+            // KT, the AR node and the SR node. The sizes are claims of how
+            // many leaves each tree has: none above what a log holds
+            // (SR's node has the AR and at most the Data Root), refused
+            // before any skeleton is built.
+            let [kt, ar, state] = hops.as_slice() else {
+                return Err("a key certificate needs three hops".into());
+            };
+            if kt.size > MAX_KEY_TREE
+                || ar.size > MAX_KEY_TREE
+                || state.size > 2
+                || hops.iter().any(|h| h.index >= h.size)
+            {
+                return Err("a key hop of a size no log has".into());
             }
             return Ok(Cert {
                 top: cells_of(raw.top.pt_cells)?,

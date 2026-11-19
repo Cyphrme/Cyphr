@@ -89,9 +89,9 @@ impl PrincipalState {
         &self.core.genesis_key
     }
 
-    /// The key `tmb` named in any period of this principal, active or not.
-    pub(crate) fn key_of_any_period(&self, tmb: &Thumbprint) -> Option<&Key> {
-        self.core.key_timeline.key_of(tmb)
+    /// The key `tmb` names if it is in the key set now (active, not revoked).
+    pub(crate) fn active_key(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.auth.keys.get(&tmb.to_b64())
     }
 
     /// Get a key by thumbprint.

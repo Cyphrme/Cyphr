@@ -2,8 +2,6 @@
 //! it needs from the commits (their roots and Principal Tree cells) and,
 //! for the paths and consistency proofs, from the log.
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
 use super::wire::{Cells, Cert, ConsW, KeyW, OpeningW, PathW, StitchW, Terminal};
 use super::{Cause as ProofError, Certificate, Claim, ProveError, Root};
 use crate::commit_root::hash_alg_to_u64;
@@ -260,62 +258,38 @@ impl<S: eml::Storage> Principal<S> {
         match claim {
             Claim::Member { index, .. } => self.membership_certificate(size, *index).await,
             Claim::Extends { from, .. } => self.extension_certificate(*from, size).await,
-            Claim::Key { tmb } => self.key_certificate(size, tmb).await,
+            Claim::Key { tmb } => self.key_certificate(size, tmb),
         }
         .map_err(Into::into)
     }
 
-    /// The state of the log's first `size` commits, replayed from its
-    /// commits into a log of its own: the key set, its nonces and its Data
-    /// Root as they stood then, which no commit keeps.
-    async fn state_at(&self, size: u64) -> Result<Principal<eml::MemoryStorage>, ProofError> {
-        let tmb = coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(self.genesis_key())
-                .map_err(|_| unprovable("the genesis key is no thumbprint"))?,
-        );
-        let genesis = self
-            .key_of_any_period(&tmb)
-            .cloned()
-            .ok_or_else(|| unprovable("the genesis key is not held"))?;
-        let mut p = Principal::implicit(genesis)
-            .await
-            .map_err(|e| unprovable(e.to_string()))?;
-        for i in 0..size {
-            let commit = self.held(i)?;
-            let bundle = crate::replay::WireBundle::of_commit(commit)
-                .map_err(|e| unprovable(e.to_string()))?
-                .decode()
-                .map_err(|e| unprovable(e.to_string()))?;
-            crate::replay::replay_held(&mut p, &bundle)
-                .await
-                .map_err(|e| unprovable(format!("commit {i} does not replay: {e}")))?;
-        }
-        Ok(p)
-    }
-
-    /// The key `tmb` is in the key set at `size` commits.
-    async fn key_certificate(
-        &self,
-        size: u64,
-        tmb: &coz::Thumbprint,
-    ) -> Result<Certificate, ProofError> {
-        if size == 0 || size > self.commit_count() as u64 {
+    /// The key `tmb` is in the key set of the log, at its tip. Only the tip:
+    /// no commit keeps the key set it left, so an earlier size would mean
+    /// replaying the log, and what a thin client needs is the key set it is
+    /// signing in against.
+    ///
+    /// The certificate is in the key's own family, whose KT leaf is the raw
+    /// thumbprint, and only a key in the key set is proved: a KT-level nonce
+    /// is a leaf too, and never a key.
+    fn key_certificate(&self, size: u64, tmb: &coz::Thumbprint) -> Result<Certificate, ProofError> {
+        if size != self.commit_count() as u64 {
             return Err(unprovable(format!(
-                "no log of {size} commits in the {} held",
+                "a key claim is for the tip, {} commits, not {size}",
                 self.commit_count()
             )));
         }
         let top = self.cells_of(size - 1)?;
-        let alg = *top
-            .families
-            .first()
-            .ok_or_else(|| unprovable("no family"))?;
-        let path = if size == self.commit_count() as u64 {
-            self.key_inclusion_proof(alg, tmb)
-        } else {
-            self.state_at(size).await?.key_inclusion_proof(alg, tmb)
+        let alg = crate::state::HASH_ALGS
+            .into_iter()
+            .find(|a| a.digest_size() == tmb.as_bytes().len())
+            .filter(|a| top.families.contains(a))
+            .ok_or_else(|| unprovable("the key's family is not active at the tip"))?;
+        if self.active_key(tmb).is_none() {
+            return Err(unprovable("the key is not in the key set"));
         }
-        .map_err(|_| ProofError::NoKey(format!("not in the key set at {size}")))?;
+        let path = self
+            .key_inclusion_proof(alg, tmb)
+            .map_err(|_| unprovable("the key is not in the key set"))?;
         let hops = path
             .hops
             .iter()

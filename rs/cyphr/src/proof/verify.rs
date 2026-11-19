@@ -430,13 +430,19 @@ pub(super) fn key(
         .into_iter()
         .find(|&a| width(a) == tmb.as_bytes().len())
         .ok_or_else(|| asked("a thumbprint of no family's width"))?;
-    // The key's leaf in KT: its thumbprint, converted to the family.
-    let leaf = if native == key.alg {
-        tmb.as_bytes().to_vec()
-    } else {
-        crate::state::hash_bytes(key.alg, tmb.as_bytes())
-    };
-    let kr = climb(kt, &leaf, 256)?;
+    // The key's leaf is its raw thumbprint in its own family. In another
+    // family the leaf is a hash of it, which a nonce of that family can
+    // equal without being the key.
+    if key.alg != native {
+        return Err(ProofError::Family);
+    }
+    // Hop positions are pinned: KR is the AR node's cell 0 and AR the SR
+    // node's cell 0, so a role is bound by position as well as by the hash
+    // each leaf is.
+    if ar.index != 0 || state.index != 0 {
+        return Err(ProofError::Path);
+    }
+    let kr = climb(kt, tmb.as_bytes(), 256)?;
     let auth = climb(ar, &kr, role_arity(ar.size))?;
     if climb(state, &auth, 2)? != sr {
         return Err(ProofError::Path);

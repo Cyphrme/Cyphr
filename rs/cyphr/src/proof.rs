@@ -79,13 +79,17 @@ mod prove;
 mod verify;
 mod wire;
 
-/// The checks that fail inside the prover and the verifier, finer than the
-/// kinds a caller acts on ([`ProofError`], [`ProveError`]). Not part of the
-/// stable surface: tests read it through `cause()` (feature `test-utils`),
-/// and no message text is contract.
-#[doc(hidden)]
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum Cause {
+/// Defines [`Cause`] public under `test-utils` and crate-private
+/// otherwise: no production caller may match on a cause, so it is not part
+/// of the surface.
+macro_rules! causes {
+    ($(#[$meta:meta])* $vis:vis) => {
+        /// The checks that fail inside the prover and the verifier, finer
+        /// than the kinds a caller acts on ([`ProofError`], [`ProveError`]).
+        /// Tests read it through `cause()`; no message text is contract.
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+        $vis enum Cause {
     /// An EML path does not reach the root it is checked against.
     #[error("log path does not reach the root")]
     Path,
@@ -115,15 +119,31 @@ pub enum Cause {
     /// The prover cannot build the certificate for what was asked.
     #[error("no certificate: {0}")]
     Unprovable(String),
-    /// The key asked about is not in the key set at the size asked.
-    #[error("no such key: {0}")]
-    NoKey(String),
     /// The log's last commit left no State Root, so there is nothing to open.
     #[error("no state root: {0}")]
     NoStateRoot(String),
     /// The log's store failed while the certificate was built.
     #[error("store: {0}")]
     Storage(String),
+        }
+    };
+}
+
+#[cfg(feature = "test-utils")]
+causes!(#[doc(hidden)] pub);
+#[cfg(not(feature = "test-utils"))]
+causes!(pub(crate));
+
+/// What failed, opaque: its text is for people and is no contract, and no
+/// production code matches on it. Tests read the typed cause through
+/// `cause()` under `test-utils`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detail(Cause);
+
+impl std::fmt::Display for Detail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Why a claim is not accepted, in the ways a caller acts on. Each carries
@@ -134,18 +154,18 @@ pub enum ProofError {
     /// The question does not fit what is pinned: a size the anchor does not
     /// pin, an index at or past the size. Nothing is accused; ask again.
     #[error("the question does not fit: {0}")]
-    Question(Cause),
+    Question(Detail),
     /// A well-formed certificate that does not verify: a possible forgery.
     #[error("refuted: {0}")]
-    Refuted(Cause),
+    Refuted(Detail),
     /// Not a certificate of the claim's kind, or out of bounds or framing:
     /// refused before any hashing.
     #[error("malformed: {0}")]
-    Malformed(Cause),
+    Malformed(Detail),
     /// An `Extends` claim whose consistency check fails: the head does not
     /// extend the pinned log, the shape of a fork. Only `Extends` gives it.
     #[error("diverged: {0}")]
-    Diverged(Cause),
+    Diverged(Detail),
 }
 
 impl ProofError {
@@ -155,7 +175,7 @@ impl ProofError {
     #[must_use]
     pub fn cause(&self) -> &Cause {
         match self {
-            Self::Question(c) | Self::Refuted(c) | Self::Malformed(c) | Self::Diverged(c) => c,
+            Self::Question(c) | Self::Refuted(c) | Self::Malformed(c) | Self::Diverged(c) => &c.0,
         }
     }
 }
@@ -164,15 +184,13 @@ impl From<Cause> for ProofError {
     fn from(c: Cause) -> Self {
         match c {
             Cause::Path | Cause::Arrow | Cause::PtCell | Cause::Family | Cause::Mismatch(_) => {
-                Self::Refuted(c)
+                Self::Refuted(Detail(c))
             },
-            Cause::NotAnExtension => Self::Diverged(c),
-            Cause::Asked(_)
-            | Cause::Unprovable(_)
-            | Cause::NoKey(_)
-            | Cause::NoStateRoot(_)
-            | Cause::Storage(_) => Self::Question(c),
-            Cause::Framing(_) => Self::Malformed(c),
+            Cause::NotAnExtension => Self::Diverged(Detail(c)),
+            Cause::Asked(_) | Cause::Unprovable(_) | Cause::NoStateRoot(_) | Cause::Storage(_) => {
+                Self::Question(Detail(c))
+            },
+            Cause::Framing(_) => Self::Malformed(Detail(c)),
         }
     }
 }
@@ -181,14 +199,15 @@ impl From<Cause> for ProofError {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProveError {
-    /// The claim asks for what the log does not hold: an index or size past
-    /// it, a key not in the key set at that size.
+    /// The claim asks for what the log does not answer: an index or size
+    /// past it, a key not in its key set, a key claim away from its tip, a
+    /// log whose last commit left no keys and no data (so no State Root to
+    /// open).
     #[error("the claim does not fit the log: {0}")]
-    Question(Cause),
-    /// The log cannot answer now: a store failure, or a last commit that
-    /// left no State Root.
+    Question(Detail),
+    /// The log's store failed.
     #[error("unavailable: {0}")]
-    Unavailable(Cause),
+    Unavailable(Detail),
 }
 
 impl ProveError {
@@ -198,7 +217,7 @@ impl ProveError {
     #[must_use]
     pub fn cause(&self) -> &Cause {
         match self {
-            Self::Question(c) | Self::Unavailable(c) => c,
+            Self::Question(c) | Self::Unavailable(c) => &c.0,
         }
     }
 }
@@ -206,8 +225,8 @@ impl ProveError {
 impl From<Cause> for ProveError {
     fn from(c: Cause) -> Self {
         match c {
-            Cause::NoStateRoot(_) | Cause::Storage(_) => Self::Unavailable(c),
-            other => Self::Question(other),
+            Cause::Storage(_) => Self::Unavailable(Detail(c)),
+            other => Self::Question(Detail(other)),
         }
     }
 }
@@ -417,9 +436,13 @@ pub enum Claim {
         head: PrincipalRoot,
     },
     /// The key with this thumbprint is in the key set (KR) at `size`: the
-    /// Principal Tree opening to SR, then AR, KR and the key's leaf. It
-    /// answers membership in KR only; frozen, deleted and errored are not
-    /// checked.
+    /// Principal Tree opening to SR, then AR, KR and the key's leaf, in the
+    /// key's own family. A prover answers it for the log's tip only (no
+    /// commit keeps the key set it left), so `size` is the tip's; a
+    /// verifier checks whatever size the anchor pins. It answers membership
+    /// in KR only; frozen, deleted and errored are not checked. A KT-level
+    /// nonce equal to the key's thumbprint cannot be told from the key by
+    /// the tree (SPEC 10.2); the prover proves only keys of the key set.
     Key {
         /// The key's thumbprint.
         tmb: coz::Thumbprint,
