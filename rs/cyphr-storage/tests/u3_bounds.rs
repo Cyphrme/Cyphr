@@ -44,6 +44,8 @@ struct Obs {
     unknown_key: Counts,
     restart_first: Counts,
     restart_second: Counts,
+    /// Commits the restarted engine held to replay.
+    restart_n: u64,
     n: u64,
 }
 
@@ -106,6 +108,7 @@ async fn observe(n: usize) -> Obs {
     e.submit_commit(&id, g.clone(), &next).await.expect("next");
 
     e = d.engine();
+    let restart_n = chain.commits as u64;
     let (w1, w2) = (chain.next().await, chain.next().await);
     let restart_first =
         counted!(async { e.submit_commit(&id, g.clone(), &w1).await.expect("write") });
@@ -121,6 +124,7 @@ async fn observe(n: usize) -> Obs {
         unknown_key,
         restart_first,
         restart_second,
+        restart_n,
         n: chain.commits as u64,
     }
 }
@@ -404,14 +408,20 @@ macro_rules! suite {
     #[tokio::test]
     $(#[$attr])?
     async fn write_blob_reads_do_not_grow() {
-        same("write blobs", |o| Counts { replayed: 0, idx_rows: 0, blobs: o.write.blobs }, obs().await);
+        let o = obs().await;
+        // Positive control: an equality of counts that read nothing proves
+        // nothing.
+        assert!(o.iter().any(|o| o.write.blobs > 0), "{o:?}");
+        same("write blobs", |o| Counts { replayed: 0, idx_rows: 0, blobs: o.write.blobs }, o);
     }
 
     /// Bound: a write reads O(1) index rows, independent of n.
     #[tokio::test]
     $(#[$attr])?
     async fn write_index_rows_do_not_grow() {
-        same("write idx rows", |o| Counts { replayed: 0, idx_rows: o.write.idx_rows, blobs: 0 }, obs().await);
+        let o = obs().await;
+        assert!(o.iter().any(|o| o.write.idx_rows > 0), "{o:?}");
+        same("write idx rows", |o| Counts { replayed: 0, idx_rows: o.write.idx_rows, blobs: 0 }, o);
     }
 
     /// Bound: reading the tip replays 0 commits and reads O(1) index rows,
@@ -479,6 +489,15 @@ macro_rules! suite {
     $(#[$attr])?
     async fn restart_replays_once_then_nothing() {
         for o in obs().await {
+            // The lower bound is the positive control: a cold start that
+            // the replay counter does not see would pass the upper one.
+            assert!(
+                o.restart_first.replayed >= o.restart_n,
+                "n={}: first write replayed {}, fewer than the {} held",
+                o.n,
+                o.restart_first.replayed,
+                o.restart_n
+            );
             assert!(
                 o.restart_first.replayed <= o.n + 2,
                 "n={}: first write replayed {}",
@@ -573,9 +592,9 @@ macro_rules! suite {
     };
 }
 
-// Span 16x (one order of magnitude): n grows x16, log n x2, so a count
+// Span 16x (one order of magnitude): n grows x16, log n x2.3, so a count
 // that is O(n) or O(log n) is red against an exact-equality bound.
-suite!(fast, [16, 64, 256]);
+suite!(fast, [8, 32, 128]);
 // Span 128x (two orders): the same bounds at a size where the gap between
 // log n (x2.75) and n (x128) is not arguable. About 2 minutes of build.
 suite!(

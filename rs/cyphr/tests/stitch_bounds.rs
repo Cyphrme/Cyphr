@@ -312,7 +312,7 @@ fn log2_ceil(n: usize) -> usize {
 ///
 /// Slope checked, at fixed k: hashes <= (stitches + 1) (2 ceil(log2 n) + 2),
 /// and bytes(n) <= 3 bytes(smallest n). Over a span of 16x (fast) or 128x
-/// (large) log n grows x2 or x2.75, so a certificate that grows with n
+/// (large) log n grows x2.3 or x2.75, so a certificate that grows with n
 /// (x16, x128) is red against the ratio at once; the fixed opening of each
 /// stitch keeps the real ratio near 1.5 and the factor of 3 leaves room for
 /// that and no room for n.
@@ -410,8 +410,8 @@ macro_rules! suite {
     };
 }
 
-// Span 16x of n, in the normal run; k from 0 to 3 at n = 64.
-suite!(fast, [16, 64, 256], 64);
+// Span 16x of n, in the normal run; k from 0 to 3 at n = 32.
+suite!(fast, [8, 32, 128], 32);
 // Span 128x of n (the 2048-commit chains take about a minute each to
 // build, five minutes in all), ignored for it; k at n = 256.
 suite!(
