@@ -237,16 +237,17 @@ pub async fn verify_principal_fork(
 }
 
 /// [`verify_principal_fork`] over a prefix state the caller keeps: `state`
-/// holds the replay of the item's first `height` commits once an earlier
-/// call built it, so a second item at the same position costs no second
-/// replay. Leave it `None` on the first call; it is filled when the
-/// replay succeeds. A state belongs to one `(base, entries, height)`.
+/// holds the replay of the first `height` commits, keyed by that height,
+/// once an earlier call built it, so a second item at the same position
+/// costs no second replay. Leave it `None` on the first call; it is filled
+/// when the replay succeeds. A state of another height is rebuilt, never
+/// trusted; the caller still keeps one `(base, entries)` per state.
 pub(crate) async fn verify_principal_fork_reusing(
     item: &Value,
     pg: &str,
     base: &Principal<MemoryStorage>,
     entries: &[PatchEntry],
-    state: &mut Option<Principal<MemoryStorage>>,
+    state: &mut Option<(u64, Principal<MemoryStorage>)>,
 ) -> Result<ForkProof, EvidenceFailure> {
     let EvidenceItem::PrincipalFork {
         pg: item_pg,
@@ -294,13 +295,13 @@ pub(crate) async fn verify_principal_fork_reusing(
         }
     }
     let state = match state {
-        Some(built) => built,
-        empty => {
+        Some((built_at, built)) if *built_at == height => built,
+        slot => {
             let from = base
                 .fork()
                 .await
                 .map_err(|source| EvidenceFailure::Replay { commit: 0, source })?;
-            empty.insert(replay_chain(from, prefix).await?)
+            &mut slot.insert((height, replay_chain(from, prefix).await?)).1
         },
     };
     if genesis_commit.is_some() && !named_by_key && !pg_names(state, pg) {
