@@ -441,25 +441,28 @@ impl Record {
             .map(|(tmb, cutoff)| (tmb.as_str(), *cutoff))
     }
 
-    /// The entries of every commit the record holds, in chain order: those
-    /// below a resumed record's state read from its [`ChainSource`].
-    async fn chain_entries(&self) -> Result<Vec<PatchEntry>, &'static str> {
+    /// The entries of the first `count` commits the record holds (all of
+    /// them if it holds fewer), in chain order: those below a resumed
+    /// record's state read from its [`ChainSource`], and no more of them
+    /// than `count` asks for.
+    async fn chain_entries(&self, count: usize) -> Result<Vec<PatchEntry>, &'static str> {
         let held = self.held.as_ref().ok_or("the record holds no chain")?;
+        let stored = held.base.min(count);
         let mut entries = Vec::new();
-        if held.base > 0 {
+        if stored > 0 {
             let source = self
                 .source
                 .as_ref()
                 .ok_or("the record's stored chain is not available")?;
             entries = source
-                .first(held.base)
+                .first(stored)
                 .await
                 .map_err(|_| "the record's stored chain could not be read")?;
-            if entries.len() != held.base {
+            if entries.len() != stored {
                 return Err("the record's stored chain is shorter than its state");
             }
         }
-        entries.extend(held.entries.iter().cloned());
+        entries.extend(held.entries.iter().take(count - stored).cloned());
         Ok(entries)
     }
 
@@ -1330,8 +1333,12 @@ async fn locate_fork<C: Connector>(
         defect,
     })?;
 
-    let (base, prefix) = fork_context(record).await.map_err(unlocatable)?;
-    let ours = prefix
+    // The prefix below the fork and the record's own commit at it: `a`.
+    let (base, context) = fork_context(record, height + 1)
+        .await
+        .map_err(unlocatable)?;
+    let prefix = &context[..height.min(context.len())];
+    let ours = context
         .get(height)
         .and_then(|e| e.bundle.clone().ok())
         .ok_or_else(|| unlocatable("the record's own commit is unreadable"))?;
@@ -1345,11 +1352,14 @@ async fn locate_fork<C: Connector>(
             "b": rival,
         })
     };
-    let proof = match crate::evidence::verify_principal_fork(
+    // The prefix is replayed once, by the first attempt; a second reuses it.
+    let mut state = None;
+    let proof = match crate::evidence::verify_principal_fork_reusing(
         &proved(&rival),
         record.bare_id(),
-        base,
-        &prefix,
+        &base,
+        prefix,
+        &mut state,
     )
     .await
     {
@@ -1362,12 +1372,12 @@ async fn locate_fork<C: Connector>(
                     with_actions.actions.extend(blobs.iter().cloned());
                 }
             }
-            let (base, _) = fork_context(record).await.map_err(unlocatable)?;
-            let proof = crate::evidence::verify_principal_fork(
+            let proof = crate::evidence::verify_principal_fork_reusing(
                 &proved(&with_actions),
                 record.bare_id(),
-                base,
-                &prefix,
+                &base,
+                prefix,
+                &mut state,
             )
             .await
             .map_err(|_| unlocatable("the peer's commit is no fork of the record's"))?;
@@ -1501,11 +1511,13 @@ async fn compare_whole_chain<C: Connector>(
 }
 
 /// What a fork is verified against: a principal at the record's genesis
-/// and the record's chain, whole.
+/// and the record's first `count` commits (its whole chain if it holds
+/// fewer).
 async fn fork_context(
     record: &Record,
+    count: usize,
 ) -> Result<(Principal<MemoryStorage>, Vec<PatchEntry>), &'static str> {
-    let prefix = record.chain_entries().await?;
+    let prefix = record.chain_entries(count).await?;
     let root = match &record.anchor {
         Anchor::GenesisKey(key) => Ok(key.clone()),
         Anchor::GenesisCommit(_) => opener_key(&prefix),
@@ -1540,7 +1552,7 @@ async fn evidence<C: Connector>(
             .push(EvidenceFailure::Malformed("items is not an array"));
         return;
     };
-    let (base, prefix) = match fork_context(record).await {
+    let (base, prefix) = match fork_context(record, usize::MAX).await {
         Ok(context) => context,
         Err(why) => {
             outcome
