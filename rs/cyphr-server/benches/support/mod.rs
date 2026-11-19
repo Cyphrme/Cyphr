@@ -173,7 +173,22 @@ pub struct ForkLocation {
     pub patch: usize,
     /// Commits the peer's `/patch` answers carried.
     pub fetched: usize,
+    /// Timestamp checks the holder's pull made of what it replayed, from
+    /// the record's clock (called once per signed message a replay checks).
+    /// Counted per thread, so it is exact only on a current-thread
+    /// runtime, and its unit is signed messages checked, not commits.
+    pub client_checks: u64,
     pub ms: f64,
+}
+
+thread_local! {
+    static CLOCK_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The record's clock: far ahead of any chain, and counting its reads.
+fn counting_clock() -> i64 {
+    CLOCK_READS.with(|c| c.set(c.get() + 1));
+    i64::MAX / 4
 }
 
 /// Counts what the holder asks the peer.
@@ -250,13 +265,10 @@ pub async fn fork_location(n: usize) -> ForkLocation {
             bundle: Ok(mine.bundle(i)),
         })
         .collect();
-    fn clock() -> i64 {
-        i64::MAX / 4
-    }
     let mut record = cyphr_client::Record::from_entries(
         &mine.id,
         cyphr_client::Anchor::GenesisKey(key),
-        clock,
+        counting_clock,
         &entries,
         &[],
     )
@@ -269,6 +281,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         asked: Default::default(),
         fetched: Default::default(),
     };
+    let checks_before = CLOCK_READS.with(std::cell::Cell::get);
     let t = std::time::Instant::now();
     let report = cyphr_client::pull(
         &mut record,
@@ -279,6 +292,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
     )
     .await;
     let ms = t.elapsed().as_secs_f64() * 1e3;
+    let client_checks = CLOCK_READS.with(std::cell::Cell::get) - checks_before;
     let count = |route: &str| {
         connector
             .asked
@@ -295,6 +309,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         proof: count("/proof"),
         patch: count("/patch"),
         fetched: *connector.fetched.lock().expect("fetched"),
+        client_checks,
         ms,
     }
 }
