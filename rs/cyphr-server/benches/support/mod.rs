@@ -173,7 +173,51 @@ pub struct ForkLocation {
     pub patch: usize,
     /// Commits the peer's `/patch` answers carried.
     pub fetched: usize,
+    /// Timestamp checks the holder's pull made of what it replayed, from
+    /// the record's clock (called once per signed message a replay checks).
+    /// Counted per thread, so it is exact only on a current-thread
+    /// runtime, and its unit is signed messages checked, not commits.
+    pub client_checks: u64,
+    /// The same count for building the holder's record from its `n`
+    /// commits: one replay of the whole chain, so `build_checks / n` is a
+    /// replay's cost per commit.
+    pub build_checks: u64,
+    /// Commits the holder asked its chain store for (a resumed holder
+    /// only: the state is kept, the commits are stored); 0 otherwise.
+    pub chain_reads: usize,
     pub ms: f64,
+}
+
+/// The chain a resumed holder's state covers, counting what is read of it.
+struct Counted {
+    entries: Vec<cyphr_client::PatchEntry>,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl cyphr_client::ChainSource for Counted {
+    fn first(
+        &self,
+        count: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<cyphr_client::PatchEntry>, String>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.reads.fetch_add(count, Relaxed);
+        Box::pin(async move { Ok(self.entries[..count].to_vec()) })
+    }
+}
+
+thread_local! {
+    static CLOCK_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The record's clock: far ahead of any chain, and counting its reads.
+fn counting_clock() -> i64 {
+    CLOCK_READS.with(|c| c.set(c.get() + 1));
+    i64::MAX / 4
 }
 
 /// Counts what the holder asks the peer.
@@ -210,23 +254,75 @@ impl cyphr_client::Connector for Asked {
 /// position `n / 2` and then goes its own way for the rest and one commit
 /// more: where the logs part is found, and what it cost.
 pub async fn fork_location(n: usize) -> ForkLocation {
+    fork_location_at(n, n / 2, false, false).await
+}
+
+/// [`fork_location`] with the logs parting at position `at`, and the
+/// holder either replayed from its commits or (`resumed`) started from its
+/// verified state with the commits in a counted store.
+///
+/// With `rival_data` the peer's commit at `at` is a data commit
+/// ([`Chain::next_data`]), which the holder verifies only once it has the
+/// action the peer serves apart from it.
+pub async fn fork_location_at(
+    n: usize,
+    at: usize,
+    resumed: bool,
+    rival_data: bool,
+) -> ForkLocation {
+    fork_locations(n, &[(at, rival_data)], resumed)
+        .await
+        .remove(0)
+}
+
+/// [`fork_location_at`] for each `(at, rival_data)` of `configs` on one
+/// holder of `n` commits, built once (a chain's commits are the cost of
+/// the measure, and the holder's are the same whatever the peer does).
+pub async fn fork_locations(
+    n: usize,
+    configs: &[(usize, bool)],
+    resumed: bool,
+) -> Vec<ForkLocation> {
+    let mut ats: Vec<usize> = configs.iter().map(|&(at, _)| at).collect();
+    ats.sort_unstable();
+    ats.dedup();
     let mut mine = Chain::new("golden", "key_a", "key_b").await;
-    while mine.commits < n / 2 {
-        mine.next().await;
+    let mut snapshots = Vec::new();
+    for at in ats {
+        while mine.commits < at {
+            mine.next().await;
+        }
+        snapshots.push((at, mine.fork().await));
     }
-    let mut theirs = mine.fork().await;
-    theirs.diverge("carol");
-    let height = mine.commits;
     while mine.commits < n {
         mine.next().await;
     }
-    while theirs.commits <= n {
-        theirs.next().await;
+    let mut out = Vec::new();
+    for &(at, rival_data) in configs {
+        let (_, snapshot) = snapshots.iter().find(|(a, _)| *a == at).expect("snapshot");
+        let mut theirs = snapshot.fork().await;
+        theirs.diverge("carol");
+        if rival_data {
+            theirs.next_data().await;
+        }
+        while theirs.commits <= n {
+            theirs.next().await;
+        }
+        out.push(pull_fork(&mine, &theirs, at, resumed).await);
     }
+    out
+}
 
+/// What the holder `mine` costs to pull from the peer `theirs`, which it
+/// shares the first `height` commits with.
+async fn pull_fork(mine: &Chain, theirs: &Chain, height: usize, resumed: bool) -> ForkLocation {
     let (peer, _dir) = keyless();
     let app = build_router(peer.clone());
     for i in 0..theirs.commits {
+        if let Some(actions) = theirs.action_bundle(i) {
+            let (st, ..) = call(&app, "POST", "/push", push_body(&theirs.id, &actions)).await;
+            assert!(st.is_success(), "peer action push {i}: {st}");
+        }
         let (st, ..) = call(
             &app,
             "POST",
@@ -250,18 +346,32 @@ pub async fn fork_location(n: usize) -> ForkLocation {
             bundle: Ok(mine.bundle(i)),
         })
         .collect();
-    fn clock() -> i64 {
-        i64::MAX / 4
-    }
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let built_before = CLOCK_READS.with(std::cell::Cell::get);
     let mut record = cyphr_client::Record::from_entries(
         &mine.id,
         cyphr_client::Anchor::GenesisKey(key),
-        clock,
+        counting_clock,
         &entries,
         &[],
     )
     .await
     .expect("record");
+    let build_checks = CLOCK_READS.with(std::cell::Cell::get) - built_before;
+    if resumed {
+        let state = record
+            .principal()
+            .expect("held a chain")
+            .fork()
+            .await
+            .expect("copy");
+        let store = std::sync::Arc::new(Counted {
+            entries: entries.clone(),
+            reads: reads.clone(),
+        });
+        record =
+            cyphr_client::Record::resume(&mine.id, state, counting_clock, store).expect("resumes");
+    }
 
     let connector = Asked {
         inner: cyphr_client::HttpConnector::with_client(reqwest::Client::new(), &url, true)
@@ -269,6 +379,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         asked: Default::default(),
         fetched: Default::default(),
     };
+    let checks_before = CLOCK_READS.with(std::cell::Cell::get);
     let t = std::time::Instant::now();
     let report = cyphr_client::pull(
         &mut record,
@@ -279,6 +390,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
     )
     .await;
     let ms = t.elapsed().as_secs_f64() * 1e3;
+    let client_checks = CLOCK_READS.with(std::cell::Cell::get) - checks_before;
     let count = |route: &str| {
         connector
             .asked
@@ -295,6 +407,9 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         proof: count("/proof"),
         patch: count("/patch"),
         fetched: *connector.fetched.lock().expect("fetched"),
+        client_checks,
+        build_checks,
+        chain_reads: reads.load(Relaxed),
         ms,
     }
 }
