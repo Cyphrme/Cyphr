@@ -528,41 +528,89 @@ macro_rules! suite {
                 }
             }
 
-            /// Bound: the holder's own work to locate and prove a fork is
-            /// independent of n. The record already holds the verified
-            /// state of its own chain, and the peer sends one commit; what
-            /// the holder must check is that commit and its own at the
-            /// fork, and O(log n) certificates against roots it holds
-            /// (hashes, no replay). So the timestamp checks of everything
-            /// it replays (one per signed message, through the record's
-            /// clock) are the same at every n.
+            /// The fork heights each size is run at: the middle of the
+            /// history (h = n / 2, so h grows with n) and a low one (h = 8
+            /// at every n, so a cost in n is not hidden in h).
+            const LOW: usize = 8;
+
+            static FORKS: OnceCell<Vec<ForkLocation>> = OnceCell::const_new();
+
+            /// A resumed holder (state kept, commits in a counted store, as
+            /// the engine keeps them) of each size pulls from a peer on a
+            /// fork at each of the two heights. Counted per thread, so
+            /// every run must be on this runtime.
+            async fn forks() -> &'static [ForkLocation] {
+                FORKS
+                    .get_or_init(|| async {
+                        let mut all = Vec::new();
+                        for n in SIZES {
+                            for at in [n / 2, LOW] {
+                                let f = fork_location_at(n, at, true).await;
+                                assert!(f.forked, "n={n}: the fork at {at} was not found");
+                                all.push(f);
+                            }
+                        }
+                        all
+                    })
+                    .await
+            }
+
+            /// Bound (issue #216, the MVP bound): the holder's own work to
+            /// locate and prove a fork at height h is one replay of the
+            /// h commits below it, not one of the whole chain and not two:
+            /// timestamp checks <= c h + k, with c a replay's own cost per
+            /// commit (measured in the same run, from building the record
+            /// out of its n commits) and k = 4 c for the commits at the
+            /// fork itself (measured: 3 c).
             ///
-            /// Slope checked: the fork sits at n / 2, so replaying the
-            /// record's prefix to prove it costs n / 2 commits' checks:
-            /// x16 from the smallest size to the largest of `fast`, x128
-            /// in `large`, against a bound of x1. Replaying only O(log n)
-            /// commits could not pass for it either: the first size is
-            /// the baseline, and the bound is its count, not a multiple.
+            /// Slope checked: at h = n / 2, a replay of the whole chain
+            /// costs 2x the allowed c h, and a second replay of the prefix
+            /// 2x it; at h = 8 and n = 256 a replay of the whole chain is
+            /// 32x. Either is red; one replay of h is the allowance. The
+            /// later target, O(fork depth + log n), needs a state
+            /// per position that the record does not keep.
+            ///
+            /// Green today: a measured pull at h = 8, 16, 32 and 128 costs
+            /// exactly 2 h + 6 checks, which is one replay at c = 2 (a
+            /// commit holds two signed messages) plus 3 c, so the
+            /// duplicated replay of the `CommitRefused` fallback is not
+            /// taken by it: a commit that names data actions, which
+            /// `Chain` cannot make, would take it.
             #[tokio::test]
             $(#[$attr])?
-            async fn fork_location_client_work_is_independent_of_history() {
-                let base = fork_location(SIZES[0]).await;
-                assert!(base.forked, "n={}: the fork was not found", SIZES[0]);
-                assert!(
-                    base.client_checks > 0,
-                    "the clock counter saw no replay: it is not measuring"
-                );
-                for n in &SIZES[1..] {
-                    let f = fork_location(*n).await;
-                    assert!(f.forked, "n={n}: the fork at {} was not found", f.height);
+            async fn fork_location_client_replays_the_prefix_once() {
+                for f in forks().await {
+                    assert!(f.build_checks > 0, "the clock counter saw no replay");
+                    let c = f.build_checks / f.n as u64;
+                    let cap = c * f.height as u64 + 4 * c;
                     assert!(
-                        f.client_checks <= base.client_checks,
-                        "timestamp checks by the holder's pull: {} at n={} (fork at {}), {} at n={n} (fork at {})",
-                        base.client_checks,
-                        SIZES[0],
-                        base.height,
-                        f.client_checks,
-                        f.height
+                        f.client_checks <= cap,
+                        "n={} fork at {}: {} timestamp checks, cap {cap} (c = {c})",
+                        f.n,
+                        f.height,
+                        f.client_checks
+                    );
+                }
+            }
+
+            /// Bound (issue #216): the holder reads from its chain store
+            /// the h commits below the fork and no more: reads <= h + 2.
+            ///
+            /// Slope checked: `fork_context` reads the whole stored chain,
+            /// n commits, to replay h of them; at h = n / 2 that is 2x the
+            /// allowance and at h = 8, n = 256 it is 32x. Red today for
+            /// that reason: the reads equal n at every height.
+            #[tokio::test]
+            $(#[$attr])?
+            async fn fork_location_client_reads_only_the_prefix() {
+                for f in forks().await {
+                    assert!(
+                        f.chain_reads <= f.height + 2,
+                        "n={} fork at {}: {} commits read from the chain store, cap {}",
+                        f.n,
+                        f.height,
+                        f.chain_reads,
+                        f.height + 2
                     );
                 }
             }

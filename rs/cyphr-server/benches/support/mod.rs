@@ -178,7 +178,36 @@ pub struct ForkLocation {
     /// Counted per thread, so it is exact only on a current-thread
     /// runtime, and its unit is signed messages checked, not commits.
     pub client_checks: u64,
+    /// The same count for building the holder's record from its `n`
+    /// commits: one replay of the whole chain, so `build_checks / n` is a
+    /// replay's cost per commit.
+    pub build_checks: u64,
+    /// Commits the holder asked its chain store for (a resumed holder
+    /// only: the state is kept, the commits are stored); 0 otherwise.
+    pub chain_reads: usize,
     pub ms: f64,
+}
+
+/// The chain a resumed holder's state covers, counting what is read of it.
+struct Counted {
+    entries: Vec<cyphr_client::PatchEntry>,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl cyphr_client::ChainSource for Counted {
+    fn first(
+        &self,
+        count: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<cyphr_client::PatchEntry>, String>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.reads.fetch_add(count, Relaxed);
+        Box::pin(async move { Ok(self.entries[..count].to_vec()) })
+    }
 }
 
 thread_local! {
@@ -225,8 +254,15 @@ impl cyphr_client::Connector for Asked {
 /// position `n / 2` and then goes its own way for the rest and one commit
 /// more: where the logs part is found, and what it cost.
 pub async fn fork_location(n: usize) -> ForkLocation {
+    fork_location_at(n, n / 2, false).await
+}
+
+/// [`fork_location`] with the logs parting at position `at`, and the
+/// holder either replayed from its commits or (`resumed`) started from its
+/// verified state with the commits in a counted store.
+pub async fn fork_location_at(n: usize, at: usize, resumed: bool) -> ForkLocation {
     let mut mine = Chain::new("golden", "key_a", "key_b").await;
-    while mine.commits < n / 2 {
+    while mine.commits < at {
         mine.next().await;
     }
     let mut theirs = mine.fork().await;
@@ -265,6 +301,8 @@ pub async fn fork_location(n: usize) -> ForkLocation {
             bundle: Ok(mine.bundle(i)),
         })
         .collect();
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let built_before = CLOCK_READS.with(std::cell::Cell::get);
     let mut record = cyphr_client::Record::from_entries(
         &mine.id,
         cyphr_client::Anchor::GenesisKey(key),
@@ -274,6 +312,21 @@ pub async fn fork_location(n: usize) -> ForkLocation {
     )
     .await
     .expect("record");
+    let build_checks = CLOCK_READS.with(std::cell::Cell::get) - built_before;
+    if resumed {
+        let state = record
+            .principal()
+            .expect("held a chain")
+            .fork()
+            .await
+            .expect("copy");
+        let store = std::sync::Arc::new(Counted {
+            entries: entries.clone(),
+            reads: reads.clone(),
+        });
+        record =
+            cyphr_client::Record::resume(&mine.id, state, counting_clock, store).expect("resumes");
+    }
 
     let connector = Asked {
         inner: cyphr_client::HttpConnector::with_client(reqwest::Client::new(), &url, true)
@@ -310,6 +363,8 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         patch: count("/patch"),
         fetched: *connector.fetched.lock().expect("fetched"),
         client_checks,
+        build_checks,
+        chain_reads: reads.load(Relaxed),
         ms,
     }
 }
