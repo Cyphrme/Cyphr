@@ -7,6 +7,10 @@ describes the code as built; it is not a protocol specification. The
 protocol's normative text is `SPEC.md`, and the envelope's design record is
 `docs/specs/http-envelope.md`.
 
+Section numbers cited from `SPEC.md` are those of the spec author's branch
+(`be0663f`); the text of every cited passage is the same in the version
+this server was built against.
+
 The router in `rs/cyphr-server/src/lib.rs` (`build_router`) registers 15
 routes. Every other method and path answers `404` with
 `{"error":"route not found"}`. All 15 are documented below.
@@ -59,8 +63,8 @@ on `kind` or the status code, not on `error` text. The kinds are listed in
 - `GET /e/{digest}` returns raw `application/octet-stream` bytes
   (`[envelope-r-entity]` in `docs/specs/http-envelope.md`).
 - `GET /healthz` returns a bare JSON object (`{"status":"ok"}`), not an
-  envelope. `docs/specs/http-envelope.md` says "every JSON response body"
-  is an envelope; `/healthz` is the exception in code.
+  envelope. `docs/specs/http-envelope.md` records it as an explicit exclusion
+  (`[envelope-r-healthz]`).
 - `GET /metrics` returns `text/plain; version=0.0.4; charset=utf-8`.
 - A request whose query string does not deserialize (a missing `pr`, a
   non-numeric `to`) is rejected by the web framework's query extractor with
