@@ -334,7 +334,8 @@ impl Rig {
     }
 }
 
-/// Commits replayed by each of a pair of identical requests.
+/// Commits replayed by each of a pair of identical requests, on a principal
+/// that held `n` commits when the first of them was made.
 #[derive(Debug)]
 struct Cold {
     n: u64,
@@ -379,6 +380,7 @@ async fn cold(n: usize, cooling: Cooling) -> (Cold, Cold) {
     };
 
     rig = cool(rig, &mut other).await;
+    let held = chain.commits as u64;
     let mut writes = [0, 0];
     for w in &mut writes {
         let before = rig.replayed();
@@ -386,7 +388,7 @@ async fn cold(n: usize, cooling: Cooling) -> (Cold, Cold) {
         *w = rig.replayed() - before;
     }
     let write = Cold {
-        n: chain.commits as u64,
+        n: held,
         first: writes[0],
         second: writes[1],
     };
@@ -407,6 +409,34 @@ async fn cold(n: usize, cooling: Cooling) -> (Cold, Cold) {
     (write, login)
 }
 
+/// `f(n)` for each n of `sizes`, each on a thread and a current-thread
+/// runtime of its own: the chains are the cost of these tests, and the
+/// sizes are independent. The runtime per thread also keeps a per-thread
+/// count (the record's clock) exact.
+fn per_size<T, F, Fut>(sizes: &[usize], f: F) -> Vec<T>
+where
+    T: Send + 'static,
+    F: Fn(usize) -> Fut + Send + Copy + 'static,
+    Fut: std::future::Future<Output = T>,
+{
+    let threads: Vec<_> = sizes
+        .iter()
+        .map(|&n| {
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(f(n))
+            })
+        })
+        .collect();
+    threads
+        .into_iter()
+        .map(|t| t.join().expect("a size's thread"))
+        .collect()
+}
+
 /// The bounds below, run on principals of each of the sizes `$sizes` and
 /// generated twice: `fast`, in the normal test run, and `large`,
 /// `#[ignore]`d for its build time.
@@ -420,14 +450,8 @@ macro_rules! suite {
             static OBS: OnceCell<Vec<Obs>> = OnceCell::const_new();
 
             async fn obs() -> &'static [Obs] {
-                OBS.get_or_init(|| async {
-                    let mut all = Vec::new();
-                    for n in SIZES {
-                        all.push(observe(n).await);
-                    }
-                    all
-                })
-                .await
+                OBS.get_or_init(|| async { per_size(&SIZES, observe) })
+                    .await
             }
 
             /// Bound: a write, a tip read, a patch from the tip and a
@@ -507,58 +531,73 @@ macro_rules! suite {
                 }
             }
 
-            /// Bound: a holder pulling from a peer on a fork finds where the
-            /// logs part with at most ceil(log2 n) + 3 /proof requests (the
-            /// pull's own, then a search over the logs' overlap) and
-            /// exactly one commit fetched, at any n (the peer's chain is
-            /// not transferred).
-            #[tokio::test(flavor = "multi_thread")]
-            $(#[$attr])?
-            async fn fork_location_is_logarithmic() {
-                for n in SIZES {
-                    let f = fork_location(n).await;
-                    let cap = (f.n as f64).log2().ceil() as usize + 3;
-                    assert!(f.forked, "n={n}: the fork at {} was not found", f.height);
-                    assert!(f.proof <= cap, "n={n}: {} proof asks, cap {cap}", f.proof);
-                    assert_eq!(
-                        f.fetched, 1,
-                        "n={n}: commits fetched ({} /patch asks)",
-                        f.patch
-                    );
-                }
-            }
-
             /// The fork heights each size is run at: the middle of the
             /// history (h = n / 2, so h grows with n) and a low one (h = 8
-            /// at every n, so a cost in n is not hidden in h).
+            /// wherever that is below n / 2, so a cost in n is not hidden
+            /// in h).
             const LOW: usize = 8;
 
             static FORKS: OnceCell<Vec<(bool, ForkLocation)>> = OnceCell::const_new();
 
             /// A resumed holder (state kept, commits in a counted store, as
             /// the engine keeps them) of each size pulls from a peer on a
-            /// fork at each of the two heights, the peer's commit there
-            /// a key change or a data commit (whose action the peer serves
-            /// apart from it, so that the holder's fallback for a commit
-            /// that names data actions is the path taken if its first
-            /// verification refuses it). Counted per thread, so every run
-            /// must be on this runtime.
+            /// fork at the middle, the peer's commit there a key change or
+            /// a data commit (whose action the peer serves apart from it,
+            /// so that the holder's fallback for a commit that names data
+            /// actions is the path taken if its first verification refuses
+            /// it), and on a fork at the low height with a key change.
+            /// Built once for every test of the suite, a thread per size.
+            /// The count is per thread, so each size's holder runs wholly
+            /// on one.
             async fn forks() -> &'static [(bool, ForkLocation)] {
                 FORKS
                     .get_or_init(|| async {
-                        let mut all = Vec::new();
-                        for n in SIZES {
-                            for at in [n / 2, LOW] {
-                                for data in [false, true] {
-                                    let f = fork_location_at(n, at, true, data).await;
-                                    assert!(f.forked, "n={n}: the fork at {at} was not found");
-                                    all.push((data, f));
-                                }
+                        per_size(&SIZES, |n| async move {
+                            // A key change at the middle and at a low
+                            // height, and a data commit at the middle: the
+                            // chains are the cost, so not every pair.
+                            let mut configs = vec![(n / 2, false), (n / 2, true)];
+                            if LOW < n / 2 {
+                                configs.push((LOW, false));
                             }
-                        }
-                        all
+                            let forks = fork_locations(n, &configs, true).await;
+                            let mut all = Vec::new();
+                            for (&(at, data), f) in configs.iter().zip(forks) {
+                                assert!(f.forked, "n={n}: the fork at {at} was not found");
+                                all.push((data, f));
+                            }
+                            all
+                        })
+                        .into_iter()
+                        .flatten()
+                        .collect()
                     })
                     .await
+            }
+
+            /// Bound: a holder pulling from a peer on a fork finds where the
+            /// logs part with at most ceil(log2 n) + 3 /proof requests (the
+            /// pull's own, then a search over the logs' overlap) and
+            /// exactly one commit fetched, at any n (the peer's chain is
+            /// not transferred).
+            #[tokio::test]
+            $(#[$attr])?
+            async fn fork_location_is_logarithmic() {
+                for (_, f) in forks().await {
+                    let cap = (f.n as f64).log2().ceil() as usize + 3;
+                    assert!(f.proof >= 1, "n={}: no proof was asked for", f.n);
+                    assert!(
+                        f.proof <= cap,
+                        "n={}: {} proof asks, cap {cap}",
+                        f.n,
+                        f.proof
+                    );
+                    assert_eq!(
+                        f.fetched, 1,
+                        "n={}: commits fetched ({} /patch asks)",
+                        f.n, f.patch
+                    );
+                }
             }
 
             /// Bound (issue #216, the MVP bound): the holder's own work to
@@ -571,12 +610,12 @@ macro_rules! suite {
             ///
             /// Slope checked: at h = n / 2, a replay of the whole chain
             /// costs 2x the allowed c h, and a second replay of the prefix
-            /// 2x it; at h = 8 and n = 256 a replay of the whole chain is
-            /// 32x. Either is red; one replay of h is the allowance. The
+            /// 2x it; at h = 8 and n = 128 a replay of the whole chain is
+            /// 16x. Either is red; one replay of h is the allowance. The
             /// later target, O(fork depth + log n), needs a state
             /// per position that the record does not keep.
             ///
-            /// Green today: a measured pull at h = 8, 16, 32 and 128 costs
+            /// Measured: a pull at h = 8, 16, 32 and 128 costs
             /// exactly 2 h + 6 checks, which is one replay at c = 2 (a
             /// commit holds two signed messages) plus 3 c, for a key
             /// change and for a data commit alike. The data commit does not
@@ -600,16 +639,27 @@ macro_rules! suite {
                         f.height,
                         f.client_checks
                     );
+                    // The counter is per thread: work that moved to another
+                    // thread would read 0 and pass the cap.
+                    assert!(
+                        f.client_checks >= c * f.height as u64,
+                        "n={} fork at {}: {} timestamp checks, fewer than the prefix's {}: \
+                         the counter is not seeing the replay",
+                        f.n,
+                        f.height,
+                        f.client_checks,
+                        c * f.height as u64
+                    );
                 }
             }
 
             /// Bound (issue #216): the holder reads from its chain store
             /// the h commits below the fork and no more: reads <= h + 2.
             ///
-            /// Slope checked: `fork_context` reads the whole stored chain,
-            /// n commits, to replay h of them; at h = n / 2 that is 2x the
-            /// allowance and at h = 8, n = 256 it is 32x. Red today for
-            /// that reason: the reads equal n at every height.
+            /// Slope checked: reading the whole stored chain, n commits, to
+            /// replay h of them is 2x the allowance at h = n / 2 and 16x at
+            /// h = 8, n = 128. The lower bound, reads >= h, is the
+            /// positive control: a replay of h commits reads them.
             #[tokio::test]
             $(#[$attr])?
             async fn fork_location_client_reads_only_the_prefix() {
@@ -622,7 +672,35 @@ macro_rules! suite {
                         f.chain_reads,
                         f.height + 2
                     );
+                    assert!(
+                        f.chain_reads >= f.height,
+                        "n={} fork at {}: {} commits read from the chain store, fewer \
+                         than the {} it replays",
+                        f.n,
+                        f.height,
+                        f.chain_reads,
+                        f.height
+                    );
                 }
+            }
+
+            static RIVAL_ROWS: OnceCell<Vec<(u64, u64)>> = OnceCell::const_new();
+
+            /// Index rows `GET /tip` and `GET /proof` (an `extends` claim
+            /// from the middle) read, per size, on a principal holding a
+            /// retained rival at position 1.
+            async fn rival_rows() -> &'static [(u64, u64)] {
+                RIVAL_ROWS
+                    .get_or_init(|| async {
+                        per_size(&SIZES, |n| async move {
+                            let proof = format!("/proof?pr={{id}}&size={n}&claim=extends:{}", n / 2);
+                            (
+                                rival_get_rows(n, "/tip?pr={id}").await,
+                                rival_get_rows(n, &proof).await,
+                            )
+                        })
+                    })
+                    .await
             }
 
             /// Bound: an unauthenticated `GET /tip` of a principal holding a
@@ -631,12 +709,11 @@ macro_rules! suite {
             #[tokio::test]
             $(#[$attr])?
             async fn tip_read_rows_are_constant_with_a_rival_at_one() {
-                let path = "/tip?pr={id}";
-                let first = rival_get_rows(SIZES[0], path).await;
-                for n in &SIZES[1..] {
+                let rows = rival_rows().await;
+                assert!(rows[0].0 > 0, "GET /tip read no index row: not counting");
+                for (later, n) in rows.iter().zip(SIZES).skip(1) {
                     assert_eq!(
-                        first,
-                        rival_get_rows(*n, path).await,
+                        rows[0].0, later.0,
                         "index rows read by GET /tip at n={} and n={n}",
                         SIZES[0]
                     );
@@ -649,31 +726,54 @@ macro_rules! suite {
             #[tokio::test]
             $(#[$attr])?
             async fn proof_read_rows_are_constant_with_a_rival_at_one() {
-                let path = |n: usize| format!("/proof?pr={{id}}&size={n}&claim=extends:{}", n / 2);
-                let first = rival_get_rows(SIZES[0], &path(SIZES[0])).await;
-                for n in &SIZES[1..] {
+                let rows = rival_rows().await;
+                assert!(rows[0].1 > 0, "GET /proof read no index row: not counting");
+                for (later, n) in rows.iter().zip(SIZES).skip(1) {
                     assert_eq!(
-                        first,
-                        rival_get_rows(*n, &path(*n)).await,
+                        rows[0].1, later.1,
                         "index rows read by GET /proof at n={} and n={n}",
                         SIZES[0]
                     );
                 }
             }
 
+            static RESTARTED: OnceCell<Vec<(Cold, Cold)>> = OnceCell::const_new();
+            static EVICTED: OnceCell<Vec<(Cold, Cold)>> = OnceCell::const_new();
+
+            /// The first two writes and logins after a restart, per size.
+            async fn restarted() -> &'static [(Cold, Cold)] {
+                RESTARTED
+                    .get_or_init(|| async {
+                        per_size(&SIZES, |n| cold(n, Cooling::Restart))
+                    })
+                    .await
+            }
+
+            /// The same after an eviction.
+            async fn evicted() -> &'static [(Cold, Cold)] {
+                EVICTED
+                    .get_or_init(|| async {
+                        per_size(&SIZES, |n| cold(n, Cooling::Eviction))
+                    })
+                    .await
+            }
+
             /// Bound: after a restart the first write, and the first login,
-            /// replay the principal's history once (at most n plus the
-            /// commits being written); the second of each replays 0.
+            /// replay the principal's history once (at least n, at most n
+            /// plus the commits being written); the second of each
+            /// replays 0.
             ///
             /// Slope checked: the first costs at most n + 2 at every size
             /// and the second exactly 0; replaying on every request would
-            /// show the second at n, and the first at more than n.
+            /// show the second at n, and the first at more than n. The
+            /// first is also at least n: the positive control that the
+            /// replay counter sees a cold start at all.
             #[tokio::test(flavor = "multi_thread")]
             $(#[$attr])?
             async fn restart_replays_once_then_nothing() {
-                for n in SIZES {
-                    let (write, login) = cold(n, Cooling::Restart).await;
+                for (write, login) in restarted().await {
                     for (what, c) in [("write", write), ("login", login)] {
+                        assert!(c.first >= c.n, "{what} after restart: {c:?}");
                         assert!(c.first <= c.n + 2, "{what} after restart: {c:?}");
                         assert_eq!(c.second, 0, "{what} after restart: {c:?}");
                     }
@@ -686,9 +786,9 @@ macro_rules! suite {
             #[tokio::test(flavor = "multi_thread")]
             $(#[$attr])?
             async fn eviction_replays_once_then_nothing() {
-                for n in SIZES {
-                    let (write, login) = cold(n, Cooling::Eviction).await;
+                for (write, login) in evicted().await {
                     for (what, c) in [("write", write), ("login", login)] {
+                        assert!(c.first >= c.n, "{what} after eviction: {c:?}");
                         assert!(c.first <= c.n + 2, "{what} after eviction: {c:?}");
                         assert_eq!(c.second, 0, "{what} after eviction: {c:?}");
                     }
@@ -698,9 +798,9 @@ macro_rules! suite {
     };
 }
 
-// Span 16x: n grows x16 and log n x2, so a count that is O(n) or O(log n)
+// Span 16x: n grows x16 and log n x2.3, so a count that is O(n) or O(log n)
 // is red against an exact-equality bound.
-suite!(fast, [16, 64, 256]);
+suite!(fast, [8, 32, 128]);
 // Span 64x: the same bounds where the gap between log n (x2.5) and n (x64)
 // is not arguable. About a minute of build, ignored for it.
 suite!(

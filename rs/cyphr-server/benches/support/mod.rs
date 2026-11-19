@@ -270,23 +270,52 @@ pub async fn fork_location_at(
     resumed: bool,
     rival_data: bool,
 ) -> ForkLocation {
+    fork_locations(n, &[(at, rival_data)], resumed)
+        .await
+        .remove(0)
+}
+
+/// [`fork_location_at`] for each `(at, rival_data)` of `configs` on one
+/// holder of `n` commits, built once (a chain's commits are the cost of
+/// the measure, and the holder's are the same whatever the peer does).
+pub async fn fork_locations(
+    n: usize,
+    configs: &[(usize, bool)],
+    resumed: bool,
+) -> Vec<ForkLocation> {
+    let mut ats: Vec<usize> = configs.iter().map(|&(at, _)| at).collect();
+    ats.sort_unstable();
+    ats.dedup();
     let mut mine = Chain::new("golden", "key_a", "key_b").await;
-    while mine.commits < at {
-        mine.next().await;
-    }
-    let mut theirs = mine.fork().await;
-    theirs.diverge("carol");
-    let height = mine.commits;
-    if rival_data {
-        theirs.next_data().await;
+    let mut snapshots = Vec::new();
+    for at in ats {
+        while mine.commits < at {
+            mine.next().await;
+        }
+        snapshots.push((at, mine.fork().await));
     }
     while mine.commits < n {
         mine.next().await;
     }
-    while theirs.commits <= n {
-        theirs.next().await;
+    let mut out = Vec::new();
+    for &(at, rival_data) in configs {
+        let (_, snapshot) = snapshots.iter().find(|(a, _)| *a == at).expect("snapshot");
+        let mut theirs = snapshot.fork().await;
+        theirs.diverge("carol");
+        if rival_data {
+            theirs.next_data().await;
+        }
+        while theirs.commits <= n {
+            theirs.next().await;
+        }
+        out.push(pull_fork(&mine, &theirs, at, resumed).await);
     }
+    out
+}
 
+/// What the holder `mine` costs to pull from the peer `theirs`, which it
+/// shares the first `height` commits with.
+async fn pull_fork(mine: &Chain, theirs: &Chain, height: usize, resumed: bool) -> ForkLocation {
     let (peer, _dir) = keyless();
     let app = build_router(peer.clone());
     for i in 0..theirs.commits {
