@@ -54,6 +54,7 @@ fn thumbprint(b64: &str) -> coz::Thumbprint {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(thin-client): a key not in the key set is a 404, not a 422"]
 async fn thin_client_end_to_end() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[
@@ -170,27 +171,34 @@ async fn thin_client_end_to_end() {
         "another principal's head: {r:?}"
     );
 
-    // (a) The ES256 key is in the key set at the pin; the retired Ed25519
-    // key is not.
+    // (a) The ES256 key is in the key set; the retired Ed25519 key is not.
+    // A key claim is for the tip only, and (c) has moved the tip past the
+    // first pin, so the thin client takes the new head as its pin (as if a
+    // witness had re-issued it) and asks there.
+    let tip_pin = || Anchor::pin(head.clone());
+    let at_tip = head.size.to_string();
     let (es, ed) = (thumbprint(&es256.0), thumbprint(&ed25519.0));
-    let resp = proof(size.clone(), format!("key:{}", es256.0)).await;
+    let resp = proof(at_tip.clone(), format!("key:{}", es256.0)).await;
     let cert_es = certificate_of(&payload(resp, "/proof key").await, "/proof key");
     assert_eq!(
-        verify(&pin(), &cert_es, n, &Claim::Key { tmb: es }),
+        verify(&tip_pin(), &cert_es, head.size, &Claim::Key { tmb: es }),
         Ok(()),
         "the ES256 key"
     );
-    let r = verify(&pin(), &cert_es, n, &Claim::Key { tmb: ed });
+    let r = verify(&tip_pin(), &cert_es, head.size, &Claim::Key { tmb: ed });
     assert!(
         matches!(r, Err(ProofError::Refuted(_))),
         "the retired key: {r:?}"
     );
-    let resp = proof(size.clone(), format!("key:{}", ed25519.0)).await;
+    let resp = proof(at_tip, format!("key:{}", ed25519.0)).await;
     assert_eq!(
         resp.status(),
-        404,
-        "the server has no certificate for a retired key"
+        422,
+        "a key not in the key set is a question the server cannot answer"
     );
+    // And a size that is not the tip is refused whoever is asked about.
+    let resp = proof(size.clone(), format!("key:{}", es256.0)).await;
+    assert_eq!(resp.status(), 422, "a key claim away from the tip");
 
     // (b) Commit 1 is in the history the pin vouches for. The route returns
     // the commit's bundle beside the certificate; the thin client holds

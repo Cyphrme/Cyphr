@@ -2,7 +2,8 @@
 //! `root: {size, pr}`; `GET /proof?pr&size&claim=member:<i>|extends:<from>|
 //! key:<tmb>` answers `{certificate}` (and the commit's `bundle` for
 //! `member:`), with no default to the tip; an unknown claim is a 400, a
-//! claim the log cannot answer a 4xx; and `/head`, `/inclusion`,
+//! claim the log cannot answer a 422 (an index or size it lacks, a key not
+//! in the key set, a log whose last commit left no State Root); and `/head`, `/inclusion`,
 //! `/consistency` and `/key` are gone. Every certificate verifies against an
 //! anchor the asker built itself. Bodies sit in the server's envelope
 //! `payload`, as every other answer does. Red until the route exists:
@@ -149,5 +150,9 @@ async fn tip_root_and_proof_answers_have_the_shapes_and_verify() {
         "a size past the log"
     );
     let (status, _) = proof(&format!("size={size}&claim=key:{}", "A".repeat(43))).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "a key not in the key set");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a key not in the key set is a question, folded in with the rest"
+    );
 }
