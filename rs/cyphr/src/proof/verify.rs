@@ -27,19 +27,50 @@ fn framing(what: impl Into<String>) -> ProofError {
     ProofError::Framing(what.into())
 }
 
-/// STUB. The transaction root of the commit `bundle` carries, under family
-/// `alg` alone (all a walk in `alg` needs): each transaction's cozies'
-/// czds converted to `alg`, grouped as the transactions group them, the
-/// commit transaction last. A bundle suffices; the family set the commit
-/// was stored with is not needed. Each czd is derived from the coz's own
-/// bytes (its pay and signature), never taken from a value the bundle
-/// carries, so a coz altered with its signature left as is changes the
-/// root and is refused.
+/// The transaction root of the commit `bundle` carries, under family `alg`
+/// alone (all a walk in `alg` needs): each transaction's cozies' czds
+/// converted to `alg`, grouped as the transactions group them, the commit
+/// transaction last. A bundle suffices; the family set the commit was stored
+/// with is not needed. Each czd is derived from the coz's own bytes (its pay
+/// and signature), never taken from a value the bundle carries, so a coz
+/// altered with its signature left as is changes the root and is refused.
 fn tr_of_bundle(
-    _bundle: &crate::replay::WireBundle,
-    _alg: HashAlg,
+    bundle: &crate::replay::WireBundle,
+    alg: HashAlg,
 ) -> Result<TransactionRoot, ProofError> {
-    unimplemented!("stub: tr_of_bundle")
+    let Some((commit_tx, mutations)) = bundle.txs.split_last() else {
+        return Err(framing("a bundle with no transaction"));
+    };
+    let id_of = |tx: &Vec<Vec<u8>>| -> Result<Vec<u8>, ProofError> {
+        if tx.is_empty() {
+            return Err(framing("a transaction of no coz"));
+        }
+        let czds: Vec<Vec<u8>> = tx
+            .iter()
+            .map(|blob| {
+                let coz = crate::replay::StoredCoz::from_wire(blob)
+                    .map_err(|e| framing(format!("a coz that does not parse: {e}")))?;
+                Ok(TaggedCzd::new(coz.czd(), coz.hash_alg()).convert_to(alg))
+            })
+            .collect::<Result<_, ProofError>>()?;
+        if let [one] = czds.as_slice() {
+            return Ok(one.clone());
+        }
+        let refs: Vec<&[u8]> = czds.iter().map(Vec::as_slice).collect();
+        Ok(hash_concat_bytes(alg, &refs))
+    };
+    let tcr = id_of(commit_tx)?;
+    let tr = if mutations.is_empty() {
+        tcr
+    } else {
+        let mut parts = mutations.iter().map(id_of).collect::<Result<Vec<_>, _>>()?;
+        parts.push(tcr);
+        let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+        hash_concat_bytes(alg, &refs)
+    };
+    MultihashDigest::from_single(alg, tr)
+        .map(TransactionRoot)
+        .map_err(|e| framing(e.to_string()))
 }
 
 fn root_of(roots: &Roots, alg: HashAlg) -> Result<&[u8], ProofError> {
@@ -253,7 +284,7 @@ pub(super) fn membership(
     bundle: &crate::replay::WireBundle,
 ) -> Result<(), ProofError> {
     let cert = parse(certificate);
-    let Terminal::Path(path) = &cert.terminal else {
+    let Some(Terminal::Path(path)) = &cert.terminal else {
         return Err(framing("a membership claim needs a path"));
     };
     if cert.base.is_some() {
@@ -316,7 +347,8 @@ pub(super) fn extension(
     head: &Root,
 ) -> Result<(), ProofError> {
     let cert = parse(certificate);
-    let (Terminal::Consistency(ConsW { alg, proof }), Some(base)) = (&cert.terminal, &cert.base)
+    let (Some(Terminal::Consistency(ConsW { alg, proof })), Some(base)) =
+        (&cert.terminal, &cert.base)
     else {
         return Err(framing("an extension claim needs a base and a consistency"));
     };
@@ -347,4 +379,67 @@ pub(super) fn extension(
     } else {
         Err(ProofError::NotAnExtension)
     }
+}
+
+/// The arity of a tree of `size` children whose children are role slots:
+/// two cells (KR, then the nonces) fold the same under either arity, so
+/// only a size past two names the wide one.
+fn role_arity(size: u64) -> u64 {
+    if size <= 2 { 2 } else { 256 }
+}
+
+/// Reconstruct the root of the tree of `size` children that has `leaf` at
+/// `index`, along `hop`'s steps, under `arity`: the leaf is the root the hop
+/// below computed, never a value the certificate names, so a role is bound
+/// by the hash and not by the slot a certificate claims it in.
+fn climb(hop: &PathW, leaf: &[u8], arity: u64) -> Result<Vec<u8>, ProofError> {
+    if hop.index >= hop.size {
+        return Err(framing("a hop whose index is past its size"));
+    }
+    let skeleton = polydigest::rebalanced_skeleton(hop.size, arity, hop.index)
+        .ok_or_else(|| framing("a hop of no shape"))?;
+    eml::reconstruct_inclusion_root(&MaltHasher::new(hop.alg), leaf, &skeleton, &hop.steps)
+        .ok_or(ProofError::Path)
+}
+
+/// The key `tmb` is in the key set at `size`: PR opens to SR (cell 0), SR
+/// to AR, AR to KR, KR to the key's leaf, each hop's leaf the root the one
+/// below computed.
+pub(super) fn key(
+    anchor: &Anchor<'_>,
+    certificate: &Certificate,
+    size: u64,
+    tmb: &coz::Thumbprint,
+) -> Result<(), ProofError> {
+    let cert = parse(certificate);
+    let Some(key) = &cert.key else {
+        return Err(framing("a key claim needs a key certificate"));
+    };
+    let pr = anchor
+        .pr_at(size)
+        .ok_or_else(|| asked(format!("the anchor pins no root at size {size}")))?;
+    open_pinned(&cert.top, pr)?;
+    let sr = cert.top.variant(0, key.alg).ok_or(ProofError::Family)?;
+    let [kt, ar, state] = key.hops.as_slice() else {
+        return Err(framing("a key certificate needs three hops"));
+    };
+    if state.size > 2 {
+        return Err(framing("a state root of more than two children"));
+    }
+    let native = crate::state::HASH_ALGS
+        .into_iter()
+        .find(|&a| width(a) == tmb.as_bytes().len())
+        .ok_or_else(|| asked("a thumbprint of no family's width"))?;
+    // The key's leaf in KT: its thumbprint, converted to the family.
+    let leaf = if native == key.alg {
+        tmb.as_bytes().to_vec()
+    } else {
+        crate::state::hash_bytes(key.alg, tmb.as_bytes())
+    };
+    let kr = climb(kt, &leaf, 256)?;
+    let auth = climb(ar, &kr, role_arity(ar.size))?;
+    if climb(state, &auth, 2)? != sr {
+        return Err(ProofError::Path);
+    }
+    Ok(())
 }

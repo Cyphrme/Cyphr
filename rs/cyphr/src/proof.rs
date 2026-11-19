@@ -9,6 +9,25 @@
 //! Tree opening at `s - 1`) into the arrow's family. The Principal Tree
 //! opening is carried at each end.
 //!
+//! # What a thin client can and cannot establish
+//!
+//! A client that pins one [`Root`] (by other means: a root it was given
+//! out of band, or one it replayed) can check, with [`verify`], that a
+//! commit is in the log that root commits to ([`Claim::Member`], given the
+//! commit itself), that a longer head extends it ([`Claim::Extends`]), and
+//! that a key is in its key set ([`Claim::Key`]). A server serves the
+//! certificates (`GET /proof`) and the head (`GET /tip`'s `root`); a
+//! holder of a principal builds them with [`Principal::prove`](crate::Principal::prove)
+//! and reads roots with [`Principal::root_at`](crate::Principal::root_at).
+//!
+//! It cannot establish that its pinned root is the principal's *current*
+//! one: a certificate is time-free, and a server may serve a log that is
+//! older than the principal's real state. Freshness needs a witness, a
+//! party the client trusts to say what the latest root is; it is not
+//! something a certificate can show. Nor does a verified extension advance
+//! the pin: an `Ok` from an `Extends` claim steers what to fetch and does
+//! not vouch for what the peer added.
+//!
 //! # Wire form
 //!
 //! JSON, every byte string base64url without padding, every family named
@@ -96,6 +115,9 @@ pub enum Cause {
     /// The prover cannot build the certificate for what was asked.
     #[error("no certificate: {0}")]
     Unprovable(String),
+    /// The key asked about is not in the key set at the size asked.
+    #[error("no such key: {0}")]
+    NoKey(String),
     /// The log's last commit left no State Root, so there is nothing to open.
     #[error("no state root: {0}")]
     NoStateRoot(String),
@@ -145,9 +167,11 @@ impl From<Cause> for ProofError {
                 Self::Refuted(c)
             },
             Cause::NotAnExtension => Self::Diverged(c),
-            Cause::Asked(_) | Cause::Unprovable(_) | Cause::NoStateRoot(_) | Cause::Storage(_) => {
-                Self::Question(c)
-            },
+            Cause::Asked(_)
+            | Cause::Unprovable(_)
+            | Cause::NoKey(_)
+            | Cause::NoStateRoot(_)
+            | Cause::Storage(_) => Self::Question(c),
             Cause::Framing(_) => Self::Malformed(c),
         }
     }
@@ -330,7 +354,7 @@ impl<'a> Anchor<'a> {
 /// Opaque proof material: built by `prove_*`, parsed by a bounded
 /// `Deserialize` that refuses oversized fields, mis-framed Principal
 /// Tree cells and implausible lengths before any hashing. It carries
-/// no trust: only [`verify_membership`] and [`verify_extension`] against
+/// no trust: only [`verify`] against
 /// an [`Anchor`] judge it.
 ///
 /// A certificate cannot be built by hand:
@@ -424,7 +448,7 @@ pub fn verify(
             };
             verify::extension(anchor, certificate, *from, &head)
         },
-        Claim::Key { .. } => unimplemented!("stub: verify of a key claim"),
+        Claim::Key { tmb } => verify::key(anchor, certificate, size, tmb),
     }
     .map_err(Into::into)
 }

@@ -219,7 +219,18 @@ pub(super) struct Cert {
     pub top: Cells,
     pub base: Option<Cells>,
     pub stitches: Vec<StitchW>,
-    pub terminal: Terminal,
+    /// A path or consistency proof; absent in a key certificate.
+    pub terminal: Option<Terminal>,
+    /// The key's hops (leaf in KT, KR in the AR node, AR in the SR node);
+    /// present only in a key certificate.
+    pub key: Option<KeyW>,
+}
+
+/// The hops of a key certificate, in one family.
+#[derive(Clone, Debug)]
+pub(super) struct KeyW {
+    pub alg: HashAlg,
+    pub hops: Vec<PathW>,
 }
 
 // ---- the raw wire ----
@@ -285,8 +296,18 @@ pub(super) struct RawCert {
     top: RawEnds,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base: Option<RawEnds>,
-    stitches: Vec<RawStitch>,
-    terminal: RawTerminal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stitches: Option<Vec<RawStitch>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal: Option<RawTerminal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key: Option<RawKey>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RawKey {
+    alg: String,
+    hops: Lim<RawPath, 8>,
 }
 
 fn steps_of(raw: Vec<RawStep>, w: usize) -> Result<Vec<eml::ProofStep>, String> {
@@ -351,8 +372,31 @@ impl TryFrom<RawCert> for Cert {
     type Error = String;
 
     fn try_from(raw: RawCert) -> Result<Self, String> {
+        if let Some(key) = raw.key {
+            if raw.stitches.is_some() || raw.terminal.is_some() || raw.base.is_some() {
+                return Err("a key certificate with stitches, a terminal or a base".into());
+            }
+            let alg = alg_named(&key.alg)?;
+            let hops = key
+                .hops
+                .0
+                .into_iter()
+                .map(path_of)
+                .collect::<Result<Vec<_>, _>>()?;
+            if hops.iter().any(|h| h.alg != alg) {
+                return Err("a key hop in another family".into());
+            }
+            return Ok(Cert {
+                top: cells_of(raw.top.pt_cells)?,
+                base: None,
+                stitches: Vec::new(),
+                terminal: None,
+                key: Some(KeyW { alg, hops }),
+            });
+        }
         let stitches = raw
             .stitches
+            .ok_or("a certificate with no stitches")?
             .into_iter()
             .map(|s| {
                 let o = s.opening;
@@ -396,7 +440,7 @@ impl TryFrom<RawCert> for Cert {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let t = raw.terminal;
+        let t = raw.terminal.ok_or("a certificate with no terminal")?;
         let alg = alg_named(&t.alg)?;
         let terminal = match (t.steps, t.peak_path) {
             (Some(steps), None) => Terminal::Path(PathW {
@@ -444,7 +488,8 @@ impl TryFrom<RawCert> for Cert {
             top: cells_of(raw.top.pt_cells)?,
             base: raw.base.map(|b| cells_of(b.pt_cells)).transpose()?,
             stitches,
-            terminal,
+            terminal: Some(terminal),
+            key: None,
         })
     }
 }
@@ -507,7 +552,21 @@ impl From<&Cert> for RawCert {
                 }
             })
             .collect();
-        let terminal = raw_terminal(&c.terminal);
+        if let Some(k) = &c.key {
+            return RawCert {
+                top: RawEnds {
+                    pt_cells: raw_cells(&c.top),
+                },
+                base: None,
+                stitches: None,
+                terminal: None,
+                key: Some(RawKey {
+                    alg: k.alg.to_string(),
+                    hops: Lim(k.hops.iter().map(raw_path).collect()),
+                }),
+            };
+        }
+        let terminal = c.terminal.as_ref().map(raw_terminal);
         RawCert {
             top: RawEnds {
                 pt_cells: raw_cells(&c.top),
@@ -515,8 +574,9 @@ impl From<&Cert> for RawCert {
             base: c.base.as_ref().map(|b| RawEnds {
                 pt_cells: raw_cells(b),
             }),
-            stitches,
+            stitches: Some(stitches),
             terminal,
+            key: None,
         }
     }
 }

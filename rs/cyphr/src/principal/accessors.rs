@@ -89,6 +89,11 @@ impl PrincipalState {
         &self.core.genesis_key
     }
 
+    /// The key `tmb` named in any period of this principal, active or not.
+    pub(crate) fn key_of_any_period(&self, tmb: &Thumbprint) -> Option<&Key> {
+        self.core.key_timeline.key_of(tmb)
+    }
+
     /// Get a key by thumbprint.
     pub fn get_key(&self, tmb: &Thumbprint) -> Option<&Key> {
         let key = tmb.to_b64();
