@@ -180,7 +180,7 @@ async fn run(n: usize) {
         let (st, len, _) = call(
             &app_a,
             "GET",
-            &format!("/consistency?pr={id}&from={}", n / 2),
+            &format!("/proof?pr={id}&size={n}&claim=extends:{}", n / 2),
             String::new(),
         )
         .await;
@@ -190,7 +190,7 @@ async fn run(n: usize) {
     .await;
     row(
         n,
-        "GET /consistency (from n/2)",
+        "GET /proof extends (from n/2)",
         "O(log n) hashes, replayed 0",
         c,
     );
@@ -198,7 +198,7 @@ async fn run(n: usize) {
         let (st, len, _) = call(
             &app_a,
             "GET",
-            &format!("/inclusion?pr={id}&index={}", n / 2),
+            &format!("/proof?pr={id}&size={n}&claim=member:{}", n / 2),
             String::new(),
         )
         .await;
@@ -206,7 +206,12 @@ async fn run(n: usize) {
         len
     })
     .await;
-    row(n, "GET /inclusion (n/2)", "O(log n) hashes, replayed 0", c);
+    row(
+        n,
+        "GET /proof member (n/2)",
+        "O(log n) hashes, replayed 0",
+        c,
+    );
 
     // auth
     let c = measure(&a, None, 3, || async {
@@ -299,9 +304,9 @@ async fn main() {
         run(n).await;
         let f = fork_location(n).await;
         println!(
-            "| {} | fork location (parts at {}) | 1 consistency, O(log n) inclusion, 1 commit | 0 \
-             | 0 | 0 | {} consistency + {} inclusion + {} patch asks | {} commits | {:.3} |",
-            f.n, f.height, f.consistency, f.inclusion, f.patch, f.fetched, f.ms
+            "| {} | fork location (parts at {}) | O(log n) proof asks, 1 commit | 0 | 0 | 0 | {} \
+             proof + {} patch asks | {} commits | {:.3} |",
+            f.n, f.height, f.proof, f.patch, f.fetched, f.ms
         );
     }
 }

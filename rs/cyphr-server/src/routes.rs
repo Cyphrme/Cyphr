@@ -111,6 +111,11 @@ pub struct TipResponse {
     pub cr: Option<String>,
     pub commit_id: String,
     pub commit_count: u64,
+    /// The principal's root at its last commit, `{size, pr}`: what a thin
+    /// client pins and `GET /proof` certificates are checked against. The
+    /// server's claim; a client that has not pinned it by other means learns
+    /// no more from it than what the server says.
+    pub root: Option<cyphr::proof::Root>,
     pub last_updated: i64,
     pub now: i64,
 }
@@ -370,6 +375,7 @@ pub async fn tip(
     // The tip reported is the tip attested: the roots signed are those of
     // the commit it names, whatever has landed since.
     let coz = sign_tip_attestation(&state, &t).await?;
+    let root = proving_log(&state, &t).await?.root_at(t.commit_count);
 
     let payload = TipResponse {
         principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
@@ -379,6 +385,7 @@ pub async fn tip(
         cr: absent_cr(&t.cr),
         commit_id: t.commit_id.clone(),
         commit_count: t.commit_count,
+        root,
         last_updated: t.last_updated,
         now: crate::auth::server_now(),
     };
@@ -484,25 +491,17 @@ pub async fn branches(
     Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
-/// Query parameters for `GET /consistency`.
+/// Query parameters for `GET /proof`.
 #[derive(Debug, Deserialize)]
-pub struct ConsistencyQuery {
+pub struct ProofQuery {
     /// Principal genesis identifier.
     pub pr: String,
-    /// The size, in commits, of the log the asker holds. Raw string here,
-    /// parsed in the handler so a malformed value is refused with the
-    /// app's JSON error envelope, as `GET /patch`'s anchor is.
-    pub from: String,
-}
-
-/// Query parameters for `GET /inclusion`.
-#[derive(Debug, Deserialize)]
-pub struct InclusionQuery {
-    /// Principal genesis identifier.
-    pub pr: String,
-    /// The commit's position in the log, from 0. Raw string, as
-    /// [`ConsistencyQuery::from`].
-    pub index: String,
+    /// The size, in commits, of the log the claim is about. Raw string,
+    /// parsed in the handler so a malformed value is refused with the app's
+    /// JSON error envelope. Asked for, never defaulted to the tip.
+    pub size: String,
+    /// `member:<index>` or `extends:<from>`.
+    pub claim: String,
 }
 
 type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
@@ -553,88 +552,102 @@ fn proof_count(what: &str, raw: &str) -> Result<u64, AppError> {
         .map_err(|_| AppError::bad_request(format!("{what} must be a commit count, got {raw:?}")))
 }
 
-/// The proof's answer, as an unsigned envelope naming the principal.
-fn proof_answer(t: &TipState, mut payload: serde_json::Value) -> impl IntoResponse + use<> {
-    payload["principal_id"] = cyphr_storage::engine::bare_digest(&t.principal_id)
-        .to_string()
-        .into();
-    Json(Envelope::unsigned(payload))
+/// What `GET /proof` is asked to certify, parsed from its `claim`.
+enum ProofClaim {
+    Member(u64),
+    Extends(u64),
 }
 
-/// `GET /consistency?pr=<PG>&from=<n>` -- the proof that the principal's
-/// commit log, as it stands, extends the log of its first `n` commits
-/// (SPEC 4.4).
-///
-/// The payload is `{principal_id, size, cr, proof}`: the log's size and
-/// Commit Root as of the answer, and the consistency proof from `n` to
-/// it. They are the server's claim, for the asker to check against the
-/// log it holds (`cyphr_client::verify_extension`) and, once the commits
-/// they cover replay, against what replayed; the server signs nothing
-/// here and the proof asks to be believed no further than it verifies.
-///
-/// `n` must be at least 1 and below the log's size: an asker that holds
-/// the whole log, or none of it, has nothing to ask. A principal in Error
-/// has no single log (SPEC 15.5) and is a 409, as is a commit landing
-/// between reading the tip and proving against it.
-#[tracing::instrument(skip(state))]
-pub async fn consistency(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<ConsistencyQuery>,
-) -> Result<impl IntoResponse, AppError> {
-    let from = proof_count("from", &query.from)?;
-    let t = provable_tip(&state, &query.pr).await?;
-    if from == 0 || from >= t.commit_count {
-        return Err(AppError::bad_request(format!(
-            "from must be between 1 and {} (the log's size less one), got {from}",
-            t.commit_count.saturating_sub(1)
-        )));
+fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
+    let bad = || {
+        AppError::bad_request(format!(
+            "claim must be member:<index> or extends:<from>, got {raw:?}"
+        ))
+    };
+    let (kind, arg) = raw.split_once(':').ok_or_else(bad)?;
+    match kind {
+        "member" => Ok(ProofClaim::Member(arg.parse().map_err(|_| bad())?)),
+        "extends" => Ok(ProofClaim::Extends(arg.parse().map_err(|_| bad())?)),
+        _ => Err(bad()),
     }
-    let log = proving_log(&state, &t).await?;
-    let extension = cyphr_client::Extension::of(&log, from)
-        .await
-        .map_err(|e| AppError::internal(format!("consistency proof not made: {e}")))?;
-    if extension.size != t.commit_count {
-        return Err(AppError::conflict(format!(
-            "the log of {} moved from {} to {} commits: read the tip again",
-            t.principal_id, t.commit_count, extension.size
-        )));
-    }
-    Ok(proof_answer(&t, extension.to_payload()))
 }
 
-/// `GET /inclusion?pr=<PG>&index=<i>` -- the commit the principal's log
-/// holds at position `i`, with the proof that it is in the log (SPEC 4.4).
-/// How an asker that holds a different log finds where the two part,
-/// without being sent either.
+/// `GET /proof?pr=<PG>&size=<n>&claim=<claim>` -- the certificate that a
+/// claim holds of the log of the principal's first `n` commits (SPEC 4.4),
+/// whatever algorithm the commits involved were made under:
 ///
-/// The payload is `{principal_id, index, size, cr, leaf, proof}`, the
-/// asker's to check (`cyphr_client::Inclusion::holds`) and no more than a
-/// claim: a fork it points at is proved by the commits' signatures. `i`
-/// must be below the log's size; the answers of 409 are `/consistency`'s.
+/// - `member:<i>`: the commit at position `i` is in it; the answer also carries that commit's
+///   `bundle`, which the asker needs to compute the transaction root the certificate is checked
+///   against;
+/// - `extends:<from>`: it extends the log of the first `from` commits, to the head `GET /tip`'s
+///   `root` reports;
+///
+/// The payload is `{certificate}` (and `bundle` for `member:`) and nothing
+/// else; the size is asked for. The asker checks the certificate against an
+/// anchor it built itself (`cyphr::proof::verify`). What a thin client can
+/// establish is only that the log it pinned contains or precedes what it
+/// asked about; that its pinned root is the principal's current one needs a
+/// witness, which this route is not.
+///
+/// An unknown or unparsable claim is a 400. A claim the log does not answer
+/// is a 422: an index or size past it, or a log whose last commit left the
+/// principal with no keys and no data (so its root has no state root to
+/// open). A
+/// store that cannot be read is the server's, a 5xx. A principal in Error
+/// has no single log (SPEC 15.5) and is a 409.
 #[tracing::instrument(skip(state))]
-pub async fn inclusion(
+pub async fn proof(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<InclusionQuery>,
+    Query(query): Query<ProofQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let index = proof_count("index", &query.index)?;
+    let size = proof_count("size", &query.size)?;
+    let asked = parse_claim(&query.claim)?;
     let t = provable_tip(&state, &query.pr).await?;
-    if index >= t.commit_count {
-        return Err(AppError::bad_request(format!(
-            "index must be below the log's size {}, got {index}",
-            t.commit_count
-        )));
-    }
     let log = proving_log(&state, &t).await?;
-    let stated = cyphr_client::Inclusion::of(&log, index)
-        .await
-        .map_err(|e| AppError::internal(format!("inclusion proof not made: {e}")))?;
-    if stated.size != t.commit_count {
-        return Err(AppError::conflict(format!(
-            "the log of {} moved from {} to {} commits: read the tip again",
-            t.principal_id, t.commit_count, stated.size
-        )));
+    let held = |i: u64| {
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| log.commit_at(i))
+            .ok_or_else(|| AppError::unprocessable(format!("the log holds no commit {i}")))
+    };
+    let (claim, bundle) = match asked {
+        ProofClaim::Member(index) => {
+            let bundle = cyphr::replay::WireBundle::of_commit(held(index)?)
+                .map_err(|e| AppError::internal(format!("commit {index} not encoded: {e}")))?;
+            (
+                cyphr::proof::Claim::Member {
+                    index,
+                    commit: bundle.clone(),
+                },
+                Some(bundle),
+            )
+        },
+        ProofClaim::Extends(from) => {
+            let head = log.root_at(size).ok_or_else(|| {
+                AppError::unprocessable(format!("the log holds no root at size {size}"))
+            })?;
+            (
+                cyphr::proof::Claim::Extends {
+                    from,
+                    head: head.pr,
+                },
+                None,
+            )
+        },
+    };
+    let certificate = log.prove(size, &claim).await.map_err(|e| match &e {
+        cyphr::proof::ProveError::Question(_) => AppError::unprocessable(e.to_string()),
+        _ => AppError::internal(e.to_string()),
+    })?;
+    let mut payload = serde_json::json!({
+        "certificate": serde_json::to_value(&certificate)
+            .map_err(|e| AppError::internal(format!("certificate not encoded: {e}")))?,
+    });
+    if let Some(bundle) = bundle {
+        payload["bundle"] = serde_json::to_value(&bundle)
+            .map_err(|e| AppError::internal(format!("bundle not encoded: {e}")))?;
     }
-    Ok(proof_answer(&t, stated.to_payload()))
+    Ok(Json(Envelope::unsigned(payload)))
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds

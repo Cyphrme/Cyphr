@@ -74,13 +74,15 @@ async fn observe(n: usize) -> Obs {
         serde_json::from_slice::<serde_json::Value>(&body).expect("json")
     };
     // Hashes in a consistency proof: the boundary, the peak path and the
-    // new peaks; in an inclusion proof: the path.
+    // new peaks; in an inclusion proof: the path. A chain that never
+    // rotated an algorithm has no stitch, so each is its terminal alone.
     let len = |v: &serde_json::Value| v.as_array().expect("array").len();
     let consistency_hashes = |v: &serde_json::Value| {
-        let p = &v["payload"]["proof"];
+        let p = &v["payload"]["certificate"]["terminal"];
         1 + len(&p["peak_path"]) + len(&p["new_peaks"])
     };
-    let inclusion_hashes = |v: &serde_json::Value| len(&v["payload"]["proof"]["path"]);
+    let inclusion_hashes =
+        |v: &serde_json::Value| len(&v["payload"]["certificate"]["terminal"]["steps"]);
 
     let before = replayed();
     let w = chain.next().await;
@@ -109,7 +111,7 @@ async fn observe(n: usize) -> Obs {
     let c = ok(call(
         &app_a,
         "GET",
-        &format!("/consistency?pr={id}&from={}", n / 2),
+        &format!("/proof?pr={id}&size={n}&claim=extends:{}", n / 2),
         String::new(),
     )
     .await);
@@ -118,7 +120,7 @@ async fn observe(n: usize) -> Obs {
     let i = ok(call(
         &app_a,
         "GET",
-        &format!("/inclusion?pr={id}&index={}", n / 2),
+        &format!("/proof?pr={id}&size={n}&claim=member:{}", n / 2),
         String::new(),
     )
     .await);
@@ -247,21 +249,17 @@ async fn gossip_pull_replays_only_the_new_commits() {
 }
 
 /// Bound: a holder pulling from a peer on a fork finds where the logs part
-/// with one consistency request, at most ceil(log2 n) + 2 inclusion
-/// requests and exactly one commit fetched, at any n (the peer's chain is
+/// with at most ceil(log2 n) + 3 /proof requests (the pull's own, then
+/// a search over the logs' overlap) and exactly one
+/// commit fetched, at any n (the peer's chain is
 /// not transferred).
 #[tokio::test(flavor = "multi_thread")]
 async fn fork_location_is_logarithmic() {
     for n in [SHORT, LONG] {
         let f = fork_location(n).await;
-        let cap = (f.n as f64).log2().ceil() as usize + 2;
+        let cap = (f.n as f64).log2().ceil() as usize + 3;
         assert!(f.forked, "n={n}: the fork at {} was not found", f.height);
-        assert_eq!(f.consistency, 1, "n={n}");
-        assert!(
-            f.inclusion <= cap,
-            "n={n}: {} inclusion asks, cap {cap}",
-            f.inclusion
-        );
+        assert!(f.proof <= cap, "n={n}: {} proof asks, cap {cap}", f.proof);
         assert_eq!(
             f.fetched, 1,
             "n={n}: commits fetched ({} /patch asks)",
@@ -318,8 +316,16 @@ async fn tip_read_rows_are_constant_with_a_rival_at_one() {
 #[tokio::test]
 async fn consistency_read_rows_are_constant_with_a_rival_at_one() {
     let (short, long) = (
-        rival_get_rows(SHORT, &format!("/consistency?pr={{id}}&from={}", SHORT / 2)).await,
-        rival_get_rows(LONG, &format!("/consistency?pr={{id}}&from={}", LONG / 2)).await,
+        rival_get_rows(
+            SHORT,
+            &format!("/proof?pr={{id}}&size={SHORT}&claim=extends:{}", SHORT / 2),
+        )
+        .await,
+        rival_get_rows(
+            LONG,
+            &format!("/proof?pr={{id}}&size={LONG}&claim=extends:{}", LONG / 2),
+        )
+        .await,
     );
     assert_eq!(
         short, long,

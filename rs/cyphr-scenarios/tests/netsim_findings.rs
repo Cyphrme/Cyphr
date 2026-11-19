@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use coz::base64ct::Encoding;
+use cyphr::proof::{Anchor, Certificate, Claim, Root, verify};
 use cyphr_scenarios::actions::{KeyRef, Principal, Standing};
 use cyphr_scenarios::{Capability, Harness};
 
@@ -360,4 +362,119 @@ async fn a_chain_whose_algorithm_returns_replays_at_every_holder() {
         },
     )
     .await;
+}
+
+async fn get(
+    h: &Harness,
+    peer: std::net::SocketAddr,
+    path: &str,
+    query: &[(&str, &str)],
+) -> reqwest::Response {
+    h.http
+        .get(format!("http://{peer}{path}"))
+        .query(query)
+        .send()
+        .await
+        .expect("request")
+}
+
+// After a full rotation (Ed25519 -> ES256) every commit of the chain must
+// be provable from the head alone. `/tip` gives the Root,
+// `/proof?pr&size&claim=member:<i>` answers 200 for every index with a
+// certificate and the bundle, and each verifies against an anchor on the
+// chain a client pulled and against a pin of the head.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
+    let h = Harness::start(&["p1"]).await.expect("start peers");
+    let (laptop, phone) = (h.client("laptop"), h.client("phone"));
+    let pr = h.ok(laptop.create_principal().await);
+    h.ok(laptop.commit_data(&pr, "before").await);
+    let paired = h.ok(laptop.pair_device(&pr, &phone).await);
+    let genesis = KeyRef(h.genesis_tmb(&pr).expect("genesis key"));
+    // The phone's ES256 key removes the only Ed25519 key: that family
+    // closes, and everything after is ES256 alone.
+    h.ok(phone.remove_key(&pr, &genesis).await);
+    for i in 0..4 {
+        h.ok(phone.commit_data(&pr, &format!("after{i}")).await);
+    }
+    let _ = paired;
+    h.ok(phone.push(&pr, &["p1"]).await)
+        .accepted("rotated chain");
+    let height = h.peer_view("p1", &pr).await.expect("p1 holds it").height;
+    assert!(height >= 8, "height {height}");
+
+    // The verifier's side: pull the chain into a record and anchor on its
+    // verified tip, as a client holding only the tip would.
+    let entry = h.genesis_of(&pr).expect("genesis entry");
+    let public =
+        coz::base64ct::Base64UrlUnpadded::decode_vec(entry["pub_key"].as_str().expect("pub_key"))
+            .expect("base64url");
+    let alg = entry["alg"].as_str().expect("alg");
+    let tmb = coz::compute_thumbprint_for_alg(alg, &public).expect("thumbprint");
+    let genesis = cyphr::Key::new(alg.to_owned(), tmb, public).expect("genesis key");
+    let mut record =
+        cyphr_client::Record::new(pr.bare(), cyphr_client::Anchor::GenesisKey(genesis));
+    let connector = cyphr_client::HttpConnector::connect(
+        &format!("http://{}", h.peer("p1").addr()),
+        &cyphr_client::HttpOptions::new(Duration::from_secs(5)),
+    )
+    .expect("connector");
+    cyphr_client::pull(
+        &mut record,
+        &[cyphr_client::PullPeer {
+            name: "p1",
+            connector: &connector,
+        }],
+    )
+    .await;
+    let held = record.principal().expect("the record holds the chain");
+
+    // `GET /tip?pr` carries the head as `root: {size, pr}`; `GET
+    // /proof?pr&size&claim=member:<i>` is `{certificate, bundle}`; nothing
+    // echoed, no default to the tip.
+    let peer = h.peer("p1").addr();
+    let resp = get(&h, peer, "/tip", &[("pr", pr.0.as_str())]).await;
+    assert_eq!(resp.status(), 200, "/tip");
+    let body: serde_json::Value = resp.json().await.expect("json");
+    let head: Root = serde_json::from_value(body["payload"]["root"].clone())
+        .unwrap_or_else(|e| panic!("/tip has no root: {e}"));
+    assert_eq!(head.size, height, "the head is the last commit's");
+    assert_eq!(
+        Some(head.clone()),
+        held.root_at(head.size),
+        "and the record agrees"
+    );
+
+    let (chain, pin) = (Anchor::of_chain(held.state()), Anchor::pin(head.clone()));
+    for index in 0..head.size {
+        let (claim, n) = (format!("member:{index}"), head.size.to_string());
+        let resp = get(
+            &h,
+            peer,
+            "/proof",
+            &[("pr", pr.0.as_str()), ("size", &n), ("claim", &claim)],
+        )
+        .await;
+        assert_eq!(resp.status(), 200, "index {index} of {}", head.size);
+        let body: serde_json::Value = resp.json().await.expect("json");
+        let cert: Certificate = serde_json::from_value(body["payload"]["certificate"].clone())
+            .unwrap_or_else(|e| panic!("index {index}: not a certificate: {e}"));
+        // The bundle comes back with the certificate, and is the commit's.
+        let bundle: cyphr::replay::WireBundle =
+            serde_json::from_value(body["payload"]["bundle"].clone())
+                .unwrap_or_else(|e| panic!("index {index}: not a bundle: {e}"));
+        assert_eq!(
+            bundle,
+            cyphr::replay::WireBundle::of_commit(held.commit_at(index as usize).expect("commit"))
+                .expect("bundle")
+        );
+        let claim = Claim::Member {
+            index,
+            commit: bundle,
+        };
+        for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
+            verify(anchor, &cert, head.size, &claim)
+                .unwrap_or_else(|e| panic!("index {index} does not verify ({what}): {e}"));
+        }
+    }
 }

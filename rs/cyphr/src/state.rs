@@ -345,6 +345,8 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
 ///
 /// Same as [`hash_sorted_concat`] but returns raw bytes for MultihashDigest construction.
 pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::probe::hashed();
     // Sort lexicographically
     let mut sorted: Vec<&[u8]> = components.to_vec();
     sorted.sort();
@@ -361,6 +363,8 @@ pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Ve
 /// Used where the order is defined, not sorted (SPEC §3.7): CommitID, where
 /// coz order is significant (SPEC §8.5), and the Arrow (SPEC §4.2).
 pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::probe::hashed();
     let mut concat = Vec::new();
     for c in components {
         concat.extend_from_slice(c);
@@ -372,6 +376,8 @@ pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
 ///
 /// Used when converting a czd from one algorithm to another.
 pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::probe::hashed();
     alg.hash_bytes(data)
 }
 

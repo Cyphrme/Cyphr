@@ -168,8 +168,8 @@ pub struct ForkLocation {
     pub n: usize,
     pub height: usize,
     pub forked: bool,
-    pub consistency: usize,
-    pub inclusion: usize,
+    /// `/proof` asks (extension certificates).
+    pub proof: usize,
     pub patch: usize,
     /// Commits the peer's `/patch` answers carried.
     pub fetched: usize,
@@ -292,8 +292,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         n: mine.commits,
         height,
         forked: report.forks.first().is_some_and(|f| f.height == height),
-        consistency: count("/consistency"),
-        inclusion: count("/inclusion"),
+        proof: count("/proof"),
         patch: count("/patch"),
         fetched: *connector.fetched.lock().expect("fetched"),
         ms,

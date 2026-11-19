@@ -701,13 +701,17 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     );
 }
 
-/// A peer that also proves its log, as a real server does: `/consistency`
-/// and `/inclusion` come from its chain's own commit trees. It records the
+/// A peer that also proves its log, as a real server does: `/tip`'s
+/// `root` and `/proof` come from its chain's own commit trees. It records the
 /// paths asked, so a test can pin which route a pull took.
 struct ProofMirror {
     mirror: Mirror,
     principal: cyphr::Principal<cyphr::eml::MemoryStorage>,
     asked: std::sync::Mutex<Vec<String>>,
+    /// The whole targets asked, query included.
+    targets: std::sync::Mutex<Vec<String>>,
+    /// `/proof` answers that crossed an algorithm rotation.
+    stitched: std::sync::atomic::AtomicUsize,
 }
 
 impl Connector for ProofMirror {
@@ -719,6 +723,10 @@ impl Connector for ProofMirror {
         let target = request.target.as_str();
         let (path, q) = target.split_once('?').unwrap_or((target, ""));
         self.asked.lock().expect("asked").push(path.to_owned());
+        self.targets
+            .lock()
+            .expect("targets")
+            .push(target.to_owned());
         let number = |name: &str| {
             q.split('&')
                 .filter_map(|kv| kv.split_once('='))
@@ -726,19 +734,38 @@ impl Connector for ProofMirror {
                 .and_then(|(_, v)| v.parse::<u64>().ok())
         };
         let payload = match path {
-            "/consistency" => {
-                let from = number("from").ok_or(ConnectError::NonSuccess(400))?;
-                cyphr_client::Extension::of(&self.principal, from)
-                    .await
-                    .map_err(|_| ConnectError::NonSuccess(404))?
-                    .to_payload()
+            "/tip" => {
+                let size = self.principal.commit_count() as u64;
+                json!({ "root": self.principal.root_at(size).expect("a root") })
             },
-            "/inclusion" => {
-                let index = number("index").ok_or(ConnectError::NonSuccess(400))?;
-                cyphr_client::Inclusion::of(&self.principal, index)
+            "/proof" => {
+                let size = number("size").ok_or(ConnectError::NonSuccess(400))?;
+                let from = q
+                    .split('&')
+                    .filter_map(|kv| kv.split_once('='))
+                    .find(|(k, _)| *k == "claim")
+                    .and_then(|(_, v)| v.strip_prefix("extends:"))
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .ok_or(ConnectError::NonSuccess(400))?;
+                let certificate = self
+                    .principal
+                    .prove(
+                        size,
+                        &cyphr::proof::Claim::Extends {
+                            from,
+                            head: self.principal.root_at(size).expect("a head").pr,
+                        },
+                    )
                     .await
-                    .map_err(|_| ConnectError::NonSuccess(404))?
-                    .to_payload()
+                    .map_err(|_| ConnectError::NonSuccess(404))?;
+                let payload = json!({ "certificate": certificate });
+                if payload["certificate"]["stitches"]
+                    .as_array()
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    self.stitched.fetch_add(1, Ordering::SeqCst);
+                }
+                payload
             },
             _ => return self.mirror.exchange(request).await,
         };
@@ -769,7 +796,7 @@ fn located_clock() -> i64 {
 }
 
 /// The lost-branch scenario over peers that serve proofs, so the pull
-/// finds the fork by consistency and inclusion proofs (`locate_fork`)
+/// finds the fork by extension proofs (`locate_fork`)
 /// instead of comparing whole chains. Pins that the same refusal holds on
 /// the route real servers take.
 ///
@@ -788,6 +815,8 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
         mirror: Mirror::of(line),
         principal,
         asked: std::sync::Mutex::default(),
+        targets: std::sync::Mutex::default(),
+        stitched: std::sync::atomic::AtomicUsize::default(),
     };
     let (first, second) = (proving(abandoned, abandoned_log), proving(kept, kept_log));
 
@@ -803,12 +832,10 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
     assert_eq!(report.forks.len(), 1, "the fork is found");
 
     let asked = second.asked.lock().expect("asked");
-    for route in ["/consistency", "/inclusion"] {
-        assert!(
-            asked.iter().any(|p| p == route),
-            "{route} not asked: {asked:?}"
-        );
-    }
+    assert!(
+        asked.iter().any(|p| p == "/proof"),
+        "/proof not asked: {asked:?}"
+    );
     // The locate path proves the one rival commit at the fork and fetches
     // nothing past it, so a tie at the fork's height reads as `Forked`:
     // still a refusal, as the record's key set is an abandoned branch's,
@@ -821,5 +848,128 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
     assert!(
         matches!(got, Err(Refusal::Forked | Refusal::LostBranch)),
         "a key only the abandoned branch added: {got:?}"
+    );
+}
+
+/// A key of `alg`, in the shape the fixtures use.
+fn kp_of(alg: coz::Alg) -> Kp {
+    let kp = alg.generate_keypair();
+    let tmb = kp
+        .alg
+        .compute_thumbprint(&kp.pub_bytes)
+        .expect("thumbprint");
+    Kp { kp, tmb }
+}
+
+/// One commit of `p`: `by` signs `typ` (`create` or `replace`) of `target`.
+async fn commit_key(
+    p: &mut cyphr::Principal<cyphr::eml::MemoryStorage>,
+    by: &Kp,
+    typ: &str,
+    target: &Kp,
+    now: i64,
+) -> Vec<String> {
+    let pay = serde_json::to_vec(&json!({
+        "alg": by.kp.alg.name(),
+        "id": target.tmb.to_b64(),
+        "now": now,
+        "tmb": by.tmb.to_b64(),
+        "typ": format!("cyphr.me/cyphr/key/{typ}"),
+    }))
+    .expect("pay");
+    let (sig, cad) =
+        coz::sign_json(&pay, by.kp.alg.name(), &by.kp.prv_bytes, &by.kp.pub_bytes).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, by.kp.alg.name()).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(target.domain_key(now)))
+        .expect("applies");
+    scope
+        .finalize_with_software(&by.signer(), now, "cyphr.me")
+        .await
+        .expect("commit");
+    wire_commit(p.commits().last().expect("a commit"))
+}
+
+/// `keys`, each paired with its commit time.
+fn timed(keys: &[Kp]) -> Vec<(&Kp, i64)> {
+    keys.iter()
+        .enumerate()
+        .map(|(i, k)| (k, T0 + 20 + i as i64))
+        .collect()
+}
+
+/// An Ed25519 principal that rotates to ES256 at its second commit (its
+/// SHA-512 tree closes there, SHA-256 carries on), then grows by one
+/// `key/create` by the ES256 key for each of `grow`.
+async fn rotated(
+    g: &Kp,
+    h: &Kp,
+    grow: &[(&Kp, i64)],
+) -> (Line, cyphr::Principal<cyphr::eml::MemoryStorage>) {
+    let mut chain = Chain::new(g).await;
+    let mut line = Line::of(&chain);
+    let blobs = commit_key(&mut chain.principal, g, "replace", h, T0 + 10).await;
+    line.push(&chain, blobs);
+    for (key, now) in grow {
+        let blobs = commit_key(&mut chain.principal, h, "create", key, *now).await;
+        line.push(&chain, blobs);
+    }
+    (line, chain.principal)
+}
+
+/// The fork is found by extension proofs across an algorithm rotation, and
+/// the pull stays on them: no whole chain is fetched, the asks are
+/// logarithmic, and at least one proof crossed the rotation by a stitch.
+///
+/// Turns red if the search falls back to the whole chain (`/patch` without
+/// an anchor), or asks linearly, or a proof across the rotation is refused.
+/// End-to-end scenario: yes.
+#[tokio::test]
+async fn a_fork_across_a_rotation_is_located_on_the_proof_path() {
+    let (g, h) = (kp(), kp_of(coz::Alg::ES256));
+    let ours: Vec<Kp> = (0..4).map(|_| kp()).collect();
+    let theirs: Vec<Kp> = (0..6).map(|_| kp()).collect();
+    let (held_line, held_log) = rotated(&g, &h, &timed(&ours)).await;
+    let (rival_line, rival_log) = rotated(&g, &h, &timed(&theirs)).await;
+    LOCATED_CLOCK.store(T0 + 100, Ordering::SeqCst);
+    let proving = |line, principal| ProofMirror {
+        mirror: Mirror::of(line),
+        principal,
+        asked: std::sync::Mutex::default(),
+        targets: std::sync::Mutex::default(),
+        stitched: std::sync::atomic::AtomicUsize::default(),
+    };
+    let (first, second) = (proving(held_line, held_log), proving(rival_line, rival_log));
+
+    let mut rp = RelyingParty::new(
+        &g.tmb.to_b64(),
+        Anchor::GenesisKey(g.domain_key(T0)),
+        config(),
+        located_clock,
+    );
+    let on = |name, p| PullPeer { name, connector: p };
+    rp.refresh(&[on("first", &first)]).await;
+    let report = rp.refresh(&[on("second", &second)]).await;
+    assert_eq!(report.forks.len(), 1, "the fork is found");
+    assert_eq!(
+        report.forks[0].height, 2,
+        "the logs part after the rotation"
+    );
+
+    let targets = second.targets.lock().expect("targets");
+    let patches: Vec<_> = targets.iter().filter(|t| t.starts_with("/patch")).collect();
+    assert!(
+        patches.iter().all(|t| t.contains("&from=")),
+        "the whole chain was fetched: {patches:?}"
+    );
+    assert_eq!(patches.len(), 1, "one rival commit: {patches:?}");
+    // The pull's own ask, then the search over the six commits held: at
+    // most ceil(log2 7) + 1 more.
+    let proofs = targets.iter().filter(|t| t.starts_with("/proof")).count();
+    assert!((2..=6).contains(&proofs), "{proofs} asks: {targets:?}");
+    assert!(
+        second.stitched.load(Ordering::SeqCst) >= 1,
+        "no proof crossed the rotation: {targets:?}"
     );
 }

@@ -47,6 +47,9 @@ pub mod principal_tree;
 /// Work counters for tests that pin cost (U3).
 #[cfg(any(test, feature = "test-utils"))]
 pub mod probe;
+/// Pinned roots and certificates: membership and extension across
+/// hash-algorithm epochs.
+pub mod proof;
 /// Replay of stored commit bundles: one entry point for every consumer.
 pub mod replay;
 /// Naked-revoke validity (SPEC 6.4): the one rule every consumer calls.

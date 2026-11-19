@@ -36,6 +36,12 @@ pub struct Commit {
     sr: Option<StateRoot>,
     /// Principal Root at the end of this commit.
     pr: PrincipalRoot,
+    /// The Principal Tree's cells at the end of this commit as serialized
+    /// (SR when there is one, CR, then the PR-level nonces), each carrying
+    /// a variant for every family active then: the components `pr` folds
+    /// (SPEC 3.7.1), kept so a proof opens `pr` by reading them, not by
+    /// rebuilding them from the log or the history.
+    pt_cells: Vec<Vec<u8>>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -48,6 +54,7 @@ impl Clone for Commit {
             ar: self.ar.clone(),
             sr: self.sr.clone(),
             pr: self.pr.clone(),
+            pt_cells: self.pt_cells.clone(),
         }
     }
 }
@@ -64,6 +71,7 @@ impl Commit {
         ar: Option<AuthRoot>,
         sr: Option<StateRoot>,
         pr: PrincipalRoot,
+        pt_cells: Vec<Vec<u8>>,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -74,7 +82,13 @@ impl Commit {
             ar,
             sr,
             pr,
+            pt_cells,
         })
+    }
+
+    /// The Principal Tree's cells at the end of this commit, as serialized.
+    pub(crate) fn pt_cells(&self) -> &[Vec<u8>] {
+        &self.pt_cells
     }
 
     /// Get the cozies in this commit.
@@ -262,17 +276,21 @@ impl PendingCommit {
     /// * `ar` - The computed Auth Root after all cozies (`None` if no key remains)
     /// * `sr` - The computed State Root: MR(AR?, DR?, embedding?) (`None` if neither exists)
     /// * `pr` - The computed Principal Root after all cozies
+    /// * `pt` - The Principal Tree `pr` was folded from, whose cells the commit keeps
+    /// * `active_algs` - The algorithms active after this commit, one variant of each cell apiece
     /// * `tx_algs` - Explicit transaction algorithm set footprint (extracted from Arrow)
     ///
     /// # Errors
     ///
     /// Returns `EmptyCommit` if no cozies exist, or if the only cozies
     /// present are finalizers (no mutation content).
-    pub fn finalize(
+    pub(crate) fn finalize(
         self,
         ar: Option<AuthRoot>,
         sr: Option<StateRoot>,
         pr: PrincipalRoot,
+        pt: &crate::principal_tree::PrincipalTree,
+        active_algs: &[crate::state::HashAlg],
         tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
         if self.is_finalizer_only() {
@@ -292,7 +310,7 @@ impl PendingCommit {
             .compute_tr(tx_algs)
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, tr, ar, sr, pr)
+        Commit::new(self.transactions, tr, ar, sr, pr, pt.cells(active_algs)?)
     }
 
     /// Consume the pending commit and return the cozies.
@@ -1288,7 +1306,15 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let result = pending.finalize(Some(auth_root), Some(sr), pr, &[coz::HashAlg::Sha256]);
+        let pt = crate::principal_tree::PrincipalTree::new();
+        let result = pending.finalize(
+            Some(auth_root),
+            Some(sr),
+            pr,
+            &pt,
+            &[HashAlg::Sha256],
+            &[coz::HashAlg::Sha256],
+        );
         assert!(
             matches!(result, Err(crate::error::Error::MissingCommit)),
             "finalize should fail without finalizer marker"

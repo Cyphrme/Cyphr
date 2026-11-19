@@ -816,7 +816,14 @@ impl PrincipalState {
         core.held_prs.push(core.pr.clone());
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;
+        let commit = pending.finalize(
+            core.ar.clone(),
+            sr,
+            core.pr.clone(),
+            &core.pt,
+            &active_algs,
+            &tr_algs,
+        )?;
 
         core.auth.commits.push(commit);
         let now = core.latest_timestamp;

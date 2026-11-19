@@ -46,6 +46,39 @@ fn new_inner(arity: u64) -> polydigest::EpochTree {
         .expect("arity is a fixed constant within the spine's 2..=256 range")
 }
 
+/// `payloads` as consecutive cells of a tree at `arity`, registering every
+/// algorithm in `algs`.
+fn tree_of(algs: &[HashAlg], payloads: Vec<Vec<u8>>, arity: u64) -> Result<polydigest::EpochTree> {
+    let mut inner = new_inner(arity);
+    for &alg in algs {
+        inner
+            .register_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
+            .map_err(|e| Error::Storage(e.to_string()))?;
+    }
+    for (index, payload) in payloads.into_iter().enumerate() {
+        inner
+            .set(index as u64, payload, Vec::new())
+            .map_err(|e| Error::Storage(e.to_string()))?;
+    }
+    Ok(inner)
+}
+
+/// The Principal Root's `alg` variant over `cells` as a Principal Tree
+/// holds them (SR, CR, then any PR-level nonces), from the cells alone: how
+/// a verifier folds what a proof supplies. `alg`'s hasher reads only its
+/// own variant of each cell, so the root binds that variant and no other.
+///
+/// # Errors
+///
+/// `Storage` (a dense-tree violation) if the cells cannot be set, and
+/// `EmptyMultihash` if the tree has no root.
+pub(crate) fn fold_cells(alg: HashAlg, cells: &[Vec<u8>]) -> Result<Vec<u8>> {
+    let arity = if cells.len() > 2 { NONCE_ARITY } else { ARITY };
+    tree_of(&[alg], cells.to_vec(), arity)?
+        .root(hash_alg_to_u64(alg))
+        .ok_or(Error::EmptyMultihash)
+}
+
 /// The Principal Tree: an `EpochTree` with cell 0 = SR, cell 1 = CR, then
 /// any PR-level nonces in ascending byte order. With no nonce it is k=2.
 ///
@@ -76,6 +109,24 @@ impl PrincipalTree {
             cr: None,
             nonces: Vec::new(),
         }
+    }
+
+    /// The held cells as serialized, in fold order (SR when set, CR, then
+    /// the nonces), each carrying a variant for every one of `algs` and no
+    /// other: what a proof must show to open the Principal Root.
+    ///
+    /// # Errors
+    ///
+    /// `MalformedPayload` if a nonce cell cannot be serialized.
+    pub(crate) fn cells(&self, algs: &[HashAlg]) -> Result<Vec<Vec<u8>>> {
+        let mut cells: Vec<Vec<u8>> = self.sr.iter().chain(&self.cr).cloned().collect();
+        for (nonce, alg) in &self.nonces {
+            cells.push(crate::semantic_tree::serialize_converted(
+                (nonce, *alg),
+                algs,
+            )?);
+        }
+        Ok(cells)
     }
 
     /// Register `alg` if it is not already registered.
@@ -110,12 +161,6 @@ impl PrincipalTree {
     /// The held cells folded at `arity`. Separate from [`Self::rebuild`] so
     /// a test can fold the same cells at both arities.
     fn build_inner(&self, arity: u64) -> Result<polydigest::EpochTree> {
-        let mut inner = new_inner(arity);
-        for &alg in &self.algs {
-            inner
-                .register_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
-                .map_err(|e| Error::Storage(e.to_string()))?;
-        }
         let mut payloads: Vec<Vec<u8>> = self.sr.iter().chain(&self.cr).cloned().collect();
         for (nonce, alg) in &self.nonces {
             payloads.push(crate::semantic_tree::serialize_converted(
@@ -123,19 +168,14 @@ impl PrincipalTree {
                 &self.algs,
             )?);
         }
-        for (index, payload) in payloads.into_iter().enumerate() {
-            inner
-                .set(index as u64, payload, Vec::new())
-                .map_err(|e| Error::Storage(e.to_string()))?;
-        }
-        Ok(inner)
+        tree_of(&self.algs, payloads, arity)
     }
 
     /// Serialize a multihash's variants into the shared cell-payload idiom
     /// (a `BTreeMap<alg_id, digest>` JSON blob), the same idiom the Commit
     /// Tree's leaves already use — each algorithm's hasher extracts its own
     /// variant at leaf time.
-    fn serialize(md: &MultihashDigest) -> Result<Vec<u8>> {
+    pub(crate) fn serialize(md: &MultihashDigest) -> Result<Vec<u8>> {
         let mut mapped = BTreeMap::new();
         for (&alg, digest) in md.variants() {
             mapped.insert(hash_alg_to_u64(alg), digest.clone());

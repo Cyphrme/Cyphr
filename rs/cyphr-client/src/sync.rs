@@ -36,15 +36,14 @@ use coz::Thumbprint;
 use cyphr::eml::MemoryStorage;
 use cyphr::fork::Held as HeldCommit;
 use cyphr::principal::{Clock, system_clock};
+use cyphr::proof::Root;
 use cyphr::replay::WireBundle;
 use cyphr::{Commit, Key, Principal, StateDigest as _};
 use serde_json::Value;
 
 use crate::connector::{BindingPolicy, Connector, Request};
 use crate::evidence::{EvidenceFailure, names_pg, pg_names, verify_fork_items};
-use crate::extension::{
-    Extension, ExtensionFailure, Inclusion, confirm_extension, verify_extension,
-};
+use crate::extension::{Extension, ExtensionFailure, confirm_extension, verify_extension_at};
 use crate::patch::{
     ActionBundle, PatchEntry, PatchFailure, PatchRequest, Step, fetch_patch,
     percent_encode_query_value, replay_order,
@@ -1130,11 +1129,9 @@ async fn reach<C: Connector>(
             // it (it is fabricated, or the log does extend), the pull goes
             // on without it, so a fork never hides behind what the peer
             // says of its tree.
-            Offer::Diverged(offer) => {
-                match locate_fork(record, connector, &offer, branches).await {
-                    Ok(Some(finding)) => return Ok((PeerStanding::Forked, vec![finding])),
-                    Ok(None) | Err(_) => None,
-                }
+            Offer::Diverged(head) => match locate_fork(record, connector, &head, branches).await {
+                Ok(Some(finding)) => return Ok((PeerStanding::Forked, vec![finding])),
+                Ok(None) | Err(_) => None,
             },
             Offer::Unavailable => None,
         }
@@ -1153,7 +1150,7 @@ async fn reach<C: Connector>(
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
                 record
-                    .extend(&patch.entries, &patch.actions, offered.as_ref())
+                    .extend(&patch.entries, &patch.actions, offered.as_deref())
                     .await?;
                 return Ok((
                     PeerStanding::Extended {
@@ -1174,15 +1171,18 @@ async fn reach<C: Connector>(
 /// What a peer's answer to a request for the proof that its tip extends
 /// the record's comes to.
 enum Offer {
-    Extends(Extension),
-    Diverged(Extension),
+    Extends(Box<Extension>),
+    /// The head the peer offered, which the held log cannot be shown to
+    /// precede.
+    Diverged(Root),
     /// The peer cannot say (it serves no such route, or has nothing the
     /// record can be judged against): the pull goes on without a proof.
     Unavailable,
 }
 
-/// Ask the peer for the proof that its tip extends the record's, and
-/// judge it against the record's own log.
+/// Ask the peer for its head and the certificate that it extends the
+/// record's log, and judge them against the record's own log. The head is
+/// the peer's claim: it is checked and never pinned.
 async fn offered_extension<C: Connector>(
     record: &Record,
     connector: &C,
@@ -1190,53 +1190,69 @@ async fn offered_extension<C: Connector>(
     let Some(held) = &record.held else {
         return Ok(Offer::Unavailable);
     };
-    let alg_id = cyphr::commit_root::hash_alg_to_u64(held.principal.hash_alg());
-    let Ok(held_size) = held.principal.commit_trees().tree_size(alg_id) else {
-        return Ok(Offer::Unavailable);
-    };
-    let target = format!(
-        "/consistency?pr={}&from={held_size}",
-        percent_encode_query_value(&record.id)
-    );
+    let held_size = held.principal.commit_count() as u64;
     // Whatever stops the answer (no such route, an unreachable peer) is
     // met again by the fetch that follows, which reports it.
+    let Ok(payload) = fetch_payload(
+        connector,
+        &format!("/tip?pr={}", percent_encode_query_value(&record.id)),
+    )
+    .await
+    else {
+        return Ok(Offer::Unavailable);
+    };
+    // A peer that answers a route with something that is not a root or a
+    // certificate is pulled as one that serves none: every commit is still
+    // replayed, so the answer decides only what is fetched, never what is
+    // believed.
+    let Ok(head) = Extension::head_from_payload(&payload["root"]) else {
+        return Ok(Offer::Unavailable);
+    };
+    if head.size <= held_size {
+        return Ok(Offer::Diverged(head));
+    }
+    let target = format!(
+        "/proof?pr={}&size={}&claim=extends:{held_size}",
+        percent_encode_query_value(&record.id),
+        head.size
+    );
     let Ok(payload) = fetch_payload(connector, &target).await else {
         return Ok(Offer::Unavailable);
     };
-    // A peer that answers the route with something that is not a proof is
-    // pulled as one that serves none: every commit is still replayed, so
-    // the answer decides only what is fetched, never what is believed.
-    let Ok(offer) = Extension::from_payload(&payload) else {
+    let Ok(certificate) = Extension::certificate_from_payload(&payload) else {
         return Ok(Offer::Unavailable);
     };
-    match verify_extension(&held.principal, &offer) {
-        Ok(()) => Ok(Offer::Extends(offer)),
+    let offer = Extension::new(head, certificate);
+    match verify_extension_at(&held.principal, held_size, &offer) {
+        Ok(()) => Ok(Offer::Extends(Box::new(offer))),
         Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => {
-            Ok(Offer::Diverged(offer))
+            Ok(Offer::Diverged(offer.head))
         },
         Err(_) => Ok(Offer::Unavailable),
     }
 }
 
-/// Where the peer's log leaves the record's, by inclusion proofs, and the
+/// Where the peer's log leaves the record's, by extension proofs, and the
 /// one commit the peer holds there, proved a fork by its signatures.
 ///
-/// A commit commits to the one before it, so the two logs agree at a
-/// position only if they agree below it, and the first position at which
-/// they differ is found in O(log n) asks. The peer's answers only steer the
-/// search: what is returned is verified from the record's own chain and the
-/// peer's one commit, the way a served fork item is, so a peer's word is
-/// never the evidence. `None` when no position within both logs differs.
+/// A commit commits to the one before it, so the peer's log extends the
+/// record's first `k` commits exactly when the two agree below position
+/// `k`, and the first position at which they differ is found in O(log n)
+/// asks, each answered by an extension proof (which crosses any algorithm
+/// rotation on the way) checked against the record's own log at that size.
+/// The peer's answers only steer; what is returned is verified from the
+/// record's own chain and the peer's one commit, the way a served fork
+/// item is, so a peer's word is never the evidence. `None` when no
+/// position within both logs differs.
 async fn locate_fork<C: Connector>(
     record: &Record,
     connector: &C,
-    offer: &Extension,
+    head: &Root,
     branches: &mut Vec<HeldCommit>,
 ) -> Result<Option<ForkFinding>, PeerFailure> {
     let Some(held) = &record.held else {
         return Ok(None);
     };
-    let alg = offer.cr.alg();
     let unlocatable = |what: &str| {
         PeerFailure::Extension(ExtensionFailure::Malformed(format!(
             "fork location: {what}"
@@ -1245,41 +1261,40 @@ async fn locate_fork<C: Connector>(
     let overlap = held
         .principal
         .commit_count()
-        .min(usize::try_from(offer.size).unwrap_or(usize::MAX));
-    // Whether the peer's commit at `index` is not the record's.
-    let differs = async |index: usize| -> Result<bool, PeerFailure> {
+        .min(usize::try_from(head.size).unwrap_or(usize::MAX));
+    // Whether the peer's log extends the record's first `k` commits. The
+    // record pins every size of its own chain, so each answer is checked
+    // against what the record holds; the head stays the peer's claim.
+    let extends = async |k: usize| -> Result<bool, PeerFailure> {
+        if k as u64 == head.size {
+            // The same size: the logs are the same exactly when the roots
+            // are.
+            return Ok(held.principal.root_at(k as u64).as_ref() == Some(head));
+        }
         let target = format!(
-            "/inclusion?pr={}&index={index}",
-            percent_encode_query_value(&record.id)
+            "/proof?pr={}&size={}&claim=extends:{k}",
+            percent_encode_query_value(&record.id),
+            head.size
         );
         let payload = fetch_payload(connector, &target).await?;
-        let stated = Inclusion::from_payload(&payload)?;
-        if stated.index != index as u64
-            || stated.size != offer.size
-            || stated.cr != offer.cr
-            || !stated.holds()
-        {
-            return Err(unlocatable("the peer's inclusion proof does not hold"));
+        let certificate = Extension::certificate_from_payload(&payload)?;
+        let offer = Extension::new(head.clone(), certificate);
+        match verify_extension_at(&held.principal, k as u64, &offer) {
+            Ok(()) => Ok(true),
+            Err(ExtensionFailure::NotAnExtension) => Ok(false),
+            Err(other) => Err(other.into()),
         }
-        let ours = held
-            .principal
-            .commit_at(index)
-            .and_then(|c| c.tr().0.get(alg).map(<[u8]>::to_vec));
-        Ok(ours.as_deref() != Some(stated.leaf.as_bytes()))
     };
-    let Some(last) = overlap.checked_sub(1) else {
-        return Ok(None);
-    };
-    if !differs(last).await? {
+    if overlap == 0 || extends(overlap).await? {
         return Ok(None);
     }
-    let (mut low, mut high) = (0, last);
-    while low < high {
+    let (mut low, mut high) = (0, overlap);
+    while high - low > 1 {
         let mid = low + (high - low) / 2;
-        if differs(mid).await? {
-            high = mid;
+        if extends(mid).await? {
+            low = mid;
         } else {
-            low = mid + 1;
+            high = mid;
         }
     }
     let height = low;

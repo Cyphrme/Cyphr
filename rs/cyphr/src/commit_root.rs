@@ -324,10 +324,15 @@ impl<S: eml::Storage> CommitTrees<S> {
 
     /// Make the log's active algorithms exactly those of `wanted` that it
     /// already registers: close the open epoch of a registered algorithm
-    /// the next leaf carries no variant for, and reopen (not re-register) a
-    /// closed one the next leaf carries a variant for. Algorithms in
-    /// `wanted` the log does not register are left to
+    /// absent from `wanted`, and reopen (not re-register) a closed one in
+    /// it. Algorithms in `wanted` the log does not register are left to
     /// [`polydigest::Staged::add_algorithm`].
+    ///
+    /// `wanted` is the post-mutation key families of the commit being
+    /// appended, so an algorithm the commit's own mutation retires closes
+    /// before that commit's leaf, though the leaf (a TR carrying the
+    /// signer's variant) still has a variant for it. Its epoch ends at the
+    /// leaf's index, and the `CR` before that leaf is the last to carry it.
     ///
     /// The log needs this because a leaf with no variant for an algorithm
     /// hashes to its null constant: an algorithm left active across such
@@ -350,6 +355,44 @@ impl<S: eml::Storage> CommitTrees<S> {
             }
         }
         Ok(())
+    }
+
+    /// Every registered algorithm's epochs as `[start, end)` leaf ranges,
+    /// `end` being `u64::MAX` while the epoch is open.
+    pub(crate) fn epochs(&self) -> Vec<(u64, Vec<(u64, u64)>)> {
+        self.log.committed_epochs_at(self.log.count())
+    }
+
+    /// Inclusion proof for `index` in `alg_id`'s tree as of `size` leaves;
+    /// `None` when the tree has no such proof.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm` or a storage error.
+    pub(crate) async fn inclusion_proof_at(
+        &self,
+        alg_id: u64,
+        index: u64,
+        size: u64,
+    ) -> LogResult<Option<eml::InclusionProof>, S> {
+        self.log.inclusion_proof_for(alg_id, index, size).await
+    }
+
+    /// Consistency proof for `alg_id`'s tree between two historical sizes;
+    /// `None` when the tree has no such proof.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownAlgorithm` or a storage error.
+    pub(crate) async fn consistency_proof_between(
+        &self,
+        alg_id: u64,
+        old_size: u64,
+        new_size: u64,
+    ) -> LogResult<Option<eml::ConsistencyProof>, S> {
+        self.log
+            .consistency_proof_for(alg_id, old_size, new_size)
+            .await
     }
 
     /// Snapshot the log into a [`polydigest::Staged`] that algorithm
