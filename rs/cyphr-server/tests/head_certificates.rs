@@ -1,11 +1,10 @@
 //! The HTTP shapes of heads and proofs: `GET /tip` carries the head as
-//! `root: {size, pr}`; `GET /proof?pr&size&claim=member:<i>|extends:<from>|
-//! key:<tmb>` answers `{certificate}` (and the commit's `bundle` for
-//! `member:`), with no default to the tip; an unknown claim is a 400, a
-//! claim the log cannot answer a 422 (an index or size it lacks, a key not
-//! in the key set, a log whose last commit left no State Root); and `/head`, `/inclusion`,
-//! `/consistency` and `/key` are gone. Every certificate verifies against an
-//! anchor the asker built itself. Bodies sit in the server's envelope
+//! `root: {size, pr}`; `GET /proof?pr&size&claim=member:<i>|extends:<from>`
+//! answers `{certificate}` (and the commit's `bundle` for `member:`), with
+//! no default to the tip; an unknown claim is a 400, a claim the log cannot
+//! answer a 422 (an index or size it lacks, a log whose last commit left no
+//! State Root); and `/head`, `/inclusion` and `/consistency` are gone. Every certificate verifies
+//! against an anchor the asker built itself. Bodies sit in the server's envelope
 //! `payload`, as every other answer does. Red until the route exists:
 //! today `/tip` has no `root` and `/proof` is a 404.
 
@@ -68,7 +67,7 @@ async fn tip_root_and_proof_answers_have_the_shapes_and_verify() {
         "the head is PR at the tip"
     );
     assert_eq!(head.size, size);
-    for gone in ["/head", "/inclusion", "/consistency", "/key"] {
+    for gone in ["/head", "/inclusion", "/consistency"] {
         let (status, _) = get_json(app.clone(), &format!("{gone}?pr={id}&size={size}")).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{gone} is gone");
     }
@@ -150,9 +149,5 @@ async fn tip_root_and_proof_answers_have_the_shapes_and_verify() {
         "a size past the log"
     );
     let (status, _) = proof(&format!("size={size}&claim=key:{}", "A".repeat(43))).await;
-    assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "a key not in the key set is a question, folded in with the rest"
-    );
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no such kind of claim");
 }

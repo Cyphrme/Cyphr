@@ -89,11 +89,6 @@ impl PrincipalState {
         &self.core.genesis_key
     }
 
-    /// The key `tmb` names if it is in the key set now (active, not revoked).
-    pub(crate) fn active_key(&self, tmb: &Thumbprint) -> Option<&Key> {
-        self.auth.keys.get(&tmb.to_b64())
-    }
-
     /// Get a key by thumbprint.
     pub fn get_key(&self, tmb: &Thumbprint) -> Option<&Key> {
         let key = tmb.to_b64();

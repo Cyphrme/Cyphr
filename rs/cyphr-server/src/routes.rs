@@ -500,7 +500,7 @@ pub struct ProofQuery {
     /// parsed in the handler so a malformed value is refused with the app's
     /// JSON error envelope. Asked for, never defaulted to the tip.
     pub size: String,
-    /// `member:<index>`, `extends:<from>` or `key:<tmb>`.
+    /// `member:<index>` or `extends:<from>`.
     pub claim: String,
 }
 
@@ -556,24 +556,18 @@ fn proof_count(what: &str, raw: &str) -> Result<u64, AppError> {
 enum ProofClaim {
     Member(u64),
     Extends(u64),
-    Key(coz::Thumbprint),
 }
 
 fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
     let bad = || {
         AppError::bad_request(format!(
-            "claim must be member:<index>, extends:<from> or key:<tmb>, got {raw:?}"
+            "claim must be member:<index> or extends:<from>, got {raw:?}"
         ))
     };
     let (kind, arg) = raw.split_once(':').ok_or_else(bad)?;
     match kind {
         "member" => Ok(ProofClaim::Member(arg.parse().map_err(|_| bad())?)),
         "extends" => Ok(ProofClaim::Extends(arg.parse().map_err(|_| bad())?)),
-        "key" => {
-            use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let bytes = Base64UrlUnpadded::decode_vec(arg).map_err(|_| bad())?;
-            Ok(ProofClaim::Key(coz::Thumbprint::from_bytes(bytes)))
-        },
         _ => Err(bad()),
     }
 }
@@ -587,8 +581,6 @@ fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
 ///   against;
 /// - `extends:<from>`: it extends the log of the first `from` commits, to the head `GET /tip`'s
 ///   `root` reports;
-/// - `key:<tmb>`: the key with that thumbprint is in its key set. Frozen, deleted and errored are
-///   not checked.
 ///
 /// The payload is `{certificate}` (and `bundle` for `member:`) and nothing
 /// else; the size is asked for. The asker checks the certificate against an
@@ -598,9 +590,9 @@ fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
 /// witness, which this route is not.
 ///
 /// An unknown or unparsable claim is a 400. A claim the log does not answer
-/// is a 422: an index or size past it, a key not in the key set, a key
-/// claim away from the tip, or a log whose last commit left the principal
-/// with no keys and no data (so its root has no state root to open). A
+/// is a 422: an index or size past it, or a log whose last commit left the
+/// principal with no keys and no data (so its root has no state root to
+/// open). A
 /// store that cannot be read is the server's, a 5xx. A principal in Error
 /// has no single log (SPEC 15.5) and is a 409.
 #[tracing::instrument(skip(state))]
@@ -642,7 +634,6 @@ pub async fn proof(
                 None,
             )
         },
-        ProofClaim::Key(tmb) => (cyphr::proof::Claim::Key { tmb }, None),
     };
     let certificate = log.prove(size, &claim).await.map_err(|e| match &e {
         cyphr::proof::ProveError::Question(_) => AppError::unprocessable(e.to_string()),

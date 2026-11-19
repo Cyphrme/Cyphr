@@ -2,7 +2,7 @@
 //! it needs from the commits (their roots and Principal Tree cells) and,
 //! for the paths and consistency proofs, from the log.
 
-use super::wire::{Cells, Cert, ConsW, KeyW, OpeningW, PathW, StitchW, Terminal};
+use super::wire::{Cells, Cert, ConsW, OpeningW, PathW, StitchW, Terminal};
 use super::{Cause as ProofError, Certificate, Claim, ProveError, Root};
 use crate::commit_root::hash_alg_to_u64;
 use crate::{Commit, HashAlg, Principal};
@@ -247,67 +247,19 @@ impl<S: eml::Storage> Principal<S> {
 
     /// The certificate for `claim` at `size` commits: that a commit is at
     /// an index (the prover reads the index only), that the log extends an
-    /// earlier size, or that a key is in the key set.
+    /// earlier size.
     ///
     /// # Errors
     ///
-    /// [`ProveError::Question`] for an index, size or key the log does not
-    /// hold; [`ProveError::Unavailable`] when the store fails or the last
-    /// commit left no State Root.
+    /// [`ProveError::Question`] for an index or size the log does not hold,
+    /// or a log whose last commit left no State Root;
+    /// [`ProveError::Unavailable`] when the store fails.
     pub async fn prove(&self, size: u64, claim: &Claim) -> Result<Certificate, ProveError> {
         match claim {
             Claim::Member { index, .. } => self.membership_certificate(size, *index).await,
             Claim::Extends { from, .. } => self.extension_certificate(*from, size).await,
-            Claim::Key { tmb } => self.key_certificate(size, tmb),
         }
         .map_err(Into::into)
-    }
-
-    /// The key `tmb` is in the key set of the log, at its tip. Only the tip:
-    /// no commit keeps the key set it left, so an earlier size would mean
-    /// replaying the log, and what a thin client needs is the key set it is
-    /// signing in against.
-    ///
-    /// The certificate is in the key's own family, whose KT leaf is the raw
-    /// thumbprint, and only a key in the key set is proved: a KT-level nonce
-    /// is a leaf too, and never a key.
-    fn key_certificate(&self, size: u64, tmb: &coz::Thumbprint) -> Result<Certificate, ProofError> {
-        if size != self.commit_count() as u64 {
-            return Err(unprovable(format!(
-                "a key claim is for the tip, {} commits, not {size}",
-                self.commit_count()
-            )));
-        }
-        let top = self.cells_of(size - 1)?;
-        let alg = crate::state::HASH_ALGS
-            .into_iter()
-            .find(|a| a.digest_size() == tmb.as_bytes().len())
-            .filter(|a| top.families.contains(a))
-            .ok_or_else(|| unprovable("the key's family is not active at the tip"))?;
-        if self.active_key(tmb).is_none() {
-            return Err(unprovable("the key is not in the key set"));
-        }
-        let path = self
-            .key_inclusion_proof(alg, tmb)
-            .map_err(|_| unprovable("the key is not in the key set"))?;
-        let hops = path
-            .hops
-            .iter()
-            .take(3)
-            .map(|h| PathW {
-                alg,
-                index: h.proof.index,
-                size: h.proof.tree_size,
-                steps: h.proof.path.clone(),
-            })
-            .collect();
-        checked(Cert {
-            top,
-            base: None,
-            stitches: Vec::new(),
-            terminal: None,
-            key: Some(KeyW { alg, hops }),
-        })
     }
 
     async fn membership_certificate(
@@ -329,8 +281,7 @@ impl<S: eml::Storage> Principal<S> {
             top,
             base: None,
             stitches,
-            terminal: Some(terminal),
-            key: None,
+            terminal,
         })
     }
 
@@ -349,8 +300,7 @@ impl<S: eml::Storage> Principal<S> {
             top,
             base: Some(base),
             stitches,
-            terminal: Some(terminal),
-            key: None,
+            terminal,
         })
     }
 

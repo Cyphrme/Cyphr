@@ -14,9 +14,8 @@
 //! A client that pins one [`Root`] (by other means: a root it was given
 //! out of band, or one it replayed) can check, with [`verify`], that a
 //! commit is in the log that root commits to ([`Claim::Member`], given the
-//! commit itself), that a longer head extends it ([`Claim::Extends`]), and
-//! that a key is in its key set ([`Claim::Key`]). A server serves the
-//! certificates (`GET /proof`) and the head (`GET /tip`'s `root`); a
+//! commit itself), and that a longer head extends it ([`Claim::Extends`]). A
+//! server serves the certificates (`GET /proof`) and the head (`GET /tip`'s `root`); a
 //! holder of a principal builds them with [`Principal::prove`](crate::Principal::prove)
 //! and reads roots with [`Principal::root_at`](crate::Principal::root_at).
 //!
@@ -49,19 +48,7 @@
 //! step        := { "position", "siblings": [bytes] }
 //! consistency := { "alg", "boundary_hash", "peak_path": [step],
 //!                  "new_peaks": [bytes], "split_index" }
-//!
-//! key certificate := {
-//!   "top": { "pt_cells": [bytes] },     // PR at the size -> SR (cell 0)
-//!   "key": { "alg", "hops": [path] }    // key leaf in KT (root KR); KR in the
-//!                                       // AR node; AR in the SR node (SR is the
-//!                                       // cell's variant); empty steps where
-//!                                       // a single child is promoted
-//! }
 //! ```
-//!
-//! A certificate of one kind is refused as malformed by the verifier of
-//! another: a key certificate has no `stitches` or `terminal`, a
-//! membership or extension certificate no `key`.
 //!
 //! The arrow is `H_G(pre || fwd? || TMR)` in SPEC 4.2 order. TMR is
 //! recomputed from the czds the opening carries (the same czds the leaf's
@@ -200,8 +187,7 @@ impl From<Cause> for ProofError {
 #[non_exhaustive]
 pub enum ProveError {
     /// The claim asks for what the log does not answer: an index or size
-    /// past it, a key not in its key set, a key claim away from its tip, a
-    /// log whose last commit left no keys and no data (so no State Root to
+    /// past it, a log whose last commit left no keys and no data (so no State Root to
     /// open).
     #[error("the claim does not fit the log: {0}")]
     Question(Detail),
@@ -435,18 +421,6 @@ pub enum Claim {
         /// The claimed head's Principal Root, at `size`.
         head: PrincipalRoot,
     },
-    /// The key with this thumbprint is in the key set (KR) at `size`: the
-    /// Principal Tree opening to SR, then AR, KR and the key's leaf, in the
-    /// key's own family. A prover answers it for the log's tip only (no
-    /// commit keeps the key set it left), so `size` is the tip's; a
-    /// verifier checks whatever size the anchor pins. It answers membership
-    /// in KR only; frozen, deleted and errored are not checked. A KT-level
-    /// nonce equal to the key's thumbprint cannot be told from the key by
-    /// the tree (SPEC 10.2); the prover proves only keys of the key set.
-    Key {
-        /// The key's thumbprint.
-        tmb: coz::Thumbprint,
-    },
 }
 
 /// Check `claim` at `size` against `certificate`, relative to `anchor`.
@@ -475,7 +449,6 @@ pub fn verify(
             };
             verify::extension(anchor, certificate, *from, &head)
         },
-        Claim::Key { tmb } => verify::key(anchor, certificate, size, tmb),
     }
     .map_err(Into::into)
 }
