@@ -911,11 +911,9 @@ async fn a_tampered_forward_state_root_is_refused() {
 async fn a_tampered_pt_cell_is_refused() {
     let (p, mut w) = genuine().await;
     flip(&mut w.opening(0)["pt_cells"][1]); // the CR cell
+    // A cell that is no longer a map of variants is refused at parse.
     let r = chain_member(&p, &w, 2);
-    assert!(
-        matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
-        "{r:?}"
-    );
+    assert!(matches!(r, Err(Cause::Framing(_))), "{r:?}");
 }
 
 // The Principal Tree opening at the head end is carried and checked: a
@@ -1361,7 +1359,7 @@ async fn a_variant_not_the_width_of_its_declared_family_is_refused_at_parse() {
     let mut b = bytes_of(f);
     b.pop();
     set_bytes(f, &b);
-    assert!(matches!(w.cert(), Err(Cause::Mismatch(_))), "a short fwd");
+    assert!(matches!(w.cert(), Err(Cause::Framing(_))), "a short fwd");
     // A cell variant one byte long.
     let mut w = genuine;
     edit_cells(&mut w, 0, |k, m| {
@@ -1370,7 +1368,7 @@ async fn a_variant_not_the_width_of_its_declared_family_is_refused_at_parse() {
         }
     });
     assert!(
-        matches!(w.cert(), Err(Cause::Mismatch(_))),
+        matches!(w.cert(), Err(Cause::Framing(_))),
         "a long cell variant"
     );
 }
@@ -1800,8 +1798,10 @@ async fn a_repartitioned_pt_opening_forges_nothing() {
         ("pin", Anchor::pin(p.root_at(n).expect("root"))),
     ] {
         let r = member_with(&anchor, n, &w, 0, &bundle_of(&y, 1));
+        // The re-split cells carry a 128-byte SHA-512 variant: refused at
+        // parse, before any fold.
         assert!(
-            matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
+            matches!(r, Err(Cause::Framing(_))),
             "a TR nobody committed was accepted under a {what} anchor: {r:?}"
         );
     }
@@ -1839,11 +1839,9 @@ async fn cells_of_the_wrong_count_or_width_are_refused() {
         cells.truncate(keep);
         cells.extend(extra);
         w.opening(0)["pt_cells"] = cells_json(&cells);
+        // An empty variant and a variant cut short: refused at parse.
         let r = chain_member(&p, &w, 0);
-        assert!(
-            matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
-            "{what}: {r:?}"
-        );
+        assert!(matches!(r, Err(Cause::Framing(_))), "{what}: {r:?}");
     }
 }
 
@@ -2009,7 +2007,7 @@ async fn a_pinned_root_verifies_membership_at_its_own_size() {
         2,
         &bundle_of(&p, 2),
     );
-    assert!(matches!(r, Err(Cause::Mismatch(_))), "{r:?}");
+    assert!(matches!(r, Err(Cause::Asked(_))), "{r:?}");
 }
 
 // PR at size n is a function of the commit history, equal for every party
