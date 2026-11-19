@@ -597,12 +597,12 @@ fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
 /// asked about; that its pinned root is the principal's current one needs a
 /// witness, which this route is not.
 ///
-/// An unknown or unparsable claim is a 400. A claim the log does not hold
-/// (an index or size past it) is a 422, and a key not in the key set at
-/// that size a 404. A store that cannot be read, or a log whose last commit
-/// left the principal with no keys and no data (so its root has no state
-/// root to open), is the server's, a 5xx. A principal in Error has no
-/// single log (SPEC 15.5) and is a 409.
+/// An unknown or unparsable claim is a 400. A claim the log does not answer
+/// is a 422: an index or size past it, a key not in the key set, a key
+/// claim away from the tip, or a log whose last commit left the principal
+/// with no keys and no data (so its root has no state root to open). A
+/// store that cannot be read is the server's, a 5xx. A principal in Error
+/// has no single log (SPEC 15.5) and is a 409.
 #[tracing::instrument(skip(state))]
 pub async fn proof(
     State(state): State<Arc<AppState>>,
@@ -645,9 +645,6 @@ pub async fn proof(
         ProofClaim::Key(tmb) => (cyphr::proof::Claim::Key { tmb }, None),
     };
     let certificate = log.prove(size, &claim).await.map_err(|e| match &e {
-        cyphr::proof::ProveError::Question(cyphr::proof::Cause::NoKey(_)) => {
-            AppError::not_found(e.to_string())
-        },
         cyphr::proof::ProveError::Question(_) => AppError::unprocessable(e.to_string()),
         _ => AppError::internal(e.to_string()),
     })?;
