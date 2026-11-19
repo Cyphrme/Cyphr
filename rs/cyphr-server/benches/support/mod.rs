@@ -135,6 +135,19 @@ pub async fn serve_counting(app: Router) -> (String, Arc<Wire>) {
     (format!("http://{addr}"), wire)
 }
 
+/// The thumbprint of the pool's `golden` key (base64url), a key of every
+/// bench principal's key set.
+pub fn golden_tmb() -> String {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).expect("pool");
+    pool.get("golden")
+        .expect("golden")
+        .compute_tmb()
+        .expect("tmb")
+        .to_b64()
+}
+
 pub fn login_body(id: &str) -> String {
     let path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/keys/pool.toml");
@@ -168,8 +181,8 @@ pub struct ForkLocation {
     pub n: usize,
     pub height: usize,
     pub forked: bool,
-    pub consistency: usize,
-    pub inclusion: usize,
+    /// `/proof` asks (extension certificates).
+    pub proof: usize,
     pub patch: usize,
     /// Commits the peer's `/patch` answers carried.
     pub fetched: usize,
@@ -292,8 +305,7 @@ pub async fn fork_location(n: usize) -> ForkLocation {
         n: mine.commits,
         height,
         forked: report.forks.first().is_some_and(|f| f.height == height),
-        consistency: count("/consistency"),
-        inclusion: count("/inclusion"),
+        proof: count("/proof"),
         patch: count("/patch"),
         fetched: *connector.fetched.lock().expect("fetched"),
         ms,
