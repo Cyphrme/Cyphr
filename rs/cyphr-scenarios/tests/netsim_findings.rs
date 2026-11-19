@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use coz::base64ct::Encoding;
-use cyphr::proof::{Anchor, Certificate, Root, verify_membership};
+use cyphr::proof::{Anchor, Certificate, Claim, Root, verify};
 use cyphr_scenarios::actions::{KeyRef, Principal, Standing};
 use cyphr_scenarios::{Capability, Harness};
 
@@ -378,12 +378,13 @@ async fn get(
         .expect("request")
 }
 
-// After a full rotation (Ed25519 -> ES256) every
-// commit of the chain must be provable from the head alone. `/head` gives
-// the Root, `/inclusion?pr&index&size` answers 200 for every index with a
-// certificate, and each verifies against an anchor on the chain a client
-// pulled and against a pin of the head.
+// After a full rotation (Ed25519 -> ES256) every commit of the chain must
+// be provable from the head alone. `/tip` gives the Root,
+// `/proof?pr&size&claim=member:<i>` answers 200 for every index with a
+// certificate and the bundle, and each verifies against an anchor on the
+// chain a client pulled and against a pin of the head.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED(rotated-chain-proofs): /tip has no root and /proof does not exist yet"]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (laptop, phone) = (h.client("laptop"), h.client("phone"));
@@ -429,20 +430,15 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     .await;
     let held = record.principal().expect("the record holds the chain");
 
-    // `GET /head?pr` is a Root (in the envelope's payload),
-    // `GET /inclusion?pr&index&size` is `{certificate}`; nothing echoed,
-    // no default to the tip.
+    // `GET /tip?pr` carries the head as `root: {size, pr}`; `GET
+    // /proof?pr&size&claim=member:<i>` is `{certificate, bundle}`; nothing
+    // echoed, no default to the tip.
     let peer = h.peer("p1").addr();
-    let resp = get(
-        &h,
-        peer,
-        "/head",
-        &[("pr", pr.0.as_str()), ("index", ""), ("size", "")][..1],
-    )
-    .await;
-    assert_eq!(resp.status(), 200, "/head");
+    let resp = get(&h, peer, "/tip", &[("pr", pr.0.as_str())]).await;
+    assert_eq!(resp.status(), 200, "/tip");
     let body: serde_json::Value = resp.json().await.expect("json");
-    let head: Root = serde_json::from_value(body["payload"].clone()).expect("a Root");
+    let head: Root = serde_json::from_value(body["payload"]["root"].clone())
+        .unwrap_or_else(|e| panic!("/tip has no root: {e}"));
     assert_eq!(head.size, height, "the head is the last commit's");
     assert_eq!(
         Some(head.clone()),
@@ -452,23 +448,33 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
 
     let (chain, pin) = (Anchor::of_chain(held.state()), Anchor::pin(head.clone()));
     for index in 0..head.size {
-        let (i, n) = (index.to_string(), head.size.to_string());
+        let (claim, n) = (format!("member:{index}"), head.size.to_string());
         let resp = get(
             &h,
             peer,
-            "/inclusion",
-            &[("pr", pr.0.as_str()), ("index", &i), ("size", &n)],
+            "/proof",
+            &[("pr", pr.0.as_str()), ("size", &n), ("claim", &claim)],
         )
         .await;
         assert_eq!(resp.status(), 200, "index {index} of {}", head.size);
         let body: serde_json::Value = resp.json().await.expect("json");
         let cert: Certificate = serde_json::from_value(body["payload"]["certificate"].clone())
             .unwrap_or_else(|e| panic!("index {index}: not a certificate: {e}"));
-        let bundle =
+        // The bundle comes back with the certificate, and is the commit's.
+        let bundle: cyphr::replay::WireBundle =
+            serde_json::from_value(body["payload"]["bundle"].clone())
+                .unwrap_or_else(|e| panic!("index {index}: not a bundle: {e}"));
+        assert_eq!(
+            bundle,
             cyphr::replay::WireBundle::of_commit(held.commit_at(index as usize).expect("commit"))
-                .expect("bundle");
+                .expect("bundle")
+        );
+        let claim = Claim::Member {
+            index,
+            commit: bundle,
+        };
         for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
-            verify_membership(anchor, &cert, head.size, index, &bundle)
+            verify(anchor, &cert, head.size, &claim)
                 .unwrap_or_else(|e| panic!("index {index} does not verify ({what}): {e}"));
         }
     }

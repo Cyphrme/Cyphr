@@ -1,13 +1,16 @@
-//! The HTTP shapes of heads and certificates: `GET /head?pr` is a `Root`,
-//! `GET /inclusion?pr&index&size` and `GET /consistency?pr&from&to` are
-//! `{certificate}` and nothing else (no echoed fields, no default to the
-//! tip), and every certificate verifies against an anchor the asker built
-//! itself. Bodies sit in the server's envelope `payload`, as every other
-//! answer does. Red until the routes exist: today `/head` is a 404 and
-//! the other two answer the old payloads.
+//! The HTTP shapes of heads and proofs: `GET /tip` carries the head as
+//! `root: {size, pr}`; `GET /proof?pr&size&claim=member:<i>|extends:<from>|
+//! key:<tmb>` answers `{certificate}` (and the commit's `bundle` for
+//! `member:`), with no default to the tip; an unknown claim is a 400, a
+//! claim the log cannot answer a 4xx; and `/head`, `/inclusion`,
+//! `/consistency` and `/key` are gone. Every certificate verifies against an
+//! anchor the asker built itself. Bodies sit in the server's envelope
+//! `payload`, as every other answer does. Red until the route exists:
+//! today `/tip` has no `root` and `/proof` is a 404.
 
 use axum::http::StatusCode;
-use cyphr::proof::{Anchor, Certificate, Root, verify_extension, verify_membership};
+use cyphr::proof::{Anchor, Certificate, Claim, Root, verify};
+use cyphr::replay::WireBundle;
 use cyphr_server::build_router;
 
 mod common;
@@ -20,7 +23,7 @@ use common::{
 const NOW: i64 = 1_700_000_000;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn head_and_certificate_answers_are_bare_and_verify() {
+async fn tip_root_and_proof_answers_have_the_shapes_and_verify() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
     let pool = load_pool();
@@ -53,54 +56,64 @@ async fn head_and_certificate_answers_are_bare_and_verify() {
     }
     let size = p.commit_count() as u64;
 
-    // /head is the Root of the last commit.
-    let (status, body) = get_json(app.clone(), &format!("/head?pr={id}")).await;
-    assert_eq!(status, StatusCode::OK, "/head: {body:?}");
-    let head: Root = serde_json::from_value(body["payload"].clone()).expect("a Root");
+    // /tip carries the head: the Root of the last commit.
+    let (status, body) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
+    assert_eq!(status, StatusCode::OK, "/tip: {body:?}");
+    let head: Root = serde_json::from_value(body["payload"]["root"].clone())
+        .unwrap_or_else(|e| panic!("/tip has no root: {e}: {body:?}"));
     assert_eq!(
         Some(&head),
         p.root_at(size).as_ref(),
         "the head is PR at the tip"
     );
     assert_eq!(head.size, size);
+    for gone in ["/head", "/inclusion", "/consistency", "/key"] {
+        let (status, _) = get_json(app.clone(), &format!("{gone}?pr={id}&size={size}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{gone} is gone");
+    }
 
-    // /inclusion: {certificate} only, and the size is asked for.
-    let (status, _) = get_json(app.clone(), &format!("/inclusion?pr={id}&index=1")).await;
+    // member: {certificate, bundle}, and the size is asked for.
+    let proof = |query: &str| get_json(app.clone(), format!("/proof?pr={id}&{query}").leak());
+    let (status, _) = proof("claim=member:1").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "no default to the tip");
-    let (status, body) = get_json(
-        app.clone(),
-        &format!("/inclusion?pr={id}&index=1&size={size}"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "/inclusion: {body:?}");
-    let payload = body["payload"].as_object().expect("an object payload");
+    let (status, body) = proof(&format!("size={size}&claim=member:1")).await;
+    assert_eq!(status, StatusCode::OK, "member: {body:?}");
+    let mut keys: Vec<_> = body["payload"]
+        .as_object()
+        .expect("an object")
+        .keys()
+        .collect();
+    keys.sort();
     assert_eq!(
-        payload.keys().collect::<Vec<_>>(),
-        ["certificate"],
-        "nothing echoed beside the certificate"
+        keys,
+        ["bundle", "certificate"],
+        "nothing echoed beside them"
     );
     let cert: Certificate =
         serde_json::from_value(body["payload"]["certificate"].clone()).expect("a certificate");
-    let bundle =
-        cyphr::replay::WireBundle::of_commit(p.commit_at(1).expect("commit")).expect("bundle");
+    let bundle: WireBundle =
+        serde_json::from_value(body["payload"]["bundle"].clone()).expect("a bundle");
     assert_eq!(
-        verify_membership(&Anchor::of_chain(p.state()), &cert, size, 1, &bundle),
+        bundle,
+        WireBundle::of_commit(p.commit_at(1).expect("commit")).expect("bundle"),
+        "the bundle served is the commit's own"
+    );
+    let claim = Claim::Member {
+        index: 1,
+        commit: bundle,
+    };
+    assert_eq!(
+        verify(&Anchor::of_chain(p.state()), &cert, size, &claim),
         Ok(())
     );
     assert_eq!(
-        verify_membership(&Anchor::pin(head.clone()), &cert, size, 1, &bundle),
+        verify(&Anchor::pin(head.clone()), &cert, size, &claim),
         Ok(())
     );
 
-    // /consistency: {certificate} only, from and to both asked for.
-    let (status, _) = get_json(app.clone(), &format!("/consistency?pr={id}&from=1")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "no default to the tip");
-    let (status, body) = get_json(
-        app.clone(),
-        &format!("/consistency?pr={id}&from=1&to={size}"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "/consistency: {body:?}");
+    // extends: {certificate} only, the size is the head's.
+    let (status, body) = proof(&format!("size={size}&claim=extends:1")).await;
+    assert_eq!(status, StatusCode::OK, "extends: {body:?}");
     assert_eq!(
         body["payload"]
             .as_object()
@@ -111,8 +124,30 @@ async fn head_and_certificate_answers_are_bare_and_verify() {
     );
     let cert: Certificate =
         serde_json::from_value(body["payload"]["certificate"].clone()).expect("a certificate");
+    let claim = Claim::Extends {
+        from: 1,
+        head: head.pr.clone(),
+    };
     assert_eq!(
-        verify_extension(&Anchor::of_chain(holder.state()), &cert, 1, &head),
+        verify(&Anchor::of_chain(holder.state()), &cert, size, &claim),
         Ok(())
     );
+
+    // What the log cannot answer is a 4xx; a claim that is no claim is a 400.
+    let (status, _) = proof(&format!("size={size}&claim=bogus")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown claim");
+    let (status, _) = proof(&format!("size={size}&claim=member:{size}")).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an index at the size"
+    );
+    let (status, _) = proof(&format!("size={}&claim=member:1", size + 1)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a size past the log"
+    );
+    let (status, _) = proof(&format!("size={size}&claim=key:{}", "A".repeat(43))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a key not in the key set");
 }
