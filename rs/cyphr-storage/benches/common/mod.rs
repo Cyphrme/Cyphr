@@ -53,6 +53,9 @@ pub struct Chain {
     toggled: Kp,
     active: bool,
     pub commits: usize,
+    /// The data actions each data commit (see [`Self::next_data`]) names,
+    /// by position.
+    actions: Vec<(usize, Vec<Vec<u8>>)>,
 }
 
 impl Chain {
@@ -74,6 +77,7 @@ impl Chain {
             toggled,
             active: false,
             commits: 1,
+            actions: Vec::new(),
         }
     }
 
@@ -87,6 +91,7 @@ impl Chain {
             toggled: self.toggled.clone(),
             active: self.active,
             commits: self.commits,
+            actions: self.actions.clone(),
         }
     }
 
@@ -102,8 +107,61 @@ impl Chain {
         bundle_at(&self.shadow, i)
     }
 
+    /// The action-only bundle a data commit at `i` needs pushed ahead of
+    /// it, if it is one: a server holding it serves the action apart from
+    /// the commit.
+    pub fn action_bundle(&self, i: usize) -> Option<WireBundle> {
+        let (_, actions) = self.actions.iter().find(|(at, _)| *at == i)?;
+        Some(WireBundle::actions(actions.clone()))
+    }
+
     pub fn first(&self) -> WireBundle {
         bundle_at(&self.shadow, 0)
+    }
+
+    /// The next commit as a data commit: a data action by the signer, then
+    /// a `ds/create` that includes it. The returned bundle is the commit
+    /// alone, which a verifier refuses until it is given the action
+    /// ([`Self::action_bundle`]).
+    pub async fn next_data(&mut self) -> WireBundle {
+        let now = NOW + 10 * self.commits as i64;
+        let s = self.signer.clone();
+        let sign = |pay: serde_json::Value| {
+            let mut pay = pay;
+            pay.as_object_mut().expect("object").sort_keys();
+            let pay = serde_json::to_vec(&pay).expect("pay");
+            let (sig, cad) = coz::sign_json(&pay, &s.alg, &s.prv, &s.pubb).expect("sign");
+            let czd = coz::czd_for_alg(&cad, &sig, &s.alg).expect("czd");
+            (pay, sig, czd)
+        };
+        let (pay, sig, czd) = sign(serde_json::json!({
+            "alg": s.alg, "msg": "data", "now": now, "tmb": s.tmb.to_b64(),
+            "typ": "cyphr.me/comment/create",
+        }));
+        self.shadow
+            .verify_and_record_action(&pay, &sig, czd)
+            .expect("action records");
+        let wire = serde_json::to_vec(&serde_json::json!({
+            "pay": serde_json::from_slice::<serde_json::Value>(&pay).expect("pay"),
+            "sig": Base64UrlUnpadded::encode_string(&sig),
+        }))
+        .expect("action coz");
+        let mut scope = self.shadow.begin_commit();
+        let dr = scope.data_tree_id().expect("dr").expect("a data action");
+        let (pay, sig, czd) = sign(serde_json::json!({
+            "alg": s.alg, "id": dr, "now": now + 1, "tmb": s.tmb.to_b64(),
+            "typ": format!("cyphr.me/{}", cyphr::parsed_coz::typ::DS_CREATE),
+        }));
+        scope
+            .verify_and_apply(&pay, &sig, czd, None)
+            .expect("ds/create applies");
+        scope
+            .finalize_with_software(&signer_of(&s), now + 1, "cyphr.me")
+            .await
+            .expect("ds/create finalizes");
+        self.commits += 1;
+        self.actions.push((self.commits - 1, vec![wire]));
+        self.bundle(self.commits - 1)
     }
 
     /// The next commit, applied to the shadow chain: a create of `toggled`

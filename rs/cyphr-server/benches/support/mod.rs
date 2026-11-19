@@ -254,13 +254,22 @@ impl cyphr_client::Connector for Asked {
 /// position `n / 2` and then goes its own way for the rest and one commit
 /// more: where the logs part is found, and what it cost.
 pub async fn fork_location(n: usize) -> ForkLocation {
-    fork_location_at(n, n / 2, false).await
+    fork_location_at(n, n / 2, false, false).await
 }
 
 /// [`fork_location`] with the logs parting at position `at`, and the
 /// holder either replayed from its commits or (`resumed`) started from its
 /// verified state with the commits in a counted store.
-pub async fn fork_location_at(n: usize, at: usize, resumed: bool) -> ForkLocation {
+///
+/// With `rival_data` the peer's commit at `at` is a data commit
+/// ([`Chain::next_data`]), which the holder verifies only once it has the
+/// action the peer serves apart from it.
+pub async fn fork_location_at(
+    n: usize,
+    at: usize,
+    resumed: bool,
+    rival_data: bool,
+) -> ForkLocation {
     let mut mine = Chain::new("golden", "key_a", "key_b").await;
     while mine.commits < at {
         mine.next().await;
@@ -268,6 +277,9 @@ pub async fn fork_location_at(n: usize, at: usize, resumed: bool) -> ForkLocatio
     let mut theirs = mine.fork().await;
     theirs.diverge("carol");
     let height = mine.commits;
+    if rival_data {
+        theirs.next_data().await;
+    }
     while mine.commits < n {
         mine.next().await;
     }
@@ -278,6 +290,10 @@ pub async fn fork_location_at(n: usize, at: usize, resumed: bool) -> ForkLocatio
     let (peer, _dir) = keyless();
     let app = build_router(peer.clone());
     for i in 0..theirs.commits {
+        if let Some(actions) = theirs.action_bundle(i) {
+            let (st, ..) = call(&app, "POST", "/push", push_body(&theirs.id, &actions)).await;
+            assert!(st.is_success(), "peer action push {i}: {st}");
+        }
         let (st, ..) = call(
             &app,
             "POST",

@@ -533,21 +533,27 @@ macro_rules! suite {
             /// at every n, so a cost in n is not hidden in h).
             const LOW: usize = 8;
 
-            static FORKS: OnceCell<Vec<ForkLocation>> = OnceCell::const_new();
+            static FORKS: OnceCell<Vec<(bool, ForkLocation)>> = OnceCell::const_new();
 
             /// A resumed holder (state kept, commits in a counted store, as
             /// the engine keeps them) of each size pulls from a peer on a
-            /// fork at each of the two heights. Counted per thread, so
-            /// every run must be on this runtime.
-            async fn forks() -> &'static [ForkLocation] {
+            /// fork at each of the two heights, the peer's commit there
+            /// a key change or a data commit (whose action the peer serves
+            /// apart from it, so that the holder's fallback for a commit
+            /// that names data actions is the path taken if its first
+            /// verification refuses it). Counted per thread, so every run
+            /// must be on this runtime.
+            async fn forks() -> &'static [(bool, ForkLocation)] {
                 FORKS
                     .get_or_init(|| async {
                         let mut all = Vec::new();
                         for n in SIZES {
                             for at in [n / 2, LOW] {
-                                let f = fork_location_at(n, at, true).await;
-                                assert!(f.forked, "n={n}: the fork at {at} was not found");
-                                all.push(f);
+                                for data in [false, true] {
+                                    let f = fork_location_at(n, at, true, data).await;
+                                    assert!(f.forked, "n={n}: the fork at {at} was not found");
+                                    all.push((data, f));
+                                }
                             }
                         }
                         all
@@ -572,20 +578,24 @@ macro_rules! suite {
             ///
             /// Green today: a measured pull at h = 8, 16, 32 and 128 costs
             /// exactly 2 h + 6 checks, which is one replay at c = 2 (a
-            /// commit holds two signed messages) plus 3 c, so the
-            /// duplicated replay of the `CommitRefused` fallback is not
-            /// taken by it: a commit that names data actions, which
-            /// `Chain` cannot make, would take it.
+            /// commit holds two signed messages) plus 3 c, for a key
+            /// change and for a data commit alike. The data commit does not
+            /// reach the `CommitRefused` fallback (which would replay the
+            /// prefix a second time): the core never matches a `ds/create`
+            /// `id` against the actions it holds (`apply.rs`), so the
+            /// commit verifies without them. The shape is kept so that the
+            /// duplicate turns this red if a commit is ever refused for
+            /// want of its actions.
             #[tokio::test]
             $(#[$attr])?
             async fn fork_location_client_replays_the_prefix_once() {
-                for f in forks().await {
+                for (data, f) in forks().await {
                     assert!(f.build_checks > 0, "the clock counter saw no replay");
                     let c = f.build_checks / f.n as u64;
                     let cap = c * f.height as u64 + 4 * c;
                     assert!(
                         f.client_checks <= cap,
-                        "n={} fork at {}: {} timestamp checks, cap {cap} (c = {c})",
+                        "n={} fork at {} (data commit: {data}): {} timestamp checks, cap {cap} (c = {c})",
                         f.n,
                         f.height,
                         f.client_checks
@@ -603,10 +613,10 @@ macro_rules! suite {
             #[tokio::test]
             $(#[$attr])?
             async fn fork_location_client_reads_only_the_prefix() {
-                for f in forks().await {
+                for (data, f) in forks().await {
                     assert!(
                         f.chain_reads <= f.height + 2,
-                        "n={} fork at {}: {} commits read from the chain store, cap {}",
+                        "n={} fork at {} (data commit: {data}): {} commits read from the chain store, cap {}",
                         f.n,
                         f.height,
                         f.chain_reads,
