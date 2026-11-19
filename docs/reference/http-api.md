@@ -7,9 +7,10 @@ describes the code as built; it is not a protocol specification. The
 protocol's normative text is `SPEC.md`, and the envelope's design record is
 `docs/specs/http-envelope.md`.
 
-Section numbers cited from `SPEC.md` are those of the spec author's branch
-(`be0663f`); the text of every cited passage is the same in the version
-this server was built against.
+Every `SPEC.md` section number and quotation in this reference is from the
+spec author's branch tip (`be0663f`). The in-tree `SPEC.md` carries
+unratified edits to some cited sections (for example §4.4, §6.4 and §13.7),
+so it is not a reliable source for them.
 
 The router in `rs/cyphr-server/src/lib.rs` (`build_router`) registers 15
 routes. Every other method and path answers `404` with
@@ -53,8 +54,13 @@ envelope (`rs/cyphr-server/src/envelope.rs`):
 `statement.kind`, never from the presence of a signature. Routes not named
 under "Signed statements" always answer `unsigned`.
 
-Error responses are envelopes whose payload is `{"error": "<text>", "now":
-<unix seconds>}` plus, for some refusals, `"kind": "<stable-kind>"`. Branch
+Handler errors are envelopes whose payload is `{"error": "<text>", "now":
+<unix seconds>}` plus, for some refusals, `"kind": "<stable-kind>"`. Refusals
+built by the fences carry no `now`: `{"error": …, "limit_bytes": n}` for a
+`413`, `{"error": …, "limit_commits": n}` for a `402`, and `{"error": "rate
+limit exceeded"}` for a `429`; the admission `403` is
+`{"error": "admission required", "policy": "invite"}`. All are unsigned
+envelopes. Branch
 on `kind` or the status code, not on `error` text. The kinds are listed in
 `docs/guides/operating-a-server.md` ("Refusals name their kind").
 
@@ -70,6 +76,11 @@ on `kind` or the status code, not on `error` text. The kinds are listed in
   non-numeric `to`) is rejected by the web framework's query extractor with
   `400` before any handler runs. This reference does not pin that body's
   shape; it was not exercised.
+- Unpinned edge, reasoned from the code and not tested: `POST /auth/login`
+  and `POST /auth/session` read their body with the framework's `String`
+  extractor, so a chunked body (no `Content-Length`) over the cap is likely
+  refused by the framework with an un-enveloped `413`. Only `POST /push`
+  buffers the body in the fence.
 
 ### Signed statements
 
@@ -228,8 +239,9 @@ payload; `attestor_tip_response_carries_signed_tip_report`
 principal, `GET /tip?pr=nonexistent`, is `404` (`tip_unknown_principal`).
 
 **Divergence from SPEC.** SPEC §13.7 (Gossip: "Clients may check
-registration through `GET /tip?pr=<principal-root>`") says the route "should return empty if
-the principal isn't registered". The code answers `404`.
+registration through `GET /tip?pr=<principal-root>`, which should return empty
+if the principal isn't registered") says the route returns empty. The code
+answers `404`.
 
 ### `GET /patch`
 
@@ -360,7 +372,7 @@ Query:
   which the asker needs to compute the transaction root the certificate is
   checked against.
 - `extends:<from>`: the log extends the log of the first `from` commits, to
-  the head `GET /tip`'s `root` reports at `size`. Payload is `{certificate}`.
+  the root at `size` (the tip's `root` when `size` is the tip). Payload is `{certificate}`.
 
 No other `claim` kind exists. The payload holds those keys and nothing else.
 
@@ -381,10 +393,6 @@ No other `claim` kind exists. The payload holds those keys and nothing else.
 | `409`  | The principal is in Error (SPEC 15.5): it has no single log to prove against.                                                                                                        |
 | `422`  | The log does not answer the question: `member:<i>` with no commit at `i`; `extends` with no root at `size`; a `size` past the log; a log whose last commit left no keys and no data. |
 | `500`  | The log's store failed (`unavailable`), the index's fork state is unreadable, or a commit or certificate could not be encoded.                                                       |
-
-This matches the dispatch: unknown claim is `400`, an unanswerable question
-is `422`, and a `5xx` arises only from a store, index or encoding fault. It
-adds `404` and `409`, which the dispatch did not list.
 
 Example: `tip_root_and_proof_answers_have_the_shapes_and_verify`
 (`rs/cyphr-server/tests/head_certificates.rs`): `size` omitted is `400`;
@@ -666,6 +674,14 @@ trust object a client replays):
 | `507`  | The death set is at its ceiling (`[limits] max_dead_keys`) and no stored principal holds the key. A revoke of a held key is still recorded.                          |
 
 Engine refusals while recording map as in "Engine error mapping".
+
+**Divergence from SPEC.** SPEC §6.4 says both "Critically, the key signing a
+revoke message must be the key itself" and "Third parties may sign a naked
+revoke, declaring a key compromised, without any other knowledge of the
+principal." The code accepts only the self-signed form: the signature must
+verify against the disclosed key that the payload's `tmb` names, and a
+third party's signature over someone else's key is `401`. The two SPEC
+sentences are not reconciled here.
 
 Example: `revoked_serves_the_accepted_naked_revoke_verifiably`
 (`rs/cyphr-server/tests/revoked_route.rs`) posts
