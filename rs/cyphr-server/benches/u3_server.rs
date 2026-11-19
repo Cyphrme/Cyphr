@@ -212,20 +212,6 @@ async fn run(n: usize) {
         "O(log n) hashes, replayed 0",
         c,
     );
-    let key = golden_tmb();
-    let c = measure(&a, None, 3, || async {
-        let (st, len, resp) = call(
-            &app_a,
-            "GET",
-            &format!("/proof?pr={id}&size={n}&claim=key:{key}"),
-            String::new(),
-        )
-        .await;
-        assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&resp));
-        len
-    })
-    .await;
-    row(n, "GET /proof key (tip)", "O(log n) hashes, replayed 0", c);
 
     // auth
     let c = measure(&a, None, 3, || async {
