@@ -19,6 +19,9 @@ This guide covers standing one up, every knob it has, what it refuses and
 why, what to back up, and what it will not tell you that you might expect it
 to.
 
+For the routes themselves (parameters, response shapes, status codes), see
+the [HTTP API reference](../reference/http-api.md).
+
 ## Terms
 
 | Term      | What it is                                                                                           |
@@ -1033,7 +1036,7 @@ a `422`:
 (`statement.kind` is the signature slot, not the refusal kind.) The kinds
 are `not_found`, `ambiguous`, `invalid_input`, `malformed_blob`,
 `malformed_body`, `too_large`, `branch_limit`, `errored`,
-`embedded_unsupported`, `state_mismatch`, `commit_mismatch`, `coz_reuse`,
+`state_mismatch`, `commit_mismatch`, `coz_reuse`,
 `genesis_incomplete` and `protocol` (any other protocol refusal). A server
 fault carries no `kind`, and neither do refusals built by the fences and
 auth layers. The set may grow, so treat an unknown kind as the generic
