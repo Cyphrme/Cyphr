@@ -54,7 +54,6 @@ fn thumbprint(b64: &str) -> coz::Thumbprint {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(thin-client): /tip has no root and /proof does not exist yet"]
 async fn thin_client_end_to_end() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     h.require(&[

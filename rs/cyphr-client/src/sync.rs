@@ -1195,7 +1195,7 @@ async fn offered_extension<C: Connector>(
     // met again by the fetch that follows, which reports it.
     let Ok(payload) = fetch_payload(
         connector,
-        &format!("/head?pr={}", percent_encode_query_value(&record.id)),
+        &format!("/tip?pr={}", percent_encode_query_value(&record.id)),
     )
     .await
     else {
@@ -1205,14 +1205,14 @@ async fn offered_extension<C: Connector>(
     // certificate is pulled as one that serves none: every commit is still
     // replayed, so the answer decides only what is fetched, never what is
     // believed.
-    let Ok(head) = Extension::head_from_payload(&payload) else {
+    let Ok(head) = Extension::head_from_payload(&payload["root"]) else {
         return Ok(Offer::Unavailable);
     };
     if head.size <= held_size {
         return Ok(Offer::Diverged(head));
     }
     let target = format!(
-        "/consistency?pr={}&from={held_size}&to={}",
+        "/proof?pr={}&size={}&claim=extends:{held_size}",
         percent_encode_query_value(&record.id),
         head.size
     );
@@ -1272,7 +1272,7 @@ async fn locate_fork<C: Connector>(
             return Ok(held.principal.root_at(k as u64).as_ref() == Some(head));
         }
         let target = format!(
-            "/consistency?pr={}&from={k}&to={}",
+            "/proof?pr={}&size={}&claim=extends:{k}",
             percent_encode_query_value(&record.id),
             head.size
         );

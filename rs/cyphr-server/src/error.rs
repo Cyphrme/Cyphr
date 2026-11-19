@@ -53,6 +53,16 @@ impl AppError {
         }
     }
 
+    /// 422 Unprocessable Entity: a well-formed request for what the log
+    /// does not hold.
+    pub fn unprocessable(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg.into(),
+            kind: None,
+        }
+    }
+
     /// 401 Unauthorized.
     ///
     /// For failed authentication: a rejected login (bad signature,

@@ -111,6 +111,11 @@ pub struct TipResponse {
     pub cr: Option<String>,
     pub commit_id: String,
     pub commit_count: u64,
+    /// The principal's root at its last commit, `{size, pr}`: what a thin
+    /// client pins and `GET /proof` certificates are checked against. The
+    /// server's claim; a client that has not pinned it by other means learns
+    /// no more from it than what the server says.
+    pub root: Option<cyphr::proof::Root>,
     pub last_updated: i64,
     pub now: i64,
 }
@@ -370,6 +375,7 @@ pub async fn tip(
     // The tip reported is the tip attested: the roots signed are those of
     // the commit it names, whatever has landed since.
     let coz = sign_tip_attestation(&state, &t).await?;
+    let root = proving_log(&state, &t).await?.root_at(t.commit_count);
 
     let payload = TipResponse {
         principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
@@ -379,6 +385,7 @@ pub async fn tip(
         cr: absent_cr(&t.cr),
         commit_id: t.commit_id.clone(),
         commit_count: t.commit_count,
+        root,
         last_updated: t.last_updated,
         now: crate::auth::server_now(),
     };
@@ -484,31 +491,17 @@ pub async fn branches(
     Ok(Json(Envelope::unsigned(BranchesResponse { branches })))
 }
 
-/// Query parameters for `GET /consistency`.
+/// Query parameters for `GET /proof`.
 #[derive(Debug, Deserialize)]
-pub struct ConsistencyQuery {
+pub struct ProofQuery {
     /// Principal genesis identifier.
     pub pr: String,
-    /// The size, in commits, of the log the asker holds. Raw string here,
-    /// parsed in the handler so a malformed value is refused with the
-    /// app's JSON error envelope, as `GET /patch`'s anchor is.
-    pub from: String,
-    /// The size of the log the asker wants shown to extend it, as
-    /// [`Self::from`]. Asked for, never defaulted to the tip.
-    pub to: String,
-}
-
-/// Query parameters for `GET /inclusion`.
-#[derive(Debug, Deserialize)]
-pub struct InclusionQuery {
-    /// Principal genesis identifier.
-    pub pr: String,
-    /// The commit's position in the log, from 0. Raw string, as
-    /// [`ConsistencyQuery::from`].
-    pub index: String,
-    /// The size of the log the commit is shown to be in. Asked for, never
-    /// defaulted to the tip.
+    /// The size, in commits, of the log the claim is about. Raw string,
+    /// parsed in the handler so a malformed value is refused with the app's
+    /// JSON error envelope. Asked for, never defaulted to the tip.
     pub size: String,
+    /// `member:<index>`, `extends:<from>` or `key:<tmb>`.
+    pub claim: String,
 }
 
 type LogStorage = cyphr_blob_fjall::storage_fjall::FjallStorage;
@@ -559,140 +552,114 @@ fn proof_count(what: &str, raw: &str) -> Result<u64, AppError> {
         .map_err(|_| AppError::bad_request(format!("{what} must be a commit count, got {raw:?}")))
 }
 
-/// A certificate answer: `{certificate}` and nothing else. A certificate
-/// is time-free plain data, so nothing here names the tip it was made at.
-fn certificate_answer(
-    certificate: &cyphr::proof::Certificate,
-) -> Result<impl IntoResponse + use<>, AppError> {
-    let certificate = serde_json::to_value(certificate)
-        .map_err(|e| AppError::internal(format!("certificate not encoded: {e}")))?;
-    Ok(Json(Envelope::unsigned(
-        serde_json::json!({ "certificate": certificate }),
-    )))
+/// What `GET /proof` is asked to certify, parsed from its `claim`.
+enum ProofClaim {
+    Member(u64),
+    Extends(u64),
+    Key(coz::Thumbprint),
 }
 
-/// A certificate opens the Principal Root of the log's last commit, whose
-/// cells name the State Root first. A principal that removed its last key
-/// and holds no data has no State Root, so for a log of that size no
-/// certificate can be made: refuse it as a conflict with the log's state,
-/// naming why, rather than failing inside the prover.
-fn no_state_root<S: eml::Storage>(log: &cyphr::Principal<S>, size: u64) -> Result<(), AppError> {
-    let last = usize::try_from(size).ok().and_then(|n| n.checked_sub(1));
-    match last.and_then(|i| log.commit_at(i)) {
-        Some(commit) if commit.sr().is_none() => Err(AppError::conflict(format!(
-            "no certificate for a log of {size} commits: the principal had removed its last key \
-             and held no data then, so its root has no state root to open"
-        ))),
-        _ => Ok(()),
+fn parse_claim(raw: &str) -> Result<ProofClaim, AppError> {
+    let bad = || {
+        AppError::bad_request(format!(
+            "claim must be member:<index>, extends:<from> or key:<tmb>, got {raw:?}"
+        ))
+    };
+    let (kind, arg) = raw.split_once(':').ok_or_else(bad)?;
+    match kind {
+        "member" => Ok(ProofClaim::Member(arg.parse().map_err(|_| bad())?)),
+        "extends" => Ok(ProofClaim::Extends(arg.parse().map_err(|_| bad())?)),
+        "key" => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let bytes = Base64UrlUnpadded::decode_vec(arg).map_err(|_| bad())?;
+            Ok(ProofClaim::Key(coz::Thumbprint::from_bytes(bytes)))
+        },
+        _ => Err(bad()),
     }
 }
 
-/// A size asked for that the log has not reached.
-fn past_the_log(what: &str, size: u64, held: usize) -> AppError {
-    AppError::bad_request(format!(
-        "{what} must be at most the log's size {held}, got {size}"
-    ))
-}
-
-/// `GET /head?pr=<PG>` -- the principal's root at the last commit it holds:
-/// a [`cyphr::proof::Root`], `{size, pr}`. Plain data, the server's claim:
-/// an asker that does not already trust it by other means checks nothing
-/// against it but a certificate's consistency with itself.
-#[tracing::instrument(skip(state))]
-pub async fn head(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<TipQuery>,
-) -> Result<impl IntoResponse, AppError> {
-    let t = provable_tip(&state, &query.pr).await?;
-    let log = proving_log(&state, &t).await?;
-    let root = log.root_at(log.commit_count() as u64).ok_or_else(|| {
-        AppError::internal(format!("principal {} holds no commit", t.principal_id))
-    })?;
-    Ok(Json(Envelope::unsigned(root)))
-}
-
-/// `GET /consistency?pr=<PG>&from=<n>&to=<m>` -- the certificate that the
-/// log of the principal's first `m` commits extends the log of its first
-/// `n` (SPEC 4.4), across any hash-algorithm rotation between them.
+/// `GET /proof?pr=<PG>&size=<n>&claim=<claim>` -- the certificate that a
+/// claim holds of the log of the principal's first `n` commits (SPEC 4.4),
+/// whatever algorithm the commits involved were made under:
 ///
-/// The payload is `{certificate}`. The asker checks it against an anchor it
-/// built itself (`cyphr::proof::verify_extension`), with `m`'s root as
-/// `GET /head` or its own source reports it; the server signs nothing
-/// here. Both sizes are asked for. `n` must be at least 1 and at most `m`,
-/// and `m` at most the log's size. A principal in Error has no single log
-/// (SPEC 15.5) and is a 409.
-#[tracing::instrument(skip(state))]
-pub async fn consistency(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<ConsistencyQuery>,
-) -> Result<impl IntoResponse, AppError> {
-    let from = proof_count("from", &query.from)?;
-    let to = proof_count("to", &query.to)?;
-    let t = provable_tip(&state, &query.pr).await?;
-    let log = proving_log(&state, &t).await?;
-    if from == 0 || from > to {
-        return Err(AppError::bad_request(format!(
-            "from must be between 1 and to, got from={from} to={to}"
-        )));
-    }
-    if to > log.commit_count() as u64 {
-        return Err(past_the_log("to", to, log.commit_count()));
-    }
-    no_state_root(&log, to)?;
-    no_state_root(&log, from)?;
-    let head = log
-        .root_at(to)
-        .ok_or_else(|| AppError::internal(format!("no root at {to}")))?
-        .pr;
-    let certificate = log
-        .prove(to, &cyphr::proof::Claim::Extends { from, head })
-        .await
-        .map_err(|e| AppError::internal(format!("consistency certificate not made: {e}")))?;
-    certificate_answer(&certificate)
-}
-
-/// `GET /inclusion?pr=<PG>&index=<i>&size=<n>` -- the certificate that the
-/// commit at position `i` is in the log of the principal's first `n`
-/// commits (SPEC 4.4), whatever algorithm it was made under.
+/// - `member:<i>`: the commit at position `i` is in it; the answer also carries that commit's
+///   `bundle`, which the asker needs to compute the transaction root the certificate is checked
+///   against;
+/// - `extends:<from>`: it extends the log of the first `from` commits, to the head `GET /tip`'s
+///   `root` reports;
+/// - `key:<tmb>`: the key with that thumbprint is in its key set. Frozen, deleted and errored are
+///   not checked.
 ///
-/// The payload is `{certificate}`, for an asker to check against an anchor
-/// it built itself (`cyphr::proof::verify_membership`). Both are asked for;
-/// `i` must be below `n` and `n` at most the log's size. The answers of 409
-/// are `/consistency`'s.
+/// The payload is `{certificate}` (and `bundle` for `member:`) and nothing
+/// else; the size is asked for. The asker checks the certificate against an
+/// anchor it built itself (`cyphr::proof::verify`). What a thin client can
+/// establish is only that the log it pinned contains or precedes what it
+/// asked about; that its pinned root is the principal's current one needs a
+/// witness, which this route is not.
+///
+/// An unknown or unparsable claim is a 400. A claim the log does not hold
+/// (an index or size past it) is a 422, and a key not in the key set at
+/// that size a 404. A store that cannot be read, or a log whose last commit
+/// left the principal with no keys and no data (so its root has no state
+/// root to open), is the server's, a 5xx. A principal in Error has no
+/// single log (SPEC 15.5) and is a 409.
 #[tracing::instrument(skip(state))]
-pub async fn inclusion(
+pub async fn proof(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<InclusionQuery>,
+    Query(query): Query<ProofQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let index = proof_count("index", &query.index)?;
     let size = proof_count("size", &query.size)?;
+    let asked = parse_claim(&query.claim)?;
     let t = provable_tip(&state, &query.pr).await?;
     let log = proving_log(&state, &t).await?;
-    if index >= size {
-        return Err(AppError::bad_request(format!(
-            "index must be below size, got index={index} size={size}"
-        )));
+    let held = |i: u64| {
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| log.commit_at(i))
+            .ok_or_else(|| AppError::unprocessable(format!("the log holds no commit {i}")))
+    };
+    let (claim, bundle) = match asked {
+        ProofClaim::Member(index) => {
+            let bundle = cyphr::replay::WireBundle::of_commit(held(index)?)
+                .map_err(|e| AppError::internal(format!("commit {index} not encoded: {e}")))?;
+            (
+                cyphr::proof::Claim::Member {
+                    index,
+                    commit: bundle.clone(),
+                },
+                Some(bundle),
+            )
+        },
+        ProofClaim::Extends(from) => {
+            let head = log.root_at(size).ok_or_else(|| {
+                AppError::unprocessable(format!("the log holds no root at size {size}"))
+            })?;
+            (
+                cyphr::proof::Claim::Extends {
+                    from,
+                    head: head.pr,
+                },
+                None,
+            )
+        },
+        ProofClaim::Key(tmb) => (cyphr::proof::Claim::Key { tmb }, None),
+    };
+    let certificate = log.prove(size, &claim).await.map_err(|e| match &e {
+        cyphr::proof::ProveError::Question(cyphr::proof::Cause::NoKey(_)) => {
+            AppError::not_found(e.to_string())
+        },
+        cyphr::proof::ProveError::Question(_) => AppError::unprocessable(e.to_string()),
+        _ => AppError::internal(e.to_string()),
+    })?;
+    let mut payload = serde_json::json!({
+        "certificate": serde_json::to_value(&certificate)
+            .map_err(|e| AppError::internal(format!("certificate not encoded: {e}")))?,
+    });
+    if let Some(bundle) = bundle {
+        payload["bundle"] = serde_json::to_value(&bundle)
+            .map_err(|e| AppError::internal(format!("bundle not encoded: {e}")))?;
     }
-    if size > log.commit_count() as u64 {
-        return Err(past_the_log("size", size, log.commit_count()));
-    }
-    // Every held commit is provable, whatever algorithm it was made under:
-    // there is nothing to choose. The one exception is a log whose last
-    // commit left the principal with no keys and no data; see
-    // `no_state_root`. A store that cannot be read, or a held commit that
-    // proves nothing otherwise, is the server's, a 5xx.
-    no_state_root(&log, size)?;
-    let certificate = log
-        .prove(
-            size,
-            &cyphr::proof::Claim::Member {
-                index,
-                commit: cyphr::replay::WireBundle::default(),
-            },
-        )
-        .await
-        .map_err(|e| AppError::internal(format!("inclusion certificate not made: {e}")))?;
-    certificate_answer(&certificate)
+    Ok(Json(Envelope::unsigned(payload)))
 }
 
 /// `GET /evidence?pr=<PG>` -- every principal fork the store holds
@@ -1957,52 +1924,4 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         )],
         state.metrics.render(state.engine.log_append_failures()),
     )
-}
-
-#[cfg(test)]
-mod no_state_root_tests {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    use cyphr::signer::SoftwareSigner;
-    use cyphr::{Key, Principal};
-
-    use super::no_state_root;
-
-    /// A principal that removed its last key and holds no data has no State
-    /// Root, so no certificate opens a log that ends there: the routes
-    /// answer a 409 that says why, and a log that ends earlier is
-    /// untouched. Unit test: pushing such a principal through the server
-    /// is refused or needs a whole fixture, and the check is the route's
-    /// own. Turns red if the check is dropped (a 500 from the prover).
-    #[tokio::test]
-    async fn a_log_ending_with_no_state_root_is_a_conflict_naming_why() {
-        let k = coz::Alg::Ed25519.generate_keypair();
-        let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
-        let key =
-            Key::new(k.alg.name().to_string(), tmb.clone(), k.pub_bytes.clone()).expect("key");
-        let signer = SoftwareSigner::new(k.alg.name(), &k.prv_bytes, &k.pub_bytes, &tmb);
-        let mut p = Principal::implicit(key).await.expect("open");
-        p.commit_genesis(&signer, &[], 1_700_000_000, "cyphr.me")
-            .await
-            .expect("genesis");
-        let id = Base64UrlUnpadded::encode_string(tmb.as_bytes());
-        let mut pay = serde_json::json!({"alg": k.alg.name(), "id": id, "now": 1_700_000_010,
-            "tmb": id, "typ": "cyphr.me/cyphr/key/delete"});
-        pay.as_object_mut().expect("object").sort_keys();
-        let v = serde_json::to_vec(&pay).expect("pay");
-        let (sig, cad) =
-            coz::sign_json(&v, k.alg.name(), &k.prv_bytes, &k.pub_bytes).expect("sign");
-        let czd = coz::czd_for_alg(&cad, &sig, k.alg.name()).expect("czd");
-        let mut scope = p.begin_commit();
-        scope.verify_and_apply(&v, &sig, czd, None).expect("delete");
-        scope
-            .finalize_with_software(&signer, 1_700_000_011, "cyphr.me")
-            .await
-            .expect("commit");
-
-        assert!(no_state_root(&p, 1).is_ok(), "the genesis log has a root");
-        let refused = no_state_root(&p, 2).expect_err("no state root at 2");
-        let shown = format!("{refused:?}");
-        assert!(shown.contains("409"), "{shown}");
-        assert!(shown.contains("no state root"), "{shown}");
-    }
 }

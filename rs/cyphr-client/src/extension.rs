@@ -59,7 +59,7 @@ impl Extension {
         Self { head, certificate }
     }
 
-    /// The head of an answer to `GET /head`.
+    /// The head of an answer to `GET /tip`: its `root`.
     ///
     /// # Errors
     ///
@@ -69,8 +69,8 @@ impl Extension {
             .map_err(|e| ExtensionFailure::Malformed(format!("head: {e}")))
     }
 
-    /// The certificate of an answer to `GET /consistency` or
-    /// `GET /inclusion`: `{certificate}` and nothing else.
+    /// The certificate of an answer to `GET /proof` for an extension: `{certificate}`
+    /// and nothing else.
     ///
     /// # Errors
     ///

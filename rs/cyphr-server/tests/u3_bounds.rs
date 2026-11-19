@@ -111,7 +111,7 @@ async fn observe(n: usize) -> Obs {
     let c = ok(call(
         &app_a,
         "GET",
-        &format!("/consistency?pr={id}&from={}&to={n}", n / 2),
+        &format!("/proof?pr={id}&size={n}&claim=extends:{}", n / 2),
         String::new(),
     )
     .await);
@@ -120,7 +120,7 @@ async fn observe(n: usize) -> Obs {
     let i = ok(call(
         &app_a,
         "GET",
-        &format!("/inclusion?pr={id}&index={}&size={n}", n / 2),
+        &format!("/proof?pr={id}&size={n}&claim=member:{}", n / 2),
         String::new(),
     )
     .await);
@@ -323,12 +323,12 @@ async fn consistency_read_rows_are_constant_with_a_rival_at_one() {
     let (short, long) = (
         rival_get_rows(
             SHORT,
-            &format!("/consistency?pr={{id}}&from={}&to={SHORT}", SHORT / 2),
+            &format!("/proof?pr={{id}}&size={SHORT}&claim=extends:{}", SHORT / 2),
         )
         .await,
         rival_get_rows(
             LONG,
-            &format!("/consistency?pr={{id}}&from={}&to={LONG}", LONG / 2),
+            &format!("/proof?pr={{id}}&size={LONG}&claim=extends:{}", LONG / 2),
         )
         .await,
     );

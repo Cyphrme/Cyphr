@@ -1,4 +1,4 @@
-//! `GET /consistency` and the proof-gated pull (SPEC 4.4: clients obtain
+//! `GET /proof` and the proof-gated pull (SPEC 4.4: clients obtain
 //! consistency proofs over the commit log). A follower that holds a tip A
 //! and is offered a tip B asks the peer for the proof that B extends A
 //! before it fetches a single commit: a fork shows as a failed extension
@@ -31,16 +31,16 @@ fn clock() -> i64 {
 }
 
 /// What the follower asked the peer, and an optional edit of the
-/// `/consistency` answer.
+/// `/proof` answer.
 struct Watched {
     inner: HttpConnector,
     asked: Mutex<Vec<String>>,
     /// Commits the peer's `/patch` answers carried.
     fetched: Mutex<usize>,
     lie: Option<fn(&mut serde_json::Value)>,
-    /// An edit of the `/head` answers.
+    /// An edit of the head `/tip` reports (its `root`).
     head_lie: Option<fn(&mut serde_json::Value)>,
-    /// An edit of the `/consistency` answers after the first: those the
+    /// An edit of the `/proof` answers after the first: those the
     /// search for where a fork parts is made of.
     search_lie: Option<fn(&mut serde_json::Value)>,
     /// Entries appended to a whole-chain `/patch` answer, each a copy of
@@ -102,10 +102,10 @@ impl Connector for Watched {
             let entries = json["payload"]["entries"].as_array().map_or(0, Vec::len);
             *self.fetched.lock().expect("fetched") += entries;
         }
-        let lie = if request.target.starts_with("/head") {
+        let lie = if request.target.starts_with("/tip") {
             self.head_lie
-        } else if request.target.starts_with("/consistency") {
-            if self.asked("/consistency") > 1 {
+        } else if request.target.starts_with("/proof") {
+            if self.asked("/proof") > 1 {
                 self.search_lie
             } else {
                 self.lie
@@ -117,7 +117,11 @@ impl Connector for Watched {
             return Ok(body);
         };
         let mut json: serde_json::Value = serde_json::from_slice(&body).expect("json");
-        lie(&mut json["payload"]);
+        if request.target.starts_with("/tip") {
+            lie(&mut json["payload"]["root"]);
+        } else {
+            lie(&mut json["payload"]);
+        }
         Ok(serde_json::to_vec(&json).expect("json"))
     }
 }
@@ -268,11 +272,10 @@ async fn a_fork_is_found_with_one_commit_fetched() {
     // One ask for the pull itself, then a binary search over the six
     // commits the record holds: at most ceil(log2 7) + 1 more.
     assert!(
-        c.asked("/consistency") <= 1 + 4,
+        c.asked("/proof") <= 1 + 4,
         "O(log n) asks: {}",
-        c.asked("/consistency")
+        c.asked("/proof")
     );
-    assert_eq!(c.asked("/inclusion"), 0, "the proofs are extension proofs");
     assert_eq!(c.fetched(), 1, "one commit, not the chain");
     assert_eq!(
         record.tip().expect("tip"),
@@ -320,7 +323,7 @@ async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
     assert_eq!(handed, [2, 2], "bundles handed on, unpadded and padded");
 }
 
-/// Backs: serving `/tip`, `/consistency` and `/inclusion`, and admitting a
+/// Backs: serving `/tip` and `/proof`, and admitting a
 /// push, read a number of commit records from the index that does not grow
 /// with the principal's history. Each asks whether the principal is in
 /// Error first; answered by walking the whole chain, a proof of logarithmic
@@ -349,8 +352,8 @@ async fn a_request_reads_no_more_of_the_index_as_history_grows() {
         let before = w.peer.engine.chain_rows_read();
         for route in [
             format!("/tip?pr={id}"),
-            format!("/consistency?pr={id}&from=1&to={}", bundles.len() + 1),
-            format!("/inclusion?pr={id}&index=0&size={}", bundles.len() + 1),
+            format!("/proof?pr={id}&size={}&claim=extends:1", bundles.len() + 1),
+            format!("/proof?pr={id}&size={}&claim=member:0", bundles.len() + 1),
         ] {
             let (status, body) = get_json(app.clone(), &route).await;
             assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
@@ -387,7 +390,7 @@ async fn an_honest_extension_pulls_only_the_new_commits() {
         "{:?}",
         only_standing(&report)
     );
-    assert_eq!(c.asked("/consistency"), 1);
+    assert_eq!(c.asked("/proof"), 1);
     assert_eq!(c.asked("/patch"), 1);
     assert_eq!(c.fetched(), 2, "only the new commits");
     assert_eq!(record.tip().expect("tip").commits, 4);
@@ -555,8 +558,8 @@ async fn an_unkept_principal_is_replayed_once_for_its_proofs() {
     let before = again.engine.commits_replayed();
     for _ in 0..3 {
         for route in [
-            format!("/consistency?pr={q}&from=2&to=4"),
-            format!("/inclusion?pr={q}&index=1&size=4"),
+            format!("/proof?pr={q}&size=4&claim=extends:2"),
+            format!("/proof?pr={q}&size=4&claim=member:1"),
         ] {
             let (status, body) = get_json(app.clone(), &route).await;
             assert_eq!(status, StatusCode::OK, "{route}: {body:?}");
@@ -596,51 +599,45 @@ async fn the_proof_request_is_bounded() {
     let (w, _) = world(&["key_a", "carol"]).await; // three commits
     let app = build_router(w.peer.clone());
     let id = w.id.replace(':', "%3A");
-    for (from, to, want) in [
-        ("1", "3", StatusCode::OK),
-        ("2", "3", StatusCode::OK),
-        ("3", "3", StatusCode::OK),
-        ("1", "2", StatusCode::OK),
-        ("4", "3", StatusCode::BAD_REQUEST),
-        ("0", "3", StatusCode::BAD_REQUEST),
-        ("1", "4", StatusCode::BAD_REQUEST),
-        ("1", "18446744073709551615", StatusCode::BAD_REQUEST),
-        ("-1", "3", StatusCode::BAD_REQUEST),
-        ("x", "3", StatusCode::BAD_REQUEST),
-        ("1", "x", StatusCode::BAD_REQUEST),
+    for (claim, size, want) in [
+        ("extends:1", "3", StatusCode::OK),
+        ("extends:2", "3", StatusCode::OK),
+        ("extends:3", "3", StatusCode::OK),
+        ("extends:1", "2", StatusCode::OK),
+        ("extends:4", "3", StatusCode::UNPROCESSABLE_ENTITY),
+        ("extends:0", "3", StatusCode::UNPROCESSABLE_ENTITY),
+        ("extends:1", "4", StatusCode::UNPROCESSABLE_ENTITY),
+        (
+            "extends:1",
+            "18446744073709551615",
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        ("extends:-1", "3", StatusCode::BAD_REQUEST),
+        ("extends:x", "3", StatusCode::BAD_REQUEST),
+        ("extends:1", "x", StatusCode::BAD_REQUEST),
+        ("member:0", "3", StatusCode::OK),
+        ("member:2", "3", StatusCode::OK),
+        ("member:0", "1", StatusCode::OK),
+        ("member:3", "3", StatusCode::UNPROCESSABLE_ENTITY),
+        ("member:0", "4", StatusCode::UNPROCESSABLE_ENTITY),
+        ("member:0", "0", StatusCode::UNPROCESSABLE_ENTITY),
+        ("member:-1", "3", StatusCode::BAD_REQUEST),
+        ("member:x", "3", StatusCode::BAD_REQUEST),
+        ("bogus", "3", StatusCode::BAD_REQUEST),
     ] {
         let (status, body) = get_json(
             app.clone(),
-            &format!("/consistency?pr={id}&from={from}&to={to}"),
+            &format!("/proof?pr={id}&size={size}&claim={claim}"),
         )
         .await;
-        assert_eq!(status, want, "from={from} to={to}: {body:?}");
+        assert_eq!(status, want, "claim={claim} size={size}: {body:?}");
     }
-    let (status, _) = get_json(app.clone(), "/consistency?pr=nobody&from=1&to=1").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    for (index, size, want) in [
-        ("0", "3", StatusCode::OK),
-        ("2", "3", StatusCode::OK),
-        ("0", "1", StatusCode::OK),
-        ("3", "3", StatusCode::BAD_REQUEST),
-        ("0", "4", StatusCode::BAD_REQUEST),
-        ("0", "0", StatusCode::BAD_REQUEST),
-        ("-1", "3", StatusCode::BAD_REQUEST),
-        ("x", "3", StatusCode::BAD_REQUEST),
-    ] {
-        let (status, body) = get_json(
-            app.clone(),
-            &format!("/inclusion?pr={id}&index={index}&size={size}"),
-        )
-        .await;
-        assert_eq!(status, want, "index={index} size={size}: {body:?}");
-    }
-    let (status, _) = get_json(app.clone(), "/inclusion?pr=nobody&index=0&size=1").await;
+    let (status, _) = get_json(app.clone(), "/proof?pr=nobody&size=1&claim=member:0").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (_, body) = get_json(app, &format!("/head?pr={id}")).await;
+    let (_, body) = get_json(app, &format!("/tip?pr={id}")).await;
     let payload = envelope_payload(&body);
-    assert_eq!(payload["size"], 3, "{body:?}");
+    assert_eq!(payload["root"]["size"], 3, "{body:?}");
 }
 
 /// Backs: a proof request on a principal whose state the engine keeps
@@ -651,9 +648,13 @@ async fn a_proof_from_a_kept_principal_replays_nothing() {
     let app = build_router(w.peer.clone());
     let id = w.id.replace(':', "%3A");
     let before = w.peer.engine.commits_replayed();
-    let (status, _) = get_json(app.clone(), &format!("/consistency?pr={id}&from=2&to=4")).await;
+    let (status, _) = get_json(
+        app.clone(),
+        &format!("/proof?pr={id}&size=4&claim=extends:2"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = get_json(app, &format!("/inclusion?pr={id}&index=1&size=4")).await;
+    let (status, _) = get_json(app, &format!("/proof?pr={id}&size=4&claim=member:1")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(w.peer.engine.commits_replayed(), before);
 }

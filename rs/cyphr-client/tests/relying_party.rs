@@ -701,8 +701,8 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     );
 }
 
-/// A peer that also proves its log, as a real server does: `/head`,
-/// `/consistency` and `/inclusion` come from its chain's own commit trees. It records the
+/// A peer that also proves its log, as a real server does: `/tip`'s
+/// `root` and `/proof` come from its chain's own commit trees. It records the
 /// paths asked, so a test can pin which route a pull took.
 struct ProofMirror {
     mirror: Mirror,
@@ -710,7 +710,7 @@ struct ProofMirror {
     asked: std::sync::Mutex<Vec<String>>,
     /// The whole targets asked, query included.
     targets: std::sync::Mutex<Vec<String>>,
-    /// `/consistency` answers that crossed an algorithm rotation.
+    /// `/proof` answers that crossed an algorithm rotation.
     stitched: std::sync::atomic::AtomicUsize,
 }
 
@@ -734,20 +734,26 @@ impl Connector for ProofMirror {
                 .and_then(|(_, v)| v.parse::<u64>().ok())
         };
         let payload = match path {
-            "/head" => {
+            "/tip" => {
                 let size = self.principal.commit_count() as u64;
-                serde_json::to_value(self.principal.root_at(size).expect("a root")).expect("root")
+                json!({ "root": self.principal.root_at(size).expect("a root") })
             },
-            "/consistency" => {
-                let from = number("from").ok_or(ConnectError::NonSuccess(400))?;
-                let to = number("to").ok_or(ConnectError::NonSuccess(400))?;
+            "/proof" => {
+                let size = number("size").ok_or(ConnectError::NonSuccess(400))?;
+                let from = q
+                    .split('&')
+                    .filter_map(|kv| kv.split_once('='))
+                    .find(|(k, _)| *k == "claim")
+                    .and_then(|(_, v)| v.strip_prefix("extends:"))
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .ok_or(ConnectError::NonSuccess(400))?;
                 let certificate = self
                     .principal
                     .prove(
-                        to,
+                        size,
                         &cyphr::proof::Claim::Extends {
                             from,
-                            head: self.principal.root_at(to).expect("a head").pr,
+                            head: self.principal.root_at(size).expect("a head").pr,
                         },
                     )
                     .await
@@ -760,22 +766,6 @@ impl Connector for ProofMirror {
                     self.stitched.fetch_add(1, Ordering::SeqCst);
                 }
                 payload
-            },
-            "/inclusion" => {
-                let index = number("index").ok_or(ConnectError::NonSuccess(400))?;
-                let size = number("size").ok_or(ConnectError::NonSuccess(400))?;
-                let certificate = self
-                    .principal
-                    .prove(
-                        size,
-                        &cyphr::proof::Claim::Member {
-                            index,
-                            commit: cyphr::replay::WireBundle::default(),
-                        },
-                    )
-                    .await
-                    .map_err(|_| ConnectError::NonSuccess(404))?;
-                json!({ "certificate": certificate })
             },
             _ => return self.mirror.exchange(request).await,
         };
@@ -843,8 +833,8 @@ async fn a_lost_branch_is_refused_when_the_fork_is_located_by_proofs() {
 
     let asked = second.asked.lock().expect("asked");
     assert!(
-        asked.iter().any(|p| p == "/consistency"),
-        "/consistency not asked: {asked:?}"
+        asked.iter().any(|p| p == "/proof"),
+        "/proof not asked: {asked:?}"
     );
     // The locate path proves the one rival commit at the fork and fetches
     // nothing past it, so a tie at the fork's height reads as `Forked`:
@@ -976,10 +966,7 @@ async fn a_fork_across_a_rotation_is_located_on_the_proof_path() {
     assert_eq!(patches.len(), 1, "one rival commit: {patches:?}");
     // The pull's own ask, then the search over the six commits held: at
     // most ceil(log2 7) + 1 more.
-    let proofs = targets
-        .iter()
-        .filter(|t| t.starts_with("/consistency"))
-        .count();
+    let proofs = targets.iter().filter(|t| t.starts_with("/proof")).count();
     assert!((2..=6).contains(&proofs), "{proofs} asks: {targets:?}");
     assert!(
         second.stitched.load(Ordering::SeqCst) >= 1,

@@ -384,7 +384,6 @@ async fn get(
 // certificate and the bundle, and each verifies against an anchor on the
 // chain a client pulled and against a pin of the head.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED(rotated-chain-proofs): /tip has no root and /proof does not exist yet"]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
     let (laptop, phone) = (h.client("laptop"), h.client("phone"));
