@@ -2,7 +2,8 @@
 //! Root. The first cell of its Principal Tree is then the Commit Root and
 //! not the State Root, and a certificate cannot say which cell is which, so
 //! the prover refuses to open such a root. Every log that does not end there
-//! is provable, including through that commit's predecessors.
+//! is provable, including through that commit's predecessors. A question
+//! the log cannot answer, not a failure of the server: `Question`, a 422.
 
 use coz::base64ct::Encoding;
 use cyphr::proof::{Anchor, Claim, ProveError, verify};
@@ -58,7 +59,7 @@ async fn a_log_ending_with_no_key_and_no_data_has_no_certificate() {
     for (index, size) in [(0, 2), (1, 2)] {
         let r = p.prove(size, &member(index)).await;
         assert!(
-            matches!(&r, Err(ProveError::Unavailable(_))),
+            matches!(&r, Err(ProveError::Question(_))),
             "membership {index} of {size}: {r:?}"
         );
     }
@@ -72,7 +73,7 @@ async fn a_log_ending_with_no_key_and_no_data_has_no_certificate() {
         )
         .await;
     assert!(
-        matches!(&r, Err(ProveError::Unavailable(_))),
+        matches!(&r, Err(ProveError::Question(_))),
         "extension 1 to 2: {r:?}"
     );
 }

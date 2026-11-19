@@ -394,7 +394,11 @@ pub enum Claim {
     /// The commit `commit` is at `index` of the log of `size` commits. The
     /// commit is as a server serves it (its bundle); the transaction root is
     /// computed from its cozies, never passed in, and a prover reads `index`
-    /// only. A holder builds it with `WireBundle::of_commit`.
+    /// only. A holder builds it with `WireBundle::of_commit`. The claim binds
+    /// the czds of the commit's cozies and how they are grouped, and nothing
+    /// else: the bundle's data `actions` and `keys` are not under the
+    /// transaction root, so verifying shows that these cozies, so grouped,
+    /// are commit `index`, not what the bundle carries beside them.
     Member {
         /// Position of the commit.
         index: u64,

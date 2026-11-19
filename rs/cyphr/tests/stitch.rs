@@ -2275,17 +2275,18 @@ async fn a_key_in_the_key_set_at_a_pinned_size_verifies() {
         "no certificate for a retired key: {r:?}"
     );
 
-    // At size 3 the roles are the other way round.
-    let cert_a = p
-        .prove(3, &claim_k(tmb_a))
-        .await
-        .expect("a certificate for A");
-    assert_eq!(verify(&pin(3), &cert_a, 3, &claim_k(tmb_a)), Ok(()));
-    let r = p.prove(3, &claim_k(tmb_b)).await;
-    assert!(
-        matches!(r, Err(ProveError::Question(_))),
-        "B is not in the key set yet: {r:?}"
-    );
+    // A key claim is for the tip only: at any other size the question is
+    // refused, whichever key is asked about (A was in the key set at 3, but
+    // 3 is not where the log stands).
+    for (what, tmb) in [("A", tmb_a), ("B", tmb_b)] {
+        for size in [3u64, 7] {
+            let r = p.prove(size, &claim_k(tmb)).await;
+            assert!(
+                matches!(r, Err(ProveError::Question(_))),
+                "a key claim for {what} at {size}, not the tip: {r:?}"
+            );
+        }
+    }
 
     // A size the anchor does not pin is a question, not an accusation.
     let r = verify(&pin(3), &cert_b, 8, &claim_k(tmb_b));
@@ -2363,8 +2364,8 @@ fn key_with(
     size: u64,
     tmb: &coz::Thumbprint,
 ) -> Result<(), ProofError> {
-    let cert: Certificate = serde_json::from_value(w.0.clone())
-        .map_err(|e| ProofError::Malformed(Cause::Framing(e.to_string())))?;
+    let cert: Certificate =
+        serde_json::from_value(w.0.clone()).expect("a certificate of the key kind parses");
     verify(anchor, &cert, size, &claim_k(tmb))
 }
 
@@ -2481,6 +2482,157 @@ async fn a_certificate_of_another_kind_is_malformed() {
         matches!(r, Err(ProofError::Malformed(_))),
         "key to verify_extension: {r:?}"
     );
+}
+
+// A hop's `size` is the claim of how many leaves its tree has; a size no
+// log has is refused at parse, quickly and without allocating, never
+// reached by a verifier that walks or sizes by it.
+#[tokio::test]
+async fn a_key_hop_of_an_absurd_size_is_refused_at_parse() {
+    let (p, _, b) = key_chain().await;
+    let genuine = cert_k(&p, &b.tmb).await;
+    assert!(
+        genuine.cert().is_ok(),
+        "control: the honest certificate parses"
+    );
+    for hop in [0usize, 1] {
+        for size in [1u64 << 32, u64::MAX] {
+            let mut w = genuine.clone();
+            w.0["key"]["hops"][hop]["size"] = json!(size);
+            let start = std::time::Instant::now();
+            let r = w.cert();
+            assert!(
+                matches!(r, Err(Cause::Framing(_))),
+                "hop {hop} of size {size} parsed: {}",
+                r.is_ok()
+            );
+            assert!(
+                start.elapsed() < std::time::Duration::from_millis(500),
+                "hop {hop} of size {size}: {:?} to refuse",
+                start.elapsed()
+            );
+        }
+    }
+}
+
+/// Ed25519 `a` replaced by ES256 `b`, which then adds two KT-level
+/// nonces: the SHA-256 form of `a`'s thumbprint, and the thumbprint of a key
+/// `eve` that was never added. Their leaves in KT equal what a Key claim for
+/// `a` or `eve` would climb from.
+async fn nonce_leaf_chain() -> (Principal, Kp, Kp, Kp) {
+    let (a, b) = keys();
+    let eve = kp(coz::Alg::ES256);
+    let mut p = genesis(&a).await;
+    commit_key(&mut p, &a, "replace", &b, at(1)).await;
+    let nonces = [
+        HashAlg::Sha256.hash_bytes(a.tmb.as_bytes()),
+        eve.tmb.as_bytes().to_vec(),
+    ];
+    for (i, n) in nonces.iter().enumerate() {
+        let id = format!("SHA-256:{}", Base64UrlUnpadded::encode_string(n));
+        commit_as(&mut p, &b, "AT/KT/nonce/create", &id, None, at(2 + i))
+            .await
+            .expect("a KT-level nonce");
+    }
+    (p, a, b, eve)
+}
+
+// A Key claim binds a key entry, not any leaf of KT: a nonce whose value is
+// a key's thumbprint does not make that key a member. The prover may
+// refuse the claim, and if it builds a certificate the verifier must refuse
+// it; the key that is in the set verifies.
+#[tokio::test]
+async fn a_nonce_does_not_satisfy_a_key_claim() {
+    let (p, a, b, eve) = nonce_leaf_chain().await;
+    let n = n_of(&p);
+    let (chain, pin) = (
+        Anchor::of_chain(p.state()),
+        Anchor::pin(p.root_at(n).expect("root")),
+    );
+    let cert_b = p
+        .prove(n, &claim_k(&b.tmb))
+        .await
+        .expect("a certificate for b");
+    for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
+        assert_eq!(
+            verify(anchor, &cert_b, n, &claim_k(&b.tmb)),
+            Ok(()),
+            "b, {what}"
+        );
+    }
+    for (name, key) in [("a (retired)", &a), ("eve (never added)", &eve)] {
+        match p.prove(n, &claim_k(&key.tmb)).await {
+            Ok(cert) => {
+                for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
+                    let r = verify(anchor, &cert, n, &claim_k(&key.tmb));
+                    assert!(
+                        matches!(r, Err(ProofError::Refuted(_))),
+                        "{name} satisfied by a nonce leaf, {what}: {r:?}"
+                    );
+                }
+            },
+            Err(ProveError::Question(_)) => {},
+            Err(e) => panic!("{name}: {e:?}"),
+        }
+    }
+}
+
+// Hop indices are pinned: the KR leaf placed at the position of an AR-level
+// nonce (the AR node's other child) is refused, not read as a leaf in the
+// same node. Green today (the swapped hop climbs to another AR); it keeps
+// the indices from being read loosely.
+#[tokio::test]
+async fn a_key_root_at_an_auth_level_nonce_slot_is_refused() {
+    let (p, _, b) = key_chain().await; // one AT-level nonce beside KR
+    let n = n_of(&p);
+    let kr = p
+        .key_root()
+        .expect("a key root")
+        .0
+        .get(HashAlg::Sha256)
+        .expect("the family's KR")
+        .to_vec();
+    let mut w = cert_k(&p, &b.tmb).await;
+    let (index, nonce) = (
+        w.0["key"]["hops"][1]["index"].as_u64().expect("index"),
+        bytes_of(&w.0["key"]["hops"][1]["steps"][0]["siblings"][0]),
+    );
+    assert_ne!(nonce, kr, "setup: the sibling is the AT-level nonce");
+    let h = hop(&mut w, 1);
+    h["index"] = json!(1 - index);
+    h["steps"][0]["position"] = json!(1 - index);
+    set_bytes(&mut h["steps"][0]["siblings"][0], &kr);
+    for (what, anchor) in [
+        ("chain", Anchor::of_chain(p.state())),
+        ("pin", Anchor::pin(p.root_at(n).expect("root"))),
+    ] {
+        let r = key_with(&anchor, &w, n, &b.tmb);
+        assert!(refuted(&r), "a KR at the nonce slot, {what}: {r:?}");
+    }
+}
+
+// A member claim binds the czds of the commit's cozies and how they are
+// grouped, nothing else: the bundle's `actions` and `keys` are not under
+// the transaction root. So a bundle with its actions replaced still
+// verifies. Green by design, to document what `Claim::Member` shows (that
+// these cozies, so grouped, are commit `index`); `verify` returns `()`.
+#[tokio::test]
+async fn a_member_claim_binds_only_czds_and_grouping() {
+    let (p, w) = genuine().await;
+    let n = n_of(&p);
+    let mut bundle = bundle_of(&p, 2);
+    bundle.actions = vec![b"not an action".to_vec()];
+    bundle.keys.clear();
+    for (what, anchor) in [
+        ("chain", Anchor::of_chain(p.state())),
+        ("pin", Anchor::pin(p.root_at(n).expect("root"))),
+    ] {
+        assert_eq!(
+            member_with(&anchor, n, &w, 2, &bundle),
+            Ok(()),
+            "actions and keys are not bound, {what}"
+        );
+    }
 }
 
 // Setup guard, green by design: the forger's tree is built faithfully
