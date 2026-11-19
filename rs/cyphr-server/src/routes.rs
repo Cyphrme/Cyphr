@@ -640,8 +640,12 @@ pub async fn consistency(
     }
     no_state_root(&log, to)?;
     no_state_root(&log, from)?;
+    let head = log
+        .root_at(to)
+        .ok_or_else(|| AppError::internal(format!("no root at {to}")))?
+        .pr;
     let certificate = log
-        .prove_extension(from, to)
+        .prove(to, &cyphr::proof::Claim::Extends { from, head })
         .await
         .map_err(|e| AppError::internal(format!("consistency certificate not made: {e}")))?;
     certificate_answer(&certificate)
@@ -679,7 +683,13 @@ pub async fn inclusion(
     // proves nothing otherwise, is the server's, a 5xx.
     no_state_root(&log, size)?;
     let certificate = log
-        .prove_membership(size, index)
+        .prove(
+            size,
+            &cyphr::proof::Claim::Member {
+                index,
+                commit: cyphr::replay::WireBundle::default(),
+            },
+        )
         .await
         .map_err(|e| AppError::internal(format!("inclusion certificate not made: {e}")))?;
     certificate_answer(&certificate)

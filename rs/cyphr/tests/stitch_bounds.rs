@@ -5,7 +5,7 @@
 //! certificate's own parser, and verify.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr::proof::{Anchor, Certificate, verify_extension, verify_membership};
+use cyphr::proof::{Anchor, Certificate, Claim, verify};
 use cyphr::signer::SoftwareSigner;
 use cyphr::{Key, Principal};
 use serde_json::json;
@@ -128,25 +128,23 @@ async fn proves_and_verifies(shape: Shape) {
         Shape::Separate => assert_eq!(txs, MANY + 2, "every nonce its own transaction"),
     }
     for i in 0..n {
-        let cert = p.prove_membership(n, i).await.expect("prove");
+        let bundle = cyphr::replay::WireBundle::of_commit(p.commit_at(i as usize).expect("commit"))
+            .expect("bundle");
+        let claim = Claim::Member {
+            index: i,
+            commit: bundle,
+        };
+        let cert = p.prove(n, &claim).await.expect("prove");
         let back: Certificate =
             serde_json::from_value(serde_json::to_value(&cert).expect("serialize"))
                 .unwrap_or_else(|e| panic!("index {i}: an honest certificate is refused: {e}"));
-        let bundle = cyphr::replay::WireBundle::of_commit(p.commit_at(i as usize).expect("commit"))
-            .expect("bundle");
         assert_eq!(
-            verify_membership(&Anchor::of_chain(p.state()), &back, n, i, &bundle),
+            verify(&Anchor::of_chain(p.state()), &back, n, &claim),
             Ok(()),
             "chain, index {i}"
         );
         assert_eq!(
-            verify_membership(
-                &Anchor::pin(p.root_at(n).expect("root")),
-                &back,
-                n,
-                i,
-                &bundle
-            ),
+            verify(&Anchor::pin(p.root_at(n).expect("root")), &back, n, &claim),
             Ok(()),
             "pin, index {i}"
         );
@@ -158,11 +156,15 @@ async fn proves_and_verifies(shape: Shape) {
         p.fork().await.expect("fork")
     };
     let head = p.root_at(n).expect("head");
-    let cert = holder.prove_extension(1, n).await.expect("prove");
+    let claim = Claim::Extends {
+        from: 1,
+        head: head.pr.clone(),
+    };
+    let cert = holder.prove(n, &claim).await.expect("prove");
     let back: Certificate =
         serde_json::from_value(serde_json::to_value(&cert).expect("serialize")).expect("parses");
     assert_eq!(
-        verify_extension(&Anchor::of_chain(p.state()), &back, 1, &head),
+        verify(&Anchor::of_chain(p.state()), &back, n, &claim),
         Ok(())
     );
 }

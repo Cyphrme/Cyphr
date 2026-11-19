@@ -5,7 +5,7 @@
 //! is provable, including through that commit's predecessors.
 
 use coz::base64ct::Encoding;
-use cyphr::proof::{Anchor, ProofError, verify_membership};
+use cyphr::proof::{Anchor, Claim, ProveError, verify};
 use cyphr::signer::SoftwareSigner;
 use cyphr::{Key, Principal};
 use serde_json::json;
@@ -44,24 +44,35 @@ async fn a_log_ending_with_no_key_and_no_data_has_no_certificate() {
     );
 
     // The log of one commit still has one.
-    let cert = p.prove_membership(1, 0).await.expect("the genesis log");
-    let bundle =
-        cyphr::replay::WireBundle::of_commit(p.commit_at(0).expect("commit")).expect("bundle");
+    let member = |index| Claim::Member {
+        index,
+        commit: cyphr::replay::WireBundle::of_commit(p.commit_at(index as usize).expect("commit"))
+            .expect("bundle"),
+    };
+    let cert = p.prove(1, &member(0)).await.expect("the genesis log");
     assert_eq!(
-        verify_membership(&Anchor::of_chain(p.state()), &cert, 1, 0, &bundle),
+        verify(&Anchor::of_chain(p.state()), &cert, 1, &member(0)),
         Ok(())
     );
     // A log that ends in the keyless commit has none, whatever is asked.
     for (index, size) in [(0, 2), (1, 2)] {
-        let r = p.prove_membership(size, index).await;
+        let r = p.prove(size, &member(index)).await;
         assert!(
-            matches!(&r, Err(ProofError::Question(m)) if m.contains("no state root")),
+            matches!(&r, Err(ProveError::Unavailable(_))),
             "membership {index} of {size}: {r:?}"
         );
     }
-    let r = p.prove_extension(1, 2).await;
+    let r = p
+        .prove(
+            2,
+            &Claim::Extends {
+                from: 1,
+                head: p.root_at(2).expect("a head").pr,
+            },
+        )
+        .await;
     assert!(
-        matches!(&r, Err(ProofError::Question(m)) if m.contains("no state root")),
+        matches!(&r, Err(ProveError::Unavailable(_))),
         "extension 1 to 2: {r:?}"
     );
 }

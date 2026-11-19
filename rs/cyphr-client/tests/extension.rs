@@ -12,6 +12,7 @@ mod common;
 use common::*;
 use cyphr::Principal;
 use cyphr::eml::MemoryStorage;
+use cyphr::proof::Claim;
 use cyphr_client::{Extension, ExtensionFailure, confirm_extension, verify_extension};
 use serde_json::json;
 
@@ -47,7 +48,15 @@ async fn offer(p: &Principal<MemoryStorage>, from: u64) -> Extension {
     let to = size_of(p);
     Extension::new(
         p.root_at(to).expect("a head"),
-        p.prove_extension(from, to).await.expect("certificate"),
+        p.prove(
+            to,
+            &Claim::Extends {
+                from,
+                head: p.root_at(to).expect("a head").pr,
+            },
+        )
+        .await
+        .expect("certificate"),
     )
 }
 

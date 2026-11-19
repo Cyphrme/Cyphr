@@ -4,7 +4,7 @@
 //!
 //! The verifier takes the older log from the principal it holds, whose
 //! commits it replayed, and the newer head from the offer. The head is the
-//! peer's claim and stays one: [`cyphr::proof::verify_extension`] returns no
+//! peer's claim and stays one: [`cyphr::proof::verify`] of an `Extends` claim returns no
 //! root and grants no trust, so an `Ok` here only steers what is fetched
 //! next. A head becomes believed when the commits it covers replay, and
 //! [`confirm_extension`] holds the offer to the replayed log then. Nothing
@@ -12,7 +12,7 @@
 
 use cyphr::Principal;
 use cyphr::eml::Storage;
-use cyphr::proof::{Anchor, Certificate, ProofError, Root};
+use cyphr::proof::{Anchor, Certificate, Claim, ProofError, Root};
 use serde_json::Value;
 
 /// An offered head's claim to extend a held log: the head, and the
@@ -112,16 +112,19 @@ pub fn verify_extension_at<S: Storage>(
     if offer.head.size <= from {
         return Err(ExtensionFailure::NotLonger);
     }
-    cyphr::proof::verify_extension(
+    cyphr::proof::verify(
         &Anchor::of_chain(held.state()),
         &offer.certificate,
-        from,
-        &offer.head,
+        offer.head.size,
+        &Claim::Extends {
+            from,
+            head: offer.head.pr.clone(),
+        },
     )
     .map_err(|e| match e {
-        // A refusal names the check that failed; only the consistency check
-        // is the shape of a fork. Anything else is a certificate gone wrong.
-        ProofError::Refuted(m) if m.contains("does not extend") => ExtensionFailure::NotAnExtension,
+        // Only the consistency check failing is the shape of a fork; any
+        // other refusal is a certificate gone wrong.
+        ProofError::Diverged(_) => ExtensionFailure::NotAnExtension,
         other => ExtensionFailure::Refused(other),
     })
 }

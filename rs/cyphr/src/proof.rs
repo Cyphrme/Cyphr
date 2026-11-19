@@ -60,32 +60,13 @@ mod prove;
 mod verify;
 mod wire;
 
-/// Why a proof is not accepted, in the three ways a caller can act on.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum ProofError {
-    /// The question does not fit what is pinned: a size the anchor does not
-    /// pin, an index at or past the size, a size past the log. Nothing is
-    /// accused; ask again with a size that is pinned.
-    #[error("the question does not fit: {0}")]
-    Question(String),
-    /// A well-formed certificate (or head) that does not verify: a possible
-    /// fork or forgery. The caller should treat the peer as suspect. The
-    /// message names the check that failed and is part of the contract: it
-    /// contains "arrow", "log path", "principal tree", "requested family",
-    /// "does not extend" or "does not match the claim".
-    #[error("refuted: {0}")]
-    Refuted(String),
-    /// Not a certificate: bounds exceeded or framing wrong, refused before
-    /// any hashing.
-    #[error("malformed: {0}")]
-    Malformed(String),
-}
-
 /// The checks that fail inside the prover and the verifier, finer than the
-/// three meanings a caller acts on; [`ProofError`] is what they become.
+/// kinds a caller acts on ([`ProofError`], [`ProveError`]). Not part of the
+/// stable surface: tests read it through `cause()` (feature `test-utils`),
+/// and no message text is contract.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum Cause {
+pub enum Cause {
     /// An EML path does not reach the root it is checked against.
     #[error("log path does not reach the root")]
     Path,
@@ -112,32 +93,103 @@ pub(crate) enum Cause {
     /// Bounds or framing.
     #[error("{0}")]
     Framing(String),
-    /// The prover cannot build the certificate.
+    /// The prover cannot build the certificate for what was asked.
     #[error("no certificate: {0}")]
     Unprovable(String),
+    /// The log's last commit left no State Root, so there is nothing to open.
+    #[error("no state root: {0}")]
+    NoStateRoot(String),
     /// The log's store failed while the certificate was built.
     #[error("store: {0}")]
     Storage(String),
 }
 
-impl From<Cause> for ProofError {
-    fn from(c: Cause) -> Self {
-        let text = c.to_string();
-        match c {
-            Cause::Path
-            | Cause::Arrow
-            | Cause::PtCell
-            | Cause::Family
-            | Cause::NotAnExtension
-            | Cause::Mismatch(_) => Self::Refuted(text),
-            Cause::Asked(_) | Cause::Unprovable(_) | Cause::Storage(_) => Self::Question(text),
-            Cause::Framing(_) => Self::Malformed(text),
+/// Why a claim is not accepted, in the ways a caller acts on. Each carries
+/// the check that failed; read it with `cause()` under `test-utils`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ProofError {
+    /// The question does not fit what is pinned: a size the anchor does not
+    /// pin, an index at or past the size. Nothing is accused; ask again.
+    #[error("the question does not fit: {0}")]
+    Question(Cause),
+    /// A well-formed certificate that does not verify: a possible forgery.
+    #[error("refuted: {0}")]
+    Refuted(Cause),
+    /// Not a certificate of the claim's kind, or out of bounds or framing:
+    /// refused before any hashing.
+    #[error("malformed: {0}")]
+    Malformed(Cause),
+    /// An `Extends` claim whose consistency check fails: the head does not
+    /// extend the pinned log, the shape of a fork. Only `Extends` gives it.
+    #[error("diverged: {0}")]
+    Diverged(Cause),
+}
+
+impl ProofError {
+    /// The check that failed.
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cause(&self) -> &Cause {
+        match self {
+            Self::Question(c) | Self::Refuted(c) | Self::Malformed(c) | Self::Diverged(c) => c,
         }
     }
 }
 
-/// The Principal Root at a size: what a holder pins and what `GET /head`
-/// reports. PR-level: it is a function of the commit history, equal for
+impl From<Cause> for ProofError {
+    fn from(c: Cause) -> Self {
+        match c {
+            Cause::Path | Cause::Arrow | Cause::PtCell | Cause::Family | Cause::Mismatch(_) => {
+                Self::Refuted(c)
+            },
+            Cause::NotAnExtension => Self::Diverged(c),
+            Cause::Asked(_) | Cause::Unprovable(_) | Cause::NoStateRoot(_) | Cause::Storage(_) => {
+                Self::Question(c)
+            },
+            Cause::Framing(_) => Self::Malformed(c),
+        }
+    }
+}
+
+/// Why a certificate cannot be built.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ProveError {
+    /// The claim asks for what the log does not hold: an index or size past
+    /// it, a key not in the key set at that size.
+    #[error("the claim does not fit the log: {0}")]
+    Question(Cause),
+    /// The log cannot answer now: a store failure, or a last commit that
+    /// left no State Root.
+    #[error("unavailable: {0}")]
+    Unavailable(Cause),
+}
+
+impl ProveError {
+    /// The check that failed.
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cause(&self) -> &Cause {
+        match self {
+            Self::Question(c) | Self::Unavailable(c) => c,
+        }
+    }
+}
+
+impl From<Cause> for ProveError {
+    fn from(c: Cause) -> Self {
+        match c {
+            Cause::NoStateRoot(_) | Cause::Storage(_) => Self::Unavailable(c),
+            other => Self::Question(other),
+        }
+    }
+}
+
+/// The Principal Root at a size: what a holder pins and what `GET /tip` reports
+/// as `root`. PR-level: it is a function of the commit history, equal for
 /// every party holding it. Plain data; it confers trust only through an
 /// [`Anchor`] constructor.
 ///
@@ -312,65 +364,67 @@ impl std::fmt::Debug for Certificate {
     }
 }
 
-/// Check that `bundle` is commit `index` of the log of `size` commits the
-/// anchor pins. The bundle is the commit as a server serves it (`/patch`,
-/// `/e/{digest}`); the transaction root is computed from its cozies, never
-/// passed in. The walk follows the signer's family from the Principal Root
-/// the anchor pins at `size`.
+/// What a certificate is asked to show, at a `size` the anchor pins.
+#[derive(Clone, Debug)]
+pub enum Claim {
+    /// The commit `commit` is at `index` of the log of `size` commits. The
+    /// commit is as a server serves it (its bundle); the transaction root is
+    /// computed from its cozies, never passed in, and a prover reads `index`
+    /// only. A holder builds it with `WireBundle::of_commit`.
+    Member {
+        /// Position of the commit.
+        index: u64,
+        /// The commit itself.
+        commit: WireBundle,
+    },
+    /// The log of `size` commits, whose Principal Root is `head`, extends
+    /// the log of `from` commits the anchor pins. `Ok` is a verdict that
+    /// steers and does not vouch: nothing the peer added past `from` is
+    /// believed, and the commits, replayed and signature-checked, are what
+    /// make a head trusted.
+    Extends {
+        /// The pinned size extended from.
+        from: u64,
+        /// The claimed head's Principal Root, at `size`.
+        head: PrincipalRoot,
+    },
+    /// The key with this thumbprint is in the key set (KR) at `size`: the
+    /// Principal Tree opening to SR, then AR, KR and the key's leaf. It
+    /// answers membership in KR only; frozen, deleted and errored are not
+    /// checked.
+    Key {
+        /// The key's thumbprint.
+        tmb: coz::Thumbprint,
+    },
+}
+
+/// Check `claim` at `size` against `certificate`, relative to `anchor`.
 ///
 /// # Errors
 ///
 /// [`ProofError::Question`] for a size the anchor does not pin or an index
-/// at or past it; [`ProofError::Refuted`] for a bundle or certificate that
-/// does not verify; [`ProofError::Malformed`] for a certificate out of
-/// bounds.
-pub fn verify_membership(
+/// at or past it; [`ProofError::Refuted`] for a certificate that does not
+/// verify; [`ProofError::Malformed`] for a certificate of another kind or
+/// out of bounds; [`ProofError::Diverged`] for an `Extends` claim whose
+/// consistency check fails.
+pub fn verify(
     anchor: &Anchor<'_>,
     certificate: &Certificate,
     size: u64,
-    index: u64,
-    bundle: &WireBundle,
+    claim: &Claim,
 ) -> Result<(), ProofError> {
-    verify::membership(anchor, certificate, size, index, bundle).map_err(Into::into)
-}
-
-/// STUB. Check that the key with thumbprint `tmb` is in the key set (KR)
-/// of the principal at the `size` the anchor pins: the Principal Tree
-/// opening to SR, then AR, KR and the key's leaf. It answers membership
-/// in KR only; frozen, deleted and errored are not checked.
-///
-/// # Errors
-///
-/// [`ProofError::Question`] for a size not pinned; [`ProofError::Refuted`]
-/// when the key is not in KR at that size or the certificate does not
-/// verify.
-pub fn verify_key(
-    _anchor: &Anchor<'_>,
-    _certificate: &Certificate,
-    _size: u64,
-    _tmb: &coz::Thumbprint,
-) -> Result<(), ProofError> {
-    unimplemented!("stub: verify_key")
-}
-
-/// Check that `head` (a peer's claim, plain data) extends the log of
-/// `from` commits the anchor pins.
-///
-/// `Ok` is a verdict that steers and does not vouch: it returns no root and
-/// grants no trust, so nothing the peer added past `from` is believed. A
-/// caller may act on it to decide what to fetch, never to accept the head;
-/// the commits themselves, replayed and signature-checked, are what make a
-/// head trusted. Pin (see [`Anchor::pin`]) only a root trusted by other
-/// means.
-///
-/// # Errors
-///
-/// The [`ProofError`] of the first failing step.
-pub fn verify_extension(
-    anchor: &Anchor<'_>,
-    certificate: &Certificate,
-    from: u64,
-    head: &Root,
-) -> Result<(), ProofError> {
-    verify::extension(anchor, certificate, from, head).map_err(Into::into)
+    match claim {
+        Claim::Member { index, commit } => {
+            verify::membership(anchor, certificate, size, *index, commit)
+        },
+        Claim::Extends { from, head } => {
+            let head = Root {
+                size,
+                pr: head.clone(),
+            };
+            verify::extension(anchor, certificate, *from, &head)
+        },
+        Claim::Key { .. } => unimplemented!("stub: verify of a key claim"),
+    }
+    .map_err(Into::into)
 }

@@ -13,9 +13,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::commit_root::{CommitTrees, MaltHasher, hash_alg_to_u64};
-use cyphr::proof::{
-    Anchor, Certificate, ProofError, Root, verify_extension, verify_key, verify_membership,
-};
+use cyphr::proof::{Anchor, Cause, Certificate, Claim, ProofError, ProveError, Root, verify};
 use cyphr::replay::WireBundle;
 use cyphr::signer::SoftwareSigner;
 use cyphr::{HashAlg, Key, Principal};
@@ -577,9 +575,9 @@ impl Wire {
         Self(serde_json::to_value(c).expect("a certificate serializes"))
     }
 
-    /// The parse a verifier does; a parse refusal reads as `Malformed`.
-    fn cert(&self) -> Result<Certificate, Why> {
-        serde_json::from_value(self.0.clone()).map_err(|_| Why::Malformed)
+    /// The parse a verifier does; a refusal is a framing cause.
+    fn cert(&self) -> Result<Certificate, Cause> {
+        serde_json::from_value(self.0.clone()).map_err(|e| Cause::Framing(e.to_string()))
     }
 
     fn stitches(&self) -> usize {
@@ -650,43 +648,46 @@ async fn prefix(a: &Kp, m: usize) -> Principal {
     p
 }
 
+fn claim_m(p: &Principal, index: u64) -> Claim {
+    Claim::Member {
+        index,
+        commit: bundle_of(p, index),
+    }
+}
+
+fn claim_e(p: &Principal, from: u64, to: u64) -> Claim {
+    Claim::Extends {
+        from,
+        head: p.root_at(to).expect("a root").pr,
+    }
+}
+
+fn claim_k(tmb: &coz::Thumbprint) -> Claim {
+    Claim::Key { tmb: tmb.clone() }
+}
+
 async fn cert_m(p: &Principal, index: u64) -> Wire {
-    Wire::of(&p.prove_membership(n_of(p), index).await.expect("prove"))
+    Wire::of(&p.prove(n_of(p), &claim_m(p, index)).await.expect("prove"))
 }
 
 async fn cert_e(p: &Principal, from: u64) -> Wire {
-    Wire::of(&p.prove_extension(from, n_of(p)).await.expect("prove"))
+    Wire::of(
+        &p.prove(n_of(p), &claim_e(p, from, n_of(p)))
+            .await
+            .expect("prove"),
+    )
 }
 
-/// What a refusal says, by the check that made it. `ProofError` has three
-/// meanings; a `Refuted` message names the check that failed (the words in
-/// `why` below are part of the contract), so tests still tell an arrow
-/// refusal from a fold or a path refusal.
-#[derive(Debug, PartialEq)]
-enum Why {
-    Arrow,
-    PtCell,
-    Path,
-    Family,
-    NotAnExtension,
-    Mismatch,
-    Question,
-    Malformed,
-}
-
-fn why(e: ProofError) -> Why {
-    match e {
-        ProofError::Refuted(m) if m.contains("arrow") => Why::Arrow,
-        ProofError::Refuted(m) if m.contains("log path") => Why::Path,
-        ProofError::Refuted(m) if m.contains("principal tree") => Why::PtCell,
-        ProofError::Refuted(m) if m.contains("requested family") => Why::Family,
-        ProofError::Refuted(m) if m.contains("does not extend") => Why::NotAnExtension,
-        ProofError::Refuted(m) if m.contains("does not match the claim") => Why::Mismatch,
-        ProofError::Refuted(m) => panic!("a refusal naming no known check: {m}"),
-        ProofError::Question(_) => Why::Question,
-        ProofError::Malformed(_) => Why::Malformed,
-        other => panic!("an unknown refusal: {other:?}"),
-    }
+/// The check a refusal names, read from the typed cause. The kind and the
+/// cause must agree: `Diverged` is the consistency check failing and
+/// nothing else.
+fn cause(e: ProofError) -> Cause {
+    assert_eq!(
+        matches!(e, ProofError::Diverged(_)),
+        *e.cause() == Cause::NotAnExtension,
+        "Diverged is exactly a failed consistency check: {e:?}"
+    );
+    e.cause().clone()
 }
 
 /// The commit as a server serves it: what a thin client holds.
@@ -704,33 +705,47 @@ fn member_with(
     w: &Wire,
     index: u64,
     bundle: &WireBundle,
-) -> Result<(), Why> {
-    verify_membership(anchor, &w.cert()?, size, index, bundle).map_err(why)
+) -> Result<(), Cause> {
+    let claim = Claim::Member {
+        index,
+        commit: bundle.clone(),
+    };
+    verify(anchor, &w.cert()?, size, &claim).map_err(cause)
 }
 
 /// Membership of the tip's commit `index` of `p`, against `anchor`.
-fn member(anchor: &Anchor<'_>, p: &Principal, w: &Wire, index: u64) -> Result<(), Why> {
+fn member(anchor: &Anchor<'_>, p: &Principal, w: &Wire, index: u64) -> Result<(), Cause> {
     member_with(anchor, n_of(p), w, index, &bundle_of(p, index))
 }
 
 /// ... as a holder of the chain.
-fn chain_member(p: &Principal, w: &Wire, index: u64) -> Result<(), Why> {
+fn chain_member(p: &Principal, w: &Wire, index: u64) -> Result<(), Cause> {
     member(&Anchor::of_chain(p.state()), p, w, index)
 }
 
 /// ... as a thin client holding only the pinned tip root.
-fn pin_member(p: &Principal, w: &Wire, index: u64) -> Result<(), Why> {
+fn pin_member(p: &Principal, w: &Wire, index: u64) -> Result<(), Cause> {
     member(&Anchor::pin(p.root_at(n_of(p)).expect("root")), p, w, index)
 }
 
-fn extends(holder: &Principal, w: &Wire, from: u64, head: &Root) -> Result<(), Why> {
-    verify_extension(&Anchor::of_chain(holder.state()), &w.cert()?, from, head).map_err(why)
+fn extends(holder: &Principal, w: &Wire, from: u64, head: &Root) -> Result<(), Cause> {
+    let claim = Claim::Extends {
+        from,
+        head: head.pr.clone(),
+    };
+    verify(
+        &Anchor::of_chain(holder.state()),
+        &w.cert()?,
+        head.size,
+        &claim,
+    )
+    .map_err(cause)
 }
 
-fn refused_at_parse_or_fold(r: &Result<(), Why>) -> bool {
+fn refused_at_parse_or_fold(r: &Result<(), Cause>) -> bool {
     matches!(
         r,
-        Err(Why::PtCell | Why::Path | Why::Mismatch | Why::Malformed)
+        Err(Cause::PtCell | Cause::Path | Cause::Mismatch(_) | Cause::Framing(_))
     )
 }
 
@@ -888,8 +903,8 @@ async fn a_tampered_forward_state_root_is_refused() {
         "setup: the commit has a fwd"
     );
     flip(&mut w.opening(0)["fwd_variants"][0][1]);
-    assert_eq!(chain_member(&p, &w, 2), Err(Why::Arrow));
-    assert_eq!(pin_member(&p, &w, 2), Err(Why::Arrow));
+    assert_eq!(chain_member(&p, &w, 2), Err(Cause::Arrow));
+    assert_eq!(pin_member(&p, &w, 2), Err(Cause::Arrow));
 }
 
 #[tokio::test]
@@ -897,7 +912,10 @@ async fn a_tampered_pt_cell_is_refused() {
     let (p, mut w) = genuine().await;
     flip(&mut w.opening(0)["pt_cells"][1]); // the CR cell
     let r = chain_member(&p, &w, 2);
-    assert!(matches!(r, Err(Why::PtCell | Why::Mismatch)), "{r:?}");
+    assert!(
+        matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
+        "{r:?}"
+    );
 }
 
 // The Principal Tree opening at the head end is carried and checked: a
@@ -927,7 +945,7 @@ async fn a_path_under_an_inactive_family_is_refused() {
     let path = wire_path(&p, HashAlg::Sha256, 2, 8).await;
     w.0["stitches"] = json!([]);
     *w.terminal() = path;
-    assert_eq!(chain_member(&p, &w, 2), Err(Why::Path));
+    assert_eq!(chain_member(&p, &w, 2), Err(Cause::Path));
 }
 
 #[tokio::test]
@@ -944,7 +962,7 @@ async fn a_family_absent_at_the_old_size_is_refused() {
         .expect("a SHA-256 consistency from 3, nulls before its tree");
     w.0["stitches"] = json!([]);
     *w.terminal() = c;
-    assert_eq!(extends(&holder, &w, 3, &head), Err(Why::Family));
+    assert_eq!(extends(&holder, &w, 3, &head), Err(Cause::Family));
 }
 
 /// The forger's tree for family SHA-512 over `size` leaves: the genuine
@@ -1003,7 +1021,7 @@ async fn the_forgers_alternate_history_is_refused() {
         "control: genuine leaves"
     );
     *w.terminal() = forged_consistency(&p, 2, 4, true).await;
-    assert_eq!(extends(&holder, &w, 2, &head), Err(Why::NotAnExtension));
+    assert_eq!(extends(&holder, &w, 2, &head), Err(Cause::NotAnExtension));
 }
 
 // Every test above hands the verifier the matching TR, so a verifier that
@@ -1013,7 +1031,7 @@ async fn a_certificate_does_not_vouch_for_another_commits_tr() {
     let (p, w) = genuine().await;
     for j in [0u64, 1, 3, 5, 7] {
         let r = member_with(&Anchor::of_chain(p.state()), 8, &w, 2, &bundle_of(&p, j));
-        assert!(matches!(r, Err(Why::Mismatch)), "tr of {j}: {r:?}");
+        assert!(matches!(r, Err(Cause::Mismatch(_))), "tr of {j}: {r:?}");
     }
     let other = single(3, 3).await; // the same position of another chain
     let r = member_with(
@@ -1023,7 +1041,7 @@ async fn a_certificate_does_not_vouch_for_another_commits_tr() {
         2,
         &bundle_of(&other, 2),
     );
-    assert!(matches!(r, Err(Why::Mismatch)), "foreign tr: {r:?}");
+    assert!(matches!(r, Err(Cause::Mismatch(_))), "foreign tr: {r:?}");
 }
 
 // The genuine leaf path for one commit with the genuine opening of
@@ -1056,7 +1074,7 @@ async fn an_opening_through_a_coz_other_than_the_closing_one_is_refused() {
     );
     assert_eq!(bytes_of(&w.opening(0)["coz"]), blobs[blobs.len() - 1]);
     set_bytes(&mut w.opening(0)["coz"], &blobs[0]);
-    assert_eq!(chain_member(&p, &w, 2), Err(Why::Arrow));
+    assert_eq!(chain_member(&p, &w, 2), Err(Cause::Arrow));
 }
 
 // A genuine, signed fork that diverges at f = 2, below the trusted size
@@ -1082,7 +1100,7 @@ async fn a_real_fork_below_the_trusted_size_is_refused() {
     );
     let forked = cert_e(&y, 3).await;
     let r = extends(&holder, &forked, 3, &y.root_at(8).expect("head"));
-    assert_eq!(r, Err(Why::NotAnExtension));
+    assert_eq!(r, Err(Cause::NotAnExtension));
 }
 
 // The API derives the sizes and never trusts a size the certificate
@@ -1096,7 +1114,10 @@ async fn a_size_the_certificate_states_wrongly_is_refused() {
     at_cr.terminal()["size"] = json!(5);
     for (what, bad) in [("anchor size", at_anchor), ("CR size", at_cr)] {
         let r = chain_member(&p, &bad, 2);
-        assert!(matches!(r, Err(Why::Mismatch | Why::Path)), "{what}: {r:?}");
+        assert!(
+            matches!(r, Err(Cause::Mismatch(_) | Cause::Path)),
+            "{what}: {r:?}"
+        );
     }
 }
 
@@ -1165,7 +1186,7 @@ async fn a_stitch_trusts_only_the_signers_family() {
     // Continue in C from the same stitch: C's tree at size 2 holds leaf 1.
     *w.terminal() = wire_path(&p, HashAlg::Sha384, 1, 2).await;
     let r = member_with(&Anchor::of_chain(p.state()), 7, &w, 1, &bundle_of(&p, 1));
-    assert_eq!(r, Err(Why::Family));
+    assert_eq!(r, Err(Cause::Family));
 }
 
 // Structurally: no API returns an Anchor or Root from a
@@ -1230,7 +1251,7 @@ async fn a_fabricated_tree_vouches_for_nothing_it_added() {
         6,
         &bundle_of(&other, 5),
     );
-    assert_eq!(r, Err(Why::Path));
+    assert_eq!(r, Err(Cause::Path));
     // And a head the certificate does not open is no extension.
     let holder = prefix(&a, 3).await;
     let honest = cert_e(&p, 3).await;
@@ -1277,7 +1298,7 @@ async fn a_tampered_variant_in_the_concatenated_pre_is_refused() {
                 .expect("variant")[0] ^= 1;
         }
     });
-    assert_eq!(chain_member(&a, &w, 0), Err(Why::Arrow));
+    assert_eq!(chain_member(&a, &w, 0), Err(Cause::Arrow));
 }
 
 #[tokio::test]
@@ -1295,7 +1316,7 @@ async fn an_invented_extra_variant_in_a_single_variant_pre_is_refused() {
     edit_cells(&mut w, 0, |_, m| {
         m.insert(hash_alg_to_u64(HashAlg::Sha384), vec![9; 48]);
     });
-    assert_eq!(chain_member(&a, &w, 0), Err(Why::Arrow));
+    assert_eq!(chain_member(&a, &w, 0), Err(Cause::Arrow));
 }
 
 #[tokio::test]
@@ -1308,7 +1329,7 @@ async fn a_variant_dropped_from_the_concatenated_pre_is_refused() {
     edit_cells(&mut w, 0, |_, m| {
         m.remove(&hash_alg_to_u64(HashAlg::Sha384));
     });
-    assert_eq!(chain_member(&a, &w, 0), Err(Why::Arrow));
+    assert_eq!(chain_member(&a, &w, 0), Err(Cause::Arrow));
 }
 
 #[tokio::test]
@@ -1328,7 +1349,7 @@ async fn a_case_one_pre_reduced_to_a_non_signer_variant_is_refused() {
     edit_cells(&mut w, 0, |_, m| {
         m.remove(&hash_alg_to_u64(HashAlg::Sha512));
     });
-    assert_eq!(chain_member(&p, &w, 0), Err(Why::Arrow));
+    assert_eq!(chain_member(&p, &w, 0), Err(Cause::Arrow));
 }
 
 #[tokio::test]
@@ -1340,7 +1361,7 @@ async fn a_variant_not_the_width_of_its_declared_family_is_refused_at_parse() {
     let mut b = bytes_of(f);
     b.pop();
     set_bytes(f, &b);
-    assert!(matches!(w.cert(), Err(Why::Mismatch)), "a short fwd");
+    assert!(matches!(w.cert(), Err(Cause::Mismatch(_))), "a short fwd");
     // A cell variant one byte long.
     let mut w = genuine;
     edit_cells(&mut w, 0, |k, m| {
@@ -1349,7 +1370,7 @@ async fn a_variant_not_the_width_of_its_declared_family_is_refused_at_parse() {
         }
     });
     assert!(
-        matches!(w.cert(), Err(Why::Mismatch)),
+        matches!(w.cert(), Err(Cause::Mismatch(_))),
         "a long cell variant"
     );
 }
@@ -1629,7 +1650,7 @@ async fn a_stitch_opening_does_not_scan_history() {
     for n in [8usize, 40] {
         let p = late(n).await;
         let before = cyphr::probe::commits_read();
-        p.prove_membership(n as u64, 0).await.expect("prove");
+        p.prove(n as u64, &claim_m(&p, 0)).await.expect("prove");
         let read = cyphr::probe::commits_read() - before;
         let cap = 2 * log2_ceil(n) + 8;
         assert!(read <= cap, "n={n}: {read} commits read, cap {cap}");
@@ -1657,7 +1678,7 @@ async fn a_fork_search_across_a_rotation_costs_polylog_work() {
             let mid = low + (high - low) / 2;
             let w = Wire::of(
                 &peer
-                    .prove_extension(mid as u64, n as u64)
+                    .prove(n as u64, &claim_e(&peer, mid as u64, n as u64))
                     .await
                     .expect("the peer's certificate"),
             );
@@ -1686,7 +1707,7 @@ async fn planning_a_walk_does_not_scan_the_last_epoch() {
     for n in [8usize, 128] {
         let p = long_last_epoch(n).await;
         let before = cyphr::probe::commits_read();
-        let c = p.prove_membership(n as u64, 1).await.expect("prove");
+        let c = p.prove(n as u64, &claim_m(&p, 1)).await.expect("prove");
         let read = cyphr::probe::commits_read() - before;
         assert_eq!(
             Wire::of(&c).stitches(),
@@ -1780,7 +1801,7 @@ async fn a_repartitioned_pt_opening_forges_nothing() {
     ] {
         let r = member_with(&anchor, n, &w, 0, &bundle_of(&y, 1));
         assert!(
-            matches!(r, Err(Why::PtCell | Why::Mismatch)),
+            matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
             "a TR nobody committed was accepted under a {what} anchor: {r:?}"
         );
     }
@@ -1820,7 +1841,7 @@ async fn cells_of_the_wrong_count_or_width_are_refused() {
         w.opening(0)["pt_cells"] = cells_json(&cells);
         let r = chain_member(&p, &w, 0);
         assert!(
-            matches!(r, Err(Why::PtCell | Why::Mismatch)),
+            matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
             "{what}: {r:?}"
         );
     }
@@ -1897,8 +1918,8 @@ async fn a_state_root_supplied_as_pre_is_refused() {
         0,
         &bundle_of(&p, 0),
     );
-    assert_eq!(chain, Err(Why::Arrow), "under a chain anchor");
-    assert_eq!(pin, Err(Why::Arrow), "under a pin");
+    assert_eq!(chain, Err(Cause::Arrow), "under a chain anchor");
+    assert_eq!(pin, Err(Cause::Arrow), "under a pin");
 }
 
 /// Genesis, a PR-level nonce (it moves PR and not SR, so the forward State
@@ -1959,7 +1980,7 @@ async fn the_role_swap_in_an_extensions_new_segment_is_refused() {
     swap_pre_and_fwd(&mut w, 0, (&a, &b), &pre, false);
     // The cells fold to the swapped pre, the consistency is the genuine
     // one: only the arrow, which the order binds, can refuse it.
-    assert_eq!(extends(&holder, &w, 1, &head), Err(Why::Arrow));
+    assert_eq!(extends(&holder, &w, 1, &head), Err(Cause::Arrow));
 }
 
 // ---- roots, anchors, heads ----
@@ -1971,7 +1992,7 @@ async fn a_pinned_root_verifies_membership_at_its_own_size() {
     for size in [3u64, 5, 8] {
         let pin = Anchor::pin(p.root_at(size).expect("root"));
         for i in 0..size {
-            let w = Wire::of(&p.prove_membership(size, i).await.expect("prove"));
+            let w = Wire::of(&p.prove(size, &claim_m(&p, i)).await.expect("prove"));
             assert_eq!(
                 member_with(&pin, size, &w, i, &bundle_of(&p, i)),
                 Ok(()),
@@ -1988,7 +2009,7 @@ async fn a_pinned_root_verifies_membership_at_its_own_size() {
         2,
         &bundle_of(&p, 2),
     );
-    assert!(matches!(r, Err(Why::Mismatch)), "{r:?}");
+    assert!(matches!(r, Err(Cause::Mismatch(_))), "{r:?}");
 }
 
 // PR at size n is a function of the commit history, equal for every party
@@ -2027,7 +2048,10 @@ async fn an_opened_pr_that_differs_from_a_pin_is_refused() {
         2,
         &bundle_of(&p, 2),
     );
-    assert!(matches!(r, Err(Why::PtCell | Why::Mismatch)), "{r:?}");
+    assert!(
+        matches!(r, Err(Cause::PtCell | Cause::Mismatch(_))),
+        "{r:?}"
+    );
     let r = chain_member(&other, &w, 2);
     assert!(refused_at_parse_or_fold(&r), "{r:?}");
 }
@@ -2055,12 +2079,11 @@ async fn a_chain_with_many_epoch_flips_round_trips_and_verifies() {
         .unwrap_or_else(|e| panic!("an honest {}-stitch certificate: {e:?}", w.stitches()));
     let n = n_of(&p);
     assert_eq!(
-        verify_membership(
+        verify(
             &Anchor::pin(p.root_at(n).expect("root")),
             &back,
             n,
-            0,
-            &bundle_of(&p, 0)
+            &claim_m(&p, 0)
         ),
         Ok(())
     );
@@ -2229,39 +2252,45 @@ async fn a_key_in_the_key_set_at_a_pinned_size_verifies() {
     let pin = |size: u64| Anchor::pin(p.root_at(size).expect("root"));
 
     // At the tip A has been replaced: B is in the key set, A is not.
-    let cert_b = p.prove_key(tmb_b, 8).await.expect("a certificate for B");
+    let cert_b = p
+        .prove(8, &claim_k(tmb_b))
+        .await
+        .expect("a certificate for B");
     assert_eq!(
-        verify_key(&pin(8), &cert_b, 8, tmb_b),
+        verify(&pin(8), &cert_b, 8, &claim_k(tmb_b)),
         Ok(()),
         "B under a pin"
     );
     assert_eq!(
-        verify_key(&Anchor::of_chain(p.state()), &cert_b, 8, tmb_b),
+        verify(&Anchor::of_chain(p.state()), &cert_b, 8, &claim_k(tmb_b)),
         Ok(()),
         "B under a chain anchor"
     );
-    let r = verify_key(&pin(8), &cert_b, 8, tmb_a);
+    let r = verify(&pin(8), &cert_b, 8, &claim_k(tmb_a));
     assert!(
         matches!(r, Err(ProofError::Refuted(_))),
         "B's certificate for A: {r:?}"
     );
-    let r = p.prove_key(tmb_a, 8).await;
+    let r = p.prove(8, &claim_k(tmb_a)).await;
     assert!(
-        matches!(r, Err(ProofError::Question(_))),
+        matches!(r, Err(ProveError::Question(_))),
         "no certificate for a retired key: {r:?}"
     );
 
     // At size 3 the roles are the other way round.
-    let cert_a = p.prove_key(tmb_a, 3).await.expect("a certificate for A");
-    assert_eq!(verify_key(&pin(3), &cert_a, 3, tmb_a), Ok(()));
-    let r = p.prove_key(tmb_b, 3).await;
+    let cert_a = p
+        .prove(3, &claim_k(tmb_a))
+        .await
+        .expect("a certificate for A");
+    assert_eq!(verify(&pin(3), &cert_a, 3, &claim_k(tmb_a)), Ok(()));
+    let r = p.prove(3, &claim_k(tmb_b)).await;
     assert!(
-        matches!(r, Err(ProofError::Question(_))),
+        matches!(r, Err(ProveError::Question(_))),
         "B is not in the key set yet: {r:?}"
     );
 
     // A size the anchor does not pin is a question, not an accusation.
-    let r = verify_key(&pin(3), &cert_b, 8, tmb_b);
+    let r = verify(&pin(3), &cert_b, 8, &claim_k(tmb_b));
     assert!(matches!(r, Err(ProofError::Question(_))), "{r:?}");
 }
 
@@ -2290,7 +2319,7 @@ async fn a_tampered_bundle_is_refused() {
     ] {
         let r = member_with(&anchor, n, &w, 2, &bundle);
         assert!(
-            matches!(r, Err(Why::Mismatch | Why::Path)),
+            matches!(r, Err(Cause::Mismatch(_) | Cause::Path)),
             "a bundle with an altered pay was accepted under a {what} anchor: {r:?}"
         );
     }
@@ -2319,7 +2348,11 @@ async fn key_chain() -> (Principal, Kp, Kp) {
 }
 
 async fn cert_k(p: &Principal, tmb: &coz::Thumbprint) -> Wire {
-    Wire::of(&p.prove_key(tmb, n_of(p)).await.expect("a key certificate"))
+    Wire::of(
+        &p.prove(n_of(p), &claim_k(tmb))
+            .await
+            .expect("a key certificate"),
+    )
 }
 
 fn hop(w: &mut Wire, i: usize) -> &mut Value {
@@ -2332,9 +2365,9 @@ fn key_with(
     size: u64,
     tmb: &coz::Thumbprint,
 ) -> Result<(), ProofError> {
-    let cert: Certificate =
-        serde_json::from_value(w.0.clone()).map_err(|e| ProofError::Malformed(e.to_string()))?;
-    verify_key(anchor, &cert, size, tmb)
+    let cert: Certificate = serde_json::from_value(w.0.clone())
+        .map_err(|e| ProofError::Malformed(Cause::Framing(e.to_string())))?;
+    verify(anchor, &cert, size, &claim_k(tmb))
 }
 
 fn refuted(r: &Result<(), ProofError>) -> bool {
@@ -2425,23 +2458,27 @@ async fn a_certificate_of_another_kind_is_malformed() {
     let n = n_of(&p);
     let pin = Anchor::pin(p.root_at(n).expect("root"));
     let key = cert_k(&p, &b.tmb).await.cert().expect("parses");
-    let membership = Wire::of(&p.prove_membership(n, 2).await.expect("prove"))
+    let membership = Wire::of(&p.prove(n, &claim_m(&p, 2)).await.expect("prove"))
         .cert()
         .expect("parses");
-    let r = verify_key(&pin, &membership, n, &b.tmb);
+    let r = verify(&pin, &membership, n, &claim_k(&b.tmb));
     assert!(
         matches!(r, Err(ProofError::Malformed(_))),
         "membership to verify_key: {r:?}"
     );
-    let bundle = bundle_of(&p, 2);
-    let r = verify_membership(&pin, &key, n, 2, &bundle);
+    let r = verify(&pin, &key, n, &claim_m(&p, 2));
     assert!(
         matches!(r, Err(ProofError::Malformed(_))),
         "key to verify_membership: {r:?}"
     );
     let holder = prefix(&a, 3).await;
     let head = p.root_at(n).expect("head");
-    let r = verify_extension(&Anchor::of_chain(holder.state()), &key, 3, &head);
+    let r = verify(
+        &Anchor::of_chain(holder.state()),
+        &key,
+        head.size,
+        &claim_e(&p, 3, n),
+    );
     assert!(
         matches!(r, Err(ProofError::Malformed(_))),
         "key to verify_extension: {r:?}"

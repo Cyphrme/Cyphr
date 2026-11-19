@@ -743,7 +743,13 @@ impl Connector for ProofMirror {
                 let to = number("to").ok_or(ConnectError::NonSuccess(400))?;
                 let certificate = self
                     .principal
-                    .prove_extension(from, to)
+                    .prove(
+                        to,
+                        &cyphr::proof::Claim::Extends {
+                            from,
+                            head: self.principal.root_at(to).expect("a head").pr,
+                        },
+                    )
                     .await
                     .map_err(|_| ConnectError::NonSuccess(404))?;
                 let payload = json!({ "certificate": certificate });
@@ -760,7 +766,13 @@ impl Connector for ProofMirror {
                 let size = number("size").ok_or(ConnectError::NonSuccess(400))?;
                 let certificate = self
                     .principal
-                    .prove_membership(index, size)
+                    .prove(
+                        size,
+                        &cyphr::proof::Claim::Member {
+                            index,
+                            commit: cyphr::replay::WireBundle::default(),
+                        },
+                    )
                     .await
                     .map_err(|_| ConnectError::NonSuccess(404))?;
                 json!({ "certificate": certificate })
