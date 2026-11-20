@@ -45,6 +45,10 @@ jobs:
       - name: Guard ignored tests
         working-directory: .
         run: test $(git grep -n "#\[ignore" -- rs | grep -vE "RED\(|QUARANTINE\(#[0-9]+\)" | wc -l) -eq 0
+      # The CLI durability test counts fsyncs by tracing the binary.
+      - name: Install strace
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y strace
       - run: cargo build --workspace --all-targets --verbose
       # The packaged example config must keep starting a server and the
       # server must keep refusing unknown keys; this regressed silently once
