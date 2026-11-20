@@ -239,20 +239,31 @@ impl<'a> Round<'a> {
             ),
         };
         for bundle in bundles {
-            if let Err(
-                fault @ (EngineError::BlobStore(_)
-                | EngineError::Indexer(_)
-                | EngineError::Storage(_)),
-            ) = self
+            if let Err(err) = self
                 .store
                 .submit_commit(&self.principal_id, Some(genesis.clone()), bundle)
                 .await
+                && is_store_fault(&err)
             {
-                return Err(fault.into());
+                return Err(err.into());
             }
         }
         Ok(())
     }
+}
+
+/// Whether the store's answer to a bundle is a fault of the store rather
+/// than its verdict on the bundle. A refusal is an answer (a held commit, a
+/// fork kept as evidence); a fault, a failed sync included, means nothing
+/// the round reports as kept is durable.
+fn is_store_fault(err: &EngineError) -> bool {
+    matches!(
+        err,
+        EngineError::BlobStore(_)
+            | EngineError::Indexer(_)
+            | EngineError::Storage(_)
+            | EngineError::DurabilityLost(_)
+    )
 }
 
 fn standing_of(s: &PeerStanding) -> (&'static str, Option<String>) {
@@ -892,4 +903,30 @@ pub fn import(
         .collect();
     let out = block_on(run_round(&round, &peers, &[]))??;
     emit(cli, &out, || print_table(&out))
+}
+
+#[cfg(test)]
+mod tests {
+    use cyphr_storage::blob::BlobStoreError;
+
+    use super::*;
+
+    /// A failed sync is a fault of the store, so the round reports an
+    /// error and not a kept commit; a refusal is the store's verdict. The
+    /// CLI store is a concrete fjall store whose sync cannot be made to
+    /// fail from here, so the classification is what is pinned. Turns red
+    /// if `DurabilityLost` is read as a refusal.
+    #[test]
+    fn a_failed_sync_is_a_fault_and_a_refusal_is_not() {
+        assert!(is_store_fault(&EngineError::DurabilityLost("eio".into())));
+        assert!(is_store_fault(&EngineError::BlobStore(
+            BlobStoreError::Backend("x".into())
+        )));
+        assert!(!is_store_fault(&EngineError::BranchLimit {
+            key: "k".into()
+        }));
+        assert!(!is_store_fault(&EngineError::Protocol(
+            cyphr::Error::CommitMismatch
+        )));
+    }
 }
