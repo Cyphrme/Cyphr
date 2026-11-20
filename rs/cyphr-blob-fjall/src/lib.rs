@@ -145,6 +145,22 @@ impl EmlLogs {
         })
     }
 
+    /// Whether this process has swept `principal_id`'s older generations.
+    /// The set only skips work; a poisoned lock holds a usable set.
+    fn has_swept(&self, principal_id: &str) -> bool {
+        self.swept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(principal_id)
+    }
+
+    fn mark_swept(&self, principal_id: &str) {
+        self.swept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(principal_id.to_owned());
+    }
+
     /// The key scope of generation `generation` of `principal_id`'s log.
     /// Fixed-width tail, so injective; `FjallStorage` length-prefixes it.
     fn scope(principal_id: &str, generation: u64) -> Vec<u8> {
@@ -226,15 +242,14 @@ impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs 
         // A crash between recording a generation and retiring the one it
         // superseded leaves that one behind; the first open of the current
         // log in this process retires every older generation still held.
-        if generation == current && current > 0 {
-            // The set only skips work; a poisoned lock holds a usable set.
-            let mut swept = self.swept.lock().unwrap_or_else(|e| e.into_inner());
-            if !swept.contains(principal_id) {
-                for older in 0..current {
-                    self.retire(principal_id, older)?;
-                }
-                swept.insert(principal_id.to_owned());
+        if generation == current && current > 0 && !self.has_swept(principal_id) {
+            // The sweep is synchronous fjall IO, so no lock is held across
+            // it. Two opens racing here both sweep; a sweep is idempotent
+            // (retiring a generation that is gone deletes nothing).
+            for older in 0..current {
+                self.retire(principal_id, older)?;
             }
+            self.mark_swept(principal_id);
         }
         self.scoped(principal_id, generation)
     }
