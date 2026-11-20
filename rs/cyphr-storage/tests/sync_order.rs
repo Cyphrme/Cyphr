@@ -141,6 +141,9 @@ impl BlobStore for RecBlobs {
     }
 
     async fn persist(&self) -> Result<(), BlobStoreError> {
+        // A real sync blocks; yielding lets another write's sync queue
+        // behind this one, as it does behind fjall's journal lock.
+        tokio::task::yield_now().await;
         note(&self.events, Ev::Persist);
         let mut disk = self.disk.lock().expect("disk");
         if self.fail_next_persist.swap(false, Ordering::SeqCst) {
@@ -649,6 +652,40 @@ fn the_scenarios_reach_promotion_rivals_and_failure() {
 
     let out = drive(run(&[Op::Extend, Op::Extend], Some(1)));
     assert!(out.failed, "the armed sync failed: {out:?}");
+}
+
+/// Two writes to different principals are in flight when a sync fails
+/// (fsyncgate: the kernel drops the dirty pages of every write, and the
+/// next sync reports success over them). The write whose sync queued
+/// behind the failure must be refused, not accepted and attested over
+/// pages that are gone. This is a concurrency edge the sequential property
+/// above cannot reach: it runs one write at a time, so no sync is ever
+/// queued behind a failing one. Turns red if a sync that follows a failure
+/// is trusted.
+#[test]
+fn a_sync_queued_behind_a_failed_one_is_refused() {
+    drive(async {
+        let (e, blobs, events) = engine();
+        let (a, b) = (Line::new().await, Line::new().await);
+        blobs.fail_next_persist.store(true, Ordering::SeqCst);
+        let (ra, rb) = tokio::join!(
+            e.submit_commit(&a.id, Some(a.genesis.clone()), &a.chain[0]),
+            e.submit_commit(&b.id, Some(b.genesis.clone()), &b.chain[0]),
+        );
+        assert!(
+            ra.is_err() && rb.is_err(),
+            "neither write is accepted: {ra:?} {rb:?}"
+        );
+        assert!(
+            matches!(
+                rb,
+                Err(cyphr_storage::engine::EngineError::DurabilityLost(_))
+            ),
+            "the queued write is refused as a durability loss: {rb:?}"
+        );
+        let log = events.lock().expect("log");
+        assert_eq!(count(&log, Ev::Index), 0, "nothing was indexed: {log:?}");
+    });
 }
 
 /// The hacker seat's attack, as one scenario: a rival is pushed, the
