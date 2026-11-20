@@ -247,22 +247,14 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
     // populate-then-drop-then-reopen structure.
     drop(state);
 
-    // Mirrors the fixed keyspace-name suffixes
-    // `storage_fjall::FjallStorage::with_database_scoped` opens (see the S1
-    // baseline's `delete_principal_eml_keyspaces`). The labelled id's `:` is
-    // outside `sanitize_fjall_prefix`'s passthrough charset and is escaped
-    // as `$3a`; the rest of `principal_id` is already inside it.
-    let keyspace_prefix = principal_id.replace(':', "$3a");
-    let eml_keyspaces = [
-        format!("{keyspace_prefix}_eml_leaves"),
-        format!("{keyspace_prefix}_eml_nodes"),
-        format!("{keyspace_prefix}_eml_metadata"),
-    ];
+    // The commit log of every principal lives in this fixed triplet, told
+    // apart by key scope (not a keyspace per principal).
+    let eml_keyspaces = ["eml_leaves", "eml_nodes", "eml_metadata"];
 
     let record_blobs_db = fjall::Database::builder(data_dir.join("record").join("blobs"))
         .open()
         .expect("open record/blobs db");
-    for name in &eml_keyspaces {
+    for name in eml_keyspaces {
         assert!(
             record_blobs_db.keyspace_exists(name),
             "principal {principal_id}'s EML keyspace {name} must live inside record/blobs -- \
@@ -273,10 +265,18 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
         );
     }
 
+    let leaves = record_blobs_db
+        .keyspace("eml_leaves", fjall::KeyspaceCreateOptions::default)
+        .expect("open eml_leaves");
+    assert!(
+        !leaves.is_empty().expect("scan eml_leaves"),
+        "principal {principal_id}'s commit leaves must be held in record/blobs's eml_leaves"
+    );
+
     let index_db = fjall::Database::builder(data_dir.join("index"))
         .open()
         .expect("open index db");
-    for name in &eml_keyspaces {
+    for name in eml_keyspaces {
         assert!(
             !index_db.keyspace_exists(name),
             "principal {principal_id}'s EML keyspace {name} must NOT live inside index/ -- \

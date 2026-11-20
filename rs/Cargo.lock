@@ -649,6 +649,7 @@ dependencies = [
  "eml",
  "fjall",
  "polydigest-storage-fjall",
+ "proptest",
  "tempfile",
  "tokio",
 ]
@@ -981,7 +982,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1046,9 +1047,9 @@ dependencies = [
 
 [[package]]
 name = "fjall"
-version = "3.1.8"
+version = "3.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "420a84699b8ccbb1ed573e38e88f4f23637b45beab6432066452f834be469c57"
+checksum = "6e98f7212d748b723dcfbd43d5f166958945ad2c05ad4537fb99bcda42ad8a96"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -1685,9 +1686,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lsm-tree"
-version = "3.1.8"
+version = "3.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "055a908d502129cf63bedae52f2db222e4436d2da32a69df9b84ac9fb9147761"
+checksum = "5498808f4d41cf785079d3ef3f28716f1b4364af1b512f3097bfb651bded1b3e"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -1972,9 +1973,9 @@ dependencies = [
 
 [[package]]
 name = "polydigest-storage-fjall"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4858709ce797f6a07ec3c9c51de60bf443209b2a3d8857eb2b5d197f819791d4"
+checksum = "0a0328e9c1a8d506e9069e67f2fa3f3913f6cd278975e7a8f6fc92bd95205aa7"
 dependencies = [
  "fjall",
  "polydigest",
@@ -2169,7 +2170,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2403,7 +2404,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2788,10 +2789,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0136791f7c95b1f6dd99f9cc786b91bb81c3800b639b3478e561ddb7be95e5f1"
 dependencies = [
  "fastrand",
- "getrandom 0.4.1",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

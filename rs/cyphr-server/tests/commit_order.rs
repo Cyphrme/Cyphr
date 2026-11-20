@@ -180,8 +180,9 @@ fn stack(config: &ServerConfig) -> Stack {
 
 /// How many leaves the principal's durable EML holds.
 async fn eml_leaves(db: &fjall::Database, principal_id: &str) -> u64 {
-    let storage =
-        cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id).expect("open EML");
+    let logs = cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs");
+    let generation = logs.generation(principal_id).expect("generation");
+    let storage = logs.open(principal_id, generation).expect("open EML");
     cyphr::CommitTrees::open(storage)
         .await
         .expect("reopen EML")
