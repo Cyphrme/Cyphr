@@ -649,6 +649,7 @@ dependencies = [
  "eml",
  "fjall",
  "polydigest-storage-fjall",
+ "proptest",
  "tempfile",
  "tokio",
 ]

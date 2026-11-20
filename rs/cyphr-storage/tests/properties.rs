@@ -2,9 +2,8 @@
 
 use std::path::PathBuf;
 
-use coz::base64ct::Encoding;
-use cyphr::StateDigest;
-use cyphr_blob_fjall::FjallBlobStore;
+use cyphr_blob_fjall::storage_fjall::FjallStorage;
+use cyphr_blob_fjall::{EmlLogs, FjallBlobStore};
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::StorageEngine;
@@ -214,6 +213,56 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
     }
 }
 
+/// A generated principal's history as the wire commits a client would
+/// push: its id, its genesis, and its commit lines with each action-only
+/// line carried into the next commit's bundle (SPEC 4.6.2 `actions`).
+struct History {
+    principal_id: String,
+    genesis: Genesis,
+    commits: Vec<CommitEntry>,
+}
+
+/// `None` for a generated intent that is cryptographically invalid or
+/// commits nothing.
+async fn history(
+    pool: &test_fixtures::Pool,
+    intent: test_fixtures::intent::TestIntent,
+) -> Option<History> {
+    let golden = test_fixtures::Generator::new(pool)
+        .generate_test(&intent)
+        .await
+        .ok()?;
+    let genesis_keys = golden.genesis_keys.as_ref()?;
+    let mut commits = Vec::new();
+    let mut pending_actions = Vec::new();
+    for commit in golden.commits.as_ref()? {
+        if commit.txs.is_empty() {
+            pending_actions.extend(commit.actions.clone());
+        } else {
+            let mut actions = std::mem::take(&mut pending_actions);
+            actions.extend(commit.actions.clone());
+            commits.push(CommitEntry {
+                actions,
+                ..commit.clone()
+            });
+        }
+    }
+    if commits.is_empty() {
+        return None;
+    }
+    let genesis = if genesis_keys.len() == 1 {
+        Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
+    } else {
+        Genesis::Disclosed(genesis_keys.iter().map(golden_key_to_domain).collect())
+    };
+    let principal_id = cyphr_storage::engine::genesis_principal_id(&genesis).ok()?;
+    Some(History {
+        principal_id,
+        genesis,
+        commits,
+    })
+}
+
 async fn run_engine_recovery_test<B, I>(
     pool: &test_fixtures::Pool,
     intent: test_fixtures::intent::TestIntent,
@@ -222,68 +271,21 @@ async fn run_engine_recovery_test<B, I>(
     B: cyphr_storage::blob::BlobStore + 'static,
     I: cyphr_storage::index::Indexer + cyphr_storage::index::IndexerWrite + 'static,
 {
-    let generator = test_fixtures::Generator::new(pool);
-    let golden = match generator.generate_test(&intent).await {
-        Ok(g) => g,
-        Err(_) => {
-            // Ignore dynamically generated intents that are cryptographically invalid
-            return;
-        },
-    };
-
-    let genesis_keys = match &golden.genesis_keys {
-        Some(gk) => gk,
-        None => return,
-    };
-    let commits = match &golden.commits {
-        Some(c) => c,
-        None => return,
-    };
-
-    // Carry each action-only line's actions into the next commit's bundle,
-    // recorded before its transactions (SPEC 4.6.2 `actions`).
-    let mut merged_commits = Vec::new();
-    let mut pending_actions = Vec::new();
-
-    for commit in commits {
-        if commit.txs.is_empty() {
-            pending_actions.extend(commit.actions.clone());
-        } else {
-            let mut actions = std::mem::take(&mut pending_actions);
-            actions.extend(commit.actions.clone());
-            merged_commits.push(CommitEntry {
-                actions,
-                ..commit.clone()
-            });
-        }
-    }
-
-    if merged_commits.is_empty() {
+    let Some(History {
+        principal_id,
+        genesis,
+        commits: merged_commits,
+    }) = history(pool, intent).await
+    else {
         return;
-    }
-
-    let genesis_key = &genesis_keys[0];
-    let key = golden_key_to_domain(genesis_key);
-    let temp_principal = cyphr::Principal::implicit(key).await.unwrap();
-    let hash_alg = temp_principal.hash_alg();
-    let pr_bytes = temp_principal.pr().as_multihash().get(hash_alg).unwrap();
-    let principal_id = format!(
-        "{hash_alg}:{}",
-        coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
-    );
+    };
 
     async {
         // Ingest commits sequentially
         for commit in &merged_commits {
             let bundle = commit.bundle().unwrap();
-            let genesis = if genesis_keys.len() == 1 {
-                Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
-            } else {
-                Genesis::Disclosed(genesis_keys.iter().map(golden_key_to_domain).collect())
-            };
-
             engine
-                .submit_commit(&principal_id, Some(genesis), &bundle)
+                .submit_commit(&principal_id, Some(genesis.clone()), &bundle)
                 .await
                 .expect("submit_commit failed");
         }
@@ -308,14 +310,9 @@ async fn run_engine_recovery_test<B, I>(
         // Re-submit the last commit to test idempotency
         let last_commit = merged_commits.last().unwrap();
         let bundle = last_commit.bundle().unwrap();
-        let genesis = if genesis_keys.len() == 1 {
-            Genesis::Implicit(golden_key_to_domain(&genesis_keys[0]))
-        } else {
-            Genesis::Disclosed(genesis_keys.iter().map(golden_key_to_domain).collect())
-        };
 
         let _ = engine
-            .submit_commit(&principal_id, Some(genesis), &bundle)
+            .submit_commit(&principal_id, Some(genesis.clone()), &bundle)
             .await;
 
         let tip_after_dup = engine
@@ -365,6 +362,165 @@ async fn run_engine_recovery_test<B, I>(
         assert_eq!(original_entity.blob_hash, recovered_entity.blob_hash);
     }
     .await;
+}
+
+type LogEngine = StorageEngine<FjallBlobStore, FjallIndexer, FjallStorage>;
+
+/// Everything a principal's commit log determines: the tip's digests, its
+/// commit count, and every registered algorithm's tree root.
+#[derive(Debug, PartialEq, Eq)]
+struct Projection {
+    tip: cyphr_storage::index::TipState,
+    global_size: u64,
+    roots: Vec<(u64, Vec<u8>)>,
+}
+
+async fn project(engine: &LogEngine, h: &History) -> Projection {
+    let tip = engine
+        .get_tip(&h.principal_id)
+        .await
+        .expect("tip")
+        .expect("a pushed principal has a tip");
+    let principal = engine
+        .load_principal(&h.principal_id, h.genesis.clone())
+        .await
+        .expect("load principal");
+    let trees = principal.commit_trees();
+    let roots = [1u64, 2, 3]
+        .into_iter()
+        .filter(|alg| trees.has_algorithm(*alg))
+        .map(|alg| (alg, trees.root(alg).expect("root")))
+        .collect();
+    Projection {
+        tip,
+        global_size: trees.global_size(),
+        roots,
+    }
+}
+
+fn open_engine(dir: &std::path::Path) -> (LogEngine, fjall::Database) {
+    let db = fjall::Database::builder(dir.join("db")).open().expect("db");
+    let engine = StorageEngine::with_log_factory(
+        FjallBlobStore::from_database(db.clone()).expect("blobs"),
+        FjallIndexer::open(&dir.join("index")).expect("index"),
+        EmlLogs::new(db.clone()).expect("logs"),
+    );
+    (engine, db)
+}
+
+async fn push_all(engine: &LogEngine, histories: &[History]) {
+    for h in histories {
+        for commit in &h.commits {
+            engine
+                .submit_commit(
+                    &h.principal_id,
+                    Some(h.genesis.clone()),
+                    &commit.bundle().unwrap(),
+                )
+                .await
+                .expect("submit_commit");
+        }
+    }
+}
+
+/// What a store written under the per-principal keyspace layout holds that
+/// the fixed layout does not: three keyspaces per principal (and per
+/// retired generation) named `<id with ':' as '$3a'>[$g<n>]_eml_<part>`,
+/// holding bytes the migration never reads, and the log generation
+/// recorded. The old code is not runnable here, so its layout is
+/// imitated; the fixed keyspaces are emptied because the legacy data lived
+/// only in the per-principal ones.
+fn make_legacy(db: &fjall::Database, histories: &[History]) {
+    for fixed in ["eml_leaves", "eml_nodes", "eml_metadata"] {
+        db.keyspace(fixed, fjall::KeyspaceCreateOptions::default)
+            .expect("fixed keyspace")
+            .clear()
+            .expect("clear");
+    }
+    let generations = db
+        .keyspace("eml_generations", fjall::KeyspaceCreateOptions::default)
+        .expect("generations");
+    for h in histories {
+        let id = h.principal_id.replace(':', "$3a");
+        for generation in ["", "$g2"] {
+            for part in ["leaves", "nodes", "metadata"] {
+                db.keyspace(
+                    &format!("{id}{generation}_eml_{part}"),
+                    fjall::KeyspaceCreateOptions::default,
+                )
+                .expect("legacy keyspace")
+                .insert(b"legacy-key", b"legacy-value")
+                .expect("legacy row");
+            }
+        }
+        generations
+            .insert(h.principal_id.as_bytes(), 2u64.to_be_bytes())
+            .expect("record generation");
+    }
+}
+
+/// Histories of distinct principals: genesis keys are consecutive pool
+/// entries from `base`.
+async fn histories(base: usize, steps: Vec<Vec<Step>>) -> Vec<History> {
+    let pool = load_pool();
+    let mut out = Vec::new();
+    for (i, steps) in steps.into_iter().enumerate() {
+        if let Some(h) = history(&pool, build_intent(base + i, steps)).await {
+            out.push(h);
+        }
+    }
+    out
+}
+
+proptest! {
+    // Each case replays whole histories into two databases.
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    /// Backs I1 across the log layout change: a store written under the
+    /// per-principal keyspace layout, opened by the fixed-keyspace code,
+    /// answers exactly as a store built fresh by it (same tips, same tree
+    /// roots, same leaf counts for every principal), and no legacy
+    /// `*_eml_*` keyspace survives the open.
+    #[test]
+    fn migrated_legacy_store_equals_fresh_store(
+        base in any::<usize>(),
+        steps in prop::collection::vec(prop::collection::vec(step_strategy(), 1..6), 1..4),
+    ) {
+        block_on(async move {
+            let histories = histories(base, steps).await;
+            prop_assume!(!histories.is_empty());
+
+            let fresh_dir = tempfile::tempdir().unwrap();
+            let fresh = {
+                let (engine, _db) = open_engine(fresh_dir.path());
+                push_all(&engine, &histories).await;
+                let mut out = Vec::new();
+                for h in &histories {
+                    out.push(project(&engine, h).await);
+                }
+                out
+            };
+
+            let legacy_dir = tempfile::tempdir().unwrap();
+            {
+                let (engine, db) = open_engine(legacy_dir.path());
+                push_all(&engine, &histories).await;
+                drop(engine);
+                make_legacy(&db, &histories);
+            }
+            let (engine, db) = open_engine(legacy_dir.path());
+            let legacy: Vec<String> = db
+                .list_keyspace_names()
+                .into_iter()
+                .map(|n| n.to_string())
+                .filter(|n| n.contains("_eml_"))
+                .collect();
+            prop_assert!(legacy.is_empty(), "legacy keyspaces survived: {:?}", legacy);
+            for (h, want) in histories.iter().zip(&fresh) {
+                prop_assert_eq!(&project(&engine, h).await, want);
+            }
+            Ok::<(), TestCaseError>(())
+        })?;
+    }
 }
 
 proptest! {
