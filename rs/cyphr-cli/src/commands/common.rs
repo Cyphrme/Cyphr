@@ -18,9 +18,12 @@ use cyphr_storage::{CommitEntry, Genesis};
 pub type CliStorageEngine =
     StorageEngine<FjallBlobStore, FjallIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>;
 
-/// Type alias for a `Principal` backed by the CLI's durable Commit Tree
-/// storage — what [`load_principal_from_engine`] always returns.
-pub type CliPrincipal = cyphr::Principal<cyphr_blob_fjall::storage_fjall::FjallStorage>;
+/// A `Principal` the CLI mutates over an in-memory commit log, detached
+/// from the engine's durable one: the engine's own append in
+/// `submit_commit` is then the only write to that log. A command that
+/// appended to it as well would leave it one leaf ahead of the chain, and
+/// the next load would regenerate it from the blobs.
+pub type CliPrincipal = cyphr::Principal<cyphr::eml::MemoryStorage>;
 
 use crate::Error;
 use crate::keystore::{Error as KeystoreError, JsonKeyStore, KeyBackend};
@@ -291,7 +294,9 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
         .to_string())
 }
 
-/// Load a principal from the storage engine.
+/// Load a principal from the storage engine, detached from its durable
+/// commit log ([`CliPrincipal`]); [`save_principal_to_engine`] writes what
+/// the caller then commits.
 pub fn load_principal_from_engine(
     engine: &CliStorageEngine,
     keystore: &impl KeyBackend,
@@ -301,24 +306,19 @@ pub fn load_principal_from_engine(
     let principal_id = get_principal_id(&pg)?;
 
     block_on(async {
-        let tip = engine.get_tip(&principal_id).await?;
-
+        if let Some(at_tip) = engine.at_tip(&principal_id).await? {
+            return Ok(at_tip.detach().await?);
+        }
         // `identity` matching a keystore thumbprint directly IS implicit
         // (single-key) genesis, independent of whether a tip has been
         // stored yet. A multi-key principal exists only through its
-        // genesis commit (SPEC 5.1), so its genesis comes from storage.
-        let is_implicit_genesis = keystore.public(identity).is_ok();
-
-        let genesis = if is_implicit_genesis {
-            let genesis_key = load_key_from_keystore(keystore, identity)?;
-            cyphr_storage::Genesis::Implicit(genesis_key)
-        } else if tip.is_none() {
+        // genesis commit (SPEC 5.1), so with no tip there is nothing to
+        // resolve it from.
+        if keystore.public(identity).is_err() {
             return Err(crate::Error::UnresolvableGenesis(identity.to_owned()));
-        } else {
-            engine.resolve_genesis(&principal_id, &[]).await?
-        };
-
-        Ok(engine.load_principal(&principal_id, genesis).await?)
+        }
+        let genesis_key = load_key_from_keystore(keystore, identity)?;
+        Ok(cyphr::Principal::implicit(genesis_key).await?)
     })?
 }
 
@@ -345,11 +345,7 @@ fn resolve_local_genesis<S: cyphr::eml::Storage>(
 
 /// Save a principal's new commits to the storage engine.
 ///
-/// Generic over `principal`'s own Commit Tree backend `S`: callers pass
-/// both a freshly-constructed, not-yet-persisted `Principal` (backed by
-/// [`cyphr::eml::MemoryStorage`], e.g. from `init`/`import`) and a
-/// [`CliPrincipal`] loaded via [`load_principal_from_engine`] and then
-/// mutated (e.g. from `key add`/`key revoke`). Either way, only `engine`'s
+/// Generic over `principal`'s own Commit Tree backend `S`: only `engine`'s
 /// own durable storage is written to — `principal`'s backend is read-only
 /// here, via `cyphr_storage::export_commits`.
 pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
