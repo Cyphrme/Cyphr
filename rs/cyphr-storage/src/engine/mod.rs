@@ -2092,6 +2092,31 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .await
     }
 
+    /// Make the record durable: one sync of the blob store's journal,
+    /// which holds the blobs and the commit logs alike.
+    ///
+    /// The one durability point of every write that lands a commit, for
+    /// every role (server, gossip, sync, CLI), because every such write
+    /// goes through [`Self::submit_commit`]. It sits after the record
+    /// (blobs, manifest, log) is written and before the first index write,
+    /// with its error propagated: the commit is then refused rather than
+    /// reported accepted without being durable. It is always on:
+    ///
+    /// - SPEC 19.5 (atomic commits): a power cut must not leave an index row whose blobs are gone,
+    ///   which is what an unordered index sync could produce.
+    /// - An attestor signs receipts and tip reports over the commit; if a power cut could erase it,
+    ///   the restarted server would accept a rival at the same sequence and its two signatures
+    ///   would meet `receipts.md`'s equivocation predicate against an honest server.
+    /// - A client must not release a commit it could lose and then re-sign on the same `pre` (SPEC
+    ///   2.3.2: implicit forks are prohibited).
+    ///
+    /// Only a keyless server needs none of this, and a sync costs it about
+    /// 8 ms on a write of about 40, so there is no option to turn it off.
+    async fn persist_record(&self) -> Result<(), EngineError> {
+        self.blob_store.persist().await?;
+        Ok(())
+    }
+
     /// Store blobs and manifest, then the commit-log append (when there is
     /// a core commit), then the index: the I1 order.
     #[tracing::instrument(
@@ -2146,6 +2171,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 "commit stored but its log append failed; the next load replays it"
             );
         }
+
+        // The record (blobs, manifest, log) is complete: make it durable
+        // before the index can point into it, and before this call returns
+        // and anything signs over or releases the commit. See
+        // [`Self::persist_record`].
+        self.persist_record().await?;
 
         // The roots of a commit this process just verified, by the commit
         // that names them, before the index can show the commit to a reader.
@@ -4823,6 +4854,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         let (next, manifest_hash) = self
             .store_blobs_and_manifest(bundle, next, next_seen, next_embedded)
             .await?;
+        self.persist_record().await?;
         let mut chain = line_commits.to_vec();
         chain.push(next.clone());
         self.indexer
@@ -4912,6 +4944,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             record: *blake3::hash(&bytes).as_bytes(),
         };
         self.blob_store.put(&bytes).await?;
+        // A tip report names the revoked keys, so the record is attested:
+        // durable before it is visible to anything that signs.
+        self.persist_record().await?;
         self.revoked
             .lock()
             .unwrap_or_else(|p| p.into_inner())

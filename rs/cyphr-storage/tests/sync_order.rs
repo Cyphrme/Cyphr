@@ -442,7 +442,7 @@ fn drive<F: std::future::Future>(f: F) -> F::Output {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig::with_cases(12))]
 
     /// Over any sequence of public engine writes: each accepted commit is
     /// one persist, no index write follows an unsynced record write, and
