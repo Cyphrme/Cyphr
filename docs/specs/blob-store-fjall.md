@@ -71,9 +71,10 @@ scope is a byte-prefix of another, and retiring a generation deletes its
 scope's keys in one batch.
 
 A store written before this layout held three keyspaces per principal
-(`<id>_eml_leaves`, `_eml_nodes`, `_eml_metadata`). Opening it drops them
-and resets the generation records; each log rebuilds from the blobs on its
-next load, because the blobs are the source of truth and the log a cache.
+(`<id>_eml_leaves`, `_eml_nodes`, `_eml_metadata`). Opening it drops them;
+each log rebuilds from the blobs on its next load, because the blobs are
+the source of truth and the log a cache. Generation records are kept: a
+record then names an empty scope, which replay fills.
 This costs about seven fsyncs per dropped keyspace, once.
 
 A witness is itself a principal (SPEC.md §2.2.15). Its commits traverse the
@@ -85,14 +86,14 @@ undermine the protocol's natural treatment of witnesses as principals.
 
 **[fjall-single-keyspace]**: The BlobStore SHOULD share a Fjall `Database`
 with the EML backend (`polydigest-storage-fjall`) when both are in use. Sharing
-a keyspace means:
+a database means:
 
 - Single WAL — one crash-recovery journal
-- Single `Batch` can span both BlobStore and EML partitions
+- Single `Batch` can span both BlobStore and EML keyspaces
 - Shared background flush/compaction threads
 
-The `Keyspace` is `Arc`-backed and cheaply cloneable. Creating a
-`FjallBlobStore` from an existing `Keyspace` MUST NOT open a new database.
+The `Database` is `Arc`-backed and cheaply cloneable. Creating a
+`FjallBlobStore` from an existing `Database` MUST NOT open a new database.
 
 **[fjall-partition-isolation]**: The blob partition (`"blobs"`) and EML
 partitions (`"eml_leaves"`, `"eml_nodes"`, `"eml_metadata"`) MUST use separate
