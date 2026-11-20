@@ -202,6 +202,13 @@ could erase a commit the server had signed over, the restarted server
 would accept a rival at that sequence, sign it, and the two statements
 would meet the predicate against an honest server.
 
+A held statement (a tip report for a principal in Error) is the same
+kind of claim: it names the tied heads and when each was first seen, so
+the retained rival behind it is made durable before it is listed. A
+power cut that erased it would restart the principal Active at the same
+height, and the server would sign an Active tip, or a held statement with
+a different `held_since`, against the one it signed before.
+
 So the engine makes the record durable before `submit_commit` returns
 (`storage-engine.md` `[record-durable-first]`), and the server signs only
 after that. This adds no persistence surface to issuing a receipt: it

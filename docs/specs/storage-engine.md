@@ -226,14 +226,27 @@ is no option to turn it off.
   ([`receipts.md`](receipts.md) `[receipts-r-durable-before-sign]`). A
   client that releases a commit it can lose could sign again on the same
   `pre`, an implicit fork (SPEC 2.3.2).
+- **The rule**: anything an attestor signs over, or tells a caller is
+  recorded, is durable first. That is an accepted commit, a fork
+  resolution (the promotion of a retained line), a retained rival (a
+  principal in Error: the held statement names its heads and their
+  first-seen times, and a power cut that erased the rival would restart
+  the principal Active at the same height to sign over different heads),
+  and a revoke record (the `/revoke` response says it was durably
+  recorded). Each syncs once, after its record is written and before it
+  is visible to a reader. Only a record nothing signs over and nothing
+  promises (an action-only bundle, answered unsigned) is left to the next
+  sync.
 - **Failure model**: `put` makes a write visible and survive a process
   crash. Only `persist` makes it survive power loss. The `persist` covers
   every record that shares the store's journal: the blobs and the commit
-  logs, which one database holds. Fork resolution (the promotion of a
-  retained line) and a revoke record sync the same way, because each is
-  attested. A record never indexed or signed over (retained fork evidence,
-  an action-only bundle) is made durable by the next sync and needs none
-  of its own.
+  logs, which one database holds.
+- **Fail closed**: A failed `persist` fails the engine. A sync that fails
+  can drop the pages it covered, and a later sync can then succeed over
+  them, so the engine refuses every further write
+  (`EngineError::DurabilityLost`) until the process restarts and replays
+  what reached the disk. fjall poisons its database on a failed write but
+  not on a failed `persist`, so this is the engine's to enforce.
 - **Cost**: One data sync per accepted commit, about 8 ms on a path of about
   40 ms. Syncing once per bundle of commits is deferred.
 
