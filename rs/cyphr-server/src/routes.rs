@@ -1172,8 +1172,10 @@ async fn push_response(
         ar: tip.ar.clone(),
         cr: absent_cr(&tip.cr),
     };
-    // The commit is durable: a receipt that cannot be signed degrades the
-    // envelope to unsigned, it does not turn the answer into an error.
+    // The commit is durable: `submit_commit` synced the record before it
+    // returned, so this signature never attests a commit a power cut can
+    // erase. A receipt that cannot be signed degrades the envelope to
+    // unsigned, it does not turn the answer into an error.
     match receipt::commit_receipt(
         signer,
         now,

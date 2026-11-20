@@ -51,7 +51,7 @@ use cyphr_client::{
     verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::AppState;
 
@@ -310,7 +310,7 @@ async fn round_principal(
             Ok(_) => info!(principal = %principal_id, "gossip: stored a verified commit"),
             // The principal may have advanced here since the round began
             // (a client's push): the engine refuses what it already holds.
-            Err(err) => debug!(principal = %principal_id, %err, "gossip: commit not stored"),
+            Err(err) => refused(principal_id, &err, "gossip: commit not stored"),
         }
     }
     for fork in &report.forks {
@@ -326,11 +326,22 @@ async fn round_principal(
             .await
         {
             Ok(_) => info!(principal = %principal_id, "gossip: a branch commit adopted"),
-            Err(err) => debug!(principal = %principal_id, %err, "gossip: branch commit answered"),
+            Err(err) => refused(principal_id, &err, "gossip: branch commit answered"),
         }
     }
     state.metrics.gossip_replayed(record.replayed());
     Ok(memo)
+}
+
+/// Log the engine's answer to a commit gossip handed it. Most answers are
+/// refusals of what the node already holds, which are routine; a failed
+/// sync is not: the engine refuses every write until restart.
+fn refused(principal_id: &str, err: &cyphr_storage::engine::EngineError, what: &str) {
+    if matches!(err, cyphr_storage::engine::EngineError::DurabilityLost(_)) {
+        error!(principal = %principal_id, %err, "{what}: the record is not durable");
+    } else {
+        debug!(principal = %principal_id, %err, "{what}");
+    }
 }
 
 /// Record each verified naked revoke where the server keeps deaths (SPEC

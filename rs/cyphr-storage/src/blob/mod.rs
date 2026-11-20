@@ -127,6 +127,23 @@ pub trait BlobStore: Send + Sync {
         hash: &Blake3Hash,
     ) -> impl std::future::Future<Output = Result<bool, BlobStoreError>> + Send;
 
+    /// Make every write this store has accepted survive power loss before
+    /// returning.
+    ///
+    /// A `put` that returned is visible to readers of this store and
+    /// survives a process crash, but only a `persist` that returned makes
+    /// it, and every record sharing this store's journal (the commit
+    /// logs), survive a power cut. The engine calls it once per accepted
+    /// commit, after the record is written and before the index is: an
+    /// index row must never outlive the record it points at, and nothing
+    /// may sign over (or release) a commit that a power cut can still
+    /// erase.
+    ///
+    /// A backend with no volatile window (memory) has nothing to flush and
+    /// returns `Ok`. There is deliberately no default: a wrapper that
+    /// forgot to forward this would silently drop durability.
+    fn persist(&self) -> impl std::future::Future<Output = Result<(), BlobStoreError>> + Send;
+
     /// Iterate over all stored blobs' digests.
     ///
     /// Used for index recovery.

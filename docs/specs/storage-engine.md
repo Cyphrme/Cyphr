@@ -208,6 +208,52 @@ If blob storage succeeds but indexing fails, the system is in a
 recoverable state (blobs exist but are not indexed; re-indexing will
 discover them).
 
+**[record-durable-first]**: The engine MUST make the record durable before
+it writes the index, and MUST do so before the write returns. After the
+blobs, the manifest, and the commit-log append are written and before the
+first index write, the engine calls `BlobStore::persist` once, and a failure
+refuses the write. This holds for every role (server, gossip, sync, CLI)
+because every path that lands a commit goes through `submit_commit`; there
+is no option to turn it off.
+
+- **Why order**: Without it a power cut can leave the index ahead of the
+  record, a tip whose blobs are gone, which recovery by re-indexing cannot
+  repair, so atomicity of a commit (SPEC 19.5) would not hold.
+- **Why before return**: Whatever signs over a commit, or releases it, does
+  so only after `submit_commit` returns. An attestor's receipt or tip
+  report over a commit a power cut could erase breaks the append-only
+  record it asserts, and convicts an honest server of equivocation
+  ([`receipts.md`](receipts.md) `[receipts-r-durable-before-sign]`). A
+  client that releases a commit it can lose could sign again on the same
+  `pre`, an implicit fork (SPEC 2.3.2).
+- **The rule**: anything an attestor signs over, or tells a caller is
+  recorded, is durable first. That is an accepted commit, a fork
+  resolution (the promotion of a retained line), a retained rival (a
+  principal in Error: the held statement names its heads and their
+  first-seen times, and a power cut that erased the rival would restart
+  the principal Active at the same height to sign over different heads),
+  a revoke record (the `/revoke` response says it was durably
+  recorded), and an action-only push (answered `201` with the stored
+  blob hashes). Each syncs once, after its record is written and before
+  it is visible to a reader or answered. There is no exemption: a write
+  the server answers as recorded is durable.
+- **Failure model**: `put` makes a write visible and survive a process
+  crash. Only `persist` makes it survive power loss. The `persist` covers
+  every record that shares the store's journal: the blobs and the commit
+  logs, which one database holds.
+- **Fail closed**: A failed `persist` fails the engine. A sync that fails
+  can drop the pages it covered, and a later sync can then succeed over
+  them, so the engine refuses every further write
+  (`EngineError::DurabilityLost`) until the process restarts and replays
+  what reached the disk. Every sync runs under one engine lock, so a sync
+  queued behind a failed one finds the failure instead of trusting a
+  success over the pages it dropped. fjall poisons its database on a failed write but
+  not on a failed `persist`, so this is the engine's to enforce.
+- **Cost**: One data sync per accepted commit, about 8 ms on a path of about
+  40 ms. Syncing once per bundle of commits is deferred.
+
+`VERIFIED: rs/cyphr-storage/tests/sync_order.rs`
+
 - **PRE**: Validation has succeeded; commit is finalized.
 - **POST**: All blobs exist in the BlobStore. Index entry exists for the
   commit.
@@ -344,6 +390,7 @@ same principal MUST reflect the ingested commit's state.
 | [separate-durability]    | agent-check | pass   | cyphr-index-fjall (Layer 1) + cyphr-blob-fjall (Layer 0) are separate Fjall keyspaces/DBs |
 | [validate-first-write]   | agent-check | pass   | submit_commit(): verify → finalize → persist                                              |
 | [ingest-ordering]        | agent-check | pass   | Blobs stored before index_commit()                                                        |
+| [record-durable-first]   | test        | pass   | sync_order.rs: one persist per accepted commit, before the first index write              |
 | [read-path-coordination] | agent-check | pass   | get_patch() joins index + blobs                                                           |
 | [recovery-reindex]       | agent-check | pass   | reindex() scans BlobStore, rebuilds index                                                 |
 | [recovery-convergence]   | agent-check | pass   | reindex() terminates in finite time                                                       |
