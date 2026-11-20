@@ -396,6 +396,8 @@ enum Op {
     Promote(usize),
     /// Push an earlier canonical commit again.
     Replay(usize),
+    /// An action-only bundle (no commit), answered 201 with its blob hashes.
+    Action(u8),
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -404,6 +406,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         2 => any::<usize>().prop_map(Op::Rival),
         2 => any::<usize>().prop_map(Op::Promote),
         1 => any::<usize>().prop_map(Op::Replay),
+        1 => any::<u8>().prop_map(Op::Action),
     ]
 }
 
@@ -540,6 +543,12 @@ async fn run(ops: &[Op], fail_at: Option<usize>) -> Outcome {
                 let bundle = line.chain[i % line.chain.len()].clone();
                 rig.push(&line, &bundle).await;
             },
+            Op::Action(m) => {
+                // Each distinct, so none is a repeat the engine stores nothing for.
+                let now = line.tick();
+                let bundle = WireBundle::actions(vec![action_blob(&line.signer, n, m, now)]);
+                rig.push(&line, &bundle).await;
+            },
         }
     }
 
@@ -592,6 +601,22 @@ async fn signed(e: &Engine, id: &str) -> (Option<(String, u64)>, String) {
         .map(|t| (t.commit_id, t.commit_count));
     let held = format!("{:?}", e.error_state(id).await.expect("error state"));
     (tip, held)
+}
+
+/// A signed action coz (`{pay, sig}`) by `signer`.
+fn action_blob(signer: &Kp, n: usize, m: u8, now: i64) -> Vec<u8> {
+    let alg = signer.kp.alg.name();
+    let pay = serde_json::json!({
+        "alg": alg, "msg": format!("{n}-{m}"), "now": now,
+        "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/comment/create",
+    });
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) =
+        coz::sign_json(&bytes, alg, &signer.kp.prv_bytes, &signer.kp.pub_bytes).expect("sign");
+    serde_json::to_vec(&serde_json::json!({
+        "pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig),
+    }))
+    .expect("wire")
 }
 
 fn revoke_evidence() -> serde_json::Value {
@@ -652,6 +677,12 @@ fn the_scenarios_reach_promotion_rivals_and_failure() {
 
     let out = drive(run(&[Op::Extend, Op::Extend], Some(1)));
     assert!(out.failed, "the armed sync failed: {out:?}");
+
+    let out = drive(run(&[Op::Action(1), Op::Action(2)], None));
+    assert_eq!(
+        out.accepted, 3,
+        "genesis and two action-only bundles: {out:?}"
+    );
 }
 
 /// Two writes to different principals are in flight when a sync fails
