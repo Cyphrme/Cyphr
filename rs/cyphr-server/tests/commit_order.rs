@@ -40,6 +40,10 @@ struct Blobs {
 }
 
 impl BlobStore for Blobs {
+    async fn persist(&self) -> Result<(), BlobStoreError> {
+        self.inner.persist().await
+    }
+
     async fn put(&self, data: &[u8]) -> Result<Blake3Hash, BlobStoreError> {
         if data.starts_with(COMMIT_MANIFEST_PREFIX) && self.fail_manifests.load(Ordering::SeqCst) {
             return Err(BlobStoreError::Backend(

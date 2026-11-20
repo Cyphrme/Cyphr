@@ -242,6 +242,10 @@ pub struct Ctr {
 pub struct CBlob(Arc<FjallBlobStore>, Arc<Ctr>);
 
 impl BlobStore for CBlob {
+    async fn persist(&self) -> Result<(), BlobStoreError> {
+        self.0.persist().await
+    }
+
     async fn put(&self, data: &[u8]) -> Result<Blake3Hash, BlobStoreError> {
         self.0.put(data).await
     }

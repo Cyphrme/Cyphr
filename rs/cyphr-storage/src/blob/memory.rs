@@ -64,6 +64,11 @@ impl BlobStore for MemoryBlobStore {
         }
     }
 
+    async fn persist(&self) -> Result<(), BlobStoreError> {
+        // Memory has no volatile window to close.
+        Ok(())
+    }
+
     fn get(
         &self,
         hash: &Blake3Hash,

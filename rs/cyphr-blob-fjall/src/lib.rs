@@ -282,6 +282,21 @@ impl BlobStore for FjallBlobStore {
         }
     }
 
+    fn persist(&self) -> impl std::future::Future<Output = Result<(), BlobStoreError>> + Send {
+        // One journal serves every keyspace of the database, the blobs and
+        // the commit logs ([`EmlLogs`]) alike, so one sync covers both.
+        // Data only: file metadata is not needed to find the journal again.
+        let db = self.db.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                db.persist(fjall::PersistMode::SyncData)
+                    .map_err(|e| BlobStoreError::Backend(format!("fjall persist: {e}")))
+            })
+            .await
+            .map_err(|e| BlobStoreError::Backend(format!("spawn_blocking join failed: {e}")))?
+        }
+    }
+
     fn get(
         &self,
         hash: &Blake3Hash,

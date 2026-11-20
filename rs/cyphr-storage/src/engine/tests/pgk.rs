@@ -223,6 +223,10 @@ struct GatedBlobs {
 }
 
 impl BlobStore for GatedBlobs {
+    async fn persist(&self) -> Result<(), BlobStoreError> {
+        self.inner.persist().await
+    }
+
     fn put(&self, data: &[u8]) -> impl Future<Output = Result<Blake3Hash, BlobStoreError>> + Send {
         let data = data.to_vec();
         let me = self.clone();

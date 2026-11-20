@@ -597,6 +597,10 @@ struct ArmedBlobs {
 }
 
 impl cyphr_storage::blob::BlobStore for ArmedBlobs {
+    async fn persist(&self) -> Result<(), cyphr_storage::blob::BlobStoreError> {
+        self.inner.persist().await
+    }
+
     fn put(
         &self,
         data: &[u8],
@@ -1550,6 +1554,10 @@ mod replay {
     }
 
     impl BlobStore for ShuffledBlobs {
+        async fn persist(&self) -> Result<(), BlobStoreError> {
+            self.inner.persist().await
+        }
+
         fn put(
             &self,
             data: &[u8],

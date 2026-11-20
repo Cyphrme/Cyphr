@@ -1044,6 +1044,10 @@ mod retained {
     }
 
     impl BlobStore for Flaky {
+        async fn persist(&self) -> Result<(), cyphr_storage::blob::BlobStoreError> {
+            self.inner.persist().await
+        }
+
         async fn put(
             &self,
             data: &[u8],
