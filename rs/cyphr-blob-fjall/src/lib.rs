@@ -82,6 +82,11 @@ impl FjallBlobStore {
 pub struct EmlLogs {
     keyspaces: LogKeyspaces,
     generations: Keyspace,
+    /// Principals whose older generations this process has swept. A crash
+    /// can only leave an older generation behind in a process that has
+    /// since died, so one sweep per principal per process recovers it, and
+    /// later opens skip the prefix scans a sweep costs.
+    swept: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Why [`EmlLogs::new`] failed.
@@ -105,9 +110,10 @@ impl EmlLogs {
     /// The logs of `db`, opening the fixed keyspaces once.
     ///
     /// A database written under the per-principal keyspace layout is
-    /// migrated by dropping those keyspaces and resetting every generation
-    /// record: the logs are caches of the blobs (I1) and replay rebuilds
-    /// each on its next load. This costs about seven fsyncs per legacy
+    /// migrated by dropping those keyspaces: the logs are caches of the
+    /// blobs (I1) and replay rebuilds each on its next load. Generation
+    /// records are left as they are; a record then names a scope that is
+    /// empty, which replay fills. This costs about seven fsyncs per legacy
     /// keyspace, once, so progress is logged.
     ///
     /// # Errors
@@ -130,11 +136,12 @@ impl EmlLogs {
             .filter(|name| LEGACY_SUFFIXES.iter().any(|s| name.ends_with(s)))
             .collect();
         if !legacy.is_empty() {
-            migrate_legacy_layout(&db, &generations, &legacy).map_err(EmlLogsError)?;
+            migrate_legacy_layout(&db, &legacy).map_err(EmlLogsError)?;
         }
         Ok(Self {
             keyspaces,
             generations,
+            swept: std::sync::Mutex::default(),
         })
     }
 
@@ -164,23 +171,15 @@ impl EmlLogs {
     }
 }
 
-/// Drop the legacy keyspaces `legacy` and reset every generation record.
-///
-/// Generations go first: were this interrupted between the two steps, the
-/// next start still finds legacy keyspaces and finishes the job.
-fn migrate_legacy_layout(
-    db: &Database,
-    generations: &Keyspace,
-    legacy: &[String],
-) -> Result<(), String> {
+/// Drop the legacy keyspaces `legacy`. An interrupted drop is finished by
+/// the next start, which finds the keyspaces still listed.
+fn migrate_legacy_layout(db: &Database, legacy: &[String]) -> Result<(), String> {
     let started = std::time::Instant::now();
     eprintln!(
-        "migrating the commit logs to the fixed keyspace layout: dropping {} legacy keyspaces          (they rebuild from the blobs on first load)",
+        "migrating the commit logs to the fixed keyspace layout: dropping {} legacy keyspaces \
+         (they rebuild from the blobs on first load)",
         legacy.len()
     );
-    generations
-        .clear()
-        .map_err(|e| format!("resetting the log generations: {e}"))?;
     for (done, name) in legacy.iter().enumerate() {
         let keyspace = db
             .keyspace(name, KeyspaceCreateOptions::default)
@@ -225,11 +224,16 @@ impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs 
             self.retire(principal_id, generation)?;
         }
         // A crash between recording a generation and retiring the one it
-        // superseded leaves that one behind; the current log's open
-        // retires every older generation still held.
-        if generation == current {
-            for older in 0..current {
-                self.retire(principal_id, older)?;
+        // superseded leaves that one behind; the first open of the current
+        // log in this process retires every older generation still held.
+        if generation == current && current > 0 {
+            // The set only skips work; a poisoned lock holds a usable set.
+            let mut swept = self.swept.lock().unwrap_or_else(|e| e.into_inner());
+            if !swept.contains(principal_id) {
+                for older in 0..current {
+                    self.retire(principal_id, older)?;
+                }
+                swept.insert(principal_id.to_owned());
             }
         }
         self.scoped(principal_id, generation)

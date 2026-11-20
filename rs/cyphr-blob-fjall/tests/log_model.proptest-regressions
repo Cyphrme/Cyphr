@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 141b8ee2af7f7b9dbb981d7a3c5e8ac450f4eb216a4d8f6656be0ff9b21cccde # shrinks to ids = ["SHA-256:", "SHA-256:a"], ops = [Regenerate { p: 6259701611443608080, leaves: [[]], crash: false }, Regenerate { p: 1432848589410513044, leaves: [], crash: true }]

@@ -67,24 +67,63 @@ fn principals() -> impl Strategy<Value = Vec<String>> {
 
 type Log = FjallStorage;
 
-async fn leaves(log: &Log) -> Vec<Vec<u8>> {
+/// The leaves of `log`, each with its leaf-hash node, and its metadata.
+async fn contents(log: &Log) -> (Vec<(Vec<u8>, Option<Vec<u8>>)>, eml::AlgorithmMetas) {
     let n = log.len().await.expect("len");
     let mut out = Vec::new();
     for i in 0..n {
-        out.push(log.get_leaf(i).await.expect("leaf"));
+        out.push((
+            log.get_leaf(i).await.expect("leaf"),
+            log.get_node(ALG, i, 0).await.expect("node"),
+        ));
     }
-    out
+    (out, log.load_algorithm_metas().await.expect("metas"))
 }
 
+const ALG: u64 = 1;
+/// Epochs of [`ALG`] once registered.
+const EPOCHS: [(u64, u64); 1] = [(0, 0)];
+/// More leaves than any one generation of a case appends.
+const MAX_LEAVES: u64 = 64;
+
+/// Append a leaf, its leaf-hash node (the leaf bytes stand in for a hash)
+/// and, on a log's first append, the algorithm's registration, so that all
+/// three keyspaces of the log (leaves, nodes, metadata) hold data.
 async fn append(log: &mut Log, data: &[u8]) {
+    if log.load_algorithm_metas().await.expect("metas").is_empty() {
+        log.apply(&[eml::WriteOp::AddAlgorithm {
+            alg_id: ALG,
+            epochs: &EPOCHS,
+        }])
+        .await
+        .expect("register");
+    }
     let at = log.len().await.expect("len");
+    let node = eml::NodeWrite {
+        alg_id: ALG,
+        left: at,
+        height: 0,
+        hash: data,
+    };
     log.apply(&[eml::WriteOp::AppendLeaf {
         at,
         data,
-        nodes: &[],
+        nodes: &[node],
     }])
     .await
     .expect("append");
+}
+
+/// Whether `log` holds no key of any of its three keyspaces, over the
+/// leaf positions a model could have used.
+async fn is_empty(log: &Log) -> bool {
+    let mut none = log.len().await.expect("len") == 0
+        && log.append_count().await.expect("count") == 0
+        && log.load_algorithm_metas().await.expect("metas").is_empty();
+    for at in 0..MAX_LEAVES {
+        none &= log.get_node(ALG, at, 0).await.expect("node").is_none();
+    }
+    none
 }
 
 fn keyspace_names(db: &Database) -> BTreeSet<String> {
@@ -130,11 +169,7 @@ async fn run(ids: Vec<String>, ops: Vec<Op>) {
                 let p = p % ids.len();
                 let next = model[p].generation + 1;
                 let mut log = logs.open(&ids[p], next).expect("open next");
-                assert_eq!(
-                    log.len().await.expect("len"),
-                    0,
-                    "a regeneration starts empty"
-                );
+                assert!(is_empty(&log).await, "a regeneration starts empty");
                 for leaf in &new {
                     append(&mut log, leaf).await;
                 }
@@ -142,6 +177,10 @@ async fn run(ids: Vec<String>, ops: Vec<Op>) {
                     generations
                         .insert(ids[p].as_bytes(), next.to_be_bytes())
                         .expect("record");
+                    // The crash is the process dying: a restart forgets
+                    // which principals it has swept.
+                    drop(log);
+                    logs = EmlLogs::new(db.clone()).expect("logs");
                 } else {
                     logs.retire_below(&ids[p], next).expect("retire");
                 }
@@ -171,11 +210,7 @@ async fn run(ids: Vec<String>, ops: Vec<Op>) {
             if !m.unswept {
                 for older in 0..m.generation {
                     let log = logs.open(id, older).expect("open older");
-                    assert_eq!(
-                        log.len().await.expect("len"),
-                        0,
-                        "{id}: generation {older} kept keys"
-                    );
+                    assert!(is_empty(&log).await, "{id}: generation {older} kept keys");
                 }
             }
             assert_eq!(
@@ -184,12 +219,22 @@ async fn run(ids: Vec<String>, ops: Vec<Op>) {
                 "{id}: recorded generation"
             );
             let log = logs.open(id, m.generation).expect("open current");
-            assert_eq!(leaves(&log).await, m.leaves, "{id}: current log");
+            let want = (
+                m.leaves
+                    .iter()
+                    .map(|l| (l.clone(), Some(l.clone())))
+                    .collect::<Vec<_>>(),
+                if m.leaves.is_empty() {
+                    vec![]
+                } else {
+                    vec![(ALG, EPOCHS.to_vec())]
+                },
+            );
+            assert_eq!(contents(&log).await, want, "{id}: current log");
             for older in 0..m.generation {
                 let log = logs.open(id, older).expect("open older");
-                assert_eq!(
-                    log.len().await.expect("len"),
-                    0,
+                assert!(
+                    is_empty(&log).await,
                     "{id}: generation {older} survived the sweep"
                 );
             }
