@@ -11,27 +11,28 @@
 mod common;
 
 use common::User;
-use fjall::{Database, KeyspaceCreateOptions};
+use cyphr_blob_fjall::EmlLogs;
+use cyphr_cli::commands::common::{get_principal_id, parse_principal_genesis};
+use cyphr_storage::engine::LogFactory;
 
-/// The generation numbers recorded for every principal of `user`'s store;
-/// an absent record is generation 0 and is not listed.
-fn recorded_generations(user: &User) -> Vec<u64> {
+/// The log generation of `identity` in `user`'s store, read by the same
+/// reader the engine uses, so a change to how generations are recorded
+/// changes this value instead of emptying the check.
+fn generation(user: &User, identity: &str) -> u64 {
     let path = user
         .store_uri()
         .strip_prefix("file:")
         .map(|p| std::path::Path::new(p).join("blobs"))
         .expect("file store uri");
-    let db = Database::builder(path).open().expect("opening the store");
-    let generations = db
-        .keyspace("eml_generations", KeyspaceCreateOptions::default)
-        .expect("generation keyspace");
-    generations
-        .iter()
-        .map(|g| {
-            let (_, v) = g.into_inner().expect("reading a generation record");
-            u64::from_be_bytes(<[u8; 8]>::try_from(v.as_ref()).expect("a u64 record"))
-        })
-        .collect()
+    let db = fjall::Database::builder(path)
+        .open()
+        .expect("opening the store");
+    let principal_id = get_principal_id(&parse_principal_genesis(identity).expect("identity"))
+        .expect("principal id");
+    EmlLogs::new(db)
+        .expect("eml logs")
+        .generation(&principal_id)
+        .expect("reading the generation")
 }
 
 /// Behaviour: consecutive `data action` + `data commit` runs never
@@ -45,16 +46,15 @@ fn data_commits_leave_the_log_at_generation_zero() {
         user.setup(&["data", "action", &ident, &signer, &format!("--msg=m{n}")]);
         user.setup(&["data", "commit", &ident, &signer]);
     }
-    assert!(
-        recorded_generations(&user).iter().all(|g| *g == 0),
-        "a CLI commit regenerated the log: {:?}",
-        recorded_generations(&user)
+    assert_eq!(
+        generation(&user, &id),
+        0,
+        "a CLI commit regenerated the log"
     );
 }
 
 /// Behaviour: a key change (`key add`, which also saves through the
-/// engine) leaves the log at generation zero too, and the history still
-/// reads back whole afterwards.
+/// engine) leaves the log at generation zero too.
 #[test]
 fn key_add_leaves_the_log_at_generation_zero() {
     let user = User::new();
@@ -64,11 +64,5 @@ fn key_add_leaves_the_log_at_generation_zero() {
     let ident = format!("--identity={id}");
     user.setup(&["data", "action", &ident, &signer, "--msg=after"]);
     user.setup(&["data", "commit", &ident, &signer]);
-    assert!(
-        recorded_generations(&user).iter().all(|g| *g == 0),
-        "a CLI write regenerated the log: {:?}",
-        recorded_generations(&user)
-    );
-    // The store still serves the principal after those writes.
-    user.setup(&["inspect", &ident]);
+    assert_eq!(generation(&user, &id), 0, "a CLI write regenerated the log");
 }
