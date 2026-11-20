@@ -6,18 +6,22 @@
 //! record store once per accepted commit, after the record is written and
 //! before the first index write, for every role.
 //!
-//! A counting [`BlobStore`] and a recording [`Indexer`] share one event
-//! log; the properties are read off that log, over random sequences of
-//! every public engine write: commits, refused forks, fork resolution
-//! (promotion), replays.
+//! A [`BlobStore`] that models a disk (a write is volatile until synced,
+//! a power cut drops what is volatile, a sync can fail) and a recording
+//! [`Indexer`] share one event log; the properties are read off that log
+//! and off a simulated restart, over random sequences of every public
+//! engine write: commits, retained rivals, fork resolution (promotion),
+//! replays.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::Principal;
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
-use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError, MemoryBlobStore};
+use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::{
     CommitRef, DeriveToken, EntityRef, IndexableCommit, Indexer, IndexerError, IndexerWrite,
@@ -43,37 +47,109 @@ fn note(events: &Events, ev: Ev) {
     events.lock().expect("event log").push(ev);
 }
 
-/// A [`MemoryBlobStore`] that logs its writes and its syncs.
+/// A blob store modelling a disk. A `put` lands in a volatile set (the
+/// page cache); `persist` makes it durable; `power_cut` drops what is still
+/// volatile. A `persist` armed to fail drops the volatile set too and
+/// returns an error, and later syncs succeed (fsyncgate: the pages are gone
+/// and nothing says so).
+#[derive(Clone)]
 struct RecBlobs {
-    inner: MemoryBlobStore,
+    disk: Arc<Mutex<Disk>>,
+    fail_next_persist: Arc<AtomicBool>,
+    persist_failures: Arc<AtomicUsize>,
     events: Events,
+}
+
+#[derive(Default)]
+struct Disk {
+    durable: HashMap<[u8; 32], Vec<u8>>,
+    volatile: HashMap<[u8; 32], Vec<u8>>,
+}
+
+impl RecBlobs {
+    fn new(events: Events) -> Self {
+        Self {
+            disk: Arc::default(),
+            fail_next_persist: Arc::default(),
+            persist_failures: Arc::default(),
+            events,
+        }
+    }
+
+    /// What a restart finds: a store over the durable set only.
+    fn power_cut(&self) -> Self {
+        let mut disk = self.disk.lock().expect("disk");
+        disk.volatile.clear();
+        Self {
+            disk: Arc::new(Mutex::new(Disk {
+                durable: disk.durable.clone(),
+                volatile: HashMap::new(),
+            })),
+            fail_next_persist: Arc::default(),
+            persist_failures: Arc::default(),
+            events: Events::default(),
+        }
+    }
+
+    fn volatile(&self) -> usize {
+        self.disk.lock().expect("disk").volatile.len()
+    }
 }
 
 impl BlobStore for RecBlobs {
     async fn put(&self, data: &[u8]) -> Result<Blake3Hash, BlobStoreError> {
-        let hash = self.inner.put(data).await?;
+        let hash = *blake3::hash(data).as_bytes();
+        let mut disk = self.disk.lock().expect("disk");
+        if !disk.durable.contains_key(&hash) {
+            disk.volatile.insert(hash, data.to_vec());
+        }
+        drop(disk);
         note(&self.events, Ev::Put);
-        Ok(hash)
+        Ok(Blake3Hash::from_bytes(hash))
     }
 
     async fn get(&self, hash: &Blake3Hash) -> Result<Option<Vec<u8>>, BlobStoreError> {
-        self.inner.get(hash).await
+        let disk = self.disk.lock().expect("disk");
+        let key = *hash.as_bytes();
+        Ok(disk
+            .volatile
+            .get(&key)
+            .or_else(|| disk.durable.get(&key))
+            .cloned())
     }
 
     async fn exists(&self, hash: &Blake3Hash) -> Result<bool, BlobStoreError> {
-        self.inner.exists(hash).await
+        Ok(self.get(hash).await?.is_some())
     }
 
     async fn iter(
         &self,
     ) -> Result<Box<dyn Iterator<Item = Result<Blake3Hash, BlobStoreError>> + Send>, BlobStoreError>
     {
-        self.inner.iter().await
+        let disk = self.disk.lock().expect("disk");
+        let mut all: Vec<[u8; 32]> = disk
+            .durable
+            .keys()
+            .chain(disk.volatile.keys())
+            .copied()
+            .collect();
+        all.sort();
+        all.dedup();
+        Ok(Box::new(
+            all.into_iter().map(|h| Ok(Blake3Hash::from_bytes(h))),
+        ))
     }
 
     async fn persist(&self) -> Result<(), BlobStoreError> {
-        self.inner.persist().await?;
         note(&self.events, Ev::Persist);
+        let mut disk = self.disk.lock().expect("disk");
+        if self.fail_next_persist.swap(false, Ordering::SeqCst) {
+            disk.volatile.clear();
+            self.persist_failures.fetch_add(1, Ordering::SeqCst);
+            return Err(BlobStoreError::Backend("injected sync failure".into()));
+        }
+        let moved: Vec<_> = disk.volatile.drain().collect();
+        disk.durable.extend(moved);
         Ok(())
     }
 }
@@ -166,19 +242,17 @@ impl IndexerWrite for RecIndex {
 
 type Engine = StorageEngine<RecBlobs, RecIndex>;
 
-fn engine() -> (Engine, Events) {
+fn engine() -> (Engine, RecBlobs, Events) {
     let events = Events::default();
+    let blobs = RecBlobs::new(events.clone());
     let e = StorageEngine::new(
-        RecBlobs {
-            inner: MemoryBlobStore::new(),
-            events: events.clone(),
-        },
+        blobs.clone(),
         RecIndex {
             inner: MemoryIndexer::new(),
             events: events.clone(),
         },
     );
-    (e, events)
+    (e, blobs, events)
 }
 
 /// The first index write that follows a record write no sync has covered,
@@ -295,12 +369,6 @@ impl Line {
         self.clock
     }
 
-    async fn submit(&self, e: &Engine, bundle: &WireBundle) -> bool {
-        e.submit_commit(&self.id, Some(self.genesis.clone()), bundle)
-            .await
-            .is_ok()
-    }
-
     /// `n` commits on the state after commit `base`, none submitted.
     async fn line_from(&mut self, base: usize, n: usize) -> Vec<(WireBundle, Principal)> {
         let mut state = self.snaps[base].fork().await.expect("fork");
@@ -340,29 +408,100 @@ fn op_strategy() -> impl Strategy<Value = Op> {
 struct Outcome {
     accepted: usize,
     promotions: usize,
+    kept: usize,
+    failed: bool,
 }
 
-/// Run `ops`, checking after every submit that a refused commit wrote
-/// nothing to the index, and at the end the two durability properties.
-async fn run(ops: &[Op]) -> Outcome {
-    let (e, events) = engine();
-    let mut line = Line::new().await;
-    let mut out = Outcome::default();
-    let g = line.chain[0].clone();
-    assert!(line.submit(&e, &g).await, "genesis is accepted");
-    out.accepted += 1;
+/// The engine under test, its disk, and what the run has seen so far.
+struct Rig {
+    e: Engine,
+    blobs: RecBlobs,
+    events: Events,
+    out: Outcome,
+}
 
-    for op in ops {
-        let before = events.lock().expect("log").len();
-        let accepted = match *op {
+impl Rig {
+    /// Submit `bundle` for `line`, checking what this one write did to the
+    /// record, the index and the disk. Returns whether it was accepted.
+    async fn push(&mut self, line: &Line, bundle: &WireBundle) -> bool {
+        let before = self.events.lock().expect("log").len();
+        let failures = self.blobs.persist_failures.load(Ordering::SeqCst);
+        let ok = self
+            .e
+            .submit_commit(&line.id, Some(line.genesis.clone()), bundle)
+            .await
+            .is_ok();
+        let wrote: Vec<Ev> = self.events.lock().expect("log")[before..].to_vec();
+        let (puts, persists, indexed) = (
+            count(&wrote, Ev::Put),
+            count(&wrote, Ev::Persist),
+            count(&wrote, Ev::Index),
+        );
+        let failed_now = self.blobs.persist_failures.load(Ordering::SeqCst) > failures;
+        if self.out.failed {
+            assert!(
+                !ok && wrote.is_empty(),
+                "after a failed sync the engine writes nothing: ok={ok} {wrote:?}"
+            );
+        } else if failed_now {
+            assert!(!ok, "a commit whose sync failed is not accepted");
+            assert_eq!(
+                indexed, 0,
+                "an index write followed a failed sync: {wrote:?}"
+            );
+            self.out.failed = true;
+        } else if ok {
+            assert_eq!(persists, 1, "one persist per accepted commit: {wrote:?}");
+            self.out.accepted += 1;
+        } else {
+            assert_eq!(indexed, 0, "a refused commit wrote to the index: {wrote:?}");
+            assert_eq!(
+                persists,
+                usize::from(puts > 0),
+                "a retained rival is one persist, a refusal that stored nothing none: {wrote:?}"
+            );
+            self.out.kept += usize::from(puts > 0);
+        }
+        if !self.out.failed {
+            assert_eq!(
+                self.blobs.volatile(),
+                0,
+                "a record write no sync covered is left behind: {wrote:?}"
+            );
+        }
+        ok
+    }
+}
+
+/// Run `ops`; the sync of the write at `fail_at` (or the first after it
+/// that syncs) fails. Checks every write as it happens ([`Rig::push`]),
+/// the order over the whole log, that a failed engine stays failed, and,
+/// for a run that never failed, that a power cut changes nothing the
+/// engine would sign over.
+async fn run(ops: &[Op], fail_at: Option<usize>) -> Outcome {
+    let (e, blobs, events) = engine();
+    let mut rig = Rig {
+        e,
+        blobs,
+        events,
+        out: Outcome::default(),
+    };
+    let mut line = Line::new().await;
+    let g = line.chain[0].clone();
+    assert!(rig.push(&line, &g).await, "genesis is accepted");
+
+    for (n, op) in ops.iter().enumerate() {
+        if fail_at == Some(n) {
+            rig.blobs.fail_next_persist.store(true, Ordering::SeqCst);
+        }
+        match *op {
             Op::Extend => {
                 let len = line.chain.len();
                 let (bundle, state) = line.line_from(len - 1, 1).await.remove(0);
-                let ok = line.submit(&e, &bundle).await;
-                assert!(ok, "extending the tip is accepted");
-                line.chain.push(bundle);
-                line.snaps.push(state);
-                1
+                if rig.push(&line, &bundle).await {
+                    line.chain.push(bundle);
+                    line.snaps.push(state);
+                }
             },
             Op::Rival(p) => {
                 let len = line.chain.len();
@@ -371,7 +510,7 @@ async fn run(ops: &[Op]) -> Outcome {
                 }
                 let at = 1 + p % (len - 1);
                 let (bundle, _) = line.line_from(at - 1, 1).await.remove(0);
-                usize::from(line.submit(&e, &bundle).await)
+                rig.push(&line, &bundle).await;
             },
             Op::Promote(p) => {
                 let len = line.chain.len();
@@ -380,10 +519,8 @@ async fn run(ops: &[Op]) -> Outcome {
                 }
                 let at = 1 + p % (len - 1);
                 let rival = line.line_from(at - 1, len - at + 1).await;
-                let mut accepted = 0;
                 for (i, (bundle, _)) in rival.iter().enumerate() {
-                    let ok = line.submit(&e, bundle).await;
-                    accepted += usize::from(ok);
+                    let ok = rig.push(&line, bundle).await;
                     if ok && i + 1 == rival.len() {
                         line.chain.truncate(at);
                         line.snaps.truncate(at);
@@ -391,47 +528,83 @@ async fn run(ops: &[Op]) -> Outcome {
                             line.chain.push(b);
                             line.snaps.push(s);
                         }
-                        out.promotions += 1;
+                        rig.out.promotions += 1;
                         break;
                     }
                 }
-                accepted
             },
             Op::Replay(i) => {
                 let bundle = line.chain[i % line.chain.len()].clone();
-                usize::from(line.submit(&e, &bundle).await)
+                rig.push(&line, &bundle).await;
             },
-        };
-        out.accepted += accepted;
-
-        let log = events.lock().expect("log");
-        let wrote = &log[before..];
-        if accepted == 0 {
-            assert_eq!(
-                count(wrote, Ev::Index),
-                0,
-                "{op:?}: a refused commit wrote to the index: {wrote:?}"
-            );
         }
-        assert_eq!(
-            count(wrote, Ev::Persist),
-            accepted,
-            "{op:?}: one persist per accepted commit: {wrote:?}"
-        );
     }
 
-    let log = events.lock().expect("log");
+    let log = rig.events.lock().expect("log").clone();
     assert_eq!(
         order_violation(&log),
         None,
         "an index write followed a record write no persist covered: {log:?}"
     );
-    assert_eq!(
-        count(&log, Ev::Persist),
-        out.accepted,
-        "persists over the whole run equal the accepted commits"
-    );
-    out
+
+    if rig.out.failed {
+        // A revoke is a write too: refused, and it stores nothing.
+        let before = rig.events.lock().expect("log").len();
+        assert!(
+            matches!(
+                rig.e.record_revoke(&revoke_evidence(), T0).await,
+                Err(cyphr_storage::engine::EngineError::DurabilityLost(_))
+            ),
+            "a failed engine refuses a revoke"
+        );
+        assert_eq!(rig.events.lock().expect("log").len(), before);
+    } else {
+        // Power cut: what the engine would sign over (the principal's tip
+        // and, in Error, the held heads with their first-seen times) is the
+        // same when it restarts over what reached the disk.
+        let before = signed(&rig.e, &line.id).await;
+        let restarted = StorageEngine::new(
+            rig.blobs.power_cut(),
+            RecIndex {
+                inner: MemoryIndexer::new(),
+                events: Events::default(),
+            },
+        );
+        assert_eq!(
+            signed(&restarted, &line.id).await,
+            before,
+            "a power cut changed what the engine signs over"
+        );
+    }
+    rig.out
+}
+
+/// What the engine would sign over for `id`: its tip and, in Error, the
+/// held heads with their first-seen times.
+async fn signed(e: &Engine, id: &str) -> (Option<(String, u64)>, String) {
+    let tip = e
+        .get_tip(id)
+        .await
+        .expect("tip")
+        .map(|t| (t.commit_id, t.commit_count));
+    let held = format!("{:?}", e.error_state(id).await.expect("error state"));
+    (tip, held)
+}
+
+fn revoke_evidence() -> serde_json::Value {
+    let k = kp();
+    let alg = k.kp.alg.name();
+    let pay = serde_json::json!({
+        "alg": alg, "now": T0, "rvk": T0, "tmb": k.tmb.to_b64(),
+        "typ": "cyphr.me/cyphr/key/revoke"
+    });
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) = coz::sign_json(&bytes, alg, &k.kp.prv_bytes, &k.kp.pub_bytes).expect("sign");
+    serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": {"alg": alg, "pub": Base64UrlUnpadded::encode_string(&k.kp.pub_bytes)},
+    })
 }
 
 fn drive<F: std::future::Future>(f: F) -> F::Output {
@@ -444,56 +617,67 @@ fn drive<F: std::future::Future>(f: F) -> F::Output {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
 
-    /// Over any sequence of public engine writes: each accepted commit is
-    /// one persist, no index write follows an unsynced record write, and
-    /// a refused commit writes nothing to the index. Turns red if the
-    /// engine syncs nothing, syncs after the index write, syncs per blob,
-    /// or lets a refusal reach the index.
+    /// Over any sequence of public engine writes, with a sync that may
+    /// fail anywhere: each accepted commit is one persist; a retained
+    /// rival is one persist before it is visible; no index write follows
+    /// an unsynced record write; a refusal writes nothing to the index; a
+    /// failed sync refuses every later write; and a power cut leaves the
+    /// tip and the held statement exactly as they were. Turns red if the
+    /// engine syncs nothing, syncs after the index write or after a rival
+    /// is listed, syncs per blob, lets a refusal reach the index, or
+    /// carries on after a failed sync.
     #[test]
-    fn one_persist_per_accepted_commit_before_the_index(
-        ops in prop::collection::vec(op_strategy(), 0..10)
+    fn the_record_is_durable_before_anything_is_visible(
+        ops in prop::collection::vec(op_strategy(), 0..10),
+        fail_at in prop::option::of(0usize..10),
     ) {
-        drive(run(&ops));
+        drive(run(&ops, fail_at));
     }
 }
 
-/// The property test must reach the path it claims to cover: a promotion
-/// (fork resolution) is an accepted commit with its own index write
-/// (`replace_chain_from`) and must be one persist as well. Turns red if
-/// the scenario stops promoting (the property above would then pass
-/// vacuously over that path) or the promotion path skips the sync.
+/// The property must reach the paths it claims to cover: a promotion
+/// (fork resolution, with its own index write), a retained rival (the
+/// held statement), and a failed sync. Turns red if a scenario stops
+/// reaching its path, which would leave the property above passing
+/// vacuously over it.
 #[test]
-fn a_promotion_is_one_persist_before_its_index_write() {
-    let out = drive(run(&[Op::Extend, Op::Extend, Op::Promote(0)]));
+fn the_scenarios_reach_promotion_rivals_and_failure() {
+    let ops = [Op::Extend, Op::Extend, Op::Promote(0)];
+    let out = drive(run(&ops, None));
     assert_eq!(out.promotions, 1, "the line displaced the chain: {out:?}");
+    assert!(out.kept >= 1, "a rival of the line was retained: {out:?}");
+
+    let out = drive(run(&[Op::Extend, Op::Extend], Some(1)));
+    assert!(out.failed, "the armed sync failed: {out:?}");
 }
 
-/// A revoke record is attested (a tip report names the revoked keys), so
-/// it must be durable before it is visible to a signer. Turns red if
+/// The hacker seat's attack, as one scenario: a rival is pushed, the
+/// server would sign a held statement over it, power is cut. The held
+/// statement survives (the property checks this over random sequences;
+/// this pins the case that was demonstrated). Turns red if a rival is
+/// listed before its record is synced.
+#[test]
+fn a_held_statement_survives_a_power_cut() {
+    let out = drive(run(&[Op::Extend, Op::Rival(0)], None));
+    assert_eq!(out.kept, 1, "the rival was retained: {out:?}");
+}
+
+/// A revoke record is durable before it is visible: the /revoke response
+/// tells the caller the key was durably recorded dead. Turns red if
 /// `record_revoke` leaves its record to a later commit's sync.
 #[test]
 fn a_revoke_record_is_durable_before_it_is_visible() {
     drive(async {
-        let (e, events) = engine();
-        let k = kp();
-        let alg = k.kp.alg.name();
-        let pay = serde_json::json!({
-            "alg": alg, "now": T0, "rvk": T0, "tmb": k.tmb.to_b64(),
-            "typ": "cyphr.me/cyphr/key/revoke"
-        });
-        let bytes = serde_json::to_vec(&pay).expect("pay");
-        let (sig, _) = coz::sign_json(&bytes, alg, &k.kp.prv_bytes, &k.kp.pub_bytes).expect("sign");
-        let evidence = serde_json::json!({
-            "pay": pay,
-            "sig": Base64UrlUnpadded::encode_string(&sig),
-            "key": {"alg": alg, "pub": Base64UrlUnpadded::encode_string(&k.kp.pub_bytes)},
-        });
-        e.record_revoke(&evidence, T0).await.expect("revoke");
+        let (e, blobs, events) = engine();
+        e.record_revoke(&revoke_evidence(), T0)
+            .await
+            .expect("revoke");
         let log = events.lock().expect("log");
         assert_eq!(
             *log,
             vec![Ev::Put, Ev::Persist],
             "one record write, then one persist"
         );
+        assert_eq!(blobs.volatile(), 0);
     });
 }

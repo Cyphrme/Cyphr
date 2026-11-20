@@ -1273,6 +1273,9 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// by principal id and commit id: a commit's roots depend on its
     /// history alone, so an entry is exact for the commit that names it.
     roots_at: BoundedCache<(String, String), DerivedRoots>,
+    /// Set by the first failed [`Self::persist_record`], never cleared: the
+    /// engine refuses every write from then on ([`EngineError::DurabilityLost`]).
+    durability_lost: std::sync::atomic::AtomicBool,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -1322,6 +1325,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             commits_replayed: std::sync::atomic::AtomicU64::new(0),
             chain_rows_read: std::sync::atomic::AtomicU64::new(0),
             roots_at: BoundedCache::new(ROOTS_MEMO_CAPACITY),
+            durability_lost: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -2109,11 +2113,41 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///   would meet `receipts.md`'s equivocation predicate against an honest server.
     /// - A client must not release a commit it could lose and then re-sign on the same `pre` (SPEC
     ///   2.3.2: implicit forks are prohibited).
+    /// - A held statement (a principal in Error) is signed over its retained rivals, so a rival is
+    ///   made durable before it is listed ([`Self::keep_branch`]), as is a revoke record.
     ///
     /// Only a keyless server needs none of this, and a sync costs it about
     /// 8 ms on a write of about 40, so there is no option to turn it off.
+    ///
+    /// A failed sync fails the engine closed. fjall poisons its database on
+    /// a failed write, but not on a failed `persist`, and a sync that fails
+    /// can drop the dirty pages it covered, so a later sync may succeed
+    /// over them (fsyncgate). From the first failure every write is
+    /// refused ([`Self::writable`]) until the process restarts and replays
+    /// what actually reached the disk.
     async fn persist_record(&self) -> Result<(), EngineError> {
-        self.blob_store.persist().await?;
+        self.writable()?;
+        if let Err(e) = self.blob_store.persist().await {
+            self.durability_lost
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::error!(error = %e, "record sync failed; refusing writes until restart");
+            return Err(EngineError::DurabilityLost(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// `Err` once a record sync has failed ([`Self::persist_record`]).
+    /// Checked before a write stores anything, so a failed engine adds
+    /// nothing to the record.
+    fn writable(&self) -> Result<(), EngineError> {
+        if self
+            .durability_lost
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(EngineError::DurabilityLost(
+                "an earlier sync of the record failed".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -3685,6 +3719,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         genesis: Option<crate::Genesis>,
         bundle: &WireBundle,
     ) -> Result<IngestResult, EngineError> {
+        self.writable()?;
         self.ensure_healed().await?;
 
         if bundle.is_empty() {
@@ -4917,6 +4952,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         evidence: &serde_json::Value,
         wrt: i64,
     ) -> Result<(), EngineError> {
+        self.writable()?;
         self.ensure_healed().await?;
         let tmb = verify_revoke(evidence).map_err(EngineError::InvalidInput)?;
         // Held across the write, so two revokes of one key store one record.
@@ -4944,8 +4980,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             record: *blake3::hash(&bytes).as_bytes(),
         };
         self.blob_store.put(&bytes).await?;
-        // A tip report names the revoked keys, so the record is attested:
-        // durable before it is visible to anything that signs.
+        // The caller is told the key was durably recorded dead (the
+        // /revoke response), and a death-set a power cut can revert would
+        // let a dead key's commits back in: durable before it is visible.
         self.persist_record().await?;
         self.revoked
             .lock()
@@ -5148,6 +5185,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 embedded,
             )
             .await?;
+        // A retained rival makes the principal Error, and an attestor signs
+        // a held statement over its heads (and their first-seen times) the
+        // moment it is listed. A power cut that erased the rival would
+        // restart the principal Active at the same height, to sign again
+        // over different heads: durable before it is visible.
+        self.persist_record().await?;
         self.branches
             .lock()
             .unwrap_or_else(|p| p.into_inner())

@@ -15,6 +15,14 @@ pub enum EngineError {
     #[error("indexer: {0}")]
     Indexer(#[from] IndexerError),
 
+    /// The record could not be made durable, now or at an earlier write.
+    /// Until the process restarts the engine refuses every write: a sync
+    /// that failed may have dropped the pages it covered, so a later sync
+    /// that succeeds proves nothing about them, and a signature over a
+    /// commit those pages held would attest state a power cut can erase.
+    #[error("record not durable, writes refused until restart: {0}")]
+    DurabilityLost(String),
+
     /// Requested resource was not found.
     #[error("not found: {0}")]
     NotFound(String),
