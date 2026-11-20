@@ -44,12 +44,37 @@ without benefit for hash→bytes access.
 ## Physical Layout
 
 ```
-Fjall Keyspace
+Fjall Database
 │
-└── "blobs"           Content-addressed blob partition
-    Key:   BLAKE3 hash (32 bytes, raw)
-    Value: Raw blob bytes (commit JSON, transaction JSON, or coz envelope)
+├── "blobs"            Content-addressed blob partition
+│   Key:   BLAKE3 hash (32 bytes, raw)
+│   Value: Raw blob bytes (commit JSON, transaction JSON, or coz envelope)
+│
+├── "eml_generations"  Current commit-log generation per principal
+│   Key:   principal id bytes
+│   Value: generation (u64, big-endian)
+│
+├── "eml_leaves"       Commit-log leaves of every principal
+├── "eml_nodes"        Commit-log tree nodes of every principal
+└── "eml_metadata"     Commit-log epochs and counts of every principal
+    Key:   scope ‖ log key (see below)
 ```
+
+The five keyspaces are fixed: their number does not depend on how many
+principals the database holds. Each keyspace creation costs about fourteen
+fsyncs and holds a database-wide lock, so a keyspace per principal would
+make a new principal's first push slow and stall every concurrent write.
+A principal's log is told apart by a key scope instead: the principal id
+bytes followed by the log generation as a `u64` big-endian. The storage
+backend (`polydigest-storage-fjall` 0.3) length-prefixes the scope, so no
+scope is a byte-prefix of another, and retiring a generation deletes its
+scope's keys in one batch.
+
+A store written before this layout held three keyspaces per principal
+(`<id>_eml_leaves`, `_eml_nodes`, `_eml_metadata`). Opening it drops them
+and resets the generation records; each log rebuilds from the blobs on its
+next load, because the blobs are the source of truth and the log a cache.
+This costs about seven fsyncs per dropped keyspace, once.
 
 A witness is itself a principal (SPEC.md §2.2.15). Its commits traverse the
 same protocol and storage path as any other principal's commits. No separate
@@ -58,8 +83,8 @@ undermine the protocol's natural treatment of witnesses as principals.
 
 ### Keyspace Configuration
 
-**[fjall-single-keyspace]**: The BlobStore SHOULD share a Fjall `Keyspace`
-with the EML backend (`eml-storage-fjall`) when both are in use. Sharing
+**[fjall-single-keyspace]**: The BlobStore SHOULD share a Fjall `Database`
+with the EML backend (`polydigest-storage-fjall`) when both are in use. Sharing
 a keyspace means:
 
 - Single WAL — one crash-recovery journal
@@ -71,7 +96,9 @@ The `Keyspace` is `Arc`-backed and cheaply cloneable. Creating a
 
 **[fjall-partition-isolation]**: The blob partition (`"blobs"`) and EML
 partitions (`"eml_leaves"`, `"eml_nodes"`, `"eml_metadata"`) MUST use separate
-logical partitions within the shared keyspace. Reads and writes to blobs
+keyspaces within the shared database, and the EML keyspaces MUST be a fixed
+set shared by all principals, scoped by key prefix, never one set per
+principal. Reads and writes to blobs
 MUST NOT interfere with EML internal state.
 
 ## Constraints

@@ -30,9 +30,8 @@
 //! byte strings can never collide under equality. `commits` additionally
 //! needs range scans (a whole principal's chain, or a sub-range of it),
 //! which raw-byte-prefix scoping would NOT make safe — see [`commit_key`]'s
-//! docs for why a naive prefix scan reintroduces exactly the kind of
-//! injectivity gap `sanitize_fjall_prefix` (F11) left unenforced, and how
-//! the length-prefixed encoding here closes it.
+//! docs for why a naive prefix scan reintroduces an injectivity
+//! gap, and how the length-prefixed encoding here closes it.
 //!
 //! - `aliases` — Principal Root variant (tagged digest) → the `principal_id` it names (point
 //!   lookup). Derived from the `pg` variants of the PG-establishing commit, so a principal is
@@ -129,9 +128,8 @@ struct CommitRow {
 /// belonging to principal `"alice2"` (or any principal for which
 /// `"alice"` is a literal byte-prefix), because `"alice2"`'s extra byte
 /// ('2' = 0x32) falls lexicographically between 0x00 and 0xFF at the very
-/// position the range brackets. That is exactly the class of bug F11
-/// left latent in `sanitize_fjall_prefix`: two distinct principals
-/// silently sharing an accessible keyspace.
+/// position the range brackets. That is an injectivity gap: two
+/// distinct principals silently sharing an accessible keyspace.
 ///
 /// Prefixing with `principal_id`'s length first guarantees any two
 /// distinct principal IDs of *different* lengths get non-overlapping

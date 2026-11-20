@@ -170,7 +170,7 @@ fn finalize_commit_rejects_mismatched_orphan_leaf() {
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let db = fjall::Database::builder(&db_path).open().expect("open db");
-        let open = || cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+        let open = || FjallStorage::with_database(db.clone()).expect("eml storage");
 
         // The first two commits, written live: real leaves at 0 and 1.
         {
@@ -244,10 +244,10 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
         // c5: the blob store and the EML commit-tree storage genuinely
         // share this one physical `Database` — not two uncoordinated
         // databases — via `FjallBlobStore::from_database` and
-        // `open_eml_storage` on the same handle.
+        // `FjallStorage::with_database` on the same handle.
         let blob_store =
             cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+        let eml_storage = FjallStorage::with_database(db.clone()).expect("eml storage");
 
         let blob_hash = blob_store
             .put(b"a blob living beside the durable commit tree")
@@ -283,8 +283,7 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
             .expect("reopen db");
         let blob_store =
             cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let eml_storage =
-            cyphr_blob_fjall::open_eml_storage(db.clone()).expect("reopen eml storage");
+        let eml_storage = FjallStorage::with_database(db.clone()).expect("reopen eml storage");
         let trees: CommitTrees<FjallStorage> = CommitTrees::open(eml_storage)
             .await
             .expect("reconstruct commit tree from disk");

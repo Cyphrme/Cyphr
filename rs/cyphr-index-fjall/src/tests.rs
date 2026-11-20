@@ -92,9 +92,7 @@ async fn survives_disk_reload() {
 // c4: multi-tenant keyspace scoping must be collision-free.
 // ---------------------------------------------------------------------
 
-/// F11 left `sanitize_fjall_prefix` (a raw character-substitution scheme)
-/// with no proof that distinct principal IDs map to distinct keyspaces.
-/// `commit_key`'s length-prefixed construction must not repeat that gap:
+/// `commit_key`'s length-prefixed construction must be injective:
 /// two principal IDs where one is a literal byte-prefix of the other
 /// (the case a naive, unprefixed `pid ++ sequence` encoding gets wrong,
 /// per `commit_key`'s doc comment) must never produce keys whose ranges

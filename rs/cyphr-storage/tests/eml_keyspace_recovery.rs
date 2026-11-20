@@ -25,8 +25,7 @@ use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_blob_fjall::storage_fjall::FjallStorage;
 use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::Genesis;
-use cyphr_storage::engine::StorageEngine;
-use fjall::KeyspaceCreateOptions;
+use cyphr_storage::engine::{LogFactory, StorageEngine};
 
 fn load_golden(category: &str, name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -131,21 +130,15 @@ async fn snapshot(
     }
 }
 
-/// Destroy every keyspace backing `principal_id`'s EML log -- real,
-/// observable deletion via fjall's own `delete_keyspace`, not a fresh store
-/// that never had the data in the first place. Mirrors the fixed keyspace
-/// suffixes `storage_fjall::FjallStorage::with_database_scoped` opens.
-fn delete_principal_eml_keyspaces(db: &fjall::Database, principal_id: &str) {
-    for suffix in ["_eml_leaves", "_eml_nodes", "_eml_metadata"] {
-        // `:` in a labelled id is escaped as `$3a` by the keyspace-name
-        // sanitizer; every other character of the id passes through.
-        let name = format!("{}{suffix}", principal_id.replace(':', "$3a"));
-        let handle = db
-            .keyspace(&name, KeyspaceCreateOptions::default)
-            .unwrap_or_else(|e| panic!("open keyspace {name} for deletion failed: {e}"));
-        db.delete_keyspace(handle)
-            .unwrap_or_else(|e| panic!("delete_keyspace {name} failed: {e}"));
-    }
+/// Destroy `principal_id`'s durable EML log -- a real, observable deletion
+/// of every key of its scope, not a fresh store that never had the data.
+fn delete_principal_eml_log(db: &fjall::Database, principal_id: &str) {
+    let logs = cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs");
+    let generation = LogFactory::<FjallStorage>::generation(&logs, principal_id)
+        .unwrap_or_else(|e| panic!("generation of {principal_id}: {e}"));
+    LogFactory::<FjallStorage>::open(&logs, principal_id, generation)
+        .and_then(|log| log.drop_scope().map_err(|e| e.to_string()))
+        .unwrap_or_else(|e| panic!("dropping the log of {principal_id} failed: {e}"));
 }
 
 /// The record-reconstruction property this node exists to check: destroy a
@@ -245,12 +238,13 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
         .expect("reopen db");
 
     for pid in [principal_id_a, principal_id_b] {
-        delete_principal_eml_keyspaces(&db, pid);
+        delete_principal_eml_log(&db, pid);
 
         // Observable deletion: reopening scoped storage over the now-empty
         // keyspaces must report zero leaves, not silently inherit anything
         // left behind.
-        let scoped = cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid)
+        let logs = cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs");
+        let scoped = LogFactory::<FjallStorage>::open(&logs, pid, 0)
             .unwrap_or_else(|e| panic!("reopen scoped storage for {pid} failed: {e}"));
         let trees: cyphr::commit_root::CommitTrees<FjallStorage> =
             cyphr::commit_root::CommitTrees::open(scoped)

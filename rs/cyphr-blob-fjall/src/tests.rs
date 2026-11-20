@@ -8,6 +8,7 @@
 //! bar, not a hand-picked subset.
 
 use cyphr_storage::blob::conformance;
+use cyphr_storage::engine::LogFactory as _;
 use eml::Storage as _;
 
 use super::*;
@@ -70,7 +71,10 @@ async fn blob_and_eml_partitions_are_isolated() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = Database::builder(dir.path()).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-    let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
+    let eml_storage = EmlLogs::new(db.clone())
+        .expect("logs")
+        .open("SHA-256:partition", 0)
+        .expect("eml storage");
 
     let blob_a = blob_store.put(b"blob-partition-marker-a").await.unwrap();
     let blob_b = blob_store.put(b"blob-partition-marker-b").await.unwrap();
@@ -103,25 +107,19 @@ async fn blob_and_eml_partitions_are_isolated() {
     );
 }
 
-/// A Cyphr `principal_id` (the intended real-world scoping identifier,
-/// e.g. `"SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"`) always
-/// contains a `:` separator, which is outside
-/// `storage_fjall::FjallStorage::with_database_scoped`'s allowed
-/// keyspace-name charset. `open_eml_storage_scoped` must still accept it
-/// — the caller should not need to know or work around fjall's naming
-/// constraints.
+/// Two principals whose ids are byte-prefixes of one another (and of the
+/// other's scope) keep separate logs in the shared keyspaces. Unit: a
+/// prefix-related pair of ids is a property of the key encoding; no real
+/// principal id is a prefix of another, so no end-to-end route reaches it.
 #[tokio::test]
-async fn scoped_eml_open_accepts_a_principal_id_shaped_prefix() {
+async fn logs_of_prefix_related_principal_ids_are_isolated() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = Database::builder(dir.path()).open().expect("open db");
+    let logs = EmlLogs::new(db).expect("logs");
 
-    let principal_id = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-    let mut storage = open_eml_storage_scoped(db, principal_id)
-        .expect("scoped open must accept a principal_id-shaped prefix");
-
-    // Exercise it like a real Commit Tree would, proving the returned
-    // storage is genuinely usable, not just successfully constructed.
-    storage
+    let mut short = logs.open("SHA-256:a", 0).expect("short");
+    let long = logs.open("SHA-256:ab", 0).expect("long");
+    short
         .apply(&[eml::WriteOp::AppendLeaf {
             at: 0,
             data: b"leaf-0",
@@ -129,104 +127,61 @@ async fn scoped_eml_open_accepts_a_principal_id_shaped_prefix() {
         }])
         .await
         .unwrap();
-    assert_eq!(storage.get_leaf(0).await.unwrap(), b"leaf-0");
-}
 
-// ============================================================================
-// F11: sanitize_fjall_prefix injectivity
-// ============================================================================
-
-/// Pairwise-distinct check over a curated adversarial corpus: every
-/// distinct input here must sanitize to a distinct output. This is the
-/// `injectivity` regression `sanitize_fjall_prefix`'s doc comment
-/// references, mirroring `cyphr-index-fjall::commit_key`'s own
-/// adversarial-pair tests for the sibling problem class.
-#[test]
-fn sanitize_fjall_prefix_is_injective_over_adversarial_corpus() {
-    let corpus = [
-        "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "SHA-256_U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "a:b",
-        "a_b",
-        "a::b",
-        "a_:b",
-        "a:_b",
-        "$",
-        "$24",
-        "$$24",
-        ":",
-        "_",
-        "",
-        "a$b",
-        "a$24b",
-        "a:24b",
-        // Each pair below once collided under an earlier scheme: a literal
-        // escape marker, and the position of the disallowed byte.
-        "$3a",
-        "a:bc",
-        "ab:c",
-    ];
-
-    let sanitized: Vec<String> = corpus.iter().map(|s| sanitize_fjall_prefix(s)).collect();
-
-    for i in 0..corpus.len() {
-        for j in (i + 1)..corpus.len() {
-            assert_ne!(
-                sanitized[i], sanitized[j],
-                "distinct inputs {:?} and {:?} must not sanitize to the same output {:?}",
-                corpus[i], corpus[j], sanitized[i]
-            );
-        }
-    }
-}
-
-/// The sanitized output must always stay within fjall's own keyspace-name
-/// charset — the property `sanitize_fjall_prefix` exists to guarantee in
-/// the first place.
-#[test]
-fn sanitize_fjall_prefix_output_always_in_charset() {
-    let inputs = [
-        "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "a:b:c",
-        "$$$",
-        "héllo",
-        "",
-    ];
-    for input in inputs {
-        let sanitized = sanitize_fjall_prefix(input);
-        assert!(
-            sanitized
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#' | '$')),
-            "sanitized output {sanitized:?} for input {input:?} must stay within fjall's \
-             keyspace-name charset"
-        );
-    }
+    assert_eq!(short.get_leaf(0).await.unwrap(), b"leaf-0");
+    assert_eq!(short.len().await.unwrap(), 1);
+    assert_eq!(long.len().await.unwrap(), 0, "the other log must be empty");
 }
 
 /// Backs "a retired log generation never outlives the next open": a crash
 /// between recording generation 1 and deleting generation 0 leaves
-/// generation 0's keyspaces behind, and the next open of the current
+/// generation 0's keys behind, and the next open of the current
 /// generation removes them. Turns red if only the generation just
 /// superseded is ever deleted (the leftover then stays forever). Unit:
-/// keyspace names are private to this crate, and no engine route
-/// observes a leaked keyspace.
-#[test]
-fn opening_the_current_generation_sweeps_older_ones() {
-    use cyphr_storage::engine::LogFactory;
-
+/// no engine route observes a leaked generation.
+#[tokio::test]
+async fn opening_the_current_generation_sweeps_older_ones() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = Database::builder(dir.path()).open().expect("db");
     let logs = EmlLogs::new(db.clone()).expect("logs");
     let id = "SHA-256:principal";
-    drop(logs.open(id, 0).expect("generation 0"));
+    let mut old = logs.open(id, 0).expect("generation 0");
+    old.apply(&[eml::WriteOp::AppendLeaf {
+        at: 0,
+        data: b"old",
+        nodes: &[],
+    }])
+    .await
+    .unwrap();
+    drop(old);
     // The crash: generation 1 recorded, generation 0 never deleted.
     logs.generations
         .insert(id.as_bytes(), 1u64.to_be_bytes())
         .expect("record");
-    let retired = |g| format!("{}_eml_leaves", EmlLogs::prefix(id, g));
-    assert!(db.keyspace_exists(&retired(0)));
 
     drop(logs.open(id, 1).expect("generation 1"));
-    assert!(!db.keyspace_exists(&retired(0)), "generation 0 leaked");
+    let swept = logs.open(id, 0).expect("generation 0 again");
+    assert_eq!(swept.len().await.unwrap(), 0, "generation 0 leaked");
+}
+
+/// Backs "an interrupted regeneration is discarded": opening a generation
+/// above the current one clears what it holds. Unit: as above.
+#[tokio::test]
+async fn opening_a_future_generation_discards_leftovers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Database::builder(dir.path()).open().expect("db");
+    let logs = EmlLogs::new(db).expect("logs");
+    let id = "SHA-256:principal";
+    let mut half = logs.open(id, 1).expect("generation 1");
+    half.apply(&[eml::WriteOp::AppendLeaf {
+        at: 0,
+        data: b"half",
+        nodes: &[],
+    }])
+    .await
+    .unwrap();
+    drop(half);
+
+    let fresh = logs.open(id, 1).expect("generation 1 reopened");
+    assert_eq!(fresh.len().await.unwrap(), 0, "leftover regeneration kept");
 }

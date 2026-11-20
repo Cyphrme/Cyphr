@@ -67,6 +67,10 @@ pub enum Error {
     #[error("database: {0}")]
     Database(#[from] fjall::Error),
 
+    /// The commit logs could not be opened or migrated.
+    #[error("commit logs: {0}")]
+    Logs(#[from] cyphr_blob_fjall::EmlLogsError),
+
     /// A bundle line could not be read.
     #[error("bundle line {line}: {source}")]
     Bundle {

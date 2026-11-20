@@ -121,7 +121,6 @@ async fn snapshot(
     }
 }
 
-
 /// Legacy keyspace names a principal's old log used, plus a retired
 /// generation's.
 fn legacy_names(principal_id: &str) -> Vec<String> {
@@ -197,7 +196,9 @@ async fn legacy_log_keyspaces_are_dropped_and_logs_regenerate() {
     };
 
     // Phase 2 -- reopen under the new code.
-    let db = fjall::Database::builder(&db_path).open().expect("reopen db");
+    let db = fjall::Database::builder(&db_path)
+        .open()
+        .expect("reopen db");
     let logs = cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs");
     let names: Vec<String> = db
         .list_keyspace_names()
@@ -219,10 +220,7 @@ async fn legacy_log_keyspaces_are_dropped_and_logs_regenerate() {
         FjallIndexer::open(&index_path).expect("open indexer"),
         logs,
     );
-    for (label, id, key, before) in [
-        ("a", &id_a, key_a, before_a),
-        ("b", &id_b, key_b, before_b),
-    ] {
+    for (label, id, key, before) in [("a", &id_a, key_a, before_a), ("b", &id_b, key_b, before_b)] {
         let after = snapshot(&engine, id, Genesis::Implicit(key)).await;
         assert_eq!(after.global_size, before.global_size, "{label}: leaf count");
         assert_eq!(after.roots, before.roots, "{label}: tree roots");
