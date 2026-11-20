@@ -126,14 +126,13 @@ async fn snapshot(
 /// generation's.
 fn legacy_names(principal_id: &str) -> Vec<String> {
     let id = principal_id.replace(':', "$3a");
-    ["", "$g2"]
-        .iter()
-        .flat_map(|g| {
-            ["_eml_leaves", "_eml_nodes", "_eml_metadata"]
-                .iter()
-                .map(move |s| format!("{id}{g}{s}"))
-        })
-        .collect()
+    let mut names = Vec::new();
+    for generation in ["", "$g2"] {
+        for part in ["_eml_leaves", "_eml_nodes", "_eml_metadata"] {
+            names.push(format!("{id}{generation}{part}"));
+        }
+    }
+    names
 }
 
 /// Behaviour: opening the logs of a store holding legacy per-principal
