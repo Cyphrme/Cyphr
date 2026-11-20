@@ -191,6 +191,26 @@ the ability to fetch the server's chain.
 `rs/cyphr-server/src/receipt.rs`'s `sign_receipt` has no side effects
 beyond signing, and this design introduces no new persistence surface.
 
+### `[receipts-r-durable-before-sign]` An attestor signs only over durable state
+
+A receipt or tip report is a signed presence claim: it says commit X
+stands at sequence n in the record this server holds, and a client keeps
+it as lasting evidence. The pinned equivocation predicate below treats two
+signed claims at one sequence with different commits as proof of
+misbehavior, which presumes the server's view only grows. If a power cut
+could erase a commit the server had signed over, the restarted server
+would accept a rival at that sequence, sign it, and the two statements
+would meet the predicate against an honest server.
+
+So the engine makes the record durable before `submit_commit` returns
+(`storage-engine.md` `[record-durable-first]`), and the server signs only
+after that. This adds no persistence surface to issuing a receipt: it
+hardens the write that already happens, and issuance stays stateless. It
+binds an attestor; a keyless server signs nothing, and pays the same
+sync, because the engine has no role flag.
+
+Covered by `rs/cyphr-storage/tests/sync_order.rs`.
+
 ### `[receipts-r-genesis-hint]` The genesis key is a trustless hint
 
 `GET /server`'s attestor payload gains a nested `genesis` object
