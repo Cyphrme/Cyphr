@@ -232,7 +232,7 @@ is no option to turn it off.
   principal in Error: the held statement names its heads and their
   first-seen times, and a power cut that erased the rival would restart
   the principal Active at the same height to sign over different heads),
-  and a revoke record (the `/revoke` response says it was durably
+  a revoke record (the `/revoke` response says it was durably
   recorded), and an action-only push (answered `201` with the stored
   blob hashes). Each syncs once, after its record is written and before
   it is visible to a reader or answered. There is no exemption: a write
