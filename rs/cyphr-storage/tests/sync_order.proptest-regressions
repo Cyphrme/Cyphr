@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 4f1f025ad14b6657f48a53423cc13545e1f1574b11e8ebbd1aa4272b51e9351e # shrinks to ops = [Extend, Rival(30840713)], fail_at = Some(7)
