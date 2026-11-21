@@ -993,13 +993,87 @@ async fn errored_refuses_and_retains() {
     assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
 }
 
+/// Backs the heads of an Error: the leaves at or above the children of the
+/// contest the walk cannot pass, whatever their heights. The owner's A, D
+/// and E are held first (E extends D) and the thief's B and C arrive as
+/// rivals, C extending B: both branches are extended, to unequal heights.
+/// The shorter branch's tip C is a head beside E, at another sequence, and
+/// D (which has E above it) is not; `/tip` and a rebuild say the same.
+/// Turns red if the shorter branch's tip is dropped (heads of the greatest
+/// height only) or D is listed. End to end.
+#[tokio::test]
+async fn error_heads_are_the_leaves_above_the_fork_point() {
+    let t = theft(false).await;
+    let (app, state, dir) = theft_server(&t).await;
+    let pool = load_pool();
+    assert_eq!(
+        push(&app, &t.d, t.n + 1, &t.id).await,
+        StatusCode::CREATED,
+        "D"
+    );
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    assert_eq!(
+        push(&app, &e, t.n + 2, &t.id).await,
+        StatusCode::CREATED,
+        "E"
+    );
+    assert!(push(&app, &t.b, t.n, &t.id).await.is_client_error(), "B");
+    assert!(
+        push(&app, &t.c, t.n + 1, &t.id).await.is_client_error(),
+        "C"
+    );
+    for (p, i) in [(&t.b, t.n), (&t.c, t.n + 1)] {
+        let id = commit_id_at(p, i);
+        let held = state
+            .engine
+            .holds_commit(&t.id, id.as_str().expect("id"))
+            .await;
+        assert!(held.expect("holds"), "the rival at {i} is retained");
+    }
+    assert!(
+        errored(&state, &t.id).await,
+        "both branches extended: Error"
+    );
+
+    let mut want = vec![
+        (commit_id_at(&t.c, t.n + 1), t.n as u64 + 1),
+        (commit_id_at(&e, t.n + 2), t.n as u64 + 2),
+    ];
+    want.sort_by_key(|h| h.0.to_string());
+    let read = |tip: &serde_json::Value| -> Vec<(serde_json::Value, u64)> {
+        let mut heads: Vec<_> = tip["heads"]
+            .as_array()
+            .expect("heads")
+            .iter()
+            .map(|h| {
+                (
+                    h["commit_id"].clone(),
+                    h["sequence"].as_u64().expect("sequence"),
+                )
+            })
+            .collect();
+        heads.sort_by_key(|h| h.0.to_string());
+        heads
+    };
+    let tip = tip_payload(app.clone(), &t.id).await;
+    assert_eq!(read(&tip), want, "the leaves above the fork point");
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    assert_eq!(
+        read(&tip_payload(app, &t.id).await),
+        want,
+        "a rebuild agrees"
+    );
+}
+
 /// Backs a revoke as an admission gate only (SPEC 14.12; #203): with the
 /// owner's D and the thief's C tied, in either arrival order of the
 /// branches, a naked revoke of `eve` received before every thief commit
 /// (NOW+4) or after them (NOW+100) re-judges no held commit. Error stands
-/// with both heads, nothing moves or is dropped, and a rebuild agrees; the
-/// owner resolves forward. Turns red if a revoke takes a held commit out
-/// of the fork.
+/// with both heads, nothing moves or is dropped, and a rebuild agrees; no
+/// commit resolves a both-extended fork. Turns red if a revoke takes a
+/// held commit out of the fork.
 #[tokio::test]
 async fn a_revoke_does_not_resolve_both_extended() {
     for thief_first in [true, false] {
@@ -1476,7 +1550,7 @@ async fn key_delete_resolves_only_as_an_extension() {
     assert_eq!(tip_payload(app, &t.id).await, tip);
 
     // Neither branch extended: the same delete, over A, resolves.
-    let (app, state, _dir) = theft_server(&t).await;
+    let (app, state, dir) = theft_server(&t).await;
     assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
     let mut del = t.a.fork().await.expect("fork");
     sign_commit(
@@ -1493,6 +1567,11 @@ async fn key_delete_resolves_only_as_an_extension() {
     let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 1, &t.id)).await;
     assert_eq!(status, StatusCode::CREATED, "the delete resolves: {body:?}");
     assert!(!errored(&state, &t.id).await, "one extended branch: Active");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(!errored(&state, &t.id).await, "a rebuild agrees: Active");
+    assert_eq!(tip_payload(app, &t.id).await, tip);
 }
 
 /// The same at the peer whose canonical chain is the losing branch: the
@@ -1632,13 +1711,14 @@ async fn a_deleted_keys_line_counts_and_cannot_out_extend() {
 
 /// Backs the retention bound on promotion against a thief: the thief's B
 /// is canonical here, the owner's A retained, and the thief also retains
-/// one more `eve`-signed rival B2 at n. The owner's `key/delete` of `eve`
-/// over A extends the only unextended-rival line and promotes it, and
-/// displaces B. Displaced commits are blobs already held, swapped one for
-/// one with the line, so they never count against `eve`'s per-key quota:
-/// the thief cannot arm that quota to refuse the owner's resolution. The
-/// delete is admitted, the principal is Active and the delete is `/tip`.
-/// Turns red if the resolution is refused.
+/// two more `eve`-signed rivals B2 and B3 at n, `eve`'s whole quota
+/// (`BRANCH_PER_KEY`). The owner's `key/delete` of `eve` over A extends
+/// the only unextended-rival line and promotes it, and displaces B.
+/// Displaced commits are blobs already held, swapped one for one with the
+/// line, so they never count against `eve`'s per-key quota (B would be a
+/// third): the thief cannot arm that quota to refuse the owner's
+/// resolution. The delete is admitted, the principal is Active and the
+/// delete is `/tip`. Turns red if the resolution is refused.
 #[tokio::test]
 async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
     let pool = load_pool();
@@ -1655,10 +1735,14 @@ async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
     create_key(&mut b2, &eve, &kp(&pool, "bob"), NOW + 4).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&b2, t.n, &t.id)).await;
     assert!(status.is_client_error(), "B2 is a rival: {body:?}");
+    let mut b3 = t.shared.fork().await.expect("fork");
+    create_key(&mut b3, &eve, &kp(&pool, "carol"), NOW + 4).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&b3, t.n, &t.id)).await;
+    assert!(status.is_client_error(), "B3 is a rival: {body:?}");
     let retained =
         |b: &Vec<cyphr_storage::engine::BranchTip>| b.iter().filter(|b| !b.canonical).count();
     let before = state.engine.list_branches(&t.id).await.expect("branches");
-    assert_eq!(retained(&before), 2, "A and B2 are retained");
+    assert_eq!(retained(&before), 3, "A, B2 and B3 are retained");
     let mut del = t.a.fork().await.expect("fork");
     sign_commit(
         &mut del,
@@ -1681,7 +1765,7 @@ async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
         "the delete is /tip"
     );
     let after = state.engine.list_branches(&t.id).await.expect("branches");
-    assert_eq!(retained(&after), 2, "B and B2 retained in A's place");
+    assert_eq!(retained(&after), 3, "B, B2 and B3 retained in A's place");
 }
 
 /// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
@@ -2138,6 +2222,17 @@ async fn fork_table_two_extended_branches_stay_error_whatever_their_heights() {
             }
         };
         check(verdict(&app, &state, &t.id).await, "live");
+        if row == 5 {
+            let f = commit_id_at(&t.thief, n + 2);
+            assert!(
+                state
+                    .engine
+                    .holds_commit(&t.id, f.as_str().expect("id"))
+                    .await
+                    .expect("holds"),
+                "the refused F is retained as evidence"
+            );
+        }
         drop((app, state));
         let (reopened, rebuilt) = reopen(dir.path()).await;
         (app, state) = (reopened, rebuilt);
