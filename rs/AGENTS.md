@@ -99,11 +99,16 @@ level if and where possible."
   (`cyphr-storage/src/engine/mod.rs`). Signpost: any persist-then-validate
   sequence violates this.
 - **I2 — Multitenancy by construction.** Principal scoping flows through
-  the storage factory and sanitized fjall keyspace prefixes, never by
-  convention. Grounding: `cyphr-blob-fjall` scoped opener +
-  `cyphr-storage/tests/multitenancy.rs`. Signpost: forge #36 (prefix
-  injectivity is an unenforced precondition — guard it when touching id
-  formats).
+  the storage factory, never by convention. Every principal's commit log
+  lives in one fixed keyspace triplet, told apart by a key scope (the
+  principal id bytes, then the log generation as a `u64` big-endian) that
+  `polydigest-storage-fjall` 0.3 length-prefixes, so no scope is a prefix
+  of another: nothing is sanitized, and the prefix-injectivity concern of
+  forge #36 is structural. Grounding: `cyphr-blob-fjall` `EmlLogs` +
+  `cyphr-storage/tests/multitenancy.rs`, with the layout pinned by
+  `cyphr-storage/tests/properties.rs` and
+  `cyphr-server/tests/log_layout.rs`. Signpost: a log opened outside
+  `EmlLogs`, or a keyspace created per principal.
 - **I3 — Trait seams are stable.** `BlobStore`, `Indexer`, `eml::Storage`
   are the replacement boundaries (the index replacement lands behind
   `Indexer`). Signpost: backend types leaking through a seam into
