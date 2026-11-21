@@ -151,11 +151,13 @@ async fn both_extended(alice: usize, thief: usize) {
     let laptop_key = h.ok(a.pair_device(&pr, &laptop).await);
     h.ok(a.push(&pr, &["p1", "p2"]).await).accepted("base push");
     h.ok(t.steal_key(&laptop, &laptop_key).await);
+    let mut alice_line = Vec::new();
     for n in 0..alice {
-        h.ok(a.commit_data(&pr, &format!("alice {n}")).await);
+        alice_line.push(h.ok(a.commit_data(&pr, &format!("alice {n}")).await).0);
     }
+    let mut thief_line = Vec::new();
     for n in 0..thief {
-        h.ok(t.commit_data(&pr, &format!("thief {n}")).await);
+        thief_line.push(h.ok(t.commit_data(&pr, &format!("thief {n}")).await).0);
     }
     let at = h
         .ok(a.push(&pr, &["p1", "p2"]).await)
@@ -174,15 +176,19 @@ async fn both_extended(alice: usize, thief: usize) {
         },
     )
     .await;
-    // Catches split witnesses: each server itself reports state Error
-    // (read from its raw `/tip`, not inferred from a head count) with
-    // exactly the two branch tips as heads, whatever their heights.
-    let mut want = vec![at.0.clone(), tt.0.clone()];
-    want.sort();
+    // Catches split witnesses: every server itself reports state Error
+    // (read from its raw `/tip`, not inferred from a head count) at the
+    // same fork point, with one head per contest child, each on that
+    // child's branch. Heads are holder-relative: where a server's own
+    // chain is the branch its head is the true tip, otherwise the tip or
+    // an ancestor within the retained depth. With no line past depth 2
+    // every server holds both true tips.
+    let exact = alice <= 2 && thief <= 2;
     h.eventually(
-        "every server to report Error on both tips",
+        "every server to report Error at one fork point",
         CONVERGE,
         || async {
+            let mut points = Vec::new();
             for peer in all {
                 let resp = h
                     .http
@@ -194,7 +200,7 @@ async fn both_extended(alice: usize, thief: usize) {
                 let Ok(tip) = resp.json::<serde_json::Value>().await else {
                     return Ok(false);
                 };
-                let mut heads: Vec<String> = tip["payload"]["heads"]
+                let heads: Vec<String> = tip["payload"]["heads"]
                     .as_array()
                     .map(|hs| {
                         hs.iter()
@@ -202,17 +208,36 @@ async fn both_extended(alice: usize, thief: usize) {
                             .collect()
                     })
                     .unwrap_or_default();
-                heads.sort();
-                if tip["payload"]["state"] != "error" || heads != want {
+                let on = |line: &[String]| heads.iter().filter(|x| line.contains(x)).count();
+                // The branch this server's own chain is carries its true tip.
+                let own = if peer == "p3" {
+                    (&thief_line, &tt.0)
+                } else {
+                    (&alice_line, &at.0)
+                };
+                let ok = tip["payload"]["state"] == "error"
+                    && heads.len() == 2
+                    && on(&alice_line) == 1
+                    && on(&thief_line) == 1
+                    && heads.contains(own.1)
+                    && (!exact || (heads.contains(&at.0) && heads.contains(&tt.0)));
+                if !ok {
                     return Ok(false);
                 }
+                points.push(tip["payload"]["fork_point"].clone());
             }
-            Ok(true)
+            Ok(points.iter().all(|p| !p.is_null() && p == &points[0]))
         },
     )
     .await;
     let v = h.ok(bob.verdict(&pr, &all).await);
-    h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
+    // The oracle's live-head set assumes every holder reports the same
+    // heads, which holds only where no line exceeds the retained depth;
+    // with holder-relative heads its comparison with the CLI's branches
+    // is the implementer's to restate, so the standing is asserted alone.
+    if exact {
+        h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
+    }
     assert_eq!(v.standing, Standing::Error, "{alice} vs {thief} commits");
 }
 
@@ -224,4 +249,9 @@ async fn a_taller_owner_branch_does_not_settle_a_both_extended_fork() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_taller_thief_branch_does_not_settle_a_both_extended_fork() {
     both_extended(2, 3).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_against_two_holds_both_true_tips_at_every_server() {
+    both_extended(2, 2).await;
 }
