@@ -3090,7 +3090,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     // Principal lifecycle
     // ========================================================================
 
-    /// Reconstruct a live [`cyphr::Principal`] by replaying stored commits.
+    /// Reconstruct a principal by replaying stored commits, as a read-only
+    /// [`AtTip`]: it holds the engine's durable log but hands out only a
+    /// shared reference, so the caller cannot append to it. Writes go
+    /// through [`Self::submit_commit`].
     ///
     /// Fetches the full commit chain from the indexer, retrieves each
     /// blob from the blob store, and delegates to the existing
@@ -3118,7 +3121,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         &self,
         principal_id: &str,
         genesis: crate::Genesis,
-    ) -> Result<cyphr::Principal<S>, EngineError> {
+    ) -> Result<AtTip<S>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
         let stored = key.as_deref().unwrap_or(principal_id);
@@ -3127,7 +3130,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // ahead of the chain and regenerates it for nothing.
         let lock = self.principal_lock(stored);
         let _no_write_in_flight = lock.lock().await;
-        self.replay_stored(stored, genesis).await
+        self.replay_stored(stored, genesis).await.map(AtTip)
     }
 
     /// [`load_principal`](Self::load_principal) for an id already known to

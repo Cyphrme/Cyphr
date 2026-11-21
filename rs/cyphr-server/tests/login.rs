@@ -361,7 +361,10 @@ async fn bootstrap_active_then_revoke(
         .engine
         .load_principal(principal_id, genesis)
         .await
-        .expect("load principal");
+        .expect("load principal")
+        .detach()
+        .await
+        .expect("detach principal");
     let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100).await;
     state
         .engine

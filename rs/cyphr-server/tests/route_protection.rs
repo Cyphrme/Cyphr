@@ -692,6 +692,9 @@ async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
             .load_principal(pid, genesis)
             .await
             .expect("load principal")
+            .detach()
+            .await
+            .expect("detach principal")
     };
     let blobs = sign_key_revoke_commit(load().await, &pool, "key_a", 1_700_000_100).await;
     state
@@ -901,7 +904,14 @@ async fn token_key_naked_revoked_session_refused() {
     naked_revoke(&state, &pool, "key_a").await;
 
     let genesis = state.engine.resolve_genesis(pid, &[]).await.unwrap();
-    let principal = state.engine.load_principal(pid, genesis).await.unwrap();
+    let principal = state
+        .engine
+        .load_principal(pid, genesis)
+        .await
+        .unwrap()
+        .detach()
+        .await
+        .unwrap();
     let (blobs, _entry) =
         sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400).await;
     let followup = common::push_blobs(pid, &blobs);
