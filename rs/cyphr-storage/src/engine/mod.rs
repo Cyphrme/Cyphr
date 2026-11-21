@@ -1223,7 +1223,8 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     healed: tokio::sync::OnceCell<()>,
     /// Retained non-canonical branches per canonical principal id: a cache
     /// of the branch manifests in the blob store (I1), filled by the
-    /// rebuild scan and by retention, at most [`BRANCH_LIMIT`] per
+    /// rebuild scan and by retention, at most
+    /// `min(`[`BRANCH_LIMIT`]`, `[`BRANCH_PER_KEY`]` * active keys)` per
     /// principal.
     branches: std::sync::Mutex<HashMap<String, Vec<Retained>>>,
     /// Each principal's canonical commits as the fork rule reads them,
@@ -4353,7 +4354,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // state kept for B. B's write lock is only tried: A's is held,
             // and two principals that embed each other, written at once,
             // would each wait on the other's. A B that is being written is
-            // replayed without it, as B's own log repair allows.
+            // replayed without it, as B's own log repair allows: a push
+            // appends B's log before it writes the index, so a replay that
+            // does not hold B's lock can find the log one leaf ahead of the
+            // chain and regenerate it for nothing. That costs a rebuild, never
+            // a wrong state, because regeneration is serialized by its own
+            // lock (`replay_stored`), not by B's write lock.
             let lock = self.principal_lock(&id);
             let state = match Self::try_lock_writes(&lock, &id) {
                 Some(write) => match self.indexer.get_tip(&id).await? {
