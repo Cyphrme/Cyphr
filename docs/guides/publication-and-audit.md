@@ -714,66 +714,6 @@ reports prove it. With two servers that hold different keys, only the
 first would be present — each would be telling the truth about what it
 holds.
 
-### What one server does with both branches
-
-Send `4100` the commit that `4101` took (`push-y.json`). `4100` already
-holds the other branch, so it refuses with a `409`:
-
-```json
-{
-  "v": 1,
-  "payload": {
-    "error": "protocol: state root mismatch",
-    "now": 1795229134,
-    "kind": "commit_mismatch"
-  },
-  "statement": { "kind": "unsigned" }
-}
-```
-
-The push is refused, but the server keeps the commit. It verified at its
-predecessor and took a position the chain already holds, so the server
-retains it as a rival branch and its answer about the principal changes:
-`GET /tip` no longer reports a tip. It reports `state: "error"`, the
-fork point, and both heads, and signs that as a `cyphr-server/receipt/held`
-statement:
-
-```sh
-curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq '.payload'
-```
-
-```json
-{
-  "state": "error",
-  "principal_id": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
-  "fork_point": {
-    "height": 2,
-    "pre": "SHA-256:038v6Co3KCUwmzGlaAGSv9wGK4_I30QF-HnmRS4ajj0"
-  },
-  "heads": [
-    {
-      "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
-      "sequence": 2,
-      "held_since": 1795229090
-    },
-    {
-      "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
-      "sequence": 2,
-      "held_since": 1795229134
-    }
-  ],
-  "now": 1795229134
-}
-```
-
-`GET /branches?pr=$PR` lists the two heads and marks the one the server
-still treats as canonical, and `GET /evidence?pr=$PR` returns both
-branches whole. So a single server that is shown both branches does notice
-the fork and says so. What it does not do is tell any other server, or
-compare itself with one: the two servers of this guide still disagree with
-each other, and nothing carries one's rival to the other. That comparison
-is still yours.
-
 ### Checking the evidence
 
 No `cyphr` command runs this check. The comparison exists as a Rust
@@ -928,7 +868,8 @@ A resolving commit is a push like any other, and no server forwards a
 push to other servers: it reaches exactly the servers the principal
 pushes it to. A server she does not push it to keeps serving whatever
 branch it holds. Building a third commit on the branch server `4101`
-holds and pushing it to both:
+holds and pushing it to both. `4100` was never shown that branch, which
+matters below:
 
 ```
 4101  201
@@ -940,14 +881,78 @@ outcome you want. The `409` looks the same as any stale push, because to
 `4100` it is one: it never saw the branch the new commit builds on, and it
 records nothing about the fork, the winner or the abandoned branch.
 
-A server that did see both branches behaves differently. Push the commit to
-`4100` after it has been shown the abandoned branch (the previous
-section) and it is accepted with a `201`: the new commit builds on one of
-the two heads the server holds, so the server settles on that branch, the
-principal leaves the `error` state, and the other head stays on record as a
-non-canonical branch in `GET /branches`. Which servers hold which branch
-at the moment the principal resolves still decides which of them answer
-`201` and which `409`.
+That `409` is what a server answers when it was never shown the branch the new
+commit builds on: here `4100` has only seen the other branch. The next
+section shows what changes when a server has seen both.
+
+### What one server does with both branches
+
+This section continues from the previous one, on the same two servers: `4100`
+has refused the resolving commit and still holds only its own branch. Send
+`4100` the commit that `4101` took (`push-y.json`). `4100` already holds the
+other branch, so it refuses with a `409`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "error": "protocol: state root mismatch",
+    "now": 1795229134,
+    "kind": "commit_mismatch"
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+The push is refused, but the server keeps the commit. It verified at its
+predecessor and took a position the chain already holds, so the server
+retains it as a rival branch and its answer about the principal changes:
+`GET /tip` no longer reports a tip. It reports `state: "error"`, the
+fork point, and both heads, and signs that as a `cyphr-server/receipt/held`
+statement:
+
+```sh
+curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq '.payload'
+```
+
+```json
+{
+  "state": "error",
+  "principal_id": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "fork_point": {
+    "height": 2,
+    "pre": "SHA-256:038v6Co3KCUwmzGlaAGSv9wGK4_I30QF-HnmRS4ajj0"
+  },
+  "heads": [
+    {
+      "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
+      "sequence": 2,
+      "held_since": 1795229090
+    },
+    {
+      "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+      "sequence": 2,
+      "held_since": 1795229134
+    }
+  ],
+  "now": 1795229134
+}
+```
+
+`GET /branches?pr=$PR` lists the two heads and marks the one the server
+still treats as canonical, and `GET /evidence?pr=$PR` returns both
+branches whole. So a single server that is shown both branches does notice
+the fork and says so. What it does not do is tell any other server, or
+compare itself with one: the two servers of this guide still disagree with
+each other, and nothing carries one's rival to the other. That comparison
+is still yours.
+
+Now push the resolving commit to `4100` again. It builds on one of the two
+heads the server now holds, so it is accepted with a `201`: the server
+settles on that branch, the principal leaves the `error` state, and the
+other head stays on record as a non-canonical branch in `GET /branches`.
+Which servers hold which branch when the principal resolves decides which
+of them answer `201` and which `409`.
 
 ### Watching, in practice
 
