@@ -433,7 +433,7 @@ async fn extend_both(
 
 /// The phone signs one ordinary commit on its head `keep` (SPEC 15.8
 /// item 1) and pushes it to every peer it knows: P1 holds the phone's
-/// branch and P2 promotes it over the laptop's, which it out-extends. The
+/// branch and P2 promotes it over the laptop's, which it does not extend. The
 /// resolution's tip, once both peers hold it.
 async fn resolve_by_extension(h: &Harness, phone: &Client<'_>, pr: &Principal, keep: &Tip) -> Tip {
     let resolved = h.ok(phone.resolve_fork(pr, keep).await);
@@ -465,7 +465,9 @@ async fn assert_still_error(
         Ok(PushOutcome::Accepted(tip)) => {
             panic!("a further commit settled a both-extended fork at {tip:?}")
         },
-        Ok(PushOutcome::Refused(_)) => {},
+        Ok(PushOutcome::Refused(r)) => {
+            panic!("refused as {:?}, not as Error: {}", r.kind, r.detail)
+        },
         Err(ActionError::Failed(why)) => assert!(why.contains("423"), "{why}"),
         Err(e) => panic!("scenario step failed: {e}"),
     }
