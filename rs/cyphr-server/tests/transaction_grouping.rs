@@ -411,7 +411,7 @@ async fn grouped_transaction_end_to_end() {
 /// root being that of the separate form. Turns red if any layer flattens the
 /// group. End-to-end scenario: yes.
 #[tokio::test]
-async fn grouping_moves_tr() {
+async fn one_mutation_transaction_grouping_moves_tr() {
     let (p, pg, setup) = two_key_principal().await;
     let replace = |signer, target| Coz {
         signer,
