@@ -559,6 +559,11 @@ async fn run(ops: &[Op], fail_at: Option<usize>) -> Outcome {
         "an index write followed a record write no persist covered: {log:?}"
     );
 
+    assert_eq!(
+        rig.e.durability_lost(),
+        rig.out.failed,
+        "the engine reports a lost record exactly when a sync failed"
+    );
     if rig.out.failed {
         // A revoke is a write too: refused, and it stores nothing.
         let before = rig.events.lock().expect("log").len();

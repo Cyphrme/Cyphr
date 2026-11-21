@@ -154,9 +154,7 @@ async fn core_replay(
     p: &mut cyphr::Principal,
     bundle: &WireBundle,
 ) -> Result<cyphr::replay::BundleId, cyphr::replay::ReplayError> {
-    replay_held(p, &bundle.decode().expect("wire bundle"))
-        .await
-        .map(|r| r.id)
+    replay_held(p, &bundle.decode().expect("wire bundle")).await
 }
 
 async fn principal(genesis: &Genesis) -> cyphr::Principal {
@@ -330,7 +328,7 @@ async fn check_kept_chain(chain: &Chain) -> usize {
             .load_principal(&id, chain.genesis.clone())
             .await
             .expect("replay");
-        let (kept, replayed) = (format!("{kept:#?}"), format!("{:#?}", *loaded));
+        let (kept, replayed) = (format!("{kept:#?}"), format!("{:#?}", **loaded));
         if kept != replayed {
             // The whole state is too long to read: the first line that
             // differs, with its neighbours.

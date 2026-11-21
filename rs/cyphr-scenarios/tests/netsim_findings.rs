@@ -1,8 +1,6 @@
 // Failures NETSIM found in the product, each reduced to a minimal run and
-// kept red but ignored (the ignore reason names the failure, as the CI guard
-// requires) until fixed. NETSIM itself steers around each one, so the
-// gate stays about the rest of the network; remove the steering with the
-// ignore.
+// kept as a regression test. NETSIM runs unsteered, so the gate covers these
+// too.
 
 use std::time::Duration;
 
@@ -382,7 +380,10 @@ async fn get(
 // be provable from the head alone. `/tip` gives the Root,
 // `/proof?pr&size&claim=member:<i>` answers 200 for every index with a
 // certificate and the bundle, and each verifies against an anchor on the
-// chain a client pulled and against a pin of the head.
+// chain a client pulled and against a pin of the head. And a forged pin (the
+// head's Principal Root altered) and a forged bridge (a stitch crossing the
+// algorithm change altered) are refused at every index, so the proofs that
+// pass are not ones anything passes.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     let h = Harness::start(&["p1"]).await.expect("start peers");
@@ -446,6 +447,17 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
     );
 
     let (chain, pin) = (Anchor::of_chain(held.state()), Anchor::pin(head.clone()));
+    // The head with one byte of one Principal Root variant altered.
+    let forged_pin = {
+        let mut wire = serde_json::to_value(&head).expect("root json");
+        let variant = wire["pr"]
+            .as_object_mut()
+            .and_then(|m| m.values_mut().next())
+            .expect("a pr variant");
+        flip_first_byte(variant);
+        Anchor::pin(serde_json::from_value(wire).expect("forged root parses"))
+    };
+    let mut bridges = 0;
     for index in 0..head.size {
         let (claim, n) = (format!("member:{index}"), head.size.to_string());
         let resp = get(
@@ -476,5 +488,34 @@ async fn every_index_of_a_rotated_chain_has_an_inclusion_proof() {
             verify(anchor, &cert, head.size, &claim)
                 .unwrap_or_else(|e| panic!("index {index} does not verify ({what}): {e}"));
         }
+        assert!(
+            verify(&forged_pin, &cert, head.size, &claim).is_err(),
+            "index {index}: a forged pinned root verified"
+        );
+        let mut forged_cert = body["payload"]["certificate"].clone();
+        if let Some(cell) = forged_cert.pointer_mut("/stitches/0/opening/txs/0/0") {
+            bridges += 1;
+            flip_first_byte(cell);
+            let forged: Certificate = serde_json::from_value(forged_cert)
+                .unwrap_or_else(|e| panic!("index {index}: forged bridge unparsable: {e}"));
+            for (what, anchor) in [("chain", &chain), ("pin", &pin)] {
+                assert!(
+                    verify(anchor, &forged, head.size, &claim).is_err(),
+                    "index {index}: a forged bridge verified ({what})"
+                );
+            }
+        }
     }
+    assert!(
+        bridges > 0,
+        "no index crossed the algorithm change: the forged bridge was never tried"
+    );
+}
+
+/// `cell`, a base64url string, with its first byte altered.
+fn flip_first_byte(cell: &mut serde_json::Value) {
+    let mut bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(cell.as_str().expect("a string"))
+        .expect("base64url");
+    bytes[0] ^= 0xff;
+    *cell = coz::base64ct::Base64UrlUnpadded::encode_string(&bytes).into();
 }

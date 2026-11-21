@@ -444,8 +444,7 @@ proptest! {
                         .collect();
                     prop_assert_eq!(dt(&r), czds(&expected), "prefix {}", n);
                     let last = seen.last().map_or(T, |&(.., at)| T + at);
-                    for (_, off, a) in held.iter().filter(|(_, off, _)| T + off < last) {
-                        let _ = off;
+                    for (.., a) in held.iter().filter(|(_, off, _)| T + off < last) {
                         prop_assert_eq!(
                             dt(&r).contains(&a.czd.to_b64()),
                             dt(&whole).contains(&a.czd.to_b64()),

@@ -91,9 +91,8 @@ pub enum PeerFailure {
     /// The `/patch` fetch failed or its envelope was refused.
     #[error("patch: {0}")]
     Patch(#[from] PatchFailure),
-    /// The log the peer stated was contradicted: by its own later answers
-    /// while the fork it points at was located, or by the commits it
-    /// covered replaying to another log than it stated.
+    /// The log the peer stated was contradicted by the commits it covered
+    /// replaying to another log than it stated.
     #[error("extension proof: {0}")]
     Extension(#[from] crate::extension::ExtensionFailure),
     /// A patch entry could not be decoded.
@@ -605,6 +604,5 @@ pub(crate) async fn replay_entry(
     })?;
     replay_held(principal, &decoded)
         .await
-        .map(|r| r.id)
         .map_err(|e| EntryRefusal::Replay(e.source))
 }

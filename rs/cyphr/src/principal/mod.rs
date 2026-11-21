@@ -148,7 +148,7 @@ pub struct PrincipalCore {
     /// Current Principal State.
     pub(crate) pr: PrincipalRoot,
     /// Every PR this principal has held, oldest first: the PR it was born
-    /// with, then the PR after each commit and each recorded action. A PR
+    /// with, then the PR after each commit. A PR
     /// is a point-in-time snapshot (SPEC 3.7.1), so merge matching
     /// (SPEC 11.5.1) needs the history, not only the current PR. Rebuilt
     /// by replaying history.
@@ -203,9 +203,9 @@ pub struct PrincipalCore {
     /// construction so a principal that never commits (Levels 1 and 2)
     /// still has one, and this tells the two apart.
     pub(crate) genesis_created: bool,
-    /// `principal/delete` has been signed (SPEC.md §11.1 `Deleted`). No
-    /// transaction sets this yet — the field exists for the derivation in
-    /// [`crate::lifecycle`] to read; it is always `false` at this node's tip.
+    /// `principal/delete` has been signed (SPEC.md §11.1 `Deleted`). Set
+    /// when the `principal/delete` cozy is applied; read by the derivation
+    /// in [`crate::lifecycle`].
     pub(crate) deleted: bool,
     /// `true` from the moment a `principal/delete` cozy is applied until
     /// the commit carrying it is successfully finalized (cleared when the
@@ -222,7 +222,8 @@ pub struct PrincipalCore {
     /// that commit (SPEC 5.1 steps 3-4).
     pub(crate) genesis_pending: bool,
     /// `freeze/create` is active and `freeze/delete` has not yet been signed
-    /// (SPEC.md §11.1 `Frozen`). No transaction sets this yet — see `deleted`.
+    /// (SPEC.md §11.1 `Frozen`). Set and cleared by the `freeze/create` and
+    /// `freeze/delete` cozies, as `deleted` is by `principal/delete`.
     pub(crate) frozen: bool,
     /// A fork or invalid chain has been detected (SPEC.md §11.1 `Errored`).
     /// Orthogonal to the base lifecycle state. No detector sets this yet

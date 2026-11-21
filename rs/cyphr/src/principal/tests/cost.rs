@@ -36,7 +36,7 @@ async fn principal_holding(actions: u8) -> (Principal, Key) {
 
 /// Cost: a commit write copies none of the actions or commits the principal
 /// holds.
-/// Red while the commit scope clones the whole state.
+/// Turns red if the commit scope clones the whole state.
 #[tokio::test]
 async fn a_commit_write_copies_no_held_action() {
     let (mut principal, key) = principal_holding(40).await;
@@ -72,7 +72,7 @@ async fn a_commit_write_copies_no_held_action() {
 /// settled segments no larger than twice what it adds (the tiered merge of
 /// `Grown`, amortised O(log n) per commit), never the history it extends:
 /// here 20 held commits against one new.
-/// Red while the first settle after the split copies the shared part.
+/// Turns red if the first settle after the split copies the shared part.
 #[tokio::test]
 async fn extending_a_forked_or_detached_principal_copies_no_held_history() {
     let (mut principal, key) = principal_holding(40).await;
@@ -122,7 +122,7 @@ fn key_create(signer: &Key, new: &Key, now: i64, n: u8) -> ParsedCoz {
 /// Cost: while a copy of the state is held (gossip holds the kept state
 /// across a write), writes do not pile up segments in the commit chain:
 /// their number stays logarithmic in the commits held (`Grown` documents
-/// the bound). Red while a shared last segment is never merged.
+/// the bound). Turns red if a shared last segment is never merged.
 #[tokio::test]
 async fn commit_segments_stay_logarithmic_while_a_copy_is_held() {
     let (mut principal, key) = principal_holding(0).await;
@@ -149,7 +149,7 @@ async fn commit_segments_stay_logarithmic_while_a_copy_is_held() {
 
 /// Cost: DT's view is read from a memo, and a write of one more action
 /// judges that action alone, so a read after an unrelated write judges
-/// nothing again. Red while every read judges every held action.
+/// nothing again. Turns red if every read judges every held action.
 #[tokio::test]
 async fn a_read_after_an_action_write_judges_only_that_action() {
     let (mut principal, key) = principal_holding(40).await;
@@ -204,7 +204,7 @@ async fn principal_with_read_view() -> (Principal, Key, Key) {
 
 /// Cost, SPEC 6.5: a commit dated at the tip changes the verdicts of
 /// actions dated at or after it only, so a read after one judges none of
-/// the 40 actions dated before it. Red while any commit drops the view.
+/// the 40 actions dated before it. Turns red if any commit drops the view.
 #[tokio::test]
 async fn a_read_after_a_tip_dated_commit_judges_nothing_before_it() {
     let (mut principal, key, _) = principal_with_read_view().await;
@@ -229,7 +229,7 @@ async fn a_read_after_a_tip_dated_commit_judges_nothing_before_it() {
 
 /// Cost, SPEC 6.2/6.5: a commit dated 120 that deletes the signer's key
 /// takes out the actions dated 120 or later, and a read after it judges
-/// exactly those 20, not the 20 before it. Red while any commit drops the
+/// exactly those 20, not the 20 before it. Turns red if any commit drops the
 /// view.
 #[tokio::test]
 async fn a_read_after_a_backdated_delete_judges_exactly_the_suffix() {

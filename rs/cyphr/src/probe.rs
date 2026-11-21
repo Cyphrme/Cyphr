@@ -15,14 +15,14 @@ thread_local! {
     static COMMITS_READ: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Held actions copied by a clone of one (a state clone copies every
-/// action it holds).
+/// Held actions copied by a clone of one (a state clone copies only the
+/// actions added since its last settle, `Grown`).
 pub fn action_clones() -> u64 {
     ACTION_CLONES.with(Cell::get)
 }
 
-/// Finalized commits copied by a clone of one (a state clone copies every
-/// commit it holds).
+/// Finalized commits copied by a clone of one (a state clone copies only
+/// the commits added since its last settle, `Grown`).
 pub fn commit_clones() -> u64 {
     COMMIT_CLONES.with(Cell::get)
 }

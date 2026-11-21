@@ -28,7 +28,7 @@
 //! idle test is [`cyphr_client::PeerHeads::idle`], the one the pull step
 //! itself uses. The revoke probe is never skipped: a naked revoke moves no
 //! head, so each round still asks every peer about the principal's active
-//! keys, remembered from the last replay (see [`Gossip`]).
+//! keys, remembered from the last round (see [`Gossip`]).
 //!
 //! Limits, stated rather than hidden: only principals the server already
 //! holds are pulled (a peer learns a new principal from its owner's `/push`;
@@ -110,9 +110,9 @@ pub fn spawn(state: &Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
 }
 
 /// What the gate keeps between rounds: for each principal, the active keys
-/// of the chain at the tip commit last replayed. A naked revoke moves no
-/// head, so a skipped round still asks every peer about these keys, and
-/// the chain is not replayed to learn them. The set is a function of the
+/// of the chain at the tip commit last opened. A naked revoke moves no
+/// head, so a skipped round still asks every peer about these keys
+/// without opening a record to learn them. The set is a function of the
 /// tip commit id alone; it only ever lets a round skip work, is never
 /// persisted, and after a restart is read again from the engine's state.
 #[derive(Default)]

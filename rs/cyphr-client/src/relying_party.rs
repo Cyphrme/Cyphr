@@ -214,6 +214,13 @@ pub struct RelyingParty {
     /// A verified commit could not be kept ([`BRANCH_COMMIT_LIMIT`]): a
     /// fork may stand that the relying party cannot see, so it refuses
     /// sign-in. Never cleared: only a rebuilt relying party starts clean.
+    ///
+    /// Operator action: every sign-in is refused as `Forked` until the
+    /// process that holds this relying party is restarted (or the relying
+    /// party rebuilt), which re-reads the principal's current rivals. The
+    /// bound is a budget against a peer flooding branches, so recurring
+    /// overflow means the principal is under attack or the limits are too
+    /// low for its legitimate forks.
     overflowed: bool,
     /// Issued challenges, by value, with their issue time.
     challenges: BTreeMap<String, i64>,

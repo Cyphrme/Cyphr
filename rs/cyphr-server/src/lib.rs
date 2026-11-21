@@ -145,6 +145,7 @@ impl AppState {
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
         let health = metrics::HealthProbe::new(&config.record_dir());
+        health.watch(observations.latch());
 
         Ok(Self {
             config,
@@ -327,6 +328,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
     let admission_config = state.config.admission.clone();
     let admission_record_dir = state.config.record_dir();
     let probe_state = state.clone();
+    let health_state = state.clone();
     let resident: admission::ResidentProbe = Arc::new(move |id: String| {
         let state = probe_state.clone();
         Box::pin(async move {
@@ -359,6 +361,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
         &admission_record_dir,
         resident,
         limits.max_body_bytes.get() as usize,
+        &health_state.health,
     )? {
         app = app.layer(gate);
     }

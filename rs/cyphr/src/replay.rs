@@ -4,10 +4,12 @@
 //! `txs`, the commit's transactions, each an ordered array of cozies with
 //! the commit transaction last; `keys`, the public keys the cozies of `txs`
 //! introduce; and `actions`, data actions (SPEC 4.8.1, not transactions)
-//! recorded before the transactions are applied. Every consumer that
-//! rebuilds a principal from stored or fetched bundles (the storage
-//! engine's ingest, rebuild and load, a client following a peer) replays
-//! through [`replay_bundle`], so a bundle means one thing on every path.
+//! recorded before the transactions are applied. A bundle arrives one of two
+//! ways, as a new submission ([`stage_bundle`], [`replay_bundle`]: the
+//! storage engine's ingest) or as history already admitted somewhere
+//! ([`replay_held`]: rebuild, load, a client following a peer), and both
+//! apply it by the same rule below, so a bundle means one thing on every
+//! path.
 //!
 //! The order rule: the bundle's actions are held first, then every
 //! transaction is applied through [`CommitScope::apply_tx`] inside one
@@ -747,8 +749,9 @@ async fn stage<'a, S: eml::Storage>(
     })
 }
 
-/// Replay one stored bundle onto `principal`: [`stage_bundle`], then
-/// [`StagedBundle::commit`].
+/// Replay one new submission onto `principal`: [`stage_bundle`], then
+/// [`StagedBundle::commit`]. Held history, already admitted elsewhere,
+/// replays through [`replay_held`].
 ///
 /// # Errors
 ///
@@ -758,13 +761,6 @@ pub async fn replay_bundle<S: eml::Storage>(
     bundle: &Bundle,
 ) -> Result<BundleId, ReplayError> {
     stage_bundle(principal, bundle).await?.commit().await
-}
-
-/// A bundle a replay of held history applied ([`replay_held`]).
-#[derive(Debug, Clone)]
-pub struct Replayed {
-    /// What the bundle formed.
-    pub id: BundleId,
 }
 
 /// [`replay_bundle`] for history already admitted somewhere (a store, a
@@ -782,10 +778,9 @@ pub struct Replayed {
 pub async fn replay_held<S: eml::Storage>(
     principal: &mut Principal<S>,
     bundle: &Bundle,
-) -> Result<Replayed, ReplayError> {
-    let id = stage(principal, bundle, Arrival::Held)
+) -> Result<BundleId, ReplayError> {
+    stage(principal, bundle, Arrival::Held)
         .await?
         .commit()
-        .await?;
-    Ok(Replayed { id })
+        .await
 }

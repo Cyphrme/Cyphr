@@ -51,8 +51,7 @@ use crate::patch::{
 use crate::peer::{EntryRefusal, PeerFailure, replay_entry};
 use crate::revoke::{RevokeFailure, verify_naked_revoke};
 
-/// Most patch entries one pull replays from one peer, unless the record
-/// says otherwise ([`Record::with_patch_cap`]); the same bound
+/// Most patch entries one pull replays from one peer; the same bound
 /// [`PeerLimits`](crate::PeerLimits) defaults to.
 pub const DEFAULT_PATCH_CAP: usize = 10_000;
 
@@ -76,13 +75,13 @@ pub enum Anchor {
 }
 
 /// The verifier's own record of one principal: the chain it has replayed,
-/// and the keys it has seen revoked. Built only from [`Record::new`] and
-/// what [`pull`] verifies; it never regresses.
+/// and the keys it has seen revoked. Built only from [`Record::new`],
+/// [`Record::from_entries`], [`Record::resume`] and what [`pull`] verifies;
+/// it never regresses.
 pub struct Record {
     id: String,
     anchor: Anchor,
     clock: Clock,
-    patch_cap: usize,
     held: Option<Held>,
     /// Where the commits a [`resume`](Record::resume)d record holds only as
     /// verified state are stored.
@@ -145,7 +144,6 @@ impl Record {
             id: principal_id.to_owned(),
             anchor,
             clock: system_clock,
-            patch_cap: DEFAULT_PATCH_CAP,
             held: None,
             source: None,
             dead: BTreeMap::new(),
@@ -233,13 +231,6 @@ impl Record {
     #[must_use]
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
-        self
-    }
-
-    /// Refuse any one peer's patch longer than `cap` entries.
-    #[must_use]
-    pub fn with_patch_cap(mut self, cap: usize) -> Self {
-        self.patch_cap = cap;
         self
     }
 
@@ -347,8 +338,8 @@ impl Record {
     }
 
     /// The bundles replayed after the first `mark` (see
-    /// [`log_len`](Self::log_len)), in replay order, action-only bundles
-    /// before the commit they precede. A record only ever grows by chains
+    /// [`log_len`](Self::log_len)), in replay order: every commit, then
+    /// every action bundle. A record only ever grows by chains
     /// that agree with what it held, so the first `mark` bundles are
     /// unchanged.
     #[must_use]
@@ -413,8 +404,10 @@ impl Record {
         })
     }
 
-    /// The newest `now` any signed message of the replayed chain carries:
-    /// the principal's own latest word on time.
+    /// The newest `now` any signed message replayed into this record
+    /// carries: the principal's own latest word on time. A record resumed
+    /// over verified state reads only what it replayed since, not the
+    /// commits the state already held.
     #[must_use]
     pub fn latest_now(&self) -> Option<i64> {
         self.bundles_since(0)
@@ -525,8 +518,8 @@ impl Record {
 
 impl Held {
     /// Replay `entries` (the commits after the ones held) and the action
-    /// bundles that go with them onto this chain, in the order they were
-    /// accepted.
+    /// bundles that go with them onto this chain: every commit, then every
+    /// action bundle ([`patch::replay_order`]).
     async fn replay(
         &mut self,
         entries: &[PatchEntry],
@@ -1097,11 +1090,11 @@ async fn pull_commits<C: Connector>(
     Ok((standing, forks))
 }
 
-fn check_cap(record: &Record, offered: usize) -> Result<(), PeerFailure> {
-    if offered > record.patch_cap {
+fn check_cap(offered: usize) -> Result<(), PeerFailure> {
+    if offered > DEFAULT_PATCH_CAP {
         return Err(PeerFailure::PatchTooLarge {
             offered,
-            cap: record.patch_cap,
+            cap: DEFAULT_PATCH_CAP,
         });
     }
     Ok(())
@@ -1126,15 +1119,15 @@ async fn reach<C: Connector>(
         None => None,
     };
     let offered = if tip.is_some() {
-        match offered_extension(record, connector).await? {
+        match offered_extension(record, connector).await {
             Offer::Extends(offer) => Some(offer),
             // A peer's tree is its own word: when no fork can be proved from
             // it (it is fabricated, or the log does extend), the pull goes
             // on without it, so a fork never hides behind what the peer
             // says of its tree.
             Offer::Diverged(head) => match locate_fork(record, connector, &head, branches).await {
-                Ok(Some(finding)) => return Ok((PeerStanding::Forked, vec![finding])),
-                Ok(None) | Err(_) => None,
+                Some(finding) => return Ok((PeerStanding::Forked, vec![finding])),
+                None => None,
             },
             Offer::Unavailable => None,
         }
@@ -1148,7 +1141,7 @@ async fn reach<C: Connector>(
         };
         match fetch_patch(connector, &request, BindingPolicy::NotRequired, None).await {
             Ok(patch) => {
-                check_cap(record, patch.entries.len())?;
+                check_cap(patch.entries.len())?;
                 if patch.entries.is_empty() && patch.actions.is_empty() {
                     return Ok((PeerStanding::Current, Vec::new()));
                 }
@@ -1186,12 +1179,9 @@ enum Offer {
 /// Ask the peer for its head and the certificate that it extends the
 /// record's log, and judge them against the record's own log. The head is
 /// the peer's claim: it is checked and never pinned.
-async fn offered_extension<C: Connector>(
-    record: &Record,
-    connector: &C,
-) -> Result<Offer, PeerFailure> {
+async fn offered_extension<C: Connector>(record: &Record, connector: &C) -> Offer {
     let Some(held) = &record.held else {
-        return Ok(Offer::Unavailable);
+        return Offer::Unavailable;
     };
     let held_size = held.principal.commit_count() as u64;
     // Whatever stops the answer (no such route, an unreachable peer) is
@@ -1202,17 +1192,17 @@ async fn offered_extension<C: Connector>(
     )
     .await
     else {
-        return Ok(Offer::Unavailable);
+        return Offer::Unavailable;
     };
     // A peer that answers a route with something that is not a root or a
     // certificate is pulled as one that serves none: every commit is still
     // replayed, so the answer decides only what is fetched, never what is
     // believed.
     let Ok(head) = Extension::head_from_payload(&payload["root"]) else {
-        return Ok(Offer::Unavailable);
+        return Offer::Unavailable;
     };
     if head.size <= held_size {
-        return Ok(Offer::Diverged(head));
+        return Offer::Diverged(head);
     }
     let target = format!(
         "/proof?pr={}&size={}&claim=extends:{held_size}",
@@ -1220,18 +1210,18 @@ async fn offered_extension<C: Connector>(
         head.size
     );
     let Ok(payload) = fetch_payload(connector, &target).await else {
-        return Ok(Offer::Unavailable);
+        return Offer::Unavailable;
     };
     let Ok(certificate) = Extension::certificate_from_payload(&payload) else {
-        return Ok(Offer::Unavailable);
+        return Offer::Unavailable;
     };
     let offer = Extension::new(head, certificate);
     match verify_extension_at(&held.principal, held_size, &offer) {
-        Ok(()) => Ok(Offer::Extends(Box::new(offer))),
+        Ok(()) => Offer::Extends(Box::new(offer)),
         Err(ExtensionFailure::NotAnExtension | ExtensionFailure::NotLonger) => {
-            Ok(Offer::Diverged(offer.head))
+            Offer::Diverged(offer.head)
         },
-        Err(_) => Ok(Offer::Unavailable),
+        Err(_) => Offer::Unavailable,
     }
 }
 
@@ -1246,21 +1236,15 @@ async fn offered_extension<C: Connector>(
 /// The peer's answers only steer; what is returned is verified from the
 /// record's own chain and the peer's one commit, the way a served fork
 /// item is, so a peer's word is never the evidence. `None` when no
-/// position within both logs differs.
+/// position within both logs differs, or the peer's answers do not prove
+/// one.
 async fn locate_fork<C: Connector>(
     record: &Record,
     connector: &C,
     head: &Root,
     branches: &mut Vec<HeldCommit>,
-) -> Result<Option<ForkFinding>, PeerFailure> {
-    let Some(held) = &record.held else {
-        return Ok(None);
-    };
-    let unlocatable = |what: &str| {
-        PeerFailure::Extension(ExtensionFailure::Malformed(format!(
-            "fork location: {what}"
-        )))
-    };
+) -> Option<ForkFinding> {
+    let held = record.held.as_ref()?;
     let overlap = held
         .principal
         .commit_count()
@@ -1268,28 +1252,28 @@ async fn locate_fork<C: Connector>(
     // Whether the peer's log extends the record's first `k` commits. The
     // record pins every size of its own chain, so each answer is checked
     // against what the record holds; the head stays the peer's claim.
-    let extends = async |k: usize| -> Result<bool, PeerFailure> {
+    let extends = async |k: usize| -> Option<bool> {
         if k as u64 == head.size {
             // The same size: the logs are the same exactly when the roots
             // are.
-            return Ok(held.principal.root_at(k as u64).as_ref() == Some(head));
+            return Some(held.principal.root_at(k as u64).as_ref() == Some(head));
         }
         let target = format!(
             "/proof?pr={}&size={}&claim=extends:{k}",
             percent_encode_query_value(&record.id),
             head.size
         );
-        let payload = fetch_payload(connector, &target).await?;
-        let certificate = Extension::certificate_from_payload(&payload)?;
+        let payload = fetch_payload(connector, &target).await.ok()?;
+        let certificate = Extension::certificate_from_payload(&payload).ok()?;
         let offer = Extension::new(head.clone(), certificate);
         match verify_extension_at(&held.principal, k as u64, &offer) {
-            Ok(()) => Ok(true),
-            Err(ExtensionFailure::NotAnExtension) => Ok(false),
-            Err(other) => Err(other.into()),
+            Ok(()) => Some(true),
+            Err(ExtensionFailure::NotAnExtension) => Some(false),
+            Err(_) => None,
         }
     };
     if overlap == 0 || extends(overlap).await? {
-        return Ok(None);
+        return None;
     }
     let (mut low, mut high) = (0, overlap);
     while high - low > 1 {
@@ -1304,12 +1288,9 @@ async fn locate_fork<C: Connector>(
 
     let pre = match height.checked_sub(1) {
         Some(below) => {
-            let commit = held
-                .principal
-                .commit_at(below)
-                .ok_or_else(|| unlocatable("no pre"))?;
+            let commit = held.principal.commit_at(below)?;
             let tagged = commit.pr().as_multihash().tagged_first();
-            Some(tagged.map_err(|_| unlocatable("no pre"))?.to_string())
+            Some(tagged.ok()?.to_string())
         },
         None => None,
     };
@@ -1318,30 +1299,17 @@ async fn locate_fork<C: Connector>(
         target.push_str(&format!("&from={}", percent_encode_query_value(pre)));
     }
     target.push_str(&format!("&to={height}"));
-    let body = connector
-        .exchange(&Request::get(target))
-        .await
-        .map_err(PatchFailure::from)?;
-    let patch = crate::patch::verify_patch_body(&body, &record.id, None)?;
+    let body = connector.exchange(&Request::get(target)).await.ok()?;
+    let patch = crate::patch::verify_patch_body(&body, &record.id, None).ok()?;
     let [rival] = patch.entries.as_slice() else {
-        return Err(unlocatable(
-            "the peer did not serve exactly the one commit asked for",
-        ));
+        return None;
     };
-    let rival = rival.bundle.clone().map_err(|defect| PeerFailure::Entry {
-        index: height,
-        defect,
-    })?;
+    let rival = rival.bundle.clone().ok()?;
 
     // The prefix below the fork and the record's own commit at it: `a`.
-    let (base, context) = fork_context(record, height + 1)
-        .await
-        .map_err(unlocatable)?;
+    let (base, context) = fork_context(record, height + 1).await.ok()?;
     let prefix = &context[..height.min(context.len())];
-    let ours = context
-        .get(height)
-        .and_then(|e| e.bundle.clone().ok())
-        .ok_or_else(|| unlocatable("the record's own commit is unreadable"))?;
+    let ours = context.get(height).and_then(|e| e.bundle.clone().ok())?;
     let proved = |rival: &WireBundle| {
         serde_json::json!({
             "kind": "principal-fork",
@@ -1380,21 +1348,21 @@ async fn locate_fork<C: Connector>(
                 &mut state,
             )
             .await
-            .map_err(|_| unlocatable("the peer's commit is no fork of the record's"))?;
+            .ok()?;
             (proof, with_actions)
         },
-        Err(_) => return Err(unlocatable("the peer's commit is no fork of the record's")),
+        Err(_) => return None,
     };
     // The item named the record's commit `a` and the peer's `b`.
     let [_, id] = proof.0.commits.clone();
     let [_, pr] = proof.0.prs.clone();
     branches.push(held_commit(height, id, proof.0.pre.clone(), pr, &proof.1));
-    Ok(Some(ForkFinding {
+    Some(ForkFinding {
         height,
         pre: proof.0.pre,
         commits: proof.0.commits,
         rival: proof.1,
-    }))
+    })
 }
 
 /// How a peer's whole chain relates to the record's.
@@ -1408,13 +1376,8 @@ enum Relation {
     Diverges(usize),
 }
 
-/// Whether two commits are the same step of a chain.
-fn same_step(m: &Link, t: &Link) -> bool {
-    m == t
-}
-
 fn relate(mine: &[Link], theirs: &[Link]) -> Relation {
-    if let Some(at) = mine.iter().zip(theirs).position(|(m, t)| !same_step(m, t)) {
+    if let Some(at) = mine.iter().zip(theirs).position(|(m, t)| m != t) {
         return Relation::Diverges(at);
     }
     match mine.len().cmp(&theirs.len()) {
@@ -1434,7 +1397,7 @@ async fn compare_whole_chain<C: Connector>(
         anchor: None,
     };
     let patch = fetch_patch(connector, &request, BindingPolicy::NotRequired, None).await?;
-    check_cap(record, patch.entries.len())?;
+    check_cap(patch.entries.len())?;
     if patch.entries.is_empty() {
         return Ok((PeerStanding::Behind { peer_commits: 0 }, Vec::new()));
     }

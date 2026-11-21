@@ -383,7 +383,10 @@ async fn initiator_key_revoked_in_the_chain_is_refused() {
         .engine
         .load_principal(&own_principal, genesis)
         .await
-        .expect("load the pushed principal");
+        .expect("load the pushed principal")
+        .detach()
+        .await
+        .expect("detach the principal");
     let blobs = self_revoke_commit_blobs(principal, "key_a", 1_700_000_100).await;
     state
         .engine

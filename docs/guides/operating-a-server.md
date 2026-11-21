@@ -911,7 +911,7 @@ rotation to configure. `--log-format json` gives one object per line:
 ```
 
 `RUST_LOG` controls filtering and defaults to
-`cyphr_server=info,tower_http=info`. At that default there is no access log
+`cyphr_server=info,cyphr_storage=info,tower_http=info`. At that default there is no access log
 at all — a request that succeeds, a request that 404s, and a request refused
 by a fence are equally invisible. Turn requests on explicitly:
 
@@ -942,11 +942,15 @@ Every request carries a generated `request_id` through its span, so a
 failure and its handler's own log lines join up.
 
 **Two operability endpoints exist.** `GET /healthz` answers `200` with
-`{"status":"ok"}` when the record directory accepts a write, and `503` with
+`{"status":"ok"}` when the record directory accepts a write and no store
+has lost a sync, and `503` with
 `{"status":"unavailable","error":"storage unavailable"}` when it does not;
-the cause goes to the log, not the wire. It is a real write probe (one
-fixed one-byte sentinel file, never concurrent), so it detects a vanished
-or unwritable store but not a full disk or failing device. `GET /metrics`
+the cause goes to the log, not the wire. The write probe is one fixed
+one-byte sentinel file, never concurrent, so it detects a vanished or
+unwritable directory but not a full disk or failing device. Those surface
+as a failed sync: once the record, the invite spent set or the death set
+fails a sync, that store refuses every write until restart and `/healthz`
+answers `503`. `GET /metrics`
 is Prometheus text exposition (`text/plain; version=0.0.4`) of fixed
 counters, with no label drawn from a request, principal or key:
 
@@ -987,7 +991,7 @@ extracting, given what is and is not emitted:
 
 - `server principal established` with its `pg`, at every keyed start. A `pg` that changed is the loudest possible alarm — every client that pinned you will refuse.
 - `witness sync failed` and `witness sync authenticated-channel check failed`, which say a witness's last sync did not complete. They do not cover the quieter case: a sync that succeeded with entries skipped, which is `witness sync applied entries` with a non-zero `rejected` at `cyphr_server=debug`. Watch that one too if you care whether a witness is complete, not merely alive.
-- `internal engine error` with `record not durable, writes refused until restart` at `error`: the record could not be flushed to disk and the server now refuses every write (see "Durability"). Alert on it; `GET /healthz` does not.
+- `internal engine error` with `record not durable, writes refused until restart` at `error`: the record could not be flushed to disk and the server now refuses every write (see "Durability"). Alert on it; `GET /healthz` also answers `503`.
 - `configuration error:` on stderr with exit 1, which is a start that never happened.
 - Response status counts from `tower_http=debug`, which covers every status a route handler produces — including a witness's `403` write refusal. It does not cover the fences; see below.
 
@@ -1077,12 +1081,13 @@ ERROR cyphr_server::error: internal engine error error=record not durable, write
 
 The storage engine also logs `record sync failed; refusing writes until
 restart` once, under the `cyphr_storage` target, which the default
-`RUST_LOG` filters out. Reads keep working. A gossip round that hits the
+`RUST_LOG` shows. Reads keep working. A gossip round that hits the
 failure logs `the record is not durable` at `error`. What to do:
 
 1. Treat a rising `cyphr_refusals_total{kind="server_error"}` together
-   with that log line as an incident. `GET /healthz` will not show it: the
-   probe writes a sentinel file and does not read the engine's state.
+   with that log line as an incident. `GET /healthz` answers `503` as well,
+   since it reads the engine's durability state, not only a sentinel
+   file.
 2. Find the cause (a failing disk, a full device, a lost mount) and fix it.
 3. Restart the server. It replays what reached the disk and serves from
    there. A commit whose push was answered `500` may or may not have

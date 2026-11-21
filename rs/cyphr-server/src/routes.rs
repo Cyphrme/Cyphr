@@ -773,7 +773,7 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
     let derived = state
         .engine
-        .derive_roots_at(t, None)
+        .derive_roots_at(t)
         .await
         .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?
         .ok_or_else(|| {
@@ -1891,7 +1891,13 @@ mod push_response_tests {
 /// `GET /healthz` -- can this peer serve? Unauthenticated; the body names
 /// no principal, path, or error text (causes go to the log, not the wire).
 pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if state.health.storage_writable().await {
+    // A failed sync of the record, the spent set or the death set leaves
+    // that store refusing every write until restart, and the sentinel
+    // probe may still succeed (it is not their sync).
+    if !state.engine.durability_lost()
+        && state.health.stores_writable()
+        && state.health.storage_writable().await
+    {
         (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
     } else {
         (

@@ -251,7 +251,7 @@ async fn replayed(e: &Engine, w: &World) -> String {
         .load_principal(&w.id, w.genesis.clone())
         .await
         .expect("replay");
-    format!("{:#?}", *p)
+    format!("{:#?}", **p)
 }
 
 /// Fail naming the first line where two printed states differ: the whole
@@ -788,10 +788,9 @@ fn action_blob(k: &Kp, now: i64) -> Vec<u8> {
 /// U3 merge-gate case, SPEC 6.2/6.5: a held action signed by `key_a` at
 /// T+100, then a commit dated T+50 that deletes `key_a`. A replay judges
 /// the action against the whole key timeline and leaves it out of DT; a
-/// state kept after the action must not answer otherwise. Until the core
-/// holds actions as an order-independent set with a read-time view, a
-/// principal with held actions is replayed, not kept. Red at 1a9338c1: the
-/// shadow check fails the second write.
+/// state kept after the action must not answer otherwise. The principal
+/// with the held action is kept; the shadow check fails the second write
+/// if the kept state and the replay disagree on the action.
 #[tokio::test]
 async fn u3_a_held_action_then_a_commit_that_removes_its_signer_before_it() {
     let (e, _dir) = engine(8, true);
@@ -814,6 +813,39 @@ async fn u3_a_held_action_then_a_commit_that_removes_its_signer_before_it() {
         0,
         "the removed signer's action is out of DT"
     );
+}
+
+/// SPEC 7.6: a held action sent again is a no-op, whoever signed it and
+/// whatever became of the signer since. A client cannot tell which actions
+/// a peer holds, so a re-send of one whose signer was later removed (by a
+/// commit dated before it, or in the same second) or naked-revoked must not
+/// be refused: it is stored already. Turns red if the signer is judged
+/// before the repeat is recognised.
+#[tokio::test]
+async fn a_held_action_sent_again_after_its_signer_was_retired_is_a_no_op() {
+    for (what, removed_at, revoked) in [
+        ("removed before it", NOW + 50, false),
+        ("removed in its second", NOW + 100, false),
+        ("naked-revoked", NOW + 150, true),
+    ] {
+        let (e, _dir) = engine(8, true);
+        let mut w = history(&e, 2).await;
+        let action = WireBundle::actions(vec![action_blob(&kp("key_a"), NOW + 100)]);
+        w.submit(&e, &action).await.expect("the action is held");
+        if revoked {
+            let evidence = naked_revoke(&kp("key_a"), NOW + 100);
+            e.record_revoke(&evidence, NOW + 120).await.expect("revoke");
+        } else {
+            let (next, bundle) = w.toggle("key_a", removed_at).await.expect("delete key_a");
+            w.submit(&e, &bundle).await.expect("the removing commit");
+            w.adopt(next);
+        }
+        let tip = e.get_tip(&w.id).await.expect("tip");
+        w.submit(&e, &action)
+            .await
+            .unwrap_or_else(|why| panic!("{what}: the repeated action was refused: {why}"));
+        assert_eq!(e.get_tip(&w.id).await.expect("tip"), tip, "{what}: stored");
+    }
 }
 
 /// U3, the cost of an action: an action-only write steps the kept state
@@ -882,8 +914,8 @@ async fn u3_a_refused_bundle_carrying_an_action_costs_no_replay() {
 /// SPEC 6.2, 6.5: an action gets one verdict whatever envelope carries it.
 /// Carried in the commit that removes its signer (dated before it), or
 /// held alone ahead of that commit, it is out of DT, in a replay of the
-/// store as in the state the engine kept. Red before the fix: the bundle
-/// path judged it at the tip before the commit and kept it.
+/// store as in the state the engine kept. Turns red if the bundle path
+/// judges it at the tip before the commit and keeps it.
 #[tokio::test]
 async fn an_action_in_a_commit_bundle_gets_the_verdict_it_would_alone() {
     let (e, _dir) = engine(8, true);
@@ -897,9 +929,8 @@ async fn an_action_in_a_commit_bundle_gets_the_verdict_it_would_alone() {
         .await
         .expect("replay");
     assert_eq!(cold.action_count(), 0, "the replay of the store");
-    if let Some(kept) = e.kept_state(&w.id).await {
-        assert_eq!(kept.action_count(), 0, "the kept state");
-    }
+    let kept = e.kept_state(&w.id).await.expect("the principal is kept");
+    assert_eq!(kept.action_count(), 0, "the kept state");
     assert_eq!(e.kept_divergences(), 0);
 }
 

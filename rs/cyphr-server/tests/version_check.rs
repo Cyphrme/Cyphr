@@ -176,7 +176,14 @@ fn open_spent_set(
     let cfg = AdmissionConfig::Invite {
         tokens_path: tokens.to_path_buf(),
     };
-    layer(&cfg, record, resident, 1 << 20).map(|_| ())
+    layer(
+        &cfg,
+        record,
+        resident,
+        1 << 20,
+        &cyphr_server::metrics::HealthProbe::new(record),
+    )
+    .map(|_| ())
 }
 
 /// Claim: the invite spent set records its format version and refuses a

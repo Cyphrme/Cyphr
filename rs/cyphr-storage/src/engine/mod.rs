@@ -945,7 +945,7 @@ impl LogFactory<cyphr::eml::MemoryStorage> for MemoryLogs {
 /// Used only for memoizing replay-derived answers under keys that name the
 /// exact tip they were derived at, so an entry can never be stale (a new
 /// commit changes the key) and eviction costs only a recomputation.
-pub struct BoundedCache<K, V> {
+struct BoundedCache<K, V> {
     capacity: usize,
     entries: std::sync::Mutex<(HashMap<K, V>, std::collections::VecDeque<K>)>,
 }
@@ -1024,6 +1024,10 @@ struct Verified<S: cyphr::eml::Storage> {
 /// its state, over the engine's own durable commit log. It hands out only
 /// a shared reference, so a holder can read state, roots and proofs of any
 /// past log size and cannot append to the engine's log.
+///
+/// It is also what [`StorageEngine::load_principal`] returns: the same
+/// read-only view, replayed from the store instead of read from the kept
+/// state.
 pub struct AtTip<S: cyphr::eml::Storage>(cyphr::Principal<S>);
 
 impl<S: cyphr::eml::Storage> std::ops::Deref for AtTip<S> {
@@ -1223,7 +1227,8 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     healed: tokio::sync::OnceCell<()>,
     /// Retained non-canonical branches per canonical principal id: a cache
     /// of the branch manifests in the blob store (I1), filled by the
-    /// rebuild scan and by retention, at most [`BRANCH_LIMIT`] per
+    /// rebuild scan and by retention, at most
+    /// `min(`[`BRANCH_LIMIT`]`, `[`BRANCH_PER_KEY`]` * active keys)` per
     /// principal.
     branches: std::sync::Mutex<HashMap<String, Vec<Retained>>>,
     /// Each principal's canonical commits as the fork rule reads them,
@@ -1371,6 +1376,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// [`Self::with_kept_shadow`] on an engine already built, such as one a
     /// server state owns.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_kept_shadow(&mut self, on: bool) {
         self.kept_shadow = on;
     }
@@ -1904,17 +1910,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// when a commit landed since `tip` was read, of one replay of the
     /// history up to the commit `tip` names, onto a private log.
     ///
-    /// `genesis` for a principal whose genesis its blobs cannot express
-    /// (the server's own); `None` reads it from the stored chain.
+    /// The genesis is read from the stored chain.
     ///
     /// # Errors
     ///
     /// As [`Self::load_principal`].
-    #[tracing::instrument(skip(self, genesis))]
+    #[tracing::instrument(skip(self))]
     pub async fn derive_roots_at(
         &self,
         tip: &TipState,
-        genesis: Option<crate::Genesis>,
     ) -> Result<Option<DerivedRoots>, EngineError> {
         self.ensure_healed().await?;
         let key = (tip.principal_id.clone(), tip.commit_id.clone());
@@ -1933,18 +1937,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // The commit `tip` names is the principal's tip unless a commit
         // landed since it was read: the verified state at the tip has its
         // roots, and is kept for whoever asks next.
-        if genesis.is_none()
-            && let Some(current) = self.at_tip(&tip.principal_id).await?
+        if let Some(current) = self.at_tip(&tip.principal_id).await?
             && ends_at_tip(&current)?
         {
             let roots = roots_of(&current)?;
             self.roots_at.insert(key, roots.clone());
             return Ok(Some(roots));
         }
-        let genesis = match genesis {
-            Some(genesis) => genesis,
-            None => self.resolve_genesis(&tip.principal_id, &[]).await?,
-        };
+        let genesis = self.resolve_genesis(&tip.principal_id, &[]).await?;
         let principal = self
             .replay_onto(
                 &tip.principal_id,
@@ -2152,14 +2152,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
+    /// Whether a record sync has failed ([`Self::persist_record`]): the
+    /// engine then refuses every write until the process restarts, so a
+    /// health check reads this rather than probing a write that the flag
+    /// would refuse anyway. Never cleared.
+    pub fn durability_lost(&self) -> bool {
+        self.durability_lost
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// `Err` once a record sync has failed ([`Self::persist_record`]).
     /// Checked before a write stores anything, so a failed engine adds
     /// nothing to the record.
     fn writable(&self) -> Result<(), EngineError> {
-        if self
-            .durability_lost
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
+        if self.durability_lost() {
             return Err(EngineError::DurabilityLost(
                 "an earlier sync of the record failed".into(),
             ));
@@ -3090,12 +3096,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     // Principal lifecycle
     // ========================================================================
 
-    /// Reconstruct a live [`cyphr::Principal`] by replaying stored commits.
+    /// Reconstruct a principal by replaying stored commits, as a read-only
+    /// [`AtTip`]: it holds the engine's durable log but hands out only a
+    /// shared reference, so the caller cannot append to it. Writes go
+    /// through [`Self::submit_commit`].
     ///
     /// Fetches the full commit chain from the indexer, retrieves each
     /// blob from the blob store, and delegates to the existing
-    /// [`import::replay_commits`] infrastructure, with the action-only
-    /// bundles accepted between commits recorded where they were accepted.
+    /// [`import::replay_commits`] infrastructure, then holds the stored
+    /// action-only bundles ([`Self::replay_onto`]).
     ///
     /// Always a replay, whatever state the engine keeps: for a caller that
     /// wants the replay itself (a store check, a one-shot tool). A reader
@@ -3118,7 +3127,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         &self,
         principal_id: &str,
         genesis: crate::Genesis,
-    ) -> Result<cyphr::Principal<S>, EngineError> {
+    ) -> Result<AtTip<S>, EngineError> {
         self.ensure_healed().await?;
         let key = self.resolve_key(principal_id).await?;
         let stored = key.as_deref().unwrap_or(principal_id);
@@ -3127,7 +3136,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // ahead of the chain and regenerates it for nothing.
         let lock = self.principal_lock(stored);
         let _no_write_in_flight = lock.lock().await;
-        self.replay_stored(stored, genesis).await
+        self.replay_stored(stored, genesis).await.map(AtTip)
     }
 
     /// [`load_principal`](Self::load_principal) for an id already known to
@@ -4349,7 +4358,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // state kept for B. B's write lock is only tried: A's is held,
             // and two principals that embed each other, written at once,
             // would each wait on the other's. A B that is being written is
-            // replayed without it, as B's own log repair allows.
+            // replayed without it, as B's own log repair allows: a push
+            // appends B's log before it writes the index, so a replay that
+            // does not hold B's lock can find the log one leaf ahead of the
+            // chain and regenerate it for nothing. That costs a rebuild, never
+            // a wrong state, because regeneration is serialized by its own
+            // lock (`replay_stored`), not by B's write lock.
             let lock = self.principal_lock(&id);
             let state = match Self::try_lock_writes(&lock, &id) {
                 Some(write) => match self.indexer.get_tip(&id).await? {

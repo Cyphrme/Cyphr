@@ -107,7 +107,8 @@ level if and where possible."
   forge #36 is structural. Grounding: `cyphr-blob-fjall` `EmlLogs` +
   `cyphr-storage/tests/multitenancy.rs`, with the layout pinned by
   `cyphr-storage/tests/properties.rs` and
-  `cyphr-server/tests/log_layout.rs`. Signpost: a log opened outside
+  `cyphr-server/tests/log_layout.rs`; `cyphr-blob-fjall/tests/log_model.rs`
+  is the direct witness for scope isolation. Signpost: a log opened outside
   `EmlLogs`, or a keyspace created per principal.
 - **I3 — Trait seams are stable.** `BlobStore`, `Indexer`, `eml::Storage`
   are the replacement boundaries (the index replacement lands behind

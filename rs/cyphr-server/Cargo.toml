@@ -52,6 +52,7 @@ coz = { workspace = true }
 cyphr = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
 cyphr-storage = { path = "../cyphr-storage", version = "0.1.0", features = [
   "conformance-tests",
+  "test-utils",
 ] }
 http-body-util = "0.1"
 proptest = { workspace = true }

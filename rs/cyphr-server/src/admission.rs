@@ -37,7 +37,9 @@ use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
 use crate::envelope::Envelope;
-use crate::observation::{STORE_FORMAT_VERSION, StampError, check_store_version};
+use crate::observation::{
+    DurabilityLost, STORE_FORMAT_VERSION, StampError, SyncLatch, check_store_version,
+};
 
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
@@ -81,11 +83,21 @@ pub enum AdmissionError {
     #[error("admission store task join: {0}")]
     Join(String),
 
+    /// A sync of the spent set failed; it refuses every write until restart.
+    #[error("admission store durability lost: {0}")]
+    DurabilityLost(String),
+
     /// The spent-set store records a format version this build does not
     /// read. Nothing was read from it: a mis-decoded spent set would let a
     /// consumed single-use token be spent again.
     #[error("spent set format version {found} is not the supported {supported}")]
     UnsupportedVersion { found: u64, supported: u32 },
+}
+
+impl From<DurabilityLost> for AdmissionError {
+    fn from(e: DurabilityLost) -> Self {
+        Self::DurabilityLost(e.0)
+    }
 }
 
 impl From<StampError> for AdmissionError {
@@ -126,12 +138,14 @@ pub fn layer(
     record_dir: &Path,
     resident: ResidentProbe,
     max_body_bytes: usize,
+    health: &crate::metrics::HealthProbe,
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
     let policy = match config {
         AdmissionConfig::Open => return Ok(None),
         AdmissionConfig::Invite { tokens_path } => {
             let hashes = load_token_hashes(tokens_path)?;
             let spent = SpentSet::open(&record_dir.join("admission"))?;
+            health.watch(spent.latch.clone());
             Policy::Invite { hashes, spent }
         },
     };
@@ -429,6 +443,8 @@ struct SpentSet {
     /// Serializes the reserve check-and-set so concurrent double-submits of
     /// one token cannot both reserve it.
     reserve_lock: Arc<Mutex<()>>,
+    /// Closes the store to writes after a failed sync.
+    latch: Arc<SyncLatch>,
 }
 
 impl SpentSet {
@@ -442,6 +458,7 @@ impl SpentSet {
             db,
             tokens,
             reserve_lock: Arc::new(Mutex::new(())),
+            latch: Arc::default(),
         })
     }
 
@@ -453,6 +470,7 @@ impl SpentSet {
         let tokens = self.tokens.clone();
         let db = self.db.clone();
         let lock = self.reserve_lock.clone();
+        let latch = self.latch.clone();
         tokio::task::spawn_blocking(move || {
             // The mutex guards no data, only mutual exclusion of the
             // contains/insert pair below, which leaves the store consistent
@@ -461,11 +479,12 @@ impl SpentSet {
             let _guard = lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            latch.writable()?;
             if tokens.contains_key(hash).map_err(backend)? {
                 return Ok(false);
             }
             tokens.insert(hash, STATE_RESERVED).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)?;
+            latch.sync(|| db.persist(PersistMode::SyncAll))?;
             Ok(true)
         })
         .await
@@ -476,9 +495,12 @@ impl SpentSet {
     async fn consume(&self, hash: [u8; 32]) -> Result<(), AdmissionError> {
         let tokens = self.tokens.clone();
         let db = self.db.clone();
+        let latch = self.latch.clone();
         tokio::task::spawn_blocking(move || {
+            latch.writable()?;
             tokens.insert(hash, STATE_CONSUMED).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)
+            latch.sync(|| db.persist(PersistMode::SyncAll))?;
+            Ok(())
         })
         .await
         .map_err(|e| AdmissionError::Join(e.to_string()))?
@@ -496,9 +518,13 @@ impl SpentSet {
     /// amplification with no integrity gain.
     async fn refund(&self, hash: [u8; 32]) -> Result<(), AdmissionError> {
         let tokens = self.tokens.clone();
-        tokio::task::spawn_blocking(move || tokens.remove(hash).map_err(backend))
-            .await
-            .map_err(|e| AdmissionError::Join(e.to_string()))?
+        let latch = self.latch.clone();
+        tokio::task::spawn_blocking(move || {
+            latch.writable()?;
+            tokens.remove(hash).map_err(backend)
+        })
+        .await
+        .map_err(|e| AdmissionError::Join(e.to_string()))?
     }
 }
 
