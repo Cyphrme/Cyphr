@@ -1904,17 +1904,15 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// when a commit landed since `tip` was read, of one replay of the
     /// history up to the commit `tip` names, onto a private log.
     ///
-    /// `genesis` for a principal whose genesis its blobs cannot express
-    /// (the server's own); `None` reads it from the stored chain.
+    /// The genesis is read from the stored chain.
     ///
     /// # Errors
     ///
     /// As [`Self::load_principal`].
-    #[tracing::instrument(skip(self, genesis))]
+    #[tracing::instrument(skip(self))]
     pub async fn derive_roots_at(
         &self,
         tip: &TipState,
-        genesis: Option<crate::Genesis>,
     ) -> Result<Option<DerivedRoots>, EngineError> {
         self.ensure_healed().await?;
         let key = (tip.principal_id.clone(), tip.commit_id.clone());
@@ -1933,18 +1931,14 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // The commit `tip` names is the principal's tip unless a commit
         // landed since it was read: the verified state at the tip has its
         // roots, and is kept for whoever asks next.
-        if genesis.is_none()
-            && let Some(current) = self.at_tip(&tip.principal_id).await?
+        if let Some(current) = self.at_tip(&tip.principal_id).await?
             && ends_at_tip(&current)?
         {
             let roots = roots_of(&current)?;
             self.roots_at.insert(key, roots.clone());
             return Ok(Some(roots));
         }
-        let genesis = match genesis {
-            Some(genesis) => genesis,
-            None => self.resolve_genesis(&tip.principal_id, &[]).await?,
-        };
+        let genesis = self.resolve_genesis(&tip.principal_id, &[]).await?;
         let principal = self
             .replay_onto(
                 &tip.principal_id,
@@ -3097,8 +3091,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// Fetches the full commit chain from the indexer, retrieves each
     /// blob from the blob store, and delegates to the existing
-    /// [`import::replay_commits`] infrastructure, with the action-only
-    /// bundles accepted between commits recorded where they were accepted.
+    /// [`import::replay_commits`] infrastructure, then holds the stored
+    /// action-only bundles ([`Self::replay_onto`]).
     ///
     /// Always a replay, whatever state the engine keeps: for a caller that
     /// wants the replay itself (a store check, a one-shot tool). A reader

@@ -773,7 +773,7 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
 async fn attested_roots(state: &Arc<AppState>, t: &TipState) -> Result<receipt::Roots, AppError> {
     let derived = state
         .engine
-        .derive_roots_at(t, None)
+        .derive_roots_at(t)
         .await
         .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?
         .ok_or_else(|| {

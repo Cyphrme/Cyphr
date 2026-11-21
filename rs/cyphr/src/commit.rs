@@ -1206,23 +1206,6 @@ impl<'a, S: eml::Storage> StagedCommit<'a, S> {
         &self.projected
     }
 
-    /// Verify and record a data action on the staged state, as if recorded
-    /// right after the commit: a bundle's actions that follow its commit
-    /// are checked before the commit is written, so a refused action
-    /// leaves nothing durable.
-    ///
-    /// # Errors
-    ///
-    /// As [`Principal::verify_and_record_action`](crate::Principal::verify_and_record_action).
-    pub fn verify_and_record_action(
-        &mut self,
-        pay_json: &[u8],
-        sig: &[u8],
-        czd: coz::Czd,
-    ) -> crate::error::Result<&PrincipalRoot> {
-        self.projected.verify_and_record_action(pay_json, sig, czd)
-    }
-
     /// Phase two: write the staged log append in one atomic
     /// `Storage::apply`, then adopt the staged state with no `.await`
     /// between, so a dropped future either wrote nothing or has adopted.
