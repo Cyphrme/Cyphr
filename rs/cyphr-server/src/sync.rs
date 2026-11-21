@@ -338,6 +338,11 @@ async fn sync_locked(
     // witness holds them all as evidence of the fork, the canonical one
     // included: a witness ahead of the fork has its own head past them.
     let mut branch_bundles = Vec::new();
+    // Each branch's head and the position of its last bundle among the
+    // bundles submitted below: a head the witness's caps refuse is read
+    // from the answer to that bundle.
+    let mut head_at: Vec<(String, usize)> = Vec::new();
+    let first_branch = bundles.len();
     for branch in patch.fork.iter().flat_map(|f| &f.branches) {
         for entry in &branch.entries {
             match &entry.bundle {
@@ -348,8 +353,12 @@ async fn sync_locked(
                 },
             }
         }
+        if !branch.entries.is_empty() {
+            head_at.push((branch.head.clone(), first_branch + branch_bundles.len() - 1));
+        }
     }
     bundles.extend(branch_bundles.iter().cloned());
+    let mut cap_refused: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     // The authority's verified revokes of the keys these commits name go to
     // the engine first, as gossip's do, so its admission refuses what a dead
@@ -380,10 +389,18 @@ async fn sync_locked(
             // is refused as the tip and kept as evidence of the fork (the
             // same answer a push gets, 409 or 422); whether the witness
             // holds every head is checked after the loop.
+            //
+            // A branch commit the witness's caps refuse (a line past its
+            // depth, or no line left) is no wedge either: a witness holds a
+            // line only to the cap, so that commit is recorded and a head
+            // it names is accepted below.
             Err(
-                cyphr_storage::engine::EngineError::Protocol(_)
+                cyphr_storage::engine::EngineError::BranchLimit { .. }
                 | cyphr_storage::engine::EngineError::Errored { .. },
-            ) if i >= main => {},
+            ) if i >= main => {
+                cap_refused.insert(i);
+            },
+            Err(cyphr_storage::engine::EngineError::Protocol(_)) if i >= main => {},
             Err(err) => {
                 warn!(
                     principal_id = %principal_id,
@@ -444,6 +461,13 @@ async fn sync_locked(
                 .await
             {
                 Ok(true) => {},
+                // The authority supplied that head and the witness's own
+                // caps refused it: the line is held as far as the witness
+                // keeps one, which is not withholding.
+                Ok(false)
+                    if head_at.iter().any(|(id, at)| {
+                        *id == head.commit_id.to_string() && cap_refused.contains(at)
+                    }) => {},
                 Ok(false) => {
                     warn!(principal = %principal_id, head = %head.commit_id,
                         "witness sync: a head of the authority is not held");

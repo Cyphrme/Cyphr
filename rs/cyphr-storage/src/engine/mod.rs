@@ -479,21 +479,28 @@ pub const BRANCH_MANIFEST_PREFIX: &[u8] = b"\0cyphr-storage/branch-manifest/v1\0
 /// evict nothing. An embedding principal's pin names a state of this one
 /// (SPEC 14.12), and finds it again only because nothing held is deleted.
 ///
-/// Retained non-canonical branches kept per principal. A key holder can
-/// mint any number of rivals at one position; the bound caps what one
-/// principal can make the store keep, and the next rival is refused as
-/// [`EngineError::BranchLimit`].
+/// Retained rival lines kept per principal. A line is a retained commit
+/// and the retained commits that extend it. A key holder can mint any
+/// number of rivals at one position; the bound caps what one principal can
+/// make the store keep (at most [`BRANCH_LIMIT`] * [`BRANCH_DEPTH`]
+/// commits), and the next line is refused as [`EngineError::BranchLimit`];
+/// a commit past [`BRANCH_DEPTH`] is refused as [`EngineError::Errored`] in Error.
 pub const BRANCH_LIMIT: usize = 16;
 
-/// Retained rivals kept per signing key of one principal. A key that
-/// forked once is already proven to equivocate by its first rival, so a
-/// small quota loses no evidence. A principal can therefore hold at most
-/// `min(BRANCH_LIMIT, BRANCH_PER_KEY * active keys)` rivals: a thief who
-/// holds one key cannot starve rivals signed by the principal's other
-/// keys, and shares that key's quota if it is the owner's only key. A
-/// thief who first adds keys to the principal (each a further slot pair)
-/// can still fill [`BRANCH_LIMIT`].
+/// Retained lines one signer may open (the signer of a line's first
+/// commit). A key that forked once is already proven to equivocate by its
+/// first rival, so a small quota loses no evidence: a thief who holds one
+/// key cannot starve lines opened by the principal's other keys, and
+/// shares that key's quota if it is the owner's only key. A thief who first
+/// adds keys to the principal (each a further pair of lines) can still
+/// fill [`BRANCH_LIMIT`].
 pub const BRANCH_PER_KEY: usize = 2;
+
+/// Commits kept in one retained line. The fork rule reads a line's first
+/// commit and whether one commit extends it; a further commit changes no
+/// verdict and only names the leaf, so a holder keeps the line to this
+/// depth and refuses what extends it further.
+pub const BRANCH_DEPTH: usize = 2;
 
 /// The leading bytes of every blob the engine itself writes (each prefix
 /// above extends it). A wire coz is JSON and never starts with NUL, so a
@@ -684,9 +691,47 @@ fn commit_signer(commit: &IndexableCommit) -> String {
         .unwrap_or_default()
 }
 
-/// Whether `signer` may still retain a rival beside `kept`.
-fn has_slot(kept: &[Retained], signer: &str) -> bool {
-    kept.len() < BRANCH_LIMIT && kept.iter().filter(|r| r.signer == signer).count() < BRANCH_PER_KEY
+/// Whether a rival commit at `sequence` over `pre`, signed by `signer`,
+/// may still be retained beside `kept`: an extension of a retained commit
+/// needs its line below [`BRANCH_DEPTH`]; a commit that opens a line needs
+/// a free line for its signer and for the principal. The caps count lines,
+/// not commits, so a line's deciding extension is never refused for the
+/// commits of another.
+fn has_slot(kept: &[Retained], pre: Option<&str>, sequence: u64, signer: &str) -> bool {
+    use std::collections::HashMap;
+    if kept.len() >= BRANCH_LIMIT * BRANCH_DEPTH {
+        return false;
+    }
+    let by_pr: HashMap<(u64, &str), &Retained> = kept
+        .iter()
+        .map(|r| ((r.tip.sequence, r.pr.as_str()), r))
+        .collect();
+    let parent_of = |r: &Retained| {
+        r.tip
+            .pre
+            .as_deref()
+            .zip(r.tip.sequence.checked_sub(1))
+            .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied())
+    };
+    let parent = pre
+        .zip(sequence.checked_sub(1))
+        .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+    if let Some(parent) = parent {
+        let mut depth = 1;
+        let mut at = parent;
+        while let Some(up) = parent_of(at) {
+            depth += 1;
+            at = up;
+        }
+        return depth < BRANCH_DEPTH;
+    }
+    let mut lines = 0;
+    let mut by_signer = 0;
+    for r in kept.iter().filter(|r| parent_of(r).is_none()) {
+        lines += 1;
+        by_signer += usize::from(r.signer == signer);
+    }
+    lines < BRANCH_LIMIT && by_signer < BRANCH_PER_KEY
 }
 
 /// A fork of a stored principal: two distinct commits that both verify at
@@ -5169,9 +5214,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// [`BRANCH_MANIFEST_PREFIX`] and list it. A commit past the canonical
     /// head (one refused while the principal is in Error) is kept the same
     /// way. A rival that is the
-    /// canonical commit or an already-kept branch is a no-op; the
-    /// rival of a key past [`BRANCH_PER_KEY`], or past [`BRANCH_LIMIT`] in all,
-    /// is [`EngineError::BranchLimit`] and stores nothing.
+    /// canonical commit or an already-kept branch is a no-op; one that
+    /// opens a line past a key's [`BRANCH_PER_KEY`] or the principal's
+    /// [`BRANCH_LIMIT`], or extends a line past [`BRANCH_DEPTH`], is
+    /// [`EngineError::BranchLimit`] and stores nothing.
     async fn keep_branch(
         &self,
         bundle: &WireBundle,
@@ -5201,7 +5247,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             {
                 return Ok(());
             }
-            if !has_slot(of_principal, &signer) {
+            if !has_slot(of_principal, commit.pre.as_deref(), commit.sequence, &signer) {
                 return Err(EngineError::BranchLimit { key: signer });
             }
         }

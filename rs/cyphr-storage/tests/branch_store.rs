@@ -958,6 +958,69 @@ mod retained {
         );
     }
 
+    /// The canonical chain carries one commit past the fork, so a retained
+    /// rival line that is extended makes both branches extended: Error.
+    async fn extended_canonical(f: &Fork, e: &Engine) {
+        let mut p = f.rival_state(0).await;
+        f.submit(e, &blobs(&p, 1)).await.expect("canonical rival");
+        create_key(&mut p, &f.golden, &fresh_kp(), NOW + 500).await;
+        f.submit(e, &blobs(&p, 2)).await.expect("its extension");
+    }
+
+    /// Backs the cap counting lines, not commits (`BRANCH_PER_KEY` = 2
+    /// lines a signer may open, [`BRANCH_DEPTH`](cyphr_storage::engine::BRANCH_DEPTH)
+    /// = 2 commits a line): one key opens two lines and extends each once,
+    /// and all four commits are retained, the second line's extension
+    /// included. Turns red if the quota counts retained commits (the third
+    /// and fourth are then refused). End to end at the engine seam: yes.
+    #[tokio::test]
+    async fn two_lines_by_one_key_are_each_extended_once() {
+        let f = Fork::new(0).await;
+        let (e, _) = f.engine_with(&[]).await;
+        extended_canonical(&f, &e).await;
+        for line in 1..=2 {
+            let mut p = f.rival_state(line * 10).await;
+            let first = blobs(&p, 1);
+            assert!(matches!(
+                f.submit(&e, &first).await,
+                Err(EngineError::Protocol(_))
+            ));
+            create_key(&mut p, &f.golden, &fresh_kp(), NOW + 600 + line).await;
+            let next = blobs(&p, 2);
+            assert!(
+                f.submit(&e, &next).await.is_err(),
+                "an extension of a retained line is not a tip"
+            );
+        }
+        let kept = branches(&e, &f.id).await.iter().filter(|b| !b.3).count();
+        assert_eq!(kept, 4, "two lines of two commits are retained");
+        assert!(e.is_errored(&f.id).await.expect("assess"), "both extended");
+    }
+
+    /// Backs the depth cap: a third commit on a retained line is not
+    /// retained, and in Error the answer is `Errored` (the refusal is true
+    /// whether or not the commit is kept), never `BranchLimit`. Turns red
+    /// if the line grows past the depth or the refusal is a 409 quota
+    /// error. End to end at the engine seam: yes.
+    #[tokio::test]
+    async fn a_line_past_the_depth_cap_is_refused_as_errored() {
+        let f = Fork::new(0).await;
+        let (e, _) = f.engine_with(&[]).await;
+        extended_canonical(&f, &e).await;
+        let mut p = f.rival_state(10).await;
+        let _ = f.submit(&e, &blobs(&p, 1)).await;
+        create_key(&mut p, &f.golden, &fresh_kp(), NOW + 700).await;
+        let _ = f.submit(&e, &blobs(&p, 2)).await;
+        assert!(e.is_errored(&f.id).await.expect("assess"));
+        let before = branches(&e, &f.id).await;
+        create_key(&mut p, &f.golden, &fresh_kp(), NOW + 701).await;
+        match f.submit(&e, &blobs(&p, 3)).await {
+            Err(EngineError::Errored { .. }) => {},
+            other => panic!("expected Errored past the depth, got {other:?}"),
+        }
+        assert_eq!(branches(&e, &f.id).await, before, "nothing was retained");
+    }
+
     /// Backs the slot policy: the total ceiling `BRANCH_LIMIT` = 16 holds
     /// across keys. Eight keys retain two rivals each; a ninth key (within
     /// its own quota) is refused as `BranchLimit` naming it. Turns red if

@@ -2742,6 +2742,95 @@ async fn witness_ahead_of_an_error_authority_reads_the_same_error() {
     );
 }
 
+/// Backs a witness holding a line only to the depth cap (`BRANCH_DEPTH`):
+/// the authority's canonical line is the thief's B, C and F, the owner's A
+/// and D retained, so its heads are F and D. The witness holds the owner's
+/// A, D and E as its chain, so it retains B and C and refuses F as past the
+/// depth cap. F is a head the witness could not keep, not one the authority
+/// withheld, so the poll is not a failure; the witness reads the same
+/// Error. Turns red if sync demands every attested head be held
+/// (EntryCommitmentMismatch). End to end over TCP.
+#[tokio::test]
+async fn witness_accepts_a_head_its_depth_cap_refused() {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+
+    let t = theft(false).await;
+    let pool = load_pool();
+    let (g, eve) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let mut f = t.c.fork().await.expect("fork");
+    create_key(&mut f, &eve, &kp(&pool, "alice"), NOW + 8).await;
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &g, &kp(&pool, "alice"), NOW + 7).await;
+
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    for (p, i) in [(&t.b, t.n), (&t.c, t.n + 1), (&f, t.n + 2)] {
+        assert_eq!(push(&app, p, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert!(push(&app, &t.a, t.n, &t.id).await.is_client_error());
+    assert!(push(&app, &t.d, t.n + 1, &t.id).await.is_client_error());
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let wstate = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    let hold = |p: &cyphr::Principal, i: usize| {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[i]
+            .bundle()
+            .expect("bundle");
+        let (state, id) = (wstate.clone(), t.id.clone());
+        async move { state.engine.submit_commit(&id, None, &bundle).await }
+    };
+    for i in 0..t.n {
+        hold(&t.shared, i).await.expect("shared");
+    }
+    hold(&t.a, t.n).await.expect("A");
+    hold(&t.d, t.n + 1).await.expect("D");
+    hold(&e, t.n + 2).await.expect("E");
+
+    let outcome = sync_from_authority(&wstate, &t.id).await;
+    assert!(
+        !matches!(outcome, SyncOutcome::Failed { .. }),
+        "a head refused by the witness's own cap is not withheld: {outcome:?}"
+    );
+    let f_id = commit_id_at(&f, t.n + 2).as_str().expect("id").to_owned();
+    assert!(
+        !wstate
+            .engine
+            .holds_commit(&t.id, &f_id)
+            .await
+            .expect("holds"),
+        "F is past the witness's depth cap"
+    );
+    assert!(errored(&wstate, &t.id).await, "the same Error");
+}
+
 /// Backs SPEC 15.8 and 6.1 ("create rejects duplicates", judged at the
 /// commit's own `pre`): two siblings at one position that both `key/create`
 /// the same key are one fork, not a duplicate. The second sibling is
