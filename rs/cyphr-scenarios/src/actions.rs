@@ -129,6 +129,8 @@ pub struct PeerTip {
     /// Every head the peer reports: `tip` alone while Active, each leaf
     /// above the fork point in Error.
     pub heads: Vec<Tip>,
+    /// The height (commit count up to it) of each head, in `heads` order.
+    pub head_heights: Vec<u64>,
     /// The peer's own consensus state, as its `/tip` says it: never read
     /// back from a head count.
     pub standing: Standing,
@@ -153,6 +155,11 @@ impl PeerTip {
             return Some(PeerTip {
                 principal_id: t["principal_id"].as_str()?.to_owned(),
                 tip: heads.first()?.clone(),
+                head_heights: t["heads"]
+                    .as_array()?
+                    .iter()
+                    .map(|h| Some(h["sequence"].as_u64()? + 1))
+                    .collect::<Option<_>>()?,
                 standing: Standing::Error,
                 fork_point: Some(t["fork_point"].clone()),
                 height: t["heads"][0]["sequence"].as_u64()? + 1,
@@ -165,6 +172,7 @@ impl PeerTip {
         Some(PeerTip {
             principal_id: t["principal_id"].as_str()?.to_owned(),
             heads: vec![tip.clone()],
+            head_heights: vec![t["commit_count"].as_u64()?],
             standing: Standing::Active,
             fork_point: None,
             tip,

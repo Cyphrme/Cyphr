@@ -192,15 +192,34 @@ impl Harness {
             "verdict evidence differs from the items the peers serve"
         );
 
-        // freshness: the lag the oracle observes. A newer height at any
-        // chosen peer than the verdict's tip means a peer reported newer.
-        let verdict_height = held
-            .iter()
-            .find(|(_, t)| t.heads.contains(&v.tip))
-            .map(|(_, t)| t.height);
-        let newer = held
-            .iter()
-            .any(|(_, t)| verdict_height.is_none_or(|h| t.height > h));
+        // freshness: the lag the oracle observes. The verdict claims no
+        // answering peer is ahead of it. Active, that is a height
+        // comparison with the verdict's tip. In Error a peer's heights are
+        // holder-relative (a line deeper than the peer's retained depth
+        // ends earlier there, and the verdict's tip is one representative
+        // among several), so the height of an Error peer is no measure of
+        // being ahead; what stays meaningful is that no Active peer is
+        // taller than the tallest branch the verdict reports.
+        let branch_height = |t: &Tip| {
+            held.iter()
+                .flat_map(|(_, h)| h.heads.iter().zip(&h.head_heights))
+                .filter(|(head, _)| *head == t)
+                .map(|(_, ht)| *ht)
+                .max()
+        };
+        let newer = if v.standing == Standing::Error {
+            let top = v.branches.iter().filter_map(branch_height).max();
+            held.iter()
+                .filter(|(_, t)| t.standing == Standing::Active)
+                .any(|(_, t)| top.is_none_or(|h| t.height > h))
+        } else {
+            let verdict_height = held
+                .iter()
+                .find(|(_, t)| t.heads.contains(&v.tip))
+                .map(|(_, t)| t.height);
+            held.iter()
+                .any(|(_, t)| verdict_height.is_none_or(|h| t.height > h))
+        };
         assert_eq!(
             v.freshness.peer_reported_newer, newer,
             "freshness.peer_reported_newer disagrees with the peers' heights"
