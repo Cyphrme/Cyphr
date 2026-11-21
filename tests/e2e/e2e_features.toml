@@ -806,10 +806,13 @@ tx = [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
 ]
 
 [test.expected]
-key_count = 3
+key_count = 4
 
 [[test]]
 name      = "t1_f11_case2"
@@ -821,10 +824,13 @@ tx = [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
 ]
 
 [test.expected]
-key_count = 3
+key_count = 4
 
 [[test]]
 name      = "t1_f11_case3"
@@ -836,10 +842,13 @@ tx = [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
 ]
 
 [test.expected]
-key_count = 3
+key_count = 4
 
 [[test]]
 name      = "t1_f11_case4"
@@ -851,10 +860,13 @@ tx = [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
 ]
 
 [test.expected]
-key_count = 3
+key_count = 4
 
 [[test]]
 name      = "t1_f11_case5"
@@ -866,10 +878,13 @@ tx = [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
 ]
 
 [test.expected]
-key_count = 3
+key_count = 4
 
 [[test]]
 name      = "t1_f12_case1"
@@ -3217,6 +3232,8 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
