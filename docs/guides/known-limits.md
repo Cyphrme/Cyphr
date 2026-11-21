@@ -57,8 +57,8 @@ A revoke stops a key from now on. It does not reach back.
   6.2, 6.5). A key that can remove another key K2 dates the removal, so
   K2's later-dated actions that were already accepted stop counting when
   the data is read. A peer can also withhold actions undetectably: an
-  action-only push forms no commit, so no signed root commits to it
-  (SPEC 4.8.1).
+  action-only push forms no commit, so no signed root commits to an
+  action until a later `ds/create` includes it (SPEC 4.8.2).
 
 What to do: treat a revoke as the start of recovery. Remove the key with a
 commit, check the commits dated near the revoke, and keep your servers'
@@ -79,8 +79,8 @@ clocks correct.
   key K at position d. Whoever holds K can later sign a different commit
   at d, because K was active just before d. That is a real fork and the
   principal enters Error. A revoke of K must be signed by K, which the
-  owner no longer holds, and K is already deleted, so no commit exits it
-  at Levels 1 to 4. The exit is the recovery strategy (SPEC 14), outside
+  owner no longer holds, and K is already deleted, so no commit
+  records an exit at Levels 1 to 4. The exit is the recovery strategy (SPEC 14), outside
   the chain (forge #203).
 - **A thief can win a fork race.** A thief whose branch is accepted first
   can extend it with a deletion of the owner's key, and the owner's later
@@ -88,9 +88,7 @@ clocks correct.
   resolution race (SPEC 15.8: the abandoned branch is permanently invalid).
 - **A fork resolves only by a commit.** The proof-of-possession
   resolution (`resync/create`, SPEC 15.8 item 2) is not implemented: the
-  Rust code has no coz kind for it. The spec author has asked for it to be
-  renamed an "assertion"; the specification does not carry the new name
-  yet.
+  Rust code has no coz kind for it.
 - **An Active verdict means no fork was seen, not that none exists.** The
   verdict covers the peers that answered. A peer that serves one head is
   not asked for fork evidence (`sync.rs` asks only when a peer reports

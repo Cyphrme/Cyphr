@@ -145,6 +145,9 @@ record as Active until the two exchange commits, so a fork still shows
 only to someone who compares the two. The owner's resolution reaches only
 the servers she pushes it to.
 
+What a verdict of Active does and does not mean is in
+[Known limits](../guides/known-limits.md).
+
 ## What you hold when you find one
 
 Two signed answers that conflict are proof that does not expire and

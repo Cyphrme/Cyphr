@@ -1170,6 +1170,11 @@ principal, disk per commit, throughput per core — is unmeasured.
 Named plainly, because finding these out during an incident is worse than
 reading them here:
 
+Limits of the protocol and of the checks around it (revocation timing,
+forks, embedded principals, promises the system does not keep) are in
+[Known limits](known-limits.md). What follows is specific to running the
+server.
+
 - **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
 - **No access log by default** (see above to turn one on); counters are `GET /metrics`.
