@@ -1,0 +1,40 @@
+# Example cyphr-server configuration. Every key below is one the binary
+# accepts today (rs/cyphr-server/src/config.rs); see
+# docs/guides/operating-a-server.md for what each buys.
+#
+# `admission` and `limits` are TOML-only: no flag or CYPHR_* variable sets
+# them. Everything else can be overridden by flags or environment.
+#
+# Keyless by default: with no signing_key_path the server stores and serves
+# commits but cannot sign receipts or issue logins. To run keyed, set
+# signing_key_path and audience together (configure both or neither).
+
+data_dir   = "/var/lib/cyphr"
+listen     = "127.0.0.1:3000" # ":0" picks a free port and prints it
+log_format = "pretty"         # "json" for a log pipeline
+mode       = "authority"
+
+# signing_key_path = "/etc/cyphr/signing-key.json"
+# audience = "login.example.com"
+
+# The Noise transport, a second listener that authenticates both ends as
+# principals. Off unless set; a keyless server refuses it (and serves HTTP
+# only), so set it together with signing_key_path. The per-address session
+# cap counts an IPv6 /64 as one address.
+# transport_listen = "127.0.0.1:3100"
+
+# Witness mode instead pulls from an upstream:
+# mode = "witness"
+# authority_url = "https://authority.example.com"
+
+[admission]
+policy = "open" # or "invite" with tokens_path = "/var/lib/cyphr/invites.txt"
+
+[limits]
+count_quota    = 1000000
+login          = { per_second = 50, burst = 100 }
+max_body_bytes = 2097152
+per_ip         = { per_second = 100, burst = 200 }
+push           = { per_second = 50, burst = 100 }
+read           = { per_second = 100, burst = 200 }
+revoke         = { per_second = 50, burst = 100 }

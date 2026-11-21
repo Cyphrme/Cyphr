@@ -17,19 +17,20 @@ level     = 1
 # KS = H(sort(tmb₀, tmb₁)) for multi-key via genesis transactions (SPEC §8.1)
 [[test]]
 name      = "ks_two_keys_sorted"
-principal = ["golden"]           # Start with single implicit key
+principal = ["golden"]           # One genesis key; the genesis adds the second
 
+# The genesis key creates itself first (SPEC 5.1 step 1), then key_a
+# (step 2), then the principal/create, whose id covers both keys (step 3).
 [[test.commit]]
 tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
   [
     { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
-    { now = 1700000002, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
   ],
 ]
 

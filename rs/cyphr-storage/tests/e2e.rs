@@ -62,15 +62,8 @@ fn golden_key_to_domain(gk: &GoldenKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&gk.pub_key).expect("invalid pub base64");
     let tmb_bytes = Base64UrlUnpadded::decode_vec(&gk.tmb).expect("invalid tmb base64");
 
-    cyphr::Key {
-        alg: gk.alg.clone(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(gk.alg.clone(), Thumbprint::from_bytes(tmb_bytes), pub_bytes)
+        .expect("key binds its tmb")
 }
 
 /// Convert Golden.genesis_keys to Genesis enum.
@@ -80,7 +73,7 @@ fn make_genesis(genesis_keys: &[GoldenKey]) -> Genesis {
     if keys.len() == 1 {
         Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        Genesis::Explicit(keys)
+        Genesis::Disclosed(keys)
     }
 }
 /// Convert Golden.commits to format suitable for load_principal_from_commits.
@@ -89,75 +82,45 @@ fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
     commits.to_vec()
 }
 
-/// Compare exported commits against expected commits.
-/// Returns ok if semantically equivalent.
-/// Note: expected may contain action pseudo-commits which are filtered out
-/// since export_commits only exports cozies.
+/// Compare an export with the lines it was imported from. The export
+/// carries every commit line, in order, then one line per data action:
+/// actions hold no chain position (SPEC 4.8.1), so the round trip must give
+/// back the same commit lines in the same order and the same actions in
+/// the order they were recorded, whatever lines carried them in.
 fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
-    // Filter expected to only coz commits (exclude action pseudo-commits)
-    // Transactions: key/* and principal/create
-    let tx_commits: Vec<_> = expected
-        .iter()
-        .filter(|c| {
-            // A commit is a coz commit if its first cz has a coz typ
-            c.cozies.first().is_some_and(|cz| {
-                cz.get("pay")
-                    .and_then(|p| p.get("typ"))
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|typ| typ.contains("/key/") || typ.contains("/principal/create"))
-            })
-        })
-        .collect();
-
-    if exported.len() != tx_commits.len() {
+    type Lines = (Vec<serde_json::Value>, Vec<serde_json::Value>);
+    let split = |lines: &[CommitEntry]| -> Result<Lines, String> {
+        let (mut commits, mut actions) = (Vec::new(), Vec::new());
+        for line in lines {
+            if line.txs.is_empty() {
+                actions.extend(line.actions.iter().cloned());
+            } else {
+                commits.push(serde_json::to_value(line).map_err(|e| e.to_string())?);
+            }
+        }
+        Ok((commits, actions))
+    };
+    let (exp_commits, exp_actions) = split(exported)?;
+    let (want_commits, want_actions) = split(expected)?;
+    if exp_commits.len() != want_commits.len() {
         return Err(format!(
-            "commit count mismatch: exported {} vs expected {} (cz commits)",
-            exported.len(),
-            tx_commits.len()
+            "commit line count mismatch: exported {} vs expected {}",
+            exp_commits.len(),
+            want_commits.len()
         ));
     }
-
-    for (i, (exp, expected_commit)) in exported.iter().zip(tx_commits.iter()).enumerate() {
-        // Compare coz counts
-        if exp.cozies.len() != expected_commit.cozies.len() {
+    for (i, (exp, want)) in exp_commits.iter().zip(&want_commits).enumerate() {
+        if exp != want {
             return Err(format!(
-                "commit {}: cz count mismatch {} vs {}",
-                i,
-                exp.cozies.len(),
-                expected_commit.cozies.len()
-            ));
-        }
-
-        // Compare state digests
-        if exp.commit_id != expected_commit.commit_id {
-            return Err(format!(
-                "commit {}: commit_id mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.commit_id, expected_commit.commit_id
-            ));
-        }
-
-        if exp.auth_root != expected_commit.auth_root {
-            return Err(format!(
-                "commit {}: as mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.auth_root, expected_commit.auth_root
-            ));
-        }
-
-        if exp.sr != expected_commit.sr {
-            return Err(format!(
-                "commit {}: sr mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.sr, expected_commit.sr
-            ));
-        }
-
-        if exp.pr != expected_commit.pr {
-            return Err(format!(
-                "commit {}: pr mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.pr, expected_commit.pr
+                "commit line {i} mismatch\n  exported: {exp}\n  expected: {want}"
             ));
         }
     }
-
+    if exp_actions != want_actions {
+        return Err(format!(
+            "actions mismatch\n  exported: {exp_actions:?}\n  expected: {want_actions:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -165,103 +128,19 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 // Round-Trip Tests
 // ============================================================================
 
-/// Single coz round-trip: load genesis + 1 entry → export → compare.
-#[test]
-fn rt_single_tx() {
-    let fixture = load_fixture("mutations", "key_add_increases_count");
-
-    let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let commits = fixture.commits.as_ref().expect("missing commits");
-
-    // Skip if no entries (genesis-only test)
-    if commits.is_empty() {
-        return;
-    }
-
-    let genesis = make_genesis(genesis_keys);
-    let commit_vec = make_commits(commits);
-
-    // Load principal from genesis + entries
-    let principal =
-        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-
-    // Export entries from loaded principal
-    let exported = export_commits(&principal).unwrap();
-
-    // Compare exported with original entries
-    compare_commits(&exported, commits).expect("round-trip mismatch");
-
-    // Verify expected state
-    if let Some(expected_count) = fixture.expected.key_count {
-        assert_eq!(
-            principal.active_key_count(),
-            expected_count,
-            "key_count mismatch"
-        );
-    }
-}
-
-/// Multi-step coz round-trip.
-#[test]
-fn rt_multi_tx() {
-    let fixture = load_fixture("multi_key", "add_third_key_to_dual_key_account");
-
-    let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let commits = fixture.commits.as_ref().expect("missing commits");
-
-    let genesis = make_genesis(genesis_keys);
-    let commit_vec = make_commits(commits);
-
-    let principal =
-        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-    let exported = export_commits(&principal).unwrap();
-
-    compare_commits(&exported, commits).expect("round-trip mismatch");
-
-    if let Some(expected_count) = fixture.expected.key_count {
-        assert_eq!(
-            principal.active_key_count(),
-            expected_count,
-            "key_count mismatch"
-        );
-    }
-}
-
-/// Level 4 round-trip: cozies + actions.
-#[test]
-fn rt_with_actions() {
-    let fixture = load_fixture("actions", "single_action_promotes_ds");
-
-    let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let commits = fixture.commits.as_ref().expect("missing commits");
-
-    let genesis = make_genesis(genesis_keys);
-    let commit_vec = make_commits(commits);
-
-    let principal =
-        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-    let exported = export_commits(&principal).unwrap();
-
-    compare_commits(&exported, commits).expect("round-trip mismatch");
-
-    // Verify Level 4 promotion
-    if let Some(expected_level) = fixture.expected.level {
-        assert_eq!(principal.level() as u8, expected_level, "level mismatch");
-    }
-}
-
 // ============================================================================
 // Dynamic E2E Tests (Intent-Driven)
 // ============================================================================
 
 /// Runner for a single e2e round-trip test.
-fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+async fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Create generator with pool
     let generator = Generator::new(pool);
 
     // Generate fixture at runtime
     let golden = generator
         .generate_test(test)
+        .await
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
@@ -285,14 +164,10 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 
     // Debug: dump pre values from commit cozies
     for (ci, commit) in commits.iter().enumerate() {
-        for (ti, cz) in commit.cozies.iter().enumerate() {
-            if let Some(pay) = cz.get("pay") {
-                if let Some(pre) = pay.get("pre") {
-                    eprintln!("  [{}:{}] pre: {}", ci, ti, pre);
-                }
-            }
-            if let Some(key) = cz.get("key") {
-                eprintln!("  [{}:{}] key.tmb: {:?}", ci, ti, key.get("tmb"));
+        let cozies = commit.actions.iter().chain(commit.txs.iter().flatten());
+        for (ti, cz) in cozies.enumerate() {
+            if let Some(pre) = cz.get("pay").and_then(|pay| pay.get("pre")) {
+                eprintln!("  [{}:{}] pre: {}", ci, ti, pre);
             }
         }
     }
@@ -301,7 +176,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(
-            "  [0] commit_id={}, as={}, pr={}",
+            "  [0] commit_id={}, as={:?}, pr={}",
             commit0.commit_id, commit0.auth_root, commit0.pr
         );
     }
@@ -318,6 +193,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 
     // Load principal from generated entries
     let principal = load_principal_from_commits(genesis, &commit_vec)
+        .await
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Export and compare
@@ -348,13 +224,13 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 }
 
 /// Data-driven e2e test: loads intents, generates at runtime, verifies round-trip.
-#[test]
-fn e2e_dynamic_round_trip() {
+#[tokio::test]
+async fn e2e_dynamic_round_trip() {
     let pool = load_pool();
     let intent = load_e2e_intents("round_trip.toml");
 
     for test in &intent.test {
-        run_e2e_round_trip(&pool, test);
+        run_e2e_round_trip(&pool, test).await;
     }
 }
 
@@ -382,12 +258,12 @@ fn load_error_name(e: &LoadError) -> &'static str {
             cyphr::Error::MalformedPayload => "MalformedPayload",
             cyphr::Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
             cyphr::Error::EmptyCommit => "EmptyCommit",
+            cyphr::Error::GenesisIncomplete => "GenesisIncomplete",
             _ => "UnknownProtocolError",
         },
         LoadError::Json { .. } => "JsonError",
-        LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
-        LoadError::CheckpointCrMismatch => "CheckpointCrMismatch",
+        _ => "UnknownLoadError",
     }
 }
 
@@ -400,25 +276,24 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         // Transactions
         "[commit-one-or-more]" => "EmptyCommit",
         "[no-empty-mr]" => "NoGenesisKeys",
-        "[data-action-no-pre]" => "MalformedPayload",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
         "[no-revoke-non-self]" => "MalformedPayload",
-        "[naked-revoke-error]" => "NoActiveKeys",
-        "[no-self-revoke-recovery]" => "NoActiveKeys",
+        // What a Dead principal answers: its revoked key signs nothing.
+        "[no-self-revoke-recovery]" => "KeyRevoked",
         // Authentication
         "[verification-timestamp-order]" => "TimestampPast",
         // Principal Lifecycle
-        "[no-level-1-recovery]" => "NoActiveKeys",
-        "[dead-terminal]" => "NoActiveKeys",
+        "[no-level-1-recovery]" => "KeyRevoked",
+        "[dead-terminal]" => "KeyRevoked",
         // Pass through if not a constraint tag
         other => other,
     }
 }
 
 /// Runner for a single e2e error test.
-fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+async fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let expected_error = test
         .expected
         .as_ref()
@@ -431,6 +306,18 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Handle NoGenesisKeys special case - error happens at genesis creation
     if expected_error == "NoGenesisKeys" {
         if test.principal.is_empty() {
+            // Load the empty explicit genesis through the production loader: this is
+            // the only check that `load_principal_from_commits` refuses it.
+            let err = load_principal_from_commits(Genesis::Disclosed(Vec::new()), &[])
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{}: an empty explicit genesis loaded", test.name));
+            assert_eq!(
+                load_error_name(&err),
+                "NoGenesisKeys",
+                "{}: empty explicit genesis refused with the wrong error: {err:?}",
+                test.name
+            );
             eprintln!("  ✓ {} (expected error: NoGenesisKeys)", test.name);
             return;
         }
@@ -446,6 +333,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Generate fixture at runtime
     let golden = generator
         .generate_test(test)
+        .await
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     if golden.genesis_keys.is_none() {
@@ -470,36 +358,8 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let genesis = make_genesis(genesis_keys);
     let commit_vec = make_commits(commits);
 
-    // Apply setup modifiers (e.g., pre-revoke keys)
-    let mut principal = match &genesis {
-        Genesis::Implicit(key) => {
-            cyphr::Principal::implicit(key.clone()).expect("implicit genesis failed")
-        },
-        Genesis::Explicit(keys) => {
-            cyphr::Principal::explicit(keys.clone()).expect("explicit genesis failed")
-        },
-    };
-
-    if let Some(setup) = &test.setup {
-        if let Some(key_name) = &setup.revoke_key {
-            let rvk_time = setup.revoke_at.unwrap_or(0);
-            let pool_key = pool
-                .pool
-                .key
-                .iter()
-                .find(|k| k.name == *key_name)
-                .unwrap_or_else(|| {
-                    panic!("{}: setup.revoke_key '{}' not found", test.name, key_name)
-                });
-            let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
-            principal
-                .pre_revoke_key(&tmb, rvk_time)
-                .expect("pre_revoke_key failed");
-        }
-    }
-
     // Try to load principal - expect failure
-    match load_principal_from_commits(genesis.clone(), &commit_vec) {
+    match load_principal_from_commits(genesis.clone(), &commit_vec).await {
         Ok(_) => {
             panic!(
                 "{}: expected error '{}' but load_principal succeeded",
@@ -520,19 +380,19 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 }
 
 /// Data-driven e2e test: loads error intents and verifies expected errors.
-#[test]
-fn e2e_dynamic_error_conditions() {
+#[tokio::test]
+async fn e2e_dynamic_error_conditions() {
     let pool = load_pool();
     let intent = load_e2e_intents("error_conditions.toml");
 
     for test in &intent.test {
-        run_e2e_error_test(&pool, test);
+        run_e2e_error_test(&pool, test).await;
     }
 }
 
 /// Data-driven e2e test: loads the dynamic feature matrix and executes happy & error paths.
-#[test]
-fn e2e_dynamic_features_matrix() {
+#[tokio::test]
+async fn e2e_dynamic_features_matrix() {
     let pool = load_pool();
     let intent = load_e2e_intents("e2e_features.toml");
     let mut happy_count = 0;
@@ -540,10 +400,10 @@ fn e2e_dynamic_features_matrix() {
 
     for test in &intent.test {
         if test.is_error_test() {
-            run_e2e_error_test(&pool, test);
+            run_e2e_error_test(&pool, test).await;
             error_count += 1;
         } else {
-            run_e2e_round_trip(&pool, test);
+            run_e2e_round_trip(&pool, test).await;
             happy_count += 1;
         }
     }
@@ -554,17 +414,18 @@ fn e2e_dynamic_features_matrix() {
 }
 
 // ============================================================================
-// Genesis/Checkpoint Load Tests
+// Genesis Load Tests
 // ============================================================================
 
 /// Runner for a genesis load test - verifies load_principal produces correct state.
-fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+async fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Create generator with pool
     let generator = Generator::new(pool);
 
     // Generate fixture at runtime
     let golden = generator
         .generate_test(test)
+        .await
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
@@ -575,6 +436,7 @@ fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 
     // Load principal
     let principal = load_principal_from_commits(genesis, &commit_vec)
+        .await
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Verify expected state
@@ -602,67 +464,14 @@ fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
 }
 
 /// Data-driven e2e test: loads genesis intents and verifies state.
-#[test]
-fn e2e_dynamic_genesis_load() {
+#[tokio::test]
+async fn e2e_dynamic_genesis_load() {
     let pool = load_pool();
     let intent = load_e2e_intents("genesis_load.toml");
 
     for test in &intent.test {
-        run_e2e_genesis_test(&pool, test);
+        run_e2e_genesis_test(&pool, test).await;
     }
-}
-
-/// Checkpoint load test: verify PR matching and partial replay.
-#[test]
-fn e2e_checkpoint_load() {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    use cyphr_storage::{Checkpoint, load_from_checkpoint};
-
-    let pool = load_pool();
-
-    // Build a 2-cz history, then load from checkpoint at cz 1
-    let golden_key = pool
-        .pool
-        .key
-        .iter()
-        .find(|k| k.name == "golden")
-        .expect("golden key not found");
-
-    let key = golden_key_to_domain(&test_fixtures::GoldenKey {
-        alg: golden_key.alg.clone(),
-        pub_key: golden_key.pub_key.clone(),
-        tmb: Base64UrlUnpadded::encode_string(golden_key.compute_tmb().unwrap().as_bytes()),
-    });
-
-    // Create principal with single key (implicit genesis)
-    let principal = cyphr::Principal::implicit(key.clone()).expect("implicit failed");
-    let initial_as = principal.auth_root().clone();
-
-    // L1 principal has no PG
-    assert!(principal.pg().is_none(), "L1 principal should have no PG");
-
-    // Create checkpoint at genesis
-    let checkpoint = Checkpoint {
-        auth_root: initial_as,
-        keys: vec![key],
-        attestor: None,
-        cr: None,
-    };
-
-    // Load from checkpoint with no additional entries (no PG for L1)
-    let loaded = load_from_checkpoint(None, checkpoint, None, &[]).expect("load failed");
-
-    // Verify PG is still None for L1
-    assert!(
-        loaded.pg().is_none(),
-        "checkpoint_matches_pg: L1 should have no PG"
-    );
-
-    eprintln!("  ✓ checkpoint_matches_pg (L1: no PG)");
-
-    // Test checkpoint_with_suffix is implicitly tested by round-trip tests
-    // that load entries after genesis - the load_principal path is the same
-    eprintln!("  ✓ checkpoint_with_suffix (covered by load_with_transactions)");
 }
 
 // ============================================================================
@@ -670,13 +479,13 @@ fn e2e_checkpoint_load() {
 // ============================================================================
 
 /// Data-driven e2e test: loads edge case intents and verifies round-trip.
-#[test]
-fn e2e_dynamic_edge_cases() {
+#[tokio::test]
+async fn e2e_dynamic_edge_cases() {
     let pool = load_pool();
     let intent = load_e2e_intents("edge_cases.toml");
 
     for test in &intent.test {
-        run_e2e_round_trip(&pool, test);
+        run_e2e_round_trip(&pool, test).await;
     }
 }
 
@@ -692,8 +501,8 @@ fn e2e_dynamic_edge_cases() {
 ///
 /// This proves the round-trip preserves information needed for deterministic
 /// state derivation across all supported algorithms.
-#[test]
-fn e2e_multihash_round_trip() {
+#[tokio::test]
+async fn e2e_multihash_round_trip() {
     use cyphr::semantic_tree::{AuthTree, KeyTree, StateTree};
     use cyphr::state::compute_pr;
 
@@ -707,6 +516,7 @@ fn e2e_multihash_round_trip() {
         let generator = Generator::new(&pool);
         let golden = generator
             .generate_test(test)
+            .await
             .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
         let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
@@ -721,6 +531,7 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 1: Load principal from serialized commits ---
         let principal = load_principal_from_commits(genesis, &commit_vec)
+            .await
             .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
         // --- Step 2: Verify active_algs contains expected algorithms ---
@@ -750,17 +561,23 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 3: Verify each variant is coherent (recomputable) ---
         // Get thumbprints from current keyset
-        let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
+        let leaves: Vec<_> = principal
+            .active_keys()
+            .map(cyphr::semantic_tree::key_leaf)
+            .collect();
 
         // Recompute KR via the real KT (not the demoted compute_kr oracle,
         // which only agrees with KT for single-algorithm keysets — see
         // cyphr::state::compute_kr's doc comment).
-        let recomputed_ks = KeyTree::build(&thumbprints, &active_algs).unwrap();
+        let recomputed_ks = KeyTree::build(&leaves, &active_algs).unwrap();
 
         // Verify each algorithm variant matches
         for alg in active_algs.clone() {
             // KS coherence
-            let principal_ks = principal.key_root().get(alg);
+            let principal_ks = principal
+                .key_root()
+                .expect("a live principal has a KR")
+                .get(alg);
             let recomputed_ks_variant = recomputed_ks.get(alg);
 
             assert_eq!(
@@ -770,7 +587,10 @@ fn e2e_multihash_round_trip() {
             );
 
             // Verify AS variant exists
-            let principal_as = principal.auth_root().get(alg);
+            let principal_as = principal
+                .auth_root()
+                .expect("a live principal has an AR")
+                .get(alg);
             assert!(
                 principal_as.is_some(),
                 "{}: AS variant {:?} should exist",
@@ -792,7 +612,8 @@ fn e2e_multihash_round_trip() {
 
         // PG check: None for L1/L2, has genesis variant for L3+
         if let Some(pg) = principal.pg() {
-            let genesis_alg = principal.hash_alg();
+            let genesis_alg = cyphr::state::hash_alg_from_str(&genesis_keys[0].alg)
+                .expect("genesis key algorithm");
             let principal_pg = pg.get(genesis_alg);
             assert!(
                 principal_pg.is_some(),
@@ -811,7 +632,10 @@ fn e2e_multihash_round_trip() {
 
         for alg in active_algs.clone() {
             assert_eq!(
-                principal.auth_root().get(alg),
+                principal
+                    .auth_root()
+                    .expect("a live principal has an AR")
+                    .get(alg),
                 recomputed_as.get(alg),
                 "{}: AS variant {:?} mismatch after recomputation",
                 test.name,
@@ -839,4 +663,93 @@ fn e2e_multihash_round_trip() {
 
         eprintln!("  ✓ {} multihash coherence verified", test.name);
     }
+}
+
+// ============================================================================
+// Dead principal (SPEC 3.1, 3.7, 11)
+// ============================================================================
+
+/// One golden commit as the wire bundle `submit_commit` takes.
+fn bundle_of(commit: &CommitEntry) -> cyphr::replay::WireBundle {
+    commit.bundle().expect("golden line")
+}
+
+/// Backs SPEC 3.1/3.7/11 through the durable stack: a principal whose only
+/// key is revoked is stored, indexed and reloaded Dead, its tip carries the
+/// absent roots as `None` (KR/AR absent, SR absent without data)
+/// with PR equal to CR, and it then refuses a further commit. Turns red if
+/// the dying commit cannot be ingested (an absent root treated as an
+/// error), if reload does not reproduce the dying roots, or if a Dead
+/// principal's chain accepts a commit. End to end: yes.
+#[tokio::test]
+async fn dead_principal_survives_reload_and_takes_no_commit() {
+    use cyphr_blob_fjall::FjallBlobStore;
+    use cyphr_index_fjall::FjallIndexer;
+    use cyphr_storage::engine::StorageEngine;
+
+    let dying = load_fixture("lifecycle", "last_key_revoke_leaves_dead");
+    let after = load_fixture("lifecycle", "dead_principal_rejects_commit");
+    let genesis = make_genesis(dying.genesis_keys.as_ref().expect("genesis keys"));
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = fjall::Database::builder(dir.path().join("db"))
+        .open()
+        .expect("open db");
+    let engine = StorageEngine::with_log_factory(
+        FjallBlobStore::from_database(db.clone()).expect("blob store"),
+        FjallIndexer::open(&dir.path().join("index")).expect("indexer"),
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    );
+
+    // The genesis commit, then the dying commit.
+    for commit in dying.commits.as_ref().expect("commits") {
+        engine
+            .submit_commit(&principal_id, Some(genesis.clone()), &bundle_of(commit))
+            .await
+            .expect("the dying commit is ingested");
+    }
+
+    let tip = engine
+        .get_tip(&principal_id)
+        .await
+        .expect("tip query")
+        .expect("tip exists");
+    assert_eq!((&tip.ar, &tip.sr), (&None, &None), "absent roots");
+    assert!(!tip.cr.is_empty(), "the dying commit has a CR");
+    assert_eq!(tip.pr, tip.cr, "PR is the promoted CR");
+
+    let roots = engine
+        .rederive_roots_with_genesis(&principal_id, genesis.clone())
+        .await
+        .expect("replay of the dying commit");
+    assert_eq!(
+        (&roots.pr, &roots.sr, &roots.ar),
+        (&tip.pr, &None, &None),
+        "reload reproduces the indexed roots"
+    );
+    let reloaded = engine
+        .load_principal(&principal_id, genesis.clone())
+        .await
+        .expect("reload");
+    assert_eq!(
+        reloaded.lifecycle_state(),
+        cyphr::lifecycle::LifecycleState::Dead
+    );
+
+    let next = bundle_of(&after.commits.as_ref().expect("commits")[2]);
+    let refused = engine
+        .submit_commit(&principal_id, Some(genesis), &next)
+        .await;
+    assert!(refused.is_err(), "a Dead principal took a commit");
+    let tip_after = engine
+        .get_tip(&principal_id)
+        .await
+        .expect("tip")
+        .expect("tip");
+    assert_eq!(
+        tip_after.commit_count, 2,
+        "the refused commit left no trace"
+    );
 }

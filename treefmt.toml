@@ -1,3 +1,6 @@
+[global]
+excludes = ["SPEC.md"]
+
 [formatter.nixfmt]
 command  = "nixfmt"
 excludes = ["build/Cargo.nix"]

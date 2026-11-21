@@ -49,8 +49,9 @@ release.
 
 Enforced in `rs/cyphr-server/src/routes.rs`'s `push()` and `tip()`
 handlers, and covered by `rs/cyphr-server/tests/receipts.rs`'s
-`keyless_push_and_tip_responses_stay_unsigned` and
-`keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned`.
+`keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned` and
+`rs/cyphr-server/tests/keyless_matrix.rs`'s
+`keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned`.
 
 ## Claim schema
 
@@ -91,9 +92,33 @@ bearer tokens already apply.
   post-state roots exactly as the tip payload does. Nested so the root
   `pr` (the post-commit Principal Root) never collides with the
   top-level `pr` claim (the genesis identifier) -- the two are different
-  facts that happen to share a SPEC field name. All four values are
-  tagged digest strings, satisfying SPEC §2.2.3's explicitly-labeled
-  exemption.
+  facts that happen to share a SPEC field name. `pr` is always a tagged
+  digest string, satisfying SPEC §2.2.3's explicitly-labeled exemption.
+  `sr`, `ar` and `cr` are tagged digest strings when present and MAY
+  instead be JSON `null`. `cr` (the Commit Root) is `null` for a
+  genesis-stage report: a principal that is key-established but has not
+  yet finalized a data commit has no commit root to attest. `ar` (the Auth
+  Root) is `null` for a Dead principal (SPEC §11: every key revoked or
+  deleted), which has no key tree left to root, unless a nonce remains
+  (SPEC §3.7, §10.2); its `sr` (the State Root) is then the Data Root
+  alone, or `null` when the principal holds no data. `null` means ABSENCE,
+  not an unknown value or an error -- a verifier MUST accept it as "no
+  such root," never refuse the receipt over it. A claim that omits `sr`,
+  `ar` or `cr` altogether is malformed, not an absent root, and the
+  envelope `v` is unchanged: `null` is the only encoding of absence. (The prior implementation signed an empty string for
+  this same case, itself not a valid tagged digest string either -- `null`
+  corrects the type of an absence that already existed here, not a new
+  gap this document is disclosing.) Pinned in
+  `rs/cyphr-server/src/receipt.rs`'s `Roots.sr`, `Roots.ar` and `Roots.cr`
+  (each `Option<String>`) and `sign_receipt`; the genesis-stage case is exercised by
+  `rs/cyphr-server/tests/receipts.rs`'s
+  `commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string`
+  and `rs/cyphr-server/tests/receipt_typed_domain.rs`'s
+  `genesis_commit_root_is_accepted`; the Dead-principal case by
+  `rs/cyphr-server/tests/dead_attestation.rs`'s
+  `dying_commit_push_and_tip_attest_absent_roots_as_null` and
+  `receipt_typed_domain.rs`'s
+  `null_sr_and_ar_are_absent_roots_but_a_missing_field_is_malformed`.
 
 ### Additional claims (tip reports only)
 
@@ -116,9 +141,12 @@ not a ruling -- each is recorded explicitly:
 
 - **Patch -- EXCLUDED.** Patch content is self-certifying chain data:
   every coz it returns already carries its own signature, and the tip
-  report (not a per-commit statement) is the freshness attestation over
-  that chain. Signing patch responses would attest nothing a client
-  cannot already verify from the coz content itself.
+  report (not a per-commit statement) is the signed claim about where
+  that chain stands. The tip report is not a freshness attestation: it
+  carries `now`, but nothing binds it to a request, so a genuine report
+  can be replayed while the authority advances (forge #152, open).
+  Signing patch responses would attest nothing a client cannot already
+  verify from the coz content itself.
 - **Entity -- EXCLUDED**, unchanged from `docs/specs/http-envelope.md`
   `[envelope-r-entity]`: raw content-addressed bytes never join the
   envelope at all.
@@ -146,7 +174,7 @@ response those configurations produced before this document.
 Covered by `rs/cyphr-server/tests/keyless_matrix.rs` and
 `rs/cyphr-server/tests/receipts.rs`.
 
-### `[receipts-r-stateless]` Issuance is stateless (decision D2)
+### `[receipts-r-stateless]` Issuance is stateless
 
 The server persists nothing new to issue a receipt: no receipt log, no
 retention window, no server-side received-at timestamp. The recipient
@@ -165,6 +193,33 @@ the ability to fetch the server's chain.
 
 `rs/cyphr-server/src/receipt.rs`'s `sign_receipt` has no side effects
 beyond signing, and this design introduces no new persistence surface.
+
+### `[receipts-r-durable-before-sign]` An attestor signs only over durable state
+
+A receipt or tip report is a signed presence claim: it says commit X
+stands at sequence n in the record this server holds, and a client keeps
+it as lasting evidence. The pinned equivocation predicate below treats two
+signed claims at one sequence with different commits as proof of
+misbehavior, which presumes the server's view only grows. If a power cut
+could erase a commit the server had signed over, the restarted server
+would accept a rival at that sequence, sign it, and the two statements
+would meet the predicate against an honest server.
+
+A held statement (a tip report for a principal in Error) is the same
+kind of claim: it names the tied heads and when each was first seen, so
+the retained rival behind it is made durable before it is listed. A
+power cut that erased it would restart the principal Active at the same
+height, and the server would sign an Active tip, or a held statement with
+a different `held_since`, against the one it signed before.
+
+So the engine makes the record durable before `submit_commit` returns
+(`storage-engine.md` `[record-durable-first]`), and the server signs only
+after that. This adds no persistence surface to issuing a receipt: it
+hardens the write that already happens, and issuance stays stateless. It
+binds an attestor; a keyless server signs nothing, and pays the same
+sync, because the engine has no role flag.
+
+Covered by `rs/cyphr-storage/tests/sync_order.rs`.
 
 ### `[receipts-r-genesis-hint]` The genesis key is a trustless hint
 
@@ -208,7 +263,7 @@ issued it, using only HTTP responses and local replay:
 4. **Replay into a SECOND, independent local engine** -- a fresh
    in-memory `StorageEngine`, never the server's own engine or state.
    Submit each patch entry's blobs via `submit_commit`, passing
-   `Genesis::Explicit(vec![genesis_key])` explicitly on every call: the
+   `Genesis::Disclosed(vec![genesis_key])` explicitly on every call: the
    genesis key is never embedded on the wire, so auto-detection cannot
    recover it from the replayed blobs themselves.
 5. **Confirm the receipt's signing key is active in the REPLAYED

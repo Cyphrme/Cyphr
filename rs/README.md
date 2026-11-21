@@ -17,12 +17,13 @@ cyphr = { path = "path/to/cyphr/rs" }
 use cyphr::{Principal, Key};
 use coz::Algorithm;
 
-fn main() -> cyphr::error::Result<()> {
+async fn run() -> cyphr::error::Result<()> {
     // Generate a key
     let key = Key::generate(Algorithm::ES256)?;
 
-    // Implicit genesis: single key, identity = thumbprint
-    let principal = Principal::implicit(key)?;
+    // Implicit genesis: single key, identity = thumbprint. Async: it opens
+    // the principal's commit log (here in memory).
+    let principal = Principal::implicit(key).await?;
 
     println!("Identity (PR): {:?}", principal.pr());
     println!("Level: {:?}", principal.level()); // Level::L1
@@ -45,7 +46,7 @@ let vtx = verify_coz(
 )?;
 
 // Apply verified coz as atomic commit
-let commit = principal.apply_transaction(vtx)?;
+let commit = principal.apply_transaction(vtx).await?;
 ```
 
 ### Multi-Coz Commits
@@ -54,8 +55,16 @@ let commit = principal.apply_transaction(vtx)?;
 let mut scope = principal.begin_commit();
 scope.apply(vtx1)?;
 scope.apply(vtx2)?;
-let commit = scope.finalize()?;
+let commit = scope.finalize().await?;
 ```
+
+A commit is two-phase: `scope.stage().await?` verifies it and computes
+every root, the commit-log append included, with nothing written; the
+returned `StagedCommit`'s `commit().await` performs the one log write and
+adopts the new state. `finalize` is both. A caller that records the commit
+elsewhere first (the storage engine writes its blob store) stages, records,
+then commits. Every call that reads or writes the log is async; its futures
+are `Send` whenever the storage is.
 
 ### Record Actions (Level 4)
 
@@ -79,26 +88,28 @@ principal.record_action(action)?;
 
 ### Genesis
 
-| Function                    | Description                                   |
-| --------------------------- | --------------------------------------------- |
-| `Principal::implicit(key)`  | Single-key genesis, PR = key thumbprint       |
-| `Principal::explicit(keys)` | Multi-key genesis, PR = H(sorted thumbprints) |
+| Function                                         | Description                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------- |
+| `Principal::implicit(key)`                       | The only constructor: a principal is its genesis key, PR = key thumbprint |
+| `Principal::open(key, storage)`                  | The same over a given storage backend (async)                             |
+| `commit_genesis(signer, others, now, authority)` | Genesis commit (Level 3+): creates the genesis key and `others`, sets PG  |
+| `fork()`                                         | Independent copy, only over storage that copies (`ForkStorage`)           |
 
 ### State Accessors
 
-| Method          | Returns                     | Description                             |
-| --------------- | --------------------------- | --------------------------------------- |
-| `pg()`          | `Option<&PrincipalGenesis>` | Permanent identity (None for L1/L2)     |
-| `pr()`          | `&PrincipalRoot`            | Current principal root (evolves)        |
-| `sr()`          | `Option<&StateRoot>`        | State root = MR(AR, DR?)                |
-| `auth_root()`   | `&AuthRoot`                 | Auth root = MR(KR, RR?)                 |
-| `key_root()`    | `&KeyRoot`                  | Key root = MR(thumbprints)              |
-| `data_root()`   | `Option<&DataRoot>`         | Data root = H(action czds), None if L<4 |
-| `cr()`          | `Option<&CommitRoot>`       | Commit root (MALT of TRs)               |
-| `current_tr()`  | `Option<&TransactionRoot>`  | Transaction root of latest commit       |
-| `level()`       | `Level`                     | Current feature level (L1-L4)           |
-| `hash_alg()`    | `HashAlg`                   | Primary hash algorithm                  |
-| `active_algs()` | `&[HashAlg]`                | Hash algorithms from active keyset      |
+| Method          | Returns                     | Description                              |
+| --------------- | --------------------------- | ---------------------------------------- |
+| `pg()`          | `Option<&PrincipalGenesis>` | Permanent identity (None for L1/L2)      |
+| `pr()`          | `&PrincipalRoot`            | Current principal root (evolves)         |
+| `sr()`          | `Option<&StateRoot>`        | State root = MR(AR?, DR?); None if Dead  |
+| `auth_root()`   | `Option<&AuthRoot>`         | Auth root = MR(KR, RR?); None if Dead    |
+| `key_root()`    | `Option<&KeyRoot>`          | Key root = MR(thumbprints); None if Dead |
+| `data_root()`   | `Option<&DataRoot>`         | Data root = H(action czds), None if L<4  |
+| `cr()`          | `Option<&CommitRoot>`       | Commit root (MALT of TRs)                |
+| `current_tr()`  | `Option<&TransactionRoot>`  | Transaction root of latest commit        |
+| `level()`       | `Level`                     | Current feature level (L1-L4)            |
+| `hash_alg()`    | `HashAlg`                   | Primary hash algorithm                   |
+| `active_algs()` | `&[HashAlg]`                | Hash algorithms from active keyset       |
 
 ### Cozies
 
@@ -122,11 +133,11 @@ principal.record_action(action)?;
 ```rust
 use cyphr::Error;
 
-match principal.apply_transaction(vtx) {
+match principal.apply_transaction(vtx).await {
     Ok(_) => { /* success */ }
     Err(Error::TimestampPast) => { /* timestamp too old */ }
     Err(Error::DuplicateKey) => { /* key already in KR */ }
-    Err(Error::NoActiveKeys) => { /* would leave 0 keys */ }
+    Err(Error::NoActiveKeys) => { /* key/delete would leave 0 keys */ }
     Err(Error::EmptyCommit) => { /* finalized with no cozies */ }
     Err(Error::CommitMismatch) => { /* arrow doesn't match computed state */ }
     Err(e) => { /* other error */ }

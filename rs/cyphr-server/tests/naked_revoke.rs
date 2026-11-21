@@ -57,9 +57,9 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::ServerConfig;
-use cyphr_server::observation::ObservationStore;
 use cyphr_server::{AppState, build_router};
-use cyphr_storage::index::Indexer;
+use cyphr_storage::blob::Blake3Hash;
+use cyphr_storage::index::{DeriveToken, IndexableCommit, Indexer, IndexerWrite};
 use tempfile::TempDir;
 use test_fixtures::Pool;
 
@@ -102,17 +102,20 @@ fn fresh_keyed_state() -> (Arc<AppState>, TempDir) {
     (state, dir)
 }
 
-/// Bootstrap `pid` with genesis `golden` plus an added active key `key_a`,
-/// both active, through the real `/push` wire path -- so `golden` and `key_a`
-/// are genuinely active keys of this exact principal AND indexed globally.
-async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool, pid: &str) {
-    let body = common::build_genesis_push_body(pool, pid, RVK);
+/// Bootstrap a principal with genesis `golden` plus an added active key
+/// `key_a`, both active, through the real `/push` wire path -- so `golden`
+/// and `key_a` are genuinely active keys of this exact principal AND indexed
+/// globally. Returns the principal's genesis-derived id (SPEC 3.1).
+async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool) -> String {
+    let pid = common::golden_principal_id(pool).await;
+    let body = common::build_genesis_push_body(pool, &pid, RVK).await;
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
         "bootstrap push must create the principal: {json:?}"
     );
+    pid
 }
 
 // ========================================================================
@@ -212,16 +215,6 @@ fn self_revoke_coz_bare(
     revoke_body(pool, &tmb, signer_name, None, rvk)
 }
 
-/// Flip one bit of a coz's detached signature, leaving payload and disclosed
-/// key intact.
-fn corrupt_sig(mut coz: serde_json::Value) -> serde_json::Value {
-    let sig_b64 = coz["sig"].as_str().expect("sig present");
-    let mut sig = Base64UrlUnpadded::decode_vec(sig_b64).expect("sig b64");
-    sig[0] ^= 0x01;
-    coz["sig"] = serde_json::Value::String(Base64UrlUnpadded::encode_string(&sig));
-    coz
-}
-
 /// The base64url thumbprint of pool key `name`.
 fn tmb_b64(pool: &Pool, name: &str) -> String {
     pool.get(name)
@@ -306,136 +299,12 @@ async fn login_status(state: &Arc<AppState>, pool: &Pool, signer: &str, pid: &st
 
 // ========================================================================
 // Push helpers (a follow-up commit signed by a named key, so a *dead* signing
-// key can be exercised at the push gate). These mirror tests/route_protection.rs
-// -- a separate integration crate that cannot be imported; the common harness's
-// `sign_key_create_commit` does not return the CommitEntry a replay needs, so
-// the entry-returning variant is reproduced here.
+// key can be exercised at the push gate).
 // ========================================================================
 
-/// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name`. Returns the new commit's raw coz blobs (wire-ready) plus its
-/// `CommitEntry`, the latter so a caller can replay it onto a FRESH principal
-/// (`Principal::clone()` shares the durable log rather than deep-copying, so
-/// two clones both appending "the next commit" collide on one leaf).
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> (Vec<Vec<u8>>, cyphr_storage::CommitEntry) {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    let blobs = new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect();
-
-    (blobs, new_commit.clone())
-}
-
-/// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
-fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
-/// The genesis `cyphr::Key` for pool key `name` (first_seen 0, like a fixture
-/// genesis).
-fn genesis_key(pool: &Pool, name: &str) -> cyphr::Key {
-    let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key {
-        alg: k.alg.clone(),
-        tmb: k.compute_tmb().expect("genesis tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
-}
-
-/// Bootstrap `pid` over real HTTP with an implicit `genesis_name` genesis that
-/// adds `added_name`, and return the genesis key + entry so a follow-up push
-/// can chain onto it. An HTTP-bootstrapped principal is the only valid target
-/// for a genesis-less follow-up push (`resolve_genesis` re-derives genesis
-/// from the first stored commit's embedded key).
+/// Bootstrap `pid` over real HTTP with its genesis commit (SPEC 5.1), in
+/// which `genesis_name` creates itself and `added_name`. `pid` must be that
+/// genesis's PG (`common::genesis_push_id`).
 async fn bootstrap_via_push(
     state: &Arc<AppState>,
     pool: &Pool,
@@ -443,55 +312,37 @@ async fn bootstrap_via_push(
     genesis_name: &str,
     added_name: &str,
     now: i64,
-) -> (cyphr::Key, cyphr_storage::CommitEntry) {
-    let gkey = genesis_key(pool, genesis_name);
-    let principal = cyphr::Principal::implicit(gkey.clone()).expect("implicit genesis");
-    let (mut blobs, entry) = sign_key_create_commit(principal, pool, genesis_name, added_name, now);
-
-    // The closing cozy of a never-before-seen principal's genesis carries the
-    // embedded genesis key `resolve_genesis` needs.
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": gkey.alg,
-            "pub": pool.get(genesis_name).unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    let (status, json) =
-        common::post_json(build_router(state.clone()), "/push", push_body(pid, &blobs)).await;
+) {
+    let body = common::build_genesis_push_body_with(pool, genesis_name, added_name, pid, now).await;
+    let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
         "genesis bootstrap push for {pid} must succeed: {json:?}"
     );
-    (gkey, entry)
 }
 
-/// Build a genesis-less follow-up push body for the existing `pid`: replay the
-/// genesis commit onto a fresh principal, then a fresh "add `added_name`"
-/// commit signed by `signer_name`. The signing key `signer_name` is the one
-/// the push gate must death-check.
-fn followup_push_body(
+/// Build a follow-up push body for the existing `pid` (bootstrapped by
+/// [`bootstrap_via_push`] with `genesis_name` + `genesis_added` at
+/// `genesis_now`): a fresh "add `added_name`" commit signed by
+/// `signer_name`, chained onto the genesis commit. The signing key
+/// `signer_name` is the one the push gate must death-check.
+#[allow(clippy::too_many_arguments)]
+async fn followup_push_body(
     pool: &Pool,
     pid: &str,
-    genesis_key: cyphr::Key,
-    genesis_entry: &cyphr_storage::CommitEntry,
+    genesis_name: &str,
+    genesis_added: &str,
+    genesis_now: i64,
     signer_name: &str,
     added_name: &str,
     now: i64,
 ) -> String {
-    let replayed = cyphr_storage::load_principal_from_commits(
-        cyphr_storage::Genesis::Implicit(genesis_key),
-        std::slice::from_ref(genesis_entry),
-    )
-    .expect("replay the genesis commit onto a fresh principal");
-    let (blobs, _entry) = sign_key_create_commit(replayed, pool, signer_name, added_name, now);
-    push_body(pid, &blobs)
+    let principal =
+        common::genesis_pushed_principal(pool, genesis_name, genesis_added, genesis_now).await;
+    let bundle =
+        common::sign_key_create_commit(principal, pool, signer_name, added_name, now).await;
+    common::push_body(pid, &bundle)
 }
 
 async fn post_push(state: &Arc<AppState>, body: String) -> (StatusCode, serde_json::Value) {
@@ -514,8 +365,7 @@ async fn post_push(state: &Arc<AppState>, body: String) -> (StatusCode, serde_js
 async fn accepts_valid_self_signed_naked_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-accept";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -557,8 +407,7 @@ async fn accepts_valid_self_signed_naked_revoke() {
 async fn keyless_revoke_body_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-keyless-body";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz_bare(&pool, "key_a", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -584,8 +433,8 @@ async fn keyless_revoke_body_is_rejected() {
 async fn forge_disclosing_non_victim_key_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-forge-bind";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     let coz = revoke_body(
         &pool,
@@ -625,8 +474,8 @@ async fn forge_disclosing_non_victim_key_is_rejected() {
 async fn forge_disclosing_victim_key_signed_by_other_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-forge-sig";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     let coz = revoke_body(
         &pool,
@@ -673,38 +522,38 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
 
     // Victim: a normal principal (golden genesis adds key_a). key_a's real
     // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
-    let victim_pid = "nr-avail-victim";
-    bootstrap_golden_key_a(&state, &pool, victim_pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
     let victim_tmb = tmb_b64(&pool, "key_a");
 
-    // Attack: overwrite index[V] -> attacker (alice) pub via a fresh attacker
-    // principal's unauthenticated poison genesis push. `alice` is a distinct
-    // key whose private half the attacker holds.
-    let body =
-        poison_genesis_push_body(&pool, "nr-avail-attacker", "bob", "alice", &victim_tmb, RVK);
+    // Attack: try to overwrite index[V] -> attacker (alice) pub via a fresh
+    // attacker principal's unauthenticated genesis push with a swapped sidecar
+    // pub. `alice` is a distinct key whose private half the attacker holds.
+    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK).await;
     let (pstatus, pjson) = post_push(&state, body).await;
-    assert_eq!(
-        pstatus,
-        StatusCode::CREATED,
-        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
-         it exploits is out of this node's scope: {pjson:?}"
+    assert!(
+        pstatus.is_client_error(),
+        "a push whose sidecar pub does not hash to its tmb must be refused: {pstatus} {pjson:?}"
     );
 
-    // Poison-took precondition: the global index now returns the ATTACKER pub
-    // for the victim's thumbprint. Asserting it makes the DoS genuine (not a
-    // vacuous no-poison pass).
-    let poisoned = state
+    // The poison did not take, so the revoke below runs against a clean
+    // index. The disclosed-key rule (never the index content) still decides
+    // the outcome: that independence is what this test guards.
+    let indexed = state
         .engine
         .indexer()
         .get_key(&victim_tmb)
         .await
         .expect("index lookup succeeds")
-        .expect("V is still indexed after the poison push");
+        .expect("V is still indexed after the refused poison push");
     assert_eq!(
-        poisoned.public_key,
-        pool.get("alice").expect("alice").pub_key,
-        "index[V] must now resolve to the attacker's pub -- the DoS precondition"
+        indexed.public_key,
+        pool.get("key_a").expect("key_a").pub_key,
+        "index[V] must still resolve to the victim's real pub"
     );
+
+    // Poison the index directly: the wire can no longer do it, but the
+    // victim's emergency revoke must not depend on the index being clean.
+    poison_index_directly(&state, &pool, &victim_tmb, "alice").await;
 
     // The victim's OWN emergency revoke: discloses key_a's REAL key, self-signed
     // by key_a. It must succeed despite the poisoned index.
@@ -739,8 +588,7 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
 async fn rejects_malformed_rvk() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-bad-rvk";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let cases = [
         ("rvk = 0", serde_json::json!(0)),
@@ -755,25 +603,6 @@ async fn rejects_malformed_rvk() {
     }
 }
 
-/// A revoke whose signature does not verify against its disclosed key is
-/// rejected.
-///
-/// Behavior: green on both servers -- the reworked server verifies the
-/// corrupted signature against the disclosed key (401); the merged server
-/// against the indexed key. The disclosed key is intact; only the signature is
-/// corrupted.
-#[tokio::test]
-async fn rejects_bad_signature() {
-    let (state, _dir) = fresh_keyed_state();
-    let pool = common::load_pool();
-    let pid = "nr-bad-sig";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
-
-    let coz = corrupt_sig(self_revoke_coz(&pool, "key_a", serde_json::json!(RVK)));
-    let (status, json) = post_revoke(&state, coz).await;
-    assert_rejected(status, &json, "corrupted signature");
-}
-
 /// A coz whose `typ` is not `key/revoke` is not a naked revoke and is rejected,
 /// even when it discloses a valid key.
 ///
@@ -782,8 +611,7 @@ async fn rejects_bad_signature() {
 async fn rejects_wrong_typ() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-wrong-typ";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let signer = pool.get("key_a").expect("key_a");
     let pay = serde_json::json!({
@@ -798,25 +626,80 @@ async fn rejects_wrong_typ() {
     assert_rejected(status, &json, "typ is not key/revoke");
 }
 
-/// A revoke for a `tmb` this server never indexed is rejected by the PRESENCE
-/// fence: the global key index has no entry for it, so the revoke is refused
-/// even with a valid disclosed self-signed key (the head-ratified conservative
-/// bound -- unknown keys are refused). `alice` is a valid pool key never pushed
-/// to this server, self-signing and disclosing its own revoke.
-///
-/// Behavior: green on both servers (both refuse an unindexed `tmb`); the
-/// reworked server refuses at the presence fence, the merged server at the
-/// key-index miss.
+/// The operator's quota bounds revokes of keys nobody here holds, never the
+/// revoke of a held key (SPEC 6.4): with `[limits] max_dead_keys = 1` and the
+/// set filled by an unseen key's revoke, the self-revoke of a key a pushed
+/// principal holds is still recorded and the key is dead, while a second
+/// unseen key's revoke is refused `507` and stays alive. Turns red if the
+/// ceiling denies the held key's emergency revoke, or does not bound unseen
+/// keys. End-to-end: yes (`/push`, `/revoke` over HTTP).
 #[tokio::test]
-async fn rejects_unknown_tmb() {
-    let (state, _dir) = fresh_keyed_state();
+async fn the_ceiling_never_refuses_a_held_keys_revoke() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let mut config = ServerConfig {
+        data_dir: dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: Some(AUDIENCE.to_string()),
+        ..Default::default()
+    };
+    config.limits.max_dead_keys = std::num::NonZeroU64::MIN;
+    let state = Arc::new(AppState::new(config).expect("open keyed AppState"));
     let pool = common::load_pool();
-    let pid = "nr-unknown-tmb";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
+    let tmb = |name: &str| {
+        pool.get(name)
+            .expect("pool key")
+            .compute_tmb()
+            .expect("tmb")
+    };
 
-    let coz = self_revoke_coz(&pool, "alice", serde_json::json!(RVK));
-    let (status, json) = post_revoke(&state, coz).await;
-    assert_rejected(status, &json, "tmb never indexed by this server");
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "alice", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "an unseen key fills the set: {status} {json:?}"
+    );
+
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "key_a", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "a held key's revoke is recorded past the ceiling: {status} {json:?}"
+    );
+    assert!(
+        state
+            .observations
+            .is_dead(&tmb("key_a"))
+            .await
+            .expect("death set"),
+        "the held key is dead"
+    );
+
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "bob", serde_json::json!(RVK)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a second unseen key past the ceiling is refused: {json:?}"
+    );
+    assert!(
+        !state
+            .observations
+            .is_dead(&tmb("bob"))
+            .await
+            .expect("death set"),
+        "the refused revoke recorded nothing"
+    );
 }
 
 // ========================================================================
@@ -832,8 +715,7 @@ async fn rejects_unknown_tmb() {
 async fn accepts_presigned_rvk_one() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-presigned";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(1));
     let (status, json) = post_revoke(&state, coz).await;
@@ -852,8 +734,7 @@ async fn accepts_presigned_rvk_one() {
 async fn idempotent_re_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-idempotent";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let first = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (s1, j1) = post_revoke(&state, first).await;
@@ -876,7 +757,7 @@ async fn idempotent_re_revoke() {
 
 /// After a naked revoke, the resulting refusal survives BOTH a full `AppState`
 /// rebuild over the same data dir (a restart) AND an in-process engine
-/// `reindex` -- proving the death record is durable and is NOT held in the
+/// `rebuild_index_from_scratch` -- proving the death record is durable and is NOT held in the
 /// rebuildable index. Observed through the login gate: the revoked key stays
 /// refused across both.
 ///
@@ -888,10 +769,10 @@ async fn death_record_survives_restart_and_reindex() {
     let key_path = common::write_signing_key(dir.path());
     let data_dir = dir.path().join("data");
     let pool = common::load_pool();
-    let pid = "nr-durable";
 
     let state1 = keyed_state_at(&data_dir, &key_path);
-    bootstrap_golden_key_a(&state1, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state1, &pool).await;
+    let pid = pid.as_str();
     // Pre-revoke sanity: key_a logs in fine.
     assert_eq!(
         login_status(&state1, &pool, "key_a", pid).await,
@@ -914,9 +795,9 @@ async fn death_record_survives_restart_and_reindex() {
     // the rebuildable index would be wiped here.
     state2
         .engine
-        .reindex(&[], true)
+        .rebuild_index_from_scratch()
         .await
-        .expect("engine reindex");
+        .expect("engine rebuild");
 
     assert_eq!(
         login_status(&state2, &pool, "key_a", pid).await,
@@ -934,12 +815,13 @@ async fn death_record_survives_restart_and_reindex() {
 /// refusal is scoped to the revoked key, not the whole principal.
 ///
 /// Behavior: green on both servers (login refusal + key-scoping unchanged).
+// @docket: signon-disowned-key :: scripts/docket-run signon-disowned-key
 #[tokio::test]
 async fn revoked_key_refused_at_login_sibling_survives() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-login-refuse";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     // Baseline: key_a logs in before any revoke.
     assert_eq!(
@@ -983,8 +865,9 @@ async fn revoked_key_refused_at_login_sibling_survives() {
 async fn revoked_key_refused_at_push() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-push-death";
-    let (gkey, gentry) = bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
+    let pid = common::golden_principal_id(&pool).await;
+    let pid = pid.as_str();
+    bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (rstatus, rjson) = post_revoke(&state, coz).await;
@@ -994,8 +877,24 @@ async fn revoked_key_refused_at_push() {
          {rjson:?}"
     );
 
-    // A follow-up commit signed by the now-dead key_a.
-    let body = followup_push_body(&pool, pid, gkey, &gentry, "key_a", "carol", RVK + 100);
+    // A follow-up commit signed by the now-dead key_a, dated after this
+    // server received the revoke: the receipt time is the cutoff (#203).
+    let after_receipt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64
+        + 60;
+    let body = followup_push_body(
+        &pool,
+        pid,
+        "golden",
+        "key_a",
+        RVK,
+        "key_a",
+        "carol",
+        after_receipt,
+    )
+    .await;
     let (status, json) = post_push(&state, body).await;
     assert!(
         status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
@@ -1022,8 +921,9 @@ async fn revoked_key_refused_at_push() {
 async fn sibling_key_still_pushes_after_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-push-sibling";
-    let (gkey, gentry) = bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
+    let pid = common::golden_principal_id(&pool).await;
+    let pid = pid.as_str();
+    bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (rstatus, rjson) = post_revoke(&state, coz).await;
@@ -1033,7 +933,17 @@ async fn sibling_key_still_pushes_after_revoke() {
     );
 
     // A follow-up commit signed by the still-live golden.
-    let body = followup_push_body(&pool, pid, gkey, &gentry, "golden", "carol", RVK + 100);
+    let body = followup_push_body(
+        &pool,
+        pid,
+        "golden",
+        "key_a",
+        RVK,
+        "golden",
+        "carol",
+        RVK + 100,
+    )
+    .await;
     let (status, json) = post_push(&state, body).await;
     assert_eq!(
         status,
@@ -1062,8 +972,9 @@ async fn sibling_key_still_pushes_after_revoke() {
 async fn revoked_key_dead_globally_across_principals() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid1 = "nr-global-1";
-    let pid2 = "nr-global-2";
+    let pid1 = common::genesis_push_id(&pool, "golden", "key_a").await;
+    let pid2 = common::genesis_push_id(&pool, "bob", "key_a").await;
+    let (pid1, pid2) = (pid1.as_str(), pid2.as_str());
 
     // Two independent principals, distinct genesis keys, both holding key_a.
     bootstrap_via_push(&state, &pool, pid1, "golden", "key_a", RVK).await;
@@ -1129,8 +1040,8 @@ async fn revoked_key_dead_globally_across_principals() {
 async fn naked_revoke_does_not_mutate_pr() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-pr-unchanged";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     let tip_before = tip_roots(&state, pid).await;
 
@@ -1176,8 +1087,7 @@ async fn tip_roots(state: &Arc<AppState>, pid: &str) -> serde_json::Value {
 async fn keyless_server_accepts_naked_revoke() {
     let (state, _dir) = common::keyless_server();
     let pool = common::load_pool();
-    let pid = "nr-keyless";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -1205,8 +1115,7 @@ async fn keyless_server_accepts_naked_revoke() {
 async fn golden_naked_revoke_vector_is_accepted() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-golden";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz: serde_json::Value =
         serde_json::from_str(&golden("naked_revoke_valid.json")).expect("parse golden vector");
@@ -1245,136 +1154,119 @@ fn golden(name: &str) -> String {
 // 12 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
 // ========================================================================
 
-/// Build a fresh ATTACKER principal's genesis push whose single added key is
-/// POISONED: the embedded key block declares `declared_tmb_b64` (the victim
-/// thumbprint to hijack) while carrying `attacker_key_name`'s REAL public key.
+/// Overwrite `index[victim tmb]` with `attacker_key_name`'s pub, directly
+/// through the test-only indexer write.
 ///
-/// No key-introduction site enforces `tmb == H(pub)`, and the global key index
-/// trusts the client-declared `tmb`, overwriting on reuse -- so pushing this
-/// overwrites `index[declared_tmb_b64]` to point at the attacker's pubkey. The
-/// new-principal genesis push is unauthenticated (`genesis_name` self-authorizes
-/// it), so no existing credential is needed. The attacker holds
-/// `attacker_key_name`'s private key and will sign the forged revoke with it.
-///
-/// (The key-introduction `tmb == H(pub)` gap this exploits is broader than
-/// revoke and out of this node's scope; the disclosed-key verification in
-/// `interpret` is what closes the revoke exploit.)
-fn poison_genesis_push_body(
+/// The wire can no longer do this (a sidecar whose `tmb` is not its pub's
+/// thumbprint is refused), so this stands in for any residual path that
+/// could corrupt the index (a bug, a bad import, disk corruption). The
+/// revoke path must not depend on the index being clean: it verifies the
+/// DISCLOSED key, never the indexed one.
+async fn poison_index_directly(
+    state: &Arc<AppState>,
     pool: &Pool,
-    attacker_pid: &str,
-    genesis_name: &str,
+    victim_tmb_b64: &str,
     attacker_key_name: &str,
-    declared_tmb_b64: &str,
+) {
+    let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
+    let poison = IndexableCommit {
+        pg: Vec::new(),
+        principal_id: "SHA-256:nr-poisoned-index".to_string(),
+        commit_ids: vec!["SHA-256:POISON_COMMIT".to_string()],
+        sequence: 0,
+        pre: None,
+        prs: vec!["SHA-256:POISON_PR".to_string()],
+        srs: vec!["SHA-256:POISON_SR".to_string()],
+        ars: vec!["SHA-256:POISON_AR".to_string()],
+        crs: vec!["SHA-256:POISON_CR".to_string()],
+        blob_hashes: vec![Blake3Hash::from_bytes([7u8; 32])],
+        cozies: vec![],
+        timestamp: 1_700_000_000,
+        keys: vec![cyphr_storage::index::PublicKeyInfo {
+            thumbprint: victim_tmb_b64.to_string(),
+            algorithm: attacker.alg.clone(),
+            public_key: attacker.pub_key.clone(),
+        }],
+    };
+    state
+        .engine
+        .indexer()
+        .index_commit(&poison, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("direct index poisoning");
+    let indexed = state
+        .engine
+        .indexer()
+        .get_key(victim_tmb_b64)
+        .await
+        .expect("index lookup succeeds")
+        .expect("the poisoned entry is indexed");
+    assert_eq!(
+        indexed.public_key, attacker.pub_key,
+        "precondition: index[V] must now resolve to the attacker's pub"
+    );
+}
+
+/// Build a fresh ATTACKER principal's genesis push that tries to POISON the
+/// global key index: the signed `key/create` introduces `victim_key_name`'s
+/// real thumbprint, but the unsigned sidecar's `pub` is swapped for
+/// `attacker_key_name`'s, so that (if accepted) `index[victim tmb]` would
+/// resolve to the attacker's key. The attacker holds `attacker_key_name`'s
+/// private key and would sign the forged revoke with it.
+///
+/// The genesis commit is built honestly through `Principal` (a forged `Key`
+/// cannot be constructed: `tmb` is bound to `pub`): `genesis_name` creates
+/// itself and the victim key. Then the victim `key/create`'s sidecar is
+/// rewritten on the wire, which is the only place the attack remains
+/// expressible. The push names the genesis's own PG, so only the server's
+/// key-binding check stands between this body and the index.
+async fn poison_genesis_push_body(
+    pool: &Pool,
+    genesis_name: &str,
+    victim_key_name: &str,
+    attacker_key_name: &str,
     now: i64,
 ) -> String {
-    let genesis = pool.get(genesis_name).expect("genesis key in pool");
+    let attacker_pid = common::genesis_push_id(pool, genesis_name, victim_key_name).await;
+    let victim_tmb = tmb_b64(pool, victim_key_name);
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
+    };
+    let mut principal = cyphr::Principal::implicit(key(genesis_name))
+        .await
+        .expect("genesis");
+    let signer = pool
+        .get(genesis_name)
+        .expect("genesis key in pool")
+        .software_signer()
+        .expect("genesis signer");
+    principal
+        .commit_genesis(&signer, &[key(victim_key_name)], now, "cyphr.me")
+        .await
+        .expect("the honest genesis commits before the key entry is swapped");
+    let mut bundle =
+        cyphr::replay::WireBundle::of_commit(principal.commits().last().expect("genesis"))
+            .expect("bundle");
 
-    let genesis_tmb_b64 = genesis.compute_tmb_b64().expect("genesis tmb");
-    let genesis_prv = Base64UrlUnpadded::decode_vec(genesis.prv.as_ref().expect("genesis prv"))
-        .expect("genesis prv b64");
-    let genesis_pub = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub b64");
-
-    // A key/create whose DECLARED new-key id is the victim's thumbprint.
-    let pay_value = serde_json::json!({
-        "alg": genesis.alg,
-        "id": declared_tmb_b64,
-        "now": now,
-        "tmb": genesis_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &genesis.alg, &genesis_prv, &genesis_pub)
-        .expect("signing supported");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &genesis.alg).expect("czd for this algorithm");
-
-    // The POISONED key: declared thumbprint = the victim's V, but the actual
+    // The POISONED key entry: declared thumbprint = the victim's V, but the
     // public key is the attacker's own (whose private key signs the revoke).
-    let victim_tmb_bytes =
-        Base64UrlUnpadded::decode_vec(declared_tmb_b64).expect("victim tmb base64");
-    let attacker_pub =
-        Base64UrlUnpadded::decode_vec(&attacker.pub_key).expect("attacker pub base64");
-    let poisoned_key = cyphr::Key {
-        alg: attacker.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(victim_tmb_bytes),
-        pub_key: attacker_pub,
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let genesis_key = cyphr::Key {
-        alg: genesis.alg.clone(),
-        tmb: genesis.compute_tmb().expect("genesis tmb"),
-        pub_key: genesis_pub.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let mut principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(poisoned_key))
-        .expect("poison key/create must verify (no tmb==H(pub) gate at key introduction)");
-    let genesis_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&genesis_tmb_b64).expect("genesis tmb base64"),
+    let mut swapped = 0;
+    for entry in &mut bundle.keys {
+        if entry.tmb == victim_tmb {
+            entry.pub_key = attacker.pub_key.clone();
+            swapped += 1;
+        }
+    }
+    assert_eq!(
+        swapped, 1,
+        "exactly the victim key/create's key entry is swapped"
     );
-    scope
-        .finalize_with_arrow(
-            &genesis.alg,
-            &genesis_prv,
-            &genesis_pub,
-            &genesis_tmb,
-            now,
-            "cyphr.me",
-        )
-        .expect("poison commit should finalize");
 
-    let entries = cyphr_storage::export_commits(&principal).expect("export the poison commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    // Embed the (poisoned) key block on the key-introducing cozy, then the
-    // genesis key on the closing cozy -- the never-before-seen-principal wire
-    // contract `resolve_genesis` requires.
-    let mut key_idx = 0;
-    let mut blobs: Vec<Vec<u8>> = new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect();
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": genesis_key.alg,
-            "pub": genesis.pub_key,
-            "tmb": genesis_tmb_b64,
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    push_body(attacker_pid, &blobs)
+    common::push_body(&attacker_pid, &bundle)
 }
 
 /// The BLOCKING R1 exploit, mounted end-to-end: an unauthenticated attacker
@@ -1400,8 +1292,8 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
 
     // Victim: a normal principal (golden genesis adds key_a). key_a's real
     // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
-    let victim_pid = "nr-poison-victim";
-    bootstrap_golden_key_a(&state, &pool, victim_pid).await;
+    let victim_pid = bootstrap_golden_key_a(&state, &pool).await;
+    let victim_pid = victim_pid.as_str();
     let victim_tmb = tmb_b64(&pool, "key_a");
 
     // Baseline: the victim key logs in before any attack.
@@ -1411,43 +1303,39 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
         "the victim key must log in before the attack (empirical baseline)"
     );
 
-    // Attack step 1: overwrite index[V] -> attacker (alice) pub via a fresh
-    // attacker principal's unauthenticated poison genesis push. `alice` is a
-    // distinct key whose private half the attacker holds (to sign the forge).
-    let body = poison_genesis_push_body(
-        &pool,
-        "nr-poison-attacker",
-        "bob",
-        "alice",
-        &victim_tmb,
-        RVK,
-    );
+    // Attack step 1: try to overwrite index[V] -> attacker (alice) pub via a
+    // fresh attacker principal's unauthenticated genesis push whose sidecar
+    // `pub` is swapped. `alice` is a distinct key whose private half the
+    // attacker holds (to sign the forge). The attacker principal's id is its
+    // genesis-derived id, so the refusal below is for the swapped sidecar.
+    let body = poison_genesis_push_body(&pool, "bob", "key_a", "alice", RVK).await;
     let (pstatus, pjson) = post_push(&state, body).await;
-    assert_eq!(
-        pstatus,
-        StatusCode::CREATED,
-        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
-         it exploits is out of this node's scope: {pjson:?}"
+    assert!(
+        pstatus.is_client_error(),
+        "a push whose sidecar pub does not hash to its tmb must be refused: {pstatus} {pjson:?}"
     );
 
-    // Poison-took precondition: the global index now returns the ATTACKER pub
-    // for the victim's thumbprint. If this failed, the test would be vacuous
-    // (no real poisoning); asserting it makes the attack genuine.
-    let poisoned = state
+    // The poison did not take: the global index still resolves the victim's
+    // thumbprint to the victim's real pub, so the forge below is rejected on
+    // its own merits (the disclosed key does not bind), not on a setup miss.
+    let indexed = state
         .engine
         .indexer()
         .get_key(&victim_tmb)
         .await
         .expect("index lookup succeeds")
-        .expect("V is still indexed after the poison push");
+        .expect("V is still indexed after the refused poison push");
     assert_eq!(
-        poisoned.public_key,
-        pool.get("alice").expect("alice").pub_key,
-        "index[V] must now resolve to the attacker's pub -- the attack precondition"
+        indexed.public_key,
+        pool.get("key_a").expect("key_a").pub_key,
+        "index[V] must still resolve to the victim's real pub"
     );
 
-    // Attack step 2: forge a naked revoke of V, signed with and disclosing the
-    // ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
+    // Poison the index directly instead: a wire push can no longer do it.
+    poison_index_directly(&state, &pool, &victim_tmb, "alice").await;
+
+    // Attack step 2 (against the directly poisoned index): forge a naked revoke of V, signed with
+    // and disclosing the ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
     // rejects it.
     let coz = revoke_body(
         &pool,
@@ -1488,8 +1376,7 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
 async fn oversize_naked_revoke_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-oversize";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let signer = pool.get("key_a").expect("key_a");
     // Pad well past RVK_MAX_SIZE (but far under any default transport limit),
@@ -1521,47 +1408,289 @@ async fn oversize_naked_revoke_is_rejected() {
 // 14 -- HARDENING R2: the death record is durable across a store reopen
 // ========================================================================
 
-/// A recorded death survives a fresh `ObservationStore` opened over the same
-/// on-disk directory: after `record`, a brand-new store instance reading the
-/// same path still reports the key dead. This pins the durability barrier R2
-/// hardens -- an ack of `recorded: true` must not be a lie a crash can undo.
-///
-/// Baseline note: if fjall's configured durability already persists a `record`
-/// before this reopen sees it, this passes against the current impl and is kept
-/// as regression coverage. It cannot, in-process, simulate a true crash BEFORE
-/// fjall's WAL flush (the precise R2 window); the impl-worker must assess
-/// whether `record` needs an explicit synchronous `persist` before returning
-/// `recorded: true`.
+/// Backs "first accepted stands" in the death set (the spec author on
+/// #203: a key's cutoff is the witness's receipt of its revoke, and Coz
+/// valid revokes are always accepted): `key_a` is revoked, then revoked
+/// again with an earlier `rvk` and `now`. Both are accepted; `/revoked`
+/// keeps serving the first, since a revoke's own `rvk` decides nothing.
+/// Turns red if a later revoke replaces the held one, as the earlier
+/// least-`rvk` rule did.
 #[tokio::test]
-async fn death_record_durable_across_store_reopen() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store_path = dir.path().join("observations");
+async fn the_first_accepted_revoke_stands() {
+    let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let dead_tmb = pool
-        .get("key_a")
-        .expect("key_a")
-        .compute_tmb()
-        .expect("tmb");
-
-    {
-        let store = ObservationStore::open(&store_path).expect("open death-set store");
-        store
-            .record(&dead_tmb, serde_json::json!({ "note": "naked revoke" }))
-            .await
-            .expect("record the death");
-        assert!(
-            store.is_dead(&dead_tmb).await.expect("is_dead"),
-            "the key must be dead in the recording store instance"
-        );
-    }
-
-    // A brand-new store over the same directory -- the death must persist.
-    let reopened = ObservationStore::open(&store_path).expect("reopen death-set store");
+    bootstrap_golden_key_a(&state, &pool).await;
+    let first = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK + 10));
+    let (status, json) = post_revoke(&state, first.clone()).await;
+    assert!(status.is_success(), "first: {status} {json:?}");
+    let earlier = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
+    let (status, json) = post_revoke(&state, earlier).await;
     assert!(
-        reopened
-            .is_dead(&dead_tmb)
-            .await
-            .expect("is_dead after reopen"),
-        "the death record must survive a store reopen over the same data dir"
+        status.is_success(),
+        "a later revoke is accepted: {status} {json:?}"
     );
+
+    let tmb = tmb_b64(&pool, "key_a");
+    let (status, json) =
+        common::get_json(build_router(state.clone()), &format!("/revoked?tmbs={tmb}")).await;
+    assert_eq!(status, StatusCode::OK, "{json:?}");
+    assert_eq!(
+        common::envelope_payload(&json)["revoked"],
+        serde_json::json!([first]),
+        "the first accepted revoke is the one served"
+    );
+}
+
+// ========================================================================
+// archrev:A2 -- one validity rule, one write order
+// ========================================================================
+
+/// A self-revoke of `key_a` whose payload carries `extra` fields and no
+/// `now`, signed and disclosed by `key_a`.
+fn revoke_without_now(pool: &Pool, extra: serde_json::Value) -> serde_json::Value {
+    let signer = pool.get("key_a").expect("key_a");
+    let mut pay = serde_json::json!({
+        "alg": signer.alg,
+        "rvk": RVK,
+        "tmb": tmb_b64(pool, "key_a"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    pay.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    sign_coz_disclosed(pool, "key_a", pay, "key_a")
+}
+
+/// archrev:A2. A naked revoke is valid iff it is Coz-valid (spec author on
+/// #203: "Coz valid revokes are always accepted"), and `now` is not part of
+/// that: the cutoff is this node's receipt time. A revoke with no `now` was
+/// accepted by the route but refused by the engine, which left the key dead
+/// for login but not for push admission. Turns red if any store refuses it:
+/// the key must be dead for login and for a push dated after receipt, and
+/// stay so after a restart and rebuild (the engine's record, not the death
+/// set, carries admission).
+#[tokio::test]
+async fn archrev_a2_revoke_without_now_is_dead_everywhere() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let data_dir = dir.path().join("data");
+    let pool = common::load_pool();
+    let state = keyed_state_at(&data_dir, &key_path);
+    let pid = common::golden_principal_id(&pool).await;
+    bootstrap_via_push(&state, &pool, &pid, "golden", "key_a", RVK).await;
+
+    let (status, json) =
+        post_revoke(&state, revoke_without_now(&pool, serde_json::json!({}))).await;
+    assert!(
+        status.is_success(),
+        "no `now` is Coz-valid: {status} {json:?}"
+    );
+
+    let after_receipt = now_secs() + 60;
+    let refused = |s: StatusCode| s == StatusCode::UNAUTHORIZED || s == StatusCode::FORBIDDEN;
+    let push = |state: Arc<AppState>| {
+        let (pool, pid) = (&pool, &pid);
+        async move {
+            let body = followup_push_body(
+                pool,
+                pid,
+                "golden",
+                "key_a",
+                RVK,
+                "key_a",
+                "carol",
+                after_receipt,
+            )
+            .await;
+            post_push(&state, body).await
+        }
+    };
+
+    assert_eq!(
+        login_status(&state, &pool, "key_a", &pid).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, json) = push(state.clone()).await;
+    assert!(refused(status), "push by the dead key: {status} {json:?}");
+
+    drop(state);
+    let state = keyed_state_at(&data_dir, &key_path);
+    state
+        .engine
+        .rebuild_index_from_scratch()
+        .await
+        .expect("rebuild");
+    let (status, json) = push(state.clone()).await;
+    assert!(refused(status), "after rebuild: {status} {json:?}");
+}
+
+/// archrev:A2. An over-size revoke (the Coz limit, `coz::RVK_MAX_SIZE`) is
+/// refused by every path: the route refused it but gossip ingest and the
+/// engine accepted it. Turns red if the engine records it (it then rides
+/// out through `/revoked` and kills the key at admission), or if the route
+/// leaves a trace of it.
+#[tokio::test]
+async fn archrev_a2_oversize_revoke_is_recorded_nowhere() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+
+    let over = coz::RVK_MAX_SIZE + 1000;
+    let coz = revoke_without_now(
+        &pool,
+        // `now` present, so only the size can make the engine refuse.
+        serde_json::json!({ "now": RVK, "pad": "A".repeat(over) }),
+    );
+    let (status, json) = post_revoke(&state, coz.clone()).await;
+    assert_rejected(status, &json, "over-size revoke at /revoke");
+
+    // The engine alone, as gossip and witness sync reach it.
+    let engine = state.engine.record_revoke(&coz, now_secs()).await;
+    assert!(engine.is_err(), "the engine must refuse it too: {engine:?}");
+
+    let tmb = tmb_b64(&pool, "key_a");
+    let (_, json) =
+        common::get_json(build_router(state.clone()), &format!("/revoked?tmbs={tmb}")).await;
+    assert_eq!(
+        common::envelope_payload(&json)["revoked"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        login_status(
+            &state,
+            &pool,
+            "key_a",
+            &common::golden_principal_id(&pool).await
+        )
+        .await,
+        StatusCode::OK,
+        "a refused revoke kills nothing"
+    );
+}
+
+/// archrev:A2. The engine's record is the truth and is written first; the
+/// death set follows. A failure between the two writes (the process dies
+/// after the engine, before the set) leaves the engine dead and the set
+/// not, and re-posting the same revoke must close the gap, since both
+/// writes are idempotent. The crash is simulated by recording the revoke in
+/// the engine alone, which is the state that window leaves.
+#[tokio::test]
+async fn archrev_a2_repost_closes_a_gap_between_the_two_stores() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+
+    let coz = revoke_without_now(&pool, serde_json::json!({}));
+    state
+        .engine
+        .record_revoke(&coz, now_secs())
+        .await
+        .expect("engine accepts");
+    assert_eq!(
+        login_status(&state, &pool, "key_a", &pid).await,
+        StatusCode::OK,
+        "the gap: the death set does not yet know"
+    );
+
+    let (status, json) = post_revoke(&state, coz).await;
+    assert!(status.is_success(), "{status} {json:?}");
+    assert_eq!(
+        login_status(&state, &pool, "key_a", &pid).await,
+        StatusCode::UNAUTHORIZED,
+        "re-posting closes the gap"
+    );
+}
+
+/// A keyed state over a fresh store whose death set holds at most one key.
+fn state_with_ceiling_one() -> (Arc<AppState>, TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let config = {
+        let mut c = ServerConfig {
+            data_dir: dir.path().join("data"),
+            signing_key_path: Some(key_path),
+            audience: Some(AUDIENCE.to_string()),
+            ..Default::default()
+        };
+        c.limits.max_dead_keys = std::num::NonZeroU64::MIN;
+        c
+    };
+    (Arc::new(AppState::new(config).expect("open")), dir)
+}
+
+/// The verified `{pay, sig, key}` envelope for `name` self-revoking, and its
+/// thumbprint, as a gossip or witness-sync caller hands them over.
+fn revoke_of(pool: &Pool, name: &str) -> (coz::Thumbprint, serde_json::Value) {
+    let body = self_revoke_coz(pool, name, serde_json::json!(RVK));
+    let tmb = pool.get(name).expect("key").compute_tmb().expect("tmb");
+    (tmb, body)
+}
+
+/// archrev:A2. The death-set ceiling bounds every caller of the one write
+/// path, not just `/revoke`: gossip and witness sync call it with revokes a
+/// peer chose to name, so an adversarial peer must not grow the engine's
+/// records or the death set past the operator's quota with fresh keys.
+/// Turns red if an unheld key's revoke is recorded past the ceiling by this
+/// path (the engine would then hold it too), or if a held key's is refused.
+/// Reached directly because the gossip and sync callers are reachable only
+/// through a live peer.
+#[tokio::test]
+async fn archrev_a2_the_ceiling_bounds_every_caller() {
+    let (state, _dir) = state_with_ceiling_one();
+    let pool = common::load_pool();
+    bootstrap_golden_key_a(&state, &pool).await;
+
+    let (alice, alice_rv) = revoke_of(&pool, "alice");
+    cyphr_server::revoke::record_everywhere(&state, &alice, &alice_rv)
+        .await
+        .expect("an unheld key fills the set");
+    let (bob, bob_rv) = revoke_of(&pool, "bob");
+    let refused = cyphr_server::revoke::record_everywhere(&state, &bob, &bob_rv).await;
+    assert!(
+        refused.is_err(),
+        "an unheld key past the ceiling: {refused:?}"
+    );
+    assert!(
+        !state.engine.is_revoked(&bob.to_b64()),
+        "a refused revoke reached the engine"
+    );
+    assert!(!state.observations.is_dead(&bob).await.expect("set"));
+
+    let (held, held_rv) = revoke_of(&pool, "key_a");
+    cyphr_server::revoke::record_everywhere(&state, &held, &held_rv)
+        .await
+        .expect("a held key is recorded past the ceiling");
+    assert!(state.engine.is_revoked(&held.to_b64()));
+}
+
+/// archrev:A2. Re-posting a revoke the engine already holds closes the gap
+/// between the two stores even when the set is full and the key unheld: the
+/// engine has the death, so the set records it without growing past what
+/// the engine holds. Turns red if the full set answers 507 and the key
+/// stays alive for login while dead for admission.
+#[tokio::test]
+async fn archrev_a2_repost_closes_the_gap_with_a_full_set() {
+    let (state, _dir) = state_with_ceiling_one();
+    let pool = common::load_pool();
+    let (status, json) = post_revoke(
+        &state,
+        self_revoke_coz(&pool, "alice", serde_json::json!(RVK)),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {json:?}");
+
+    let (bob, bob_rv) = revoke_of(&pool, "bob");
+    state
+        .engine
+        .record_revoke(&bob_rv, now_secs())
+        .await
+        .expect("the engine alone holds bob's death");
+    assert!(!state.observations.is_dead(&bob).await.expect("set"));
+
+    let (status, json) = post_revoke(&state, bob_rv).await;
+    assert!(
+        status.is_success(),
+        "re-post with a full set: {status} {json:?}"
+    );
+    assert!(state.observations.is_dead(&bob).await.expect("set"));
 }

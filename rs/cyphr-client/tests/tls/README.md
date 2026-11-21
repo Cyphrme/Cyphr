@@ -1,0 +1,1 @@
+These fixtures are test-only: `ca.der` signs `leaf.der` (valid for `localhost` and `127.0.0.1`), whose key is `leaf.key.der`. None of it is trusted by default; the tests pass `ca.der` explicitly through `HttpOptions::trust_root_der`.

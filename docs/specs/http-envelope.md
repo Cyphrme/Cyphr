@@ -19,23 +19,24 @@ endpoint-specific payload, and an OPTIONAL server statement — a coz
 (`{pay, sig}`) the server signs over the response. Its purpose is to keep
 the wire format from calcifying: an unversioned, unsigned JSON body cannot
 later grow a server attestation without breaking every client, so the
-version and the statement slot are designed in from day one even though
-this server does not yet sign responses.
+version and the statement slot are designed in from day one. An attestor
+server (one holding a bootstrapped principal and a signing key) now signs
+`GET /tip`, `GET /patch` and `POST /push` responses; every other response
+is `unsigned`.
 
 **Target System:** `rs/cyphr-server` — the HTTP response layer only. The
 envelope is transport: it _carries_ a coz, it does not change the coz wire
 format (`{pay, sig, key?}`), which is SPEC.md's and the `coz` crate's.
 
 **Scope boundary:** This document defines the container and records the
-rulings below. It does not wrap any handler's response (that is a later
-adoption step) and does not define what a signed statement's payload
-_claims_ (that is the server-receipt design, later still). This document
-pins only that the slot is a coz.
+rulings below. It does not define what a signed statement's payload
+_claims_ (that is `docs/specs/receipts.md`). This document pins only that
+the slot is a coz.
 
 ## Wire shape
 
 Every JSON response body is an envelope object with three fields, in this
-order:
+order, except the health probe (`[envelope-r-healthz]`):
 
 ```json
 {
@@ -92,7 +93,7 @@ test, and the two golden vectors differ by `kind`, not by omission.
 
 ## Rulings
 
-Six rulings the envelope requires. Each is explicit; silence is not a
+Seven rulings the envelope requires. Each is explicit; silence is not a
 ruling.
 
 ### `[envelope-r-entity]` Entity endpoint — EXCLUDED
@@ -104,8 +105,8 @@ the entity is already tamper-evident without a server statement. Wrapping
 it would force a binary→base64 JSON re-encoding and add envelope bytes for
 no trust gain. The bytes stay raw.
 
-Implemented by `entity()` in `rs/cyphr-server/src/routes.rs:220-246`,
-returning a raw octet-stream keyed by the requested `TaggedDigest`.
+Implemented by `entity()` in `rs/cyphr-server/src/routes.rs`, returning a
+raw octet-stream keyed by the requested `TaggedDigest`.
 
 ### `[envelope-r-auth]` Challenge and login — INCLUDED
 
@@ -115,23 +116,38 @@ client parses carries `v` in the same place, so version detection is one
 mechanism, not a per-endpoint special case. The bearer token in a login
 response is itself already a signed coz, but that is the token's own
 signature over auth claims — orthogonal to the envelope's response-level
-statement slot, which stays `unsigned` for these endpoints until a
-later adoption step signs responses.
+statement slot, which is `unsigned` for these endpoints.
 
-`ChallengeResponse` and `LoginResponse`
-(`rs/cyphr-server/src/auth/login.rs:311-324`) are bare JSON today.
+`POST /auth/session` joins the envelope the same way.
+`auth::login::challenge`, `login` and `session` in
+`rs/cyphr-server/src/auth/login.rs` each return an unsigned `Envelope`.
 
-### `[envelope-r-error]` Error bodies — NOT enveloped
+### `[envelope-r-healthz]` Health probe — EXCLUDED
 
-Error responses keep their current bare shape, `{"error": "<message>"}`,
-and are NOT wrapped. HTTP status codes already carry the live semantics
-(400/401/404/409/422/500), and an error body is not a state-or-time claim
-the server would ever attest. Enveloping errors would add a version and an
-always-`unsigned` statement to bodies that gain nothing from either, and
-complicate the uniform `AppError::into_response` path. Errors stay as-is.
+`GET /healthz` does NOT participate in the envelope. It returns a bare JSON
+object: `{"status":"ok"}` (200) or
+`{"status":"unavailable","error":"storage unavailable"}` (503). The code
+(`healthz()` in `rs/cyphr-server/src/routes.rs`) states no reason for the
+exception. What it does document is that the body names no principal, path
+or error text, and the route is unauthenticated: it is an operability probe
+for a supervisor, not a protocol response, and carries no state a client
+would pin or attest. `GET /metrics` is likewise outside the envelope
+(Prometheus `text/plain`, not JSON).
 
-`AppError::into_response` (`rs/cyphr-server/src/error.rs:64-68`) emits
-`{"error": message}`; the status code carries the semantics.
+### `[envelope-r-error]` Error bodies — INCLUDED
+
+Error responses are enveloped: `{"v":1,"payload":{"error":"<message>",
+"now":<unix seconds>},"statement":{"kind":"unsigned"}}`, with
+`payload.kind` added for refusals a client can act on (a stable
+machine-readable refusal kind; not the `statement.kind` discriminator). The
+statement is always `unsigned`: an error is not a state-or-time claim the
+server attests. HTTP status codes still carry the live semantics
+(`[envelope-r-status]`). Fence refusals (429, 413, 402) and the admission
+403 are built outside `AppError` but use the same unsigned envelope.
+
+`AppError::into_response` in `rs/cyphr-server/src/error.rs` builds this
+body for every handler error. This reverses an earlier ruling that left
+errors as a bare `{"error": …}`.
 
 ### `[envelope-r-migration]` Migration — flag-day, version-gated
 
@@ -154,33 +170,34 @@ envelope revisions by probing individual fields.
 
 The envelope MUST NOT collapse or relocate HTTP status semantics into the
 body. Success responses keep their codes (200 OK for tip/patch, 201 CREATED
-for push) and the envelope rides only inside those 2xx bodies. Error paths
-keep their non-2xx codes and their bare error body. A client still branches
-on the HTTP status first; the envelope never becomes a `200`-wrapping-an-
-error anti-pattern.
+for push). Error paths keep their non-2xx codes, with the error enveloped
+(`[envelope-r-error]`). A client still branches on the HTTP status first;
+the envelope never becomes a `200`-wrapping-an-error anti-pattern.
 
-`rs/cyphr-server/src/routes.rs:212-217` (201 CREATED on push) and
-`error.rs:83-126` (status mapping) are unchanged by the envelope
-adoption.
+`push()` (201 CREATED) in `rs/cyphr-server/src/routes.rs` and
+`AppError::engine` in `error.rs` (status mapping) are unchanged by the
+envelope adoption.
 
 ### `[envelope-r-cr]` Commit Root in the tip payload — INCLUDED
 
-The tip payload SHOULD carry `cr` (Commit Root), which today's
-`TipResponse` omits even though the storage layer's `TipState` provides it.
-`cr` is a legitimate element of a principal's attestable state; a future
+The tip payload SHOULD carry `cr` (Commit Root), as the storage layer's
+`TipState` provides it. `cr` is a legitimate element of a principal's attestable state; a future
 signed statement over a tip could not attest the commit root if the payload
-never carried it. The envelope-adoption step (which wraps
-`TipResponse`) adds the field; this document records the ruling that
-it belongs in the payload.
+never carried it. `TipResponse` carries the field; this document records the ruling that it
+belongs in the payload.
 
-`rs/cyphr-storage/src/index/types.rs:97` has `TipState.cr` present,
-while `rs/cyphr-server/src/routes.rs:57-65`'s `TipResponse` (before
-this ruling) omitted `cr`.
+In the tip and push payloads `sr` and `ar` MAY be JSON `null` for a Dead
+principal (SPEC §11), next to the `cr` rule: `null` is the only encoding of
+an absent root, and the envelope `v` is unchanged.
+
+`TipState.cr` (`rs/cyphr-storage/src/index/types.rs`) is the source;
+`TipResponse.cr` is `null` while no commit root exists.
 
 ## Statement payload — deferred
 
-What a signed statement's `pay` _claims_ (its `typ`, and whether it binds a
-digest of the payload, the tip, or something else) is NOT settled here.
+What a signed statement's `pay` _claims_ (its `typ`, and what it binds) is NOT
+settled here; `docs/specs/receipts.md` defines the receipts `GET /tip`,
+`GET /patch` and `POST /push` carry.
 This document pins only that the slot is a coz `{pay, sig}`. The golden vector's
 signed `pay` is illustrative, not normative: it demonstrates a valid coz in
 the slot, not the claim schema a server-receipt design will define. The `v`

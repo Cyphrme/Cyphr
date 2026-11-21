@@ -39,7 +39,7 @@ verification and access control.
 **`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
 "implemented."** The Verification table's uniform 24/24 `pass` reflects
 SPEC-internal consistency, not implementation status. The following
-revisions apply post-campaign:
+revisions apply after the login work:
 
 - **Implemented**: login, both challenge-response and timestamp-based
   (`rs/cyphr-server/src/auth/login.rs`, real HTTP routes wired in
@@ -48,11 +48,12 @@ revisions apply post-campaign:
   and lifecycle gate (rejects Frozen/Deleted/unknown principals), replay
   prevention (single-use challenge store, timestamp window) -- all tested
   end to end with real signed HTTP requests in
-  `rs/cyphr-server/tests/login.rs` (12 tests). Also: signature-based PoP,
-  checkpoint restore (`Principal::from_checkpoint`/`from_checkpoint_with_trees`
-  in `rs/cyphr/src/principal.rs`, covering [checkpoint-self-contained] and
-  [checkpoint-genesis-foundational]), and chain-replay verification.
-- **Still unimplemented (correctly out of campaign scope)**: MSS push,
+  `rs/cyphr-server/tests/login.rs` (12 tests). Also: signature-based PoP
+  and chain-replay verification. There is no checkpoint restore: a
+  principal is rebuilt by replaying history (`rs/cyphr/src/principal/mod.rs`),
+  so [checkpoint-self-contained] and [checkpoint-genesis-foundational]
+  have no code behind them.
+- **Still unimplemented (out of scope for the login work)**: MSS push,
   Principal Embedding -- `rs/cyphr/src/state.rs`'s own doc comments say
   embedding "is reserved for future use; pass `None`," confirming
   [embedding-weight-default] through [embedding-pinning] (5 constraints)
@@ -64,7 +65,7 @@ revisions apply post-campaign:
 12 STRUCTURAL, 10 OOS, 1 RUNTIME) reflects this breakdown; the login/bearer
 constraints moved from OOS to STRUCTURAL (verified by real integration
 tests, not the narrower `errors.toml`/`error_conditions.toml` TESTED
-category) once N05/N06/N07 landed.
+category) once the login, bearer-token and route-protection work landed.
 
 ## Constraints
 

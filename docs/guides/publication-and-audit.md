@@ -1,7 +1,7 @@
 # Publishing a record and auditing it
 
 A Cyphr server will sign a statement about what it just did, hand it to
-you, and keep no copy. That receipt is the whole trust object. Everything
+you, and keep no copy of it. That receipt is the whole trust object. Everything
 in this guide follows from it: what a publisher can get signed, what a
 watcher can check later without asking the server again, and where the
 chain of "check it yourself" runs out.
@@ -15,19 +15,20 @@ over what it accepted.
 
 **Auditing** is holding a server to those signatures. A server that tells
 you one thing and someone else another has produced two statements it
-signed and cannot take back, and a watcher who collected both is holding
-proof. That is the entire enforcement mechanism: there is no quorum, no
-consensus round, and nothing that stops a server from lying — only
-evidence, after the fact, in the hands of whoever bothered to keep it.
+signed and cannot take back. That is the entire enforcement mechanism:
+there is no quorum, no consensus round, and nothing that stops a server
+from lying — only evidence, after the fact. No server is an authority
+over anyone's record and none collects that evidence on your behalf: it
+exists only if somebody went and collected it.
 
-Both halves work today, up to a point. This guide says where the point is.
+Both halves have real limits. This guide says where they are.
 
 ## Terms
 
 | Term       | What it is                                                                                                       |
 | :--------- | :--------------------------------------------------------------------------------------------------------------- |
 | Principal  | A user's identity: a chain of commits adding and revoking keys over time. Not a key — a key history.             |
-| `pr`       | The identifier a server files a principal under.                                                                 |
+| `pr`       | The principal's identifier, derived from its genesis keys.                                                       |
 | PG         | Principal Genesis. A server's own identifier, derived from its signing key. Tagged, like `SHA-512:wWKa…`.        |
 | Coz        | The signed-message format, `{"pay": {…}, "sig": "…"}`. Transactions, receipts, and bearer tokens are all cozies. |
 | Receipt    | A coz the server signs over what it accepted or currently sees. Two kinds: commit receipts and tip reports.      |
@@ -77,14 +78,14 @@ curl -s http://127.0.0.1:4100/server | jq .payload
 ```json
 {
   "tier": "attestor",
-  "pg": "SHA-512:wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "pg": "SHA-512:lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "alg": "Ed25519",
-  "pub": "iQjl20zGarrf02bY-L-C5NeSb_wCPnb3DGHHK8BMXq4",
-  "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+  "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "genesis": {
     "alg": "Ed25519",
-    "pub": "iQjl20zGarrf02bY-L-C5NeSb_wCPnb3DGHHK8BMXq4",
-    "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+    "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+    "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
     "first_seen": 0
   }
 }
@@ -95,9 +96,10 @@ with two addresses — which is the point. A server without a signing key
 answers `{"tier": "repository"}` and signs nothing; nothing in the auditing
 half of this guide applies to one.
 
-Make something to publish. The `cyphr` CLI builds principals locally and
-has no command that talks to a server, so the push is a `curl` you
-assemble:
+Make something to publish. The `cyphr` CLI can push to a server itself
+(`cyphr push --identity="$PR" --peer=http://127.0.0.1:4100`); this guide
+builds the request by hand with `curl`, so that you hold the raw response
+and its receipt:
 
 ```sh
 PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
@@ -107,8 +109,8 @@ cyphr export --identity="$PR" --output ./export.jsonl
 
 ```
 Exported identity to ./export.jsonl
-  identity: xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho
-  commits: 1
+  identity: N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow
+  commits: 2
 ```
 
 ## Publishing
@@ -120,15 +122,19 @@ history — adding a key, revoking one, creating or freezing the principal.
 Push one and the server validates every signature, re-derives the four
 roots, stores the blobs, and hands you a receipt.
 
-Turn the newest exported commit into a push body and send it:
+Turn each exported commit into a push body and send them in order (a new
+principal exports two: the genesis commit, then the key add, and the server
+refuses a first push that is not a genesis commit):
 
 ```sh
-jq -c --arg pid "$PR" -s '{principal_id: $pid, blobs: [.[-1].txs[]
-  | tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";"")]}' \
-  ./export.jsonl > ./push.json
-
-curl -s -X POST http://127.0.0.1:4100/push \
-  -H 'content-type: application/json' -d @push.json
+jq -c --arg pid "$PR" '{principal_id: $pid, keys: .keys,
+  txs: [.txs[] | map(tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";""))]}' \
+  ./export.jsonl |
+while IFS= read -r body; do
+  curl -s -X POST http://127.0.0.1:4100/push \
+    -H 'content-type: application/json' -d "$body"
+  echo
+done
 ```
 
 `201`:
@@ -138,16 +144,17 @@ curl -s -X POST http://127.0.0.1:4100/push \
   "v": 1,
   "payload": {
     "blob_hashes": [
-      "63db3adcb04fa00eb1dbe453f4bce474c67e229b7b3292d2417b4efc9e6e7a2c",
-      "f0ce0e480d5550f9edea4b529ab9ce4db866daef4eadbdc932de33cfcb4d6cc8"
+      "b9532fd78782a4692144cca96239112c5fa56dfb38806b3cf58de463e25e019a",
+      "68c7c8bc59eae3106483ef83de11b84d2fe5a6bcc7ae17c429eef387a7058276",
+      "cdccf0ba6195f36a0cba78f72460e9f4c6e532e4e3e9a39035c0700f8720f61b"
     ],
-    "commit_id": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg",
+    "commit_id": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q",
     "sequence": 0,
     "roots": {
-      "pr": "SHA-256:SLJTafFYjz-0JMAx5cPw_5DAfYzcr3b_CM9zlgme_aA",
-      "sr": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-      "ar": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-      "cr": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg"
+      "pr": "SHA-256:6GfLOb_VXaKMWz4it4iywYh4pgDgVnuM6dbvtbJKlXo",
+      "sr": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+      "ar": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+      "cr": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q"
     }
   },
   "statement": {
@@ -155,20 +162,20 @@ curl -s -X POST http://127.0.0.1:4100/push \
     "coz": {
       "pay": {
         "alg": "Ed25519",
-        "now": 1785879800,
-        "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+        "now": 1795229090,
+        "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
         "sequence": 0,
-        "commit_id": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg",
+        "commit_id": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q",
         "roots": {
-          "pr": "SHA-256:SLJTafFYjz-0JMAx5cPw_5DAfYzcr3b_CM9zlgme_aA",
-          "sr": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-          "ar": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-          "cr": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg"
+          "pr": "SHA-256:6GfLOb_VXaKMWz4it4iywYh4pgDgVnuM6dbvtbJKlXo",
+          "sr": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+          "ar": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+          "cr": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q"
         }
       },
-      "sig": "IZUqweqL0RdMhssVsutUTjmK0uS9JdoGf9xSbIaG7OHgSqs4gwSF6AhJp7A8uJZD0-_VYGpEAONGabf_4XkTAg"
+      "sig": "IA7kUFeEi9g9TSI2vgAtUPntGU0YCKvyxjGnm4kDy_DCcxnpR8XXyh_hksGTjKOZCqT0dUgFFB492itJOlg3CQ"
     }
   }
 }
@@ -181,9 +188,10 @@ the payload's `commit_id`, `sequence`, and `roots`, stamp them with the
 server's key and clock, and mark them `cyphr-server/receipt/commit`.
 
 **Keep the receipt, byte for byte — `pay` and `sig` together.** The server
-persists nothing to issue one and holds no log of what it signed. If you
-discard it, the fact that this server ever accepted this commit is gone
-from everywhere except your side of the exchange.
+persists nothing to issue one and holds no log of what it signed
+(`docs/specs/receipts.md` `[receipts-r-stateless]`). If you discard it,
+the fact that this server ever accepted this commit is gone from
+everywhere except your side of the exchange.
 
 Notice what the receipt does not carry: `blob_hashes`. It attests a chain
 position, not the specific bytes you uploaded. For a commit that is a
@@ -206,8 +214,8 @@ naturally write them:
 ```json
 {
   "alg": "ES256",
-  "now": 1785880079,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229209,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create",
   "msg": "hello world"
 }
@@ -229,8 +237,8 @@ The same fields, signed over the alphabetically sorted form:
 {
   "alg": "ES256",
   "msg": "hello world",
-  "now": 1785880211,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229341,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create"
 }
 ```
@@ -254,8 +262,8 @@ in order:
 ```json
 {
   "alg": "ES256",
-  "now": 1785880211,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229341,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create",
   "note": { "title": "hello", "tags": ["b", "a"], "body": "world" }
 }
@@ -267,8 +275,8 @@ Sign over this instead — `note`'s three keys sorted, `tags` untouched:
 {
   "alg": "ES256",
   "note": { "body": "world", "tags": ["b", "a"], "title": "hello" },
-  "now": 1785880211,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229341,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create"
 }
 ```
@@ -295,7 +303,7 @@ your own client and you meet it immediately.
 
 You can sign a coz with any `typ` you like and push it. The server
 verifies the signature against the principal's active keys, answers `201`,
-and signs a receipt. Then the content vanishes.
+and signs a receipt. Then the content is stored and forgotten.
 
 Push a bundle containing only that `example.com/note/create` cozy from
 above. Everything in this section runs against `4101`, whose copy of the
@@ -307,15 +315,15 @@ below reports in full, so the numbers here and there match on purpose:
   "v": 1,
   "payload": {
     "blob_hashes": [
-      "43635be8a87f71b348d78b5b4e5ffde0b94eb46570631132faf9a5c51ea04e2e"
+      "a1cc941d88447059c8db7a99f2c52b53f550ec7fe7f9b33c691c977c9c1be84a"
     ],
-    "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
-    "sequence": 1,
+    "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+    "sequence": 2,
     "roots": {
-      "pr": "SHA-256:MOldD2IVG-RWFVpN72_X3IECouOSNKDkrS7by-tedIU",
-      "sr": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-      "ar": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-      "cr": "SHA-256:fzbJ1XCD8Pmcdy4pToIaatXz21UjY1N7KEaKEUE3vq0"
+      "pr": "SHA-256:SnPB2CXXZtisXfYf7u93-n49U33507l3hxiFh9Csh4c",
+      "sr": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+      "ar": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+      "cr": "SHA-256:sjFnzyHCBQ3NwfHbDCwd3K7h_9P4gJMNH4N-eXQwF8g"
     }
   },
   "statement": {
@@ -323,20 +331,20 @@ below reports in full, so the numbers here and there match on purpose:
     "coz": {
       "pay": {
         "alg": "Ed25519",
-        "now": 1785880211,
-        "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+        "now": 1795229120,
+        "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-        "sequence": 1,
-        "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
+        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+        "sequence": 2,
+        "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
         "roots": {
-          "pr": "SHA-256:MOldD2IVG-RWFVpN72_X3IECouOSNKDkrS7by-tedIU",
-          "sr": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-          "ar": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-          "cr": "SHA-256:fzbJ1XCD8Pmcdy4pToIaatXz21UjY1N7KEaKEUE3vq0"
+          "pr": "SHA-256:SnPB2CXXZtisXfYf7u93-n49U33507l3hxiFh9Csh4c",
+          "sr": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+          "ar": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+          "cr": "SHA-256:sjFnzyHCBQ3NwfHbDCwd3K7h_9P4gJMNH4N-eXQwF8g"
         }
       },
-      "sig": "1888gDSol2_nzuHSxjg_tXUY2Tv-PUkmwlgscVmNpsIrddg8wjACGGndNSiUsNmK8S7FnW92hQevo2Nc2vH4CA"
+      "sig": "JJp5pt774DEO5YSdmkwKTq8pLXBviufyMzK8Th2oubZSaKkwZaVX7GeFw5mqF8j-0Dfl8QcYtwpcCRjWfyTYCg"
     }
   }
 }
@@ -356,14 +364,14 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.payload
 
 ```json
 {
-  "commit_count": 2,
-  "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
-  "last_updated": 1785879942
+  "commit_count": 3,
+  "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+  "last_updated": 1795229090
 }
 ```
 
 Unchanged, `last_updated` included. `GET /patch?pr=$PR` returns the same
-two entries it did before. And nobody can fetch the content back — the
+three entries it did before. And nobody can fetch the content back — the
 content-addressed lookup does not find it:
 
 ```sh
@@ -375,7 +383,7 @@ curl -s "http://127.0.0.1:4101/e/SHA-256:Sea6fBxGvclh1KlA9SVcOSc6gyRRmg_JkKYwT5X
   "v": 1,
   "payload": {
     "error": "entity SHA-256:Sea6fBxGvclh1KlA9SVcOSc6gyRRmg_JkKYwT5Xf4rY not found",
-    "now": 1785880272
+    "now": 1795229402
   },
   "statement": { "kind": "unsigned" }
 }
@@ -388,7 +396,7 @@ in the index. A bundle carrying no chain transaction takes a separate path
 that writes the blobs and skips indexing entirely, so no commit forms, no
 root moves, and nothing points at what was stored.
 
-**So Cyphr publishes key history, and nothing else, today.** If your
+**So Cyphr publishes key history, and nothing else.** If your
 application needs to publish content, anchor it yourself: hash the
 content, and put the hash somewhere the chain does cover — or keep the
 content and its signature entirely on your own side and use Cyphr for what
@@ -421,15 +429,14 @@ What none of it establishes:
 - **That the server will still say it.** There is no undertaking to
   retain anything. Losing the server's data directory loses the record;
   what survives is what its users and watchers kept.
-- **That the identifier is meaningful.** A `pr` is whatever the client
-  used on its first push, first-come-first-served within that one server's
-  namespace, not something derived from key material. Pushing a
-  perfectly ordinary principal's commits under a randomly generated
-  identifier gets a `201` and a signed receipt naming that identifier, and
-  `GET /tip` then serves it. The only constraint an attestor imposes is
-  shape: the identifier has to decode as base64url to 32, 48, or 64 bytes,
-  because a receipt's `pr` claim will not compose otherwise. On an
-  open-admission server, anyone can take any unused one.
+- **That the principal is anyone in particular.** A `pr` is derived
+  from the principal's genesis keys, not chosen: a push filed under any
+  other identifier is refused with a `400` before anything is stored, so
+  no one can claim another principal's identifier. The server stores the
+  algorithm-labelled spelling and accepts the bare digest for the same
+  principal. What the identifier does not tell you is who holds the keys.
+  Who may create a principal on a server at all is its admission policy;
+  on an open-admission server, anyone can.
 
 ## Auditing
 
@@ -471,46 +478,45 @@ curl -s "http://127.0.0.1:4100/patch?pr=$PR&from=$TIPPR" \
 One request, no data transferred, and a fresh signed claim about where the
 server says the principal is.
 
-One endpoint that does not work: **a server cannot report a tip about
-itself.** The server is an ordinary principal in its own store, and
-`/patch` serves its chain like anyone else's, but the tip report fails:
+A server is an ordinary principal in its own store, so its own chain
+answers like any other's. `GET /tip` with the server's `pg` as `pr` returns
+a signed tip report, and `GET /patch?pr=<pg>` returns its chain with a
+signed tip report over it:
 
 ```sh
-curl -s "http://127.0.0.1:4100/tip?pr=SHA-512:wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw"
+curl -s "http://127.0.0.1:4100/tip?pr=SHA-512:lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q" | jq -c '.payload | {commit_count, commit_id}'
 ```
 
 ```json
 {
-  "v": 1,
-  "payload": {
-    "error": "attestation root re-derivation failed: malformed blob: genesis blob must contain a 'key' field",
-    "now": 1785879825
-  },
-  "statement": { "kind": "unsigned" }
+  "commit_count": 1,
+  "commit_id": "SHA-512:TOosR-0A10HFjb8bnfyD1UJ0BJY4A72rIgFtitq0Xd0L92bIF21KPKMnVvf7KkN5HxfJUYoPQDLbrjEbnJerlA"
 }
 ```
 
-`500`, on every keyed server, permanently. The server's own genesis cozy
-carries no key material — that is why `GET /server` publishes the genesis
-key separately — and the tip attestation path has no way to get it back.
-Verification does not need this endpoint, but a monitor sweeping `/tip`
-across a server's principals will find one that always fails with a
-message that reads like store corruption.
+The statement is a `cyphr-server/receipt/tip`, signed by the server about
+its own chain. Treat it as the server's claim about itself, not as an
+independent check on the server's key: the next section says what that
+takes.
 
 ### Verifying a receipt without trusting the server again
 
-Six steps, and they are worth walking because the shape of the answer is
-"most of this is portable, one part is not."
+No shipped command verifies a receipt: the `cyphr` CLI has no receipt
+or audit command and never talks to a server. The check is six steps,
+and every one of them is something you can write yourself, in any
+language.
 
 1. Pin `pg` and the `genesis` object from `GET /server`.
 2. Re-derive the PG from that genesis key alone. If it does not match the
    pinned `pg`, stop — the published key does not back the identity.
-3. Fetch the server's own chain: `GET /patch?pr=<pg>`, tagged form
-   included. The bare thumbprint is a `404`; the tag is part of the
-   identifier the server files itself under.
+3. Fetch the server's own chain: `GET /patch?pr=<pg>`. The tagged form
+   and the bare digest after the `SHA-512:` label both work. The response
+   carries a signed tip report over the chain, which is the server vouching
+   for itself; do not rely on it for this check.
 4. Replay every entry into a fresh, independent engine of your own,
-   supplying that genesis key explicitly on each commit. The blobs carry
-   no key material, so nothing recovers it from the chain itself.
+   checking the genesis commit's key against the `genesis` object you pinned
+   in step 1. Each entry carries the public keys its commit introduces, in
+   `keys`; the transactions themselves name keys by thumbprint only.
 5. Confirm the receipt's `tmb` is an active key of the chain you just
    replayed.
 6. Verify the signature using the public key from that replayed chain.
@@ -548,49 +554,29 @@ thumbprint with its hash algorithm prefixed — `SHA-512:` followed by
 hashing the canonical string `{"alg":"<alg>","pub":"<pub>"}` built from
 `genesis.alg` and `genesis.pub`, with the algorithm's own hash: SHA-512
 for Ed25519 and ES512, SHA-256 for ES256, SHA-384 for ES384. For the
-attestor above that reproduces `wWKaBAIF…` exactly.
+attestor above that reproduces `lsraVr9s…` exactly.
 
 That shortcut stops holding the moment a principal has more than one
 genesis key, where the root is a tree over all of them rather than a
 single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
-**Steps 4 and 5 have no portable implementation, and what blocks them is
-getting the chain in, not replaying it.** Replay ships.
-`cyphr tx verify --identity=<pr>` loads a principal out of a local store,
-replays every commit through Cyphr's own validation — each signature
-checked against the keys active at that point — and compares the principal
-root it derives with the one the store recorded. That is step 4, running
-today, against a chain that is already local.
+**Steps 4 and 5 are the part worth walking slowly.** Replaying a chain
+means loading it into a second, independent engine — never the one you
+are checking — and running every commit through the same validation
+Cyphr always applies: each signature checked against the keys active at
+that point, with the resulting principal root compared against what the
+chain claims. In Rust, the `cyphr` and `cyphr-storage` crates are that
+engine; in any other language, it is code you write or trust.
 
-Getting a server's chain to be local is the part with no route. Converting
-the server's `/patch` response into the shape `cyphr import` reads, with
-the genesis key from the discovery hint supplied alongside, gets:
-
-```
-error: cannot determine genesis keys from storage
-```
-
-`import` has two ways to find a genesis key — your local keystore, or key
-material embedded in the chain's first commit — and a server's chain
-offers neither, the same gap that breaks its own tip report. There is no
-flag that feeds a genesis key in. And `import` does not round-trip
-`export` either — `cyphr export`'s own output for an ordinary two-key
-principal, imported into an empty store, gets
-`error: protocol error: duplicate key`.
-
-So a watcher today has two honest options. Link `cyphr` and
-`cyphr-storage` and do the replay properly — a few dozen lines against
-`StorageEngine` with an in-memory blob store and indexer, `submit_commit`,
-`load_principal`, and `is_key_active`. Or skip steps 4 and 5, verify the
-signature against the key `GET /server` publishes, and be clear with
-yourself that you have then trusted the server's claim about its own
-current key, which is exactly what those two steps exist to avoid.
-
-The second option is not worthless. It still catches a forged receipt from
-a third party and still detects a server signing two conflicting things
-with one key. What it cannot catch is a server that rotates its published
-key to one that never appeared in its chain.
+The alternative to all six steps — verify the signature against the key
+`GET /server` publishes right now, and stop there — is weaker in one
+specific way: it trusts the server's claim about its own current key
+instead of the chain that key's history is supposed to answer for. It
+still catches a forged receipt from a third party and still detects a
+server signing two conflicting things with one key. What it cannot catch
+is a server that rotates its published key to one that never appeared
+in its chain — exactly what the full replay exists to rule out.
 
 ### What to keep
 
@@ -617,8 +603,20 @@ answers about the same principal at the same chain position. Produce one
 with the two servers from the setup, which share a key and share nothing
 else.
 
-Push the same first commit to both, so they agree. Then build two
-conflicting second commits: snapshot the client's local store, add one key,
+No server runs this comparison for you. A server's tip report claims
+only what that server holds; comparing two of them is the reader's job,
+done with answers the reader kept. The
+[equivocation detection architecture](../architecture/equivocation-detection.md)
+states the model.
+
+The two servers below share a signing key, so they are one server
+identity with two data directories. That is what lets this setup
+produce a split view on demand: it makes one identity sign two
+conflicting views. The steps here gather and check the two answers by
+hand.
+
+Push the same two commits to both (the loop above, once per server), so
+they agree. Then build two conflicting third commits: snapshot the client's local store, add one key,
 export; restore the snapshot, add a different key, export.
 
 ```sh
@@ -632,8 +630,10 @@ cyphr export --identity="$PR" --output ./export-y.jsonl
 ```
 
 Two commits with the same predecessor and different contents. Run each
-export through the same `jq` that built `push.json` earlier, taking
-`.[-1]` so only the newest commit goes out, and send one to each server.
+export through the same `jq` filter as before (without the loop), keep
+only the last line (`| tail -n 1 > push-x.json`, and `push-y.json` for the
+other) so that only the newest commit goes out, since both servers already
+hold the first two commits, and send one to each server.
 Both take it:
 
 ```sh
@@ -646,22 +646,9 @@ curl -s -X POST http://127.0.0.1:4101/push \
 ```
 
 ```json
-{ "sequence": 1, "commit_id": "SHA-256:DJ7mXgcMovELEH3QAIaNAaWFNFSQbDe6j6CyQWCrjBg" }
-{ "sequence": 1, "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM" }
+{ "sequence": 2, "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y" }
+{ "sequence": 2, "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY" }
 ```
-
-A single server does refuse the second branch. Send the other commit to
-the server that already took one and it is a `409`:
-
-```
-409  payload.error: "protocol: state root mismatch"
-```
-
-That refusal is local bookkeeping, not fork detection. The server rejects
-a commit that does not follow the state it holds; it does not conclude
-anything happened, record the conflicting commit as evidence, or change
-how it answers afterwards. Nothing about a fork exists in the server's
-vocabulary.
 
 Now ask each server where the principal is:
 
@@ -673,40 +660,40 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.statement.coz.pay'
 ```json
 {
   "alg": "Ed25519",
-  "now": 1785879960,
-  "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "now": 1795229090,
+  "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-  "sequence": 1,
-  "commit_id": "SHA-256:DJ7mXgcMovELEH3QAIaNAaWFNFSQbDe6j6CyQWCrjBg",
+  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "sequence": 2,
+  "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
   "roots": {
-    "pr": "SHA-256:H7mluvygAqNaBwUSW7OWnlLxazcG6t_NNPALs3G6JlA",
-    "sr": "SHA-256:eMFV9AUzzfnn8PLTd0sgfqj8vYZdwJN9TBgC1MlNZtc",
-    "ar": "SHA-256:eMFV9AUzzfnn8PLTd0sgfqj8vYZdwJN9TBgC1MlNZtc",
-    "cr": "SHA-256:Iz3NGqU7jCg3i6M6mwgeT_N_ww_ab_CWTquq3DNrwFo"
+    "pr": "SHA-256:TZ_yNik2MjrWwbOAtc3ytIZtUVXGcS41u9kOT_m0c7Y",
+    "sr": "SHA-256:Yu10Am03qfFBLCc-A-Gg5vnR4t2dUVsXCGdqJKGwSg0",
+    "ar": "SHA-256:Yu10Am03qfFBLCc-A-Gg5vnR4t2dUVsXCGdqJKGwSg0",
+    "cr": "SHA-256:NiRFeyfe4RNjUuqME406ANsa1HG2AK4f5CywkE3YXLY"
   },
-  "commit_count": 2,
-  "last_updated": 1785879941
+  "commit_count": 3,
+  "last_updated": 1795229090
 }
 ```
 
 ```json
 {
   "alg": "Ed25519",
-  "now": 1785879960,
-  "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "now": 1795229090,
+  "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-  "sequence": 1,
-  "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
+  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "sequence": 2,
+  "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
   "roots": {
-    "pr": "SHA-256:MOldD2IVG-RWFVpN72_X3IECouOSNKDkrS7by-tedIU",
-    "sr": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-    "ar": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-    "cr": "SHA-256:fzbJ1XCD8Pmcdy4pToIaatXz21UjY1N7KEaKEUE3vq0"
+    "pr": "SHA-256:SnPB2CXXZtisXfYf7u93-n49U33507l3hxiFh9Csh4c",
+    "sr": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+    "ar": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+    "cr": "SHA-256:sjFnzyHCBQ3NwfHbDCwd3K7h_9P4gJMNH4N-eXQwF8g"
   },
-  "commit_count": 2,
-  "last_updated": 1785879942
+  "commit_count": 3,
+  "last_updated": 1795229090
 }
 ```
 
@@ -714,16 +701,31 @@ Same `tmb`, same `pr`, same `sequence`, different `commit_id` and
 different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
-**Nothing detected this.** Neither server knows the other exists, and no
-component anywhere compared them. Detection is a thing a watcher does,
-with bytes it went and collected, entirely outside the system.
+**Nothing detected this.** Neither server knows the other exists, and
+no server compares its views with anyone's. Detection is a thing you do
+yourself, with bytes you went and collected.
+
+Two faults are present here, and they are different. The principal's
+key signed two commits on the same predecessor: that is a fork in the
+principal's record, and the two commits prove it with no server
+signature involved. And one server identity signed two views that
+cannot both be true: that is the server equivocating, and its two tip
+reports prove it. With two servers that hold different keys, only the
+first would be present — each would be telling the truth about what it
+holds.
 
 ### Checking the evidence
 
-The predicate is short enough to write in whatever your watcher is written
-in. Both statements have to be tip reports, both signatures have to verify
-under their own key, both have to name the same principal and the same
-sequence, and they have to differ in `commit_id` or in any root:
+No `cyphr` command runs this check. The comparison exists as a Rust
+function, `check_equivocation` in the `cyphr-server` crate's `receipt`
+module, which returns `Proven` or the specific reason a pair is not a
+proven conflict (`WrongTyp`, `InvalidSignature`, `DifferentPrincipal`,
+`DifferentSequence`, `IdenticalClaims`, `Malformed`). Call it from Rust,
+or write the predicate in whatever your watcher is written in. Both
+statements have to be tip reports, both signatures
+have to verify under their own key, both have to name the same
+principal and the same sequence, and they have to differ in `commit_id`
+or in any root:
 
 ```js
 function sameRoots(a, b) {
@@ -769,11 +771,15 @@ having:
 verdict: IdenticalClaims
 ```
 
-**Two keys, not one.** The function takes a key per report, and they may
-differ. A server's identity is its chain, not any single key, so two
+**Two keys, one server.** The function takes a key per report, and they
+may differ. A server's identity is its chain, not any single key, so two
 receipts either side of a key rotation are still two statements by the
-same server. Passing one key twice is the ordinary case, not the general
-one.
+same server. But the function does not check that both keys belong to
+one server; you must, by binding each to the same server's chain as the
+previous section describes. Two reports signed by two different servers
+that hold different branches of a forked record come out `Proven`, and
+neither server lied: each signed what it holds. That pair is evidence of
+a fork in the principal's record, not of either server equivocating.
 
 **Compare the roots one named field at a time.** A whole-object
 comparison — `JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)`
@@ -781,9 +787,8 @@ comparison — `JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)`
 reports that serialise `roots` differently come out `Proven`: an
 accusation against a server that did nothing. The server's own predicate
 compares four separately parsed values, which no serialisation order can
-disturb. `roots.cr` is an empty string on a principal with no data commit
-yet, and the `??` keeps an absent `cr` from reading as a difference
-against an empty one.
+disturb. `roots.cr` is `null` on a principal with no data commit yet,
+and the `??` makes two `null` values compare equal.
 
 Two comparisons in that sketch are still looser than the version inside
 the server, and they fail in opposite directions. The server parses
@@ -802,12 +807,28 @@ comparison holds only because a stock server emits one canonical spelling
 of every digest. Decode before comparing, and accept both spellings of
 `sequence`, if you take reports from a source you did not write.
 
-There is a Rust implementation of this predicate, plus an all-pairs sweep
-across a set of reports and a formatter that renders the conflicting pair
-as an evidence document. It lives in `cyphr-server`'s
-library and has no HTTP route, no CLI subcommand, and no caller in the
-server itself — every caller in the workspace is a test. To use it you
-link the server crate; to avoid that, write the predicate above.
+#### When the two positions differ
+
+The predicate above requires the identical `sequence` on both sides, and
+`DifferentSequence` is what it returns whenever that requirement is not
+met — including two reports from a genuinely forked server, caught at
+different sequences. A bare `DifferentSequence` is not an answer; it is
+an unclosed question, and no shipped tool closes it.
+
+[arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
+states how it closes. Take the report with the higher `sequence`, `n`,
+and the one with the lower, `m`. Fetch the principal's chain from the
+higher-sequence server — `GET /patch?pr=<pr>`, naming the principal the
+two reports disagree about — and replay it into an engine of your own,
+the way the previous section replays a server's chain. Check that the
+replayed chain reaches the higher report's signed roots at `n`, then
+read the Commit Root it had at `m`:
+
+- Equal to the lower report's signed `cr`: the lower server is behind,
+  not forked. No conflict.
+- Different: the two reports fork at or before `m`. If one server
+  identity signed both, that server equivocated; if two servers did,
+  the principal's record forked.
 
 ### What you hold when you find one
 
@@ -816,15 +837,9 @@ keys. That is a complete, portable, self-contained proof, and it stays
 valid for as long as the signatures do. The server can decline to explain
 it, but cannot deny making both statements.
 
-What you can do with it, inside Cyphr, is nothing. No endpoint accepts
-evidence, nothing propagates it, and no server behaves differently for
-having seen it. The specification describes witnesses that detect
-forks, broadcast proof, transition a principal into an error state, and
-refuse both branches until resolved; none of that is built. There is no
-consensus state machine, no proof-of-error retention, and no fork
-detection anywhere in the server. The only piece of the resync design that
-exists is `/patch?from=<digest>`, an anchor that lets a caller ask for
-everything after a state it already holds.
+No server carries that proof to anyone. A server's answers say nothing
+about what other servers hold, and nothing in Cyphr today passes
+evidence between servers or readers: whoever gathered it holds it.
 
 So the answer to "what do I do with it" is an application question, and
 worth deciding before you need it rather than after:
@@ -841,15 +856,20 @@ published — which is your problem, not the protocol's.
 **Compare more servers.** Two conflicting reports tell you the identity
 equivocated but not which answer is the odd one out. A third report
 breaks the tie for you, by ordinary majority — nothing in Cyphr does that
-reasoning. The all-pairs sweep in `cyphr-server`'s library returns the
-first conflicting pair it finds and stops, so it proves misbehaviour
-without mapping it; if you want the shape of the disagreement across a
-set, collect the verdicts yourself.
+reasoning. If you want the shape of the disagreement across a set,
+collect the verdicts yourself.
 
 **Ask the principal to resolve it.** A fork is resolved when the principal
 publishes a commit whose predecessor is the tip of one branch, abandoning
-the other. That much works. Building a third commit on the branch server
-`4101` holds and pushing it to both:
+the other. Only the principal can do it, and no server does it for her
+([the architecture page states
+why](../architecture/equivocation-detection.md#arch-principal-resolves)).
+A resolving commit is a push like any other, and no server forwards a
+push to other servers: it reaches exactly the servers the principal
+pushes it to. A server she does not push it to keeps serving whatever
+branch it holds. Building a third commit on the branch server `4101`
+holds and pushing it to both. `4100` was never shown that branch, which
+matters below:
 
 ```
 4101  201
@@ -857,17 +877,97 @@ the other. That much works. Building a third commit on the branch server
 ```
 
 The chosen branch advances and the abandoned one is stuck, which is the
-outcome you want. But it is a convention between you and the user, not
-something the server participates in: neither server records that a fork
-happened, that one branch won, or that the other was abandoned. The `409`
-looks the same as any stale push.
+outcome you want. The `409` looks the same as any stale push, because to
+`4100` it is one: it never saw the branch the new commit builds on, and it
+records nothing about the fork, the winner or the abandoned branch.
+
+That `409` is what a server answers when it was never shown the branch the new
+commit builds on: here `4100` has only seen the other branch. The next
+section shows what changes when a server has seen both.
+
+### What one server does with both branches
+
+This section continues from the previous one, on the same two servers: `4100`
+has refused the resolving commit and still holds only its own branch. Send
+`4100` the commit that `4101` took (`push-y.json`). `4100` already holds the
+other branch, so it refuses with a `409`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "error": "protocol: state root mismatch",
+    "now": 1795229134,
+    "kind": "commit_mismatch"
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+The push is refused, but the server keeps the commit. It verified at its
+predecessor and took a position the chain already holds, so the server
+retains it as a rival branch and its answer about the principal changes:
+`GET /tip` no longer reports a tip. It reports `state: "error"`, the
+fork point, and both heads, and signs that as a `cyphr-server/receipt/held`
+statement:
+
+```sh
+curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq '.payload'
+```
+
+```json
+{
+  "state": "error",
+  "principal_id": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "fork_point": {
+    "height": 2,
+    "pre": "SHA-256:038v6Co3KCUwmzGlaAGSv9wGK4_I30QF-HnmRS4ajj0"
+  },
+  "heads": [
+    {
+      "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
+      "sequence": 2,
+      "held_since": 1795229090
+    },
+    {
+      "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+      "sequence": 2,
+      "held_since": 1795229134
+    }
+  ],
+  "now": 1795229134
+}
+```
+
+`GET /branches?pr=$PR` lists the two heads and marks the one the server
+still treats as canonical, and `GET /evidence?pr=$PR` returns both
+branches whole. So a single server that is shown both branches does notice
+the fork and says so. What it does not do is tell any other server, or
+compare itself with one: the two servers of this guide still disagree with
+each other, and nothing carries one's rival to the other. That comparison
+is still yours.
+
+Now push the resolving commit to `4100` again. It builds on one of the two
+heads the server now holds, so it is accepted with a `201`: the server
+settles on that branch, the principal leaves the `error` state, and the
+other head stays on record as a non-canonical branch in `GET /branches`.
+Which servers hold which branch when the principal resolves decides which
+of them answer `201` and which `409`.
 
 ### Watching, in practice
 
 A watcher is a loop, and a small one. For each principal you care about
 and each server you are willing to ask, fetch the tip, keep the receipt,
-and compare across servers. Anchoring at the tip you already hold makes
-the steady-state request nearly free — no entries, one signed claim.
+and compare across servers.
+
+No shipped command runs this loop. The fetch step is
+`curl -s "<url>/tip?pr=<pr>"`, saving the response body byte-exact so
+the receipt under `statement.coz` can be checked later. Anchoring at the
+tip you already hold (the `from=` form [shown
+earlier](#where-receipts-come-from)) makes the steady-state request
+nearly free — no entries, one signed claim. A watcher's loop is this
+fetch, repeated per principal and per server, feeding what it collects
+into [the comparison](#checking-the-evidence).
 
 Two limits shape how you build it.
 
@@ -883,47 +983,3 @@ confirmation.
 or serves an old view has done nothing you can prove. Only two conflicting
 signatures are provable. Everything else is a reason for suspicion and
 nothing more.
-
-## What is not there yet
-
-Named plainly, because finding these out mid-integration is worse than
-reading them here:
-
-- **No content publishing.** A bundle with no chain transaction is stored
-  and forgotten: no commit, no root movement, no index entry, no way to
-  fetch it back — and a signed receipt attesting the unchanged tip anyway.
-- **No agreement about what a signature covers.** `/push` verifies over
-  the payload's recursively key-sorted form. `/push` is the only endpoint
-  that canonicalizes before checking a signature — every other
-  signature-verifying path, `/auth/login`, naked `/revoke`, and the
-  witness-registration envelope among them, verifies over the key order
-  as sent. Hand-build a payload against one assumption and post it to a
-  path that holds the other, and the divergence is stated nowhere else:
-  the failure it produces is a bare `protocol: invalid signature`.
-- **No way to get a server's chain into the verifier that ships.**
-  `cyphr tx verify` replays a local principal and re-derives its root, so
-  the replay half is real; what is missing is the path in. `cyphr import`
-  cannot ingest a server's chain — it fails with
-  `cannot determine genesis keys from storage` — and cannot even
-  re-import `cyphr export`'s own output, which fails with
-  `protocol error: duplicate key`. The six steps end to end exist in full
-  only as an integration test.
-- **No reachable equivocation checking.** The predicate, the all-pairs
-  sweep, and the evidence formatter are implemented and tested in
-  `cyphr-server`'s library, with no route, no command, and no caller
-  outside the test suite.
-- **No tip report about the server itself.** `GET /tip` on a server's own
-  PG is a permanent `500`, though `/patch` on it works.
-- **No fork detection.** A server refuses a conflicting commit with a
-  `409` and draws no conclusion. No consensus state machine, no
-  proof-of-error retention, no state jumping — the specification describes
-  all of it and none of it is built. The one piece of the resync design
-  that exists is `/patch`'s digest anchor.
-- **Nowhere to file evidence.** No endpoint accepts it, nothing
-  propagates it, and no server behaves differently for having seen it.
-- **No freshness.** A genuinely signed response stays true about its
-  moment forever and can be replayed at a reader or a witness
-  indefinitely.
-- **No key-inclusion proof endpoint.** A third party can verify that a key
-  was included under a principal's root given the four proof hops, but no
-  route serves those hops; whoever holds the chain has to generate them.

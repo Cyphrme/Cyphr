@@ -18,6 +18,8 @@ use cyphr_server::config::ServerConfig;
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::StorageEngine;
 
+mod common;
+
 // ========================================================================
 // Helpers
 // ========================================================================
@@ -60,6 +62,9 @@ fn tmb_of(kp: &coz::KeyPair) -> coz::Thumbprint {
         .expect("thumbprint")
 }
 
+/// Backs: a single-key explicit genesis built client-side and pushed is
+/// established with a PG derived from its genesis key (SPEC 3.7.1), the
+/// shape the server principal itself is created in.
 #[tokio::test]
 async fn single_key_explicit_genesis_establishes_pg() {
     let kp = coz::Alg::Ed25519.generate_keypair();
@@ -70,22 +75,18 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .expect("thumbprint for server key");
     let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
 
-    let genesis_key = cyphr::Key {
-        alg: alg.clone(),
-        tmb: tmb.clone(),
-        pub_key: kp.pub_bytes.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let genesis = Genesis::Explicit(vec![genesis_key.clone()]);
+    let genesis_key =
+        cyphr::Key::new(alg.clone(), tmb.clone(), kp.pub_bytes.clone()).expect("key binds its tmb");
+    let genesis = Genesis::Disclosed(vec![genesis_key.clone()]);
 
-    // Client-side: build the explicit principal and derive its PG.
-    let mut client = cyphr::Principal::explicit(vec![genesis_key]).expect("explicit genesis");
+    // Client-side: build the principal and derive its PG, which for a
+    // single-key genesis is the genesis key's own PR (SPEC 5.2).
+    let mut client = cyphr::Principal::implicit(genesis_key.clone())
+        .await
+        .expect("genesis");
     let pg_tagged = client
         .pr_tagged()
-        .expect("pr_tagged for a fresh single-key explicit genesis");
+        .expect("pr_tagged for a fresh single-key genesis");
 
     let now = 1_700_000_000i64;
     let pc_pay = serde_json::json!({
@@ -103,18 +104,28 @@ async fn single_key_explicit_genesis_establishes_pg() {
     let pc_czd = coz::czd_for_alg(&pc_cad, &pc_sig, &alg).expect("czd pc");
 
     let mut scope = client.begin_commit();
+    let kc_blob = scope
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb),
+            &[],
+            now,
+            "cyphr.me",
+        )
+        .await
+        .expect("the genesis key creates itself (SPEC 5.2 TX0)")
+        .first()
+        .map(|c| serde_json::to_vec(c).unwrap())
+        .expect("one key/create");
     scope
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create applies to single-key explicit genesis");
     let commit = scope
-        .finalize_with_arrow(
-            &alg,
-            &kp.prv_bytes,
-            &kp.pub_bytes,
-            &tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb),
             now + 1,
             "cyphr.me",
         )
+        .await
         .expect("genesis commit finalizes");
 
     // The commit/create finalizer comes off the finalized commit; the
@@ -147,12 +158,22 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .expect("db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
     let indexer = FjallIndexer::open(&dir.path().join("index")).expect("indexer");
-    let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
-        cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-    });
+    let engine = StorageEngine::with_log_factory(
+        blob_store,
+        indexer,
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    );
 
     engine
-        .submit_commit(&pg_tagged, Some(genesis), &[&pc_blob, &cc_blob])
+        .submit_commit(
+            &pg_tagged,
+            Some(genesis),
+            &cyphr::replay::WireBundle {
+                txs: vec![vec![kc_blob], vec![pc_blob], vec![cc_blob]],
+                keys: vec![cyphr_storage::KeyEntry::of(&genesis_key)],
+                ..Default::default()
+            },
+        )
         .await
         .expect("genesis commit submits through the validated write path");
 
@@ -264,7 +285,7 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
     // Reload the chain and inspect its key state.
     let principal = state
         .engine
-        .load_principal(sp.pg(), Genesis::Explicit(vec![sp.genesis_key().clone()]))
+        .load_principal(sp.pg(), Genesis::Disclosed(vec![sp.genesis_key().clone()]))
         .await
         .expect("reload the rotated chain");
 
@@ -346,7 +367,7 @@ async fn principal_can_rotate_again_after_rotation() {
 
     let principal = state
         .engine
-        .load_principal(sp.pg(), Genesis::Explicit(vec![sp.genesis_key().clone()]))
+        .load_principal(sp.pg(), Genesis::Disclosed(vec![sp.genesis_key().clone()]))
         .await
         .expect("reload the twice-rotated chain");
     assert!(
@@ -394,7 +415,14 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
         .identity
         .as_ref()
         .expect("identity present after rotation")
-        .issue_token("some-principal", vec!["read".to_string()], now, 900)
+        .issue_login_token(
+            "some-principal",
+            &tmb_of(&new_kp),
+            vec!["read".to_string()],
+            now,
+            900,
+            None,
+        )
         .expect("issue token");
 
     // The token carries the issuing key's thumbprint; after rotation it must
@@ -410,4 +438,66 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
         claims.tmb, new_tmb_b64,
         "a token issued after rotation must be signed by the rotated-in key"
     );
+}
+
+// ========================================================================
+// The keyed server answers /tip for its own principal
+// ========================================================================
+
+/// Claim: a keyed server signs its own tip. A client that pins the server's
+/// PG (from `GET /server`) reads `/tip?pr=<PG>` in either spelling and gets
+/// a signed 200. Red if the keyed server 500s or answers unsigned on its
+/// own PG (the keyless genesis blob defeats root re-derivation). Lying impls
+/// it catches: an unsigned 200 fallback, or fixing only one spelling.
+/// E2E: bootstrap, then HTTP.
+#[tokio::test]
+async fn own_tip_keyed_server_signs_its_own_pg_tip() {
+    let (state, _identity, _dir) = common::attestor_server().await;
+    let pg = state
+        .principal
+        .as_ref()
+        .expect("bootstrapped")
+        .pg()
+        .to_string();
+    let bare = cyphr_storage::engine::bare_digest(&pg).to_string();
+    let app = cyphr_server::build_router(state);
+
+    for spelling in [pg.as_str(), bare.as_str()] {
+        let (status, env) = common::get_json(app.clone(), &format!("/tip?pr={spelling}")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{spelling}: {env:?}");
+        assert_eq!(env["statement"]["kind"], "signed", "{spelling}: {env:?}");
+        assert_eq!(
+            env["statement"]["coz"]["pay"]["pr"], bare,
+            "the report attests the server's own PG"
+        );
+    }
+}
+
+/// A rebooted server signs its own PG's tip with no derived roots
+/// remembered: the roots are re-derived from the stored chain, genesis
+/// included. Regression test; lying impls it catches: an unsigned answer
+/// or a re-derivation that cannot read the server's own genesis.
+/// E2E: boot, drop, reboot, then HTTP.
+#[tokio::test]
+async fn rebooted_server_signs_its_own_pg_tip() {
+    let (first, _identity, dir) = common::attestor_server().await;
+    let pg = first
+        .principal
+        .as_ref()
+        .expect("bootstrapped")
+        .pg()
+        .to_string();
+    drop(first);
+    let key_path = dir.path().join("signing-key.json");
+    let mut state = common::keyed_appstate(&dir.path().join("data"), &key_path);
+    let identity = state.identity.clone().expect("identity");
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+        .await
+        .expect("second boot");
+    state.principal = Some(Arc::new(sp));
+    let app = cyphr_server::build_router(Arc::new(state));
+
+    let (status, env) = common::get_json(app, &format!("/tip?pr={pg}")).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{env:?}");
+    assert_eq!(env["statement"]["kind"], "signed", "{env:?}");
 }

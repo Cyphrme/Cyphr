@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Targeted cargo-mutants run: mutate only the non-test code a change touched.
+#
+# usage: scripts/mutants-diff -p <crate> --base <rev> --timeout <n>
+#            [--test-package <pkg>] -- <tests>
+#
+# --test-package names the package whose tests run when the covering tests
+# live in another package than the mutated one (default: the mutated crate).
+# The diff is limited to *.rs files: cargo-mutants parses every file in
+# --in-diff as a Rust source diff and crashes on binary ones (e.g. .der).
+#
+# Runs --in-place because cargo-mutants otherwise copies only rs/, and tests
+# that read repo-root fixtures (../tests/...) fail the unmutated baseline.
+# The diff uses --relative=rs so --in-diff paths match the rs/ workspace.
+# A hard kill during an --in-place run can leave a mutant in the checkout:
+# check `git status` after an interrupted run.
+# Run inside the nix shell (cargo-mutants comes from it).
+set -euo pipefail
+
+usage() {
+	echo "usage: $0 -p <crate> --base <rev> --timeout <secs> [--test-package <pkg>] -- <test args>" >&2
+	exit 2
+}
+
+help() {
+	echo "usage: $0 -p <crate> --base <rev> --timeout <secs> [--test-package <pkg>] -- <test args>"
+	exit 0
+}
+
+crate="" base="" timeout="" test_pkg=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-p) crate="${2:-}"; shift 2 ;;
+	--base) base="${2:-}"; shift 2 ;;
+	--timeout) timeout="${2:-}"; shift 2 ;;
+	--test-package) test_pkg="${2:-}"; shift 2 ;;
+	-h | --help) help ;;
+	--) shift; break ;;
+	*) usage ;;
+	esac
+done
+[ -n "$crate" ] && [ -n "$base" ] && [ -n "$timeout" ] || usage
+test_pkg="${test_pkg:-$crate}"
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# --in-place mutates the working tree; a dirty tree would mix the user's
+# edits with mutants and the diff would not describe the change.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+	echo "mutants-diff: working tree is dirty; commit or stash first" >&2
+	exit 1
+fi
+
+diff_file="$(mktemp "${TMPDIR:-/tmp}/mutants-diff.XXXXXX")"
+trap 'rm -f "$diff_file"' EXIT
+git diff --relative=rs "$base" -- 'rs/*.rs' >"$diff_file"
+if [ ! -s "$diff_file" ]; then
+	echo "mutants-diff: no *.rs changes under rs/ since $base" >&2
+	exit 1
+fi
+
+cmd=(cargo mutants --in-place -p "$crate" --test-package "$test_pkg"
+	--in-diff "$diff_file" --timeout "$timeout" -- "$@")
+echo "mutants-diff: (cd rs && ${cmd[*]})"
+cd rs
+# cargo-mutants exits non-zero for a failed baseline (4) and for missed
+# mutants (2); set -e propagates whichever it is.
+"${cmd[@]}"

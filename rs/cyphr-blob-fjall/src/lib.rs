@@ -1,10 +1,10 @@
 //! fjall-backed [`BlobStore`] implementation.
 //!
-//! Also provides [`open_eml_storage`], which opens an EML log storage
-//! backend against the *same* fjall [`Database`] a [`FjallBlobStore`]
-//! uses — one physical database (one WAL, atomic cross-keyspace
-//! batches) shared by the blob and EML keyspaces, per
-//! docs/specs/blob-store-fjall.md's `[fjall-single-keyspace]` mandate.
+//! Also provides [`EmlLogs`], which keeps every principal's EML log in the
+//! *same* fjall [`Database`] a [`FjallBlobStore`] uses — one physical
+//! database (one WAL, atomic cross-keyspace batches) shared by the blob
+//! and EML keyspaces, per docs/specs/blob-store-fjall.md's
+//! `[fjall-single-keyspace]` mandate.
 
 use std::path::Path;
 
@@ -12,9 +12,10 @@ use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 /// Re-exported so a caller wiring up a shared-database
 /// [`StorageEngine`](cyphr_storage::engine::StorageEngine) (via
-/// [`open_eml_storage`]) can name `storage_fjall::FjallStorage` without
+/// [`EmlLogs`]) can name `storage_fjall::FjallStorage` without
 /// taking its own direct Cargo dependency on `storage-fjall`.
 pub use storage_fjall;
+use storage_fjall::LogKeyspaces;
 
 /// Production blob store backed by fjall (LSM-tree).
 pub struct FjallBlobStore {
@@ -60,99 +61,211 @@ impl FjallBlobStore {
     }
 
     /// Get the underlying [`Database`] reference, so a caller can open
-    /// further keyspaces (e.g. [`open_eml_storage`]) sharing this same
+    /// further keyspaces sharing this same
     /// physical database.
     pub fn database(&self) -> &Database {
         &self.db
     }
 }
 
-/// Open an EML log storage backend sharing `db` with a [`FjallBlobStore`]
-/// built from the same database — one WAL, atomic cross-keyspace batches,
-/// instead of two uncoordinated fjall databases.
+/// The per-principal EML logs of one database, by generation: a
+/// [`LogFactory`](cyphr_storage::engine::LogFactory) for
+/// [`StorageEngine::with_log_factory`](cyphr_storage::engine::StorageEngine::with_log_factory).
 ///
-/// Opens fixed keyspace names, so two logical logs (e.g. two Cyphr
-/// principals) sharing one physical `db` would collide on EML's
-/// positional leaf/node keys. For more than one principal per database,
-/// use [`open_eml_storage_scoped`] instead.
-pub fn open_eml_storage(
-    db: Database,
-) -> Result<storage_fjall::FjallStorage, storage_fjall::FjallStorageError> {
-    storage_fjall::FjallStorage::with_database(db)
+/// Every log of every principal and generation lives in one fixed
+/// keyspace triplet ([`LogKeyspaces`]), told apart by a key scope: the
+/// principal id bytes followed by the generation as a `u64` big-endian.
+/// A keyspace is never created per principal: creating one costs about
+/// fourteen fsyncs under a database-wide lock. The current generation is
+/// recorded in the `eml_generations` keyspace beside the logs; it names a
+/// cache, not chain state (I1).
+pub struct EmlLogs {
+    keyspaces: LogKeyspaces,
+    generations: Keyspace,
+    /// Principals whose older generations this process has swept. A crash
+    /// can only leave an older generation behind in a process that has
+    /// since died, so one sweep per principal per process recovers it, and
+    /// later opens skip the prefix scans a sweep costs.
+    swept: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
-/// Open an EML log storage backend scoped to `prefix`, sharing `db` with a
-/// [`FjallBlobStore`] built from the same database.
-///
-/// Distinct prefixes give each logical log (e.g. each Cyphr principal) its
-/// own isolated keyspace triplet within the same physical `db`, safe for
-/// more than one principal to share — see
-/// [`storage_fjall::FjallStorage::with_database_scoped`] for the collision
-/// this avoids.
-///
-/// `prefix` need not already satisfy `with_database_scoped`'s keyspace-name
-/// charset (alphanumeric, `_`, `-`, `.`, `#`, `$`): a Cyphr `principal_id`
-/// (e.g. `"SHA-256:U5XUZ..."`) always contains a `:` separator, which is
-/// outside it. Any byte outside that charset is escaped, injectively (see
-/// [`sanitize_fjall_prefix`]), before opening, so callers can pass a
-/// `principal_id` directly.
-pub fn open_eml_storage_scoped(
-    db: Database,
-    prefix: &str,
-) -> Result<storage_fjall::FjallStorage, storage_fjall::FjallStorageError> {
-    let sanitized = sanitize_fjall_prefix(prefix);
-    storage_fjall::FjallStorage::with_database_scoped(db, &sanitized)
+/// Why [`EmlLogs::new`] failed.
+#[derive(Debug)]
+pub struct EmlLogsError(String);
+
+impl std::fmt::Display for EmlLogsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
-/// Escape marker [`sanitize_fjall_prefix`] uses for its reversible
-/// encoding — reserved out of the passthrough set (see that function) so
-/// it can never appear un-escaped in the output.
-const FJALL_PREFIX_ESCAPE: char = '$';
+impl std::error::Error for EmlLogsError {}
 
-/// Map arbitrary bytes into fjall's keyspace-name charset (alphanumeric,
-/// `_`, `-`, `.`, `#`, `$`), injectively: distinct inputs always produce
-/// distinct output.
-///
-/// # Why not blind substitution
-///
-/// An earlier version replaced every disallowed byte with a fixed `_`,
-/// which is lossy: e.g. `"a:b"` (colon) and `"a_b"` (literal underscore)
-/// both sanitized to `"a_b"`, a genuine same-length collision no length
-/// prefix can fix (length-prefixing — the pattern `commit_key` in
-/// `cyphr-index-fjall` uses — only disambiguates *variable-length* field
-/// boundaries; it does nothing for a same-length, information-losing
-/// character map like this one). A Cyphr `principal_id` is always
-/// `"{alg}:{digest}"` and so never triggers this in practice, but
-/// `principal_id` is caller-supplied and not otherwise validated —
-/// multitenancy correctness (root AGENTS.md I2) must not depend on that
-/// shape holding.
-///
-/// # Encoding
-///
-/// Every allowed byte passes through unchanged, *except* the escape
-/// marker `$` itself, which (like every other disallowed byte) is
-/// replaced with `$` followed by its two-hex-digit value. Because `$`
-/// therefore never appears un-escaped in the output, a `$` encountered
-/// left-to-right always starts exactly one two-hex-digit escape unit —
-/// the encoding is uniquely decodable (hence injective) with no length
-/// prefix needed: two distinct inputs can only produce the same output if
-/// some output position is simultaneously a passthrough byte and part of
-/// an escape unit, which the reserved marker rules out by construction.
-/// See `injectivity` tests below for the adversarial cases this rules out.
-fn sanitize_fjall_prefix(prefix: &str) -> String {
-    let mut out = String::with_capacity(prefix.len());
-    for b in prefix.bytes() {
-        let c = b as char;
-        if c != FJALL_PREFIX_ESCAPE
-            && (c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#'))
-        {
-            out.push(c);
-        } else {
-            out.push(FJALL_PREFIX_ESCAPE);
-            out.push_str(&format!("{b:02x}"));
+/// Suffixes of the per-principal keyspaces of the layout before the fixed
+/// triplet. The fixed names carry no leading underscore, so none ends in
+/// one of these.
+const LEGACY_SUFFIXES: [&str; 3] = ["_eml_leaves", "_eml_nodes", "_eml_metadata"];
+
+impl EmlLogs {
+    /// The logs of `db`, opening the fixed keyspaces once.
+    ///
+    /// A database written under the per-principal keyspace layout is
+    /// migrated by dropping those keyspaces: the logs are caches of the
+    /// blobs (I1) and replay rebuilds each on its next load. Generation
+    /// records are left as they are; a record then names a scope that is
+    /// empty, which replay fills. This costs about seven fsyncs per legacy
+    /// keyspace, once, so progress is logged.
+    ///
+    /// # Errors
+    ///
+    /// A keyspace does not open, or a legacy one does not delete.
+    pub fn new(db: Database) -> Result<Self, EmlLogsError> {
+        let err = |what: &str| {
+            let what = what.to_owned();
+            move |e: &dyn std::fmt::Display| EmlLogsError(format!("{what}: {e}"))
+        };
+        let generations = db
+            .keyspace("eml_generations", KeyspaceCreateOptions::default)
+            .map_err(|e| err("opening the generation record")(&e))?;
+        let keyspaces =
+            LogKeyspaces::open(db.clone()).map_err(|e| err("opening the log keyspaces")(&e))?;
+        let legacy: Vec<String> = db
+            .list_keyspace_names()
+            .into_iter()
+            .map(|name| name.to_string())
+            .filter(|name| LEGACY_SUFFIXES.iter().any(|s| name.ends_with(s)))
+            .collect();
+        if !legacy.is_empty() {
+            migrate_legacy_layout(&db, &legacy).map_err(EmlLogsError)?;
+        }
+        Ok(Self {
+            keyspaces,
+            generations,
+            swept: std::sync::Mutex::default(),
+        })
+    }
+
+    /// Whether this process has swept `principal_id`'s older generations.
+    /// The set only skips work; a poisoned lock holds a usable set.
+    fn has_swept(&self, principal_id: &str) -> bool {
+        self.swept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(principal_id)
+    }
+
+    fn mark_swept(&self, principal_id: &str) {
+        self.swept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(principal_id.to_owned());
+    }
+
+    /// The key scope of generation `generation` of `principal_id`'s log.
+    /// Fixed-width tail, so injective; `FjallStorage` length-prefixes it.
+    fn scope(principal_id: &str, generation: u64) -> Vec<u8> {
+        let mut scope = Vec::with_capacity(principal_id.len() + 8);
+        scope.extend_from_slice(principal_id.as_bytes());
+        scope.extend_from_slice(&generation.to_be_bytes());
+        scope
+    }
+
+    fn scoped(
+        &self,
+        principal_id: &str,
+        generation: u64,
+    ) -> Result<storage_fjall::FjallStorage, String> {
+        storage_fjall::FjallStorage::scoped(&self.keyspaces, &Self::scope(principal_id, generation))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Delete generation `generation` of `principal_id`'s log, if held.
+    fn retire(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        self.scoped(principal_id, generation)?
+            .drop_scope()
+            .map_err(|e| format!("retiring log generation {generation}: {e}"))
+    }
+}
+
+/// Drop the legacy keyspaces `legacy`. An interrupted drop is finished by
+/// the next start, which finds the keyspaces still listed.
+fn migrate_legacy_layout(db: &Database, legacy: &[String]) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    eprintln!(
+        "migrating the commit logs to the fixed keyspace layout: dropping {} legacy keyspaces \
+         (they rebuild from the blobs on first load)",
+        legacy.len()
+    );
+    for (done, name) in legacy.iter().enumerate() {
+        let keyspace = db
+            .keyspace(name, KeyspaceCreateOptions::default)
+            .map_err(|e| format!("fjall keyspace '{name}' open: {e}"))?;
+        db.delete_keyspace(keyspace)
+            .map_err(|e| format!("deleting legacy keyspace '{name}': {e}"))?;
+        let done = done + 1;
+        if done % 30 == 0 || done == legacy.len() {
+            eprintln!(
+                "  dropped {done}/{} legacy keyspaces, {:.1}s elapsed",
+                legacy.len(),
+                started.elapsed().as_secs_f64()
+            );
         }
     }
-    out
+    Ok(())
+}
+
+impl cyphr_storage::engine::LogFactory<storage_fjall::FjallStorage> for EmlLogs {
+    fn generation(&self, principal_id: &str) -> Result<u64, String> {
+        let held = self
+            .generations
+            .get(principal_id.as_bytes())
+            .map_err(|e| format!("reading the log generation of {principal_id}: {e}"))?;
+        match held {
+            None => Ok(0),
+            Some(bytes) => <[u8; 8]>::try_from(bytes.as_ref())
+                .map(u64::from_be_bytes)
+                .map_err(|_| format!("the log generation of {principal_id} is not a u64")),
+        }
+    }
+
+    fn open(
+        &self,
+        principal_id: &str,
+        generation: u64,
+    ) -> Result<storage_fjall::FjallStorage, String> {
+        let current = self.generation(principal_id)?;
+        // A generation above the current one is being regenerated: what an
+        // interrupted regeneration left there is discarded.
+        if generation > current {
+            self.retire(principal_id, generation)?;
+        }
+        // A crash between recording a generation and retiring the one it
+        // superseded leaves that one behind; the first open of the current
+        // log in this process retires every older generation still held.
+        if generation == current && current > 0 && !self.has_swept(principal_id) {
+            // The sweep is synchronous fjall IO, so no lock is held across
+            // it. Two opens racing here both sweep; a sweep is idempotent
+            // (retiring a generation that is gone deletes nothing).
+            for older in 0..current {
+                self.retire(principal_id, older)?;
+            }
+            self.mark_swept(principal_id);
+        }
+        self.scoped(principal_id, generation)
+    }
+
+    fn retire_below(&self, principal_id: &str, generation: u64) -> Result<(), String> {
+        let retired = self.generation(principal_id)?;
+        self.generations
+            .insert(principal_id.as_bytes(), generation.to_be_bytes())
+            .map_err(|e| format!("recording the log generation of {principal_id}: {e}"))?;
+        // Older generations were retired when their successors became
+        // current, or are swept by the next open if a crash intervened.
+        if retired < generation {
+            self.retire(principal_id, retired)?;
+        }
+        Ok(())
+    }
 }
 
 impl BlobStore for FjallBlobStore {
@@ -164,13 +277,13 @@ impl BlobStore for FjallBlobStore {
         let blobs = self.blobs.clone();
         let data = data.to_vec();
         async move {
-            if let Some(max) = max_blob_size {
-                if data.len() > max {
-                    return Err(BlobStoreError::BlobTooLarge {
-                        size: data.len(),
-                        max,
-                    });
-                }
+            if let Some(max) = max_blob_size
+                && data.len() > max
+            {
+                return Err(BlobStoreError::BlobTooLarge {
+                    size: data.len(),
+                    max,
+                });
             }
             let hash = Blake3Hash::from_bytes(*blake3::hash(&data).as_bytes());
             tokio::task::spawn_blocking(move || {
@@ -178,6 +291,21 @@ impl BlobStore for FjallBlobStore {
                     .insert(hash.as_bytes(), data)
                     .map_err(|e| BlobStoreError::Backend(format!("fjall insert: {e}")))?;
                 Ok(hash)
+            })
+            .await
+            .map_err(|e| BlobStoreError::Backend(format!("spawn_blocking join failed: {e}")))?
+        }
+    }
+
+    fn persist(&self) -> impl std::future::Future<Output = Result<(), BlobStoreError>> + Send {
+        // One journal serves every keyspace of the database, the blobs and
+        // the commit logs ([`EmlLogs`]) alike, so one sync covers both.
+        // Data only: file metadata is not needed to find the journal again.
+        let db = self.db.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                db.persist(fjall::PersistMode::SyncData)
+                    .map_err(|e| BlobStoreError::Backend(format!("fjall persist: {e}")))
             })
             .await
             .map_err(|e| BlobStoreError::Backend(format!("spawn_blocking join failed: {e}")))?

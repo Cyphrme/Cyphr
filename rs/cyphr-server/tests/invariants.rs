@@ -26,19 +26,6 @@ fn current_unix_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
-/// these principal identifiers must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
-
 /// N0.1: `two_instances_are_independent`
 ///
 /// Verifies that two independent server instances (built using `common::multi`)
@@ -70,10 +57,10 @@ async fn two_instances_are_independent() {
 
     // 2. Data & Storage engine isolation: push principal to inst0
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_derived = common::golden_principal_id(&pool).await;
+    let principal_id = principal_id_derived.as_str();
     let now = current_unix_timestamp();
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
 
     let (push_status, push_resp) = inst0.post("/push", push_body.clone()).await;
     assert_eq!(
@@ -146,7 +133,7 @@ async fn refusals_are_never_signed() {
             attestor,
             "/push",
             "POST",
-            Some(serde_json::json!({ "principal_id": "p1", "blobs": [] }).to_string()),
+            Some(serde_json::json!({ "principal_id": "p1", "txs": [] }).to_string()),
             StatusCode::BAD_REQUEST,
         ),
         (
@@ -227,10 +214,10 @@ async fn signed_statements_carry_freshness() {
     let identity = inst.identity.as_ref().unwrap();
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x02);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_derived = common::golden_principal_id(&pool).await;
+    let principal_id = principal_id_derived.as_str();
     let start_time = current_unix_timestamp();
-    let push_body = build_genesis_push_body(&pool, principal_id, start_time);
+    let push_body = build_genesis_push_body(&pool, principal_id, start_time).await;
 
     let (push_status, push_resp) = inst.post("/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
@@ -310,23 +297,4 @@ async fn no_standing_honesty_claim() {
         serde_json::json!("unsigned"),
         "N0.4 / I7 invariant failure: keyless discovery statement must be unsigned"
     );
-}
-
-/// N0.5: `multi_server_tcp_socket_listener_option`
-///
-/// Verifies that `MultiServer` instances can bind real ephemeral TCP socket listeners
-/// on `127.0.0.1:0` alongside in-process dispatch, returning distinct local addresses and URLs.
-#[tokio::test]
-async fn multi_server_tcp_socket_listener_option() {
-    let mut multi = MultiServer::new_attestors(2).await;
-    let addrs = multi.bind_tcp().await.expect("bind_tcp must succeed");
-
-    assert_eq!(addrs.len(), 2);
-    assert_ne!(addrs[0], addrs[1]);
-    assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
-    assert_eq!(addrs[1].ip().to_string(), "127.0.0.1");
-
-    let inst0 = multi.get(0);
-    assert_eq!(inst0.tcp_addr(), Some(addrs[0]));
-    assert_eq!(inst0.url(), Some(format!("http://{}", addrs[0])));
 }

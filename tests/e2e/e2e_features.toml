@@ -383,12 +383,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -405,12 +404,11 @@ principal = ["bob"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "bob", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -427,12 +425,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -449,12 +446,11 @@ principal = ["diana_es384"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "diana_es384", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "diana_es384", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "diana_es384", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -471,12 +467,11 @@ principal = ["eve_ed25519"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "eve_ed25519", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "eve_ed25519", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "eve_ed25519", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1195,6 +1190,16 @@ key_count = 2
 name      = "t1_f15_case1"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
 now    = 1700000000
@@ -1207,6 +1212,16 @@ level = 4
 [[test]]
 name      = "t1_f15_case2"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
@@ -1221,6 +1236,16 @@ level = 4
 name      = "t1_f15_case3"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
 now    = 1700000000
@@ -1233,6 +1258,16 @@ level = 4
 [[test]]
 name      = "t1_f15_case4"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
@@ -1247,6 +1282,16 @@ level = 4
 name      = "t1_f15_case5"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 msg    = "Tier 1 F-15 Case"
 now    = 1700000000
@@ -1260,6 +1305,16 @@ level = 4
 name      = "t1_f16_case1"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -1271,6 +1326,16 @@ level = 4
 [[test]]
 name      = "t1_f16_case2"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -1284,6 +1349,16 @@ level = 4
 name      = "t1_f16_case3"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -1296,6 +1371,16 @@ level = 4
 name      = "t1_f16_case4"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -1307,6 +1392,16 @@ level = 4
 [[test]]
 name      = "t1_f16_case5"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -1436,7 +1531,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case2"
@@ -1450,7 +1545,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case3"
@@ -1464,7 +1559,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case4"
@@ -1478,7 +1573,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f03_case5"
@@ -1492,7 +1587,7 @@ tx = [
 ]
 
 [test.expected]
-error = "[naked-revoke-error]"
+key_count = 0
 
 [[test]]
 name      = "t2_f04_case1"
@@ -1676,12 +1771,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1697,12 +1791,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1718,12 +1811,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1739,12 +1831,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -1760,12 +1851,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -2388,6 +2478,16 @@ error = "UnknownAlg"
 name      = "t2_f15_case1"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2397,12 +2497,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case2"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2412,12 +2522,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case3"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2427,12 +2547,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case4"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2442,12 +2572,22 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f15_case5"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "golden"
@@ -2457,11 +2597,21 @@ typ    = "cyphr.me/action"
 inject_pre = true
 
 [test.expected]
-error = "[data-action-no-pre]"
+level = 4
 
 [[test]]
 name      = "t2_f16_case1"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -2475,6 +2625,16 @@ error = "UnknownSigner"
 name      = "t2_f16_case2"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "alice"
@@ -2486,6 +2646,16 @@ error = "UnknownSigner"
 [[test]]
 name      = "t2_f16_case3"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -2499,6 +2669,16 @@ error = "UnknownSigner"
 name      = "t2_f16_case4"
 principal = ["golden"]
 
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
 [[test.action]]
 now    = 1700000000
 signer = "alice"
@@ -2510,6 +2690,16 @@ error = "UnknownSigner"
 [[test]]
 name      = "t2_f16_case5"
 principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
 
 [[test.action]]
 now    = 1700000000
@@ -2671,12 +2861,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -2858,12 +3047,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -2887,13 +3075,14 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -2970,13 +3159,14 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],
@@ -3072,12 +3262,11 @@ principal = ["alice"]
 [[test.commit]]
 tx = [
   [
+    { now = 1700000000, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
-]
-
-[[test.commit]]
-tx = [
   [
     { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
   ],

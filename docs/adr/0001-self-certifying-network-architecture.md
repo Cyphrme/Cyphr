@@ -322,7 +322,7 @@ governing mental model and are not in question. What is **not yet landed**
 is the specific server-side consequence this ADR calls for in "Consequences"
 below (thin-witness push replacing full replay as the default path):
 
-- **Proof primitives exist as a library capability.** `rs/cyphr/src/principal.rs`
+- **Proof primitives exist as a library capability.** `rs/cyphr/src/principal/proofs.rs`
   implements `Principal::inclusion_proof`, `Principal::consistency_proof`,
   `Principal::verify_transaction_inclusion`, and `Principal::verify_key_inclusion`
   (built on EML's proof primitives, exposed via `rs/cyphr/src/commit_root.rs`),

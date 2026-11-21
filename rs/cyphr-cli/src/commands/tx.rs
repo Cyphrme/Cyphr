@@ -6,7 +6,6 @@ use super::common::{
     CliPrincipal, get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
     parse_store,
 };
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat, TxCommands};
 
 /// Run a tx subcommand.
@@ -85,9 +84,9 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
+        let keystore = super::common::open_backend(cli)?;
         let key = load_key_from_keystore(&keystore, identity)?;
-        let principal = cyphr::Principal::implicit(key)?;
+        let principal = cyphr::PrincipalState::genesis(key)?;
 
         // Verify PG matches (L1 has no PG)
         if let Some(pg) = principal.pg() {
@@ -95,13 +94,12 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
             let computed_pg = pg
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+                .map(Base64UrlUnpadded::encode_string)?;
             if computed_pg != identity {
-                return Err(Error::Storage(format!(
-                    "PG mismatch: computed {} != {}",
-                    computed_pg, identity
-                )));
+                return Err(Error::PgMismatch {
+                    computed: computed_pg,
+                    expected: identity.to_owned(),
+                });
             }
         }
 
@@ -128,7 +126,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     }
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Verify PG matches
@@ -137,13 +135,12 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         let computed_pg = pg
             .as_multihash()
             .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+            .map(Base64UrlUnpadded::encode_string)?;
         if computed_pg != identity {
-            return Err(Error::Storage(format!(
-                "PG mismatch: computed {} != expected {}",
-                computed_pg, identity
-            )));
+            return Err(Error::PgMismatch {
+                computed: computed_pg,
+                expected: identity.to_owned(),
+            });
         }
     }
 
@@ -155,8 +152,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .pr()
         .as_multihash()
         .first_variant()
-        .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+        .map(Base64UrlUnpadded::encode_string)?;
 
     // Parse stored pr which may be in "alg:digest" format
     let stored_pr_digest = last_commit
@@ -166,10 +162,10 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .unwrap_or(&last_commit.pr);
 
     if computed_pr != stored_pr_digest {
-        return Err(Error::Storage(format!(
-            "PR mismatch: computed {} != stored {}",
-            computed_pr, stored_pr_digest
-        )));
+        return Err(Error::PrMismatch {
+            computed: computed_pr,
+            stored: stored_pr_digest.to_owned(),
+        });
     }
 
     let tx_count: usize = principal.iter_all_cozies().count();
@@ -200,6 +196,6 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 /// Load identity from storage or keystore.
 fn load_identity(cli: &Cli, identity: &str) -> crate::Result<CliPrincipal> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     load_principal_from_engine(&store, &keystore, identity)
 }

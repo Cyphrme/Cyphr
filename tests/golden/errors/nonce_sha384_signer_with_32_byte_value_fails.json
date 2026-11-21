@@ -1,0 +1,111 @@
+{
+  "name": "nonce_sha384_signer_with_32_byte_value_fails",
+  "principal": [
+    "diana_es384"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES384",
+      "pub": "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ",
+      "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
+    }
+  ],
+  "commits": [
+    {
+      "v": 2,
+      "txs": [
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "id": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/key/create"
+            },
+            "sig": "Y5pzs71OaAmMsegxydalj3oWBADV5K-tSQh7i-zhYqtQdbPFERU5C8fL1FK4I7RDYG64zrN1olfk80zp5l43gq6KYzQ4KRJ7lq8ltn_X0n1W8a0dcz82r1cWaNPzxgY2"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "id": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/principal/create"
+            },
+            "sig": "ERCqCoq2IMvj4BnqaG49EZxdxmCiZPI88tn251nvaHb9ASHCJYQwSmKHi_ryeN1ydfzabzHnGa868UbEZGfn99dEShEnGB-Qia_WQ_o9z6lPC2QdMpiffFI15bqoRrIA"
+          }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "arrow": "SHA-384:3BJ7LvTciQXsyWyepFjGlZqotDh-dD38rzMzQQ8_blOrWem3XtPo1d2JM5TfILrg",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/commit/create"
+            },
+            "sig": "DVFdfuqgy-cbLTRJDlys2cKAFYEGay8oFn3IiHTDsasR1F6KS94wkB54azbWNvTfJUcR8YRR5I75GRa2gSlH2MAMyiN6PzF5AlaAt8zFJQWUQn3vVZL0QBNGMhWuIyDP"
+          }
+        ]
+      ],
+      "keys": [
+        {
+          "alg": "ES384",
+          "pub": "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ",
+          "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+          "tag": "Diana (ES384)",
+          "now": 0
+        }
+      ],
+      "commit_id": "SHA-384:2I0bpPSWEEk5XWXmqUJ0OLWjgnkQ_57dvG2KmKahE2qkZyA9B0a6XtHkdu1sWkWu",
+      "ar": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+      "sr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+      "pr": "SHA-384:91llOGSGyBIaqZ2AWfSzA3pUTQZ2zA2qzTpZLN0MXUjQ2p7cJ5HrllayZ3BwWt_A"
+    },
+    {
+      "v": 2,
+      "txs": [
+        [
+          {
+            "pay": {
+              "alg": "ES384",
+              "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "now": 1700000000,
+              "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+              "typ": "cyphr.me/cyphr/AT/nonce/create"
+            },
+            "sig": "y5rJ03luTyD1dT8YvWfa0KNS5KAJKRXFqa5bB9oCeeaxUbUvyZikjUPe0vlqFubtNLZlEPs53CsDo_s8Wx2-FYu7Eoxky3nY_wGtch1mDjAiVbUJsEbe-lf8WzEUE27N"
+          }
+        ]
+      ],
+      "keys": [],
+      "commit_id": "",
+      "ar": null,
+      "sr": null,
+      "pr": ""
+    }
+  ],
+  "digests": [
+    "ArevnCoXPhDJLbONQDEJGJmiil2tmaf2uDrBCBV8ofCK2I37Huxr5Cak_yR_LAgm",
+    "WKdwCNtczS8oujyyxpCuzA13QiDEgbPENaBMlPIKQlYaF7Z6KUElV7aOg-iNadrD",
+    "0dh0yV9dLtSzhBnPtCxWfgnp9Pwi6-6x6V12u2ENQNxXTgPxhyQ5aRwe-WbeJmFA",
+    "zdRl7OKpzkZliWjf-RNJfTGFky8CXmoebyHrs17cKOOUB0fyT1EFBucTbqDd4mIl"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 3,
+    "kr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "ar": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pr": "SHA-384:91llOGSGyBIaqZ2AWfSzA3pUTQZ2zA2qzTpZLN0MXUjQ2p7cJ5HrllayZ3BwWt_A",
+    "cr": "SHA-384:2I0bpPSWEEk5XWXmqUJ0OLWjgnkQ_57dvG2KmKahE2qkZyA9B0a6XtHkdu1sWkWu",
+    "tr": "SHA-384:2I0bpPSWEEk5XWXmqUJ0OLWjgnkQ_57dvG2KmKahE2qkZyA9B0a6XtHkdu1sWkWu",
+    "sr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pg": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "error": "MalformedPayload",
+    "deleted": false,
+    "frozen": false
+  }
+}

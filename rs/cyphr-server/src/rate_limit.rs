@@ -177,8 +177,8 @@ impl Fences {
             push: BoundedLimiter::new(quota(limits.push)),
             login: BoundedLimiter::new(quota(limits.login)),
             revoke: BoundedLimiter::new(quota(limits.revoke)),
-            max_body_bytes: limits.max_body_bytes,
-            count_quota: limits.count_quota,
+            max_body_bytes: limits.max_body_bytes.get(),
+            count_quota: limits.count_quota.get(),
         }
     }
 
@@ -199,8 +199,8 @@ impl Fences {
 /// quota: one cell replenished every `1s / per_second`, up to `burst` capacity.
 /// Both fields are clamped to at least 1 so a misconfigured `0` becomes the
 /// tightest live bucket rather than a panic. Deliberately a silent LOOSENING,
-/// unlike `max_body_bytes == 0` / `count_quota == 0` (rejected loudly at
-/// startup -- see `config::resolve_config`): a clamped-tightest bucket still
+/// unlike `max_body_bytes` / `count_quota` (`NonZeroU64`, so a zero does not
+/// deserialize): a clamped-tightest bucket still
 /// serves traffic, just very strictly, so it never bricks writes and is
 /// clamped rather than refused.
 fn quota(bucket: RateBucket) -> Quota {
@@ -279,10 +279,10 @@ where
 {
     // (1) Size cap on the declared length -- refuse before any keying or
     // buffering when the client announces an over-cap body.
-    if let Some(len) = declared_len(&req) {
-        if len > fences.max_body_bytes {
-            return too_large(fences.max_body_bytes);
-        }
+    if let Some(len) = declared_len(&req)
+        && len > fences.max_body_bytes
+    {
+        return too_large(fences.max_body_bytes);
     }
 
     // (2) Per-IP fence over every request.
@@ -293,10 +293,10 @@ where
 
     // (3) Per-operation fence (keyed on peer IP within the operation).
     let op = classify(req.method(), req.uri().path());
-    if let Some(limiter) = fences.op_limiter(op) {
-        if limiter.check_key(&ip).is_err() {
-            return rate_limited();
-        }
+    if let Some(limiter) = fences.op_limiter(op)
+        && limiter.check_key(&ip).is_err()
+    {
+        return rate_limited();
     }
 
     // (4) Write path: buffer the body (enforcing the size cap on the actual
@@ -470,56 +470,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use governor::clock::DefaultClock;
-    use governor::state::keyed::DefaultKeyedStateStore;
-
     use super::*;
 
-    /// A keyed `governor` limiter over key `K`, backed by the default
-    /// (DashMap) keyed state store and default clock. Exercises `governor`'s
-    /// own keyed bucket behavior directly, in isolation from
-    /// [`BoundedLimiter`]'s `moka`-backed store.
-    type KeyedLimiter<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
-
-    /// A tight bucket trips within its burst; a fresh key starts full.
-    #[test]
-    fn tight_quota_trips_within_burst() {
-        let limiter: KeyedLimiter<IpAddr> = RateLimiter::keyed(quota(RateBucket {
-            per_second: 1,
-            burst: 2,
-        }));
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        assert!(limiter.check_key(&ip).is_ok(), "first cell within burst");
-        assert!(limiter.check_key(&ip).is_ok(), "second cell within burst");
-        assert!(
-            limiter.check_key(&ip).is_err(),
-            "third immediate cell exceeds a burst of 2"
-        );
-
-        // A distinct key is an independent bucket.
-        let other = IpAddr::from([127, 0, 0, 2]);
-        assert!(
-            limiter.check_key(&other).is_ok(),
-            "a distinct key must not share the tripped bucket"
-        );
-    }
-
-    /// A generous bucket never trips under a modest burst.
-    #[test]
-    fn generous_quota_admits_a_burst() {
-        let limiter: KeyedLimiter<IpAddr> = RateLimiter::keyed(quota(RateBucket {
-            per_second: 100_000,
-            burst: 100_000,
-        }));
-        let ip = IpAddr::from([127, 0, 0, 1]);
-        for _ in 0..1000 {
-            assert!(
-                limiter.check_key(&ip).is_ok(),
-                "generous bucket must not trip"
-            );
-        }
-    }
-
+    /// Backs: each route is rate-limited under its own operation bucket (push, revoke, login,
+    /// read). Unit: rate_limits.rs probes push/read/revoke buckets; the login/other mapping has no
+    /// e2e probe.
     #[test]
     fn classify_maps_routes_to_operations() {
         assert!(classify(&Method::POST, "/push") == Op::Push);
@@ -528,42 +483,6 @@ mod tests {
         assert!(classify(&Method::GET, "/tip") == Op::Read);
         assert!(classify(&Method::GET, "/e/abc") == Op::Read);
         assert!(classify(&Method::PUT, "/whatever") == Op::Other);
-    }
-
-    #[test]
-    fn peek_reads_principal_id() {
-        let body = br#"{"principal_id":"abc","blobs":[]}"#;
-        assert_eq!(peek_principal_id(body).as_deref(), Some("abc"));
-        assert!(peek_principal_id(b"not json").is_none());
-    }
-
-    /// WHITE-BOX bounded-state invariant: every keyed limiter carries a hard
-    /// max-entry ceiling (`KEY_CEILING`) enforced continuously by `moka` on
-    /// every insert, not just an amortized sweep -- so even a flood of
-    /// distinct, never-repeated keys (e.g. a distributed or IPv6-rotation
-    /// attack, which no time-based staleness check alone can bound) never
-    /// grows the map past `KEY_CEILING` resident entries.
-    #[test]
-    fn keyed_limiter_map_is_bounded_by_key_ceiling() {
-        use std::net::Ipv6Addr;
-
-        let fences = Fences::from_config(&LimitsConfig::default());
-
-        // Flood the per-IP map with distinct, never-seen keys. `moka` evicts
-        // the coldest resident key inline on each insert past capacity --
-        // no external sweep to drive.
-        for i in 0..(KEY_CEILING as u128 + 1_000) {
-            let ip = IpAddr::V6(Ipv6Addr::from(i));
-            let _ = fences.per_ip.check_key(&ip);
-        }
-
-        assert!(
-            fences.per_ip.len() <= KEY_CEILING,
-            "the per-IP limiter map must stay within KEY_CEILING ({}) entries under a flood of \
-             distinct keys, got {}",
-            KEY_CEILING,
-            fences.per_ip.len(),
-        );
     }
 
     /// A HOT key's accumulated throttle must SURVIVE a flood of distinct
@@ -588,11 +507,17 @@ mod tests {
         // against that; the assertion holds only because per-key eviction
         // keeps H recently-touched and therefore never the eviction victim,
         // so its exhausted bucket is the one that survives, never a reset one.
+        //
+        // The refill period is an hour, not `quota()`'s one-second floor: the
+        // flood's wall time is machine-load dependent, and under load it can
+        // exceed a second, letting the real clock refill a cell of H's
+        // legitimately-surviving bucket and flip the final check to `Ok`.
         const HOT_BURST: u32 = 64;
-        let lim = BoundedLimiter::new(quota(RateBucket {
-            per_second: 1,
-            burst: HOT_BURST,
-        }));
+        let lim = BoundedLimiter::new(
+            Quota::with_period(Duration::from_secs(3600))
+                .expect("non-zero period")
+                .allow_burst(NonZeroU32::new(HOT_BURST).expect("non-zero burst")),
+        );
         let hot = IpAddr::from([10, 0, 0, 1]);
 
         // 1. Exhaust H's bucket; confirm it is now throttled (guard

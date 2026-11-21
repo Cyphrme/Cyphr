@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cyphr::key::Key;
 use cyphr::{Principal, StateDigest};
-use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
+use test_fixtures::{Golden, GoldenExpected, GoldenPeer, Pool, PoolKey};
 
 // ============================================================================
 // Test helpers
@@ -49,22 +49,17 @@ fn load_pool() -> Pool {
     Pool::load(&path).expect("failed to load pool.toml")
 }
 
-/// Try to convert a pool key to domain key, returning None for unsupported algorithms.
-fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
+/// Convert a pool key to a domain key. An unsupported algorithm or key
+/// material the checked `Key` constructor refuses is the genesis error the
+/// vector may declare.
+fn try_pool_key_to_domain(pk: &PoolKey) -> Result<Key, cyphr::error::Error> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).ok()?;
-    let tmb = pk.compute_tmb().ok()?;
+    let unsupported = || cyphr::error::Error::UnsupportedAlgorithm(pk.alg.clone());
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).map_err(|_| unsupported())?;
+    let tmb = pk.compute_tmb().map_err(|_| unsupported())?;
 
-    Some(Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    })
+    Key::new(pk.alg.clone(), tmb, pub_bytes)
 }
 
 fn error_name(e: &cyphr::error::Error) -> &'static str {
@@ -75,6 +70,7 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::KeyRevoked => "KeyRevoked",
         Error::NoActiveKeys => "NoActiveKeys",
         Error::DuplicateKey => "DuplicateKey",
+        Error::CozReuse => "CozReuse",
         Error::TimestampPast => "TimestampPast",
         Error::TimestampFuture => "TimestampFuture",
         Error::InvalidSignature => "InvalidSignature",
@@ -83,11 +79,47 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::AlreadyDeleted => "AlreadyDeleted",
         Error::AlreadyFrozen => "AlreadyFrozen",
         Error::NotFrozen => "NotFrozen",
+        Error::EmbeddedErrored => "EmbeddedErrored",
+        Error::DuplicateNonce => "DuplicateNonce",
+        Error::UnknownNonce => "UnknownNonce",
+        Error::GenesisIncomplete => "GenesisIncomplete",
+        Error::StateMismatch => "StateMismatch",
+        Error::MixedTransactionTyp => "MixedTransactionTyp",
+        Error::EmptyCommit => "EmptyCommit",
+        Error::EmptyMultihash => "EmptyMultihash",
         _ => "UnknownError",
     }
 }
 
 fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: &str) {
+    // SPEC 3.7.5 / 4.6.3 `txs_order`: the TX of each transaction of the
+    // last commit, TX = MR(czd0, czd1?, ...), in the stated algorithm.
+    if let Some(order) = &expected.txs_order {
+        let commit = principal
+            .commits()
+            .last()
+            .unwrap_or_else(|| panic!("{test_name}: txs_order but no commit"));
+        let actual: Vec<String> = commit
+            .transactions()
+            .iter()
+            .zip(order)
+            .map(|(tx, stated)| {
+                let (alg, _) = parse_alg_digest(stated).expect("tagged TX");
+                let alg = parse_hash_alg(&alg).expect("TX algorithm");
+                let id = tx.id(&[alg]).expect("TX");
+                cyphr::state::TaggedDigest::new(alg, id.get(alg).expect("variant").to_vec())
+                    .expect("tagged")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            commit.transactions().len(),
+            order.len(),
+            "{test_name}: txs_order length"
+        );
+        assert_eq!(&actual, order, "{test_name}: txs_order mismatch");
+    }
+
     if let Some(count) = expected.key_count {
         assert_eq!(
             principal.active_key_count(),
@@ -124,36 +156,54 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         );
     }
 
-    if let Some(ref ks) = expected.kr {
-        // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(ks)
-            .unwrap_or_else(|| panic!("{}: invalid ks format (expected alg:digest)", test_name));
-        let hash_alg = parse_hash_alg(&alg)
-            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_ks = principal
-            .key_root()
-            .get(hash_alg)
-            .map(|b| {
-                use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                Base64UrlUnpadded::encode_string(b)
-            })
-            .unwrap_or_default();
-        assert_eq!(actual_ks, expected_digest, "{}: ks mismatch", test_name);
+    // `null` in the vector is a root the principal must not have (a Dead
+    // principal has no KR or AR, SPEC 3.7); a string is compared by digest.
+    match &expected.kr {
+        Some(Some(ks)) => {
+            let (alg, expected_digest) = parse_alg_digest(ks).unwrap_or_else(|| {
+                panic!("{}: invalid ks format (expected alg:digest)", test_name)
+            });
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_ks = principal
+                .key_root()
+                .and_then(|k| k.get(hash_alg))
+                .map(|b| {
+                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                    Base64UrlUnpadded::encode_string(b)
+                })
+                .unwrap_or_default();
+            assert_eq!(actual_ks, expected_digest, "{}: ks mismatch", test_name);
+        },
+        Some(None) => assert!(
+            principal.key_root().is_none(),
+            "{}: expected no KR",
+            test_name
+        ),
+        None => {},
     }
 
-    if let Some(ref auth_root) = expected.auth_root {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(auth_root)
-            .unwrap_or_else(|| panic!("{}: invalid as format (expected alg:digest)", test_name));
-        let hash_alg = parse_hash_alg(&alg)
-            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_as = principal
-            .auth_root()
-            .get(hash_alg)
-            .map(Base64UrlUnpadded::encode_string)
-            .unwrap_or_default();
-        assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
+    match &expected.auth_root {
+        Some(Some(auth_root)) => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let (alg, expected_digest) = parse_alg_digest(auth_root).unwrap_or_else(|| {
+                panic!("{}: invalid as format (expected alg:digest)", test_name)
+            });
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_as = principal
+                .auth_root()
+                .and_then(|a| a.get(hash_alg))
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
+        },
+        Some(None) => assert!(
+            principal.auth_root().is_none(),
+            "{}: expected no AR",
+            test_name
+        ),
+        None => {},
     }
 
     if let Some(ref pr) = expected.pr {
@@ -186,37 +236,41 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_cr, expected_digest, "{}: cr mismatch", test_name);
     }
 
-    if let Some(ref sr) = expected.sr {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(sr)
-            .unwrap_or_else(|| panic!("{}: invalid sr format (expected alg:digest)", test_name));
-        let hash_alg = parse_hash_alg(&alg)
-            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_sr = principal
-            .sr()
-            .and_then(|sr_val| sr_val.get(hash_alg))
-            .map(Base64UrlUnpadded::encode_string)
-            .unwrap_or_default();
-        assert_eq!(actual_sr, expected_digest, "{}: sr mismatch", test_name);
+    match &expected.sr {
+        Some(Some(sr)) => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let (alg, expected_digest) = parse_alg_digest(sr).unwrap_or_else(|| {
+                panic!("{}: invalid sr format (expected alg:digest)", test_name)
+            });
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_sr = principal
+                .sr()
+                .and_then(|sr_val| sr_val.get(hash_alg))
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(actual_sr, expected_digest, "{}: sr mismatch", test_name);
+        },
+        Some(None) => assert!(principal.sr().is_none(), "{}: expected no SR", test_name),
+        None => {},
     }
 
     if let Some(ref pg) = expected.pg {
         // Skip empty PG or non-prefixed format (implicit genesis uses raw thumbprint)
-        if !pg.is_empty() {
-            if let Some((alg, expected_digest)) = parse_alg_digest(pg) {
-                use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                let hash_alg = parse_hash_alg(&alg)
-                    .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-                let actual_pg = principal
-                    .pg()
-                    .and_then(|pg_val| pg_val.get(hash_alg))
-                    .map(Base64UrlUnpadded::encode_string)
-                    .unwrap_or_default();
-                assert_eq!(actual_pg, expected_digest, "{}: pg mismatch", test_name);
-            }
-            // If no ':' in pg, it's a raw thumbprint format - skip alg:digest verification
+        if !pg.is_empty()
+            && let Some((alg, expected_digest)) = parse_alg_digest(pg)
+        {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let hash_alg = parse_hash_alg(&alg)
+                .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+            let actual_pg = principal
+                .pg()
+                .and_then(|pg_val| pg_val.get(hash_alg))
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(actual_pg, expected_digest, "{}: pg mismatch", test_name);
         }
+        // If no ':' in pg, it's a raw thumbprint format - skip alg:digest verification
     }
 
     if let Some(ref ds) = expected.dr {
@@ -239,7 +293,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
                 .key_root()
-                .get(hash_alg)
+                .and_then(|k| k.get(hash_alg))
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
             assert_eq!(
@@ -257,7 +311,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
                 .auth_root()
-                .get(hash_alg)
+                .and_then(|a| a.get(hash_alg))
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
             assert_eq!(
@@ -294,18 +348,20 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
-        "[data-action-no-pre]" => "MalformedPayload",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
         "[no-revoke-non-self]" => "MalformedPayload",
-        "[naked-revoke-error]" => "NoActiveKeys",
-        "[no-self-revoke-recovery]" => "NoActiveKeys",
+        // What a Dead principal answers: its revoked key signs nothing.
+        "[no-self-revoke-recovery]" => "KeyRevoked",
+        // Structural constraints
+        "[commit-one-or-more]" => "EmptyCommit",
+        "[no-empty-mr]" => "EmptyMultihash",
         // Authentication
         "[verification-timestamp-order]" => "TimestampPast",
         // Principal Lifecycle
-        "[no-level-1-recovery]" => "NoActiveKeys",
-        "[dead-terminal]" => "NoActiveKeys",
+        "[no-level-1-recovery]" => "KeyRevoked",
+        "[dead-terminal]" => "KeyRevoked",
         // Rust cyphr library conflates UnknownSigner and UnknownTarget into UnknownKey
         "UnknownSigner" => "UnknownKey",
         // Pass through if not a constraint tag
@@ -313,9 +369,7 @@ fn resolve_constraint_tag(expected: &str) -> &str {
     }
 }
 
-fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
+async fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     let content = fs::read_to_string(fixture_path)
         .unwrap_or_else(|e| panic!("failed to read {:?}: {}", fixture_path, e));
     let fixture: Golden = serde_json::from_str(&content)
@@ -341,46 +395,39 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         })
         .collect();
 
-    // Try to convert pool keys to domain keys (may fail for unsupported algs)
-    let genesis_keys: Result<Vec<Key>, &str> = pool_keys
+    // Try to convert pool keys to domain keys (may fail for unsupported
+    // algs). A key `setup.revoke_key` names reaches genesis already revoked.
+    let revoked_at = |pk: &PoolKey| {
+        fixture
+            .setup
+            .as_ref()
+            .filter(|s| s.revoke_key.as_deref() == Some(pk.name.as_str()))
+            .map(|s| cyphr::key::Revocation {
+                rvk: s.revoke_at.unwrap_or(0),
+                by: None,
+            })
+    };
+    let genesis_keys: Result<Vec<Key>, cyphr::error::Error> = pool_keys
         .iter()
-        .map(|pk| try_pool_key_to_domain(pk).ok_or("UnsupportedAlgorithm"))
+        .map(|pk| {
+            let key = try_pool_key_to_domain(pk)?;
+            Ok(match revoked_at(pk) {
+                Some(r) => key.with_revocation(r),
+                None => key,
+            })
+        })
         .collect();
 
     // Handle genesis-time errors (e.g., unsupported algorithm)
     let genesis_keys = match genesis_keys {
         Ok(keys) => keys,
-        Err(_) => {
-            // Genesis failed (unsupported algorithm)
-            if let Some(expected) = expected_error {
-                if expected == "UnsupportedAlgorithm" {
-                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                    return;
-                }
-            }
-            panic!(
-                "{}: genesis failed due to unsupported algorithm, but expected error was {:?}",
-                fixture.name, expected_error
-            );
-        },
-    };
-
-    // Create principal
-    let principal_res = if genesis_keys.len() == 1 {
-        Principal::implicit(genesis_keys.into_iter().next().unwrap())
-    } else {
-        Principal::explicit(genesis_keys)
-    };
-
-    let mut principal = match principal_res {
-        Ok(p) => p,
         Err(e) => {
-            let err_str = error_name(&e);
-            if let Some(expected) = expected_error {
-                if expected == err_str {
-                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                    return;
-                }
+            // Genesis failed (e.g. unsupported algorithm)
+            if let Some(expected) = expected_error
+                && expected == error_name(&e)
+            {
+                println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                return;
             }
             panic!(
                 "{}: genesis failed with {:?}, but expected error was {:?}",
@@ -389,214 +436,119 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         },
     };
 
-    // Apply setup modifiers (e.g., pre-revoke keys)
-    if let Some(ref setup) = fixture.setup {
-        if let Some(ref key_name) = setup.revoke_key {
-            let rvk_time = setup.revoke_at.unwrap_or(0);
-            let pool_key = pool
-                .pool
-                .key
-                .iter()
-                .find(|k| k.name == *key_name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}: setup.revoke_key '{}' not found in pool",
-                        fixture.name, key_name
-                    )
-                });
-            let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
-            principal
-                .pre_revoke_key(&tmb, rvk_time)
-                .expect("pre_revoke_key failed");
+    // A vector with no genesis key at all (`[no-empty-mr]`): there is no
+    // principal to replay, so the proposition is the one the constraint
+    // states, a state digest computed from zero children. Built from the
+    // core's own key tree over no members.
+    if genesis_keys.is_empty() {
+        let sha256 = [coz::HashAlg::Sha256];
+        let root = cyphr::semantic_tree::KeyTree::build_tree(&[], &sha256)
+            .and_then(|kt| kt.root(&sha256).map(|_| ()));
+        match (root, expected_error) {
+            (Err(e), Some(expected)) if error_name(&e) == expected => {
+                println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                return;
+            },
+            (got, _) => panic!(
+                "{}: an empty key tree gave {got:?}, expected {expected_error:?}",
+                fixture.name
+            ),
         }
     }
 
+    // A principal is its genesis key, the first listed; every further key
+    // enters by a `key/create` the vector's commits carry (SPEC 5.1).
+    let genesis_key = genesis_keys
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("{}: no genesis key", fixture.name));
+    let principal_res = Principal::implicit(genesis_key).await;
+
+    let mut principal = match principal_res {
+        Ok(p) => p,
+        Err(e) => {
+            let err_str = error_name(&e);
+            if let Some(expected) = expected_error
+                && expected == err_str
+            {
+                println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                return;
+            }
+            panic!(
+                "{}: genesis failed with {:?}, but expected error was {:?}",
+                fixture.name, e, expected_error
+            );
+        },
+    };
+
     // ========================================================================
-    // Apply commits from fixture using CommitScope (batch processing)
+    // Replay each line through the core's one replay entry point, the path
+    // every consumer of a stored or fetched bundle takes: actions first,
+    // then each transaction of `txs` as one transaction (SPEC 4.6.2).
     // ========================================================================
+    // An embedded peer (SPEC 10.3) is replayed first, and every PR it held
+    // is pinned on the test principal to the peer's tip.
+    if let Some(peer) = fixture.peer.as_ref().filter(|p| p.embedded) {
+        let other = replay_peer(pool, peer, &fixture.name).await;
+        for commit in other.commits() {
+            let pr = commit.pr().as_multihash().tagged_first().expect("PR");
+            let tip = cyphr::Tip::new(&other, 0);
+            principal
+                .reveal_embedded(&pr.to_string(), cyphr::Tracking::Pin(Box::new(tip)))
+                .expect("pin peer");
+        }
+    }
+
     if let Some(commits) = &fixture.commits {
+        // What the vector's bundles carry, to hold the replay to: no action
+        // may be ignored or lost on the way into DT, whichever way it fails.
+        let mut carried: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
         for (ci, commit) in commits.iter().enumerate() {
-            // Collect actions to replay after commit scope finalizes
-            let mut deferred_actions: Vec<(serde_json::Value, Vec<u8>)> = Vec::new();
-
-            let mut scope = principal.begin_commit();
-            let mut applied_tx_count = 0;
-            let mut key_iter = commit.keys.iter();
-
-            for (ti, cz) in commit.cozies.iter().enumerate() {
-                let pay = cz.get("pay").unwrap_or_else(|| {
-                    panic!(
-                        "{}: commit {} cz {} missing pay",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1
-                    )
-                });
-                let sig_b64 = cz.get("sig").and_then(|v| v.as_str()).unwrap_or_else(|| {
-                    panic!(
-                        "{}: commit {} cz {} missing sig",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1
-                    )
-                });
-                let sig = Base64UrlUnpadded::decode_vec(sig_b64).unwrap_or_else(|e| {
-                    panic!(
-                        "{}: commit {} cz {} invalid sig base64: {}",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1,
-                        e
-                    )
-                });
-
-                let pay_json = serde_json::to_vec(pay).unwrap_or_else(|e| {
-                    panic!(
-                        "{}: commit {} cz {} failed to serialize pay: {}",
-                        fixture.name,
-                        ci + 1,
-                        ti + 1,
-                        e
-                    )
-                });
-
-                let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
-                let is_transaction = typ.contains("/key/")
-                    || typ.contains("/principal/create")
-                    || typ.contains("/principal/delete")
-                    || typ.contains("/freeze/create")
-                    || typ.contains("/freeze/delete")
-                    || typ.contains("/commit/create");
-
-                if is_transaction {
-                    // Consume next key from commit-level keys if key-introducing
-                    let new_key = if typ.contains("/key/create") || typ.contains("/key/replace") {
-                        key_iter.next().map(|ke| {
-                            let pub_bytes = Base64UrlUnpadded::decode_vec(&ke.pub_key)
-                                .expect("invalid key pub base64");
-                            let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb)
-                                .expect("invalid key tmb base64");
-                            Key {
-                                alg: ke.alg.clone(),
-                                tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-                                pub_key: pub_bytes,
-                                first_seen: 0,
-                                last_used: None,
-                                revocation: None,
-                                tag: None,
-                            }
-                        })
-                    } else {
-                        None
-                    };
-
-                    // Compute czd using the scope's hash algorithm
-                    let alg_str = match scope.principal_hash_alg() {
-                        coz::HashAlg::Sha256 => "ES256",
-                        coz::HashAlg::Sha384 => "ES384",
-                        coz::HashAlg::Sha512 => "ES512",
-                    };
-                    let cad = coz::canonical_hash_for_alg(&pay_json, alg_str, None)
-                        .expect("unsupported alg for cad");
-                    let czd =
-                        coz::czd_for_alg(&cad, &sig, alg_str).expect("unsupported alg for czd");
-
-                    match scope.verify_and_apply(&pay_json, &sig, czd, new_key) {
-                        Ok(()) => {
-                            applied_tx_count += 1;
-                        },
-                        Err(e) => {
-                            if let Some(expected) = expected_error {
-                                assert_eq!(
-                                    error_name(&e),
-                                    expected,
-                                    "{}: wrong error type at commit {} cz {}",
-                                    fixture.name,
-                                    ci + 1,
-                                    ti + 1
-                                );
-                                println!(
-                                    "  ✓ {} (expected error: {}) [commits]",
-                                    fixture.name, expected
-                                );
-                                return;
-                            }
-                            panic!(
-                                "{}: commit {} cz {} failed: {:?}",
-                                fixture.name,
-                                ci + 1,
-                                ti + 1,
-                                e
-                            );
-                        },
-                    }
-                } else {
-                    // Action: defer until after commit scope finalizes
-                    deferred_actions.push((pay.clone(), sig));
-                }
-            }
-
-            // Finalize the commit scope
-            if applied_tx_count > 0 {
-                match scope.finalize() {
-                    Ok(_) => {},
-                    Err(e) => {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong error on commit {} finalize",
-                                fixture.name,
-                                ci + 1
-                            );
-                            println!(
-                                "  ✓ {} (expected error: {}) [finalize]",
-                                fixture.name, expected
-                            );
-                            return;
-                        }
-                        panic!(
-                            "{}: commit {} finalize failed: {:?}",
+            // The lines are held history, judged as a replay is; an error
+            // vector's last line is the submission it pins, judged as
+            // admission is.
+            let submitted = expected_error.is_some() && ci + 1 == commits.len();
+            let replayed = match commit.bundle().map(|b| b.decode()) {
+                Ok(Ok(bundle)) if submitted => {
+                    cyphr::replay::replay_bundle(&mut principal, &bundle)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.source)
+                },
+                Ok(Ok(bundle)) => {
+                    carried.extend(
+                        bundle
+                            .action_cozies()
+                            .iter()
+                            .map(|c| c.czd().as_bytes().to_vec()),
+                    );
+                    cyphr::replay::replay_held(&mut principal, &bundle)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.source)
+                },
+                Ok(Err(e)) => Err(match e.error {
+                    cyphr::replay::WireError::Protocol(p)
+                    | cyphr::replay::WireError::Header(p)
+                    | cyphr::replay::WireError::Key(p) => p,
+                    other => panic!("{}: line {} is malformed: {other}", fixture.name, ci + 1),
+                }),
+                Err(e) => panic!("{}: line {} does not serialize: {e}", fixture.name, ci + 1),
+            };
+            if let Err(e) = replayed {
+                match expected_error {
+                    Some(expected) => {
+                        assert_eq!(
+                            error_name(&e),
+                            expected,
+                            "{}: wrong error at line {}: {e:?}",
                             fixture.name,
-                            ci + 1,
-                            e
+                            ci + 1
                         );
+                        println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                        return;
                     },
-                }
-            } else {
-                drop(scope);
-            }
-
-            // Replay deferred actions on the principal
-            for (pay_val, sig) in deferred_actions {
-                let pay_json =
-                    serde_json::to_vec(&pay_val).expect("failed to serialize action pay");
-                let alg = pay_val
-                    .get("alg")
-                    .and_then(|v| v.as_str())
-                    .expect("action missing alg");
-                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
-                    .expect("unsupported alg for cad");
-                let czd = coz::czd_for_alg(&cad, &sig, alg).expect("unsupported alg for czd");
-
-                match principal.verify_and_record_action(&pay_json, &sig, czd) {
-                    Ok(_) => {},
-                    Err(e) => {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong action error",
-                                fixture.name
-                            );
-                            println!(
-                                "  ✓ {} (expected error: {}) [action]",
-                                fixture.name, expected
-                            );
-                            return;
-                        }
-                        panic!("{}: action failed: {:?}", fixture.name, e);
-                    },
+                    None => panic!("{}: line {} failed: {e:?}", fixture.name, ci + 1),
                 }
             }
         }
@@ -608,6 +560,28 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 fixture.name, expected
             );
         }
+
+        // A two-principal vector: replay the peer the same way, then the
+        // merge status of the test principal (source) into it (SPEC 11.5.1).
+        if let Some(peer) = fixture.peer.as_ref().filter(|p| !p.embedded) {
+            let other = replay_peer(pool, peer, &fixture.name).await;
+            let status = format!("{:?}", cyphr::merge_status(&principal, &other));
+            assert_eq!(
+                Some(status.as_str()),
+                fixture.expected.merge_status.as_deref(),
+                "{}: merge_status mismatch",
+                fixture.name
+            );
+        }
+
+        // Actions move no root of their own (SPEC 4.8.1), so a dropped one
+        // is invisible to the expected roots below: count them.
+        assert_eq!(
+            principal.action_count(),
+            carried.len(),
+            "{}: DT holds a different number of actions than the vector carries",
+            fixture.name
+        );
 
         // Verify expected state
         verify_expected(&principal, &fixture.expected, &fixture.name);
@@ -622,7 +596,29 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     );
 }
 
-fn run_golden_dir(subdir: &str) {
+/// The second principal of a two-principal vector, replayed through the
+/// same entry point as the first.
+async fn replay_peer(pool: &Pool, peer: &GoldenPeer, name: &str) -> Principal {
+    let first = pool
+        .get(&peer.principal[0])
+        .unwrap_or_else(|| panic!("{name}: peer key not in pool"));
+    let mut other = Principal::implicit(try_pool_key_to_domain(first).expect("peer genesis key"))
+        .await
+        .expect("peer genesis");
+    for (ci, commit) in peer.commits.iter().enumerate() {
+        let bundle = commit
+            .bundle()
+            .expect("peer line")
+            .decode()
+            .expect("peer bundle");
+        cyphr::replay::replay_bundle(&mut other, &bundle)
+            .await
+            .unwrap_or_else(|e| panic!("{name}: peer line {} failed: {e}", ci + 1));
+    }
+    other
+}
+
+async fn run_golden_dir(subdir: &str) {
     let pool = load_pool();
     let dir = golden_dir().join(subdir);
 
@@ -635,7 +631,7 @@ fn run_golden_dir(subdir: &str) {
     for entry in fs::read_dir(&dir).expect("failed to read dir") {
         let path = entry.expect("failed to read entry").path();
         if path.extension().is_some_and(|ext| ext == "json") {
-            run_golden_test(&path, &pool);
+            run_golden_test(&path, &pool).await;
             count += 1;
         }
     }
@@ -646,47 +642,92 @@ fn run_golden_dir(subdir: &str) {
 // Tests - one per category
 // ============================================================================
 
-#[test]
-fn test_golden_mutations() {
-    run_golden_dir("mutations");
+#[tokio::test]
+async fn test_golden_mutations() {
+    run_golden_dir("mutations").await;
 }
 
-#[test]
-fn test_golden_multi_key() {
-    run_golden_dir("multi_key");
+#[tokio::test]
+async fn test_golden_multi_key() {
+    run_golden_dir("multi_key").await;
 }
 
-#[test]
-fn test_golden_algorithm_diversity() {
-    run_golden_dir("algorithm_diversity");
+#[tokio::test]
+async fn test_golden_algorithm_diversity() {
+    run_golden_dir("algorithm_diversity").await;
 }
 
-#[test]
-fn test_golden_edge_cases() {
-    run_golden_dir("edge_cases");
+#[tokio::test]
+async fn test_golden_edge_cases() {
+    run_golden_dir("edge_cases").await;
 }
 
-#[test]
-fn test_golden_actions() {
-    run_golden_dir("actions");
+#[tokio::test]
+async fn test_golden_actions() {
+    run_golden_dir("actions").await;
 }
 
-#[test]
-fn test_golden_state_computation() {
-    run_golden_dir("state_computation");
+#[tokio::test]
+async fn test_golden_state_computation() {
+    run_golden_dir("state_computation").await;
 }
 
-#[test]
-fn test_golden_errors() {
-    run_golden_dir("errors");
+// @docket: rv-timestamp-monotone :: scripts/docket-run rv-timestamp-monotone
+// @docket: rv-key-set :: scripts/docket-run rv-key-set
+// @docket: rv-alg-support :: scripts/docket-run rv-alg-support
+#[tokio::test]
+async fn test_golden_errors() {
+    run_golden_dir("errors").await;
 }
 
-#[test]
-fn test_golden_lifecycle() {
-    run_golden_dir("lifecycle");
+#[tokio::test]
+async fn test_golden_lifecycle() {
+    run_golden_dir("lifecycle").await;
 }
 
-#[test]
-fn test_golden_witness() {
-    run_golden_dir("witness");
+#[tokio::test]
+async fn test_golden_witness() {
+    run_golden_dir("witness").await;
+}
+
+/// Structural-constraint vectors (`[commit-one-or-more]`,
+/// `[no-empty-mr]`): the vectors `constraint_coverage.md` names as TESTED.
+/// Their expected errors are constraint tags, mapped to `Error` variants by
+/// [`resolve_constraint_tag`].
+#[tokio::test]
+async fn test_golden_structural_constraints() {
+    run_golden_dir("structural_constraints").await;
+}
+
+/// Key-authentication vectors (SPEC 6.4): a revoked key is never re-added.
+#[tokio::test]
+async fn test_golden_key_auth() {
+    run_golden_dir("key_auth").await;
+}
+
+/// Transaction grouping vectors (SPEC 3.7.5, 4, 4.1, 4.6.2): the SPEC 4
+/// example as one two-coz transaction pins its TX (`txs_order`) and TR,
+/// the same pair as two transactions pins another TR, and a transaction
+/// mixing `typ`s is refused with `MixedTransactionTyp`. Red if a replay
+/// applies each coz as its own transaction or accepts the mix.
+#[tokio::test]
+async fn test_golden_transaction_grouping() {
+    run_golden_dir("transaction_grouping").await;
+}
+
+/// Merge vectors (SPEC 11.5.1): a merge alone is pending, an ack alone is
+/// no merge, the two with equal fields are merged, and an ack naming
+/// another `merge_from` leaves the merge pending.
+#[tokio::test]
+async fn test_golden_merge() {
+    run_golden_dir("merge").await;
+}
+
+/// Embedding vectors (SPEC 10.3, 10.5): a principal embeds another's PR in
+/// its KT and a key the embedded principal authorizes at its tip signs
+/// for it, including a key added after the embedded PR. Red if the
+/// embedded member's key is refused or the resulting roots drift.
+#[tokio::test]
+async fn test_golden_embedding() {
+    run_golden_dir("embedding").await;
 }

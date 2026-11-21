@@ -8,10 +8,9 @@ use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id, parse_store,
-    save_principal_to_engine,
+    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
+    parse_principal_genesis, parse_store, save_principal_to_engine,
 };
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
@@ -21,18 +20,28 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
-        return Err(Error::Storage(
-            "no commits found for identity (genesis-only state cannot be exported)".into(),
-        ));
+        return Err(Error::EmptyHistory(identity.to_owned()));
     }
 
     // Write commits to JSONL file
     let file = File::create(output)?;
     let mut writer = BufWriter::new(file);
 
+    // Action-only lines follow the commits, as `export_commits` writes
+    // them: actions hold no chain position (SPEC 4.8.1).
+    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
+    let bundles = block_on(store.get_patch(&principal_id, None, None))??
+        .actions
+        .into_iter();
+    let action_line = |blobs: &[Vec<u8>]| -> crate::Result<String> {
+        let line = CommitEntry::from_bundle(&cyphr::replay::WireBundle::actions(blobs.to_vec()))?;
+        Ok(serde_json::to_string(&line)?)
+    };
     for commit in &commits {
-        let line = serde_json::to_string(commit)?;
-        writeln!(writer, "{}", line)?;
+        writeln!(writer, "{}", serde_json::to_string(commit)?)?;
+    }
+    for bundle in bundles {
+        writeln!(writer, "{}", action_line(&bundle.blobs)?)?;
     }
     writer.flush()?;
 
@@ -57,7 +66,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
 
 /// Run the import command.
 pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let store = parse_store(cli)?;
 
     // Read commits from JSONL file
@@ -70,48 +79,50 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let commit: CommitEntry = serde_json::from_str(&line)
-            .map_err(|e| Error::Storage(format!("line {}: {}", line_num + 1, e)))?;
+        let commit = CommitEntry::from_json(&line).map_err(|source| Error::Bundle {
+            line: line_num + 1,
+            source,
+        })?;
         commits.push(commit);
     }
 
     if commits.is_empty() {
-        return Err(Error::Storage("no commits found in file".into()));
+        return Err(Error::EmptyBundle);
     }
 
     // Determine genesis from first commit
     let genesis = extract_genesis_from_commits(&commits, Some(&keystore))?;
 
     // Verify by loading the principal (this replays and verifies all cozies)
-    let principal = load_principal_from_commits(genesis.clone(), &commits)?;
+    let principal = block_on(load_principal_from_commits(genesis.clone(), &commits))??;
     // For Level 2 identities (no PG established), use the genesis thumbprint
     let pg = match principal.pg() {
         Some(pg) => pg.clone(),
         None => match &genesis {
-            Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec())?,
-            Genesis::Explicit(_) => {
-                return Err(Error::Storage(
-                    "explicit genesis must establish a PG".into(),
-                ));
+            // The thumbprint is hashed with the key's own algorithm, so the
+            // digest is read under it, not assumed SHA-256.
+            Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_digest(
+                cyphr::state::hash_alg_from_str(k.alg())?,
+                k.tmb().as_bytes().to_vec(),
+            )?,
+            // `Disclosed` is the case that matters; a variant added later
+            // (the enum is non-exhaustive) has no thumbprint-only form either.
+            _ => {
+                return Err(Error::ExplicitGenesisWithoutPg);
             },
         },
     };
 
     // Check if identity already exists in storage
     let pg_id = get_principal_id(&pg)?;
-    let tip = block_on(async { store.get_tip(&pg_id).await })?
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let tip = block_on(async { store.get_tip(&pg_id).await })??;
     if tip.is_some() {
         use base64ct::{Base64UrlUnpadded, Encoding};
         let pg_b64 = pg
             .as_multihash()
             .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
-        return Err(Error::Storage(format!(
-            "identity {} already exists in storage",
-            pg_b64
-        )));
+            .map(Base64UrlUnpadded::encode_string)?;
+        return Err(Error::AlreadyExists(pg_b64));
     }
 
     // Store commits
@@ -123,8 +134,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
             let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+                .map(Base64UrlUnpadded::encode_string)?;
             let result = serde_json::json!({
                 "identity": pg_b64,
                 "input": input.display().to_string(),
@@ -138,8 +148,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
             let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
-                .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+                .map(Base64UrlUnpadded::encode_string)?;
             println!("Imported identity from {}", input.display());
             println!("  identity: {}", pg_b64);
             println!("  commits: {}", commits.len());

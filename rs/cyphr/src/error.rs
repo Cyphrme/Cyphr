@@ -4,7 +4,12 @@ use thiserror::Error;
 
 /// Cyphr error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
+    /// The signing backend failed (see [`crate::signer`]).
+    #[error(transparent)]
+    Signer(#[from] crate::signer::SignerError),
+
     // === ParsedCoz errors (§17.1) ===
     /// Signature does not verify against claimed key.
     #[error("invalid signature")]
@@ -34,9 +39,35 @@ pub enum Error {
     #[error("malformed payload")]
     MalformedPayload,
 
+    /// A key's `tmb` is not the thumbprint of its public key.
+    #[error("key tmb does not match its public key")]
+    TmbMismatch,
+
+    /// `pay.alg` differs from the signing key's algorithm. An absent
+    /// `alg` is [`Error::MalformedPayload`] (SPEC 2.3.1).
+    #[error("pay alg does not match signing key alg")]
+    AlgMismatch,
+
+    /// The supplied `czd` is not the digest of the signed bytes.
+    #[error("czd does not match signed bytes")]
+    CzdMismatch,
+
     /// `key/create` for key already in KS.
     #[error("duplicate key")]
     DuplicateKey,
+
+    /// `nonce/create` for a nonce already at that level (SPEC §7.6, §10.2).
+    #[error("duplicate nonce")]
+    DuplicateNonce,
+
+    /// `nonce/delete` for a nonce not at that level.
+    #[error("unknown nonce")]
+    UnknownNonce,
+
+    /// A transaction coz this principal already included is submitted
+    /// again (SPEC §7.6). The first inclusion stays authoritative.
+    #[error("COZ_REUSE: transaction coz already included by this principal")]
+    CozReuse,
 
     // === State errors (§17.3) ===
     /// Computed PR does not match claimed PR.
@@ -70,6 +101,22 @@ pub enum Error {
     #[error("principal not frozen")]
     NotFrozen,
 
+    /// A transaction other than the lifecycle ones, or a data action,
+    /// against a frozen principal (SPEC §2.3.2, §11.2: no mutations until
+    /// unfrozen).
+    #[error("principal frozen: rejected until thawed")]
+    Frozen,
+
+    /// The signer is a key of an embedded principal that is in `Error`
+    /// (SPEC §10.5, §11.1): authorization through it is `Error` too.
+    #[error("embedded principal in error: authorization through it refused")]
+    EmbeddedErrored,
+
+    /// A transaction's cozies do not all carry one identical `typ`
+    /// (SPEC §4.1).
+    #[error("transaction cozies do not share one typ")]
+    MixedTransactionTyp,
+
     /// Algorithm not supported.
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),
@@ -82,18 +129,18 @@ pub enum Error {
     #[error("storage failure: {0}")]
     Storage(String),
 
-    /// A collection node (e.g. KT) was asked to hold more items than its
-    /// 256-child collection-node arity boundary allows.
-    ///
-    /// A known, tracked gap deferred to future work — not resolved by
-    /// silently extending arity or any other ad hoc handling.
-    #[error("collection node exceeds 256-item arity boundary: {0} items")]
-    CollectionArityExceeded(usize),
-
     // === Commit lifecycle errors ===
     /// Attempted to finalize an empty commit (no cozies).
     #[error("empty commit")]
     EmptyCommit,
+
+    /// The genesis is incomplete: a commit on a principal not yet created
+    /// lacks its `principal/create` (a commit chain begins with the
+    /// genesis commit, SPEC 5.1 steps 3-4), or a `principal/create` comes
+    /// while a genesis key has no `key/create` (SPEC 5.1 step 1, 7.7
+    /// Example 1).
+    #[error("genesis incomplete")]
+    GenesisIncomplete,
 
     /// `commit` field appears on a non-terminal coz in the commit array.
     ///
@@ -116,10 +163,13 @@ pub enum Error {
     /// The leaf durably stored at a commit's position does not match the
     /// TR just computed for that commit.
     ///
-    /// Signals a crash-window orphan leaf (a prior `finalize_commit` call
-    /// durably appended its leaf but crashed before the index recorded the
-    /// commit), not a genuine replay — the mismatched leaf's root must
-    /// never be silently adopted as this commit's CR.
+    /// Signals an orphan leaf: a log leaf with no commit behind it, which
+    /// the mismatched leaf's root must never be adopted for. Reachable only
+    /// for a log written before the two-phase commit, when a commit's leaf
+    /// was appended before the commit was recorded and a crash or refusal
+    /// in between left it behind; a commit's leaf is now written only after
+    /// its commit is staged whole and, through the storage engine, recorded
+    /// in the blob store.
     #[error("durable leaf at index {0} does not match this commit's TR")]
     DurableLeafMismatch(u64),
 
@@ -146,3 +196,16 @@ pub enum Error {
 
 /// Result type for Cyphr operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    /// Whether the refusal is that the signer was not active at the
+    /// signature's `now`: unknown to the key history then, revoked, or a
+    /// key of an embedded principal in Error.
+    #[must_use]
+    pub fn is_inactive_signer(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownKey | Self::KeyRevoked | Self::EmbeddedErrored
+        )
+    }
+}

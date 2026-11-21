@@ -20,14 +20,9 @@ impl CliTest {
     fn new() -> Self {
         let temp_dir = TempDir::new().expect("failed to create temp dir");
 
-        // Find the binary - cargo test puts it in target/debug
-        let binary = std::env::current_exe()
-            .expect("current_exe")
-            .parent()
-            .expect("parent")
-            .parent()
-            .expect("parent")
-            .join("cyphr");
+        // Cargo sets CARGO_BIN_EXE_<name> for integration tests, so the
+        // path stays correct under any target-dir or build-dir layout.
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_cyphr"));
 
         Self { temp_dir, binary }
     }
@@ -79,54 +74,53 @@ impl CliTest {
     }
 }
 
+/// Claim: a Level 2 (single key, no principal/create) Ed25519 identity survives export then
+/// import into a fresh store: its identity is the key's SHA-512 thumbprint, read under the key's
+/// own hash (SPEC 2.2.1), not SHA-256.
+/// End-to-end: yes (CLI processes, two stores).
+/// Turns red on: an import that builds the identity's PG as a SHA-256 digest ("digest length
+/// mismatch for SHA-256: expected 32 bytes, got 64").
 #[test]
-fn test_key_generate() {
+fn test_ed25519_level2_export_import_roundtrip() {
     let cli = CliTest::new();
+    let genesis = cli.run_json(&["key", "generate", "--algo", "Ed25519"]);
+    let tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={tmb}");
+    let signer_arg = format!("--signer={tmb}");
+    let _ = cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
-    let json = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "test-key"]);
+    let export_path = cli.temp_dir.path().join("export.jsonl");
+    let output_path_arg = format!("--output={}", export_path.to_str().unwrap());
+    let _ = cli.run_ok(&["export", &identity_arg, &output_path_arg]);
 
-    assert_eq!(json["alg"], "ES256");
-    assert_eq!(json["tag"], "test-key");
-    assert!(json["tmb"].as_str().is_some(), "should have thumbprint");
-}
-
-#[test]
-fn test_key_lifecycle() {
-    let cli = CliTest::new();
-
-    // 1. Generate genesis key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "genesis"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-
-    // 2. Add a new key to identity (this creates the first coz)
-    // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
-    let signer_arg = format!("--signer={genesis_tmb}");
-    let add_result = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
-    let new_key_tmb = add_result["added_key"].as_str().unwrap();
-
-    // 3. List keys - should show both (field is "active_keys")
-    let list_result = cli.run_json(&["key", "list", &identity_arg]);
-    let keys = list_result["active_keys"].as_array().unwrap();
-    assert_eq!(keys.len(), 2, "should have 2 active keys");
-
-    // 4. Revoke the new key (self-revoke: the key signs its own revocation)
-    // Per SPEC §4.2.4, only self-revoke is supported
-    let key_arg = format!("--key={new_key_tmb}");
-    let new_key_signer = format!("--signer={new_key_tmb}");
-    let _ = cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &new_key_signer]);
-
-    // 5. List keys - should show only genesis
-    let list_result = cli.run_json(&["key", "list", &identity_arg]);
-    let keys = list_result["active_keys"].as_array().unwrap();
-    assert_eq!(keys.len(), 1, "should have 1 active key after revoke");
-    // Key order is not guaranteed, check that genesis key is present
+    let import_uri = format!("file:{}", cli.temp_dir.path().join("import-data").display());
+    let out = Command::new(&cli.binary)
+        .arg("--keystore")
+        .arg(cli.keystore_path())
+        .args([
+            "--store",
+            &import_uri,
+            "--output",
+            "json",
+            "import",
+            "--input",
+        ])
+        .arg(&export_path)
+        .output()
+        .expect("import failed to run");
     assert!(
-        keys.iter().any(|k| k["tmb"].as_str() == Some(genesis_tmb)),
-        "genesis key should be in active keys"
+        out.status.success(),
+        "Ed25519 import must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).expect("import JSON");
+    assert_eq!(
+        result["identity"], tmb,
+        "imported identity is the key's thumbprint"
     );
 }
 
+/// Backs: user-visible export then import into a fresh store preserves the identity.
 #[test]
 fn test_export_import_roundtrip() {
     let cli = CliTest::new();
@@ -178,8 +172,7 @@ fn test_export_import_roundtrip() {
         .arg("json")
         .arg("key")
         .arg("list")
-        .arg("--identity")
-        .arg(genesis_tmb);
+        .arg(&identity_arg);
 
     let output = cmd.output().expect("list failed");
     assert!(output.status.success(), "list should succeed");
@@ -189,6 +182,48 @@ fn test_export_import_roundtrip() {
     assert_eq!(keys.len(), 2, "imported identity should have 2 keys");
 }
 
+/// Backs: `key list --identity=<tmb>` works for a thumbprint that begins with `-`, which a
+/// separate-argument `--identity <tmb>` would parse as a flag (#111, the cause of the former
+/// intermittent failure). One in 64 generated thumbprints qualifies, so the test generates until
+/// one does.
+#[test]
+fn test_key_list_accepts_thumbprint_starting_with_dash() {
+    let cli = CliTest::new();
+
+    let tmb = (0..1000)
+        .map(|_| {
+            let key = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+            key["tmb"].as_str().unwrap().to_owned()
+        })
+        .find(|tmb| tmb.starts_with('-'))
+        .expect("no thumbprint starting with '-' in 1000 keys");
+
+    let identity_arg = format!("--identity={tmb}");
+    let signer_arg = format!("--signer={tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+    let list = cli.run_json(&["key", "list", &identity_arg]);
+    assert_eq!(list["active_keys"].as_array().unwrap().len(), 2);
+}
+
+/// Backs: a peer URL that is plain http:// to a non-loopback host is refused before any
+/// connection, and the refusal names the `--allow-cleartext` opt-in.
+#[test]
+fn test_cleartext_peer_refused_and_names_opt_in_flag() {
+    let cli = CliTest::new();
+
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={tmb}");
+
+    let err = cli
+        .run(&["fetch", &identity_arg, "--peer=http://192.0.2.1:8080"])
+        .expect_err("cleartext to a remote host must be refused");
+    assert!(err.contains("--allow-cleartext"), "stderr: {err}");
+}
+
+/// Backs: an exported commit record carries its real auth root and state root (SPEC 4 commit
+/// fields), not placeholders.
 #[test]
 fn test_exported_commits_carry_real_auth_root_and_state_root() {
     // Regression test: exported CommitEntry lines used to hardcode empty
@@ -223,58 +258,8 @@ fn test_exported_commits_carry_real_auth_root_and_state_root() {
     );
 }
 
-#[test]
-fn test_keystore_list() {
-    let cli = CliTest::new();
-
-    // Generate a few keys
-    cli.run_ok(&["key", "generate", "--algo", "ES256", "--tag", "key1"]);
-    cli.run_ok(&["key", "generate", "--algo", "ES256", "--tag", "key2"]);
-
-    // List keystore keys (no identity specified)
-    let list = cli.run_json(&["key", "list"]);
-    let keys = list.as_array().unwrap();
-    assert_eq!(keys.len(), 2, "should have 2 keys in keystore");
-}
-
-#[test]
-fn test_tx_list_genesis() {
-    let cli = CliTest::new();
-
-    // Generate key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-
-    // List cozies (should be empty for genesis)
-    // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
-    let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-
-    assert_eq!(tx_list["transaction_count"], 0);
-}
-
-#[test]
-fn test_tx_list_after_transactions() {
-    let cli = CliTest::new();
-
-    // Generate key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-
-    // Add a key (creates first coz)
-    // Use --arg=value format to handle thumbprints starting with -
-    let identity_arg = format!("--identity={genesis_tmb}");
-    let signer_arg = format!("--signer={genesis_tmb}");
-    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
-
-    // List cozies - should show 2 (key/create + commit/create per commit)
-    let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-
-    assert_eq!(tx_list["transaction_count"], 2);
-    let cozies = tx_list["cozies"].as_array().unwrap();
-    assert_eq!(cozies.len(), 2);
-}
-
+/// Backs: inspect at genesis shows PG unset and PR/KS/AS equal to the sole key thumbprint (SPEC
+/// 2.2.10 singleton promotion, 2.3.2 PG).
 #[test]
 fn test_inspect_genesis() {
     let cli = CliTest::new();
@@ -299,6 +284,9 @@ fn test_inspect_genesis() {
     assert_eq!(keys.len(), 1);
 }
 
+/// Backs: inspect after a key add shows the PG established (the CLI commits the
+/// genesis before its first key add; a single-key PG is the key's thumbprint),
+/// the new KS, two commits (genesis, add) and two active keys.
 #[test]
 fn test_inspect_after_transactions() {
     let cli = CliTest::new();
@@ -316,24 +304,28 @@ fn test_inspect_after_transactions() {
     // Inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // PG is still <none> until a principal/create coz establishes it
-    assert_eq!(inspect["pg"].as_str().unwrap(), "<none>");
+    // The genesis commit's principal/create established the PG; for a
+    // single-key genesis it is that key's thumbprint.
+    assert_eq!(inspect["pg"].as_str().unwrap(), genesis_tmb);
     assert_ne!(
         inspect["ks"].as_str().unwrap(),
         genesis_tmb,
         "KS should change after key add"
     );
-    assert_eq!(inspect["commit_count"], 1);
+    assert_eq!(inspect["commit_count"], 2, "genesis commit + key add");
 
     let keys = inspect["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 2, "should have 2 keys after add");
 }
 
+/// Backs: a multi-key genesis reloads with every genesis key before any push (user-visible
+/// init/inspect).
 #[test]
 fn test_explicit_multi_key_genesis_reload() {
-    // An identity created with explicit genesis (multiple keys) must be
-    // reloadable before any commit has ever been made against it -- e.g.
-    // before it has been pushed to a server. Regression test for a bug
+    // An identity created with a multi-key genesis must be reloadable
+    // before it has been pushed to a server; `init --keys` commits its
+    // genesis (SPEC 5.1: a multi-key principal is Level 3+, which exists
+    // only through its genesis commit). Regression test for a bug
     // where the load path unconditionally treated a never-yet-committed
     // identity as implicit (single-key) genesis, so it tried to look up
     // the combined multi-key digest as if it were a single key's
@@ -356,7 +348,7 @@ fn test_explicit_multi_key_genesis_reload() {
     let identity_arg = format!("--identity={pr}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    assert_eq!(inspect["commit_count"], 0);
+    assert_eq!(inspect["commit_count"], 1, "the genesis commit");
     let active_keys: Vec<_> = inspect["active_keys"]
         .as_array()
         .unwrap()
@@ -372,29 +364,16 @@ fn test_explicit_multi_key_genesis_reload() {
     assert!(active_keys.contains(&key2_tmb));
 }
 
+/// Backs: commits chain on a multi-key explicit genesis across separate CLI invocations (F40).
 #[test]
 fn test_explicit_multi_key_genesis_accepts_commits() {
-    // F40 regression: a genuinely fresh explicit multi-key genesis (2+
-    // keys, zero prior commits) must accept commits signed on top of it --
+    // F40 regression: a genuinely fresh multi-key genesis (2+ keys) must
+    // accept commits signed on top of it --
     // not just reload (test_explicit_multi_key_genesis_reload, above).
-    //
-    // Root cause: `save_principal_to_engine` (cyphr-cli/src/commands/
-    // common.rs) reconstructed the `Genesis` it handed to
-    // `StorageEngine::submit_commit` from only `genesis_keys().first()`,
-    // silently collapsing a multi-key explicit genesis down to a
-    // single-key implicit one. The resubmitted commit's signer then didn't
-    // match the (wrongly narrowed) reconstructed principal's active key
-    // set, so `submit_commit`'s independent `load_principal` replay
-    // diverged from what the CLI had actually signed the arrow against --
-    // `finalize_commit`'s arrow-verification check (the sole surviving
-    // chain-integrity guard) correctly rejected the divergence with a
-    // "state root mismatch" error. A second, related bug at the same site
-    // affected only the second-and-later commit (this test's `key add`
-    // #2/#3): genesis was only supplied for the first commit, so later
-    // commits fell back to `StorageEngine::submit_commit`'s own
-    // server-side genesis reconstruction, which can only recover a
-    // *single* key from stored blob material and has no wire
-    // representation for a multi-key genesis at all.
+    // A multi-key principal replays from its genesis key alone: its
+    // genesis commit's key/creates add the rest (SPEC 5.1), so every
+    // commit after it is signed against, and replayed onto, the same key
+    // set.
     let cli = CliTest::new();
 
     let key1 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k1"]);
@@ -408,23 +387,23 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
     let identity_arg = format!("--identity={pr}");
     let signer_arg = format!("--signer={key1_tmb}");
 
-    // Commit #1 on top of the fresh multi-key genesis -- the exact F40
-    // scenario ("a second commit is signed on top of it", counting
-    // genesis itself as the first "commit").
+    // The first key add on top of the fresh multi-key genesis -- the exact
+    // F40 scenario. `init` committed the genesis commit (both genesis
+    // keys' key/creates + principal/create); this is the second commit.
     let add1 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key3_tmb = add1["added_key"].as_str().unwrap().to_string();
 
-    // Commit #2: reload (replaying the one stored commit) and resubmit.
+    // Second add: reload (replaying the stored commits) and resubmit.
     let add2 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key4_tmb = add2["added_key"].as_str().unwrap().to_string();
 
-    // Commit #3, for good measure -- proves this isn't merely "the second
+    // Third add, for good measure -- proves this isn't merely "the second
     // commit specifically" but genuinely fixed for the general case.
     let add3 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let key5_tmb = add3["added_key"].as_str().unwrap().to_string();
 
     let inspect = cli.run_json(&["inspect", &identity_arg]);
-    assert_eq!(inspect["commit_count"], 3);
+    assert_eq!(inspect["commit_count"], 4, "genesis commit + 3 adds");
     let active_keys: Vec<_> = inspect["active_keys"]
         .as_array()
         .unwrap()
@@ -440,10 +419,11 @@ fn test_explicit_multi_key_genesis_accepts_commits() {
     }
 }
 
+/// Backs: an unknown identity is refused with a clear error, never misread as another genesis.
 #[test]
 fn test_unresolvable_identity_fails_loudly() {
-    // An identity that matches neither a keystore key, a recorded
-    // explicit genesis, nor any stored commit must fail with a clear
+    // An identity that matches neither a keystore key nor any stored
+    // commit must fail with a clear
     // error -- not silently misinterpret it as some other identity's
     // genesis.
     let cli = CliTest::new();
@@ -465,6 +445,8 @@ fn test_unresolvable_identity_fails_loudly() {
     );
 }
 
+/// Backs: end-to-end CLI lifecycle - generate, list, tx list, inspect, add, export, revoke (SPEC
+/// 4.2.4 self-revoke); subsumes the single-step key/list/tx-list checks.
 #[test]
 fn test_full_workflow() {
     // Comprehensive test mimicking the demo script
@@ -499,13 +481,15 @@ fn test_full_workflow() {
     let key_list = cli.run_json(&["key", "list", &identity_arg]);
     assert_eq!(key_list["active_keys"].as_array().unwrap().len(), 2);
 
-    // 7. Check tx list after coz (mutation + commit/create per commit)
+    // 7. Check tx list after coz: the genesis commit (key/create of the
+    // genesis key, principal/create, commit/create) then the add (mutation +
+    // commit/create)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-    assert_eq!(tx_list["transaction_count"], 2);
+    assert_eq!(tx_list["transaction_count"], 5);
 
-    // 8. Check inspect after coz
+    // 8. Check inspect after coz (genesis commit + add)
     let inspect = cli.run_json(&["inspect", &identity_arg]);
-    assert_eq!(inspect["commit_count"], 1);
+    assert_eq!(inspect["commit_count"], 2);
     assert_eq!(inspect["active_keys"].as_array().unwrap().len(), 2);
 
     // 9. Export
@@ -530,28 +514,13 @@ fn test_full_workflow() {
         "genesis key should be in final active keys"
     );
 
-    // 12. Check tx list shows 4 cozies (2 commits × 2 each: mutation + commit/create)
+    // 12. Check tx list shows 7 cozies: the genesis commit's 3, then 2 commits
+    // × 2 each (mutation + commit/create)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-    assert_eq!(tx_list["transaction_count"], 4);
+    assert_eq!(tx_list["transaction_count"], 7);
 }
 
-#[test]
-fn test_tx_verify_genesis() {
-    let cli = CliTest::new();
-
-    // Generate key
-    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
-    let genesis_tmb = genesis["tmb"].as_str().unwrap();
-    let identity_arg = format!("--identity={genesis_tmb}");
-
-    // Verify genesis state (no cozies yet)
-    let verify = cli.run_json(&["tx", "verify", &identity_arg]);
-
-    assert_eq!(verify["status"], "OK");
-    assert_eq!(verify["commits_verified"], 0);
-    assert_eq!(verify["transactions_verified"], 0);
-}
-
+/// Backs: tx verify accepts a real commit chain (PR/arrow consistency, SPEC 4).
 #[test]
 fn test_tx_verify_after_transactions() {
     let cli = CliTest::new();
@@ -562,7 +531,7 @@ fn test_tx_verify_after_transactions() {
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
 
-    // Add a key (creates first coz)
+    // Add a key (the CLI commits the genesis commit first, then the add)
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Verify coz chain - THIS IS THE CRITICAL TEST
@@ -570,10 +539,12 @@ fn test_tx_verify_after_transactions() {
     let verify = cli.run_json(&["tx", "verify", &identity_arg]);
 
     assert_eq!(verify["status"], "OK", "tx verify should succeed");
-    assert_eq!(verify["commits_verified"], 1);
-    assert_eq!(verify["transactions_verified"], 2);
+    // genesis commit (3 cozies) + add (2 cozies)
+    assert_eq!(verify["commits_verified"], 2);
+    assert_eq!(verify["transactions_verified"], 5);
 }
 
+/// Backs: tx verify fails loudly when stored commit data is unreadable, never reporting a false OK.
 #[test]
 fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
     // Regression test: `tx verify` used to collapse any storage error
@@ -593,7 +564,7 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
     let verify_before = cli.run_json(&["tx", "verify", &identity_arg]);
     assert_eq!(verify_before["status"], "OK");
-    assert_eq!(verify_before["commits_verified"], 1);
+    assert_eq!(verify_before["commits_verified"], 2, "genesis commit + add");
 
     // Simulate real data loss: wipe the blob store contents while
     // leaving the index's references to them intact, so retrieving this
@@ -613,4 +584,40 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
         err.contains("not found"),
         "error should surface the real storage failure, got: {err}"
     );
+}
+
+fn wall_second() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs() as i64
+}
+
+/// Backs NETSIM-2 D1 (key-timeline tie rule, forge #213): a data action signed by a key, then
+/// `key replace` of that key in the same second (a signature dated at a
+/// removal is judged after it), must not fail the replace. The action is a
+/// verdict its history flipped: ignored, not refused as `unknown key`.
+/// End-to-end: yes (CLI processes, one store). Red before the fix: `key
+/// replace` exits non-zero with `unknown key` while saving the action.
+#[test]
+fn test_key_replace_in_the_second_of_an_action_is_not_refused() {
+    let cli = CliTest::new();
+    let genesis = cli.run_json(&["key", "generate", "--algo", "Ed25519", "--tag", "genesis"]);
+    let tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={tmb}");
+    let signer_arg = format!("--signer={tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+    // Both commands sign with one fixed `now`, so they share a second
+    // however slowly each process runs.
+    let now = format!("--now={}", wall_second());
+    cli.run_ok(&[
+        "data",
+        "action",
+        &identity_arg,
+        &signer_arg,
+        "--msg=held",
+        &now,
+    ]);
+    cli.run_ok(&["key", "replace", &identity_arg, &signer_arg, &now]);
 }

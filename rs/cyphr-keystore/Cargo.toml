@@ -1,0 +1,23 @@
+[package]
+categories             = ["cryptography"]
+description            = "Key backend seam for Cyphr clients: keys are generated and used, never exported"
+edition.workspace      = true
+homepage.workspace     = true
+keywords               = ["keystore", "cryptography", "signer"]
+license-file.workspace = true
+name                   = "cyphr-keystore"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[dependencies]
+base64ct.workspace   = true
+coz.workspace        = true
+cyphr                = { path = "../cyphr", version = "0.1.0" }
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = "3"

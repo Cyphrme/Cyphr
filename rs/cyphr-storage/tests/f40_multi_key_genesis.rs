@@ -28,15 +28,7 @@ fn load_pool() -> test_fixtures::Pool {
 fn pool_key_to_domain(pk: &test_fixtures::PoolKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
     let tmb = pk.compute_tmb().expect("pool tmb");
-    cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 fn pool_key_json(pk: &test_fixtures::PoolKey) -> serde_json::Value {
@@ -84,15 +76,12 @@ fn commit_tx_raw_blob(commit: &cyphr::commit::Commit, n: usize) -> Vec<u8> {
     serde_json::to_vec(raw).expect("serialize raw coz json")
 }
 
-/// F40: mirrors `submit_commit_explicit_multi_key_genesis_second_commit_succeeds`
-/// in `cyphr-storage/src/engine/tests.rs` exactly, except the engine is
-/// backed by a *durable* fjall database (shared across both `submit_commit`
-/// calls in-process, exactly as `multitenancy.rs` wires it) instead of the
-/// in-memory default — the one combination that regression test could not
-/// cover, since `load_principal`'s replay of commit #1 during the second
-/// call hits fjall's `already_durable` branch in `finalize_commit` (the
-/// leaf is already on disk from the first `submit_commit`), not a fresh
-/// append.
+/// F40: an established multi-key genesis accepts a second commit through
+/// `submit_commit` on a *durable* fjall database (shared across both calls
+/// in-process, as `multitenancy.rs` wires it). `load_principal`'s replay of
+/// commit #1 during the second call hits fjall's `already_durable` branch
+/// in `stage_commit` (the leaf is already on disk from the first
+/// `submit_commit`), not a fresh append.
 #[tokio::test]
 async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let pool = load_pool();
@@ -105,16 +94,44 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let tmb_a = key_a.compute_tmb().expect("golden tmb");
 
     let genesis_domain_keys = vec![pool_key_to_domain(key_a), pool_key_to_domain(key_b)];
-    let genesis = Genesis::Explicit(genesis_domain_keys.clone());
+    let genesis = Genesis::Disclosed(genesis_domain_keys.clone());
+    let genesis_keys_entries: Vec<cyphr_storage::KeyEntry> = genesis_domain_keys
+        .iter()
+        .map(cyphr_storage::KeyEntry::of)
+        .collect();
 
-    let mut client = cyphr::Principal::explicit(genesis_domain_keys).expect("client genesis");
-    let id_tagged = client
-        .pr_tagged()
-        .expect("pr_tagged should succeed for a fresh genesis");
+    let mut client = cyphr::Principal::implicit(genesis_domain_keys[0].clone())
+        .await
+        .expect("client genesis");
+    let mut scope1 = client.begin_commit();
+    let genesis_creates: Vec<Vec<u8>> = scope1
+        .create_genesis_keys(
+            &cyphr::signer::SoftwareSigner::new(
+                &key_a.alg,
+                &coz::base64ct::Base64UrlUnpadded::decode_vec(
+                    key_a.prv.as_ref().expect("golden has prv"),
+                )
+                .expect("golden prv base64"),
+                &coz::base64ct::Base64UrlUnpadded::decode_vec(&key_a.pub_key)
+                    .expect("golden pub base64"),
+                &tmb_a,
+            ),
+            &genesis_domain_keys[1..],
+            now,
+            "cyphr.me",
+        )
+        .await
+        .expect("genesis key/creates (SPEC 7.7 Example 1)")
+        .iter()
+        .map(|c| serde_json::to_vec(c).expect("key/create blob"))
+        .collect();
+    // The future SR after every genesis key/create: the PG-to-be that
+    // `principal/create`'s `id` carries (SPEC 5.1 step 3).
+    let id_tagged = scope1.genesis_id().expect("genesis id");
 
     let pc_pay = serde_json::json!({
         "alg": key_a.alg,
-        "id": id_tagged,
+        "id": &id_tagged,
         "now": now,
         "tmb": a_tmb_b64,
         "typ": "cyphr.me/cyphr/principal/create",
@@ -126,7 +143,6 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         coz::czd_for_alg(&cad, &pc_sig, &key_a.alg).expect("czd")
     };
 
-    let mut scope1 = client.begin_commit();
     scope1
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis (client side)");
@@ -136,9 +152,18 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
 
     let commit1 = scope1
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
+        .await
         .expect("genesis commit should finalize (client side)");
-    assert_eq!(commit1.len(), 2, "principal/create + commit/create");
+    assert_eq!(
+        commit1.len(),
+        genesis_creates.len() + 2,
+        "key/create per genesis key + principal/create + commit/create"
+    );
     let cc1_blob = commit_tx_raw_blob(commit1, 0);
 
     assert!(
@@ -149,17 +174,32 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
     let index_path = dir.path().join("index");
-    let principal_id = "f40-durable-multi-key-genesis";
+    // A genesis commit keys its principal by PG (SPEC 5.1).
+    let principal_id = id_tagged.as_str();
 
     let db = fjall::Database::builder(&db_path).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
     let indexer = FjallIndexer::open(&index_path).expect("open indexer");
-    let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
-        cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
-    });
+    let engine = StorageEngine::with_log_factory(
+        blob_store,
+        indexer,
+        cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
+    );
 
     engine
-        .submit_commit(principal_id, Some(genesis.clone()), &[&pc_blob, &cc1_blob])
+        .submit_commit(
+            principal_id,
+            Some(genesis.clone()),
+            &cyphr::replay::WireBundle {
+                txs: genesis_creates
+                    .iter()
+                    .chain([&pc_blob, &cc1_blob])
+                    .map(|b| vec![b.clone()])
+                    .collect(),
+                keys: genesis_keys_entries.clone(),
+                ..Default::default()
+            },
+        )
         .await
         .expect("genesis commit should submit through the real durable StorageEngine write path");
 
@@ -171,7 +211,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         "typ": "cyphr.me/cyphr/key/create",
     });
     let (kc_pay_bytes, kc_sig) = sign_pay(key_a, kc_pay);
-    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, Some(pool_key_json(key_c)));
+    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, None);
     let kc_czd = {
         let cad = coz::canonical_hash_for_alg(&kc_pay_bytes, &key_a.alg, None).expect("cad");
         coz::czd_for_alg(&cad, &kc_sig, &key_a.alg).expect("czd")
@@ -187,12 +227,25 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         )
         .expect("key/create mutation should apply to the second commit (client side)");
     let commit2 = scope2
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
+        .await
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 
     engine
-        .submit_commit(principal_id, Some(genesis), &[&kc_blob, &cc2_blob])
+        .submit_commit(
+            principal_id,
+            Some(genesis),
+            &cyphr::replay::WireBundle {
+                txs: vec![vec![kc_blob], vec![cc2_blob]],
+                keys: vec![serde_json::from_value(pool_key_json(key_c)).expect("key entry")],
+                ..Default::default()
+            },
+        )
         .await
         .expect(
             "a second commit signed on top of a fresh multi-key established genesis must submit \

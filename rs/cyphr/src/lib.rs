@@ -22,8 +22,12 @@ pub mod action;
 pub mod commit;
 /// Commit Root logic.
 pub mod commit_root;
+/// Embedded principals at default weight (SPEC §10.3, §10.5, §10.7).
+pub mod embedded;
 pub mod error;
-pub mod hasher;
+/// Fork resolution (SPEC 15.5-15.8): the one rule over held commits.
+pub mod fork;
+mod grown;
 /// Portable inclusion-proof verification (F9) — free functions taking proof
 /// material and a trusted root as plain parameters, with no `Principal`
 /// dependency.
@@ -31,15 +35,30 @@ pub mod inclusion;
 pub mod key;
 /// Principal lifecycle state derivation (SPEC.md §11).
 pub mod lifecycle;
+/// Explicit merge (SPEC 11.5.1).
+pub mod merge;
 pub mod multihash;
+/// Nonces (SPEC §10.1, §10.2).
+pub mod nonce;
 pub mod parsed_coz;
 pub mod principal;
 /// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.
 pub mod principal_tree;
+/// Work counters for tests that pin cost (U3).
+#[cfg(any(test, feature = "test-utils"))]
+pub mod probe;
+/// Pinned roots and certificates: membership and extension across
+/// hash-algorithm epochs.
+pub mod proof;
+/// Replay of stored commit bundles: one entry point for every consumer.
+pub mod replay;
+/// Naked-revoke validity (SPEC 6.4): the one rule every consumer calls.
+pub mod revoke;
 /// Semantic Tree nodes (KT, AR-node, SR-node) — generalizes `PrincipalTree`'s
 /// pattern from "one instance at the root" to "one instance per semantic
 /// node." See module docs for the full design.
 pub mod semantic_tree;
+pub mod signer;
 pub mod state;
 // ...
 /// Transaction structure definitions.
@@ -47,10 +66,16 @@ pub mod transaction;
 /// Transaction root (TR, TMR, TCR) computations.
 pub mod transaction_root;
 
+#[cfg(test)]
+mod restructure_props;
+
 // Re-exports
 pub use action::Action;
-pub use commit::{Commit, CommitScope, PendingCommit};
-pub use commit_root::{CommitRoot, CommitTrees, MaltHasher, verify_consistency, verify_inclusion};
+pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit, PreparedCoz, StagedCommit};
+pub use commit_root::{
+    CommitRoot, CommitTrees, ForkStorage, MaltHasher, verify_consistency, verify_inclusion,
+};
+pub use embedded::{EmbedReport, EmbedStatus, Tip, TipSource, Tracking};
 // The full `eml` crate, re-exported so a durable-storage caller (e.g.
 // `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and
 // `eml::MemoryStorage` — the bound and default for `Principal`'s storage
@@ -64,14 +89,15 @@ pub use inclusion::{
     TransactionHop1, TransactionHop2, verify_key_inclusion, verify_transaction_inclusion,
 };
 pub use key::Key;
+pub use merge::{MergeClaim, MergeStatus, merge_status};
 pub use multihash::MultihashDigest;
 pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, compute_czd, verify_coz};
-pub use principal::Principal;
+pub use principal::{Principal, PrincipalState, StateProjection};
 #[cfg(any(test, feature = "test-utils"))]
 pub use state::compute_pr;
 pub use state::{
-    AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest,
-    StateRoot, compute_commit_id, compute_dr,
+    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest, StateRoot,
+    compute_dr,
 };
 pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};

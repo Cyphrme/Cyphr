@@ -1,4 +1,4 @@
-//! Domain types for the relational index.
+//! Domain types for the index.
 //!
 //! These types live at the storage boundary — they carry serialized
 //! representations of protocol state (strings, blob hashes), not live
@@ -65,6 +65,13 @@ pub struct IndexableCommit {
     pub timestamp: i64,
     /// Public keys extracted from key-introducing transactions.
     pub keys: Vec<PublicKeyInfo>,
+    /// Principal Genesis variants (tagged digest strings), set only on the
+    /// commit that establishes the PG (`principal/create`): the PR held
+    /// immediately BEFORE that commit, not the commit's own post-commit PR
+    /// (SPEC §3.7.1). Empty on every other commit. `serde(default)` so a
+    /// manifest written before this field existed still deserializes.
+    #[serde(default)]
+    pub pg: Vec<String>,
 }
 
 /// Public key metadata.
@@ -88,10 +95,10 @@ pub struct TipState {
     pub principal_id: String,
     /// Current Principal Root.
     pub pr: String,
-    /// Current State Root.
-    pub sr: String,
-    /// Current Auth Root.
-    pub ar: String,
+    /// Current State Root; `None` for a Dead principal with no data.
+    pub sr: Option<String>,
+    /// Current Auth Root; `None` for a Dead principal (no keys).
+    pub ar: Option<String>,
     /// Current Commit Root (empty string if no commit has populated the EML
     /// log yet).
     pub cr: String,
@@ -118,10 +125,10 @@ pub struct CommitRef {
     pub pre: Option<String>,
     /// Principal Root after this commit.
     pub pr: String,
-    /// State Root after this commit.
-    pub sr: String,
-    /// Auth Root after this commit.
-    pub ar: String,
+    /// State Root after this commit (`None` if absent).
+    pub sr: Option<String>,
+    /// Auth Root after this commit (`None` if absent).
+    pub ar: Option<String>,
     /// Commit Root after this commit (empty string if none yet).
     pub cr: String,
     /// BLAKE3 hashes of blobs belonging to this commit.
@@ -149,10 +156,22 @@ pub struct EntityRef {
     /// `digests` record deserializes instead of failing to open).
     #[serde(default)]
     pub sequence: Option<u64>,
+    /// The principal whose commit produced this digest. A locator hint
+    /// only (`None` in a record written before this field existed): any
+    /// authorisation decision must re-verify against replayed state.
+    #[serde(default)]
+    pub principal_id: Option<String>,
+    /// Whether this digest is a Principal Root variant (as opposed to a
+    /// commit id, state, auth or commit root, or a coz digest). Lets a
+    /// caller tell a PR claim from any other digest without loading
+    /// history. `false` in a record written before this field existed.
+    #[serde(default)]
+    pub principal_root: bool,
 }
 
 /// Classification of indexed entities.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EntityType {
     /// A finalized commit bundle.
     Commit,

@@ -19,6 +19,9 @@ version                = "0.1.0"
 # dev-dependency with this feature enabled and hold its own backend to the
 # same conformance functions MemoryIndexer's/MemoryBlobStore's tests use.
 conformance-tests = []
+# Exposes engine switches a test of a consumer sets on an engine it did not
+# build (`StorageEngine::set_kept_shadow`), so a release never carries them.
+test-utils = []
 
 [dependencies]
 blake3     = { workspace = true }
@@ -40,3 +43,7 @@ serde             = { workspace = true }
 serde_json        = { workspace = true }
 tempfile          = "3"
 test-fixtures     = { path = "../test-fixtures" }
+
+[[bench]]
+harness = false
+name    = "u3_engine"

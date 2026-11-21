@@ -23,6 +23,7 @@ clap.workspace               = true
 coz.workspace                = true
 cyphr                        = { path = "../cyphr", version = "0.1.0" }
 cyphr-blob-fjall             = { path = "../cyphr-blob-fjall", version = "0.1.0" }
+cyphr-client                 = { path = "../cyphr-client", version = "0.1.0" }
 cyphr-index-fjall            = { path = "../cyphr-index-fjall", version = "0.1.0" }
 cyphr-storage                = { path = "../cyphr-storage", version = "0.1.0" }
 eml.workspace                = true
@@ -39,20 +40,29 @@ sha2                         = "0.10"
 subtle                       = "2"
 thiserror.workspace          = true
 tokio.workspace              = true
-tower                        = "0.5"
+tower                        = { version = "0.5", features = ["util"] }
 tower-http.workspace         = true
 tracing.workspace            = true
 tracing-subscriber.workspace = true
 uuid.workspace               = true
 
 [dev-dependencies]
-blake3         = { workspace = true }
-coz            = { workspace = true }
+blake3 = { workspace = true }
+coz = { workspace = true }
+cyphr = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
+cyphr-storage = { path = "../cyphr-storage", version = "0.1.0", features = [
+  "conformance-tests",
+  "test-utils",
+] }
 http-body-util = "0.1"
-proptest       = { workspace = true }
-serde_json     = { workspace = true }
-socket2        = "0.6"
-tempfile       = "3"
-test-fixtures  = { path = "../test-fixtures" }
-tokio          = { workspace = true }
-tower          = { version = "0.5", features = ["util"] }
+proptest = { workspace = true }
+serde_json = { workspace = true }
+socket2 = "0.6"
+tempfile = "3"
+test-fixtures = { path = "../test-fixtures" }
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+
+[[bench]]
+harness = false
+name    = "u3_server"

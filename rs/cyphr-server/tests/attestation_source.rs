@@ -11,45 +11,52 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use cyphr_server::build_router;
 use cyphr_storage::blob::Blake3Hash;
-use cyphr_storage::index::{IndexableCommit, Indexer};
+use cyphr_storage::index::{DeriveToken, IndexableCommit, Indexer, IndexerWrite};
 
 mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
-const CORRUPT_PR: &str = "SHA-256:CORRUPTED_PR_9999999999999999999999999999999999999999";
-const CORRUPT_SR: &str = "SHA-256:CORRUPTED_SR_9999999999999999999999999999999999999999";
-const CORRUPT_AR: &str = "SHA-256:CORRUPTED_AR_9999999999999999999999999999999999999999";
-const CORRUPT_CR: &str = "SHA-256:CORRUPTED_CR_9999999999999999999999999999999999999999";
-
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not the top-level `pr` this suite's `principal_id` fixtures become --
-/// `docs/specs/receipts.md`). `receipt::tip_report`/`commit_receipt`
-/// refuse a malformed `pr`, so this suite's principal identifiers must
-/// genuinely parse. Named `principal_digest` (not `digest`) to stay
-/// distinct from the TAGGED digest helper other test files use for
-/// `commit_id`/`roots` fixtures -- same shape, different wire form,
-/// never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::encode_string(&[byte; 32])
+/// A corrupt root per principal: the index refuses one digest naming two
+/// principals, so the injected values must differ between them. Keyed on
+/// the id's digest, so either spelling of the id names the same value.
+fn corrupt_root(kind: &str, principal_id: &str) -> String {
+    let digest = principal_id
+        .strip_prefix("SHA-256:")
+        .unwrap_or(principal_id);
+    format!("SHA-256:CORRUPTED_{kind}_{digest}")
+}
+fn corrupt_pr(p: &str) -> String {
+    corrupt_root("PR", p)
+}
+fn corrupt_sr(p: &str) -> String {
+    corrupt_root("SR", p)
+}
+fn corrupt_ar(p: &str) -> String {
+    corrupt_root("AR", p)
+}
+fn corrupt_cr(p: &str) -> String {
+    corrupt_root("CR", p)
 }
 
 /// Helper: Corrupt the indexer's tip state for `principal_id` by injecting a
 /// fake IndexableCommit with sequence 99 and corrupted root strings.
 async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: &str) {
+    // The index is keyed on the canonical (algorithm-labelled) spelling of a
+    // principal id, which is how both principals here are named (their PG
+    // is a SHA-256 PR).
+    let bare = principal_id;
     let dummy_hash = Blake3Hash::from_bytes([1u8; 32]);
     let corrupt_commit = IndexableCommit {
+        pg: Vec::new(),
         principal_id: principal_id.to_string(),
-        commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_ID_999999999999999999999999".to_string()],
+        commit_ids: vec![corrupt_root("COMMIT_ID", bare)],
         sequence: 99,
         pre: None,
-        prs: vec![CORRUPT_PR.to_string()],
-        srs: vec![CORRUPT_SR.to_string()],
-        ars: vec![CORRUPT_AR.to_string()],
-        crs: vec![CORRUPT_CR.to_string()],
+        prs: vec![corrupt_pr(bare)],
+        srs: vec![corrupt_sr(bare)],
+        ars: vec![corrupt_ar(bare)],
+        crs: vec![corrupt_cr(bare)],
         blob_hashes: vec![dummy_hash],
         cozies: vec![],
         timestamp: 1_700_000_000,
@@ -58,7 +65,7 @@ async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: 
     state
         .engine
         .indexer()
-        .index_commit(&corrupt_commit)
+        .index_commit(&corrupt_commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("corrupt index_commit");
 }
@@ -70,12 +77,12 @@ async fn roots_derive_from_blobs() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id = common::golden_principal_id(&pool).await;
+    let principal_id = principal_id.as_str();
     let now = 1_700_000_000;
 
     // 1. Establish valid principal via genesis push.
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (status, push_res) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         status,
@@ -94,10 +101,10 @@ async fn roots_derive_from_blobs() {
         .await
         .unwrap()
         .expect("tip exists");
-    assert_eq!(index_tip.pr, CORRUPT_PR);
-    assert_eq!(index_tip.sr, CORRUPT_SR);
-    assert_eq!(index_tip.ar, CORRUPT_AR);
-    assert_eq!(index_tip.cr, CORRUPT_CR);
+    assert_eq!(index_tip.pr, corrupt_pr(principal_id));
+    assert_eq!(index_tip.sr, Some(corrupt_sr(principal_id)));
+    assert_eq!(index_tip.ar, Some(corrupt_ar(principal_id)));
+    assert_eq!(index_tip.cr, corrupt_cr(principal_id));
 
     // 3. GET /tip MUST NOT return a receipt signed over corrupted index values (all 4 root fields).
     let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
@@ -106,19 +113,23 @@ async fn roots_derive_from_blobs() {
         // If it succeeded, its signed roots MUST NOT match any of the corrupted index roots!
         let coz_roots = &tip_body["statement"]["coz"]["pay"]["roots"];
         assert_ne!(
-            coz_roots["pr"], CORRUPT_PR,
+            coz_roots["pr"],
+            corrupt_pr(principal_id),
             "attestation MUST NOT sign corrupted index pr: {tip_body:?}"
         );
         assert_ne!(
-            coz_roots["sr"], CORRUPT_SR,
+            coz_roots["sr"],
+            corrupt_sr(principal_id),
             "attestation MUST NOT sign corrupted index sr: {tip_body:?}"
         );
         assert_ne!(
-            coz_roots["ar"], CORRUPT_AR,
+            coz_roots["ar"],
+            corrupt_ar(principal_id),
             "attestation MUST NOT sign corrupted index ar: {tip_body:?}"
         );
         assert_ne!(
-            coz_roots["cr"], CORRUPT_CR,
+            coz_roots["cr"],
+            corrupt_cr(principal_id),
             "attestation MUST NOT sign corrupted index cr: {tip_body:?}"
         );
     } else {
@@ -131,28 +142,33 @@ async fn roots_derive_from_blobs() {
 
     // 4. POST /push under corrupted index MUST NOT return a commit receipt signed over corrupted
     //    index values.
-    let push_principal_digest = principal_digest(0x02);
-    let push_principal = push_principal_digest.as_str();
+    let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
+    let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
-    let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
+    let push_body_corrupt =
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
 
     let (push_status, push_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
     if push_status == StatusCode::CREATED {
         let coz_roots = &push_res["statement"]["coz"]["pay"]["roots"];
         assert_ne!(
-            coz_roots["pr"], CORRUPT_PR,
+            coz_roots["pr"],
+            corrupt_pr(push_principal),
             "push attestation MUST NOT sign corrupted index pr: {push_res:?}"
         );
         assert_ne!(
-            coz_roots["sr"], CORRUPT_SR,
+            coz_roots["sr"],
+            corrupt_sr(push_principal),
             "push attestation MUST NOT sign corrupted index sr: {push_res:?}"
         );
         assert_ne!(
-            coz_roots["ar"], CORRUPT_AR,
+            coz_roots["ar"],
+            corrupt_ar(push_principal),
             "push attestation MUST NOT sign corrupted index ar: {push_res:?}"
         );
         assert_ne!(
-            coz_roots["cr"], CORRUPT_CR,
+            coz_roots["cr"],
+            corrupt_cr(push_principal),
             "push attestation MUST NOT sign corrupted index cr: {push_res:?}"
         );
     } else {
@@ -170,12 +186,12 @@ async fn stale_index_fails_attestation() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x03);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id = common::golden_principal_id(&pool).await;
+    let principal_id = principal_id.as_str();
     let now = 1_700_000_000;
 
     // 1. Initial valid push.
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (status, push_res) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         status,
@@ -192,10 +208,10 @@ async fn stale_index_fails_attestation() {
     let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
     let is_signed_corrupt_tip = tip_status == StatusCode::OK
         && tip_body["statement"]["kind"] == "signed"
-        && (tip_body["statement"]["coz"]["pay"]["roots"]["pr"] == CORRUPT_PR
-            || tip_body["statement"]["coz"]["pay"]["roots"]["sr"] == CORRUPT_SR
-            || tip_body["statement"]["coz"]["pay"]["roots"]["ar"] == CORRUPT_AR
-            || tip_body["statement"]["coz"]["pay"]["roots"]["cr"] == CORRUPT_CR);
+        && (tip_body["statement"]["coz"]["pay"]["roots"]["pr"] == corrupt_pr(principal_id)
+            || tip_body["statement"]["coz"]["pay"]["roots"]["sr"] == corrupt_sr(principal_id)
+            || tip_body["statement"]["coz"]["pay"]["roots"]["ar"] == corrupt_ar(principal_id)
+            || tip_body["statement"]["coz"]["pay"]["roots"]["cr"] == corrupt_cr(principal_id));
     assert!(
         !is_signed_corrupt_tip,
         "GET /tip attestation MUST FAIL when index is corrupted, but got 200 OK signing corrupted \
@@ -208,18 +224,22 @@ async fn stale_index_fails_attestation() {
     );
 
     // 4. POST /push with stale/corrupted index MUST FAIL attestation.
-    let push_principal_digest = principal_digest(0x04);
-    let push_principal = push_principal_digest.as_str();
+    let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
+    let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
-    let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
+    let push_body_corrupt =
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
     let (push_status, push_body_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     let is_signed_corrupt_push = push_status == StatusCode::CREATED
         && push_body_res["statement"]["kind"] == "signed"
-        && (push_body_res["statement"]["coz"]["pay"]["roots"]["pr"] == CORRUPT_PR
-            || push_body_res["statement"]["coz"]["pay"]["roots"]["sr"] == CORRUPT_SR
-            || push_body_res["statement"]["coz"]["pay"]["roots"]["ar"] == CORRUPT_AR
-            || push_body_res["statement"]["coz"]["pay"]["roots"]["cr"] == CORRUPT_CR);
+        && (push_body_res["statement"]["coz"]["pay"]["roots"]["pr"] == corrupt_pr(push_principal)
+            || push_body_res["statement"]["coz"]["pay"]["roots"]["sr"]
+                == corrupt_sr(push_principal)
+            || push_body_res["statement"]["coz"]["pay"]["roots"]["ar"]
+                == corrupt_ar(push_principal)
+            || push_body_res["statement"]["coz"]["pay"]["roots"]["cr"]
+                == corrupt_cr(push_principal));
     assert!(
         !is_signed_corrupt_push,
         "POST /push attestation MUST FAIL when index is corrupted, but got 201 Created signing \
@@ -238,12 +258,12 @@ async fn failure_is_typed_not_silent() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x05);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id = common::golden_principal_id(&pool).await;
+    let principal_id = principal_id.as_str();
     let now = 1_700_000_000;
 
     // 1. Initial valid push.
-    let push_body = build_genesis_push_body(&pool, principal_id, now);
+    let push_body = build_genesis_push_body(&pool, principal_id, now).await;
     let (status, push_res) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(
         status,
@@ -286,10 +306,11 @@ async fn failure_is_typed_not_silent() {
     );
 
     // 4. POST /push under corrupted index must also fail with a typed error message.
-    let push_principal_digest = principal_digest(0x06);
-    let push_principal = push_principal_digest.as_str();
+    let push_principal = common::genesis_push_id(&pool, "alice", "key_a").await;
+    let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
-    let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
+    let push_body_corrupt =
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now).await;
     let (push_status, push_res_body) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     assert!(

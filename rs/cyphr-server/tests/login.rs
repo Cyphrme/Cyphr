@@ -19,6 +19,13 @@ use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+/// A push body: `principal_id` and `bundle` in the wire form (SPEC 4.6.2).
+fn push_body(principal_id: &str, bundle: &cyphr::replay::WireBundle) -> String {
+    let mut body = serde_json::to_value(bundle).expect("bundle serializes");
+    body["principal_id"] = principal_id.into();
+    body.to_string()
+}
+
 // ========================================================================
 // Shared fixture helpers (mirrored from tests/e2e.rs, which is a separate
 // integration-test crate and cannot be imported here)
@@ -48,15 +55,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's `genesis_keys` array.
@@ -65,38 +69,17 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> cyphr_storage::Genesis {
     if keys.len() == 1 {
         cyphr_storage::Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        cyphr_storage::Genesis::Explicit(keys)
+        cyphr_storage::Genesis::Disclosed(keys)
     }
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key material.
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// Load the shared cryptographic key pool backing the golden fixtures.
@@ -108,98 +91,6 @@ fn load_pool() -> test_fixtures::Pool {
         .unwrap()
         .join("tests/keys/pool.toml");
     test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
-}
-
-/// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name` (must have a known private key in `pool`). Returns the new
-/// commit's raw coz blob bytes, wire-ready for `submit_commit`. Mirrors the
-/// helper of the same name in tests/e2e.rs.
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
 }
 
 /// Assert `body` is a well-formed unsigned envelope
@@ -322,99 +213,87 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
     (status, json)
 }
 
-/// Bootstrap a brand-new Active principal (genesis `golden`, plus one added
-/// key) through the real `/push` wire path, so `golden` and the added key
-/// are both active and the principal is loadable by the login handler.
+/// Bootstrap a brand-new Active principal through the real `/push` wire
+/// path: its genesis commit (SPEC 5.1), in which `genesis_name` creates
+/// itself and `add_key`, so both keys are active and the principal is
+/// loadable by the login handler. Returns the principal's id (its PG) in
+/// the bare spelling.
 async fn bootstrap_active_with_key(
     app: axum::Router,
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    genesis_name: &str,
     add_key: &str,
-) {
-    let golden = pool.get("golden").expect("golden in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
+) -> String {
+    let key = |name: &str| {
+        pool.get(name)
+            .expect("key in pool")
+            .key()
+            .expect("pool key")
     };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, "golden", add_key, 1_700_000_000);
+    let mut principal = cyphr::Principal::implicit(key(genesis_name))
+        .await
+        .expect("genesis");
+    let blobs = test_fixtures::bundle::genesis_bundle(
+        &mut principal,
+        pool.get(genesis_name).expect("genesis key in pool"),
+        &[key(add_key)],
+        1_700_000_000,
+    )
+    .await
+    .expect("genesis commit");
+    let principal_id = test_fixtures::bundle::genesis_id(&blobs).expect("PG");
 
-    // Embed genesis on the closing commit/create -- the wire contract for a
-    // brand-new principal's genesis auto-detection.
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    let body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let body = push_body(&principal_id, &blobs);
     let (status, _) = post_json(app, "/push", body).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
         "bootstrap active principal push must succeed"
     );
+    principal_id
+        .split_once(':')
+        .expect("an algorithm-labelled PG")
+        .1
+        .to_string()
 }
 
 /// Bootstrap a golden `lifecycle/` fixture so the login handler can load it:
-/// the genesis key is embedded on the stored `commit/create` cozy (what
-/// `resolve_genesis` recovers an existing principal's genesis from), and the
+/// its first commit is its genesis commit (what `resolve_genesis` recovers
+/// an existing principal's genesis from), and the
 /// fixture's own pre-signed transactions drive the real lifecycle
 /// transition. Only reachable once the storage layer recognizes the
 /// lifecycle transactions (see the module-level note).
-async fn bootstrap_lifecycle(state: &AppState, principal_id: &str, fixture_name: &str) {
+async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
     let fixture = load_golden("lifecycle", fixture_name);
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let gk = &genesis_keys[0];
+    let principal_id = cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+        .expect("fixture genesis derives an id");
 
     for commit in fixture["commits"].as_array().unwrap() {
-        let mut blobs = build_raw_blobs(commit);
-        for blob in blobs.iter_mut() {
-            let mut value: serde_json::Value = serde_json::from_slice(blob).unwrap();
-            let typ = value["pay"]["typ"].as_str().unwrap_or("");
-            if typ.ends_with("/commit/create") {
-                value.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({ "alg": gk["alg"], "pub": gk["pub"], "tmb": gk["tmb"] }),
-                );
-                *blob = serde_json::to_vec(&value).unwrap();
-            }
-        }
-        let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
         state
             .engine
-            .submit_commit(principal_id, Some(make_genesis(genesis_keys)), &slices)
+            .submit_commit(
+                &principal_id,
+                Some(make_genesis(genesis_keys)),
+                &build_bundle(commit),
+            )
             .await
             .expect("bootstrap lifecycle commit");
     }
+    principal_id
 }
 
 /// Sign a fresh "self-revoke `signer_name`" commit onto `principal`. Mirrors
-/// [`sign_key_create_commit`]'s shape (see that function for the pattern),
-/// but for `key/revoke`: no new key is introduced, the signer revokes
+/// the common `sign_key_create_commit`'s shape (see that function for the
+/// pattern), but for `key/revoke`: no new key is introduced, the signer revokes
 /// itself (`rvk`, no `id` -- SPEC's self-revoke shape), so the mechanism
 /// differs enough not to share a body with the create case.
-fn sign_key_revoke_commit<S: eml::Storage>(
+async fn sign_key_revoke_commit<S: eml::Storage>(
     mut principal: cyphr::Principal<S>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
     rvk: i64,
-) -> Vec<Vec<u8>> {
+) -> cyphr::replay::WireBundle {
     let signer = pool.get(signer_name).expect("signer key in pool");
     let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
 
@@ -444,23 +323,16 @@ fn sign_key_revoke_commit<S: eml::Storage>(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             rvk,
             "cyphr.me",
         )
+        .await
         .expect("commit should finalize");
 
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| serde_json::to_vec(v).expect("cozy serializes"))
-        .collect()
+    let commit = principal.commits().last().expect("the new commit");
+    cyphr::replay::WireBundle::of_commit(commit).expect("the new commit's bundle")
 }
 
 /// Bootstrap a principal with two active keys (`golden` + `revoked_key`)
@@ -472,10 +344,13 @@ fn sign_key_revoke_commit<S: eml::Storage>(
 async fn bootstrap_active_then_revoke(
     state: &Arc<AppState>,
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    genesis_name: &str,
     revoked_key: &str,
-) {
-    bootstrap_active_with_key(build_router(state.clone()), pool, principal_id, revoked_key).await;
+) -> String {
+    let principal_id =
+        bootstrap_active_with_key(build_router(state.clone()), pool, genesis_name, revoked_key)
+            .await;
+    let principal_id = principal_id.as_str();
 
     let genesis = state
         .engine
@@ -486,14 +361,17 @@ async fn bootstrap_active_then_revoke(
         .engine
         .load_principal(principal_id, genesis)
         .await
-        .expect("load principal");
-    let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100);
-    let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        .expect("load principal")
+        .detach()
+        .await
+        .expect("detach principal");
+    let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100).await;
     state
         .engine
-        .submit_commit(principal_id, None, &slices)
+        .submit_commit(principal_id, None, &blobs)
         .await
         .expect("submit the revoke commit");
+    principal_id.to_string()
 }
 
 // ========================================================================
@@ -506,8 +384,9 @@ async fn bootstrap_active_then_revoke(
 async fn login_timestamp_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-ts-active";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
 
     let app = build_router(state.clone());
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
@@ -535,8 +414,9 @@ async fn login_timestamp_flow_issues_valid_token() {
 async fn login_challenge_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-chal-active";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state.clone());
 
     let (cs, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
@@ -573,12 +453,14 @@ async fn login_challenge_flow_issues_valid_token() {
 // ========================================================================
 
 /// A consumed challenge cannot be replayed.
+// @docket: signon-replay-bound :: scripts/docket-run signon-replay-bound
 #[tokio::test]
 async fn login_rejects_replayed_challenge() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-replay";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state.clone());
 
     let (_, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
@@ -611,8 +493,9 @@ async fn login_rejects_replayed_challenge() {
 async fn login_rejects_out_of_window_timestamp() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-window";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let stale = now_secs() - 3600;
@@ -630,12 +513,14 @@ async fn login_rejects_out_of_window_timestamp() {
 // ========================================================================
 
 /// A login for a different audience (the relay attack) is rejected.
+// @docket: signon-audience-binding :: scripts/docket-run signon-audience-binding
 #[tokio::test]
 async fn login_rejects_mismatched_audience() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-aud-mismatch";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", "evil.example", Some(pid), None, now_secs());
@@ -655,8 +540,9 @@ async fn login_rejects_mismatched_audience() {
 async fn login_rejects_missing_audience() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-aud-missing";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", "", Some(pid), None, now_secs());
@@ -685,8 +571,7 @@ async fn login_rejects_missing_audience() {
 async fn login_rejects_missing_principal_claim() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-no-pr";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", AUDIENCE, None, None, now_secs());
@@ -702,16 +587,20 @@ async fn login_rejects_missing_principal_claim() {
 /// principal it is active in, but rejected for a different claimed principal
 /// that does not have it -- the server never infers the principal from the
 /// thumbprint.
+// @docket: signon-claimed-principal :: scripts/docket-run signon-claimed-principal
 #[tokio::test]
 async fn login_binds_key_to_claimed_principal_not_thumbprint() {
     let state = login_state();
     let pool = load_pool();
 
-    // P_other genuinely has key_a active; P_claimed (golden + key_b) does not.
-    let other = "login-share-other";
-    let claimed = "login-share-claimed";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, other, "key_a").await;
-    bootstrap_active_with_key(build_router(state.clone()), &pool, claimed, "key_b").await;
+    // P_other genuinely has key_a active; P_claimed (alice + key_b) does not.
+    // Distinct genesis keys, because a principal's id is derived from its
+    // genesis.
+    let other =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let claimed =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "alice", "key_b").await;
+    let (other, claimed) = (other.as_str(), claimed.as_str());
 
     // key_a claiming P_other: accepted (key_a is active there).
     let ok_body = login_body(&pool, "key_a", AUDIENCE, Some(other), None, now_secs());
@@ -744,8 +633,9 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
 async fn login_rejects_invalid_signature() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-badsig";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
@@ -763,6 +653,34 @@ async fn login_rejects_invalid_signature() {
         StatusCode::UNAUTHORIZED,
         "an invalid signature must be rejected"
     );
+}
+
+// ========================================================================
+// Malformed bodies
+// ========================================================================
+
+/// A login (or push) body with a wrong-typed field is refused 400 and the
+/// refusal does not echo the field's value: serde's and axum's own texts
+/// quote it. Covers the handler's body parse, the payload schema parse and
+/// the shared JSON extractor. Turns red if any of the three reflects it.
+#[tokio::test]
+async fn malformed_login_bodies_do_not_echo_values() {
+    let app = build_router(login_state());
+    for (path, body) in [
+        ("/auth/login", r#"{"pay":{},"sig":424242424242}"#),
+        (
+            "/auth/login",
+            r#"{"pay":{"tmb":424242424242},"sig":"AAAA"}"#,
+        ),
+        ("/push", r#"{"principal_id":424242424242}"#),
+    ] {
+        let (status, reply) = post_json(app.clone(), path, body.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path} {body}: {reply:?}");
+        assert!(
+            !reply.to_string().contains("424242424242"),
+            "{path} echoed the value: {reply:?}"
+        );
+    }
 }
 
 // ========================================================================
@@ -812,8 +730,8 @@ async fn login_rejects_unknown_principal() {
 async fn login_rejects_frozen_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-frozen";
-    bootstrap_lifecycle(&state, pid, "freeze_create_transitions_to_frozen").await;
+    let pid = bootstrap_lifecycle(&state, "freeze_create_transitions_to_frozen").await;
+    let pid = pid.as_str();
 
     // The reconstructed principal is genuinely Frozen (real state, real path).
     let genesis = state
@@ -850,8 +768,8 @@ async fn login_rejects_frozen_principal() {
 async fn login_rejects_deleted_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-deleted";
-    bootstrap_lifecycle(&state, pid, "principal_delete_transitions_to_deleted").await;
+    let pid = bootstrap_lifecycle(&state, "principal_delete_transitions_to_deleted").await;
+    let pid = pid.as_str();
 
     let genesis = state
         .engine
@@ -891,12 +809,13 @@ async fn login_rejects_deleted_principal() {
 /// built via a real implicit genesis, a real `key/create` for `key_a`, and
 /// a real, separately-signed `key/revoke` self-revoking `key_a` -- all
 /// through the full storage path.
+// @docket: signon-key-active-in-principal :: scripts/docket-run signon-key-active-in-principal
 #[tokio::test]
 async fn login_rejects_key_revoked_in_claimed_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-revoked-key";
-    bootstrap_active_then_revoke(&state, &pool, pid, "key_a").await;
+    let pid = bootstrap_active_then_revoke(&state, &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
 
     let genesis = state
         .engine
@@ -921,5 +840,345 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
         status,
         StatusCode::UNAUTHORIZED,
         "a key genuinely revoked from the claimed principal must be rejected: {json:?}"
+    );
+}
+
+// ========================================================================
+// Sign-on hardening (SO1)
+// ========================================================================
+
+/// Backs: one principal has one token subject. A login claiming the bare
+/// spelling and one claiming the algorithm-labelled spelling of the same
+/// identity both succeed and mint tokens naming the same subject. Turns
+/// red if: `parsed.pr` reaches `issue_login_token` as typed, giving a relying
+/// party two account rows for one identity. A no-op that canonicalizes
+/// only one flow (or lowercases) still fails the equality. End to end: yes.
+#[tokio::test]
+async fn token_subject_is_one_whatever_spelling_logged_in() {
+    let state = login_state();
+    let pool = load_pool();
+    let bare =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let labelled = format!("SHA-256:{bare}");
+
+    let mut subjects = Vec::new();
+    for spelling in [bare.as_str(), labelled.as_str()] {
+        let body = login_body(&pool, "golden", AUDIENCE, Some(spelling), None, now_secs());
+        let (status, json) = post_json(build_router(state.clone()), "/auth/login", body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "login under {spelling} must succeed (same identity): {json:?}"
+        );
+        let token = envelope_payload(&json)["token"].as_str().expect("token");
+        let claims = state
+            .identity
+            .as_ref()
+            .unwrap()
+            .verify_token(token, now_secs())
+            .expect("issued token verifies");
+        subjects.push(claims.pr);
+    }
+    assert_eq!(
+        subjects[0], subjects[1],
+        "two spellings of one principal produced two token subjects"
+    );
+}
+
+/// Backs: signon-honest-refusal. A server that holds a signing key but no
+/// audience cannot complete any login (login answers "not configured"), so
+/// it must not hand out a challenge a login can never redeem, and must
+/// refuse both steps alike. Turns red if: `challenge` checks the identity
+/// only and issues a nonce (200) while `login` refuses. A no-op that makes
+/// challenge fail with a different status/body than login still fails the
+/// equality. End to end: yes.
+#[tokio::test]
+async fn login_and_challenge_refuse_alike_without_audience() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let key_path = temp_dir.path().join("signing-key.json");
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let key_file = serde_json::json!({
+        "alg": kp.alg.name(),
+        "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+    });
+    std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();
+    let config = ServerConfig {
+        data_dir: temp_dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: None,
+        ..Default::default()
+    };
+    std::mem::forget(temp_dir);
+    let state = Arc::new(AppState::new(config).expect("open audience-less AppState"));
+
+    let pool = load_pool();
+    let body = login_body(&pool, "golden", AUDIENCE, Some("any"), None, now_secs());
+    let (login_status, login_json) =
+        post_json(build_router(state.clone()), "/auth/login", body).await;
+    let (challenge_status, challenge_json) =
+        post_json(build_router(state), "/auth/challenge", String::new()).await;
+
+    assert!(
+        !login_status.is_success(),
+        "premise: a server with no audience cannot log anyone in: {login_json:?}"
+    );
+    assert_eq!(
+        challenge_status, login_status,
+        "challenge must refuse with login's status: {challenge_json:?}"
+    );
+    assert_eq!(
+        challenge_json, login_json,
+        "challenge must refuse with login's body"
+    );
+}
+
+/// Backs: signon-replay-bound (window arm), future side. A timestamp as far
+/// ahead of server time as the stale one is behind is refused too: the
+/// window is two-sided. Turns red if: the bound is one-sided (only
+/// `server - client` is checked), letting a pre-dated signature live for
+/// hours. Characterization (green today); the existing stale-timestamp test
+/// covers only the past side. End to end: yes.
+#[tokio::test]
+async fn login_rejects_future_dated_timestamp() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let app = build_router(state);
+
+    let future = now_secs() + 3600;
+    let body = login_body(&pool, "golden", AUDIENCE, Some(&pid), None, future);
+    let (status, _) = post_json(app, "/auth/login", body).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a future-dated timestamp outside the window must be rejected"
+    );
+}
+
+// ========================================================================
+// Sign-on typ and role separation (SPEC 17.2: both flows share one typ,
+// `<audience>/cyphr/auth/login`; the challenge field tells them apart)
+// ========================================================================
+
+/// Sign a login-shaped payload under an arbitrary `typ`, so tests can vary
+/// exactly the field the exact-match rule judges.
+fn login_body_typ(
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    typ: &str,
+    pr: &str,
+    challenge: Option<&str>,
+    now: i64,
+) -> String {
+    let signer = pool.get(signer_name).expect("signer in pool");
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).unwrap();
+
+    let mut pay = coz::Pay::new();
+    pay.alg = Some(signer.alg.clone());
+    pay.now = Some(now);
+    pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
+    pay.typ = Some(typ.to_string());
+    pay.extra
+        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+    if let Some(c) = challenge {
+        pay.extra
+            .insert("challenge".to_string(), serde_json::Value::String(c.into()));
+    }
+    let pay_bytes = serde_json::to_vec(&pay).unwrap();
+    let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign");
+    serde_json::to_string(&coz::CozJson {
+        pay: serde_json::to_value(&pay).unwrap(),
+        sig,
+    })
+    .unwrap()
+}
+
+/// Backs: a sign-on statement is accepted only under exactly the typ it was
+/// signed for, `<server audience>/cyphr/auth/login`. Turns red if the typ
+/// match loosens to a prefix/suffix/contains test: a foreign audience, a
+/// trailing segment, a leading segment, or no audience then yields a token.
+/// The control (exact typ accepted) stops a reject-everything no-op.
+/// Characterization (green). End to end: yes.
+#[tokio::test]
+async fn login_typ_is_matched_exactly() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+
+    let exact = format!("{AUDIENCE}/cyphr/auth/login");
+    let (status, json) = post_json(
+        build_router(state.clone()),
+        "/auth/login",
+        login_body_typ(&pool, "golden", &exact, &pid, None, now_secs()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "control: exact typ accepted: {json:?}"
+    );
+
+    for typ in [
+        "evil.example/cyphr/auth/login".to_string(),
+        format!("{AUDIENCE}/cyphr/auth/login/extra"),
+        format!("sub/{AUDIENCE}/cyphr/auth/login"),
+        "/cyphr/auth/login".to_string(),
+        format!("{AUDIENCE}/cyphr/auth/logout"),
+    ] {
+        let (status, json) = post_json(
+            build_router(state.clone()),
+            "/auth/login",
+            login_body_typ(&pool, "golden", &typ, &pid, None, now_secs()),
+        )
+        .await;
+        assert!(
+            !status.is_success() && json["payload"]["token"].is_null(),
+            "typ {typ:?} must not be accepted as this server's login: {status} {json:?}"
+        );
+    }
+}
+
+/// Backs: a statement carrying a challenge is accepted only through
+/// challenge-response, once. Turns red if a challenge-bearing statement can
+/// be re-presented (a consumed challenge, or one this server never issued)
+/// and accepted as a timestamp login because its `now` is in the window.
+/// Characterization (green; the flow is chosen by the challenge field's
+/// presence). End to end: yes.
+#[tokio::test]
+async fn cross_flow_challenge_statement_never_passes_as_timestamp() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let typ = format!("{AUDIENCE}/cyphr/auth/login");
+
+    let (_, cj) = post_json(
+        build_router(state.clone()),
+        "/auth/challenge",
+        String::new(),
+    )
+    .await;
+    let challenge = envelope_payload(&cj)["challenge"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let body = login_body_typ(&pool, "golden", &typ, &pid, Some(&challenge), now_secs());
+
+    let (first, _) = post_json(build_router(state.clone()), "/auth/login", body.clone()).await;
+    assert_eq!(
+        first,
+        StatusCode::OK,
+        "control: challenge flow succeeds once"
+    );
+    let (replay, json) = post_json(build_router(state.clone()), "/auth/login", body).await;
+    assert_eq!(
+        replay,
+        StatusCode::UNAUTHORIZED,
+        "a consumed challenge statement, in-window, must not pass as a timestamp login: {json:?}"
+    );
+
+    let forged = login_body_typ(
+        &pool,
+        "golden",
+        &typ,
+        &pid,
+        Some("never-issued"),
+        now_secs(),
+    );
+    let (status, json) = post_json(build_router(state), "/auth/login", forged).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a timestamp login carrying an unissued challenge must be refused: {json:?}"
+    );
+}
+
+/// Backs: role separation for the roles that exist in code today (bearer
+/// token, naked revoke; the transport binding and pairing have no code yet
+/// and are not testable). A statement signed in another role is never a
+/// login, and a login is never accepted in another role. Turns red if
+/// `/auth/login` accepts a `key/revoke` statement or a server-minted bearer
+/// token, or `/revoke` accepts a login (the key then dies). Characterization
+/// (green). End to end: yes.
+#[tokio::test]
+async fn login_role_is_not_interchangeable_with_other_statements() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let login_typ = format!("{AUDIENCE}/cyphr/auth/login");
+
+    // Other roles presented as a login.
+    let revoke_as_login = login_body_typ(
+        &pool,
+        "golden",
+        "cyphr.me/cyphr/key/revoke",
+        &pid,
+        None,
+        now_secs(),
+    );
+    let (status, json) =
+        post_json(build_router(state.clone()), "/auth/login", revoke_as_login).await;
+    assert!(
+        !status.is_success() && json["payload"]["token"].is_null(),
+        "a key/revoke statement must not be accepted as a login: {status} {json:?}"
+    );
+    let token = state
+        .identity
+        .as_ref()
+        .unwrap()
+        .issue_login_token(
+            pid.as_str(),
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
+            vec!["read".into()],
+            now_secs(),
+            300,
+            None,
+        )
+        .expect("issue token");
+    let (status, json) = post_json(build_router(state.clone()), "/auth/login", token).await;
+    assert!(
+        !status.is_success() && json["payload"]["token"].is_null(),
+        "a bearer token must not be accepted as a login: {status} {json:?}"
+    );
+
+    // A login presented as a naked revoke (with the key disclosed so only
+    // the typ can stop it).
+    let golden = pool.get("golden").unwrap();
+    let mut login: serde_json::Value = serde_json::from_str(&login_body_typ(
+        &pool,
+        "golden",
+        &login_typ,
+        &pid,
+        None,
+        now_secs(),
+    ))
+    .unwrap();
+    login["pay"]["rvk"] = serde_json::json!(now_secs());
+    login.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({ "alg": golden.alg, "pub": golden.pub_key }),
+    );
+    let (status, json) = post_json(build_router(state.clone()), "/revoke", login.to_string()).await;
+    assert!(
+        !status.is_success(),
+        "a login must not act as a naked revoke: {status} {json:?}"
+    );
+
+    // Control: the key is still alive and the login role still works.
+    let (status, json) = post_json(
+        build_router(state),
+        "/auth/login",
+        login_body_typ(&pool, "golden", &login_typ, &pid, None, now_secs()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the golden key must not be dead: {json:?}"
     );
 }

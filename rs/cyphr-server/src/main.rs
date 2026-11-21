@@ -7,6 +7,59 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use cyphr_server::config::{AdmissionConfig, Cli, Command, InviteAction};
+use cyphr_server::ops::{self, OpsError};
+
+mod rotate;
+
+fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    tokio::runtime::Runtime::new().map_err(|e| {
+        eprintln!("failed to create tokio runtime: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+/// Run one offline operator command, print its report, and map failure to
+/// a non-zero exit.
+fn run_op<R: std::fmt::Display>(
+    op: impl std::future::Future<Output = Result<R, OpsError>>,
+) -> ExitCode {
+    let rt = match runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    match rt.block_on(op) {
+        Ok(report) => {
+            println!("{report}");
+            ExitCode::SUCCESS
+        },
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        },
+    }
+}
+
+/// `verify-all` also exits non-zero when it reports a failed chain.
+fn run_verify_all(config: &cyphr_server::config::ServerConfig) -> ExitCode {
+    let rt = match runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    match rt.block_on(ops::chains::verify_all(config)) {
+        Ok(report) => {
+            println!("{report}");
+            if report.failures.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        },
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        },
+    }
+}
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -53,7 +106,7 @@ fn main() -> ExitCode {
                     "Starting total index rebuild in {}",
                     state.config.data_dir.display()
                 );
-                state.engine.reindex(&[], true).await?;
+                state.engine.rebuild_index_from_scratch().await?;
                 tracing::info!("Index rebuild completed successfully");
                 Ok::<(), Box<dyn std::error::Error>>(())
             }) {
@@ -61,13 +114,40 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        Command::Export { .. } => {
-            // Not yet implemented: fail loudly with a non-zero exit code
-            // rather than logging a warning (easily missed, or filtered
-            // out entirely depending on log level) and then exiting 0 as
-            // if the export had actually happened.
-            eprintln!("error: export is not yet implemented");
-            return ExitCode::FAILURE;
+        Command::RotateKey(_) => {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("failed to create tokio runtime: {e}");
+                    return ExitCode::FAILURE;
+                },
+            };
+            match rt.block_on(rotate::rotate_key(config)) {
+                Ok(report) => println!("{report}"),
+                Err(e) => {
+                    eprintln!("error: rotate-key failed: {e}");
+                    return ExitCode::FAILURE;
+                },
+            }
+        },
+        Command::Backup { dest, .. } => {
+            return run_op(ops::snapshot::backup(&config, &dest));
+        },
+        Command::Restore { from, .. } => {
+            return run_op(ops::snapshot::restore(&config, &from));
+        },
+        Command::Export { out, .. } => {
+            return run_op(async {
+                let ids = ops::chains::export(&config, &out).await?;
+                Ok(format!(
+                    "exported {} principal(s) to {}",
+                    ids.len(),
+                    out.display()
+                ))
+            });
+        },
+        Command::VerifyAll { .. } => {
+            return run_verify_all(&config);
         },
         Command::Invite { action } => {
             let InviteAction::New { count } = action;

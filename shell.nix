@@ -22,9 +22,12 @@ mkShell {
     treefmt
     toolchain
     cargo-fuzz
+    cargo-mutants
     shfmt
     nixfmt
     taplo
     nodePackages.prettier
-  ];
+  ]
+  # The CLI durability test counts syscalls with strace (Linux only).
+  ++ lib.optional stdenv.isLinux strace;
 }

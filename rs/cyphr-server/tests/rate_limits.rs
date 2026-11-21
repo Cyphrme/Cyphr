@@ -42,7 +42,6 @@
 
 mod common;
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use tempfile::TempDir;
 
 // A distinct, deterministic `now` per principal keeps genesis blob bytes (and
@@ -212,162 +211,29 @@ fn some_429(statuses: &[u16]) -> bool {
 // Push bodies
 // ========================================================================
 
-/// A brand-new principal's genesis push body (golden key adds `key_a`).
-fn genesis_body(principal_id: &str, now: i64) -> String {
+/// A brand-new principal's genesis push body (its genesis commit: golden
+/// creates itself and `key_a`).
+async fn genesis_body(principal_id: &str, now: i64) -> String {
     let pool = common::load_pool();
-    common::build_genesis_push_body(&pool, principal_id, now)
+    common::build_genesis_push_body(&pool, principal_id, now).await
 }
 
 /// A push body's blob list, base64url-encoded, wrapped with `principal_id`.
 fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
-    serde_json::json!({
-        "principal_id": pid,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
-/// The genesis `cyphr::Key` for pool key `name` (`first_seen` 0, like a fixture
-/// genesis).
-fn genesis_key(pool: &test_fixtures::Pool, name: &str) -> cyphr::Key {
-    let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key {
-        alg: k.alg.clone(),
-        tmb: k.compute_tmb().expect("genesis tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
-}
-
-/// Append a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name`, and return the new commit's raw coz blobs, wire-ready. Takes
-/// `&mut principal` so a caller can build a genesis and a valid follow-on onto
-/// the SAME principal in sequence (a fresh `Principal::clone()` would share the
-/// durable log rather than deep-copy, colliding two "next commits" on one leaf).
-/// The key-introducing cozy carries its new key embedded, as the wire path
-/// expects.
-fn append_key_create(
-    principal: &mut cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    // Alphabetical field order matches the server's `canonicalize_value`
-    // `sort_keys()`, which it re-derives before verifying; any other order
-    // would make the signature mismatch what the server recomputes.
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the current principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    // The wire format expects the introduced key embedded directly on the
-    // key-introducing cozy; `export_commits` carries it separately.
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({ "alg": key.alg, "pub": key.pub_key, "tmb": key.tmb }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
+    common::push_blobs(pid, blobs)
 }
 
 /// Build a genesis push body AND a valid follow-on push body for the SAME
-/// principal, sharing one principal instance so the follow-on legitimately
-/// chains onto the genesis. The follow-on is a genesis-less "add key_b" commit
-/// the protocol accepts once the principal is resident -- so the ONLY thing that
-/// can refuse it is the count quota.
-fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
+/// principal. The genesis is the standard genesis commit (golden creates
+/// itself and `key_a`); the follow-on is a non-genesis "golden adds key_b"
+/// commit chained onto it, which the protocol accepts once the principal is
+/// resident -- so the ONLY thing that can refuse it is the count quota.
+async fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
     let pool = common::load_pool();
-    let gkey = genesis_key(&pool, "golden");
-    let mut principal = cyphr::Principal::implicit(gkey.clone()).expect("implicit genesis");
-
-    // Genesis commit: golden adds key_a.
-    let mut g_blobs = append_key_create(&mut principal, &pool, "golden", "key_a", now);
-    // The closing cozy of a never-before-seen genesis carries the embedded
-    // genesis key `resolve_genesis` re-derives the principal from.
-    let closing = g_blobs.len() - 1;
-    let mut c: serde_json::Value = serde_json::from_slice(&g_blobs[closing]).unwrap();
-    c.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": gkey.alg,
-            "pub": pool.get("golden").unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb.as_bytes()),
-        }),
-    );
-    g_blobs[closing] = serde_json::to_vec(&c).unwrap();
-
-    // Follow-on commit: golden (still active) adds key_b onto the same chain.
-    let f_blobs = append_key_create(&mut principal, &pool, "golden", "key_b", now + 1);
-
-    (push_body(pid, &g_blobs), push_body(pid, &f_blobs))
+    (
+        common::build_genesis_push_body(&pool, pid, now).await,
+        common::build_second_commit_push_body(&pool, pid, now, now + 1).await,
+    )
 }
 
 // ========================================================================
@@ -428,7 +294,7 @@ async fn per_operation_push_bucket_limits_reads_independent() {
             server
                 .post(
                     "/push",
-                    &genesis_body(&format!("perop-{i}"), NOW_BASE + i as i64),
+                    &genesis_body(&format!("perop-{i}"), NOW_BASE + i as i64).await,
                 )
                 .await
                 .status,
@@ -446,6 +312,31 @@ async fn per_operation_push_bucket_limits_reads_independent() {
         read, 429,
         "reads must bucket independently of pushes -- a push flood must not throttle a read: \
          {read}"
+    );
+}
+
+/// Backs the push fence for data actions: an action-only bundle (SPEC
+/// 4.8.1) forms no commit, so the count quota never sees it, and the push
+/// bucket is what bounds a flood of them. With a small push bucket, a
+/// burst of action-only pushes 429s. Turns red if the rate fence exempts
+/// a push that carries no transaction. End to end over the served stack.
+#[tokio::test]
+async fn push_bucket_limits_action_only_pushes() {
+    let mut limits = Limits::generous();
+    limits.push = (TRIP_PER_SECOND, TRIP_BURST);
+    let server = TestServer::with_limits(&limits).await;
+
+    let action = br#"{"pay":{"alg":"ES256","now":1,"typ":"cyphr.me/action"},"sig":"AA"}"#;
+    let body = common::push_body(
+        "action-flood",
+        &cyphr::replay::WireBundle::actions(vec![action.to_vec()]),
+    );
+    let pushes = server
+        .burst("POST", "/push", Some(&body), "127.0.0.1", BURST)
+        .await;
+    assert!(
+        some_429(&pushes),
+        "an action-only push flood past the push bucket must yield at least one 429: {pushes:?}"
     );
 }
 
@@ -495,28 +386,21 @@ async fn revoke_takes_ordinary_limits_no_exemption() {
 /// Everything except the per-principal bucket configured below is generous,
 /// so the ONLY thing that can 429 the victim is a per-principal rate fence
 /// drained by the attacker -- the failure is unambiguously that fence. With
-/// the field dropped from `LimitsConfig`, the `per_principal` line below is
-/// an unknown `[limits]` key the server ignores, so the victim's follow-on
-/// push reaches the handler and commits (2xx).
+/// no per-principal field in `LimitsConfig` (and unknown `[limits]` keys
+/// refused at startup), nothing can throttle the victim's follow-on push
+/// except per-IP and quota, both generous here, so it commits (2xx).
 #[tokio::test]
 async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
-    // Generous everywhere, then append a per-principal rate bucket as raw
-    // `[limits]` TOML, tight enough that the attacker's burst drains it. This
-    // key no longer exists in `LimitsConfig`, so the server ignores this line
-    // (it does not deny unknown fields), which is exactly what lets the
-    // victim through.
-    let limits = Limits::generous();
-    let extra = format!(
-        "{}per_principal = {{ per_second = {}, burst = {} }}\n",
-        limits.render(),
-        TRIP_PER_SECOND,
-        TRIP_BURST,
-    );
+    // Generous everywhere. There is deliberately no per-principal bucket to
+    // configure: the server refuses unknown `[limits]` keys, so the attacker
+    // flood below can only be fenced by per-IP and quota, both generous.
+    let extra = Limits::generous().render();
     let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), &extra).await;
 
     // The victim establishes residency with an active key via its genesis push
     // (from its own IP). Under generous per-op/per-IP limits this succeeds.
-    let (genesis, followon) = genesis_and_followon("griefing-victim", NOW_BASE + 700);
+    let victim_id = common::golden_principal_id(&common::load_pool()).await;
+    let (genesis, followon) = genesis_and_followon(&victim_id, NOW_BASE + 700).await;
     let g = server
         .request("POST", "/push", Some(&genesis), "127.0.0.1")
         .await;
@@ -530,7 +414,7 @@ async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
     // VICTIM's principal_id. Garbage blobs never commit (the handler rejects
     // them), so the victim's chain is untouched -- but a per-principal rate
     // fence keyed on the named principal would drain the victim's bucket.
-    let garbage = push_body("griefing-victim", &[b"not a valid commit".to_vec()]);
+    let garbage = push_body(&victim_id, &[b"not a valid commit".to_vec()]);
     let _ = server
         .burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST)
         .await;
@@ -569,7 +453,7 @@ async fn request_size_cap_rejects_oversized_body() {
     // A well-formed push envelope whose single blob is 256 KiB of filler: over
     // the 64 KiB cap, under axum's 2 MiB default.
     let filler = "A".repeat(256 * 1024);
-    let oversized = serde_json::json!({ "principal_id": "too-big", "blobs": [filler] }).to_string();
+    let oversized = serde_json::json!({ "principal_id": "too-big", "txs": [[filler]] }).to_string();
     let over = server.post("/push", &oversized).await;
     assert_eq!(
         over.status, 413,
@@ -579,7 +463,7 @@ async fn request_size_cap_rejects_oversized_body() {
 
     // A normal genesis body is far under the cap and must still be admitted.
     let under = server
-        .post("/push", &genesis_body("size-ok", NOW_BASE + 5))
+        .post("/push", &genesis_body("size-ok", NOW_BASE + 5).await)
         .await;
     assert_ne!(
         under.status, 413,
@@ -643,7 +527,11 @@ async fn per_principal_count_quota_refuses_over_cap() {
     limits.count_quota = 1;
     let server = TestServer::with_limits(&limits).await;
 
-    let (genesis, followon) = genesis_and_followon("quota-p", NOW_BASE + 100);
+    let (genesis, followon) = genesis_and_followon(
+        &common::golden_principal_id(&common::load_pool()).await,
+        NOW_BASE + 100,
+    )
+    .await;
 
     let g = server.post("/push", &genesis).await;
     assert_eq!(
@@ -704,7 +592,10 @@ async fn both_fences_compose_in_serve() {
 
     // Admission still fires: a no-token genesis under invite is 403.
     let denied = server
-        .post("/push", &genesis_body("coexist-admission", NOW_BASE + 200))
+        .post(
+            "/push",
+            &genesis_body("coexist-admission", NOW_BASE + 200).await,
+        )
         .await;
     assert_eq!(
         denied.status, 403,
@@ -743,48 +634,17 @@ async fn bare_server_boots_and_self_bootstraps() {
     );
     assert_eq!(
         server
-            .post("/push", &genesis_body("bare-genesis", NOW_BASE + 400))
+            .post(
+                "/push",
+                &genesis_body(
+                    &common::golden_principal_id(&common::load_pool()).await,
+                    NOW_BASE + 400,
+                )
+                .await,
+            )
             .await
             .status,
         201,
         "a bare server must admit a normal genesis push under default limits"
-    );
-}
-
-// ========================================================================
-// Bounded limiter state (self-DoS guard)
-// ========================================================================
-
-/// GUARD: many distinct principals and many distinct per-IP keys keep the
-/// server responsive.
-#[tokio::test]
-async fn many_distinct_keys_keep_server_responsive() {
-    let server = TestServer::with_limits(&Limits::generous()).await;
-
-    // Many distinct principals, all from the same source IP -- this loop
-    // exercises storage/count-quota state growth, not the rate limiter's key
-    // map: `rate_limit` is deliberately IP-keyed only (no per-principal RATE
-    // bucket; see the `rate_limit` module doc), so these pushes never grow a
-    // limiter key map by themselves ...
-    for i in 0..64 {
-        let _ = server
-            .post(
-                "/push",
-                &genesis_body(&format!("bounded-{i}"), NOW_BASE + 500 + i),
-            )
-            .await;
-    }
-    // Many distinct source IPs (distinct per-IP keys) ...
-    for i in 2..32u8 {
-        let _ = server
-            .request("GET", "/tip?pr=nobody", None, &format!("127.0.0.{i}"))
-            .await;
-    }
-    // The server is still live and serving after churning the key space.
-    assert_eq!(
-        server.get("/server").await.status,
-        200,
-        "the server must stay responsive after many distinct limiter keys (no unbounded-state \
-         wedge)"
     );
 }

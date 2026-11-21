@@ -1,15 +1,13 @@
 //! c4 — proves `Principal`'s Commit Tree is genuinely disk-backed end to
 //! end, through the `cyphr`/`cyphr-storage`/`cyphr-blob-fjall` layers
-//! together, one level above what `cyphr-blob-fjall`'s own
-//! `eml_log_survives_disk_reload_sharing_blob_database` test already
-//! proves at the raw `eml::Storage` layer alone.
+//! together.
 //!
 //! # Why this test does not route commits through
 //! `StorageEngine::submit_commit`/`load_principal` twice
 //!
 //! `StorageEngine::load_principal` reconstructs a principal by full replay
 //! from genesis: for each historical commit it calls
-//! `Principal::finalize_commit`, which unconditionally appends that
+//! `PrincipalState::stage_commit`, which unconditionally appends that
 //! commit's TR to the live `CommitTrees`. That is correct and cheap for the
 //! in-memory-only default (`eml::MemoryStorage`), where a freshly
 //! constructed genesis principal's tree always starts empty. It is **not**
@@ -34,16 +32,15 @@
 //! applied directly to that one live instance (never reloaded via replay
 //! mid-lifetime — exactly how a long-lived server process would use it),
 //! genuinely persists its Commit Tree to disk; and a *fresh* reconstruction
-//! via [`cyphr::commit_root::CommitTrees::open`] plus
-//! [`cyphr::Principal::from_checkpoint_with_trees`] (no replay involved)
-//! recovers byte-identical PR/CR after a full drop and reopen of the same
+//! via [`cyphr::commit_root::CommitTrees::open`] (no replay involved)
+//! recovers a byte-identical CR after a full drop and reopen of the same
 //! physical `fjall::Database` — proving the durability the standalone
 //! `cyphr-blob-fjall` test already proved is faithfully reachable through
 //! `Principal`'s own API.
 //!
 //! The storage instance itself is still produced via
-//! [`cyphr_storage::engine::StorageEngine`]'s `with_storage_factory` /
-//! `cyphr_blob_fjall::open_eml_storage`, sharing one physical `Database`
+//! [`cyphr_storage::engine::StorageEngine`]'s `with_log_factory` /
+//! `cyphr_blob_fjall::EmlLogs`, sharing one physical `Database`
 //! with the blob store — this test exercises that exact production wiring,
 //! just not `submit_commit`'s replay-based reload path.
 
@@ -73,15 +70,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 fn canonicalize(val: &mut serde_json::Value) {
@@ -103,7 +97,7 @@ fn canonicalize(val: &mut serde_json::Value) {
 /// commits carry no pre-actions, only transactions). Returns `finalize()`'s
 /// result rather than panicking on it, so callers can assert on error paths
 /// (e.g. the orphan-leaf guard test below).
-fn apply_golden_commit<S: eml::Storage>(
+async fn apply_golden_commit<S: eml::Storage>(
     principal: &mut cyphr::Principal<S>,
     commit: &serde_json::Value,
 ) -> cyphr::error::Result<()> {
@@ -112,20 +106,24 @@ fn apply_golden_commit<S: eml::Storage>(
     let mut key_idx = 0;
 
     let mut scope = principal.begin_commit();
-    for coz_value in cozies {
+    // The fixture's transactions are one coz each, so applying coz by coz
+    // forms the same transactions.
+    for coz_value in cozies
+        .iter()
+        .flat_map(|tx| tx.as_array().expect("transaction"))
+    {
         let coz = coz_value.clone();
         let pay = coz["pay"].clone();
         let typ = pay["typ"].as_str().unwrap_or("").to_string();
         let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(&typ);
 
         let mut new_key = None;
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    new_key = Some(golden_key_to_domain(&ks[key_idx]));
-                    key_idx += 1;
-                }
-            }
+        if is_key_introducing
+            && let Some(ks) = keys
+            && key_idx < ks.len()
+        {
+            new_key = Some(golden_key_to_domain(&ks[key_idx]));
+            key_idx += 1;
         }
 
         let sig_b64 = coz["sig"].as_str().expect("sig");
@@ -143,19 +141,18 @@ fn apply_golden_commit<S: eml::Storage>(
             .verify_and_apply(&pay_json, &sig, czd, new_key)
             .expect("verify_and_apply failed");
     }
-    scope.finalize()?;
+    scope.finalize().await?;
     Ok(())
 }
 
 /// F31 / F-A regression (blocker from Fable's pre-merge review of PR #6):
-/// `finalize_commit`'s `already_durable` branch must not silently adopt an
-/// orphan leaf's TR as the new commit's CR. This reproduces the exact
-/// crash-window invariant end to end through `finalize_commit` — a foreign
-/// leaf occupies the position the next commit would take in the durable
-/// EML log, while `core.auth.commits` has NOT advanced past it (precisely
-/// what a crash between a prior `finalize_commit`'s durable EML append and
-/// its index write leaves behind) — without needing an actual process
-/// crash or reload to produce that state.
+/// replay's `already_durable` branch must not silently adopt an orphan
+/// leaf's TR as a commit's CR. A principal now writes its log only in the
+/// one write that commits it, so an orphan (a leaf with no commit behind
+/// it) exists only in a log written before the two-phase commit; this test
+/// plants one with a second writer of the same durable store, then replays
+/// the chain over it: the commit that meets the orphan is refused with
+/// `DurableLeafMismatch` rather than deriving CR from the orphan.
 #[test]
 fn finalize_commit_rejects_mismatched_orphan_leaf() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
@@ -173,43 +170,46 @@ fn finalize_commit_rejects_mismatched_orphan_leaf() {
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let db = fjall::Database::builder(&db_path).open().expect("open db");
-        let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+        let open = || FjallStorage::with_database(db.clone()).expect("eml storage");
 
-        let mut principal =
-            cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
+        // The first two commits, written live: real leaves at 0 and 1.
+        {
+            let mut principal = cyphr::Principal::open(keys[0].clone(), open())
+                .await
+                .unwrap();
+            apply_golden_commit(&mut principal, &commits[0])
+                .await
+                .expect("commit 0 finalize failed");
+            apply_golden_commit(&mut principal, &commits[1])
+                .await
+                .expect("commit 1 finalize failed");
+            assert_eq!(principal.commit_trees().global_size(), 2);
+        }
 
-        // Apply the first two commits live and normally — real leaves at
-        // durable positions 0 and 1.
-        apply_golden_commit(&mut principal, &commits[0]).expect("commit 0 finalize failed");
-        apply_golden_commit(&mut principal, &commits[1]).expect("commit 1 finalize failed");
-        assert_eq!(principal.commit_trees().global_size(), 2);
+        // Plant the legacy orphan: a FOREIGN leaf (commit 0's payload, a
+        // genuinely different commit's TR) at the position the 3rd commit
+        // would occupy, written by another writer of the same store.
+        {
+            let mut log = CommitTrees::open(open()).await.expect("reopen log");
+            let orphan_leaf = log.get_leaf(0).await.expect("read leaf 0");
+            log.append(&orphan_leaf).await.expect("append orphan leaf");
+            assert_eq!(log.global_size(), 3);
+        }
+
+        // Replay the chain over the store. Commits 0 and 1 find their own
+        // leaves (the already-durable path); commit 2 finds the orphan at
+        // index 2 and must hard-error rather than derive CR from it.
+        let mut principal = cyphr::Principal::open(keys[0].clone(), open())
+            .await
+            .unwrap();
+        apply_golden_commit(&mut principal, &commits[0])
+            .await
+            .expect("commit 0 replays");
+        apply_golden_commit(&mut principal, &commits[1])
+            .await
+            .expect("commit 1 replays");
         assert_eq!(principal.commits().count(), 2);
-
-        // Simulate the crash window: durably append a FOREIGN leaf
-        // (reusing commit 0's own already-stored payload — a genuinely
-        // different commit's TR) at the position the 3rd commit would
-        // occupy, without advancing `core.auth.commits` past it.
-        let orphan_leaf = principal
-            .commit_trees()
-            .get_leaf(0)
-            .expect("read leaf 0 for orphan simulation");
-        principal
-            .commit_trees()
-            .append(&orphan_leaf)
-            .expect("append orphan leaf");
-        assert_eq!(principal.commit_trees().global_size(), 3);
-        assert_eq!(
-            principal.commits().count(),
-            2,
-            "auth.commits must NOT have advanced past the orphan leaf"
-        );
-
-        // Submit the real 3rd commit through the normal API. leaf_index
-        // (2) is < global_size (3), so finalize_commit takes the
-        // already_durable branch — the guard must detect the leaf at
-        // index 2 is NOT this commit's own TR and hard-error, rather than
-        // silently deriving CR from the orphan.
-        let result = apply_golden_commit(&mut principal, &commits[2]);
+        let result = apply_golden_commit(&mut principal, &commits[2]).await;
         match result {
             Err(cyphr::Error::DurableLeafMismatch(idx)) => assert_eq!(idx, 2),
             other => panic!(
@@ -220,6 +220,9 @@ fn finalize_commit_rejects_mismatched_orphan_leaf() {
     });
 }
 
+/// Backs the Commit Tree (SPEC be0663f section 12.1 EML) surviving a disk drop
+/// and reload: the reopened log yields the same roots for a multi-commit
+/// principal.
 #[test]
 fn principal_commit_tree_survives_disk_drop_and_reload() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
@@ -235,39 +238,37 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
 
-    let (original_pr, original_cr, ar, keys_snapshot, pg, blob_hash) =
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let db = fjall::Database::builder(&db_path).open().expect("open db");
+    let (original_cr, algs, blob_hash) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let db = fjall::Database::builder(&db_path).open().expect("open db");
 
-            // c5: the blob store and the EML commit-tree storage genuinely
-            // share this one physical `Database` — not two uncoordinated
-            // databases — via `FjallBlobStore::from_database` and
-            // `open_eml_storage` on the same handle.
-            let blob_store =
-                cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+        // c5: the blob store and the EML commit-tree storage genuinely
+        // share this one physical `Database` — not two uncoordinated
+        // databases — via `FjallBlobStore::from_database` and
+        // `FjallStorage::with_database` on the same handle.
+        let blob_store =
+            cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
+        let eml_storage = FjallStorage::with_database(db.clone()).expect("eml storage");
 
-            let blob_hash = blob_store
-                .put(b"a blob living beside the durable commit tree")
+        let blob_hash = blob_store
+            .put(b"a blob living beside the durable commit tree")
+            .await
+            .expect("blob put");
+
+        let mut principal = cyphr::Principal::open(keys[0].clone(), eml_storage)
+            .await
+            .unwrap();
+
+        for commit in commits {
+            apply_golden_commit(&mut principal, commit)
                 .await
-                .expect("blob put");
+                .expect("finalize failed");
+        }
 
-            let mut principal =
-                cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
-
-            for commit in commits {
-                apply_golden_commit(&mut principal, commit).expect("finalize failed");
-            }
-
-            let pr = principal.pr().clone();
-            let cr = principal.cr().cloned();
-            let ar = principal.auth_root().clone();
-            let keys_snapshot: Vec<cyphr::Key> = principal.active_keys().cloned().collect();
-            let pg = principal.pg().cloned();
-            (pr, cr, ar, keys_snapshot, pg, blob_hash)
-            // `principal`, `blob_store`, and `db` all drop here, releasing
-            // the on-disk database before it's reopened below.
-        });
+        let cr = principal.cr().cloned();
+        (cr, principal.active_algs(), blob_hash)
+        // `principal`, `blob_store`, and `db` all drop here, releasing
+        // the on-disk database before it's reopened below.
+    });
 
     assert!(
         original_cr.is_some(),
@@ -276,35 +277,31 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
 
     // Reopen from scratch at the same path — a fresh `Database`, not a
     // clone of the one above — to prove the state is genuinely durable.
-    let (restored_pr, restored_cr, blob_survived) =
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let db = fjall::Database::builder(&db_path)
-                .open()
-                .expect("reopen db");
-            let blob_store =
-                cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let eml_storage =
-                cyphr_blob_fjall::open_eml_storage(db.clone()).expect("reopen eml storage");
-            let trees: CommitTrees<FjallStorage> =
-                CommitTrees::open(eml_storage).expect("reconstruct commit tree from disk");
+    let (restored_cr, blob_survived) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let db = fjall::Database::builder(&db_path)
+            .open()
+            .expect("reopen db");
+        let blob_store =
+            cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
+        let eml_storage = FjallStorage::with_database(db.clone()).expect("reopen eml storage");
+        let trees: CommitTrees<FjallStorage> = CommitTrees::open(eml_storage)
+            .await
+            .expect("reconstruct commit tree from disk");
 
-            let restored =
-                cyphr::Principal::from_checkpoint_with_trees(pg, ar, keys_snapshot, trees).unwrap();
+        let restored_cr = cyphr::commit_root::commit_root_from_trees(&trees, &algs)
+            .expect("commit root from reopened trees");
 
-            let blob_survived = blob_store
-                .get(&blob_hash)
-                .await
-                .expect("blob get")
-                .is_some();
-            (restored.pr().clone(), restored.cr().cloned(), blob_survived)
-        });
+        let blob_survived = blob_store
+            .get(&blob_hash)
+            .await
+            .expect("blob get")
+            .is_some();
+        (restored_cr, blob_survived)
+    });
 
     assert_eq!(
-        restored_pr, original_pr,
-        "PR must survive a disk drop-and-reload byte-for-byte"
-    );
-    assert_eq!(
-        restored_cr, original_cr,
+        Some(restored_cr),
+        original_cr,
         "CR must survive a disk drop-and-reload byte-for-byte"
     );
     assert!(
@@ -315,40 +312,17 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
     );
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key
-/// material — the same shape `StorageEngine::submit_commit` expects from a
-/// real client (mirrors `cyphr-server`'s e2e test helper of the same
-/// purpose).
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// c2/c3 (P6c) — `StorageEngine::load_principal`'s NORMAL replay path (not
-/// `CommitTrees::open` + `from_checkpoint_with_trees`, which the test above
+/// `CommitTrees::open` alone, which the test above
 /// deliberately avoids) must correctly reconstruct a multi-commit principal
 /// from a durable Commit Tree that already carries every leaf from a prior
 /// session, without duplicating any of them.
@@ -375,8 +349,10 @@ fn principal_replay_survives_disk_drop_and_reload() {
     );
 
     let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
-    let genesis = Genesis::Explicit(keys);
-    let principal_id = "durable-replay-test";
+    let genesis = Genesis::Disclosed(keys);
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+    let principal_id = principal_id.as_str();
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
@@ -387,19 +363,16 @@ fn principal_replay_survives_disk_drop_and_reload() {
             let db = fjall::Database::builder(&db_path).open().expect("open db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
             let indexer = FjallIndexer::open(&index_path).expect("open indexer");
-            let engine = StorageEngine::with_storage_factory(
+            let engine = StorageEngine::with_log_factory(
                 blob_store,
                 indexer,
-                move |_principal_id: &str| {
-                    cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
-                },
+                cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
             );
 
             for commit in commits {
-                let blobs = build_raw_blobs(commit);
-                let blob_refs: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+                let bundle = build_bundle(commit);
                 engine
-                    .submit_commit(principal_id, Some(genesis.clone()), &blob_refs)
+                    .submit_commit(principal_id, Some(genesis.clone()), &bundle)
                     .await
                     .expect("submit_commit failed");
             }
@@ -435,12 +408,10 @@ fn principal_replay_survives_disk_drop_and_reload() {
                 .expect("reopen db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
             let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
-            let engine = StorageEngine::with_storage_factory(
+            let engine = StorageEngine::with_log_factory(
                 blob_store,
                 indexer,
-                move |_principal_id: &str| {
-                    cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
-                },
+                cyphr_blob_fjall::EmlLogs::new(db.clone()).expect("logs"),
             );
 
             let principal = engine

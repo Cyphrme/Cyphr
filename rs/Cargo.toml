@@ -4,8 +4,11 @@ members = [
   "cyphr-storage",
   "cyphr-blob-fjall",
   "cyphr-index-fjall",
+  "cyphr-client",
   "cyphr-server",
   "cyphr-cli",
+  "cyphr-keystore",
+  "cyphr-scenarios",
   "test-fixtures",
   "fixture-gen",
   "fuzz",
@@ -17,20 +20,18 @@ edition      = "2024"
 homepage     = "https://cyphr.me"
 license-file = "../LICENSE"
 repository   = "https://github.com/Cyphrme/Cyphr"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Core crypto - from coz-rs (re-exports digest, sha2)
-coz = { package = "coz-rs", version = "0.4.1" }
+coz = { package = "coz-rs", version = "0.5" }
 
 # Storage
-blake3            = "1"
-cyphr-blob-fjall  = { path = "cyphr-blob-fjall", version = "0.1.0" }
-cyphr-index-fjall = { path = "cyphr-index-fjall", version = "0.1.0" }
-eml               = { version = "0.11" }
-fjall             = "3"
-polydigest        = { version = "0.1" }
-storage-fjall     = { package = "polydigest-storage-fjall", version = "0.1" }
+blake3        = "1"
+eml           = "0.12"
+fjall         = "3"
+polydigest    = "0.2.1"
+storage-fjall = { package = "polydigest-storage-fjall", version = "0.3" }
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
@@ -60,3 +61,8 @@ proptest = { version = "1.6.0", default-features = false, features = [
   "std",
   "alloc",
 ] }
+
+# Test builds are compiled cold by every worker; panics still carry file and
+# line, and nothing here is stepped through a debugger.
+[profile.dev]
+debug = "line-tables-only"

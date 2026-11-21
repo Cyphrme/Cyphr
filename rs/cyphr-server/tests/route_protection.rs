@@ -17,6 +17,8 @@ use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+mod common;
+
 // ========================================================================
 // Shared fixture helpers (mirrored from tests/e2e.rs and tests/login.rs,
 // which are separate integration-test crates and cannot be imported here)
@@ -46,15 +48,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's `genesis_keys` array.
@@ -63,38 +62,17 @@ fn make_genesis(genesis_keys: &[serde_json::Value]) -> cyphr_storage::Genesis {
     if keys.len() == 1 {
         cyphr_storage::Genesis::Implicit(keys.into_iter().next().unwrap())
     } else {
-        cyphr_storage::Genesis::Explicit(keys)
+        cyphr_storage::Genesis::Disclosed(keys)
     }
 }
 
-/// Build raw coz blobs from a golden fixture's commit, embedding key material.
-fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
-    let cozies = commit["txs"].as_array().expect("txs array");
-    let keys = commit["keys"].as_array();
-    let mut key_idx = 0;
-    let mut blobs = Vec::new();
-
-    for coz_value in cozies {
-        let mut coz = coz_value.clone();
-
-        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
-
-        if is_key_introducing {
-            if let Some(ks) = keys {
-                if key_idx < ks.len() {
-                    coz.as_object_mut()
-                        .unwrap()
-                        .insert("key".to_string(), ks[key_idx].clone());
-                    key_idx += 1;
-                }
-            }
-        }
-
-        blobs.push(serde_json::to_vec(&coz).unwrap());
-    }
-
-    blobs
+/// A golden fixture's commit line as the wire bundle a client would push
+/// (SPEC 4.6.2: `txs` by transaction, the keys they introduce in `keys`).
+fn build_bundle(commit: &serde_json::Value) -> cyphr::replay::WireBundle {
+    serde_json::from_value::<cyphr_storage::CommitEntry>(commit.clone())
+        .expect("fixture commit line")
+        .bundle()
+        .expect("fixture bundle")
 }
 
 /// Load the shared cryptographic key pool backing the golden fixtures.
@@ -113,12 +91,11 @@ fn load_pool() -> test_fixtures::Pool {
 /// commit's raw coz blob bytes (wire-ready for `submit_commit`) alongside
 /// its `CommitEntry` -- the latter lets a caller replay this exact commit
 /// onto a fresh `Principal` (via `cyphr_storage::load_principal_from_commits`)
-/// to build a genuinely independent NEXT commit, since `Principal::clone()`
-/// shares the same underlying durable commit log rather than deep-copying
-/// it (two clones both trying to append "the next commit" collide on the
-/// same leaf position instead of chaining).
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
+/// to build a genuinely independent NEXT commit: a principal over durable
+/// storage has no fork (its store cannot be copied independently), and two
+/// writers of one log would collide on the same leaf position.
+async fn sign_key_create_commit<S: eml::Storage>(
+    mut principal: cyphr::Principal<S>,
     pool: &test_fixtures::Pool,
     signer_name: &str,
     new_key_name: &str,
@@ -147,17 +124,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -168,14 +143,12 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
+        .await
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -183,8 +156,9 @@ fn sign_key_create_commit(
 
     let mut key_idx = 0;
     let blobs = new_commit
-        .cozies
+        .txs
         .iter()
+        .flatten()
         .map(|v| {
             let mut coz = v.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
@@ -207,6 +181,20 @@ fn sign_key_create_commit(
     (blobs, new_commit.clone())
 }
 
+/// The id the fixture's genesis derives (SPEC 3.1), the only `principal_id`
+/// the engine accepts for it.
+fn fixture_principal_id(fixture: &serde_json::Value) -> String {
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+        .expect("fixture genesis derives an id")
+}
+
+/// The id (the PG, SPEC 3.1) of the standard principal whose genesis
+/// commit `build_genesis_push_body` pushes.
+async fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+    common::golden_principal_id(pool).await
+}
+
 /// Bootstrap a principal into the engine via the validated write path
 /// (explicit genesis), submitting every commit in the fixture in order.
 async fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &serde_json::Value) {
@@ -214,13 +202,12 @@ async fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &ser
     let commits = fixture["commits"].as_array().unwrap();
 
     for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let bundle = build_bundle(commit);
         let genesis = make_genesis(genesis_keys);
 
         state
             .engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .submit_commit(principal_id, Some(genesis), &bundle)
             .await
             .expect("bootstrap submit_commit failed");
     }
@@ -275,42 +262,16 @@ async fn send(req: Request<Body>, app: axum::Router) -> (StatusCode, serde_json:
     (status, json)
 }
 
-/// Build a brand-new principal's genesis push HTTP body: the same wire
-/// contract `push_new_principal_happy_path` (`tests/e2e.rs`) exercises --
-/// a `key/create` closed by `commit/create` with the genesis key embedded
-/// on the closing cozy. Shared by the admission-knob tests below, which
-/// only differ in what (if any) bearer token they attach.
-fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let (mut blobs, _entry) = sign_key_create_commit(principal, pool, "golden", "key_a", now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
+/// Build a brand-new principal's genesis push HTTP body: its genesis
+/// commit (SPEC 5.1), in which `golden` creates itself and `key_a`
+/// (`common::build_genesis_push_body`). Shared by the admission-knob tests
+/// below, which only differ in what (if any) bearer token they attach.
+async fn build_genesis_push_body(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+) -> String {
+    common::build_genesis_push_body(pool, principal_id, now).await
 }
 
 fn push_request(body: String, bearer: Option<&str>) -> Request<Body> {
@@ -347,19 +308,22 @@ fn real_now() -> i64 {
 #[tokio::test]
 async fn push_with_mismatched_token_pr_rejected() {
     let pool = load_pool();
-    let principal_id = "push-admission-mismatch";
-    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
+    let principal_id = golden_principal_id(&pool).await;
+    let principal_id = principal_id.as_str();
+    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = state_with_identity();
     let token = state
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(
+        .issue_login_token(
             "a-different-principal",
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["write".to_string()],
             real_now(),
             300,
+            None,
         )
         .expect("issue token");
 
@@ -377,19 +341,23 @@ async fn push_with_mismatched_token_pr_rejected() {
 #[tokio::test]
 async fn push_with_matching_token_pr_succeeds() {
     let pool = load_pool();
-    let principal_id = "push-admission-match";
-    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
+    let principal_id = golden_principal_id(&pool).await;
+    let principal_id = principal_id.as_str();
+    let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = state_with_identity();
     let token = state
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(
-            principal_id,
+        .issue_login_token(
+            // A token's subject is the canonical bare digest.
+            cyphr_storage::engine::bare_digest(principal_id),
+            &pool.get("golden").unwrap().compute_tmb().unwrap(),
             vec!["read".to_string(), "write".to_string()],
             real_now(),
             300,
+            None,
         )
         .expect("issue token");
 
@@ -407,49 +375,17 @@ async fn push_with_matching_token_pr_succeeds() {
 /// genuinely optional beyond the genesis-bootstrap case, not merely
 /// untested by omission.
 ///
-/// The principal is bootstrapped over real HTTP first (genesis
-/// auto-detection, same wire contract as `push_new_principal_happy_path`
-/// in `tests/e2e.rs`) rather than via the engine's explicit-genesis API:
-/// `resolve_genesis`'s existing-principal branch re-derives genesis by
-/// re-scanning the first STORED commit's own wire blobs for an embedded
-/// key, which an explicit-genesis bootstrap never carries (that key is
-/// supplied out-of-band instead) -- so only an HTTP-bootstrapped
-/// principal is a valid target for a genesis-less follow-up push.
+/// The principal is bootstrapped over real HTTP first by pushing its
+/// genesis commit (same wire contract as `push_new_principal_happy_path`
+/// in `tests/e2e.rs`), whose `key/create`s disclose the genesis keys the
+/// server re-derives the principal from for the follow-up push.
 #[tokio::test]
 async fn push_for_existing_principal_with_no_token_succeeds() {
     let pool = load_pool();
-    let principal_id = "push-admission-existing-no-token";
+    let principal_id = golden_principal_id(&pool).await;
+    let principal_id = principal_id.as_str();
 
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let (mut genesis_blobs, genesis_entry) =
-        sign_key_create_commit(principal, &pool, "golden", "key_a", 1_700_000_000);
-    let closing_idx = genesis_blobs.len() - 1;
-    let mut closing: serde_json::Value =
-        serde_json::from_slice(&genesis_blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    genesis_blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-    let genesis_body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": genesis_blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    let genesis_body = build_genesis_push_body(&pool, principal_id, 1_700_000_000).await;
 
     let state = test_state();
     let app = build_router(state);
@@ -461,25 +397,12 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
         "genesis bootstrap push must succeed: {genesis_json:?}"
     );
 
-    // Follow-up commit for the now-existing principal: replay the
-    // genesis commit onto a FRESH principal (a live clone of `principal`
-    // would share the same durable commit log and collide on the same
-    // leaf position rather than chain -- see `sign_key_create_commit`'s
-    // doc comment). No embedded genesis key on this one (only a
-    // genuinely new principal's wire blobs carry one), and no bearer
-    // token.
-    let replayed = cyphr_storage::load_principal_from_commits(
-        cyphr_storage::Genesis::Implicit(golden_key),
-        std::slice::from_ref(&genesis_entry),
-    )
-    .expect("replay the genesis commit onto a fresh principal");
-    let (followup_blobs, _followup_entry) =
-        sign_key_create_commit(replayed, &pool, "golden", "key_b", 1_700_000_100);
-    let followup_body = serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": followup_blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string();
+    // Follow-up commit for the now-existing principal: a non-genesis
+    // "golden adds key_b" commit chained onto the pushed genesis, with no
+    // bearer token.
+    let followup_body =
+        common::build_second_commit_push_body(&pool, principal_id, 1_700_000_000, 1_700_000_100)
+            .await;
 
     let (status, json) = send(push_request(followup_body, None), app).await;
     assert_eq!(
@@ -498,10 +421,10 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
 #[tokio::test]
 async fn tip_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "route-protection-tip-public";
+    let principal_id = fixture_principal_id(&fixture);
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture).await;
+    bootstrap_principal(&state, &principal_id, &fixture).await;
     let app = build_router(state);
 
     let req = Request::builder()
@@ -523,10 +446,10 @@ async fn tip_succeeds_with_no_bearer_token() {
 #[tokio::test]
 async fn patch_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "route-protection-patch-public";
+    let principal_id = fixture_principal_id(&fixture);
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture).await;
+    bootstrap_principal(&state, &principal_id, &fixture).await;
     let app = build_router(state);
 
     let req = Request::builder()
@@ -572,5 +495,442 @@ async fn entity_succeeds_with_no_bearer_token() {
         StatusCode::NOT_FOUND,
         "GET /e/{{digest}} must be public: unknown digest is 404, never a 401/403 auth rejection: \
          {json:?}"
+    );
+}
+
+// ========================================================================
+// Session liveness across a key's removal from the chain (#162)
+// ========================================================================
+
+const AUDIENCE: &str = "cyphr.me";
+
+/// An `AppState` with a signing identity AND a login audience, so
+/// `/auth/login` can mint real tokens for `/push` to judge.
+fn state_with_login() -> Arc<AppState> {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let key_path = temp_dir.path().join("signing-key.json");
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let key_file = serde_json::json!({
+        "alg": kp.alg.name(),
+        "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+    });
+    std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();
+    let config = ServerConfig {
+        data_dir: temp_dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: Some(AUDIENCE.to_string()),
+        ..Default::default()
+    };
+    std::mem::forget(temp_dir);
+    Arc::new(AppState::new(config).expect("failed to open AppState with login"))
+}
+
+/// A signed timestamp-flow login body for `signer_name` claiming `pr`.
+/// Mirrors `tests/login.rs::login_body` (a separate integration crate).
+fn login_body(pool: &test_fixtures::Pool, signer_name: &str, pr: &str) -> String {
+    let signer = pool.get(signer_name).expect("signer in pool");
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
+        .expect("signer prv b64");
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("signer pub b64");
+
+    let mut pay = coz::Pay::new();
+    pay.alg = Some(signer.alg.clone());
+    pay.now = Some(real_now());
+    pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
+    pay.typ = Some(format!("{AUDIENCE}/cyphr/auth/login"));
+    pay.extra
+        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+
+    let pay_bytes = serde_json::to_vec(&pay).unwrap();
+    let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign login");
+    serde_json::to_string(&coz::CozJson {
+        pay: serde_json::to_value(&pay).unwrap(),
+        sig,
+    })
+    .unwrap()
+}
+
+/// Log in and return the issued bearer token.
+async fn login_token(
+    state: &Arc<AppState>,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    pr: &str,
+) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(login_body(pool, signer_name, pr)))
+        .unwrap();
+    let (status, json) = send(req, build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{signer_name} login: {json:?}");
+    json["payload"]["token"]
+        .as_str()
+        .expect("token in login response")
+        .to_string()
+}
+
+/// Backs: a login and a token check read the principal from the state the
+/// engine keeps, as a write does, and replay none of its commits. Both ran
+/// a replay of the whole chain per request, the token check on every
+/// authenticated request and the login for anyone who asks.
+///
+/// The replay count is the engine's own: the answers are the same either
+/// way. End to end: a login and a bearer-authorized push over the router.
+#[tokio::test]
+async fn login_and_a_token_check_replay_nothing_of_a_kept_principal() {
+    let state = state_with_login();
+    let pool = load_pool();
+    let g = pool.get("golden").expect("golden");
+    let mut p = cyphr::Principal::implicit(g.key().expect("golden"))
+        .await
+        .expect("implicit");
+    let genesis = test_fixtures::bundle::genesis_bundle(&mut p, g, &[], 1_700_000_000)
+        .await
+        .expect("genesis");
+    let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
+    let second = common::key_commit_by(&mut p, "golden", "key_a", 1_700_000_001).await;
+    let third = common::key_commit_by(&mut p, "golden", "key_b", 1_700_000_002).await;
+    for b in [&genesis, &second] {
+        let body = common::push_body(&id, b);
+        let (status, json) = send(push_request(body, None), build_router(state.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "{json:?}");
+    }
+
+    let before = state.engine.commits_replayed();
+    let token = login_token(&state, &pool, "golden", &id).await;
+    let body = common::push_body(&id, &third);
+    let (status, json) = send(
+        push_request(body, Some(&token)),
+        build_router(state.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{json:?}");
+    assert_eq!(
+        state.engine.commits_replayed() - before,
+        0,
+        "commits replayed by a login and an authorized push"
+    );
+}
+
+/// A signed "self-revoke `signer_name`" commit onto `principal`, wire-ready
+/// for `submit_commit`. Mirrors `tests/login.rs::sign_key_revoke_commit`.
+async fn sign_key_revoke_commit<S: eml::Storage>(
+    mut principal: cyphr::Principal<S>,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    rvk: i64,
+) -> Vec<Vec<u8>> {
+    let signer = pool.get(signer_name).expect("signer key in pool");
+    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
+    let pay_vec = serde_json::to_vec(&serde_json::json!({
+        "alg": signer.alg,
+        "now": rvk,
+        "rvk": rvk,
+        "tmb": signer_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/revoke",
+    }))
+    .unwrap();
+
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).unwrap();
+    let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &prv, &pub_key).expect("sign revoke");
+    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay_vec, &sig, czd, None)
+        .expect("key/revoke verifies against the starting principal");
+    let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&signer_tmb_b64).unwrap());
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &prv, &pub_key, &tmb),
+            rvk,
+            "cyphr.me",
+        )
+        .await
+        .expect("commit finalizes");
+
+    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
+    entries
+        .last()
+        .expect("at least one commit after finalize")
+        .txs
+        .iter()
+        .flatten()
+        .map(|v| serde_json::to_vec(v).expect("cozy serializes"))
+        .collect()
+}
+
+/// A principal holding `golden` + `key_a`, a session token for each, then
+/// `key_a` removed from the chain by a real `key/revoke` commit. Returns
+/// the state, a follow-up `/push` body (a `key_b` add, validly signed by
+/// the surviving `golden`), and the two tokens (revoked key's, survivor's).
+async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
+    let state = state_with_login();
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool).await;
+    let pid = pid.as_str();
+
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000).await;
+    let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
+
+    let revoked_token = login_token(&state, &pool, "key_a", pid).await;
+    let survivor_token = login_token(&state, &pool, "golden", pid).await;
+
+    let load = || async {
+        let genesis = state
+            .engine
+            .resolve_genesis(pid, &[])
+            .await
+            .expect("resolve genesis");
+        state
+            .engine
+            .load_principal(pid, genesis)
+            .await
+            .expect("load principal")
+            .detach()
+            .await
+            .expect("detach principal")
+    };
+    let blobs = sign_key_revoke_commit(load().await, &pool, "key_a", 1_700_000_100).await;
+    state
+        .engine
+        .submit_commit(pid, None, &common::bundle_of(&blobs))
+        .await
+        .expect("submit the revoke commit");
+
+    let (followup, _entry) =
+        sign_key_create_commit(load().await, &pool, "golden", "key_b", 1_700_000_200).await;
+    let followup_body = common::push_blobs(pid, &followup);
+    (state, followup_body, revoked_token, survivor_token)
+}
+
+/// Backs: a session minted by a key stays live only while that key is in
+/// the chain; the revocation is applied and the surviving sibling key's
+/// session still works (a no-op "refuse every token" gate fails this).
+/// Turns red if: a token is judged by signature and expiry alone.
+/// Characterization (green today). End to end: yes.
+#[tokio::test]
+async fn token_key_survivor_session_outlives_sibling_revoke() {
+    let (state, followup, _revoked, survivor) = revoked_key_session().await;
+    let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the surviving key's session must still authorize its principal's push: {json:?}"
+    );
+}
+
+/// Backs: a removed or revoked key cannot keep a session alive (#162).
+/// Turns red if: the token minted by `key_a` is accepted after `key_a` left
+/// the chain (verify_token checks signature, typ and exp only). Catches
+/// the lying implementation that leaves `verify_token` unchanged. The
+/// follow-up push is otherwise valid (control: the survivor test above).
+/// End to end: yes.
+#[tokio::test]
+async fn token_key_revoked_session_refused_at_push() {
+    let (state, followup, revoked, _survivor) = revoked_key_session().await;
+    let (status, json) = send(push_request(followup, Some(&revoked)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a session whose key was revoked from the chain must be refused: {json:?}"
+    );
+}
+
+/// Backs: signon-token-kind-binding end to end. A message the server
+/// genuinely signed under a different `typ`, naming the target principal
+/// and unexpired, is refused as a bearer token at the route. Turns red if
+/// the `typ` binding is dropped from `verify_token` (the push then
+/// succeeds with 201). Characterization (green today). Complements the
+/// `verify_token` unit test, which cannot see the route. End to end: yes.
+#[tokio::test]
+async fn bearer_refuses_server_signed_non_token() {
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool).await;
+    let state = state_with_login();
+    let identity = state.identity.as_ref().unwrap();
+
+    let mut pay = coz::Pay::new();
+    pay.alg = Some(identity.alg().name().to_string());
+    pay.now = Some(real_now());
+    pay.tmb = Some(pool.get("golden").unwrap().compute_tmb().unwrap());
+    pay.typ = Some("cyphr-server/auth/not-a-token".to_string());
+    pay.extra
+        .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+    pay.extra
+        .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
+    pay.extra
+        .insert("perms".to_string(), serde_json::json!(["write"]));
+    let pay_json = serde_json::to_vec(&pay).unwrap();
+    let (sig, _cad) = identity.sign(&pay_json).expect("server signs");
+    let forged = serde_json::to_string(&coz::CozJson {
+        pay: serde_json::to_value(&pay).unwrap(),
+        sig,
+    })
+    .unwrap();
+
+    let body = build_genesis_push_body(&pool, &pid, 1_700_000_000).await;
+    let (status, json) = send(push_request(body, Some(&forged)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a genuine server signature under a non-token typ must not authorize a push: {json:?}"
+    );
+}
+
+/// Backs: a session names a key that is in the chain; a token whose login
+/// key the principal does not hold (a deleted key looks identical to the
+/// chain: absent) is refused as KeyNotActive, not merely as Revoked, and
+/// a token with no login key at all is refused. Turns red if: the
+/// absent-key arm is dropped (a never-held key then authorizes) or a
+/// token without `ltmb` is admitted for an existing principal. End to
+/// end: yes. Control: the survivor test above.
+#[tokio::test]
+async fn token_key_absent_or_missing_is_refused_at_push() {
+    let (state, followup, _revoked, _survivor) = revoked_key_session().await;
+    let pool = load_pool();
+    // A token's subject is the canonical bare digest.
+    let pid = cyphr_storage::engine::bare_digest(&golden_principal_id(&pool).await).to_string();
+    let identity = state.identity.as_ref().unwrap();
+    let stranger = coz::Alg::Ed25519
+        .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
+        .expect("thumbprint");
+    let perms = || vec!["write".to_string()];
+
+    let absent = identity
+        .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300, None)
+        .expect("issue token");
+    // What no login mints: a genuine server-signed bearer token naming no
+    // login key (built by hand; issuance has no such path).
+    let unbound = {
+        let mut pay = coz::Pay::new();
+        pay.alg = Some(identity.alg().name().to_string());
+        pay.now = Some(real_now());
+        pay.tmb = identity.alg().compute_thumbprint(identity.pub_key());
+        pay.typ = Some(cyphr_server::auth::token::BEARER_TOKEN_TYP.to_string());
+        pay.extra
+            .insert("pr".to_string(), serde_json::Value::String(pid.clone()));
+        pay.extra
+            .insert("exp".to_string(), serde_json::Value::from(real_now() + 300));
+        pay.extra
+            .insert("perms".to_string(), serde_json::json!(perms()));
+        let (sig, _cad) = identity.sign(&serde_json::to_vec(&pay).unwrap()).unwrap();
+        serde_json::to_string(&coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig,
+        })
+        .unwrap()
+    };
+
+    for (label, token, reason) in [
+        ("absent key", absent, "not an active key"),
+        ("no login key", unbound, "names no login key"),
+    ] {
+        let (status, json) = send(
+            push_request(followup.clone(), Some(&token)),
+            build_router(state.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{label}: a session not backed by an active key must be refused: {json:?}"
+        );
+        assert!(
+            json.to_string().contains(reason),
+            "{label}: refused for the wrong reason (want `{reason}`): {json:?}"
+        );
+    }
+}
+
+/// POST a self-signed naked revoke (SPEC 6.4) of pool key `name`, which
+/// discloses its own key, to `/revoke`. Mirrors `tests/naked_revoke.rs`.
+async fn naked_revoke(state: &Arc<AppState>, pool: &test_fixtures::Pool, name: &str) {
+    let key = pool.get(name).expect("key in pool");
+    let pay = serde_json::json!({
+        "alg": key.alg,
+        "now": 1_700_000_300,
+        "rvk": 1_700_000_300,
+        "tmb": key.compute_tmb_b64().expect("tmb"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let prv = Base64UrlUnpadded::decode_vec(key.prv.as_ref().expect("prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&key.pub_key).unwrap();
+    let (sig, _cad) =
+        coz::sign_json(&serde_json::to_vec(&pay).unwrap(), &key.alg, &prv, &pub_key).unwrap();
+    let body = serde_json::json!({
+        "pay": pay,
+        "sig": Base64UrlUnpadded::encode_string(&sig),
+        "key": { "alg": key.alg, "pub": key.pub_key },
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/revoke")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (status, json) = send(req, build_router(state.clone())).await;
+    assert!(
+        status.is_success(),
+        "naked revoke accepted: {status} {json:?}"
+    );
+}
+
+/// Backs: a session lives only while its login key is alive, and a naked
+/// revoke (SPEC 6.4) kills a key globally without touching the chain. The
+/// key that opened a session is naked-revoked after login: its token is
+/// refused at `/push`, while the sibling key's
+/// session (control) still authorizes the same push. Turns red if: the
+/// session check consults the chain only (the death-set is skipped), so
+/// the token keeps working until it expires. End to end: yes.
+#[tokio::test]
+async fn token_key_naked_revoked_session_refused() {
+    let state = state_with_login();
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool).await;
+    let pid = pid.as_str();
+
+    let genesis = build_genesis_push_body(&pool, pid, 1_700_000_000).await;
+    let (status, json) = send(push_request(genesis, None), build_router(state.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "genesis push: {json:?}");
+
+    let doomed = login_token(&state, &pool, "key_a", pid).await;
+    let survivor = login_token(&state, &pool, "golden", pid).await;
+    naked_revoke(&state, &pool, "key_a").await;
+
+    let genesis = state.engine.resolve_genesis(pid, &[]).await.unwrap();
+    let principal = state
+        .engine
+        .load_principal(pid, genesis)
+        .await
+        .unwrap()
+        .detach()
+        .await
+        .unwrap();
+    let (blobs, _entry) =
+        sign_key_create_commit(principal, &pool, "golden", "key_b", 1_700_000_400).await;
+    let followup = common::push_blobs(pid, &blobs);
+
+    let (status, json) = send(
+        push_request(followup.clone(), Some(&doomed)),
+        build_router(state.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a naked-revoked key's session must be refused at push: {json:?}"
+    );
+
+    let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the sibling key's session must still authorize the push: {json:?}"
     );
 }

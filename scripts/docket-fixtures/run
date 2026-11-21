@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# The docket-wiring acceptance suite: five fixtures proving the gate reds
+# on what it must catch (a malformed marker, an exempt marker's silent
+# pass, a stale registration, a renamed test behind a green marker) plus
+# scripts/docket-run's own list-valued claim table.
+#
+# Five fixtures, four of them ("through the wired gate") exercising the
+# pinned docket binary directly against a self-contained corpus under
+# this directory — the same isolated-corpus-root convention
+# axiosoph/docket's own fixtures/ uses (see its MANIFEST.md) — and the
+# fifth exercising scripts/docket-run's own list-valued claim->command
+# table (list-valued-map/CONTRACT.md). Each assertion is independent:
+# one failing does not stop the rest from running, and the aggregate
+# exit code is nonzero iff any assertion failed.
+#
+# DOCKET_BIN overrides the pinned binary path (default: the sibling
+# checkout this repository's docs/AGENTS.md will pin, at commit
+# 0854eca) — set it to re-run this suite against a different docket
+# build without editing the script.
+set -uo pipefail
+
+DOCKET="${DOCKET_BIN:-/var/home/nrd/git/github.com/axiosoph/docket/target/release/docket}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+
+if [ ! -x "$DOCKET" ]; then
+  echo "docket-fixtures: no docket binary at $DOCKET (build axiosoph/docket, or set DOCKET_BIN)" >&2
+  exit 2
+fi
+
+failures=0
+
+# assert_exit NAME WANT_CODE -- CMD...
+# Runs CMD, captures its exit code explicitly (never through a pipe),
+# and reports PASS/FAIL against WANT_CODE.
+assert_exit() {
+  local name="$1" want="$2"
+  shift 2
+  "$@" >/tmp/docket-fixtures-$$.out 2>&1
+  local got=$?
+  if [ "$got" = "$want" ]; then
+    echo "PASS  $name (exit $got)"
+  else
+    echo "FAIL  $name (exit $got, want $want)"
+    sed 's/^/      | /' /tmp/docket-fixtures-$$.out
+    failures=1
+  fi
+  rm -f /tmp/docket-fixtures-$$.out
+}
+
+# assert_nonzero NAME -- CMD...
+# Same as assert_exit, but any nonzero code passes (the runner's exact
+# failure code for the list-valued "one failing" case is unspecified by
+# the IBC -- only that it reds).
+assert_nonzero() {
+  local name="$1"
+  shift 1
+  "$@" >/tmp/docket-fixtures-$$.out 2>&1
+  local got=$?
+  if [ "$got" != "0" ]; then
+    echo "PASS  $name (exit $got)"
+  else
+    echo "FAIL  $name (exit 0, want nonzero)"
+    sed 's/^/      | /' /tmp/docket-fixtures-$$.out
+    failures=1
+  fi
+  rm -f /tmp/docket-fixtures-$$.out
+}
+
+# --- 1. malformed marker: a single colon is not the marker grammar's
+# `::`; the scanner never sees it (marker.rs) -- Absent, exit 3.
+assert_exit "malformed-marker (docket run -> Absent)" 3 \
+  "$DOCKET" run malformed-target --corpus "$HERE/malformed-marker"
+
+# --- 2. exempt marker: KNOWN GAP, pinned rather than asserted-away. The
+# bang suppresses vacuity detection unconditionally (run.rs); a renamed-
+# away test behind an exempt marker silently reports Pass, exit 0 -- no
+# diagnosis at all. This is docket's own documented, deliberate contract
+# for the `!` sigil, not a bug this node can fix locally (DK0 IBC
+# non_goals: never patch docket, never fork). Filed upstream per the
+# IBC's goal; this assertion exists so a future docket upgrade that
+# starts diagnosing this case is caught here rather than silently
+# assumed unchanged.
+assert_exit "exempt-marker (docket run -> Pass, no diagnosis -- KNOWN GAP)" 0 \
+  "$DOCKET" run exempt-target --corpus "$HERE/exempt-marker"
+
+# --- 3. stale registration: an `evaluator: absent` claim whose prose no
+# longer names the marker's literal. `absent-marker-stale` is Warn
+# severity and never flips `check`'s exit code (checks.rs's own test
+# suite asserts this), so the diagnosis is verified by inspecting
+# --json's findings, not the process exit code.
+json="$("$DOCKET" check --corpus "$HERE/stale-registration" --json 2>/tmp/docket-fixtures-check-$$.err)"
+check_exit=$?
+if [ "$check_exit" != "0" ]; then
+  echo "FAIL  stale-registration (docket check exit $check_exit, want 0)"
+  sed 's/^/      | /' /tmp/docket-fixtures-check-$$.err
+  failures=1
+else
+  echo "PASS  stale-registration (docket check exit 0)"
+fi
+rm -f /tmp/docket-fixtures-check-$$.err
+found=$(printf '%s' "$json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(1 if any(f["check"] == "absent-marker-stale" for f in d["findings"]) else 0)
+' 2>/dev/null)
+if [ "$found" = "1" ]; then
+  echo "PASS  stale-registration (absent-marker-stale diagnosis present in --json findings)"
+else
+  echo "FAIL  stale-registration (no absent-marker-stale finding in --json output)"
+  echo "$json" | sed 's/^/      | /'
+  failures=1
+fi
+
+# --- 4. renamed test behind a green marker: the sharpest fixture and the
+# reason the node exists. No exempt bang, so vacuity detection must catch
+# the same "0 passed; 0 failed" shape #2 is exempted from -- Vacuous,
+# exit 4, never Pass.
+assert_exit "renamed-test-vacuity (docket run -> Vacuous, not Pass)" 4 \
+  "$DOCKET" run renamed-target --corpus "$HERE/renamed-test-vacuity"
+
+# --- 5. list-valued map (list-valued-map/CONTRACT.md): scripts/docket-run
+# does not exist yet, so both invocations currently fail with "command
+# not found" -- a nonzero exit either way. That accidentally satisfies
+# "one failing -> reds" today but not "both green -> passes", which is
+# the sub-case genuinely blocked on the runner being built.
+assert_nonzero "list-valued-map: one failing -> reds" \
+  "$REPO_ROOT/scripts/docket-run" list-valued-one-failing
+assert_exit "list-valued-map: both green -> passes" 0 \
+  "$REPO_ROOT/scripts/docket-run" list-valued-both-green
+
+exit $failures

@@ -35,12 +35,13 @@ use axum::Json;
 use axum::extract::State;
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_storage::engine::EngineError;
+use cyphr_storage::engine::{EngineError, bare_digest};
 use rand::RngCore;
 use serde::Serialize;
 
-use super::server_now;
+use super::{ServerIdentity, server_now};
 use crate::AppState;
+use crate::config::MAX_SESSION_TTL_SECS;
 use crate::envelope::Envelope;
 use crate::error::AppError;
 
@@ -52,6 +53,10 @@ pub mod field {
     pub const PR: &str = "pr";
     /// The service-issued 256-bit nonce (challenge-response flow only).
     pub const CHALLENGE: &str = "challenge";
+    /// The Noise handshake hash (b64ut) of the session the login is sent
+    /// over, signed by the client so the login names its channel. Distinct
+    /// from the token's server-signed `cb`: a client never supplies that.
+    pub const CHANNEL: &str = "h";
 }
 
 /// Suffix every login `typ` must end with; the text before it is the
@@ -76,7 +81,7 @@ pub const CHALLENGE_BYTES: usize = 32;
 #[derive(Debug, thiserror::Error)]
 pub enum LoginError {
     /// The request body was not valid JSON in the expected Coz shape.
-    #[error("login payload is not valid JSON in the expected shape: {0}")]
+    #[error("login payload is not valid JSON in the expected shape ({})", super::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// A required field was absent from the signed payload.
@@ -126,6 +131,12 @@ pub enum LoginError {
     /// The challenge is unknown, already used, or expired.
     #[error("login challenge is unknown, already used, or expired")]
     ChallengeInvalid,
+
+    /// The login does not commit to the channel it arrived on: over Noise
+    /// it must carry the session's handshake hash and over HTTP none, and
+    /// it must be signed by the session's own principal and key.
+    #[error("login does not match the channel it arrived on: {0}")]
+    ChannelMismatch(&'static str),
 }
 
 /// A parsed, audience-verified login payload. Field extraction and the
@@ -144,6 +155,9 @@ pub struct ParsedLogin {
     /// The challenge nonce, present iff this is the challenge-response
     /// flow.
     pub challenge: Option<String>,
+    /// The handshake hash the login commits to, present iff the client
+    /// signed it into the login (a login sent over Noise).
+    pub channel: Option<Vec<u8>>,
     /// The exact payload bytes the signature is over.
     pub pay_bytes: Vec<u8>,
     /// The detached signature.
@@ -193,12 +207,23 @@ pub fn parse_login(
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
 
+    let channel = pay
+        .extra
+        .get(field::CHANNEL)
+        .map(|v| {
+            v.as_str()
+                .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
+                .ok_or(LoginError::ChannelMismatch("`h` is not base64url"))
+        })
+        .transpose()?;
+
     Ok(ParsedLogin {
         tmb,
         alg,
         now,
         pr,
         challenge,
+        channel,
         pay_bytes,
         sig,
     })
@@ -223,7 +248,7 @@ pub fn authorize_login<S: eml::Storage>(
         .ok_or(LoginError::KeyNotActive)?;
 
     // Proof of possession: the signature must verify against that key.
-    if coz::verify_json(&login.pay_bytes, &login.sig, &key.alg, &key.pub_key) != Some(true) {
+    if coz::verify_json(&login.pay_bytes, &login.sig, key.alg(), key.pub_key()) != Some(true) {
         return Err(LoginError::InvalidSignature);
     }
 
@@ -370,6 +395,34 @@ fn keyless_identity_rejection() -> AppError {
     )
 }
 
+/// The explicit refusal a server with a signing key but no configured
+/// audience gives: it cannot verify any login's audience binding, so no
+/// login can succeed. Same shape as [`keyless_identity_rejection`] -- a
+/// declared capability absence, not a fault.
+fn audienceless_rejection() -> AppError {
+    AppError::not_implemented(
+        "this server has no configured audience; login is not offered -- see GET /server for the \
+         declared capability tier",
+    )
+}
+
+/// What a server must hold before it can complete any login: a signing
+/// identity to issue the token and an audience to bind logins against.
+/// Both `challenge` and `login` gate on this one function, so the server
+/// never issues a nonce that a login cannot redeem.
+fn login_capability(state: &AppState) -> Result<(&ServerIdentity, &str), AppError> {
+    let identity = state
+        .identity
+        .as_deref()
+        .ok_or_else(keyless_identity_rejection)?;
+    let audience = state
+        .config
+        .audience
+        .as_deref()
+        .ok_or_else(audienceless_rejection)?;
+    Ok((identity, audience))
+}
+
 /// Map a principal-load failure: an unknown principal is an
 /// authentication failure (401, and indistinguishable from a
 /// wrong-audience or inactive rejection, so principal existence is not an
@@ -384,17 +437,15 @@ fn map_load_error(err: EngineError) -> AppError {
 /// `POST /auth/challenge` — issue a single-use challenge for the
 /// challenge-response flow (SPEC 17.2 Option A).
 ///
-/// A keyless server (no configured signing identity) never issues a
-/// challenge at all: a nonce that can never be redeemed by a login that
-/// can never succeed is a silent trap, not a service worth offering, so
-/// this fails the same honest way `login` does rather than succeeding
-/// here and only failing later.
+/// A server that cannot complete a login (no signing identity, or no
+/// audience) never issues a challenge at all: a nonce that can never be
+/// redeemed by a login that can never succeed is a silent trap, not a
+/// service worth offering, so this fails the same honest way `login`
+/// does rather than succeeding here and only failing later.
 pub async fn challenge(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Envelope<ChallengeResponse>>, AppError> {
-    if state.identity.is_none() {
-        return Err(keyless_identity_rejection());
-    }
+    login_capability(&state)?;
     let challenge = state.challenges.issue(server_now());
     Ok(Json(Envelope::unsigned(ChallengeResponse { challenge })))
 }
@@ -408,38 +459,62 @@ pub async fn challenge(
 /// by whether the payload carries a challenge.
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
     body: String,
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
-    let identity = state
-        .identity
-        .as_ref()
-        .ok_or_else(keyless_identity_rejection)?;
-    let audience = state
-        .config
-        .audience
-        .as_deref()
-        .ok_or_else(|| AppError::internal("server is not configured to accept logins"))?;
+    let (identity, audience) = login_capability(&state)?;
 
-    let coz_json: coz::CozJson = serde_json::from_str(&body)
-        .map_err(|e| AppError::bad_request(format!("failed to parse login body as JSON: {e}")))?;
+    let coz_json: coz::CozJson = serde_json::from_str(&body).map_err(|e| {
+        AppError::bad_request(format!(
+            "failed to parse login body as JSON ({})",
+            super::json_fault(&e)
+        ))
+    })?;
 
     // One schema parse + audience binding for both flows (ruling R6a).
     let parsed = parse_login(coz_json, audience)?;
 
-    // Load the *claimed* principal and gate on it: key active in it, and
-    // it is Active. Reconstructed from stored state via the same engine
-    // the write path uses.
-    let genesis = state
-        .engine
-        .resolve_genesis(&parsed.pr, &[])
-        .await
-        .map_err(map_load_error)?;
+    // Read the *claimed* principal and gate on it: key active in it, and
+    // it is Active. The verified state at its tip, from the same engine
+    // entry the write path uses.
     let principal = state
         .engine
-        .load_principal(&parsed.pr, genesis)
+        .at_tip(&parsed.pr)
+        .await
+        .map_err(map_load_error)?
+        .ok_or_else(|| AppError::unauthorized("login: unknown principal"))?;
+    authorize_login(&parsed, &principal)?;
+    let canonical_id = state
+        .engine
+        .canonical_principal_id(&parsed.pr)
         .await
         .map_err(map_load_error)?;
-    authorize_login(&parsed, &principal)?;
+
+    // The login must name the channel it arrived on (no downgrade either
+    // way) and, over Noise, come from the principal and key that
+    // authenticated the session: otherwise a signed login could be carried
+    // to the server on someone else's channel and earn a token bound to it.
+    let channel = match (peer.as_ref(), &parsed.channel) {
+        (None, None) => None,
+        (Some(p), Some(h)) => {
+            if *h != p.0.handshake_hash {
+                return Err(LoginError::ChannelMismatch("`h` is not this session's hash").into());
+            }
+            if p.0.tmb != parsed.tmb || bare_digest(&p.0.pg) != bare_digest(&canonical_id) {
+                return Err(LoginError::ChannelMismatch(
+                    "the session's principal and key did not sign this login",
+                )
+                .into());
+            }
+            Some(h.as_slice())
+        },
+        (Some(_), None) => {
+            return Err(LoginError::ChannelMismatch("a login over Noise must sign `h`").into());
+        },
+        (None, Some(_)) => {
+            return Err(LoginError::ChannelMismatch("a login over HTTP must not sign `h`").into());
+        },
+    };
 
     // Naked-revoke gate (SPEC §6.4): a key its own holder self-revoked out of
     // band is refused here even though `authorize_login` found it still active
@@ -465,270 +540,122 @@ pub async fn login(
         },
     }
 
+    // The subject is the principal's one canonical id, never the spelling
+    // the client typed: a relying party keys accounts on this, and two
+    // spellings of one identity must not yield two accounts.
+    let subject = bare_digest(&canonical_id).to_string();
     let token = identity
-        .issue_token(
-            parsed.pr.clone(),
+        .issue_login_token(
+            subject,
+            &parsed.tmb,
             default_login_perms(),
             now,
-            super::token::DEFAULT_TTL_SECS,
+            state.config.session_ttl_secs.clamp(1, MAX_SESSION_TTL_SECS),
+            // Bound to the channel the login committed to; over HTTP (a
+            // browser edge) there is none, and the session is bound to the
+            // key alone. `channel` is the session's own hash, checked above.
+            channel,
         )
         .ok_or_else(|| AppError::internal("failed to issue bearer token"))?;
 
     Ok(Json(Envelope::unsigned(LoginResponse { token })))
 }
 
+/// Response for `POST /auth/session`: what a live session stands for.
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    /// The session's principal.
+    pub pr: String,
+    /// The key that opened the session, which it stands or falls with.
+    pub key: String,
+    /// `noise-handshake-hash` for a session bound to the Noise channel that
+    /// issued it, `key` for a browser edge session bound to its key alone.
+    pub binding: &'static str,
+    /// When the session ends (Unix seconds). Fixed at login: presenting the
+    /// token never extends it.
+    pub exp: i64,
+}
+
+/// `POST /auth/session` — present a bearer token (the request body) and
+/// learn whether its session still stands.
+///
+/// The token must verify, the channel it arrives on must be the one it was
+/// issued on (a token minted over Noise is refused over any other
+/// session, and over HTTP), and the key that opened it must still be
+/// active in the principal's chain. This is the one route that presents a
+/// token as its whole input, since the transport carries no headers.
+pub async fn session(
+    State(state): State<Arc<AppState>>,
+    peer: Option<axum::Extension<crate::transport::AuthenticatedPeer>>,
+    body: String,
+) -> Result<Json<Envelope<SessionResponse>>, AppError> {
+    let (identity, _) = login_capability(&state)?;
+    let claims = identity
+        .verify_token(body.trim(), server_now())
+        .map_err(|e| AppError::unauthorized(format!("bearer token rejected: {e}")))?;
+    super::middleware::check_channel(
+        &claims,
+        peer.as_ref().map(|p| p.0.handshake_hash.as_slice()),
+    )?;
+    super::middleware::check_session_key(&state.engine, &state.observations, &claims).await?;
+    let key = claims
+        .login_tmb
+        .clone()
+        .ok_or_else(|| AppError::unauthorized("bearer token names no login key"))?;
+    let binding = if claims.channel.is_some() {
+        "noise-handshake-hash"
+    } else {
+        "key"
+    };
+    Ok(Json(Envelope::unsigned(SessionResponse {
+        pr: claims.pr,
+        key,
+        binding,
+        exp: claims.exp,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
-    use coz::Pay;
-
     use super::*;
-
-    const AUDIENCE: &str = "cyphr.me";
-
-    /// A freshly generated Ed25519 principal and the private key bytes to
-    /// sign logins for it.
-    struct TestPrincipal {
-        principal: cyphr::Principal,
-        tmb: Thumbprint,
-        alg: String,
-        prv: Vec<u8>,
-        pub_key: Vec<u8>,
-    }
-
-    fn test_principal() -> TestPrincipal {
-        let kp = coz::Alg::Ed25519.generate_keypair();
-        let tmb = coz::Alg::Ed25519
-            .compute_thumbprint(&kp.pub_bytes)
-            .expect("thumbprint");
-        let key = cyphr::Key {
-            alg: kp.alg.name().to_string(),
-            tmb: tmb.clone(),
-            pub_key: kp.pub_bytes.clone(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
-        let principal = cyphr::Principal::implicit(key).expect("implicit genesis");
-        TestPrincipal {
-            principal,
-            tmb,
-            alg: kp.alg.name().to_string(),
-            prv: kp.prv_bytes,
-            pub_key: kp.pub_bytes,
-        }
-    }
-
-    /// Build a login envelope with the given `typ`, claimed `pr`, optional
-    /// challenge, and `now`, signed by `tp`.
-    fn signed_login(
-        tp: &TestPrincipal,
-        typ: &str,
-        pr: &str,
-        challenge: Option<&str>,
-        now: i64,
-    ) -> coz::CozJson {
-        let mut pay = Pay::new();
-        pay.alg = Some(tp.alg.clone());
-        pay.now = Some(now);
-        pay.tmb = Some(tp.tmb.clone());
-        pay.typ = Some(typ.to_string());
-        pay.extra
-            .insert(field::PR.to_string(), serde_json::Value::String(pr.into()));
-        if let Some(c) = challenge {
-            pay.extra.insert(
-                field::CHALLENGE.to_string(),
-                serde_json::Value::String(c.into()),
-            );
-        }
-
-        let pay_bytes = serde_json::to_vec(&pay).unwrap();
-        let (sig, _cad) = coz::sign_json(&pay_bytes, &tp.alg, &tp.prv, &tp.pub_key).unwrap();
-        let pay_value = serde_json::to_value(&pay).unwrap();
-        coz::CozJson {
-            pay: pay_value,
-            sig,
-        }
-    }
-
-    fn login_typ(audience: &str) -> String {
-        format!("{audience}{LOGIN_TYP_SUFFIX}")
-    }
-
-    // --- parse_login: audience + schema ---
-
-    #[test]
-    fn parse_accepts_matching_audience_timestamp_flow() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let parsed = parse_login(coz, AUDIENCE).expect("valid login parses");
-        assert_eq!(parsed.pr, "pr-x");
-        assert!(parsed.challenge.is_none());
-        assert_eq!(parsed.now, 1000);
-    }
-
-    #[test]
-    fn parse_accepts_challenge_flow() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", Some("nonce"), 1000);
-        let parsed = parse_login(coz, AUDIENCE).expect("valid challenge login parses");
-        assert_eq!(parsed.challenge.as_deref(), Some("nonce"));
-    }
-
-    #[test]
-    fn parse_rejects_different_audience() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ("evil.example"), "pr-x", None, 1000);
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::AudienceMismatch)),
-            "a login for a different audience must be a distinct rejection, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_missing_audience() {
-        let tp = test_principal();
-        // typ is exactly the bare suffix: login-shaped, empty audience.
-        let coz = signed_login(&tp, LOGIN_TYP_SUFFIX, "pr-x", None, 1000);
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::AudienceMissing)),
-            "a login naming no audience must be rejected distinctly, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_non_login_typ() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, "cyphr.me/cyphr/key/create", "pr-x", None, 1000);
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::NotALogin)),
-            "a non-login typ must be NotALogin, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_missing_principal() {
-        let tp = test_principal();
-        let mut pay = Pay::new();
-        pay.alg = Some(tp.alg.clone());
-        pay.now = Some(1000);
-        pay.tmb = Some(tp.tmb.clone());
-        pay.typ = Some(login_typ(AUDIENCE));
-        // no `pr` field
-        let pay_bytes = serde_json::to_vec(&pay).unwrap();
-        let (sig, _cad) = coz::sign_json(&pay_bytes, &tp.alg, &tp.prv, &tp.pub_key).unwrap();
-        let coz = coz::CozJson {
-            pay: serde_json::to_value(&pay).unwrap(),
-            sig,
-        };
-        let result = parse_login(coz, AUDIENCE);
-        assert!(
-            matches!(result, Err(LoginError::MissingField("pr"))),
-            "a login without a claimed principal must be rejected, got: {result:?}"
-        );
-    }
-
-    // --- authorize_login: signature + key + lifecycle (Active states) ---
-
-    #[test]
-    fn authorize_accepts_active_key_and_principal() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let parsed = parse_login(coz, AUDIENCE).unwrap();
-        authorize_login(&parsed, &tp.principal).expect("active key on active principal authorizes");
-    }
-
-    #[test]
-    fn authorize_rejects_tampered_signature() {
-        let tp = test_principal();
-        let coz = signed_login(&tp, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let mut parsed = parse_login(coz, AUDIENCE).unwrap();
-        // Tamper a signed value (not mere whitespace, which coz's
-        // canonicalization would normalize away): flip the claimed pr in
-        // the exact bytes the signature covers.
-        let pos = parsed
-            .pay_bytes
-            .windows(4)
-            .position(|w| w == b"pr-x")
-            .expect("pr value present in signed bytes");
-        parsed.pay_bytes[pos + 3] = b'y';
-        let result = authorize_login(&parsed, &tp.principal);
-        assert!(
-            matches!(result, Err(LoginError::InvalidSignature)),
-            "a payload whose signed bytes no longer match the signature must fail, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn authorize_rejects_key_unknown_to_claimed_principal() {
-        // The claimed principal knows only its own genesis key; a login
-        // signed by a *different* principal's key (active there, not here)
-        // is rejected -- the key-sharing ambiguity in miniature.
-        let claimed = test_principal();
-        let other = test_principal();
-        let coz = signed_login(&other, &login_typ(AUDIENCE), "pr-x", None, 1000);
-        let parsed = parse_login(coz, AUDIENCE).unwrap();
-        let result = authorize_login(&parsed, &claimed.principal);
-        assert!(
-            matches!(result, Err(LoginError::KeyNotActive)),
-            "a key not active in the claimed principal must be rejected, got: {result:?}"
-        );
-    }
 
     // --- within_window ---
 
-    #[test]
-    fn window_accepts_edges_and_rejects_just_beyond() {
-        let server = 1_000_000;
-        assert!(within_window(server, server, TIMESTAMP_WINDOW_SECS));
-        assert!(within_window(
-            server - TIMESTAMP_WINDOW_SECS,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-        assert!(within_window(
-            server + TIMESTAMP_WINDOW_SECS,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-        assert!(!within_window(
-            server - TIMESTAMP_WINDOW_SECS - 1,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-        assert!(!within_window(
-            server + TIMESTAMP_WINDOW_SECS + 1,
-            server,
-            TIMESTAMP_WINDOW_SECS
-        ));
-    }
+    proptest::proptest! {
+        /// Backs: SPEC 17.2 timestamp window. For any signed `now` pair (extremes
+        /// included, so an attacker-chosen `now` can never overflow) the window
+        /// is exactly `|client - server| <= window`, computed here in i128.
+        /// Property: e2e cannot place `now` on the one-second boundary or at
+        /// `i64::MIN`.
+        #[test]
+        fn window_is_exactly_the_absolute_difference(
+            client in proptest::prelude::any::<i64>(),
+            server in proptest::prelude::any::<i64>(),
+            window in 0i64..=i64::MAX,
+        ) {
+            let diff = (i128::from(server) - i128::from(client)).abs();
+            proptest::prop_assert_eq!(
+                within_window(client, server, window),
+                diff <= i128::from(window)
+            );
+        }
 
-    #[test]
-    fn window_rejects_extreme_client_now_without_overflow() {
-        // client_now is attacker-controlled; a subtract-then-abs would
-        // overflow on these boundary values instead of just failing closed.
-        assert!(!within_window(i64::MIN, 1_000_000, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(i64::MAX, 1_000_000, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(i64::MIN, i64::MAX, TIMESTAMP_WINDOW_SECS));
+        /// The edge the generator rarely lands on: one second either side of
+        /// the production window.
+        #[test]
+        fn window_edges_at_the_production_constant(server in -1_000_000i64..1_000_000) {
+            let w = TIMESTAMP_WINDOW_SECS;
+            proptest::prop_assert!(within_window(server - w, server, w));
+            proptest::prop_assert!(within_window(server + w, server, w));
+            proptest::prop_assert!(!within_window(server - w - 1, server, w));
+            proptest::prop_assert!(!within_window(server + w + 1, server, w));
+        }
     }
 
     // --- ChallengeStore ---
 
-    #[test]
-    fn challenge_is_single_use() {
-        let store = ChallengeStore::new();
-        let c = store.issue(1000);
-        store.consume(&c, 1001).expect("first use succeeds");
-        let result = store.consume(&c, 1002);
-        assert!(
-            matches!(result, Err(LoginError::ChallengeInvalid)),
-            "a consumed challenge must not be reusable, got: {result:?}"
-        );
-    }
-
+    /// Backs: SPEC 17.2 challenge freshness - an expired challenge cannot be redeemed.
+    /// Unit: e2e cannot advance the store clock.
     #[test]
     fn challenge_expires() {
         let store = ChallengeStore::new();
@@ -738,26 +665,6 @@ mod tests {
         assert!(
             matches!(result, Err(LoginError::ChallengeInvalid)),
             "an expired challenge must be rejected, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn challenge_unknown_is_rejected() {
-        let store = ChallengeStore::new();
-        let result = store.consume("never-issued", 1000);
-        assert!(matches!(result, Err(LoginError::ChallengeInvalid)));
-    }
-
-    #[test]
-    fn issued_challenges_are_distinct_and_256_bit() {
-        let store = ChallengeStore::new();
-        let a = store.issue(1000);
-        let b = store.issue(1000);
-        assert_ne!(a, b, "each issuance must be a fresh nonce");
-        assert_eq!(
-            Base64UrlUnpadded::decode_vec(&a).unwrap().len(),
-            CHALLENGE_BYTES,
-            "challenge must decode to 256 bits"
         );
     }
 }

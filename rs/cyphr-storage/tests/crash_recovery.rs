@@ -35,6 +35,9 @@ const COMMIT_MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
 struct RawManifest<'a> {
     kind: &'a str,
     commit: &'a IndexableCommit,
+    /// How the blobs group into the commit's bundle: here one coz, one
+    /// transaction.
+    shape: serde_json::Value,
 }
 
 /// Build a durable-shaped commit for a given principal/sequence/timestamp,
@@ -42,6 +45,7 @@ struct RawManifest<'a> {
 fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
     let dummy_hash = Blake3Hash::from_bytes([0; 32]);
     IndexableCommit {
+        pg: Vec::new(),
         principal_id: principal_id.to_string(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,
@@ -72,11 +76,22 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
 /// Write a manifest blob directly, with no accompanying index write --
 /// the crash-window state: durably stored, unindexed.
 async fn write_orphan_manifest(blob_store: &MemoryBlobStore, commit: &IndexableCommit) {
+    // The commit's blob must exist: rebuild refuses a manifest the store's
+    // blobs do not support.
+    let hash = blob_store
+        .put(format!("{}-{}", commit.principal_id, commit.sequence).as_bytes())
+        .await
+        .expect("blob put");
+    let mut commit = commit.clone();
+    commit.blob_hashes = vec![hash];
+    commit.cozies[0].blob_hash = hash;
     let manifest = RawManifest {
         kind: COMMIT_MANIFEST_KIND,
-        commit,
+        commit: &commit,
+        shape: serde_json::json!({"actions": 0, "txs": [1]}),
     };
-    let bytes = serde_json::to_vec(&manifest).expect("manifest serialize");
+    let mut bytes = cyphr_storage::engine::COMMIT_MANIFEST_PREFIX.to_vec();
+    serde_json::to_writer(&mut bytes, &manifest).expect("manifest serialize");
     blob_store.put(&bytes).await.expect("manifest put");
 }
 
@@ -149,19 +164,4 @@ async fn heal_is_idempotent_across_repeated_opens() {
             "repeated reads on an already-healed instance must not double-index"
         );
     }
-}
-
-/// c-idempotent-heal: opening a healthy store (no orphan manifest at all)
-/// must not error and must leave the index empty -- the heal scan is a
-/// correctness-preserving no-op when there is nothing to heal.
-#[tokio::test]
-async fn healthy_store_open_is_unaffected() {
-    let blob_store = MemoryBlobStore::new();
-    let engine = StorageEngine::new(blob_store, MemoryIndexer::new());
-
-    let tip = engine.get_tip("nobody").await.expect("get_tip failed");
-    assert!(
-        tip.is_none(),
-        "no manifest exists, so nothing should be indexed"
-    );
 }

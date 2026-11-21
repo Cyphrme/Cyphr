@@ -106,3 +106,341 @@ tx = [
 
 [test.expected]
 key_count = 2
+
+# ============================================================================
+# Nonces (SPEC 10.1, 10.2)
+#
+# A nonce is opaque: `target` names a pool key only to borrow its thumbprint
+# as a 256-bit value, so each `id` is a bare SHA-256 nonce (signed by an
+# ES256 key). The nonce never becomes a key.
+# ============================================================================
+
+# A KT nonce enters the Key Root: KR = H(sort(tmb_golden, nonce)).
+[[test]]
+name      = "nonce_kt_create_changes_kr"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# An AT nonce enters the Auth Root only: KR is untouched.
+[[test]]
+name      = "nonce_at_create_changes_ar_not_kr"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# A PR nonce enters the Principal Root only: KR, AR and SR are untouched.
+[[test]]
+name      = "nonce_pr_create_changes_pr_only"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# nonce/delete undoes nonce/create: the roots return to genesis.
+[[test]]
+name      = "nonce_kt_delete_restores_roots"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# Two nonces sit at one level and are deleted one at a time:
+# KR = H(sort(tmb_golden, nonce_carol)) after the first delete.
+[[test]]
+name      = "nonce_two_kt_deleted_one_at_a_time"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# One key, two principals: the same key reaches a distinct PG once a nonce
+# is in the tree (SPEC 5.1). Compare `pg` with `principal_create_single_key_without_nonce`.
+[[test]]
+name      = "nonce_kt_principal_reaches_distinct_pg"
+principal = ["golden"]
+
+# The genesis commit opens with the genesis key's own key/create (SPEC 5.1
+# step 1); the nonce follows, before the principal/create whose id is the
+# future SR (step 3), so the nonce is in the PG.
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# The same key with no nonce, the contrast for the PG above.
+[[test]]
+name      = "principal_create_single_key_without_nonce"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+# n-arity (SPEC 4, line 463): a collection node holds more than 256
+# items. Each level has three vectors: a full 256-item fold, an
+# overflow of 300 nonces past one fold, and 300 nonces created then
+# deleted back to 256 items. The delete vector's final KR, AR and SR
+# equal the full-fold vector's; its PR differs only through the longer
+# commit chain (CR), which PR folds in.
+#
+# Items are written in the numbered form (see tests/README.md): a commit
+# with `repeat` states its tx once for each item number, and `nonce:{n}`
+# is item n's nonce value.
+
+# KT (KR counts the key and its nonces): exactly 256 items, the largest single-fold node.
+[[test]]
+name      = "arity_kt_full_fold_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 255 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# KT (KR counts the key and its nonces): 300 nonces, past one fold.
+[[test]]
+name      = "arity_kt_overflow_past_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# KT (KR counts the key and its nonces): 300 nonces created, the surplus deleted: KR, AR and
+# SR equal those of arity_kt_full_fold_256_items.
+[[test]]
+name      = "arity_kt_delete_back_to_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/KT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+repeat = { from = 255, count = 45 }
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/KT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# AT (AR counts KR and its nonces): exactly 256 items, the largest single-fold node.
+[[test]]
+name      = "arity_at_full_fold_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 255 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# AT (AR counts KR and its nonces): 300 nonces, past one fold.
+[[test]]
+name      = "arity_at_overflow_past_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# AT (AR counts KR and its nonces): 300 nonces created, the surplus deleted: KR, AR and
+# SR equal those of arity_at_full_fold_256_items.
+[[test]]
+name      = "arity_at_delete_back_to_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+repeat = { from = 255, count = 45 }
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/AT/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# PR (PR counts SR, CR and its nonces): exactly 256 items, the largest single-fold node.
+[[test]]
+name      = "arity_pr_full_fold_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 254 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# PR (PR counts SR, CR and its nonces): 300 nonces, past one fold.
+[[test]]
+name      = "arity_pr_overflow_past_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/nonce/create" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+
+# PR (PR counts SR, CR and its nonces): 300 nonces created, the surplus deleted: KR, AR and
+# SR equal those of arity_pr_full_fold_256_items.
+[[test]]
+name      = "arity_pr_delete_back_to_256_items"
+principal = ["golden"]
+
+[[test.commit]]
+repeat = { from = 0, count = 300 }
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/nonce/create" },
+  ],
+]
+
+[[test.commit]]
+repeat = { from = 254, count = 46 }
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "nonce:{n}", typ = "cyphr.me/cyphr/nonce/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1

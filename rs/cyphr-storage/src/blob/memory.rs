@@ -45,13 +45,13 @@ impl BlobStore for MemoryBlobStore {
         let max_blob_size = self.max_blob_size;
         let data = data.to_vec();
         async move {
-            if let Some(max) = max_blob_size {
-                if data.len() > max {
-                    return Err(BlobStoreError::BlobTooLarge {
-                        size: data.len(),
-                        max,
-                    });
-                }
+            if let Some(max) = max_blob_size
+                && data.len() > max
+            {
+                return Err(BlobStoreError::BlobTooLarge {
+                    size: data.len(),
+                    max,
+                });
             }
             let hash = Blake3Hash::from_bytes(*blake3::hash(&data).as_bytes());
             self.blobs
@@ -62,6 +62,11 @@ impl BlobStore for MemoryBlobStore {
                 .map_err(|e| BlobStoreError::Backend(format!("lock poisoned: {e}")))?;
             Ok(hash)
         }
+    }
+
+    async fn persist(&self) -> Result<(), BlobStoreError> {
+        // Memory has no volatile window to close.
+        Ok(())
     }
 
     fn get(

@@ -59,9 +59,9 @@ impl Instance {
         let mut state = AppState::new(config).expect("failed to open AppState");
         state
             .engine
-            .reindex(&[], false)
+            .rebuild_index_from_manifests()
             .await
-            .expect("reindex failed");
+            .expect("index heal failed");
 
         let identity = if let (Some(id), Some(key_path)) = (
             state.identity.clone(),

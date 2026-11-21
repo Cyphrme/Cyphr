@@ -1,6 +1,10 @@
 [build]
 command = """
-printf '+++\ntitle = \"Protocol Specification\"\ndescription = \"Cyphr Protocol — Draft v0.1\"\ntoc = true\n+++\n\n' | cat - ../../../SPEC.md > content/specification.md && \
+# Publish the spec author's SPEC.md pinned at be0663f (zami branch), not the
+# in-tree reference copy. curl -f fails the build if the fetch fails; the
+# fetch lands in a temp file first so a failure never leaves a half page.
+curl -sSfL https://raw.githubusercontent.com/Cyphrme/Cyphr/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md -o /tmp/spec.md && \
+{ printf '+++\ntitle = \"Protocol Specification\"\ndescription = \"Cyphr Protocol, SPEC.md at commit be0663f58086ac20131cc16a14944cf96c025609\"\ntoc = true\n+++\n\nThis page renders SPEC.md at commit `be0663f58086ac20131cc16a14944cf96c025609`.\n\n'; cat /tmp/spec.md; } > content/specification.md && \
 curl -sSfL https://sukr.io/release/x86_64-linux/sukr -o /tmp/sukr && \
 chmod +x /tmp/sukr && \
 /tmp/sukr && \

@@ -3,15 +3,46 @@
 //! A bearer token is a signed Coz message *from the service*: the server
 //! signs the claims with its own [`ServerIdentity`], and a holder presents
 //! the resulting opaque string on subsequent requests instead of re-signing
-//! each one. `issue_token` is called from the login flow (`auth::login`);
+//! each one. `issue_login_token` is called from the login flow (`auth::login`);
 //! `verify_token` is called from `auth::middleware`'s bearer-verification
 //! helpers, wired into `/push`'s optional admission knob.
 //!
-//! There is no revocation list in v1 (ruling R8): a short `exp` is the sole
-//! invalidation mechanism, and the token carries the issuing key's `tmb` so
-//! a future key-rotation story has a verification-time anchor to check
-//! against.
+//! There is no revocation list (ruling R8), but a session is bound to the
+//! key that opened it: a login token carries that key's thumbprint in
+//! [`LOGIN_KEY_FIELD`], and route protection refuses the token once the key
+//! is no longer active in the server's current view of the principal
+//! (`auth::middleware`). `exp` still caps a session on top of that.
+//!
+//! A login over the principal-authenticated Noise transport commits to its
+//! channel: the client signs the session's handshake hash `h` into the
+//! login, the server accepts it only from the session's own principal and
+//! key and only when `h` equals that session's hash, and then signs the
+//! hash into the token ([`CHANNEL_FIELD`]) so the token is good only on
+//! that channel (Noise section 11.2: the handshake hash is the channel
+//! binding). A login over plain HTTP, a browser edge, carries no `h` and
+//! gets a token with no channel claim: that session is bound to its key
+//! alone. Neither login can be presented as the other. Admission reads the
+//! channel only from this server-signed token, never from the request.
+//!
+//! # Bearer residual
+//!
+//! A token is still a bearer credential. A channel-bound token is useless
+//! off its channel, but whoever controls that channel (the client's own
+//! endpoint, or a process that reads its memory) can use it until `exp`; a
+//! key-bound (browser) token has no channel at all and works for anyone who
+//! holds it until `exp` or until its key leaves the chain. Binding narrows
+//! theft, it does not make a token proof of possession. The lifetime is
+//! therefore short and configured (`session_ttl_secs`, at most an hour),
+//! and a session is never extended: only a new login, which proves
+//! possession of the key again, mints a new token. A timestamp-flow login
+//! can be replayed inside its window; the challenge flow is single-use.
+//! That residual is why Authenticated Atomic Actions (AAA), each signed
+//! individually by the key, are preferred over a bearer token for
+//! sensitive operations.
+//! The binding is a signed claim rather than a server-side session table,
+//! so it survives a restart and adds no state.
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;
 
 use super::ServerIdentity;
@@ -35,6 +66,18 @@ pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
 /// the signature, not merely assumed by the reader.
 pub const BEARER_TOKEN_TYP: &str = "cyphr-server/auth/token";
 
+/// The signed claim naming the thumbprint (b64ut) of the principal key
+/// that logged in. The server signs it, so a holder cannot rebind a
+/// session to a different key; route protection re-checks that key
+/// against the principal chain on every request (#162). Absent on a
+/// token not minted by a login, which route protection refuses.
+pub const LOGIN_KEY_FIELD: &str = "ltmb";
+
+/// The signed claim holding the handshake hash (b64ut) of the Noise
+/// session that issued the token. Present only on a token minted over the
+/// transport; route protection refuses such a token on any other channel.
+pub const CHANNEL_FIELD: &str = "cb";
+
 /// Claims extracted from a verified bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
@@ -46,13 +89,19 @@ pub struct Claims {
     pub exp: i64,
     /// The issuing key's thumbprint (b64ut), SPEC.md 17.4 / ruling R8.
     pub tmb: String,
+    /// The thumbprint (b64ut) of the principal key that logged in
+    /// ([`LOGIN_KEY_FIELD`]); `None` for a token not minted by a login.
+    pub login_tmb: Option<String>,
+    /// The handshake hash of the Noise session that issued the token
+    /// ([`CHANNEL_FIELD`]); `None` for a key-bound (browser edge) token.
+    pub channel: Option<Vec<u8>>,
 }
 
 /// Errors verifying a bearer token.
 #[derive(Debug, thiserror::Error)]
 pub enum TokenError {
     /// The token was not valid JSON in the expected Coz shape.
-    #[error("bearer token is not valid JSON: {0}")]
+    #[error("bearer token is not valid JSON ({})", super::json_fault(.0))]
     Malformed(#[from] serde_json::Error),
 
     /// The payload verified but is missing a required claim.
@@ -75,21 +124,69 @@ pub enum TokenError {
 }
 
 impl ServerIdentity {
-    /// Issue a bearer token for `pr`, authorizing `perms`, expiring
-    /// `ttl_secs` after `now`.
+    /// Issue the bearer token a successful login mints: `pr`, authorizing
+    /// `perms`, expiring `ttl_secs` after `now`, plus the thumbprint of the
+    /// key that logged in. That thumbprint is signed into the token so
+    /// route protection can end the session when the key leaves the chain
+    /// or dies (#162).
     ///
     /// The token is always stamped with [`BEARER_TOKEN_TYP`]; the caller
     /// cannot mint a token under any other `typ`, which is the issuance
     /// half of the F22 binding (verification checks the same constant).
     ///
+    /// `channel` is the handshake hash of the Noise session the login
+    /// arrived on, or `None` for a login with no channel (a browser edge),
+    /// whose token is bound to the key alone.
+    ///
     /// Returns `None` if coz rejects the payload or this identity's key
     /// (mirrors [`ServerIdentity::sign`]).
-    pub fn issue_token(
+    pub fn issue_login_token(
+        &self,
+        pr: impl Into<String>,
+        login_tmb: &coz::Thumbprint,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+        channel: Option<&[u8]>,
+    ) -> Option<String> {
+        self.issue(pr.into(), Some(login_tmb), perms, now, ttl_secs, channel)
+    }
+
+    /// A login-shaped token under a fixed login key, for unit tests that
+    /// only need some verifiable token.
+    #[cfg(test)]
+    pub(crate) fn issue_test_token(
         &self,
         pr: impl Into<String>,
         perms: Vec<String>,
         now: i64,
         ttl_secs: i64,
+    ) -> Option<String> {
+        let tmb = coz::Alg::Ed25519.compute_thumbprint(&[7u8; 32])?;
+        self.issue_login_token(pr, &tmb, perms, now, ttl_secs, None)
+    }
+
+    /// A validly signed token that names no login key -- what no login
+    /// mints -- to exercise route protection's fail-closed arm.
+    #[cfg(test)]
+    pub(crate) fn issue_unbound_token(
+        &self,
+        pr: impl Into<String>,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+    ) -> Option<String> {
+        self.issue(pr.into(), None, perms, now, ttl_secs, None)
+    }
+
+    fn issue(
+        &self,
+        pr: String,
+        login_tmb: Option<&coz::Thumbprint>,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+        channel: Option<&[u8]>,
     ) -> Option<String> {
         let tmb = self.alg().compute_thumbprint(self.pub_key())?;
 
@@ -98,10 +195,23 @@ impl ServerIdentity {
         pay.now = Some(now);
         pay.tmb = Some(tmb);
         pay.typ = Some(BEARER_TOKEN_TYP.to_string());
-        pay.extra.insert("pr".to_string(), Value::String(pr.into()));
+        pay.extra.insert("pr".to_string(), Value::String(pr));
         pay.extra
             .insert("exp".to_string(), Value::from(now + ttl_secs));
         pay.extra.insert("perms".to_string(), Value::from(perms));
+        if let Some(login_tmb) = login_tmb {
+            pay.extra.insert(
+                LOGIN_KEY_FIELD.to_string(),
+                Value::String(login_tmb.to_b64()),
+            );
+        }
+
+        if let Some(channel) = channel {
+            pay.extra.insert(
+                CHANNEL_FIELD.to_string(),
+                Value::String(Base64UrlUnpadded::encode_string(channel)),
+            );
+        }
 
         let pay_json = serde_json::to_vec(&pay).ok()?;
         let (sig, _cad) = self.sign(&pay_json)?;
@@ -180,11 +290,33 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
         .collect::<Option<Vec<_>>>()
         .ok_or(TokenError::MissingClaim("perms"))?;
 
+    let login_tmb = pay
+        .extra
+        .get(LOGIN_KEY_FIELD)
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or(TokenError::MissingClaim(LOGIN_KEY_FIELD))
+        })
+        .transpose()?;
+
+    let channel = pay
+        .extra
+        .get(CHANNEL_FIELD)
+        .map(|v| {
+            v.as_str()
+                .and_then(|s| Base64UrlUnpadded::decode_vec(s).ok())
+                .ok_or(TokenError::MissingClaim(CHANNEL_FIELD))
+        })
+        .transpose()?;
+
     Ok(Claims {
         pr,
         perms,
         exp,
         tmb,
+        login_tmb,
+        channel,
     })
 }
 
@@ -231,75 +363,15 @@ mod tests {
 
     const PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
-    /// Forge a Coz message signed by `identity` carrying an arbitrary
-    /// `typ` but otherwise-valid bearer-token claims. Used to exercise
-    /// F22: a message the server genuinely signed, presented as a bearer
-    /// token, must still be rejected when its `typ` is not
-    /// [`BEARER_TOKEN_TYP`].
-    fn forge_signed_message(identity: &ServerIdentity, typ: &str, now: i64, exp: i64) -> String {
-        let tmb = identity
-            .alg()
-            .compute_thumbprint(identity.pub_key())
-            .expect("thumbprint");
-
-        let mut pay = coz::Pay::new();
-        pay.alg = Some(identity.alg().name().to_string());
-        pay.now = Some(now);
-        pay.tmb = Some(tmb);
-        pay.typ = Some(typ.to_string());
-        pay.extra.insert("pr".to_string(), Value::String(PR.into()));
-        pay.extra.insert("exp".to_string(), Value::from(exp));
-        pay.extra
-            .insert("perms".to_string(), Value::from(vec!["read".to_string()]));
-
-        let pay_json = serde_json::to_vec(&pay).expect("serialize pay");
-        let (sig, _cad) = identity.sign(&pay_json).expect("sign");
-        let pay_value = serde_json::to_value(&pay).expect("pay to value");
-        serde_json::to_string(&coz::CozJson {
-            pay: pay_value,
-            sig,
-        })
-        .expect("serialize coz")
-    }
-
-    #[test]
-    fn issue_then_verify_genuine_unexpired_token_succeeds() {
-        let (_dir, path) = write_random_key_file();
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let token = identity
-            .issue_token(
-                PR,
-                vec!["read".to_string(), "write".to_string()],
-                1_000,
-                300,
-            )
-            .expect("issue token");
-
-        let claims = identity
-            .verify_token(&token, 1_100)
-            .expect("verify unexpired token");
-
-        assert_eq!(claims.pr, PR);
-        assert_eq!(claims.perms, vec!["read".to_string(), "write".to_string()]);
-        assert_eq!(claims.exp, 1_300);
-        assert_eq!(
-            claims.tmb,
-            identity
-                .alg()
-                .compute_thumbprint(identity.pub_key())
-                .unwrap()
-                .to_b64()
-        );
-    }
-
+    /// Backs: bearer-token claims are signature-bound; a rewritten claim is refused.
+    /// Unit: e2e cannot rewrite a token minted by the server.
     #[test]
     fn verify_rejects_tampered_claims() {
         let (_dir, path) = write_random_key_file();
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // Flip a claim without re-signing: "read" -> "admin".
@@ -316,33 +388,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn verify_rejects_foreign_signer() {
-        let (_dir, path) = write_random_key_file();
-        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let (_foreign_dir, foreign_path) = write_random_key_file();
-        let foreign = ServerIdentity::load_from_path(&foreign_path).expect("load foreign key");
-
-        let token = foreign
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
-            .expect("issue token from foreign identity");
-
-        let result = identity.verify_token(&token, 1_100);
-        assert!(
-            matches!(result, Err(TokenError::InvalidSignature)),
-            "a token issued by a foreign key must not verify against a different identity, got: \
-             {result:?}"
-        );
-    }
-
+    /// Backs: bearer tokens expire.
+    /// Unit: e2e cannot advance the server clock past `exp`.
     #[test]
     fn verify_rejects_expired_token() {
         let (_dir, path) = write_random_key_file();
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .issue_test_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // now == exp: expiry is inclusive of the boundary instant.
@@ -353,16 +407,17 @@ mod tests {
         );
     }
 
+    /// Backs the shared `json_fault` rule on the bearer path: a wrong-typed
+    /// token field is a typed refusal that does not echo the value.
     #[test]
-    fn verify_rejects_malformed_token() {
+    fn malformed_token_does_not_echo_values() {
         let (_dir, path) = write_random_key_file();
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
-
-        let result = identity.verify_token("not json", 1_000);
-        assert!(
-            matches!(result, Err(TokenError::Malformed(_))),
-            "malformed JSON must be rejected with a typed error, got: {result:?}"
-        );
+        let err = identity
+            .verify_token(r#"{"pay":{},"sig":424242424242}"#, 0)
+            .expect_err("a numeric sig is malformed");
+        assert!(matches!(err, TokenError::Malformed(_)));
+        assert!(!err.to_string().contains("424242424242"), "{err}");
     }
 
     /// Byte-exact golden vector: a fixed key, fixed claims, and fixed
@@ -375,7 +430,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(
+            .issue_test_token(
                 PR,
                 vec!["read".to_string(), "write".to_string()],
                 1_700_000_000,
@@ -387,8 +442,9 @@ mod tests {
             r#"{"pay":{"alg":"Ed25519","now":1700000000,"#,
             r#""tmb":"aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw","#,
             r#""typ":"cyphr-server/auth/token","pr":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","#,
-            r#""exp":1700000900,"perms":["read","write"]},"#,
-            r#""sig":"a7Gqw1C2Pd8XgBS-HYdzPfinLtAKZl2AlDeEWWpcNLrIoyNBm-_icERvy4SlNMQOJCzLw5w5A0w08t5dl8aYCg"}"#,
+            r#""exp":1700000900,"perms":["read","write"],"#,
+            r#""ltmb":"OzD0J6wdMqmN0aWu42RcWFRp1DzYJeQW8KYvXdrsLOrNV8Pva_ZpjrNtvsdqWsFL_zpZUDutAiTu4W5OdIL44A"},"#,
+            r#""sig":"rdOfTv9Wm11gKJ9YT6tbj1wNs1cB8aF_yQKPjahwc3iEccPcsZF8wjJf9cJb04LHkAqhZ8BD3kYuWJi5HjaVAQ"}"#,
         );
 
         assert_eq!(token, GOLDEN);
@@ -401,34 +457,35 @@ mod tests {
         assert_eq!(claims.pr, PR);
     }
 
-    /// F22: a message the server genuinely signed, with valid
-    /// `pr`/`exp`/`perms`/`tmb` claims and an unexpired `exp`, but whose
-    /// `typ` is not [`BEARER_TOKEN_TYP`], must be rejected -- otherwise
-    /// any other message the server key ever signs could be replayed as a
-    /// bearer token. The signature here is real (same identity), so only
-    /// the `typ` binding stands between it and acceptance.
+    /// Backs: the login key rides in the signed token (#162). The claim
+    /// round-trips, a plain token carries none, and rewriting it breaks the
+    /// signature, so a holder cannot rebind a session to another key.
     #[test]
-    fn verify_rejects_valid_signature_with_wrong_typ() {
+    fn login_token_signs_in_the_login_key() {
         let (_dir, path) = write_random_key_file();
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
+        let login_tmb = coz::Alg::Ed25519
+            .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
+            .expect("thumbprint");
 
-        let forged = forge_signed_message(&identity, "cyphr-server/auth/not-a-token", 1_000, 1_300);
+        let token = identity
+            .issue_login_token(PR, &login_tmb, vec!["read".to_string()], 1_000, 300, None)
+            .expect("issue login token");
+        let claims = identity.verify_token(&token, 1_100).expect("verifies");
+        assert_eq!(claims.login_tmb, Some(login_tmb.to_b64()));
 
-        // Sanity: the forgery IS a genuine signature by this identity --
-        // it is the `typ` binding, not the signature, that must reject it.
-        let coz_json: coz::CozJson = serde_json::from_str(&forged).expect("forged parses");
-        let pay_json = serde_json::to_vec(&coz_json.pay).expect("pay bytes");
+        let plain = identity
+            .issue_unbound_token(PR, vec!["read".to_string()], 1_000, 300)
+            .expect("issue plain token");
         assert_eq!(
-            identity.verify(&pay_json, &coz_json.sig),
-            Some(true),
-            "test setup: the forged message must carry a genuine signature by this identity"
+            identity.verify_token(&plain, 1_100).unwrap().login_tmb,
+            None
         );
 
-        let result = identity.verify_token(&forged, 1_100);
-        assert!(
-            matches!(result, Err(TokenError::TypMismatch)),
-            "a validly-signed, unexpired message whose typ is not the bearer typ must be rejected \
-             as TypMismatch, got: {result:?}"
-        );
+        let rebound = token.replace(&login_tmb.to_b64(), &"A".repeat(login_tmb.to_b64().len()));
+        assert!(matches!(
+            identity.verify_token(&rebound, 1_100),
+            Err(TokenError::InvalidSignature)
+        ));
     }
 }

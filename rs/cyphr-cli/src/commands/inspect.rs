@@ -3,13 +3,12 @@
 use cyphr::StateDigest;
 
 use super::common::{CliPrincipal, load_principal_from_engine, parse_store};
-use crate::keystore::JsonKeyStore;
 use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.
 pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
-    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let keystore = super::common::open_backend(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     match cli.output {
@@ -18,11 +17,11 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
                 .active_keys()
                 .map(|k| {
                     serde_json::json!({
-                        "tmb": k.tmb.to_b64(),
-                        "alg": k.alg,
-                        "tag": k.tag,
-                        "first_seen": k.first_seen,
-                        "last_used": k.last_used,
+                        "tmb": k.tmb().to_b64(),
+                        "alg": k.alg(),
+                        "tag": k.tag(),
+                        "first_seen": k.first_seen(),
+                        "last_used": k.last_used(),
                     })
                 })
                 .collect();
@@ -34,6 +33,10 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
                 "as": format_as(&principal),
                 "active_keys": active_keys,
                 "commit_count": principal.commits().count(),
+                "tip": cyphr_storage::export_commits(&principal)?
+                    .into_iter()
+                    .rfind(|l| !l.commit_id.is_empty())
+                    .map(|l| l.commit_id),
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
@@ -51,8 +54,8 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 
             println!("Active Keys ({}):", active.len());
             for key in active {
-                let tag_str = key.tag.as_deref().unwrap_or("-");
-                println!("  {} ({}) [{}]", key.tmb.to_b64(), key.alg, tag_str);
+                let tag_str = key.tag().unwrap_or("-");
+                println!("  {} ({}) [{}]", key.tmb().to_b64(), key.alg(), tag_str);
             }
 
             println!();
@@ -74,6 +77,10 @@ fn format_ks(principal: &CliPrincipal) -> String {
     let ks = principal.key_root();
     let hash_alg = principal.hash_alg();
 
+    // A Dead principal has no KR (SPEC 3.7).
+    let Some(ks) = ks else {
+        return "<none>".to_string();
+    };
     ks.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
@@ -86,6 +93,10 @@ fn format_as(principal: &CliPrincipal) -> String {
     let auth_root = principal.auth_root();
     let hash_alg = principal.hash_alg();
 
+    // A Dead principal has no AR (SPEC 3.7).
+    let Some(auth_root) = auth_root else {
+        return "<none>".to_string();
+    };
     auth_root
         .get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)

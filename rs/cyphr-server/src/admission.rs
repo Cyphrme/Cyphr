@@ -37,17 +37,12 @@ use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
 use crate::envelope::Envelope;
+use crate::observation::{
+    DurabilityLost, STORE_FORMAT_VERSION, StampError, SyncLatch, check_store_version,
+};
 
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
-
-/// Header carrying the client's hashcash nonce (a base-10 `u64`).
-const POW_HEADER: &str = "x-cyphr-pow";
-
-/// Fixed-length domain-separation tag opening every hashcash preimage. The
-/// trailing byte versions the encoding so a future preimage change cannot
-/// collide with a solution minted under this one.
-const POW_DOMAIN_TAG: &[u8] = b"cyphr-pow\x01";
 
 /// Spent-set marker for a reserved (in-flight) token hash.
 const STATE_RESERVED: &[u8] = b"R";
@@ -87,6 +82,37 @@ pub enum AdmissionError {
     /// A `spawn_blocking` store task failed to join.
     #[error("admission store task join: {0}")]
     Join(String),
+
+    /// A sync of the spent set failed; it refuses every write until restart.
+    #[error("admission store durability lost: {0}")]
+    DurabilityLost(String),
+
+    /// The spent-set store records a format version this build does not
+    /// read. Nothing was read from it: a mis-decoded spent set would let a
+    /// consumed single-use token be spent again.
+    #[error("spent set format version {found} is not the supported {supported}")]
+    UnsupportedVersion { found: u64, supported: u32 },
+}
+
+impl From<DurabilityLost> for AdmissionError {
+    fn from(e: DurabilityLost) -> Self {
+        Self::DurabilityLost(e.0)
+    }
+}
+
+impl From<StampError> for AdmissionError {
+    fn from(e: StampError) -> Self {
+        match e {
+            StampError::Backend(m) => Self::Backend(m),
+            StampError::NotANumber(t) => {
+                Self::Backend(format!("recorded format version is not a number: {t:?}"))
+            },
+            StampError::Unsupported { found } => Self::UnsupportedVersion {
+                found,
+                supported: STORE_FORMAT_VERSION,
+            },
+        }
+    }
 }
 
 fn backend(e: fjall::Error) -> AdmissionError {
@@ -101,22 +127,25 @@ fn backend(e: fjall::Error) -> AdmissionError {
 /// the same single authoritative body cap enforced on every other route --
 /// so a genesis push is bounded by the deployer's own knob, never a private
 /// admission constant.
+///
+/// `record_dir` is the `record/` subtree (ADR-0002 Decision 1), not the bare
+/// data directory: the spent-set is told state the server cannot recover if
+/// lost, so it lives beside `blobs/`, `observations/`, and
+/// `server-principal.json` under `record/`, never beside the disposable
+/// `index/`.
 pub fn layer(
     config: &AdmissionConfig,
-    data_dir: &Path,
+    record_dir: &Path,
     resident: ResidentProbe,
     max_body_bytes: usize,
+    health: &crate::metrics::HealthProbe,
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
     let policy = match config {
         AdmissionConfig::Open => return Ok(None),
-        // Stateless hashcash: no durable store, no challenge endpoint. The
-        // difficulty is the only state the gate carries.
-        AdmissionConfig::Pow { difficulty } => Policy::Pow {
-            difficulty: *difficulty,
-        },
         AdmissionConfig::Invite { tokens_path } => {
             let hashes = load_token_hashes(tokens_path)?;
-            let spent = SpentSet::open(&data_dir.join("admission"))?;
+            let spent = SpentSet::open(&record_dir.join("admission"))?;
+            health.watch(spent.latch.clone());
             Policy::Invite { hashes, spent }
         },
     };
@@ -191,8 +220,6 @@ enum Policy {
         /// Durable single-use spent-set.
         spent: SpentSet,
     },
-    /// Stateless hashcash proof-of-work at `difficulty` leading zero bits.
-    Pow { difficulty: u32 },
 }
 
 impl Gate {
@@ -227,14 +254,13 @@ impl Gate {
 
         // (3) An already-resident principal is bound to its chain by the
         // protocol; admission never fires for it.
-        if (self.resident)(id.clone()).await {
+        if (self.resident)(id).await {
             return call_inner(inner, req).await;
         }
 
         // (4) A new principal -- apply the active policy.
         match &self.policy {
             Policy::Invite { hashes, spent } => admit_invite(hashes, spent, req, inner).await,
-            Policy::Pow { difficulty } => admit_pow(&id, *difficulty, req, inner).await,
         }
     }
 }
@@ -305,34 +331,6 @@ where
     response
 }
 
-/// Proof-of-work policy for a new principal: an `X-Cyphr-Pow` nonce whose
-/// hashcash, bound to this `principal_id` and a live UTC-hour window, clears
-/// `difficulty` leading zero bits admits; a missing, non-`u64`, or
-/// insufficient nonce is a 403 echoing the challenge parameters. Stateless --
-/// the gate does one hash per window and holds no per-request state.
-async fn admit_pow<S>(principal_id: &str, difficulty: u32, req: Request, inner: &mut S) -> Response
-where
-    S: Service<Request, Response = Response, Error = Infallible>,
-    S::Future: Send,
-{
-    // Parse strictly: an absent or non-`u64` header is not a challenge, so it
-    // is denied outright -- never treated as a bypass.
-    let nonce = req
-        .headers()
-        .get(POW_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    let Some(nonce) = nonce else {
-        return denied_pow(difficulty);
-    };
-
-    if pow_admits(principal_id, nonce, difficulty) {
-        call_inner(inner, req).await
-    } else {
-        denied_pow(difficulty)
-    }
-}
-
 /// Drive the inner service. Its error is `Infallible`, so the match is total.
 async fn call_inner<S>(inner: &mut S, req: Request) -> Response
 where
@@ -356,80 +354,6 @@ fn denied_invite() -> Response {
         }))),
     )
         .into_response()
-}
-
-/// A proof-of-work denial: 403 whose JSON body echoes the challenge parameters
-/// -- the difficulty and the window binding -- so a client can size and bind
-/// its work without an out-of-band challenge exchange.
-fn denied_pow(difficulty: u32) -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(Envelope::unsigned(serde_json::json!({
-            "error": "admission required",
-            "policy": "pow",
-            "difficulty": difficulty,
-            "window": "utc-hour",
-        }))),
-    )
-        .into_response()
-}
-
-/// The coarse current time window: whole UTC hours since the Unix epoch. A
-/// pre-epoch clock (absurd in practice) yields window 0, under which every
-/// nonce simply fails difficulty -- the safe, refusing direction.
-fn current_utc_hour() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() / 3600)
-        .unwrap_or(0)
-}
-
-/// The hashcash preimage digest over an INJECTIVE byte encoding: a
-/// fixed-length domain tag, the `principal_id` LENGTH-PREFIXED, then the
-/// `utc_hour` and `nonce` as fixed-width little-endian `u64`s. The length
-/// prefix and fixed-width integers guarantee distinct `(principal_id,
-/// utc_hour, nonce)` triples never share a preimage for ANY `principal_id`, so
-/// a solution provably binds to exactly one principal and one window -- the
-/// anti-amortization property. A `:`-delimited string preimage would be
-/// non-injective (a colon-bearing `principal_id` could reframe the field
-/// boundaries and amortize one solve across principals), which is why the
-/// encoding is length-prefixed rather than delimited.
-fn pow_digest(principal_id: &str, utc_hour: u64, nonce: u64) -> [u8; 32] {
-    let pid = principal_id.as_bytes();
-    let mut preimage = Vec::with_capacity(POW_DOMAIN_TAG.len() + 8 + pid.len() + 8 + 8);
-    preimage.extend_from_slice(POW_DOMAIN_TAG);
-    preimage.extend_from_slice(&(pid.len() as u64).to_le_bytes());
-    preimage.extend_from_slice(pid);
-    preimage.extend_from_slice(&utc_hour.to_le_bytes());
-    preimage.extend_from_slice(&nonce.to_le_bytes());
-    *blake3::hash(&preimage).as_bytes()
-}
-
-/// Leading zero *bits* of a 32-byte digest read big-endian (byte 0 most
-/// significant) -- the difficulty metric. Bits, not bytes: a difficulty need
-/// not be a multiple of 8.
-fn leading_zero_bits(digest: &[u8; 32]) -> u32 {
-    let mut bits = 0;
-    for &byte in digest {
-        if byte == 0 {
-            bits += 8;
-        } else {
-            bits += byte.leading_zeros();
-            break;
-        }
-    }
-    bits
-}
-
-/// Whether `nonce` clears `difficulty` leading zero bits for `principal_id` in
-/// a live window. The grace spans the current UTC hour AND the immediately
-/// previous one, so a solution found just before an hour boundary still
-/// verifies; anything older is stale and refused (no stockpiling).
-fn pow_admits(principal_id: &str, nonce: u64, difficulty: u32) -> bool {
-    let hour = current_utc_hour();
-    [hour, hour.saturating_sub(1)]
-        .into_iter()
-        .any(|window| leading_zero_bits(&pow_digest(principal_id, window, nonce)) >= difficulty)
 }
 
 /// A non-denial refusal on a transport/infrastructure fact.
@@ -519,11 +443,14 @@ struct SpentSet {
     /// Serializes the reserve check-and-set so concurrent double-submits of
     /// one token cannot both reserve it.
     reserve_lock: Arc<Mutex<()>>,
+    /// Closes the store to writes after a failed sync.
+    latch: Arc<SyncLatch>,
 }
 
 impl SpentSet {
     fn open(path: &Path) -> Result<Self, AdmissionError> {
         let db = Database::builder(path).open().map_err(backend)?;
+        check_store_version(&db)?;
         let tokens = db
             .keyspace("admission", KeyspaceCreateOptions::default)
             .map_err(backend)?;
@@ -531,6 +458,7 @@ impl SpentSet {
             db,
             tokens,
             reserve_lock: Arc::new(Mutex::new(())),
+            latch: Arc::default(),
         })
     }
 
@@ -542,13 +470,21 @@ impl SpentSet {
         let tokens = self.tokens.clone();
         let db = self.db.clone();
         let lock = self.reserve_lock.clone();
+        let latch = self.latch.clone();
         tokio::task::spawn_blocking(move || {
-            let _guard = lock.lock().expect("admission reserve lock poisoned");
+            // The mutex guards no data, only mutual exclusion of the
+            // contains/insert pair below, which leaves the store consistent
+            // at every step: a panicked prior holder poisons the lock
+            // without invalidating anything, so recover the guard.
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            latch.writable()?;
             if tokens.contains_key(hash).map_err(backend)? {
                 return Ok(false);
             }
             tokens.insert(hash, STATE_RESERVED).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)?;
+            latch.sync(|| db.persist(PersistMode::SyncAll))?;
             Ok(true)
         })
         .await
@@ -559,9 +495,12 @@ impl SpentSet {
     async fn consume(&self, hash: [u8; 32]) -> Result<(), AdmissionError> {
         let tokens = self.tokens.clone();
         let db = self.db.clone();
+        let latch = self.latch.clone();
         tokio::task::spawn_blocking(move || {
+            latch.writable()?;
             tokens.insert(hash, STATE_CONSUMED).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)
+            latch.sync(|| db.persist(PersistMode::SyncAll))?;
+            Ok(())
         })
         .await
         .map_err(|e| AdmissionError::Join(e.to_string()))?
@@ -579,9 +518,13 @@ impl SpentSet {
     /// amplification with no integrity gain.
     async fn refund(&self, hash: [u8; 32]) -> Result<(), AdmissionError> {
         let tokens = self.tokens.clone();
-        tokio::task::spawn_blocking(move || tokens.remove(hash).map_err(backend))
-            .await
-            .map_err(|e| AdmissionError::Join(e.to_string()))?
+        let latch = self.latch.clone();
+        tokio::task::spawn_blocking(move || {
+            latch.writable()?;
+            tokens.remove(hash).map_err(backend)
+        })
+        .await
+        .map_err(|e| AdmissionError::Join(e.to_string()))?
     }
 }
 
@@ -635,64 +578,4 @@ fn load_token_hashes(path: &Path) -> Result<Vec<[u8; 32]>, AdmissionError> {
         hashes.push(hash);
     }
     Ok(hashes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sha256_matches_the_suite_fixture() {
-        // The acceptance suite precomputes sha256("valid-invite-token-...").
-        let hash = sha256(b"valid-invite-token-aaaaaaaaaaaaaaaaaaaa");
-        assert_eq!(
-            hex_encode(&hash),
-            "1d3ff7848551415ad2947246fb017ed8d4a3a2fee20bad4cc4e4affcad861705"
-        );
-    }
-
-    #[test]
-    fn hex_round_trips_a_hash() {
-        let hash = sha256(b"round-trip");
-        let decoded = hex_decode_32(&hex_encode(&hash)).expect("64 hex chars decode");
-        assert_eq!(decoded, hash);
-    }
-
-    #[test]
-    fn hex_decode_rejects_wrong_length_and_non_hex() {
-        assert!(hex_decode_32("abcd").is_none());
-        assert!(hex_decode_32(&"z".repeat(64)).is_none());
-    }
-
-    #[test]
-    fn known_membership_is_exact() {
-        let hashes = vec![sha256(b"a"), sha256(b"b")];
-        assert!(is_known(&hashes, &sha256(b"a")));
-        assert!(is_known(&hashes, &sha256(b"b")));
-        assert!(!is_known(&hashes, &sha256(b"c")));
-    }
-
-    #[test]
-    fn pow_digest_is_injective_across_a_colon_bearing_reframe() {
-        // The old `:`-delimited framing folds `("sybil", "HH:7")` and the
-        // colon-bearing twin `("sybil:HH", "7")` onto one preimage; the
-        // length-prefixed encoding must give them unrelated digests.
-        let hour = 471_000u64;
-        let twin = format!("sybil:{hour}");
-        assert_ne!(
-            pow_digest("sybil", hour, 7),
-            pow_digest(&twin, hour, 7),
-            "length-prefixed preimage must not collide the colon reframe"
-        );
-    }
-
-    #[test]
-    fn leading_zero_bits_counts_bits_not_bytes() {
-        assert_eq!(leading_zero_bits(&[0u8; 32]), 256);
-        let mut d = [0u8; 32];
-        d[0] = 0b0000_0001;
-        assert_eq!(leading_zero_bits(&d), 7);
-        d[0] = 0b1000_0000;
-        assert_eq!(leading_zero_bits(&d), 0);
-    }
 }

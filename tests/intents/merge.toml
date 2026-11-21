@@ -1,0 +1,105 @@
+# Explicit merge (SPEC 11.5.1)
+#
+# Two principals: the test's (the source) and its `peer` (the target). A
+# merge and its ack are each their signer's own statement; `merge_status`
+# reads both chains. References name a PR a principal held: `self:<n>` or
+# `peer:<n>`, after that principal's n-th commit (0 its genesis commit).
+
+# The source signs a merge into the target's genesis PR: pending until acked.
+[[test]]
+name      = "merge_canonical"
+principal = ["alice", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", merge_from = [
+      "self:0",
+    ], merge_to_pr = "peer:0", typ = "cyphr.me/cyphr/principal/merge" },
+  ],
+]
+
+[test.peer]
+principal = ["bob", "key_b"]
+
+[test.expected]
+merge_status = "Pending"
+
+# The target acks a merge the source never signed: no merge.
+[[test]]
+name      = "merge_ack_canonical"
+principal = ["alice", "key_a"]
+
+[test.peer]
+principal = ["bob", "key_b"]
+
+[[test.peer.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", merge_from = [
+      "peer:0",
+    ], merge_to_pr = "self:0", typ = "cyphr.me/cyphr/principal/merge-ack" },
+  ],
+]
+
+[test.expected]
+merge_status = "None"
+
+# The merge and the ack carrying the same fields: merged.
+[[test]]
+name      = "merge_and_ack"
+principal = ["alice", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", merge_from = [
+      "self:0",
+    ], merge_to_pr = "peer:0", typ = "cyphr.me/cyphr/principal/merge" },
+  ],
+]
+
+[test.peer]
+principal = ["bob", "key_b"]
+
+[[test.peer.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", merge_from = [
+      "peer:0",
+    ], merge_to_pr = "self:0", typ = "cyphr.me/cyphr/principal/merge-ack" },
+  ],
+]
+
+[test.expected]
+merge_status = "Merged"
+
+# An ack whose merge_from names another PR of the source than the merge
+# did: the merge stays pending.
+[[test]]
+name      = "merge_ack_mismatched_from"
+principal = ["alice", "key_a"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", merge_from = [
+      "self:0",
+    ], merge_to_pr = "peer:0", typ = "cyphr.me/cyphr/principal/merge" },
+  ],
+]
+
+[test.peer]
+principal = ["bob", "key_b"]
+
+[[test.peer.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", merge_from = [
+      "peer:1",
+    ], merge_to_pr = "self:0", typ = "cyphr.me/cyphr/principal/merge-ack" },
+  ],
+]
+
+[test.expected]
+merge_status = "Pending"

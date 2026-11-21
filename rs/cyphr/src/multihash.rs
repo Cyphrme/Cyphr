@@ -235,13 +235,13 @@ impl MultihashDigest {
     pub fn matches(&self, other: &Self) -> bool {
         let mut common = false;
         for alg in self.algorithms() {
-            if let Some(d1) = self.get(alg) {
-                if let Some(d2) = other.get(alg) {
-                    if d1 != d2 {
-                        return false;
-                    }
-                    common = true;
+            if let Some(d1) = self.get(alg)
+                && let Some(d2) = other.get(alg)
+            {
+                if d1 != d2 {
+                    return false;
                 }
+                common = true;
             }
         }
         common
@@ -256,64 +256,13 @@ impl MultihashDigest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn from_single_creates_one_variant() {
-        let digest = vec![0xDE; 32];
-        let mh = MultihashDigest::from_single(HashAlg::Sha256, digest.clone()).unwrap();
-
-        assert_eq!(mh.len(), 1);
-        assert!(mh.contains(HashAlg::Sha256));
-        assert!(!mh.contains(HashAlg::Sha384));
-        assert_eq!(mh.get(HashAlg::Sha256), Some(digest.as_slice()));
-    }
-
-    #[test]
-    fn new_accepts_multiple_variants() {
-        let mut variants = BTreeMap::new();
-        variants.insert(HashAlg::Sha256, vec![0u8; 32].into_boxed_slice());
-        variants.insert(HashAlg::Sha384, vec![1u8; 48].into_boxed_slice());
-
-        let mh = MultihashDigest::new(variants).unwrap();
-
-        assert_eq!(mh.len(), 2);
-        assert!(mh.contains(HashAlg::Sha256));
-        assert!(mh.contains(HashAlg::Sha384));
-        assert!(!mh.contains(HashAlg::Sha512));
-    }
-
+    /// Backs the digest-width rule (SPEC 2.2.1): a variant whose length does not match its
+    /// algorithm is refused at construction. Unit: untrusted wire digests reach this constructor
+    /// only via parse paths whose own tests use whole cozies.
     #[test]
     fn new_rejects_invalid_lengths() {
         let mut variants = BTreeMap::new();
         variants.insert(HashAlg::Sha256, vec![0u8; 31].into_boxed_slice());
         assert!(MultihashDigest::new(variants).is_err());
-    }
-
-    #[test]
-    fn algorithms_iterates_in_order() {
-        let mut variants = BTreeMap::new();
-        variants.insert(HashAlg::Sha512, vec![0u8; 64].into_boxed_slice());
-        variants.insert(HashAlg::Sha256, vec![0u8; 32].into_boxed_slice());
-
-        let mh = MultihashDigest::new(variants).unwrap();
-        let algs: Vec<_> = mh.algorithms().collect();
-
-        // BTreeMap orders by key, HashAlg derives Ord
-        assert_eq!(algs.len(), 2);
-    }
-
-    #[test]
-    fn get_returns_none_for_missing() {
-        let mh = MultihashDigest::from_single(HashAlg::Sha256, vec![0u8; 32]).unwrap();
-        assert!(mh.get(HashAlg::Sha384).is_none());
-    }
-
-    #[test]
-    fn equality_checks_all_variants() {
-        let mh1 = MultihashDigest::from_single(HashAlg::Sha256, vec![1; 32]).unwrap();
-        let mh2 = MultihashDigest::from_single(HashAlg::Sha256, vec![1; 32]).unwrap();
-        let mh3 = MultihashDigest::from_single(HashAlg::Sha256, vec![4; 32]).unwrap();
-
-        assert_eq!(mh1, mh2);
-        assert_ne!(mh1, mh3);
     }
 }

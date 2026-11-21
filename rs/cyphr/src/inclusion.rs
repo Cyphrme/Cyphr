@@ -11,30 +11,24 @@
 
 use std::collections::BTreeMap;
 
-use coz::Thumbprint;
 use eml::Hasher as _;
 
 use crate::commit_root::{MaltHasher, hash_alg_to_u64};
 use crate::multihash::MultihashDigest;
 use crate::principal::{NodePath, NodePathHop};
+use crate::semantic_tree::Leaf;
 use crate::state::HashAlg;
 
-/// The canonical per-algorithm digest of a thumbprint's raw bytes: the exact
-/// value [`crate::semantic_tree::KeyTree`] stores as `alg`'s entry in a KT
-/// leaf's cell payload (see `semantic_tree::serialize_converted`) — verbatim
-/// if `alg` is the thumbprint's own native algorithm (inferred from its
-/// length), else `alg`'s hash of the raw bytes.
-///
-/// Returns `None` for a byte length that names no known algorithm — mirrors
-/// `serialize_converted`'s own rejection of an unrecognized digest length
-/// rather than silently hashing it under `alg` anyway.
-fn canonical_thumbprint_digest(bytes: &[u8], alg: HashAlg) -> Option<Vec<u8>> {
-    let native = crate::state::infer_alg_from_len(bytes.len())?;
-    Some(if native == alg {
+/// The canonical per-algorithm digest of a KT leaf: the exact value
+/// [`crate::semantic_tree::KeyTree`] stores as `alg`'s entry in the leaf's
+/// cell payload (see `semantic_tree::serialize_converted`) — verbatim if
+/// `alg` is the leaf's own algorithm, else `alg`'s hash of the raw bytes.
+fn canonical_leaf_digest((bytes, native): Leaf<'_>, alg: HashAlg) -> Vec<u8> {
+    if native == alg {
         bytes.to_vec()
     } else {
         crate::state::hash_bytes(alg, bytes)
-    })
+    }
 }
 
 /// Hop-1 witness material: `tr`'s claimed inclusion, at commit `index`, in a
@@ -113,7 +107,9 @@ pub fn verify_transaction_inclusion(
     hop1_ok && hop2_ok && bridge_ok
 }
 
-/// Verify that the key with thumbprint `tmb` is included under trusted root
+/// Verify that the key whose leaf is `member` (its thumbprint and its
+/// key's hash algorithm, see [`crate::semantic_tree::key_leaf`]) is
+/// included under trusted root
 /// `roots[roots.len() - 1]` (the Principal Root), for hash algorithm `alg` —
 /// a portable generalization of
 /// [`crate::principal::Principal::verify_key_inclusion`]'s 4-hop
@@ -134,17 +130,14 @@ pub fn verify_transaction_inclusion(
 #[must_use]
 pub fn verify_key_inclusion(
     alg: HashAlg,
-    tmb: &Thumbprint,
+    member: Leaf<'_>,
     hops: &[polydigest::LeafProof],
     roots: &[&[u8]],
 ) -> bool {
     let Some(first_hop) = hops.first() else {
         return false;
     };
-    let Some(expected_leaf) = canonical_thumbprint_digest(tmb.as_bytes(), alg) else {
-        return false;
-    };
-    if first_hop.leaf_hash != expected_leaf {
+    if first_hop.leaf_hash != canonical_leaf_digest(member, alg) {
         return false;
     }
 
