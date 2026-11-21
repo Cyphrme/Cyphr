@@ -136,7 +136,10 @@ Procedure when a contradiction surfaces during any work:
   Signpost: a protocol-touching diff without a corpus regen is a defect.
 - **R3 — KV index.** The query index is to be replaced with arbitrary KV
   index tables over the durable store plus a meta-table tracking them,
-  behind the existing `Indexer` trait seam.
+  behind the existing `Indexer` trait seam. Status: built in
+  `rs/cyphr-index-fjall` (one fjall keyspace per logical index plus a
+  `meta` keyspace recording which index keyspaces exist and the schema
+  version); the SQLite backend is retired.
   Grounding: human operator decision 2026-07-06 (comments on forge issue #18 and PR #23).
   Signpost: defeated only if the human operator reverses it; in-repo docs recording the
   older KV→SQLite decision are superseded, not authority.
@@ -298,23 +301,38 @@ resolved unilaterally.
   visibility within a commit is ratified (`docs/AGENTS.md`
   two-authorization-contexts tenet), and per-mutation `pre` in signed pays
   is a rejected old draft slated for removal (`rs/AGENTS.md` traps).
-- **U2 — Live-principal concurrency.** `CloneableLog` is sound only under
-  fresh-`Principal`-per-call; per-principal write serialization inside one
-  process exists, but the cross-process lease (#27's full scope) does not.
-  Grounding: `rs/cyphr/src/commit_root.rs` (`CloneableLog` design note).
-  Signpost: any long-lived `Principal` shared across concurrent tasks.
-- **U3 — Replay cost.** Every write replays full principal history from
-  cold storage; caching strategy undecided. Grounding: `load_principal`
-  in `rs/cyphr-storage/src/engine/mod.rs`. Signpost: a latency or
+- **U2 — Live-principal concurrency.** The rule is one writer per
+  principal log. Inside one process the engine enforces it with a lock
+  per principal (`principal_locks` in `rs/cyphr-storage/src/engine/mod.rs`):
+  writers to the same principal queue, writers to different principals do
+  not contend. A second process on the same data directory is refused by
+  the store's exclusive lock; the cross-process per-principal lease
+  (#27's full scope) does not exist. Reads of one principal also queue
+  behind that principal's lock. Grounding: the same file. Signpost: a
+  requirement for more than one server process on one data directory.
+- **U3 — Replay cost: RESOLVED for the write path.** The engine keeps each
+  principal's verified state between uses (`Kept` in the same file) and
+  checks only what arrives, so a write no longer replays full history on
+  every push; losing the kept state costs one replay (I1). Commit logs
+  share one fixed keyspace triplet scoped by principal and generation, so
+  a new principal no longer creates keyspaces. Not resolved: the kept
+  state is in memory and holds 128 principals by default
+  (`DEFAULT_KEPT_CAPACITY`), each as large as its history, so a principal
+  evicted by a busier set replays once on its next use; and a principal
+  that embeds another is kept as its replay built it, so a write follows
+  the embedded principal to its current tip. Signpost: a latency or
   throughput requirement the scenario suite cannot meet.
 - **U4 — EMT→EML conversion.** A one-way, permanent conversion of the
   PT's EMT to an EML is a supported-mode design goal, deferred. Grounding:
   forge issue #40. Signpost: the campaign after the MVP.
-- **U5 — Transport.** TLS with a principal-signed certificate (the
-  libp2p-TLS pattern) versus Noise XX for peer connections. Agreed in
-  principle that the principal authenticates and TLS encrypts; the final
-  choice is open. Signpost: the transport node's design review; until then
-  only the transport seam ships.
+- **U5 — Transport.** Decided: Noise NN, with each side signing the
+  Noise handshake hash with a key of its own principal
+  (`rs/cyphr-client/src/transport.rs`, feature `noise`). No long-lived
+  key exists outside Cyphr: the Noise keys are per-handshake ephemerals,
+  which is why the static-key patterns (XX and the rest) were rejected.
+  Open: nothing at the pattern level; the transport ships behind the
+  `noise` feature and TLS remains the reverse proxy's job for the HTTP
+  routes. Signpost: a transport requirement NN cannot meet.
 - **U6 — Keychain design details.** The Coz-encryption entry envelope,
   P-256 ECDH key wrapping, padding, device-to-device sync (including two
   devices writing at once), and recovery. Whether the Coz encryption

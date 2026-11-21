@@ -141,9 +141,12 @@ not a ruling -- each is recorded explicitly:
 
 - **Patch -- EXCLUDED.** Patch content is self-certifying chain data:
   every coz it returns already carries its own signature, and the tip
-  report (not a per-commit statement) is the freshness attestation over
-  that chain. Signing patch responses would attest nothing a client
-  cannot already verify from the coz content itself.
+  report (not a per-commit statement) is the signed claim about where
+  that chain stands. The tip report is not a freshness attestation: it
+  carries `now`, but nothing binds it to a request, so a genuine report
+  can be replayed while the authority advances (forge #152, open).
+  Signing patch responses would attest nothing a client cannot already
+  verify from the coz content itself.
 - **Entity -- EXCLUDED**, unchanged from `docs/specs/http-envelope.md`
   `[envelope-r-entity]`: raw content-addressed bytes never join the
   envelope at all.
@@ -171,7 +174,7 @@ response those configurations produced before this document.
 Covered by `rs/cyphr-server/tests/keyless_matrix.rs` and
 `rs/cyphr-server/tests/receipts.rs`.
 
-### `[receipts-r-stateless]` Issuance is stateless (decision D2)
+### `[receipts-r-stateless]` Issuance is stateless
 
 The server persists nothing new to issue a receipt: no receipt log, no
 retention window, no server-side received-at timestamp. The recipient

@@ -143,9 +143,11 @@ signed the response. Errors come back in the same envelope with
 ## Make a test principal
 
 You need a user to sign in as, and in production your client creates one. To
-get one now, use the `cyphr` CLI. It creates and mutates principals locally
-but has no command that talks to a server, so the push is a `curl` you build
-yourself.
+get one now, use the `cyphr` CLI. `cyphr push --identity="$PR"
+--peer=http://127.0.0.1:3999` sends a principal's commits to a server
+(`cyphr --help` lists `push`, `fetch`, `rebase`, `verify` and `watch`). This
+guide builds the push by hand with `curl` instead, so that you see the raw
+request and the signed response your app will meet.
 
 ```sh
 PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
@@ -154,16 +156,20 @@ cyphr export --identity="$PR" --output ./export.jsonl
 ```
 
 That leaves keys in `./cyphr-keys.json`, a principal in `./cyphr-data`, and a
-JSONL file with one line per commit. Turn the newest commit into a push body
-and send it:
+JSONL file with one line per commit. A new principal exports two commits (the
+genesis commit, then the key add). Turn each line into a push body and send
+them in order, because the server refuses a first push that is not a genesis
+commit:
 
 ```sh
-jq -c --arg pid "$PR" -s '{principal_id: $pid, blobs: [.[-1].txs[]
-  | tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";"")]}' \
-  ./export.jsonl > ./push.json
-
-curl -s -X POST http://127.0.0.1:3999/push \
-  -H 'content-type: application/json' -d @push.json
+jq -c --arg pid "$PR" '{principal_id: $pid, keys: .keys,
+  txs: [.txs[] | map(tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";""))]}' \
+  ./export.jsonl |
+while IFS= read -r body; do
+  curl -s -X POST http://127.0.0.1:3999/push \
+    -H 'content-type: application/json' -d "$body"
+  echo
+done
 ```
 
 `201`, with this `payload` (the response also carries a `statement` of kind
@@ -186,20 +192,21 @@ curl -s -X POST http://127.0.0.1:3999/push \
 }
 ```
 
-The `jq` rewrites each transaction as a base64url blob, which is the shape
-`/push` wants; standard base64 will not do, which is what the `gsub` chain is
-for. Use `.[-1]` to send only the newest commit — re-sending one the server
-already holds is an error.
+The exported line already holds the commit's `txs` (an array of
+transactions, each an array of coz objects, the commit transaction last) and
+the `keys` it introduces. The `jq` rewrites each coz as base64url of its JSON,
+which is the form `/push` wants; standard base64 will not do, which is what
+the `gsub` chain is for. The loop sends every exported commit in order and
+prints one response per commit (`201` each for a new principal). To add
+a commit to a principal the server already holds, send only the lines it
+lacks: re-sending one it already holds is an error.
 
 Use the genesis thumbprint as the principal id, as above. Any other id is
 refused with a `400` before anything is stored; see
 [Map `pr` to an account](#5-map-pr-to-an-account).
 
-Two CLI limits to know before you lean on it: `key add` and `key revoke` fail
-outright on Ed25519 principals (`digest length mismatch for SHA-256: expected
-32 bytes, got 64`), so use ES256 for principals you create this way, and `key
-revoke` refuses unless `--key` equals `--signer`, so it can only ever
-self-revoke.
+One CLI limit to know before you lean on it: `key revoke` refuses unless
+`--key` equals `--signer`, so it can only ever self-revoke.
 
 ## The exchange
 
@@ -701,13 +708,6 @@ them here:
 
 - **No client library.** There is no SDK for signing a login. The code in this
   guide is the reference; port it to your stack.
-- **No CLI for the network.** `cyphr` creates and mutates principals locally
-  and exports them; it has no command that talks to a server. The `jq` bridge
-  above is what stands in for a push command, and you will want to replace it
-  with something in your client.
-- **`cyphr key add` and `cyphr key revoke` fail on Ed25519 principals.** Use
-  ES256 for principals you create with the CLI. The server itself handles
-  Ed25519 keys fine, and its own signing key in the examples above is Ed25519.
 - **`cyphr key revoke` only self-revokes.** It requires `--key` to equal
   `--signer`, and that is not a CLI shortcoming — non-self revoke is refused
   at the protocol level, full stop. Removing a key you no longer hold is
