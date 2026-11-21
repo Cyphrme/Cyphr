@@ -136,7 +136,10 @@ Procedure when a contradiction surfaces during any work:
   Signpost: a protocol-touching diff without a corpus regen is a defect.
 - **R3 — KV index.** The query index is to be replaced with arbitrary KV
   index tables over the durable store plus a meta-table tracking them,
-  behind the existing `Indexer` trait seam.
+  behind the existing `Indexer` trait seam. Status: built in
+  `rs/cyphr-index-fjall` (one fjall keyspace per logical index plus a
+  `meta` keyspace recording which index keyspaces exist and the schema
+  version); the SQLite backend is retired.
   Grounding: human operator decision 2026-07-06 (comments on forge issue #18 and PR #23).
   Signpost: defeated only if the human operator reverses it; in-repo docs recording the
   older KV→SQLite decision are superseded, not authority.

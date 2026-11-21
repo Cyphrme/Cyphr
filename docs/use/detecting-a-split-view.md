@@ -118,7 +118,8 @@ hand. Two limits apply to the check as it exists:
 
 Only the owner resolves a fork in her own record. She signs one more
 entry on the branch she chooses: a commit whose `pre` is that branch's
-tip, or a `resync/create` proof of possession re-asserting a tip
+tip, or a `resync/create` proof of possession re-asserting a tip (the Rust
+implementation has no such message yet)
 ([SPEC §15.8](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#158-fork-resolution)).
 No server, witness or reader resolves it for her. Until she does, SPEC
 puts the record in the Error state: no new transactions are processed
