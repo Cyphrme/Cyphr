@@ -5,11 +5,12 @@
 // action the laptop recorded but never committed survives the rebase, re-signed
 // and named in the rebase output (SPEC 15.9), and reaches the peers;
 // case 2, the commits reach different partitioned peers (a real principal fork),
-// each branch extended twice to equal height: Error plus evidence at every peer,
-// both extended heads live and neither settled, until Alice signs one further
-// ordinary commit on the chosen head (SPEC 15.8 item 1), which out-extends the
-// other branch: Active on it at every peer, the abandoned branch kept as
-// evidence, and a restart of the peers changes nothing.
+// each branch extended twice: Error plus evidence at every peer, both extended
+// heads live and neither settled. Both branches being extended, no further
+// ordinary commit on either head leaves Error (the spec author on #203: "They're
+// both out of compliance"): the peers refuse it, and a restart of the peers
+// changes nothing. A fork whose branches are not both extended is settled by
+// one ordinary commit on a head (SPEC 15.8 item 1): see s03_resolver_differs.
 //
 // Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,data-commit.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
@@ -146,7 +147,7 @@ async fn s03_offline() {
     // Case 2: the devices commit to different, partitioned peers, each
     // extending its branch past the fork point before anyone sees the
     // other.
-    let (laptop_branch, phone_branch) = extend_both(&h, &laptop, &phone, &pr).await;
+    let (laptop_branch, phone_branch) = extend_both(&h, &laptop, &phone, &pr, 2).await;
     let (lt, pt) = (laptop_branch[1].clone(), phone_branch[1].clone());
 
     // Before the link heals each peer holds one branch, but an observer
@@ -195,26 +196,10 @@ async fn s03_offline() {
         "no branch is settled while both are extended"
     );
 
-    // Alice resolves (SPEC 15.8 item 1): one ordinary commit on the
-    // phone's head, a tied head, out-extends the laptop's branch; the
-    // abandoned branch stays in the record.
-    let resolved = resolve_by_extension(&h, &phone, &pr, &pt).await;
-    let healed = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
-        .await;
-    assert_eq!(healed.standing, Standing::Active);
-    assert_eq!(
-        healed.branches,
-        std::slice::from_ref(&resolved),
-        "one live head"
-    );
-    assert_eq!(healed.tip, resolved);
-    // Retained as proof of error (SPEC 15.8), not as a live head.
-    assert!(
-        healed.abandoned.contains(&laptop_branch[0]),
-        "the abandoned branch is kept"
-    );
-    assert!(healed.resolved_by.is_some());
+    // Alice answers on the phone's head, a tied head: one further ordinary
+    // commit. Both branches are extended, so it settles nothing: every
+    // peer refuses it, and the verdict is what it was.
+    assert_still_error(&h, &phone, &observer, &pr, &forked).await;
 
     // A restart of every peer changes nothing.
     for peer in both {
@@ -223,8 +208,8 @@ async fn s03_offline() {
     }
     let restarted = h.ok(observer.verdict(&pr, &both).await);
     assert_eq!(
-        (restarted.standing, restarted.branches, restarted.tip),
-        (healed.standing, healed.branches, healed.tip),
+        (restarted.standing, sorted(&restarted.branches)),
+        (Standing::Error, sorted(&forked.branches)),
         "a restart changes nothing"
     );
     for peer in both {
@@ -235,12 +220,13 @@ async fn s03_offline() {
     }
 }
 
-/// SPEC 15.8 item 1 for a late verifier: one that first looks only once
-/// the peers hold both extended branches reports Error, then Active once
-/// the principal's next ordinary commit out-extends the rival branch, as
-/// the peers do.
+/// A late verifier: one that first looks only once the peers hold both
+/// extended branches reports Error, and still does after the principal's
+/// next ordinary commit, which settles nothing while both branches are
+/// extended, as the peers do (a catches-tallest-wins scenario: the old rule
+/// let that commit out-extend the rival branch).
 #[tokio::test(flavor = "multi_thread")]
-async fn s03_extension_settles_extended_fork() {
+async fn s03_extension_does_not_settle_a_both_extended_fork() {
     let h = Harness::start_gossiping(&["p1", "p2"], 1)
         .await
         .expect("start peers");
@@ -261,7 +247,7 @@ async fn s03_extension_settles_extended_fork() {
     let base = h.ok(laptop.push(&pr, &both).await).accepted("base push");
     assert_eq!(h.ok(phone.sync(&pr, &both).await), base);
 
-    let (laptop_branch, phone_branch) = extend_both(&h, &laptop, &phone, &pr).await;
+    extend_both(&h, &laptop, &phone, &pr, 2).await;
     h.proxy.heal("p1", "p2");
     // Each peer holds the other's whole branch, both of its commits.
     h.eventually("each peer to hold the rival branch", CONVERGE, || async {
@@ -273,19 +259,7 @@ async fn s03_extension_settles_extended_fork() {
         .await;
     assert_eq!(forked.standing, Standing::Error, "both branches extended");
 
-    let resolved = resolve_by_extension(&h, &phone, &pr, &phone_branch[1]).await;
-    let healed = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
-        .await;
-    assert_eq!(
-        (healed.standing, healed.branches),
-        (Standing::Active, vec![resolved]),
-        "the phone's branch out-extends: Active, as the peers are"
-    );
-    assert!(
-        healed.abandoned.contains(&laptop_branch[0]),
-        "the abandoned branch is kept"
-    );
+    assert_still_error(&h, &phone, &observer, &pr, &forked).await;
 }
 
 /// A fork the owner resolved stays in the record as an abandoned branch
@@ -313,14 +287,15 @@ async fn s03_resolved_fork_is_not_a_live_head() {
     h.ok(laptop.pair_device(&pr, &phone).await);
     h.ok(laptop.push(&pr, &both).await).accepted("base push");
 
-    // First fork, resolved on the phone's branch.
-    let (_, phone_branch) = extend_both(&h, &laptop, &phone, &pr).await;
+    // First fork, one commit a side and so neither branch extended, resolved
+    // on the phone's branch by one ordinary commit (SPEC 15.8 item 1).
+    let (_, phone_branch) = extend_both(&h, &laptop, &phone, &pr, 1).await;
     h.proxy.heal("p1", "p2");
     h.eventually("each peer to hold the rival branch", CONVERGE, || async {
-        Ok(evidence(&h, "p1", &pr).await >= 2 && evidence(&h, "p2", &pr).await >= 2)
+        Ok(evidence(&h, "p1", &pr).await >= 1 && evidence(&h, "p2", &pr).await >= 1)
     })
     .await;
-    let resolved = resolve_by_extension(&h, &phone, &pr, &phone_branch[1]).await;
+    let resolved = resolve_by_extension(&h, &phone, &pr, &phone_branch[0]).await;
     let seen = [evidence(&h, "p1", &pr).await, evidence(&h, "p2", &pr).await];
 
     // Second fork from the resolved tip, the first one's abandoned tip
@@ -331,7 +306,7 @@ async fn s03_resolved_fork_is_not_a_live_head() {
     h.proxy.heal("alice-phone", "p2");
     let tablet = h.client("alice-laptop");
     h.ok(phone.pair_device(&pr, &tablet).await);
-    let (laptop2, phone2) = extend_both(&h, &tablet, &phone, &pr).await;
+    let (laptop2, phone2) = extend_both(&h, &tablet, &phone, &pr, 2).await;
     h.proxy.heal("p1", "p2");
     h.eventually("each peer to hold the second rival", CONVERGE, || async {
         Ok(evidence(&h, "p1", &pr).await >= seen[0] + 2
@@ -411,14 +386,16 @@ async fn s03_resolver_differs_from_the_commit_below() {
 }
 
 /// Partition the laptop with P2 and the phone with P1, then have each
-/// commit and push twice on its side: two branches over one `pre`, both
-/// extended past the fork point. The commits of each branch, in order.
+/// commit and push `rounds` times on its side: two branches over one `pre`,
+/// both extended past the fork point when `rounds` is at least two. The
+/// commits of each branch, in order.
 async fn extend_both(
     h: &Harness,
     laptop: &Client<'_>,
     phone: &Client<'_>,
     pr: &Principal,
-) -> ([Tip; 2], [Tip; 2]) {
+    rounds: usize,
+) -> (Vec<Tip>, Vec<Tip>) {
     h.proxy.partition("p1", "p2");
     h.proxy.partition("alice-laptop", "p1");
     h.proxy.partition("alice-phone", "p2");
@@ -426,7 +403,7 @@ async fn extend_both(
     assert!(h.reach("alice-laptop", "p2").await && h.reach("alice-phone", "p1").await);
     let mut laptop_tips = Vec::new();
     let mut phone_tips = Vec::new();
-    for round in 1..=2 {
+    for round in 1..=rounds {
         h.ok(laptop
             .commit_data(pr, &format!("laptop, branch {round}"))
             .await);
@@ -451,8 +428,7 @@ async fn extend_both(
         h.peer_view("p1", pr).await.map(|v| v.tip),
         phone_tips.last().cloned()
     );
-    let pair = |t: Vec<Tip>| -> [Tip; 2] { t.try_into().expect("two rounds") };
-    (pair(laptop_tips), pair(phone_tips))
+    (laptop_tips, phone_tips)
 }
 
 /// The phone signs one ordinary commit on its head `keep` (SPEC 15.8
@@ -469,6 +445,37 @@ async fn resolve_by_extension(h: &Harness, phone: &Client<'_>, pr: &Principal, k
     })
     .await;
     resolved
+}
+
+/// The phone's one further ordinary commit, pushed to both peers, is
+/// refused where both branches are held and extended, and the verdict
+/// read earlier, `before`, still stands: Error, its heads still live, no
+/// branch settled or abandoned.
+async fn assert_still_error(
+    h: &Harness,
+    phone: &Client<'_>,
+    observer: &Client<'_>,
+    pr: &Principal,
+    before: &Verdict,
+) {
+    let both = ["p1", "p2"];
+    h.ok(phone.commit_data(pr, "a further commit").await);
+    // A peer in Error answers 423, which the CLI reports as a failed push.
+    match phone.push(pr, &both).await {
+        Ok(PushOutcome::Accepted(tip)) => {
+            panic!("a further commit settled a both-extended fork at {tip:?}")
+        },
+        Ok(PushOutcome::Refused(_)) => {},
+        Err(ActionError::Failed(why)) => assert!(why.contains("423"), "{why}"),
+        Err(e) => panic!("scenario step failed: {e}"),
+    }
+    let after = h.ok(observer.verdict(pr, &both).await);
+    assert_eq!(after.standing, Standing::Error, "still Error");
+    assert!(
+        before.branches.iter().all(|b| after.branches.contains(b)),
+        "the heads it had are still live"
+    );
+    assert!(after.resolved_by.is_none() && after.abandoned.is_empty());
 }
 
 fn sorted(tips: &[Tip]) -> Vec<Tip> {
