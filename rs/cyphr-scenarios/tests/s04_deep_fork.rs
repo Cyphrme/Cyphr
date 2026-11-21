@@ -231,13 +231,7 @@ async fn both_extended(alice: usize, thief: usize) {
     )
     .await;
     let v = h.ok(bob.verdict(&pr, &all).await);
-    // The oracle's live-head set assumes every holder reports the same
-    // heads, which holds only where no line exceeds the retained depth;
-    // with holder-relative heads its comparison with the CLI's branches
-    // is the implementer's to restate, so the standing is asserted alone.
-    if exact {
-        h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
-    }
+    h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
     assert_eq!(v.standing, Standing::Error, "{alice} vs {thief} commits");
 }
 

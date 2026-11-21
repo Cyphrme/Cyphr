@@ -114,10 +114,44 @@ impl Harness {
                 .chain(rival_tips.into_iter().map(Tip))
                 .filter(|t| !inner.contains(t))
                 .collect();
-            assert_eq!(
-                claimed_branches, live_heads,
-                "verdict branches differ from the peers' live heads"
-            );
+            // Heads are holder-relative: each holder reports the leaves of
+            // what it holds, so a line deeper than a holder's retained
+            // depth ends at a different commit there. What is the same
+            // everywhere is the standing and the fork point; each head
+            // lies on its contest child's branch, which a verdict branch
+            // must be too. Where every Error holder reports the same
+            // heads, the verdict's branches are exactly the live heads.
+            let erred: Vec<_> = held
+                .iter()
+                .filter(|(_, t)| t.standing == Standing::Error)
+                .collect();
+            let points: BTreeSet<String> = erred
+                .iter()
+                .filter_map(|(_, t)| t.fork_point.as_ref().map(ToString::to_string))
+                .collect();
+            assert!(points.len() <= 1, "holders disagree on the fork point: {points:?}");
+            let lists: BTreeSet<Vec<Tip>> = erred.iter().map(|(_, t)| t.heads.clone()).collect();
+            if lists.len() <= 1 {
+                assert_eq!(
+                    claimed_branches, live_heads,
+                    "verdict branches differ from the peers' live heads"
+                );
+            } else {
+                let mut known: BTreeSet<Tip> = live_heads.clone();
+                for name in &live {
+                    known.extend(self.chain_read(name, p).await.commit_ids.into_iter().map(Tip));
+                }
+                assert!(
+                    claimed_branches.iter().all(|b| known.contains(b)),
+                    "a verdict branch is on no branch a holder holds: {claimed_branches:?}"
+                );
+                let width = erred.iter().map(|(_, t)| t.heads.len()).max().unwrap_or(0);
+                assert_eq!(
+                    claimed_branches.len(),
+                    width,
+                    "one verdict branch per contest child"
+                );
+            }
             assert_eq!(v.standing, Standing::Error, "a fork is reported in Error");
         }
         if v.standing == Standing::Active && v.branches.len() > 1 {

@@ -205,6 +205,7 @@ async fn harness_peer_view_reads_the_peer_itself() {
             tip: Tip("C2".into()),
             heads: vec![Tip("C2".into())],
             standing: Standing::Active,
+            fork_point: None,
             height: 2,
             pr: "PR".into(),
             ar: "AR".into()
@@ -226,6 +227,7 @@ async fn harness_peer_view_reads_the_peer_itself() {
             tip: Tip("C3".into()),
             heads: vec![Tip("C3".into()), Tip("D3".into())],
             standing: Standing::Error,
+            fork_point: Some(serde_json::json!({"height": 1, "pre": "PRE"})),
             height: 3,
             pr: String::new(),
             ar: String::new()

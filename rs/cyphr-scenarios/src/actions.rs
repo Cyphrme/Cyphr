@@ -132,6 +132,9 @@ pub struct PeerTip {
     /// The peer's own consensus state, as its `/tip` says it: never read
     /// back from a head count.
     pub standing: Standing,
+    /// The fork point the peer reports in Error (`height` and `pre`, as it
+    /// states them); `None` while Active.
+    pub fork_point: Option<serde_json::Value>,
     pub height: u64,
     pub pr: String,
     pub ar: String,
@@ -151,6 +154,7 @@ impl PeerTip {
                 principal_id: t["principal_id"].as_str()?.to_owned(),
                 tip: heads.first()?.clone(),
                 standing: Standing::Error,
+                fork_point: Some(t["fork_point"].clone()),
                 height: t["heads"][0]["sequence"].as_u64()? + 1,
                 heads,
                 pr: String::new(),
@@ -162,6 +166,7 @@ impl PeerTip {
             principal_id: t["principal_id"].as_str()?.to_owned(),
             heads: vec![tip.clone()],
             standing: Standing::Active,
+            fork_point: None,
             tip,
             height: t["commit_count"].as_u64()?,
             pr: t["pr"].as_str()?.to_owned(),
