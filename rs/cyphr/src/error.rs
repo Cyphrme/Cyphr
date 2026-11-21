@@ -117,6 +117,16 @@ pub enum Error {
     #[error("transaction cozies do not share one typ")]
     MixedTransactionTyp,
 
+    /// A commit's only mutation transaction holds more than one coz. The
+    /// signed `arrow` covers the mutation root, which a lone grouped
+    /// transaction shares with the same cozies as separate transactions,
+    /// so admitting both would give one signed commit two identities.
+    #[error(
+        "commit's only mutation transaction holds more than one coz: the grouping is ambiguous \
+         with separate transactions"
+    )]
+    LoneGroupedTransaction,
+
     /// Algorithm not supported.
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),

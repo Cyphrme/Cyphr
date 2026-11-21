@@ -239,6 +239,7 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::UnknownNonce => "UnknownNonce",
         Error::GenesisIncomplete => "GenesisIncomplete",
         Error::MixedTransactionTyp => "MixedTransactionTyp",
+        Error::LoneGroupedTransaction => "LoneGroupedTransaction",
         _ => "UnknownError",
     }
 }

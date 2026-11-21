@@ -428,6 +428,10 @@ the finalizer elsewhere is rejected with `CommitNotLast`. Separately,
 `CommitScope::apply_tx` rejects cozies grouped into one transaction with
 different `typ` values (`MixedTransactionTyp`); replay does not use it, as the
 known defect below says.
+A commit whose only mutation transaction holds more than one coz is refused
+with `LoneGroupedTransaction`: it shares a mutation root, hence the signed
+arrow, with the same cozies as separate transactions, so admitting both would
+give one signed commit two identities.
 
 ```claim
 kind: requirement
@@ -758,43 +762,44 @@ points to a different claim than the classification, or a claim is neither
 bound nor declared unbound. Variants the test classifies as outside the core
 paths have no row; its source gives the reason for each.
 
-| Error                  | Claim                      |
-| :--------------------- | :------------------------- |
-| `Signer`               | `rv-signer-faults`         |
-| `InvalidSignature`     | `rv-sig-verifies`          |
-| `UnknownKey`           | `rv-key-active-gate`       |
-| `UnknownAlg`           | `rv-alg-support`           |
-| `TimestampPast`        | `rv-timestamp-monotone`    |
-| `TimestampFuture`      | `rv-timestamp-future`      |
-| `KeyRevoked`           | `rv-key-active-gate`       |
-| `MalformedPayload`     | `rv-coz-wellformed`        |
-| `TmbMismatch`          | `rv-key-material`          |
-| `AlgMismatch`          | `rv-alg-alignment`         |
-| `CzdMismatch`          | `rv-alg-alignment`         |
-| `DuplicateKey`         | `rv-key-set`               |
-| `DuplicateNonce`       | `rv-nonce-ledger`          |
-| `UnknownNonce`         | `rv-nonce-ledger`          |
-| `CozReuse`             | `rv-no-coz-reuse`          |
-| `StateMismatch`        | `rv-state-recomputed`      |
-| `EmptyMultihash`       | `rv-internal-invariants`   |
-| `MissingVariant`       | `rv-internal-invariants`   |
-| `NoActiveKeys`         | `rv-key-set`               |
-| `AlreadyDeleted`       | `rv-lifecycle-gate`        |
-| `AlreadyFrozen`        | `rv-lifecycle-transitions` |
-| `NotFrozen`            | `rv-lifecycle-transitions` |
-| `Frozen`               | `rv-lifecycle-gate`        |
-| `EmbeddedErrored`      | `rv-key-active-gate`       |
-| `MixedTransactionTyp`  | `rv-intra-commit-shape`    |
-| `UnsupportedAlgorithm` | `rv-alg-support`           |
-| `Storage`              | `rv-storage-backend`       |
-| `EmptyCommit`          | `rv-commit-nonempty`       |
-| `GenesisIncomplete`    | `rv-genesis-immutable`     |
-| `CommitNotLast`        | `rv-intra-commit-shape`    |
-| `MissingCommit`        | `rv-commit-nonempty`       |
-| `CommitMismatch`       | `rv-arrow-chain`           |
-| `DurableLeafMismatch`  | `rv-storage-backend`       |
-| `MalformedDigest`      | `rv-digest-wellformed`     |
-| `DigestLengthMismatch` | `rv-digest-wellformed`     |
+| Error                    | Claim                      |
+| :----------------------- | :------------------------- |
+| `Signer`                 | `rv-signer-faults`         |
+| `InvalidSignature`       | `rv-sig-verifies`          |
+| `UnknownKey`             | `rv-key-active-gate`       |
+| `UnknownAlg`             | `rv-alg-support`           |
+| `TimestampPast`          | `rv-timestamp-monotone`    |
+| `TimestampFuture`        | `rv-timestamp-future`      |
+| `KeyRevoked`             | `rv-key-active-gate`       |
+| `MalformedPayload`       | `rv-coz-wellformed`        |
+| `TmbMismatch`            | `rv-key-material`          |
+| `AlgMismatch`            | `rv-alg-alignment`         |
+| `CzdMismatch`            | `rv-alg-alignment`         |
+| `DuplicateKey`           | `rv-key-set`               |
+| `DuplicateNonce`         | `rv-nonce-ledger`          |
+| `UnknownNonce`           | `rv-nonce-ledger`          |
+| `CozReuse`               | `rv-no-coz-reuse`          |
+| `StateMismatch`          | `rv-state-recomputed`      |
+| `EmptyMultihash`         | `rv-internal-invariants`   |
+| `MissingVariant`         | `rv-internal-invariants`   |
+| `NoActiveKeys`           | `rv-key-set`               |
+| `AlreadyDeleted`         | `rv-lifecycle-gate`        |
+| `AlreadyFrozen`          | `rv-lifecycle-transitions` |
+| `NotFrozen`              | `rv-lifecycle-transitions` |
+| `Frozen`                 | `rv-lifecycle-gate`        |
+| `EmbeddedErrored`        | `rv-key-active-gate`       |
+| `MixedTransactionTyp`    | `rv-intra-commit-shape`    |
+| `LoneGroupedTransaction` | `rv-intra-commit-shape`    |
+| `UnsupportedAlgorithm`   | `rv-alg-support`           |
+| `Storage`                | `rv-storage-backend`       |
+| `EmptyCommit`            | `rv-commit-nonempty`       |
+| `GenesisIncomplete`      | `rv-genesis-immutable`     |
+| `CommitNotLast`          | `rv-intra-commit-shape`    |
+| `MissingCommit`          | `rv-commit-nonempty`       |
+| `CommitMismatch`         | `rv-arrow-chain`           |
+| `DurableLeafMismatch`    | `rv-storage-backend`       |
+| `MalformedDigest`        | `rv-digest-wellformed`     |
+| `DigestLengthMismatch`   | `rv-digest-wellformed`     |
 
 ## Storage replay
 

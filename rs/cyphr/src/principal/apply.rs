@@ -661,6 +661,21 @@ impl PrincipalState {
             return Err(Error::GenesisIncomplete);
         }
 
+        // One mutation transaction of k >= 2 cozies and k transactions of
+        // one coz each share a TMR (singleton promotion) but not a TR, under
+        // one signed arrow. Admit only the separate form so the arrow fixes
+        // the commit's identity.
+        let mutation_txs: Vec<_> = pending
+            .transactions()
+            .iter()
+            .filter(|tx| !tx.is_commit())
+            .collect();
+        if let [only] = mutation_txs.as_slice()
+            && only.0.len() > 1
+        {
+            return Err(Error::LoneGroupedTransaction);
+        }
+
         // Validate arrow field placement: only last cz may have it,
         // and last cz MUST have it (SPEC §4.4).
         let cozies = pending.all_cozies();
