@@ -675,7 +675,7 @@ proptest! {
 /// vacuously over it.
 #[test]
 fn the_scenarios_reach_promotion_rivals_and_failure() {
-    let ops = [Op::Extend, Op::Extend, Op::Promote(0)];
+    let ops = [Op::Extend, Op::Promote(0)];
     let out = drive(run(&ops, None));
     assert_eq!(out.promotions, 1, "the line displaced the chain: {out:?}");
     assert!(out.kept >= 1, "a rival of the line was retained: {out:?}");
