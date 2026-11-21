@@ -10,7 +10,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let json = matches!(cli.output, OutputFormat::Json);
-    if let Err(e) = run(cli) {
+    if let Err(e) = run_on_runtime(cli) {
         if json {
             // One object on the last stderr line, switchable on `error.kind`.
             let obj = serde_json::json!({"error": {"kind": e.kind(), "message": e.to_string()}});
@@ -22,6 +22,20 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// Build the process's one runtime and run the command on a blocking
+/// thread of it; see [`commands::common::block_on`].
+fn run_on_runtime(cli: Cli) -> cyphr_cli::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::task::spawn_blocking(move || run(cli))
+            .await
+            .map_err(|e| std::io::Error::other(format!("command task failed: {e}")))?
+    })
 }
 
 fn run(cli: Cli) -> cyphr_cli::Result<()> {

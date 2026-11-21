@@ -52,17 +52,18 @@ pub fn open_backend(cli: &crate::Cli) -> crate::Result<JsonKeyStore> {
     Ok(keystore)
 }
 
-/// Build a fresh single-threaded tokio runtime and drive `fut` to
-/// completion on it.
+/// Drive `fut` to completion on the process's one runtime.
 ///
-/// The CLI is synchronous end-to-end; every entry point that needs to await
-/// one async storage call spins up a short-lived runtime just for that call
-/// rather than making the whole CLI async.
+/// `main` builds the runtime once and runs the (synchronous) command body
+/// on a blocking-pool thread, so this blocks that thread on the runtime's
+/// handle. Every await in a command, and every connection pool a
+/// connector holds, therefore lives on the same runtime for the whole
+/// process; a per-call runtime would strand a pool's background tasks when
+/// the call returned.
 pub fn block_on<F: std::future::Future>(fut: F) -> crate::Result<F::Output> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    Ok(rt.block_on(fut))
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|e| std::io::Error::other(format!("no process runtime: {e}")))?;
+    Ok(handle.block_on(fut))
 }
 
 /// Get Unix timestamp as i64 seconds.
