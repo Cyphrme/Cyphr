@@ -429,10 +429,15 @@ pub async fn verify_fork_items(
             .await
             .map_err(|source| EvidenceFailure::Replay { commit: at, source })
     };
+    // Every item is checked by the one verifier fork location uses
+    // ([`verify_principal_fork_reusing`]), over one prefix state, so items
+    // at one position replay the prefix once.
+    let mut prefix_state = None;
     let mut off_chain = Vec::new();
     for item in items {
         let verified = async {
-            let proof = verify_principal_fork(item, pg, fork_of(base, 0).await?, entries).await?;
+            let proof =
+                verify_principal_fork_reusing(item, pg, base, entries, &mut prefix_state).await?;
             let EvidenceItem::PrincipalFork { a, b, .. } = EvidenceItem::parse(item)?;
             let height = usize::try_from(proof.height).unwrap_or(usize::MAX);
             let mine = chain_ids.get(height).cloned().flatten();
