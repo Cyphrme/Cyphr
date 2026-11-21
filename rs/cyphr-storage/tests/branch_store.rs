@@ -399,8 +399,9 @@ async fn after_revocation(r: &Revoked) -> WireBundle {
 /// branch only; it is no naked revoke ("signed outside of a commit"), so
 /// it does not stop the key on a rival branch. The canonical commit at 1
 /// revokes `golden`; a `golden`-signed rival R is retained at 1, and B
-/// over R makes R's line the taller: B is admitted as the tip and the
-/// principal is Active, at the engine seam every holder ingests through.
+/// over R extends it, the only extended branch: B is admitted as the tip
+/// and the principal is Active, at the engine seam every holder ingests
+/// through.
 /// Turns red if an in-chain revoke disqualifies a rival branch's commits.
 #[tokio::test]
 async fn an_in_chain_revoke_is_state_of_its_own_branch() {
@@ -420,7 +421,7 @@ async fn an_in_chain_revoke_is_state_of_its_own_branch() {
     );
     r.f.submit(&e, &blobs(&rival, 2))
         .await
-        .expect("B out-extends the revocation's branch");
+        .expect("B extends the only extended branch");
     assert!(!e.is_errored(&r.f.id).await.expect("verdict"));
 }
 
@@ -1429,16 +1430,18 @@ async fn a_dead_keys_commit_arriving_after_its_revoke_is_refused() {
     assert_eq!(answers(&e, &f).await, before, "nothing of X4 is kept");
 }
 
-/// Backs F1's forward answer (SPEC 14.12, 15.8 item 1): the thief's
-/// `key_a` line X1, X2 is served and `key_a` is then revoked, so the thief
-/// can extend it no further. The owner out-extends on a rival line with
-/// `golden` alone, within the retention caps: R1 ties nothing (X2 is
-/// taller) and is retained, R2 ties X2 (Error) and is retained, R3 is the
-/// one tallest commit and is admitted and served, Active on the owner's
-/// line, live and after a rebuild. Turns red if the owner's line cannot
-/// out-extend a revoked key's line within two retained commits.
+/// Backs F1's answer under the fork rule (SPEC 14.12, 15.8; the spec
+/// author on #203: both branches extended are out of compliance): the
+/// thief's `key_a` line X1, X2 is served and `key_a` is then revoked, so
+/// the thief can extend it no further. The revoke judges nothing held, so
+/// X1 stays extended. The owner builds a rival line with `golden` alone,
+/// within the retention caps: R1 is retained, R2 extends it, so both
+/// branches are extended and the principal is Error. R3 does not leave it
+/// (the old tallest-wins rule admitted it as the tip): it is refused, and
+/// the verdict is the same after a rebuild. Turns red if a taller owner's
+/// line settles a both-extended fork.
 #[tokio::test]
-async fn the_owner_out_extends_a_revoked_keys_line() {
+async fn the_owner_cannot_out_extend_a_revoked_keys_extended_line() {
     let f = Fork::new(0).await;
     let pool = load_pool();
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
@@ -1453,14 +1456,15 @@ async fn the_owner_out_extends_a_revoked_keys_line() {
         create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
         pushed.push(pushed_tip(&e, &f, &blobs(&r, i + 1)).await);
     }
-    assert!(pushed[0].is_err() && pushed[1].is_err(), "{pushed:?}");
-    assert!(!e.is_errored(&f.id).await.expect("verdict"));
-    let r3 = pushed[2].clone().expect("R3 out-extends the thief's line");
+    assert!(
+        pushed.iter().all(Result::is_err),
+        "R1 and R2 are retained, R3 is no exit: {pushed:?}"
+    );
     for when in ["live", "after a rebuild"] {
-        let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
-        let assessed = e.assess(&f.id).await.expect("assess");
-        assert_eq!(tip.commit_id, r3, "{when}: R3 is served");
-        assert_eq!(assessed.heads, vec![r3.clone()], "{when}: R3 is the head");
+        assert!(
+            e.is_errored(&f.id).await.expect("verdict"),
+            "{when}: both branches extended"
+        );
         e.rebuild_index_from_scratch().await.expect("rebuild");
     }
 }
@@ -1702,8 +1706,8 @@ async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
 /// line as canonical, [G, C1], and the owner's rival R1 at position 1,
 /// `key/replace` of `key_a` by `alice` signed by `key_a`, is retained. R2
 /// extends R1, signed by `alice`, a key only the rival branch introduced.
-/// R2 is admitted: it out-extends the canonical line, which makes R1, R2
-/// the tallest, so the principal is Active on R2. Turns red if the signers
+/// R2 is admitted: it extends R1, the only extended branch, so the
+/// principal is Active on R2. Turns red if the signers
 /// of a resolution are read only from the canonical state, so a key the
 /// retained branch introduced is refused `UnknownKey`.
 #[tokio::test]
