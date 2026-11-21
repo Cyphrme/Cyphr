@@ -121,7 +121,7 @@ pub struct TipResponse {
 }
 
 /// Response for `GET /tip` while the principal is in Error (SPEC 15.5):
-/// no single tip, but the fork point and each tied head (SPEC 15.7.1).
+/// no single tip, but the fork point and each head (SPEC 15.7.1).
 /// The Active answer is [`TipResponse`], which has no `state`.
 #[derive(Debug, Serialize)]
 pub struct ErrorTipResponse {
@@ -133,7 +133,7 @@ pub struct ErrorTipResponse {
     pub now: i64,
 }
 
-/// One tied head of [`ErrorTipResponse`].
+/// One head of [`ErrorTipResponse`].
 #[derive(Debug, Serialize)]
 pub struct HeldHeadResponse {
     pub commit_id: String,
@@ -178,12 +178,12 @@ pub struct PatchResponseBody {
     /// then end below it. Absent while Active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fork_point: Option<cyphr_storage::engine::ForkPoint>,
-    /// While in Error: each tied branch from the fork point to its head.
+    /// While in Error: each branch from the fork point to its head.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<PatchBranchResponse>>,
 }
 
-/// One tied branch in a patch response.
+/// One branch in a patch response.
 #[derive(Debug, Serialize)]
 pub struct PatchBranchResponse {
     pub head: String,
@@ -357,7 +357,7 @@ pub async fn tip(
     let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
 
     // In Error no commit is the tip (SPEC 15.5): the answer is the fork and
-    // its tied heads, and nothing canonical is attested.
+    // its heads, and nothing canonical is attested.
     //
     // An index that cannot say is a failure to answer, never a fall back
     // to the tip it may have corrupted.
@@ -397,7 +397,7 @@ pub async fn tip(
 }
 
 /// The `/tip` answer for a principal in Error: the engine's fork point and
-/// tied heads, with the attestor's `held` statement over them. A statement
+/// heads, with the attestor's `held` statement over them. A statement
 /// that cannot be signed degrades the answer to unsigned, as a tip report
 /// does.
 async fn error_tip(
@@ -1035,7 +1035,7 @@ pub async fn patch(
     // unsigned than refusing to serve at all.
     //
     // In Error no tip exists to attest (SPEC 15.5): the statement is the
-    // held one `/tip` signs, naming the tied heads, and a bounded `to`
+    // held one `/tip` signs, naming the heads, and a bounded `to`
     // (which could stop short of them) is served unsigned as above.
     let coz = match tip {
         Some(_) if in_error => held_patch_statement(&state, &query.pr, query.to.is_some()).await,

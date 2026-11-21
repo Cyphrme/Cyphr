@@ -18,7 +18,7 @@ use super::check::{
     Want, evidence_count, heal_everything, n5_refused, n8_refused, tip_diff, until, verdict_check,
 };
 use super::run::{Failure, PState, act, fail, refresh};
-use crate::actions::{ActionError, Backup, Client, KeyRef, PeerTip, PushOutcome, Tip};
+use crate::actions::{ActionError, Backup, Client, KeyRef, PeerTip, PushOutcome, Standing, Tip};
 use crate::harness::Harness;
 
 /// Accept a push's tip or name the refusal as the invariant's failure.
@@ -42,7 +42,7 @@ async fn isolate_home(h: &Harness, names: &[String], home: &str) -> Result<(), F
     Ok(())
 }
 
-/// Wait until every holder reports the two tied heads and serves evidence
+/// Wait until every holder reports the two heads and serves evidence
 /// of the fork: N4 before resolution.
 async fn both_heads_everywhere(
     h: &Harness,
@@ -262,7 +262,7 @@ pub(crate) async fn lock<'h>(
         let mut lines = Vec::new();
         for holder in &ps.holders {
             match h.peer_view(holder, &ps.pr).await {
-                Some(v) if v.heads.len() > 1 => {},
+                Some(v) if v.standing == Standing::Error => {},
                 got => lines.push(format!("`{holder}` reads {got:?}, expected Error")),
             }
         }

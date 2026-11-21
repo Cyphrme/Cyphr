@@ -907,12 +907,11 @@ pub async fn pull<C: Connector>(record: &mut Record, peers: &[PullPeer<'_, C>]) 
 /// the fork; only its commits past the fork show which.
 ///
 /// Of a forked peer's chain, no more is handed on than the record itself
-/// holds from the fork up: a branch changes the holder's chain only by
-/// out-extending the holder's own, and the rival with that many commits
-/// past it does. Once the holder is on the peer's branch, the rest of it
-/// is an ordinary extension, verified by the next pull. So what a peer can
-/// make the holder submit is bounded by the holder's own chain, however
-/// long a chain the peer serves.
+/// holds from the fork up: one commit past the rival already settles the
+/// holder's fork rule (extended, or both extended and so Error), and
+/// further commits of the peer's branch are ordinary extensions, verified
+/// by the next pull. So what a peer can make the holder submit is bounded
+/// by the holder's own chain, however long a chain the peer serves.
 ///
 /// Nothing here is verified past what the pull verified: the holder admits
 /// or retains each commit only if it verifies, and refuses what it holds.

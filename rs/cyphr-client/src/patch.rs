@@ -128,12 +128,12 @@ pub(crate) fn replay_order<'a>(
 pub struct VerifiedPatch {
     /// The entries, in wire order, still to be applied by the caller: the
     /// chain the peer serves. While the peer is in Error (SPEC 15.5) it
-    /// serves the common chain and then each tied branch; this is the
+    /// serves the common chain and then each branch; this is the
     /// common chain followed by the branch the peer marks canonical, so a
     /// consumer reads one chain exactly as it would an Active peer's, and
     /// [`fork`](Self::fork) holds every branch.
     pub entries: Vec<PatchEntry>,
-    /// The fork point and each tied branch, present exactly when the peer
+    /// The fork point and each branch, present exactly when the peer
     /// reports Error.
     pub fork: Option<ForkPatch>,
     /// The action-only bundles, in wire order; empty from a peer that
@@ -144,7 +144,7 @@ pub struct VerifiedPatch {
     pub report: Option<TipReport>,
     /// The authenticated held statement; `Some` exactly when an
     /// [`AuthorityKey`] was supplied and the peer is in Error, where it
-    /// attests the tied heads instead of a tip.
+    /// attests the heads instead of a tip.
     pub held: Option<HeldReport>,
     /// The carrier's channel binding, passed through for the caller.
     pub binding: Option<ChannelBinding>,
@@ -161,11 +161,11 @@ fn entries_fork_marker(body: &Value) -> bool {
 pub struct ForkPatch {
     /// Where the branches part.
     pub fork_point: ForkPoint,
-    /// Each tied branch, from the fork point to its head.
+    /// Each branch, from the fork point to its head.
     pub branches: Vec<BranchPatch>,
 }
 
-/// One tied branch of a [`ForkPatch`].
+/// One branch of a [`ForkPatch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchPatch {
     /// The branch's head commit id, as the peer states it.

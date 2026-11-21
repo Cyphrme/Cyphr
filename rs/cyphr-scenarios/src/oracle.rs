@@ -163,10 +163,10 @@ impl Harness {
             "freshness.peer_reported_newer disagrees with the peers' heights"
         );
         // A peer in Error reports no single tip (SPEC 15.5) and so no age
-        // of one: only a peer with exactly one head has an age to compare.
+        // of one: only a peer that is Active has an age to compare.
         if let Some((name, _)) = held
             .iter()
-            .find(|(_, t)| t.heads.len() == 1 && t.tip == v.tip)
+            .find(|(_, t)| t.standing == Standing::Active && t.tip == v.tip)
         {
             // The peer's age is whole seconds (truncated, so up to 1s low)
             // and is read after the verdict: it can exceed the verdict's age
@@ -189,7 +189,7 @@ impl Harness {
                 None => assert!(
                     self.peer_view(name, p)
                         .await
-                        .is_some_and(|t| t.heads.len() > 1),
+                        .is_some_and(|t| t.standing == Standing::Error),
                     "peer reported a tip"
                 ),
             }

@@ -334,7 +334,7 @@ async fn sync_locked(
         }
     }
 
-    // An authority in Error serves every tied branch (SPEC 15.7.1). The
+    // An authority in Error serves every branch (SPEC 15.7.1). The
     // witness holds them all as evidence of the fork, the canonical one
     // included: a witness ahead of the fork has its own head past them.
     let mut branch_bundles = Vec::new();
@@ -379,7 +379,7 @@ async fn sync_locked(
             // A branch commit that does not extend the witness's own head
             // is refused as the tip and kept as evidence of the fork (the
             // same answer a push gets, 409 or 422); whether the witness
-            // holds every tied head is checked after the loop.
+            // holds every head is checked after the loop.
             Err(
                 cyphr_storage::engine::EngineError::Protocol(_)
                 | cyphr_storage::engine::EngineError::Errored { .. },
@@ -434,7 +434,7 @@ async fn sync_locked(
         }
     }
 
-    // Part 2 for an authority in Error: its statement names tied heads, not
+    // Part 2 for an authority in Error: its statement names heads, not
     // a tip, so the witness must now hold every one of them.
     if let Some(held) = &held_report {
         for head in &held.heads {
@@ -446,7 +446,7 @@ async fn sync_locked(
                 Ok(true) => {},
                 Ok(false) => {
                     warn!(principal = %principal_id, head = %head.commit_id,
-                        "witness sync: a tied head of the authority is not held");
+                        "witness sync: a head of the authority is not held");
                     return SyncOutcome::Failed {
                         reason: SyncFailure::EntryCommitmentMismatch,
                     };

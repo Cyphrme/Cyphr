@@ -124,11 +124,14 @@ pub struct PeerTip {
     /// The principal as the peer reports it (a bare digest).
     pub principal_id: String,
     /// The peer's one tip while Active; while it reports Error (no single
-    /// tip, SPEC 15.5) its first tied head, with `pr` and `ar` empty.
+    /// tip, SPEC 15.5) its first head, with `pr` and `ar` empty.
     pub tip: Tip,
-    /// Every head the peer reports: `tip` alone while Active, each tied
-    /// head in Error.
+    /// Every head the peer reports: `tip` alone while Active, each leaf
+    /// above the fork point in Error.
     pub heads: Vec<Tip>,
+    /// The peer's own consensus state, as its `/tip` says it: never read
+    /// back from a head count.
+    pub standing: Standing,
     pub height: u64,
     pub pr: String,
     pub ar: String,
@@ -147,6 +150,7 @@ impl PeerTip {
             return Some(PeerTip {
                 principal_id: t["principal_id"].as_str()?.to_owned(),
                 tip: heads.first()?.clone(),
+                standing: Standing::Error,
                 height: t["heads"][0]["sequence"].as_u64()? + 1,
                 heads,
                 pr: String::new(),
@@ -157,6 +161,7 @@ impl PeerTip {
         Some(PeerTip {
             principal_id: t["principal_id"].as_str()?.to_owned(),
             heads: vec![tip.clone()],
+            standing: Standing::Active,
             tip,
             height: t["commit_count"].as_u64()?,
             pr: t["pr"].as_str()?.to_owned(),

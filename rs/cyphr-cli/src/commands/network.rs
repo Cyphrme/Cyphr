@@ -37,8 +37,9 @@ fn wire_id(identity: &str) -> crate::Result<String> {
 
 /// The position in `local` of the commit the peer's answer says it holds:
 /// its tip, or while it is in Error (SPEC 15.5) the highest of its tied
-/// heads that `local` holds. A commit extending any tied head is admitted
-/// (SPEC 15.8), so one such head is enough to push from.
+/// heads that `local` holds. A commit extending a head resolves the fork
+/// while neither branch is extended (SPEC 15.8), so one such head is enough
+/// to push from; once both are, the peer refuses it as Errored.
 fn held_position(tip: &TipAnswer, local: &[RawCommit]) -> Option<usize> {
     let at = |id: &TaggedDigest| local.iter().position(|c| c.commit_id == id.to_string());
     match tip {
@@ -52,7 +53,7 @@ fn describe(tip: &TipAnswer) -> String {
     match tip {
         TipAnswer::Active { commit_id } => format!("peer tip {commit_id}"),
         TipAnswer::Error { heads, .. } => format!(
-            "peer is in Error with tied heads {}; none of them",
+            "peer is in Error with heads {}; none of them",
             heads
                 .iter()
                 .map(|h| h.commit_id.to_string())
@@ -695,7 +696,7 @@ mod tests {
 
     /// Backs `push` choosing where to send from: an Active peer's tip is
     /// found by id; for an Error peer (SPEC 15.5), the highest-positioned
-    /// tied head the local history holds, since extending any tied head is
+    /// head the local history holds, since extending any head is
     /// admitted (SPEC 15.8); and a peer none of whose heads is held gives
     /// nothing to extend. Red if Error's heads are ignored, the lowest is
     /// taken, or an unheld head is found.

@@ -211,7 +211,7 @@ pub async fn tip_report(
     .await
 }
 
-/// One tied head a held statement names, as the engine reports it.
+/// One head a held statement names, as the engine reports it.
 #[derive(Debug, Clone)]
 pub struct HeldClaim {
     pub commit_id: String,
@@ -220,7 +220,7 @@ pub struct HeldClaim {
 }
 
 /// Compose and sign the statement `/tip` carries while the principal is in
-/// Error (SPEC 15.5): the fork point and each tied head with the time this
+/// Error (SPEC 15.5): the fork point and each head with the time this
 /// server first stored it (SPEC 13.6 "first_seen"). It claims nothing
 /// canonical: no `roots`, no `commit_id`, no `sequence`, because in Error
 /// no commit is the principal's tip.

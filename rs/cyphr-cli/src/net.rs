@@ -160,7 +160,7 @@ impl Peer {
     }
 
     /// What the peer says its tip is for `principal`: one commit while the
-    /// principal is Active, the fork point and tied heads in Error (SPEC
+    /// principal is Active, the fork point and heads in Error (SPEC
     /// 15.5); `None` when the peer holds nothing for it.
     ///
     /// # Errors

@@ -254,7 +254,7 @@ fn parse_sequence(value: &Value) -> Result<u64, TipReportParseError> {
 /// tip (SPEC 15.5, 13.6).
 pub const HELD_REPORT_TYP: &str = "cyphr-server/receipt/held";
 
-/// Where tied branches part: the commits below `height` are common, and
+/// Where branches part: the commits below `height` are common, and
 /// `pre` is their Principal Root (`None` at position 0).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkPoint {
@@ -262,7 +262,7 @@ pub struct ForkPoint {
     pub pre: Option<TaggedDigest>,
 }
 
-/// One tied head a held statement or an Error `/tip` names.
+/// One head a held statement or an Error `/tip` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldHead {
     pub commit_id: TaggedDigest,
@@ -273,7 +273,7 @@ pub struct HeldHead {
 }
 
 /// A held statement's claims, canonically parsed: the fork point and every
-/// tied head. It carries no tip and no roots; a verifier that wants one
+/// head. It carries no tip and no roots; a verifier that wants one
 /// has none to take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldReport {
@@ -370,7 +370,7 @@ fn parse_fork_with(
 }
 
 /// What a `/tip` answer says, whichever shape: one tip while the principal
-/// is Active, or the fork point and the tied heads in Error. The answer is
+/// is Active, or the fork point and the heads in Error. The answer is
 /// the peer's claim; nothing here verifies it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TipAnswer {

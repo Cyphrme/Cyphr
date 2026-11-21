@@ -180,7 +180,7 @@ async fn harness_partition_cuts_an_open_connection() {
 // tip, and by neither under a principal it never saw.
 #[tokio::test(flavor = "multi_thread")]
 async fn harness_peer_view_reads_the_peer_itself() {
-    use cyphr_scenarios::actions::{PeerTip, Principal, Tip};
+    use cyphr_scenarios::actions::{PeerTip, Principal, Standing, Tip};
 
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
     let pr = h
@@ -204,6 +204,7 @@ async fn harness_peer_view_reads_the_peer_itself() {
             principal_id: "x".into(),
             tip: Tip("C2".into()),
             heads: vec![Tip("C2".into())],
+            standing: Standing::Active,
             height: 2,
             pr: "PR".into(),
             ar: "AR".into()
@@ -224,6 +225,7 @@ async fn harness_peer_view_reads_the_peer_itself() {
             principal_id: "x".into(),
             tip: Tip("C3".into()),
             heads: vec![Tip("C3".into()), Tip("D3".into())],
+            standing: Standing::Error,
             height: 3,
             pr: String::new(),
             ar: String::new()
