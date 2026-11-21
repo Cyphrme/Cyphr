@@ -103,7 +103,7 @@ even logarithmically, fails; the tests count work and never time it.
 | Stitched proofs (`stitch_bounds`) | 7 pass                                   | 5 pass                              |
 
 The large tier is marked `#[ignore]` and runs with `-- --ignored`; in
-release it took 6 s (storage), 10 s (server) and 4 s (proofs) on the
+release it took 5 s (storage), 10 s (server) and 4 s (proofs) on the
 machine above. All 68 pass.
 
 ## Whole-network simulation
@@ -115,17 +115,33 @@ limits. Release build, on the machine above, storage on the real disk:
 
 | Measure                                       | Value                 |
 | :-------------------------------------------- | :-------------------- |
-| Wall time                                     | 55 s                  |
-| Summed server CPU, all server processes       | 5.7 s                 |
-| Gossip rounds, summed over servers            | 59                    |
-| Commits replayed by gossip, summed            | 39                    |
+| Wall time, the simulation itself              | 56 s                  |
+| Wall time, including server setup and cleanup | 67 s                  |
+| Summed server CPU                             | about 5.5 s           |
+| Gossip rounds, summed over the five servers   | 265                   |
+| Commits replayed by gossip, summed            | 192                   |
 | Convergence at the three barriers             | 1.11, 1.15 and 1.15 s |
 | Server errors (5xx), rate-limit answers (429) | 0, 0                  |
 
-For scale, the same run as a debug build took 130 s wall, 122 s of server
-CPU and 136 replayed commits. Before the bounds above held, a debug build
-of the same simulation (80 generated operations) took 782 CPU-seconds and
-replayed 23,661 commits through gossip alone.
+Method. The gossip figures are the simulation's own counters, which read
+each server's `/metrics` and add the counts of every process lifetime of
+that server, so a restarted server loses nothing. They are exact for the
+run. Replays and rounds depend on the order of concurrent operations and on timing,
+so they are one run's values (a release and a debug run, once each).
+The CPU figure is a sampler reading each server
+process's CPU from `/proc` every 0.5 s and keeping the last reading before
+the process exits, so each of the 16 to 19 server processes can lose up to
+0.5 s of CPU, and a process that lives under 0.5 s is missed. The error is
+therefore at most about 16 x 0.5 = 8 s in principle. As a cross-check, the
+simulation's own process reaped 7.4 s of CPU from all its children, which
+include the command-line client processes as well as the servers: so the
+server figure lies between 5.5 and 7.4 s. The same method gives, for the
+debug build, 132 s sampled against 123 s reaped.
+
+For scale, the same run as a debug build took 131 s wall (119 s for the
+simulation), 545 gossip rounds and 195 replayed commits. Before the bounds
+above held, a debug build of the same simulation (80 generated operations)
+took 782 CPU-seconds and replayed 23,661 commits through gossip alone.
 
 Where the simulation's wall time goes. The server CPU is a tenth of it. A
 single command that creates a new local store (`cyphr init`, which is what
