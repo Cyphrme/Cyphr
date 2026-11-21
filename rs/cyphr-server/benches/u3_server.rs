@@ -222,11 +222,11 @@ async fn run(n: usize) {
     .await;
     row(n, "auth: POST /auth/login", "replayed 0", c);
     let (_, _, resp) = call(&app_a, "POST", "/auth/login", login_body(&id)).await;
-    let token = serde_json::from_slice::<serde_json::Value>(&resp).expect("json")["payload"]
-        ["token"]
-        .as_str()
-        .expect("token")
-        .to_owned();
+    let token =
+        serde_json::from_slice::<serde_json::Value>(&resp).expect("json")["payload"]["token"]
+            .as_str()
+            .expect("token")
+            .to_owned();
     let c = measure(&a, None, 3, || async {
         let (st, len, _) = call(&app_a, "POST", "/auth/session", token.clone()).await;
         assert_eq!(st, StatusCode::OK);

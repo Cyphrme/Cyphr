@@ -30,6 +30,52 @@ const VERSION_KEY: &str = "format-version";
 /// with no recorded version predates versions and is v1 (same layout).
 pub(crate) const STORE_FORMAT_VERSION: u32 = 1;
 
+/// A dedicated store's sync has failed: the store is closed to writes
+/// until the process restarts ([`SyncLatch`]).
+#[derive(Debug)]
+pub(crate) struct DurabilityLost(pub(crate) String);
+
+/// Fails a dedicated fjall store closed on a failed sync, as the engine
+/// does for the record ([`cyphr_storage::engine::EngineError::DurabilityLost`]).
+///
+/// fjall poisons its database on a failed write but not on a failed
+/// `persist`, and a sync that fails can drop the dirty pages it covered, so
+/// a later sync may succeed over them (fsyncgate). From the first failure
+/// every write is refused until a restart replays what reached the disk.
+/// Syncs run one at a time, so a write queued behind the failing one finds
+/// the latch set instead of reporting success over pages that are gone.
+#[derive(Default)]
+pub(crate) struct SyncLatch {
+    lost: std::sync::atomic::AtomicBool,
+    one_sync: std::sync::Mutex<()>,
+}
+
+impl SyncLatch {
+    /// `Err` once a sync has failed. Checked before a write stores
+    /// anything, so a failed store adds nothing.
+    pub(crate) fn writable(&self) -> Result<(), DurabilityLost> {
+        if self.lost.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DurabilityLost("an earlier sync of the store failed".into()));
+        }
+        Ok(())
+    }
+
+    /// Run `sync`; if it fails, latch the store closed.
+    pub(crate) fn sync(
+        &self,
+        sync: impl FnOnce() -> Result<(), fjall::Error>,
+    ) -> Result<(), DurabilityLost> {
+        // The mutex guards no data; a panicked holder left nothing to repair.
+        let _one_sync = self.one_sync.lock().unwrap_or_else(|p| p.into_inner());
+        self.writable()?;
+        sync().map_err(|e| {
+            self.lost.store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::error!(error = %e, "store sync failed; refusing writes until restart");
+            DurabilityLost(e.to_string())
+        })
+    }
+}
+
 /// Why a store's recorded format version could not be accepted.
 #[derive(Debug)]
 pub(crate) enum StampError {
@@ -84,6 +130,9 @@ pub enum ObservationError {
     /// Serializing a death record failed.
     #[error("death-set serialize: {0}")]
     Serialize(String),
+    /// A sync of the store failed; it refuses every write until restart.
+    #[error("death-set store durability lost: {0}")]
+    DurabilityLost(String),
     /// The store records a format version this build does not read. Nothing
     /// was read from it: a mis-decoded death set would un-revoke keys.
     #[error("death set format version {found} is not the supported {supported}")]
@@ -92,6 +141,12 @@ pub enum ObservationError {
     /// (`[limits] max_dead_keys`): a refusal of the new record, not a fault.
     #[error("death set is full ({ceiling} keys)")]
     Full { ceiling: u64 },
+}
+
+impl From<DurabilityLost> for ObservationError {
+    fn from(e: DurabilityLost) -> Self {
+        Self::DurabilityLost(e.0)
+    }
 }
 
 impl From<StampError> for ObservationError {
@@ -124,6 +179,8 @@ pub struct ObservationStore {
     /// How many keys the death set holds, guarded so the count and
     /// the insert are one step.
     dead_count: std::sync::Arc<std::sync::Mutex<u64>>,
+    /// Closes the store to writes after a failed sync.
+    latch: std::sync::Arc<SyncLatch>,
     /// The most keys the death set may hold ([`Self::with_ceiling`]).
     ceiling: u64,
     /// Held across a revoke's ceiling check and both writes, so concurrent
@@ -150,6 +207,7 @@ impl ObservationStore {
             db,
             dead_keys,
             dead_count: std::sync::Arc::new(std::sync::Mutex::new(count)),
+            latch: std::sync::Arc::default(),
             ceiling: u64::MAX,
             revoke_gate: tokio::sync::Mutex::new(()),
         })
@@ -222,13 +280,15 @@ impl ObservationStore {
         let dead_keys = self.dead_keys.clone();
         let db = self.db.clone();
         let dead_count = self.dead_count.clone();
+        let latch = self.latch.clone();
         tokio::task::spawn_blocking(move || {
             if dead_keys.contains_key(&key).map_err(backend)? {
                 return Ok(());
             }
+            latch.writable()?;
             let mut count = dead_count.lock().unwrap_or_else(|p| p.into_inner());
             dead_keys.insert(key, value).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)?;
+            latch.sync(|| db.persist(PersistMode::SyncAll))?;
             *count += 1;
             Ok(())
         })
@@ -287,5 +347,38 @@ impl ObservationStore {
         tokio::task::spawn_blocking(move || dead_keys.contains_key(&key).map_err(backend))
             .await
             .map_err(|e| ObservationError::Join(e.to_string()))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The only seam for a failed `persist`: fjall's cannot be made to
+    /// fail on demand, so the latch both stores route their syncs through
+    /// is held to its contract directly.
+    #[test]
+    fn a_failed_sync_closes_the_store_and_later_syncs_never_run() {
+        let latch = SyncLatch::default();
+        latch.sync(|| Ok(())).expect("a healthy sync passes");
+        latch.writable().expect("and leaves the store writable");
+
+        let failed = latch.sync(|| Err(fjall::Error::Io(std::io::Error::other("disk gone"))));
+        assert!(matches!(failed, Err(DurabilityLost(m)) if m.contains("disk gone")));
+
+        let mut ran = false;
+        let later = latch.sync(|| {
+            ran = true;
+            Ok(())
+        });
+        assert!(later.is_err(), "a sync after a failed one is refused");
+        assert!(
+            !ran,
+            "and is not attempted: its success would be over lost pages"
+        );
+        assert!(
+            latch.writable().is_err(),
+            "writes are refused until restart"
+        );
     }
 }
