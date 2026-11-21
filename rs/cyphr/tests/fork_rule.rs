@@ -179,7 +179,11 @@ proptest! {
     ) {
         let (mut held, mut l, mut r) = fork(2, left, right);
         for (n, on_left) in adds.into_iter().enumerate() {
-            if on_left { l = extend(&mut held, l, 5000 + n) } else { r = extend(&mut held, r, 5000 + n) }
+            if on_left {
+                l = extend(&mut held, l, 5000 + n);
+            } else {
+                r = extend(&mut held, r, 5000 + n);
+            }
             prop_assert!(is_error(&held), "after {n} adds");
         }
     }
