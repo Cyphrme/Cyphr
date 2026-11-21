@@ -85,6 +85,7 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::GenesisIncomplete => "GenesisIncomplete",
         Error::StateMismatch => "StateMismatch",
         Error::MixedTransactionTyp => "MixedTransactionTyp",
+        Error::LoneGroupedTransaction => "LoneGroupedTransaction",
         Error::EmptyCommit => "EmptyCommit",
         Error::EmptyMultihash => "EmptyMultihash",
         _ => "UnknownError",

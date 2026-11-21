@@ -355,10 +355,13 @@ def generate_toml():
             f'    {{ now = {base_time}, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" }},',
             f'    {{ now = {base_time}, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }}',
             "  ],",
+            "  [",
+            f'    {{ now = {base_time}, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" }},',
+            "  ],",
             "]",
             "",
             "[test.expected]",
-            "key_count = 3",
+            "key_count = 4",
             ""
         ])
 
@@ -1460,6 +1463,8 @@ def generate_toml():
         "tx = [",
         "  [",
         f'    {{ now = {base_time}, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" }},',
+        "  ],",
+        "  [",
         f'    {{ now = {base_time}, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }}',
         "  ],",
         "]",

@@ -377,8 +377,8 @@ fn pre_algs(p: &Principal, before: usize) -> Vec<HashAlg> {
 }
 
 /// Commit 1 is one transaction of two cozies (`key/create` of an ES256 and
-/// an ES384 key, SPEC 4.1 grouping); then the ES256 key retires the
-/// genesis key, so index 0 is covered by SHA-512 alone and the walk must
+/// an ES384 key, SPEC 4.1 grouping) beside a `nonce/create` transaction; then the ES256 key retires
+/// the genesis key, so index 0 is covered by SHA-512 alone and the walk must
 /// stitch at the multi-coz commit.
 async fn multi_coz(grouped: bool) -> Principal {
     let (a, b, c) = (
@@ -410,6 +410,13 @@ async fn multi_coz(grouped: bool) -> Principal {
         scope
             .apply_tx(group)
             .expect("one transaction of two cozies");
+        // A lone grouped mutation transaction is refused, so the group
+        // sits beside a second mutation transaction.
+        let nonce = format!("SHA-256:{}", Base64UrlUnpadded::encode_string(&[9; 32]));
+        let nonce = verified(&scope, "nonce/create", nonce, None);
+        scope
+            .apply(nonce)
+            .expect("a second transaction, of another typ");
     } else {
         let key = verified(&scope, "key/create", tmb(&b), Some(key_of(&b)));
         scope.apply(key).expect("key/create");
@@ -1437,8 +1444,8 @@ async fn a_two_component_arrow_is_not_misread() {
 
 // A commit with several cozies must be provable like any other: the
 // stitch opens the TR path to the closing coz whatever the shape of the
-// commit's transactions, one grouped transaction of two cozies or
-// several transactions of one (cozies of one typ are grouped at finalize).
+// commit's transactions, one grouped transaction of two cozies beside
+// another transaction or several transactions of one (cozies of one typ are grouped at finalize).
 #[tokio::test]
 async fn a_stitch_at_a_multi_coz_commit_is_provable() {
     for grouped in [true, false] {
@@ -1446,7 +1453,11 @@ async fn a_stitch_at_a_multi_coz_commit_is_provable() {
         let txs = p.commit_at(1).expect("commit").transactions();
         assert_eq!(
             txs.iter().map(|t| t.0.len()).collect::<Vec<_>>(),
-            if grouped { vec![2, 1] } else { vec![1, 1, 1] },
+            if grouped {
+                vec![2, 1, 1]
+            } else {
+                vec![1, 1, 1]
+            },
             "setup: commit 1 transactions (the last is the closing coz)"
         );
         for i in 0..n_of(&p) {

@@ -291,10 +291,9 @@ SPEC 3.7.5, line 415. Disposition: `covered`.
 - disposition: covered
 - spec-text: TR = MR(TXₘ₀?, TXₘ₁?, ..., TX꜀)
 - tests:
-  - `rs/cyphr-server/tests/transaction_grouping.rs::one_mutation_transaction_grouping_moves_tr`
   - `rs/cyphr-server/tests/transaction_grouping.rs::grouped_transaction_end_to_end`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_transaction_grouping[transaction_grouping/key_replace_signed_by_two_keys]`
-- fails when: TR is not the MR of every transaction's id in order with the commit transaction last (for example TR built over TMR, which promotes a lone mutation transaction and so hides its grouping), or a commit's transactions grouped otherwise give the same TR.
+- fails when: TR is not the MR of every transaction's id in order with the commit transaction last (for example TR built over TMR, which promotes a single mutation transaction's id), or a commit's transactions grouped otherwise give the same TR.
 
 ```claim
 kind: requirement
