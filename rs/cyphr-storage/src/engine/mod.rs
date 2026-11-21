@@ -5247,7 +5247,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             {
                 return Ok(());
             }
-            if !has_slot(of_principal, commit.pre.as_deref(), commit.sequence, &signer) {
+            if !has_slot(
+                of_principal,
+                commit.pre.as_deref(),
+                commit.sequence,
+                &signer,
+            ) {
                 return Err(EngineError::BranchLimit { key: signer });
             }
         }

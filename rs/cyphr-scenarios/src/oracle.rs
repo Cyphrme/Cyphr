@@ -129,7 +129,10 @@ impl Harness {
                 .iter()
                 .filter_map(|(_, t)| t.fork_point.as_ref().map(ToString::to_string))
                 .collect();
-            assert!(points.len() <= 1, "holders disagree on the fork point: {points:?}");
+            assert!(
+                points.len() <= 1,
+                "holders disagree on the fork point: {points:?}"
+            );
             let lists: BTreeSet<Vec<Tip>> = erred.iter().map(|(_, t)| t.heads.clone()).collect();
             if lists.len() <= 1 {
                 assert_eq!(
@@ -139,7 +142,13 @@ impl Harness {
             } else {
                 let mut known: BTreeSet<Tip> = live_heads.clone();
                 for name in &live {
-                    known.extend(self.chain_read(name, p).await.commit_ids.into_iter().map(Tip));
+                    known.extend(
+                        self.chain_read(name, p)
+                            .await
+                            .commit_ids
+                            .into_iter()
+                            .map(Tip),
+                    );
                 }
                 assert!(
                     claimed_branches.iter().all(|b| known.contains(b)),
