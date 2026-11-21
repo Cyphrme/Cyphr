@@ -157,9 +157,10 @@ async fn both_extended(alice: usize, thief: usize) {
     for n in 0..thief {
         h.ok(t.commit_data(&pr, &format!("thief {n}")).await);
     }
-    h.ok(a.push(&pr, &["p1", "p2"]).await)
+    let at = h
+        .ok(a.push(&pr, &["p1", "p2"]).await)
         .accepted("alice branch");
-    h.ok(t.push(&pr, &["p3"]).await).accepted("thief branch");
+    let tt = h.ok(t.push(&pr, &["p3"]).await).accepted("thief branch");
 
     // Catches tallest-wins: the taller branch must not make any server
     // Active, and no server may hold a single tip.
@@ -173,16 +174,42 @@ async fn both_extended(alice: usize, thief: usize) {
         },
     )
     .await;
-    // Catches split witnesses: each server reports the tie itself.
-    h.eventually("every server to report Error", CONVERGE, || async {
-        for peer in all {
-            match h.peer_view(peer, &pr).await {
-                Some(v) if v.heads.len() > 1 => {},
-                _ => return Ok(false),
+    // Catches split witnesses: each server itself reports state Error
+    // (read from its raw `/tip`, not inferred from a head count) with
+    // exactly the two branch tips as heads, whatever their heights.
+    let mut want = vec![at.0.clone(), tt.0.clone()];
+    want.sort();
+    h.eventually(
+        "every server to report Error on both tips",
+        CONVERGE,
+        || async {
+            for peer in all {
+                let resp = h
+                    .http
+                    .get(format!("http://{}/tip", h.peer(peer).addr()))
+                    .query(&[("pr", pr.0.as_str())])
+                    .send()
+                    .await;
+                let Ok(resp) = resp else { return Ok(false) };
+                let Ok(tip) = resp.json::<serde_json::Value>().await else {
+                    return Ok(false);
+                };
+                let mut heads: Vec<String> = tip["payload"]["heads"]
+                    .as_array()
+                    .map(|hs| {
+                        hs.iter()
+                            .filter_map(|x| x["commit_id"].as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                heads.sort();
+                if tip["payload"]["state"] != "error" || heads != want {
+                    return Ok(false);
+                }
             }
-        }
-        Ok(true)
-    })
+            Ok(true)
+        },
+    )
     .await;
     let v = h.ok(bob.verdict(&pr, &all).await);
     h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
