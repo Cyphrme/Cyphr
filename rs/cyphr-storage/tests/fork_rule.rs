@@ -239,7 +239,7 @@ fn run<F: std::future::Future>(f: F) -> F::Output {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
     /// Catches path dependence and rebuild drift: whatever order a tree is
     /// pushed in, the live verdict is rule E over what the engine holds,
@@ -329,4 +329,122 @@ async fn one_extension_resolves_and_the_abandoned_branch_reopens_it() {
     );
     e.rebuild_index_from_scratch().await.expect("rebuild");
     assert_eq!(verdict(&e, &w.id).await, Err(()), "a rebuild agrees");
+}
+
+/// A genesis commit of the shared keys, signed by `first` (the others
+/// follow in key order), at `now`.
+async fn genesis_commit(first: usize, now: i64) -> cyphr::Principal {
+    let keys: Vec<Kp> = SIGNERS.iter().map(|n| kp(n)).collect();
+    let mut p = cyphr::Principal::implicit(key_of(&keys[first]))
+        .await
+        .expect("genesis");
+    let others: Vec<cyphr::Key> = (0..keys.len())
+        .filter(|&i| i != first)
+        .map(|i| key_of(&keys[i]))
+        .collect();
+    p.commit_genesis(&signer_of(&keys[first]), &others, now, "cyphr.me")
+        .await
+        .expect("genesis commit");
+    p
+}
+
+fn commit_id(p: &cyphr::Principal) -> String {
+    p.commits()
+        .last()
+        .expect("commit")
+        .tr()
+        .0
+        .tagged_first()
+        .expect("commit id")
+        .to_string()
+}
+
+/// Whether two distinct genesis commits of one principal can share a
+/// Principal Root, which would make a sequence-1 commit extend both. Not
+/// constructible from honest signing: the same keys, signer and time give
+/// the one commit (no fork), and changing the time or the signer changes
+/// the commit and its PR. A shared PR is then a hash collision, and the
+/// rule's answer to one (both extended: Error) is pinned over held
+/// commits in the core tests.
+#[tokio::test]
+async fn distinct_genesis_commits_have_distinct_principal_roots() {
+    let same = (genesis_commit(0, NOW).await, genesis_commit(0, NOW).await);
+    assert_eq!(commit_id(&same.0), commit_id(&same.1), "one commit");
+    assert_eq!(
+        same.0.pr_tagged().expect("pr"),
+        same.1.pr_tagged().expect("pr")
+    );
+    let others = [
+        genesis_commit(0, NOW + 7).await,
+        genesis_commit(1, NOW).await,
+    ];
+    for o in &others {
+        assert_ne!(commit_id(o), commit_id(&same.0), "a distinct commit");
+        assert_ne!(
+            o.pr_tagged().expect("pr"),
+            same.0.pr_tagged().expect("pr"),
+            "with a distinct PR"
+        );
+    }
+}
+
+/// Rule E at position 0: two genesis commits of one principal are a
+/// contest like any other. Neither extended is Error; a commit over one
+/// selects it; a commit over the other too is Error again. Catches a rule
+/// that skips position 0, and tallest-wins (the second extension below is
+/// the taller branch's rival).
+#[tokio::test]
+async fn two_genesis_commits_are_a_contest_like_any_other() {
+    let a = genesis_commit(0, NOW).await;
+    let b = genesis_commit(0, NOW + 7).await;
+    let keys: Vec<Kp> = SIGNERS.iter().map(|n| kp(n)).collect();
+    let mut a1 = a.fork().await.expect("fork");
+    create_key(&mut a1, &keys[0], &kp(CREATED[0]), NOW + 20).await;
+    let mut b1 = b.fork().await.expect("fork");
+    create_key(&mut b1, &keys[0], &kp(CREATED[1]), NOW + 21).await;
+    let mut b2 = b1.fork().await.expect("fork");
+    create_key(&mut b2, &keys[0], &kp(CREATED[2]), NOW + 22).await;
+
+    let bundle = |p: &cyphr::Principal| {
+        WireBundle::of_commit(p.commits().last().expect("commit")).expect("bundle")
+    };
+    let id = test_fixtures::bundle::genesis_id(&bundle(&a)).expect("genesis id");
+    let genesis = Genesis::Disclosed(keys.iter().map(key_of).collect());
+    let e = engine();
+    let push = |p: &cyphr::Principal| {
+        let (e, id, genesis, b) = (&e, id.clone(), genesis.clone(), bundle(p));
+        async move { e.submit_commit(&id, Some(genesis), &b).await.map(|_| ()) }
+    };
+    push(&a).await.expect("the first genesis");
+    let _ = push(&b).await;
+    assert_eq!(
+        verdict(&e, &id).await,
+        Err(()),
+        "two unextended genesis commits"
+    );
+    let fp = e.assess(&id).await.expect("assess").fork_point;
+    assert_eq!(
+        fp.map(|f| (f.height, f.pre)),
+        Some((0, None)),
+        "the fork point"
+    );
+
+    push(&a1)
+        .await
+        .expect("one commit over one genesis selects it");
+    assert_eq!(verdict(&e, &id).await, Ok(commit_id(&a1)));
+    let _ = push(&b1).await;
+    assert_eq!(
+        verdict(&e, &id).await,
+        Err(()),
+        "both genesis commits extended"
+    );
+    let refused = push(&b2).await;
+    assert!(
+        refused.is_err(),
+        "a taller extension is no exit: {refused:?}"
+    );
+    assert_eq!(verdict(&e, &id).await, Err(()));
+    e.rebuild_index_from_scratch().await.expect("rebuild");
+    assert_eq!(verdict(&e, &id).await, Err(()), "a rebuild agrees");
 }
