@@ -10,9 +10,9 @@
 //!
 //! The two episodes that do fork a principal (a second device forking it,
 //! a thief forking it) are built, not raced, and each follows the one flow
-//! the hand-written scenarios already pin: two extended branches resolved
-//! by the owner's next commit, or a stolen key's branch resolved by the
-//! owner's `key/delete`. The model records only the chain the owner is left
+//! the hand-written scenarios already pin: two unextended branches
+//! resolved by the owner's next commit, or a stolen key's branch resolved
+//! by the owner's `key/delete`. The model records only the chain the owner is left
 //! with; which branch peers hold in between is read from the peers' own
 //! evidence by the oracle, never predicted here.
 //!
@@ -194,12 +194,12 @@ impl Model {
                 pm.keys -= 1;
             },
             // Two devices fork the principal on opposite sides of a cut and
-            // the first resolves it: its two commits plus the resolving one.
-            // The second device is left holding the abandoned branch.
+            // the first resolves it: its commit plus the resolving one. The
+            // second device is left holding the abandoned branch.
             Op::Fork { p } => {
                 self.episode(op, *p)?;
                 let pm = &mut self.principals[*p];
-                pm.height += 3;
+                pm.height += 2;
                 pm.devices = 1;
                 pm.backups.retain(|d| *d == 0);
             },

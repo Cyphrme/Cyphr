@@ -7,9 +7,11 @@
 //! (their heads, their served and offline-verified evidence), never
 //! predicted; the model supplies only the owner's chain.
 //!
-//! The two flows are the ones the hand-written scenarios pin: two extended
-//! branches settled by the owner's next commit (S03), and a stolen key's
-//! branch settled by the owner's naked revoke and `key/delete` (S04).
+//! The two flows are the ones the hand-written scenarios pin: two
+//! unextended branches settled by the owner's next commit (S03), and a
+//! stolen key's branch settled by the owner's naked revoke and `key/delete`
+//! (S04). A fork whose branches are both extended has no exit in the
+//! chain, so it ends a run and no episode builds one.
 
 use super::Size;
 use super::check::{
@@ -129,22 +131,15 @@ pub(crate) async fn fork<'h>(
     isolate_home(h, names, &ps.home).await?;
     let (home, other) = (ps.home.clone(), ps.holders[1].clone());
     let (c0, c1) = (&ps.clients[0], &ps.clients[1]);
-    for i in 0..2 {
-        act(c0.commit_data(&ps.pr, &format!("fa{idx}x{i}")).await, what)?;
-    }
+    act(c0.commit_data(&ps.pr, &format!("fa{idx}")).await, what)?;
     let t0 = accepted(
         act(c0.push(&ps.pr, &[home.as_str()]).await, what)?,
         "N2",
         what,
     )?;
-    // The verdict names an abandoned branch by its first commit, the one
-    // that took the forked position (S03).
-    let mut abandoned = None;
-    for i in 0..2 {
-        let tip = act(c1.commit_data(&ps.pr, &format!("fb{idx}x{i}")).await, what)?;
-        abandoned.get_or_insert(tip);
-    }
-    let abandoned = abandoned.expect("two commits were made");
+    // The verdict names an abandoned branch by the commit that took the
+    // forked position (S03): here its only one.
+    let abandoned = act(c1.commit_data(&ps.pr, &format!("fb{idx}")).await, what)?;
     let t1 = accepted(
         act(c1.push(&ps.pr, &[other.as_str()]).await, what)?,
         "N2",
@@ -164,8 +159,8 @@ pub(crate) async fn fork<'h>(
     .await?;
     n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
 
-    // SPEC 15.8: one ordinary commit on the first device's head, a tied
-    // head, out-extends the other branch.
+    // SPEC 15.8 item 1: one ordinary commit on the first device's head,
+    // the only extended branch.
     let resolved = c0
         .resolve_fork(&ps.pr, &t0)
         .await
