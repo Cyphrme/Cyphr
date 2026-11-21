@@ -13,23 +13,37 @@ All active development happens here.
 | `cyphr-blob-fjall`             | Durable fjall `BlobStore` + principal-scoped eml storage opener (multitenancy by construction)                                                                                                                                                                                    |
 | `cyphr-index-fjall`            | fjall KV-backed `Indexer` (production; the SQLite backend is retired per root R3) -- length-prefixed commit keys, one meta partition tracking schema version                                                                                                                      |
 | `cyphr-server`                 | axum HTTP server over the durable backends: envelope and signed receipts, admission, equivocation evidence, witness-mode sync, and the `auth/` modules (server identity, login, bearer-token middleware, route protection). The `Export` subcommand is a stub that exits non-zero |
-| `cyphr-cli`                    | Single-user dev CLI; plaintext keystore, not secure by design                                                                                                                                                                                                                     |
+| `cyphr-client`                 | Carrier-independent sync client: a no-I/O verify core (patch, evidence, revoke, relying-party verdicts) plus the HTTP and Noise connectors behind the `Connector` trait                                                                                                           |
+| `cyphr-keystore`               | The `KeyBackend` seam (keys are generated and used, never exported) and the plaintext `JsonKeyStore` software backend; no encryption exists yet                                                                                                                                   |
+| `cyphr-cli`                    | Single-user CLI over `cyphr-keystore`; software-held, unencrypted keys (see `docs/guides/key-storage.md`)                                                                                                                                                                         |
+| `cyphr-scenarios`              | End-to-end scenario harness: drives the shipped server and CLI binaries over loopback behind a fault-injecting proxy (root R13)                                                                                                                                                   |
 | `test-fixtures`, `fixture-gen` | Golden-corpus harness + generator (Rust is the canonical generator)                                                                                                                                                                                                               |
 | `fuzz`                         | cargo-fuzz targets (`fuzz_coz_parser`, `fuzz_reindex`); CI runs each as a 60-second smoke                                                                                                                                                                                         |
 
-### Planned crates (not yet in the workspace)
+Hardware-held keys sign through the `cyphr::signer::Signer` seam; the
+Coz Rust library (`Cyphrme/coz-rust`) still takes raw private-key bytes
+in `coz::sign_json`, so a backend that cannot export its key needs an
+upstream change.
 
-The MVP campaign adds these; do not assume they exist until they appear
-in `Cargo.toml`. Root requirements R5–R9 and R14 govern the first.
+## Building: the shared target directory
 
-| Crate            | Role                                                                                                                                                                         |
-| :--------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cyphr-keystore` | Generic key backends and roots behind one interface each: hardware first (PKCS#11, TPM, Secure Enclave), flagged software fallback, private-key bytes never reach Cyphr code |
-| scenario crate   | End-to-end multi-peer scenario suite (root R13); planned name `cyphr-scenarios`                                                                                              |
+Worktrees share one cargo target directory (`build.target-dir` in the
+parent `.cargo/config.toml`, `.cargo-shared-target`). When two worktrees
+have matching dependency graphs, cargo can reuse a workspace crate's
+artifacts built from another worktree's source, so a test result can
+describe code that is not in your tree (reproduced). Before any build or
+test run whose result matters, clean the workspace crates, and build in
+one worktree at a time:
 
-Hardware-held keys sign through a signer trait that the Coz Rust library
-(`Cyphrme/coz-rust`) must expose; today `coz::sign_json` takes raw
-private-key bytes, so the seam is an upstream change.
+```sh
+cd rs && cargo clean -p cyphr -p cyphr-storage -p cyphr-blob-fjall \
+  -p cyphr-index-fjall -p cyphr-client -p cyphr-server -p cyphr-cli \
+  -p cyphr-keystore -p cyphr-scenarios -p test-fixtures -p fixture-gen \
+  -p cyphr-fuzz
+```
+
+Dependency crates stay cached, so this costs a rebuild of the workspace
+only.
 
 ## Testing policy
 
@@ -105,10 +119,11 @@ level if and where possible."
   and refusals MUST ALWAYS be returned as unsigned envelopes
   (`Statement::Unsigned`) and MUST NEVER carry a signed statement / receipt.
   Grounding: `rs/cyphr-server/tests/invariants.rs` (`refusals_are_never_signed`).
-- **I6 — Signed statements carry freshness.** All signed server statements
+- **I6 — Signed statements carry a timestamp.** All signed server statements
   and receipts MUST carry a valid, positive, non-zero unix timestamp (`now`)
-  reflecting request processing time within acceptable clock drift boundaries;
-  freshness scope is request-bound. Grounding:
+  reflecting request processing time. The timestamp is not a freshness
+  proof: no request nonce binds a statement to one request, so a genuine
+  statement can be replayed (forge #152). Grounding:
   `rs/cyphr-server/tests/invariants.rs` (`signed_statements_carry_freshness`).
 - **I7 — No standing honesty claim.** The server MUST NEVER issue or publish
   standing, static, or unverified claims of honesty or attestation. Keyless
@@ -124,9 +139,16 @@ level if and where possible."
   in the core, and no `Clone` (a copy is `fork()`, only over storage that
   copies independently). Two `Principal`s opened over one durable store
   are still two writers of it; `StorageEngine::submit_commit` serializes
-  them with a per-principal async lock across its whole critical section
-  (`F3`/`F24`). Don't open the same durable principal from concurrent
+  them with a per-principal async lock across its whole critical section.
+  Don't open the same durable principal from concurrent
   tasks without an equivalent guard.
+- **The record is synced before the index and before the answer.**
+  `submit_commit` calls `BlobStore::persist` once, after the blobs,
+  manifest and commit-log append and before the first index write; every
+  role pays it. A failed sync sets a flag and the engine refuses every
+  later write (`EngineError::DurabilityLost`, a `500` over HTTP) until the
+  process restarts. Never move a signature or an answer ahead of it
+  (`docs/specs/storage-engine.md` `[record-durable-first]`).
 - **Trust-boundary parsing is multiplied.** Coz header extraction /
   czd computation are hand-rolled in ~4/10 places (engine, reindex,
   import, CLI) with silent defaults. Don't add a fifth — the campaign
@@ -137,10 +159,10 @@ level if and where possible."
 Inherited from root (`/AGENTS.md`); resolve there, not locally:
 
 - U1 — intra-commit ordering (resolved);
-- U2 — live-principal concurrency;
-- U3 — replay cost and caching;
+- U2 — live-principal concurrency (in-process lock exists; no cross-process lease);
+- U3 — replay cost (resolved for the write path);
 - U4 — EMT→EML conversion;
-- U5 — peer transport;
+- U5 — peer transport (decided: Noise NN);
 - U6 — keychain design details;
 - U7 — restore watermark;
 - U8 — passphrase root defaults and attestation roots;
