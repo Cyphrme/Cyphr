@@ -48,10 +48,11 @@ revisions apply post-campaign:
   and lifecycle gate (rejects Frozen/Deleted/unknown principals), replay
   prevention (single-use challenge store, timestamp window) -- all tested
   end to end with real signed HTTP requests in
-  `rs/cyphr-server/tests/login.rs` (12 tests). Also: signature-based PoP,
-  checkpoint restore (`Principal::from_checkpoint`/`from_checkpoint_with_trees`
-  in `rs/cyphr/src/principal.rs`, covering [checkpoint-self-contained] and
-  [checkpoint-genesis-foundational]), and chain-replay verification.
+  `rs/cyphr-server/tests/login.rs` (12 tests). Also: signature-based PoP
+  and chain-replay verification. There is no checkpoint restore: a
+  principal is rebuilt by replaying history (`rs/cyphr/src/principal/mod.rs`),
+  so [checkpoint-self-contained] and [checkpoint-genesis-foundational]
+  have no code behind them.
 - **Still unimplemented (correctly out of campaign scope)**: MSS push,
   Principal Embedding -- `rs/cyphr/src/state.rs`'s own doc comments say
   embedding "is reserved for future use; pass `None`," confirming

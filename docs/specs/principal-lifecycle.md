@@ -61,7 +61,7 @@ consistency, not implementation status. The following revisions apply post-campa
 **Partially implemented or with known limitations:**
 
 - `Principal::level()` still cannot return `Level::L2` —
-  `rs/cyphr/src/principal.rs` comment: "For now, single key with no commits = Level 1"
+  `Principal::level` in `rs/cyphr/src/principal/accessors.rs` carries the comment: "For now, single key with no commits = Level 1"
 - Nuked vs Dead distinguishability: KeyDelete erases keys; SelfRevoke preserves
   them in revoked set — both trace back to deletion state, making Nuked/Dead
   separation not externally observable (findings F11, deferred refinement)

@@ -467,7 +467,7 @@ prior state MUST be rejected.
 > is derived, not client-declared. The underlying safety property (reject a
 > commit that doesn't chain from the real prior state) is unchanged and is
 > now the sole job of arrow verification (`Error::CommitMismatch` in
-> `rs/cyphr/src/principal.rs`'s `finalize_commit`).
+> `rs/cyphr/src/principal/apply.rs`'s commit finalization).
 
 `VERIFIED: rs/cyphr/tests/properties.rs — arrow/CommitMismatch property tests`
 
