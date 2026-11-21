@@ -62,7 +62,7 @@ pub struct PatchResponse {
     /// bounds the commits only.
     pub actions: Vec<PatchActions>,
     /// In Error, for [`StorageEngine::get_served_patch`]: the fork point and
-    /// each tied branch from it; `entries` then end below the fork point.
+    /// each branch from it; `entries` then end below the fork point.
     /// `None` while Active, and always for `get_patch`.
     pub fork: Option<PatchFork>,
 }
@@ -72,7 +72,7 @@ pub struct PatchResponse {
 pub struct PatchFork {
     /// Where the branches part.
     pub fork_point: ForkPoint,
-    /// Each tied branch, ordered by head commit id.
+    /// Each branch, ordered by head commit id.
     pub branches: Vec<PatchBranch>,
 }
 
@@ -775,7 +775,7 @@ pub trait Recovery: Send + Sync {
     fn review(&self, principal_id: &str, protocol: Consensus, forks: &[ForkView]) -> Review;
 }
 
-/// A tied head and when this engine first stored it.
+/// A head and when this engine first stored it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldHead {
     /// The head's commit id.
@@ -788,16 +788,16 @@ pub struct HeldHead {
 }
 
 /// A principal in Error as a reader is told of it: the fork point and
-/// every tied head, in place of a tip.
+/// every head, in place of a tip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorState {
     /// Where the heads part.
     pub fork_point: ForkPoint,
-    /// The tied heads, sorted by commit id.
+    /// The heads, sorted by commit id.
     pub heads: Vec<HeldHead>,
 }
 
-/// One commit of a tied branch, as served.
+/// One commit of a branch, as served.
 #[derive(Debug, Clone)]
 pub struct BranchEntry {
     /// The commit id.
@@ -810,7 +810,7 @@ pub struct BranchEntry {
     pub bundle: WireBundle,
 }
 
-/// One tied branch of an Error principal: the commits from the fork point
+/// One branch of an Error principal: the commits from the fork point
 /// to its head, in order.
 #[derive(Debug, Clone)]
 pub struct PatchBranch {
@@ -1648,7 +1648,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// [`Self::get_patch`] as a peer is served it (SPEC 15.7.1): while the
     /// principal is in Error, `entries` are the chain up to the fork point
-    /// and [`PatchResponse::fork`] carries each tied branch, so no one
+    /// and [`PatchResponse::fork`] carries each branch, so no one
     /// branch is passed off as the chain. Active, it is `get_patch`.
     /// Callers that want the engine's canonical chain regardless use
     /// `get_patch`.
@@ -3991,15 +3991,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     if matches!(refused, EngineError::Protocol(_)) {
                         // A bundle that extends a retained rival resolves the
                         // fork (SPEC 15.8) or, below the head, forks anew.
-                        let canonical_len = tip_before.as_ref().map_or(0, |tip| tip.commit_count);
                         match self
-                            .resolve_fork(
-                                principal_id,
-                                &genesis,
-                                bundle,
-                                canonical_len,
-                                principal.state(),
-                            )
+                            .resolve_fork(principal_id, &genesis, bundle, principal.state())
                             .await
                         {
                             Ok(Some(resolved)) => return Ok((resolved, false)),
@@ -4701,7 +4694,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: &crate::Genesis,
         bundle: &WireBundle,
-        canonical_len: u64,
         tip: &cyphr::PrincipalState,
     ) -> Result<Option<IngestResult>, EngineError> {
         let rivals = self
@@ -4801,14 +4793,29 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             };
             let next_commit = next.commit;
-            if at + 1 < canonical_len {
+            // `bundle` resolves the fork only where the fork rule over the
+            // held commits plus it is Active on `bundle` ([`assessment`]);
+            // otherwise its line is kept as evidence (an extended rival and
+            // an extended canonical branch are both out of compliance).
+            // It passed the revoke gate on arrival ([`dead_key_in`]).
+            let before = self.held(principal_id).await?;
+            let next_id = next_commit.commit_ids.first().cloned().unwrap_or_default();
+            let mut after = before.clone();
+            after.push(held_of(&next_commit));
+            let after = assessment(&after);
+            if after.consensus == Consensus::Error || after.heads != [next_id] {
+                if in_error(&before) {
+                    // SPEC 15.5: it leaves nothing standing, so it is
+                    // refused as the Error gate refuses; kept as evidence
+                    // only where a slot is left.
+                    self.keep_evidence(bundle, next_commit, &embedded).await;
+                    return Err(EngineError::Errored {
+                        principal_id: principal_id.to_string(),
+                    });
+                }
                 self.keep_branch(bundle, next_commit, &embedded).await?;
                 return Ok(None);
             }
-            // `bundle` takes the position above the canonical head, which
-            // no held commit reaches, so it is the one tallest commit: the
-            // fork rule's head, Active, in Error or not ([`assessment`]).
-            // It passed the revoke gate on arrival ([`dead_key_in`]).
             return self
                 .promote_branch(
                     principal_id,
@@ -5332,7 +5339,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(assessment(&held))
     }
 
-    /// The principal's fork point and tied heads while it is in Error, `None`
+    /// The principal's fork point and heads while it is in Error, `None`
     /// while Active or not stored: what a reader is told in place of a tip.
     /// From the held commits alone, so a live engine and one rebuilt from
     /// the blobs answer alike (I1).
@@ -5404,7 +5411,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             // Heads are drawn from `held` by `assessment`, so each is in
             // `by_id`; a miss is an inconsistency, reported, not a panic.
             let head = by_id.get(id.as_str()).ok_or_else(|| {
-                EngineError::NotFound(format!("tied head {id} of {principal_id} is not held"))
+                EngineError::NotFound(format!("head {id} of {principal_id} is not held"))
             })?;
             let held_since = match retained.iter().find(|r| &r.tip.tip == id) {
                 Some(r) => r.tip.seen,
@@ -5426,7 +5433,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(Some((fork_point, heads)))
     }
 
-    /// Each tied branch from the fork point to its head: a commit is read
+    /// Each branch from the fork point to its head: a commit is read
     /// from the canonical chain when the index holds it, else from the
     /// retained rival of that id.
     async fn branches_of(
@@ -6076,9 +6083,8 @@ fn in_error(held: &[Held]) -> bool {
 }
 
 /// Whether the principal `held` describes, in Error, stays in Error once
-/// `candidate` is held too as the new canonical head: the Error gate,
-/// which admits a commit only if it extends one of the tied heads
-/// ([`assessment`]).
+/// `candidate` is held too: the Error gate, which admits a commit only if
+/// the fork rule over the held commits plus it is Active ([`assessment`]).
 fn stays_errored(held: &[Held], candidate: &IndexableCommit) -> bool {
     let mut after = held.to_vec();
     after.push(held_of(candidate));
