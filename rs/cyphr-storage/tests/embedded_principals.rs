@@ -1092,7 +1092,7 @@ async fn replayed(engine: &DurableEngine, a: &Line) -> String {
         .load_principal(&a.id, genesis)
         .await
         .expect("A replays");
-    format!("{:#?}", *cold)
+    format!("{:#?}", **cold)
 }
 
 /// What a reader is handed for A, and what the engine keeps for it when it

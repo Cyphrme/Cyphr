@@ -328,7 +328,7 @@ async fn check_kept_chain(chain: &Chain) -> usize {
             .load_principal(&id, chain.genesis.clone())
             .await
             .expect("replay");
-        let (kept, replayed) = (format!("{kept:#?}"), format!("{:#?}", *loaded));
+        let (kept, replayed) = (format!("{kept:#?}"), format!("{:#?}", **loaded));
         if kept != replayed {
             // The whole state is too long to read: the first line that
             // differs, with its neighbours.
