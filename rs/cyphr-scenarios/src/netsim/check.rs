@@ -228,8 +228,9 @@ pub(crate) async fn barrier(b: Barrier<'_, '_>) -> Result<Duration, Failure> {
     Ok(convergence)
 }
 
-/// One line per peer of what it refused so far, so a run that fails N6
-/// still reports its throttle counters.
+/// One line per peer of what it refused so far and of gossip's work (rounds,
+/// commits replayed), summed over every process lifetime, so a run that
+/// fails N6 still reports its throttle counters.
 async fn report_counters(h: &Harness, names: &[String]) -> Result<(), Failure> {
     let mut line = String::new();
     for name in names {
@@ -243,10 +244,13 @@ async fn report_counters(h: &Harness, names: &[String]) -> Result<(), Failure> {
                 .unwrap_or(0)
         };
         line.push_str(&format!(
-            " {name}[rate_limited={} server_error={} rounds={}]",
+            " {name}[rate_limited={} server_error={} rounds={} replayed={}]",
             get("rate_limited"),
             get("server_error"),
-            c.get("cyphr_gossip_rounds_total").copied().unwrap_or(0)
+            c.get("cyphr_gossip_rounds_total").copied().unwrap_or(0),
+            c.get("cyphr_gossip_commits_replayed_total")
+                .copied()
+                .unwrap_or(0)
         ));
     }
     eprintln!("NETSIM counters:{line}");
