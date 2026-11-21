@@ -54,7 +54,7 @@ file holding a raw keypair:
 ```json
 {
   "alg": "Ed25519",
-  "pub_key": "LNTO4mebHBg3YzWB2QwjXyETKcbvmmSnJ7hLMKGEElo",
+  "pub_key": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
   "prv_key": "-YSZ3MD_vmCxINuQHpTM3LkQ9zCdBVkYEVr1glDJp-Q"
 }
 ```
@@ -89,7 +89,7 @@ answer `501`:
   "v": 1,
   "payload": {
     "error": "this server runs without a signing identity; login is not offered -- see GET /server for the declared capability tier",
-    "now": 1785862749
+    "now": 1795229749
   },
   "statement": { "kind": "unsigned" }
 }
@@ -118,14 +118,14 @@ curl -s http://127.0.0.1:3999/server
   "v": 1,
   "payload": {
     "tier": "attestor",
-    "pg": "SHA-512:mRf9FF8DhlZs...",
+    "pg": "SHA-512:lsraVr9sNuOt...",
     "alg": "Ed25519",
-    "pub": "LNTO4mebHBg3YzWB2QwjXyETKcbvmmSnJ7hLMKGEElo",
-    "tmb": "mRf9FF8DhlZs...",
+    "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+    "tmb": "lsraVr9sNuOt...",
     "genesis": {
       "alg": "Ed25519",
-      "pub": "LNTO4mebHBg3YzWB2QwjXyETKcbvmmSnJ7hLMKGEElo",
-      "tmb": "mRf9FF8DhlZs...",
+      "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+      "tmb": "lsraVr9sNuOt...",
       "first_seen": 0
     }
   },
@@ -178,16 +178,17 @@ done
 ```json
 {
   "blob_hashes": [
-    "49e91e044083d384b2fa84b0d41179ca2c05de83c9f883379202205ec20437bc",
-    "1aa0dc85394503326b22d940af233af03cd27bc6759361a3eacd279b3b972de2"
+    "5a550ff9aff4ce5c88511f1968efff3e75152f7c0aeb23c77a0bdaff98b91716",
+    "8efaba95ee111e45cb404609e473e87ceee9b1153072691f080ba917f8b75eb2",
+    "cbfae4dab5a65121d2653b60873b55d7f4ad5bf0e09f58effad857efdf217491"
   ],
-  "commit_id": "SHA-256:NK5GHZP2MEdzmH3b26xb5CDsEQZ7D1m5eyy_3I1di44",
+  "commit_id": "SHA-256:wnQ7vgrRaDb2js1Ap76PiFxwS_dhREcSB7WhlUNLsjM",
   "sequence": 0,
   "roots": {
-    "pr": "SHA-256:OVQOpDdSBKT4uyXvQMwqn15iOy3oK3zASO9tuLtU46g",
-    "sr": "SHA-256:VtpqdWOesrfKmfpZF55VPCDg_mSP2pl-Re-NjULgyGg",
-    "ar": "SHA-256:VtpqdWOesrfKmfpZF55VPCDg_mSP2pl-Re-NjULgyGg",
-    "cr": "SHA-256:NK5GHZP2MEdzmH3b26xb5CDsEQZ7D1m5eyy_3I1di44"
+    "pr": "SHA-256:3-0Y72FpNXhMVM1FTJQrwSg0sOYfcNK2M35vIpg3uuQ",
+    "sr": "SHA-256:YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8",
+    "ar": "SHA-256:YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8",
+    "cr": "SHA-256:wnQ7vgrRaDb2js1Ap76PiFxwS_dhREcSB7WhlUNLsjM"
   }
 }
 ```
@@ -229,8 +230,12 @@ curl -s -X POST http://127.0.0.1:3999/auth/challenge
 ```json
 {
   "v": 1,
-  "payload": { "challenge": "Ala4GzN1T25zOEmPYlXfQpm2jUmdhm9Qe5PemmLsbnM" },
-  "statement": { "kind": "unsigned" }
+  "payload": {
+    "challenge": "P_HRkoYKGbdsnX1gkq9DfwiaYTyYYSIbR-eWbpvLQCE"
+  },
+  "statement": {
+    "kind": "unsigned"
+  }
 }
 ```
 
@@ -254,13 +259,13 @@ claims to be, and the challenge.
 {
   "pay": {
     "alg": "ES256",
-    "now": 1785862430,
-    "tmb": "M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk",
+    "now": 1795229621,
+    "tmb": "YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8",
     "typ": "localhost:3999/cyphr/auth/login",
-    "pr": "M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk",
-    "challenge": "Ala4GzN1T25zOEmPYlXfQpm2jUmdhm9Qe5PemmLsbnM"
+    "pr": "YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8",
+    "challenge": "P_HRkoYKGbdsnX1gkq9DfwiaYTyYYSIbR-eWbpvLQCE"
   },
-  "sig": "57TBiuouH0xrMY7B_YsobElQ5BHljz61tqVYK98rkB50zL5OYrik9L15pkTBRUMcK1yi4AJiaD29OT0x6n5a9w"
+  "sig": "wS3bijohYYHdkUnnxVfk4J7tLi46arijgEh5VDm6f7NNUYZse1itQm4oGgw_mi7_3s_ZnZQDppflCM68NCO3GA"
 }
 ```
 
@@ -382,23 +387,26 @@ rather than over the payload itself. There is no low-S concern.
 ```sh
 curl -s -X POST http://127.0.0.1:3999/auth/login \
   -H 'content-type: application/json' \
-  -d '{"pay":{"alg":"ES256","now":1785862430,"tmb":"M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk","typ":"localhost:3999/cyphr/auth/login","pr":"M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk"},"sig":"57TBiuouH0xrMY7B_YsobElQ5BHljz61tqVYK98rkB50zL5OYrik9L15pkTBRUMcK1yi4AJiaD29OT0x6n5a9w"}'
+  -d '{"pay":{"alg":"ES256","now":1795229621,"tmb":"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8","typ":"localhost:3999/cyphr/auth/login","pr":"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8","challenge":"P_HRkoYKGbdsnX1gkq9DfwiaYTyYYSIbR-eWbpvLQCE"},"sig":"wS3bijohYYHdkUnnxVfk4J7tLi46arijgEh5VDm6f7NNUYZse1itQm4oGgw_mi7_3s_ZnZQDppflCM68NCO3GA"}'
 ```
 
 ```json
 {
   "v": 1,
   "payload": {
-    "token": "{\"pay\":{\"alg\":\"Ed25519\",\"now\":1785862536,\"tmb\":\"mRf9FF8DhlZs...\",\"typ\":\"cyphr-server/auth/token\",\"pr\":\"M9wE8OFsu_LZweYWTnJn_ezJzb_VWyxfibuk03_dwbk\",\"exp\":1785863436,\"perms\":[\"read\",\"write\"]},\"sig\":\"efaRhdSMKMRCcmpbzZfBYbhqNImnZ-oRjvJ9wFKyeAoMuHD8y1EoDZOiWqaxAoVoGAEhvFpd04riNBZY_QWxDQ\"}"
+    "token": "{\"pay\":{\"alg\":\"Ed25519\",\"now\":1795229621,\"tmb\":\"lsraVr9sNuOt...\",\"typ\":\"cyphr-server/auth/token\",\"pr\":\"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8\",\"exp\":1795230521,\"perms\":[\"read\",\"write\"],\"ltmb\":\"YzK1CiQw7yUrI1CrWjEII0rbzQ3D7STy1sZLzdbf1Y8\"},\"sig\":\"wUozXQ3zuraugitgYAu9U5yG7xSMVeoBsyVbtIMyPsICITFYoAeR_xuU1XO39MYXxAY4h2pJijZejcxpfCVuBw\"}"
   },
-  "statement": { "kind": "unsigned" }
+  "statement": {
+    "kind": "unsigned"
+  }
 }
 ```
 
 `payload.token` is a JSON string containing a Coz message the server signed.
 It lives 15 minutes. Ignore `perms`: the server has no permissions model yet,
 so every token it issues carries this same pair. Your own authorization stays
-yours.
+yours. `ltmb` is the thumbprint of the key that opened the session; the
+server's own routes use it, as the next section says.
 
 ### 4. Verify the token
 
@@ -437,9 +445,18 @@ commit receipts, tip reports — and every one of those is a genuine signature
 by the same key. `typ` is what separates "the server said something" from "the
 server issued a session".
 
-There is no revocation list. A token is valid until it expires, full stop. If
-you need to cut a session short, cut yours — do not expect the Cyphr server to
-help.
+There is no revocation list your app can consult: a valid signature says
+nothing about whether the key that opened the session is still active. The
+Cyphr server's own routes that take a token (`POST /push`) do check, on each
+request, that the key named by `ltmb` is still active, and refuse the token
+once it is not:
+
+```
+-> 401 {"error":"bearer token rejected: the key that opened this session was revoked"}
+```
+
+That protects the server's routes, not your app. If you need to cut a
+session short, cut yours.
 
 ### 5. Map `pr` to an account
 
@@ -621,7 +638,7 @@ curl -s -X POST http://127.0.0.1:3999/revoke \
 {
   "v": 1,
   "payload": {
-    "revoked_tmb": "R5PV3JqMiUNSFdyjClRrNGNF7APWUUPB638wQoOQz4c",
+    "revoked_tmb": "9veK3L_l8SMZifoGpabEiuKJ1DyZT5m3Oo7oCXdtvOk",
     "recorded": true
   },
   "statement": { "kind": "unsigned" }
@@ -640,19 +657,14 @@ exact key — the stolen device's own key, saved somewhere before it was
 stolen — not a different backup key. This is for "I still have that exact
 key," not for a key that is simply gone.
 
-**One sharp limitation.** The server only accepts this for a key it has
-indexed, which in practice means a key introduced by a `key/create`
-transaction. A principal's _genesis_ key is not indexed, so the same request
-naming a genesis key is refused:
-
-```
--> 400 {"error":"revoke names a key this server has not indexed"}
-```
-
-That is precisely the key a user is most likely to have on the device they
-lost. If your enrollment flow generates one key and stops, your users have no
-emergency kill switch. Have the client add a second key at enrollment and use
-_that_ one day to day, keeping genesis offline.
+**It works for a genesis key too.** The server checks the revoke against the
+key it discloses and nothing else, so a principal's original key, the one a
+user is most likely to have on the device they lost, is revoked the same way
+as a later one, and the same `200` answers a key the server has never seen.
+Revoking a principal's only key leaves it nothing to sign with, so the
+recovery paths below start from a new principal. The server bounds how many
+keys it records (`max_dead_keys`, see the operator guide); past that it
+records only keys a stored principal holds and answers `507` to the rest.
 
 ### They hold nothing: a new principal, and you have a stranger
 
