@@ -8,7 +8,7 @@ use crate::config::{LogFormat, ServerConfig};
 
 /// Initialize the global tracing subscriber.
 ///
-/// - `RUST_LOG` env var controls filtering (default: `cyphr_server=info,tower_http=info`).
+/// - `RUST_LOG` env var controls filtering (default: `cyphr_server=info,cyphr_storage=info,tower_http=info`).
 /// - Log format is switchable via [`LogFormat`]: `pretty` for development, `json` for production.
 /// - Uses `Option` layers for type-safe conditional composition.
 pub fn init_tracing(config: &ServerConfig) {
@@ -16,7 +16,7 @@ pub fn init_tracing(config: &ServerConfig) {
     use tracing_subscriber::{EnvFilter, fmt};
 
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("cyphr_server=info,tower_http=info"));
+        .unwrap_or_else(|_| EnvFilter::new("cyphr_server=info,cyphr_storage=info,tower_http=info"));
 
     let json_layer = matches!(config.log_format, LogFormat::Json)
         .then(|| fmt::layer().json().with_writer(std::io::stderr));

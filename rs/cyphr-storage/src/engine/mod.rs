@@ -945,7 +945,7 @@ impl LogFactory<cyphr::eml::MemoryStorage> for MemoryLogs {
 /// Used only for memoizing replay-derived answers under keys that name the
 /// exact tip they were derived at, so an entry can never be stale (a new
 /// commit changes the key) and eviction costs only a recomputation.
-pub struct BoundedCache<K, V> {
+struct BoundedCache<K, V> {
     capacity: usize,
     entries: std::sync::Mutex<(HashMap<K, V>, std::collections::VecDeque<K>)>,
 }
@@ -1371,6 +1371,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
     /// [`Self::with_kept_shadow`] on an engine already built, such as one a
     /// server state owns.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_kept_shadow(&mut self, on: bool) {
         self.kept_shadow = on;
     }
@@ -2146,14 +2147,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(())
     }
 
+    /// Whether a record sync has failed ([`Self::persist_record`]): the
+    /// engine then refuses every write until the process restarts, so a
+    /// health check reads this rather than probing a write that the flag
+    /// would refuse anyway. Never cleared.
+    pub fn durability_lost(&self) -> bool {
+        self.durability_lost
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// `Err` once a record sync has failed ([`Self::persist_record`]).
     /// Checked before a write stores anything, so a failed engine adds
     /// nothing to the record.
     fn writable(&self) -> Result<(), EngineError> {
-        if self
-            .durability_lost
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
+        if self.durability_lost() {
             return Err(EngineError::DurabilityLost(
                 "an earlier sync of the record failed".into(),
             ));
