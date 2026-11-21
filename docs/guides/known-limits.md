@@ -150,8 +150,9 @@ These are guarantees a reader might assume. None is provided today.
 - **Timestamps.** The `now` in a receipt is the server's own clock, which
   no one else attests.
 - **Bearer tokens.** A token lives 15 minutes and cannot be revoked. A
-  server issues every token with read and write permission, and only
-  `POST /push` checks one.
+  server issues every token with read and write permission. No route
+  requires a token. `POST /push` is authorized by the bundle's own
+  signatures, and checks a token only when the request presents one.
 - **Key custody.** A key stored by the CLI is software-held and
   unencrypted, and nothing can record how a key is held. See
   [key storage](key-storage.md).

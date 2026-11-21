@@ -110,7 +110,7 @@ cyphr export --identity="$PR" --output ./export.jsonl
 ```
 Exported identity to ./export.jsonl
   identity: xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho
-  commits: 1
+  commits: 2
 ```
 
 ## Publishing
@@ -122,15 +122,19 @@ history — adding a key, revoking one, creating or freezing the principal.
 Push one and the server validates every signature, re-derives the four
 roots, stores the blobs, and hands you a receipt.
 
-Turn the newest exported commit into a push body and send it:
+Turn each exported commit into a push body and send them in order (a new
+principal exports two: the genesis commit, then the key add, and the server
+refuses a first push that is not a genesis commit):
 
 ```sh
-jq -c --arg pid "$PR" -s '.[-1] | {principal_id: $pid, keys: .keys,
+jq -c --arg pid "$PR" '{principal_id: $pid, keys: .keys,
   txs: [.txs[] | map(tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";""))]}' \
-  ./export.jsonl > ./push.json
-
-curl -s -X POST http://127.0.0.1:4100/push \
-  -H 'content-type: application/json' -d @push.json
+  ./export.jsonl |
+while IFS= read -r body; do
+  curl -s -X POST http://127.0.0.1:4100/push \
+    -H 'content-type: application/json' -d "$body"
+  echo
+done
 ```
 
 `201`:
@@ -629,8 +633,10 @@ cyphr export --identity="$PR" --output ./export-y.jsonl
 ```
 
 Two commits with the same predecessor and different contents. Run each
-export through the same `jq` that built `push.json` earlier, taking
-`.[-1]` so only the newest commit goes out, and send one to each server.
+export through the same `jq` filter as before (without the loop), keep
+only the last line (`| tail -n 1 > push-x.json`, and `push-y.json` for the
+other) so that only the newest commit goes out, since both servers already
+hold the genesis commit, and send one to each server.
 Both take it:
 
 ```sh

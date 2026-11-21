@@ -27,8 +27,8 @@ upstream change.
 
 ## Building: the shared target directory
 
-Worktrees share one cargo target directory (`build.target-dir` in the
-parent `.cargo/config.toml`, `.cargo-shared-target`). When two worktrees
+If your checkout shares a cargo target directory across worktrees (a local,
+untracked `.cargo/config.toml` with `build.target-dir`), then when two worktrees
 have matching dependency graphs, cargo can reuse a workspace crate's
 artifacts built from another worktree's source, so a test result can
 describe code that is not in your tree (reproduced). Before any build or
@@ -36,10 +36,8 @@ test run whose result matters, clean the workspace crates, and build in
 one worktree at a time:
 
 ```sh
-cd rs && cargo clean -p cyphr -p cyphr-storage -p cyphr-blob-fjall \
-  -p cyphr-index-fjall -p cyphr-client -p cyphr-server -p cyphr-cli \
-  -p cyphr-keystore -p cyphr-scenarios -p test-fixtures -p fixture-gen \
-  -p cyphr-fuzz
+cd rs && cargo metadata --no-deps --format-version 1 \
+  | jq -r '.packages[].name' | sed 's/^/-p /' | xargs cargo clean
 ```
 
 Dependency crates stay cached, so this costs a rebuild of the workspace

@@ -156,16 +156,20 @@ cyphr export --identity="$PR" --output ./export.jsonl
 ```
 
 That leaves keys in `./cyphr-keys.json`, a principal in `./cyphr-data`, and a
-JSONL file with one line per commit. Turn the newest commit into a push body
-and send it:
+JSONL file with one line per commit. A new principal exports two commits (the
+genesis commit, then the key add). Turn each line into a push body and send
+them in order, because the server refuses a first push that is not a genesis
+commit:
 
 ```sh
-jq -c --arg pid "$PR" -s '.[-1] | {principal_id: $pid, keys: .keys,
+jq -c --arg pid "$PR" '{principal_id: $pid, keys: .keys,
   txs: [.txs[] | map(tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";""))]}' \
-  ./export.jsonl > ./push.json
-
-curl -s -X POST http://127.0.0.1:3999/push \
-  -H 'content-type: application/json' -d @push.json
+  ./export.jsonl |
+while IFS= read -r body; do
+  curl -s -X POST http://127.0.0.1:3999/push \
+    -H 'content-type: application/json' -d "$body"
+  echo
+done
 ```
 
 `201`, with this `payload` (the response also carries a `statement` of kind
@@ -192,8 +196,10 @@ The exported line already holds the commit's `txs` (an array of
 transactions, each an array of coz objects, the commit transaction last) and
 the `keys` it introduces. The `jq` rewrites each coz as base64url of its JSON,
 which is the form `/push` wants; standard base64 will not do, which is what
-the `gsub` chain is for. Use `.[-1]` to send only the newest commit —
-re-sending one the server already holds is an error.
+the `gsub` chain is for. The loop sends every exported commit in order and
+prints one response per commit (`201` each for a new principal). To add
+a commit to a principal the server already holds, send only the lines it
+lacks: re-sending one it already holds is an error.
 
 Use the genesis thumbprint as the principal id, as above. Any other id is
 refused with a `400` before anything is stored; see
