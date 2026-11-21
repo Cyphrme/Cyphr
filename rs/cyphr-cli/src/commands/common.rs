@@ -391,38 +391,6 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                 .await
             {
                 Ok(_) => {},
-                // Every save re-sends the trailing action-only lines the store
-                // already holds, and the store refuses an action whose signer
-                // is dead at the action's time. Two cases reach here, and both
-                // must not fail the save (only an action-only line, and only
-                // a key the principal held):
-                // - the signer was retired by a later commit of the principal's own in the same
-                //   second: the key timeline judges a signature dated at a removal as after it
-                //   (forge #213 asks the spec author whether SPEC 6.2 agrees), so every replay
-                //   ignores the action;
-                // - the signer was naked-revoked (SPEC 6.4) at or before the action's time: the
-                //   store refuses the re-sent action as `key revoked`.
-                // The proper fix is in the engine: a repeated held action is
-                // a no-op before the signer is judged (SPEC 7.6). This arm
-                // stays until it lands.
-                Err(cyphr_storage::engine::EngineError::Protocol(e))
-                    if e.is_inactive_signer()
-                        && commit.commit_id.is_empty()
-                        && bundle.actions.iter().all(|blob| {
-                            cyphr::replay::StoredCoz::from_wire(blob)
-                                .is_ok_and(|c| principal.held_key(&c.header().tmb))
-                        }) =>
-                {
-                    for blob in &bundle.actions {
-                        if let Ok(c) = cyphr::replay::StoredCoz::from_wire(blob) {
-                            eprintln!(
-                                "warning: dropped action {}: its signer was retired in the same \
-                                 second or revoked (see forge #213)",
-                                c.czd().to_b64()
-                            );
-                        }
-                    }
-                },
                 Err(e) => return Err(e.into()),
             }
         }
