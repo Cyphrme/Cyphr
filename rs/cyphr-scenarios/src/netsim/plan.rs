@@ -72,6 +72,15 @@ pub enum Op {
     Fork {
         p: usize,
     },
+    /// Lock episode: as a fork episode, but each device extends its branch
+    /// twice, so both are extended. No commit leaves that Error, so the
+    /// episode ends the principal: every holder must converge on Error with
+    /// fork evidence and refuse the owner's further commit, and the model
+    /// then retires the principal. Written by hand into op logs; the
+    /// generator does not draw it, as no run can go on with the principal.
+    Lock {
+        p: usize,
+    },
     /// Theft episode: a thief copies the second device's key and forks the
     /// principal; the owner revokes the key and resolves by `key/delete`.
     Theft {
@@ -177,6 +186,7 @@ impl fmt::Display for Op {
             Op::Concurrent { p } => write!(f, "concurrent p={p}"),
             Op::NakedRevoke { p, d } => write!(f, "nakedrevoke p={p} d={d}"),
             Op::Fork { p } => write!(f, "fork p={p}"),
+            Op::Lock { p } => write!(f, "lock p={p}"),
             Op::Theft { p } => write!(f, "theft p={p}"),
             Op::Backup { peer } => write!(f, "backup peer={peer}"),
             Op::Restore { peer } => write!(f, "restore peer={peer}"),
@@ -264,6 +274,7 @@ impl FromStr for Op {
                 d: num("d")?,
             },
             "fork" => Op::Fork { p: num("p")? },
+            "lock" => Op::Lock { p: num("p")? },
             "theft" => Op::Theft { p: num("p")? },
             "backup" => Op::Backup { peer: num("peer")? },
             "restore" => Op::Restore { peer: num("peer")? },

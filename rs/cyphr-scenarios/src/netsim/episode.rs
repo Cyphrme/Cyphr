@@ -18,7 +18,7 @@ use super::check::{
     Want, evidence_count, heal_everything, n5_refused, n8_refused, tip_diff, until, verdict_check,
 };
 use super::run::{Failure, PState, act, fail, refresh};
-use crate::actions::{Backup, Client, KeyRef, PeerTip, PushOutcome, Tip};
+use crate::actions::{ActionError, Backup, Client, KeyRef, PeerTip, PushOutcome, Tip};
 use crate::harness::Harness;
 
 /// Accept a push's tip or name the refusal as the invariant's failure.
@@ -180,6 +180,97 @@ pub(crate) async fn fork<'h>(
     .await?;
 
     settle(ps, resolved, abandoned);
+    Ok(())
+}
+
+/// Two devices fork the principal across a cut and each extends its branch
+/// twice, so both are extended: every holder must read Error with fork
+/// evidence, and the owner's further commit, which a fork with an
+/// unextended branch would take as its resolution, must be refused.
+pub(crate) async fn lock<'h>(
+    h: &'h Harness,
+    size: &Size,
+    names: &[String],
+    ps: &mut PState<'h>,
+    idx: usize,
+    what: &str,
+) -> Result<(), Failure> {
+    refresh(ps, 0, what).await?;
+    refresh(ps, 1, what).await?;
+    isolate_home(h, names, &ps.home).await?;
+    let (home, other) = (ps.home.clone(), ps.holders[1].clone());
+    let (c0, c1) = (&ps.clients[0], &ps.clients[1]);
+    for i in 0..2 {
+        act(c0.commit_data(&ps.pr, &format!("la{idx}x{i}")).await, what)?;
+    }
+    let t0 = accepted(
+        act(c0.push(&ps.pr, &[home.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
+    for i in 0..2 {
+        act(c1.commit_data(&ps.pr, &format!("lb{idx}x{i}")).await, what)?;
+    }
+    let t1 = accepted(
+        act(c1.push(&ps.pr, &[other.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
+    heal_everything(h, names).await?;
+
+    both_heads_everywhere(h, size, ps, [&t0, &t1], what).await?;
+    verdict_check(
+        h,
+        ps,
+        &format!("obs-l{idx}a"),
+        "N4",
+        Want::Forked([&t0, &t1]),
+        what,
+    )
+    .await?;
+
+    // The owner's one further commit, the resolution of a fork with an
+    // unextended branch: every holder must refuse it (423), and none may
+    // settle on it.
+    act(c0.commit_data(&ps.pr, &format!("lc{idx}")).await, what)?;
+    match c0
+        .push(
+            &ps.pr,
+            &ps.holders.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await
+    {
+        Ok(PushOutcome::Accepted(tip)) => {
+            return Err(fail(
+                "N4",
+                format!("{what}: a further commit settled a both-extended fork at {tip:?}"),
+            ));
+        },
+        Ok(PushOutcome::Refused(r)) => {
+            return Err(fail(
+                "N4",
+                format!(
+                    "{what}: refused as {:?}, not as Error: {}",
+                    r.kind, r.detail
+                ),
+            ));
+        },
+        Err(ActionError::Failed(why)) if why.contains("423") => {},
+        Err(e) => return Err(fail("DRIVER", format!("{what}: push: {e}"))),
+    }
+    until(size, "every holder to stay in Error", || async {
+        let mut lines = Vec::new();
+        for holder in &ps.holders {
+            match h.peer_view(holder, &ps.pr).await {
+                Some(v) if v.heads.len() > 1 => {},
+                got => lines.push(format!("`{holder}` reads {got:?}, expected Error")),
+            }
+        }
+        lines
+    })
+    .await
+    .map_err(|m| fail("N4", format!("{what}: {m}")))?;
+    n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
     Ok(())
 }
 
