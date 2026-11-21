@@ -1,7 +1,9 @@
 //! The fork rule (SPEC 15.7-15.8) as a pure function of the held commits:
 //! a contest's child is *extended* when a held commit names its PR as
-//! `pre`; the walk from genesis follows the only extended child, and no
-//! extended child, or more than one, is Error. Two extended branches are
+//! `pre`; the walk from genesis (a contest like any other, between two
+//! genesis commits) follows the only extended child, and no extended
+//! child, or more than one, is Error. The heads in Error are the leaves at
+//! or above the children of the contest the walk cannot pass. Two extended branches are
 //! Error at any heights, and no further commit on either leaves it.
 //!
 //! The reference below is rule E written the plain way, over a generated
@@ -10,22 +12,23 @@
 use cyphr::fork::{Consensus, Held, assessment};
 use proptest::prelude::*;
 
-/// A tree of held commits: node `i`'s parent is `parents[i - 1]`, always
-/// an earlier node; node 0 is genesis.
+/// A tree of held commits: nodes `0..roots` are genesis commits (position
+/// 0, no `pre`); node `roots + i`'s parent is `parents[i]`, always an
+/// earlier node.
 #[derive(Debug, Clone)]
 struct Tree {
+    roots: usize,
     parents: Vec<usize>,
 }
 
 impl Tree {
     fn held(&self) -> Vec<Held> {
-        let mut seqs = vec![0u64];
-        for &p in &self.parents {
-            seqs.push(seqs[p] + 1);
-        }
-        let mut out = vec![held_of(0, 0, None)];
+        let mut seqs = vec![0u64; self.roots];
+        let mut out: Vec<Held> = (0..self.roots).map(|i| held_of(i, 0, None)).collect();
         for (i, &p) in self.parents.iter().enumerate() {
-            out.push(held_of(i + 1, seqs[i + 1], Some(p)));
+            let n = self.roots + i;
+            seqs.push(seqs[p] + 1);
+            out.push(held_of(n, seqs[n], Some(p)));
         }
         out
     }
@@ -41,48 +44,70 @@ fn held_of(i: usize, sequence: u64, parent: Option<usize>) -> Held {
     }
 }
 
-/// An arbitrary tree of up to `max` commits.
+/// An arbitrary tree of one or two genesis commits and up to `max` more.
 fn tree(max: usize) -> impl Strategy<Value = Tree> {
-    (1..=max)
-        .prop_flat_map(|n| (0..n).map(|i| 0..=i).collect::<Vec<_>>())
-        .prop_map(|parents| Tree { parents })
+    (1usize..=2, 0..=max)
+        .prop_flat_map(|(roots, n)| {
+            (
+                Just(roots),
+                (0..n).map(|i| 0..roots + i).collect::<Vec<_>>(),
+            )
+        })
+        .prop_map(|(roots, parents)| Tree { roots, parents })
 }
 
-/// What the reference reads: the verdict, the leaf while Active, and the
-/// fork point (height, `pre`) in Error.
+/// What the reference reads: the verdict, the one head while Active, and in
+/// Error the fork point (height, `pre`) and the heads.
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    Active { head: String },
-    Error { height: u64, pre: String },
+    Active {
+        head: String,
+    },
+    Error {
+        height: u64,
+        pre: Option<String>,
+        heads: Vec<String>,
+    },
 }
 
-/// Rule E, written the plain way.
+/// Rule E, written the plain way: walk from a virtual root whose children
+/// are the genesis commits; the heads in Error are the leaves at or above
+/// the children of the contest the walk cannot pass.
 fn reference(held: &[Held]) -> Verdict {
-    let mut at = held
-        .iter()
-        .find(|h| h.sequence == 0)
-        .expect("a genesis is held");
+    let kids = |pr: Option<&str>| -> Vec<&Held> {
+        held.iter().filter(|c| c.pre.as_deref() == pr).collect()
+    };
+    let extended = |c: &Held| held.iter().any(|d| d.pre.as_deref() == Some(c.pr.as_str()));
+    let mut at: Option<&Held> = None;
     loop {
-        let children: Vec<&Held> = held
-            .iter()
-            .filter(|c| c.pre.as_deref() == Some(at.pr.as_str()))
-            .collect();
-        let extended = |c: &&Held| held.iter().any(|d| d.pre.as_deref() == Some(c.pr.as_str()));
+        let children = kids(at.map(|a| a.pr.as_str()));
         match children.len() {
             0 => {
                 return Verdict::Active {
-                    head: at.id.clone(),
+                    head: at.expect("a commit is held").id.clone(),
                 };
             },
-            1 => at = children[0],
+            1 => at = Some(children[0]),
             _ => {
                 let ext: Vec<&&Held> = children.iter().filter(|c| extended(c)).collect();
                 if let [only] = ext.as_slice() {
-                    at = **only;
+                    at = Some(**only);
                 } else {
+                    let mut leaves = Vec::new();
+                    let mut frontier = children.clone();
+                    while let Some(c) = frontier.pop() {
+                        let below = kids(Some(c.pr.as_str()));
+                        if below.is_empty() {
+                            leaves.push(c.id.clone());
+                        }
+                        frontier.extend(below);
+                    }
+                    leaves.sort();
+                    leaves.dedup();
                     return Verdict::Error {
-                        height: at.sequence + 1,
-                        pre: at.pr.clone(),
+                        height: at.map_or(0, |a| a.sequence + 1),
+                        pre: at.map(|a| a.pr.clone()),
+                        heads: leaves,
                     };
                 }
             },
@@ -103,7 +128,8 @@ fn read(held: &[Held]) -> Verdict {
             let fp = a.fork_point.expect("Error has a fork point");
             Verdict::Error {
                 height: fp.height,
-                pre: fp.pre.expect("a fork is never at genesis"),
+                pre: fp.pre,
+                heads: a.heads,
             }
         },
     }
@@ -161,13 +187,38 @@ proptest! {
         prop_assert_eq!(read(&held), reference(&held));
     }
 
-    /// Catches tallest-wins: two extended branches are Error at any heights.
+    /// Catches tallest-wins: two extended branches are Error at any
+    /// heights; and a head list that drops the shorter branch's tip (the
+    /// heads are the leaves above the fork point, of unequal heights).
     #[test]
     fn both_extended_is_error_at_any_heights(
         common in 1usize..4, left in 2usize..6, right in 2usize..6,
     ) {
-        let (held, _, _) = fork(common, left, right);
+        let (held, l, r) = fork(common, left, right);
         prop_assert!(is_error(&held), "heights {left} vs {right}");
+        let mut tips = vec![format!("c{l}"), format!("c{r}")];
+        tips.sort();
+        prop_assert_eq!(assessment(&held).heads, tips, "both branch tips are heads");
+    }
+
+    /// Catches a rule that skips position 0: two genesis commits are a
+    /// contest like any other. Neither extended is Error at {0, no pre};
+    /// one extended is selected; both is Error, at any heights.
+    #[test]
+    fn two_genesis_commits_are_a_contest(left in 0usize..4, right in 0usize..4) {
+        let mut v = vec![held_of(0, 0, None), held_of(1, 0, None)];
+        let (mut l, mut r) = (0, 1);
+        for k in 0..left { l = extend(&mut v, l, 100 + k); }
+        for k in 0..right { r = extend(&mut v, r, 200 + k); }
+        let got = read(&v);
+        match (left, right) {
+            (0, 0) => prop_assert_eq!(got, Verdict::Error {
+                height: 0, pre: None, heads: vec!["c0".to_owned(), "c1".to_owned()],
+            }),
+            (_, 0) => prop_assert_eq!(got, Verdict::Active { head: format!("c{l}") }),
+            (0, _) => prop_assert_eq!(got, Verdict::Active { head: format!("c{r}") }),
+            _ => prop_assert!(matches!(got, Verdict::Error { height: 0, pre: None, .. }), "{got:?}"),
+        }
     }
 
     /// Catches an exit by out-building: from a both-extended fork, any
@@ -229,4 +280,24 @@ proptest! {
         prop_assert_eq!(a.heads, b.heads);
         prop_assert_eq!(a.fork_point, b.fork_point);
     }
+}
+
+/// If two genesis commits could share a Principal Root (a hash collision;
+/// honest signing never produces one, see the storage tests), a commit at
+/// position 1 names the PR of both, so both count as extended: Error, with
+/// no extra rule. Catches a rule that reads the shared PR as one chain.
+#[test]
+fn a_shared_genesis_pr_is_both_extended() {
+    let mut a = held_of(0, 0, None);
+    let mut b = held_of(1, 0, None);
+    a.pr = "shared".to_owned();
+    b.pr = "shared".to_owned();
+    let mut c = held_of(2, 1, None);
+    c.pre = Some("shared".to_owned());
+    let held = [a, b, c];
+    assert!(is_error(&held), "{:?}", assessment(&held));
+    assert_eq!(
+        assessment(&held).fork_point.map(|f| (f.height, f.pre)),
+        Some((0, None))
+    );
 }

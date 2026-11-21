@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 18e943124725de9b0df7eb9fdf265a23cea6c93bb438fc7dda0e94a374f35c01 # shrinks to left = 2, right = 2, adds = [false]
+cc 0c7cf13fb8d2561233b057445bd5f1178fc53673f2d5ed65777d5c7a9c9b12d4 # shrinks to left = 3
+cc 0a0a1139f846028899a9691fcf670da372f710029b94d83982612e70091a6bcc # shrinks to common = 1, left = 2, right = 3
+cc c4417d6e93656de409ac1202c5fff329f9ec38b76616499ade135340c382d6a2 # shrinks to left = 1, right = 2
+cc fe1cce101e83008b61a33e64088e82ef381a847d04b793d4ec8a48b107f55825 # shrinks to t = Tree { roots: 1, parents: [0, 0, 0, 1, 2] }
