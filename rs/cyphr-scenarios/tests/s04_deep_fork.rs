@@ -1,11 +1,12 @@
-// Fork over an agreed history, S04's theft at depth (k = 3 agreed commits
-// beyond genesis before the fork).
+// Fork over an agreed history, S04's theft at depth: in both tests the
+// agreed history is k = 3 commits beyond genesis (two commits, then the
+// laptop's pairing) before the fork.
 //
 // Equal branches: every server converges on Error plus evidence, as at
 // depth 0.
 // Unequal branches: the taller branch settles the fork (SPEC 15.8, the
 // fork rule in cyphr/src/fork.rs), so every server converges on Active at
-// the taller tip with the shorter kept as evidence, never on Error. A
+// the taller tip with the shorter kept as evidence. A
 // thief's stale copy of a device (made before the owner's later commits)
 // forks that far down, and the owner's longer chain wins without resolving.
 //
@@ -85,7 +86,11 @@ async fn a_taller_branch_settles_the_fork() {
     let all = ["p1", "p2", "p3"];
 
     let pr = h.ok(alice.create_principal().await);
+    h.ok(alice.commit_data(&pr, "agreed one").await);
+    h.ok(alice.add_backup_key(&pr).await);
     let laptop_key = h.ok(alice.pair_device(&pr, &laptop).await);
+    h.ok(alice.push(&pr, &["p1", "p2"]).await)
+        .accepted("base push");
     // Alice goes on after the pairing, so the stolen laptop is a stale
     // copy and the fork lies below her tip.
     h.ok(alice.commit_data(&pr, "alice one").await);
