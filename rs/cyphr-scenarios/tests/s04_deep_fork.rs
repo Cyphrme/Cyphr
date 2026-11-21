@@ -4,11 +4,15 @@
 //
 // Equal branches: every server converges on Error plus evidence, as at
 // depth 0.
-// Unequal branches: the taller branch settles the fork (SPEC 15.8, the
-// fork rule in cyphr/src/fork.rs), so every server converges on Active at
-// the taller tip with the shorter kept as evidence. A
-// thief's stale copy of a device (made before the owner's later commits)
-// forks that far down, and the owner's longer chain wins without resolving.
+// One branch extended: a commit naming a fork child as its `pre` is what
+// selects it (SPEC 15.8 item 1), so every server converges on Active at
+// the extended tip with the other kept as evidence. A thief's stale copy
+// of a device (made before the owner's later commits) forks that far
+// down, and the owner's two commits against the thief's one select the
+// owner's branch because only it is extended, not because it is taller.
+// Both extended: the fork stays an error whatever the heights (the spec
+// author on #203: "They're both out of compliance"), and no further
+// commit on either side leaves it.
 //
 // Required capabilities: transport,cli-network,branch-store,evidence,peer-gossip,audit,data-commit.
 
@@ -76,7 +80,7 @@ async fn deep_fork_converges_on_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_taller_branch_settles_the_fork() {
+async fn the_only_extended_branch_selects_the_fork() {
     let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
         .await
         .expect("start peers");
@@ -106,7 +110,7 @@ async fn a_taller_branch_settles_the_fork() {
     assert_ne!(at, tt, "the thief must have forked");
 
     h.eventually(
-        "every server to settle on the taller branch",
+        "every server to settle on the extended branch",
         CONVERGE,
         || async {
             for peer in all {
@@ -120,8 +124,77 @@ async fn a_taller_branch_settles_the_fork() {
     .await;
     let v = h.ok(bob.verdict(&pr, &all).await);
     h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
-    assert_eq!(v.standing, Standing::Active, "the longer branch settles it");
+    assert_eq!(
+        v.standing,
+        Standing::Active,
+        "only the extended branch is selected"
+    );
     assert_eq!(v.tip, at);
     assert!(v.evidence.contains(&Evidence::PrincipalFork(pr.clone())));
-    assert!(v.abandoned.contains(&tt), "the shorter branch is kept");
+    assert!(v.abandoned.contains(&tt), "the unextended branch is kept");
+}
+
+/// Alice makes `alice` commits and the thief `thief` commits over the
+/// fork, both past the agreed history; every server must read Error.
+async fn both_extended(alice: usize, thief: usize) {
+    let h = Harness::start_gossiping(&["p1", "p2", "p3"], 1)
+        .await
+        .expect("start peers");
+    h.require(CAPS).await;
+    let (a, laptop) = (h.client("alice"), h.client("alice-laptop"));
+    let (t, bob) = (h.client("thief"), h.client("bob"));
+    let all = ["p1", "p2", "p3"];
+
+    let pr = h.ok(a.create_principal().await);
+    h.ok(a.commit_data(&pr, "agreed one").await);
+    h.ok(a.add_backup_key(&pr).await);
+    let laptop_key = h.ok(a.pair_device(&pr, &laptop).await);
+    h.ok(a.push(&pr, &["p1", "p2"]).await).accepted("base push");
+    h.ok(t.steal_key(&laptop, &laptop_key).await);
+    for n in 0..alice {
+        h.ok(a.commit_data(&pr, &format!("alice {n}")).await);
+    }
+    for n in 0..thief {
+        h.ok(t.commit_data(&pr, &format!("thief {n}")).await);
+    }
+    h.ok(a.push(&pr, &["p1", "p2"]).await)
+        .accepted("alice branch");
+    h.ok(t.push(&pr, &["p3"]).await).accepted("thief branch");
+
+    // Catches tallest-wins: the taller branch must not make any server
+    // Active, and no server may hold a single tip.
+    h.eventually(
+        "every verdict to converge on Error plus evidence",
+        CONVERGE,
+        || async {
+            let v = bob.verdict(&pr, &all).await?;
+            Ok(v.standing == Standing::Error
+                && v.evidence.contains(&Evidence::PrincipalFork(pr.clone())))
+        },
+    )
+    .await;
+    // Catches split witnesses: each server reports the tie itself.
+    h.eventually("every server to report Error", CONVERGE, || async {
+        for peer in all {
+            match h.peer_view(peer, &pr).await {
+                Some(v) if v.heads.len() > 1 => {},
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    })
+    .await;
+    let v = h.ok(bob.verdict(&pr, &all).await);
+    h.check_verdict(&v, &pr, &Expect::new(&all, &pr.0)).await;
+    assert_eq!(v.standing, Standing::Error, "{alice} vs {thief} commits");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_taller_owner_branch_does_not_settle_a_both_extended_fork() {
+    both_extended(3, 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_taller_thief_branch_does_not_settle_a_both_extended_fork() {
+    both_extended(2, 3).await;
 }
