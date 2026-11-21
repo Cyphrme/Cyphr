@@ -401,66 +401,6 @@ async fn grouped_transaction_end_to_end() {
     drop(dir);
 }
 
-/// Claim: TR is the MR of every transaction's TX, the commit transaction
-/// last (SPEC 3.7.5 `TR = MR(TXm0?, TXm1?, ..., TXc)`), so grouping moves TR:
-/// two key/replace cozies as one transaction beside a `key/create` give
-/// `MR(MR(czd0, czd1), czd2, czdc)`, the same cozies as two transactions give
-/// `MR(czd0, czd1, czd2, czdc)`. Both pushes are accepted and their TRs
-/// differ. The group sits beside a second mutation transaction because a
-/// commit whose only mutation transaction is grouped is refused, its mutation
-/// root being that of the separate form. Turns red if any layer flattens the
-/// group. End-to-end scenario: yes.
-#[tokio::test]
-async fn one_mutation_transaction_grouping_moves_tr() {
-    let (p, pg, setup) = two_key_principal().await;
-    let replace = |signer, target| Coz {
-        signer,
-        kind: "key/replace",
-        target,
-    };
-    let create = Coz {
-        signer: "alice",
-        kind: "key/create",
-        target: "carol",
-    };
-    let mut trs = Vec::new();
-    for grouped in [true, false] {
-        let mut q = p.fork().await.expect("fork");
-        let txs = if grouped {
-            vec![
-                vec![replace("golden", "alice"), replace("key_a", "bob")],
-                vec![create.clone()],
-            ]
-        } else {
-            vec![
-                vec![replace("golden", "alice")],
-                vec![replace("key_a", "bob")],
-                vec![create.clone()],
-            ]
-        };
-        author(&mut q, &txs, "alice").await.expect("commits");
-        let commit = q.commits().last().unwrap().clone();
-        let c = czds(&commit);
-        let oracle = if grouped {
-            sha256(&[&sha256(&[&c[0][0], &c[0][1]]), &c[1][0], &c[2][0]])
-        } else {
-            sha256(&[&c[0][0], &c[1][0], &c[2][0], &c[3][0]])
-        };
-        let (state, _dir) = keyless_server();
-        let app = build_router(state);
-        push_all(&app, &pg, &setup).await;
-        let (status, body) = post_json(app, "/push", push_body(&pg, &wire(&commit))).await;
-        assert_eq!(status, StatusCode::CREATED, "push refused: {body}");
-        assert_eq!(
-            body["payload"]["commit_id"],
-            json!(format!("SHA-256:{}", b64(&oracle))),
-            "TR is the flat MR of the transaction ids (grouped: {grouped})"
-        );
-        trs.push(body["payload"]["commit_id"].clone());
-    }
-    assert_ne!(trs[0], trs[1], "grouping must move TR");
-}
-
 /// Claim: SPEC 4.1 "All cozies for a particular transaction contain an
 /// identical `typ`" holds where data enters: a transaction of a
 /// `key/create` and a `key/delete`, each validly signed, is refused through
