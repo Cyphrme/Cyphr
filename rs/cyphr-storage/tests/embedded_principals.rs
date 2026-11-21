@@ -972,19 +972,35 @@ async fn load_reads_b_once_for_every_pinned_state() {
 }
 
 /// B reorganizes by fork promotion after A was admitted through B at the
-/// tip of B's line X: `depth` commits X past the one that creates carol. A
-/// rival line Y (signed by `signer`, one commit longer) is pushed to B, kept
-/// as evidence and then promoted, so B's canonical chain is Y and A's pin
-/// names a displaced state of B. Returns the engine and A's roots before.
-async fn b_reorganizes(depth: i64, thief: bool) -> (Engine, MemoryBlobStore, Line, DerivedRoots) {
+/// tip of B's line X: one commit X past `below` commits that follow the one
+/// that creates carol (a fork line is displaced only while its first
+/// commit is unextended, so depth lives below the fork). A rival line Y
+/// (signed by `signer`, two commits) is pushed to B, kept as evidence and
+/// then promoted by its second commit, so B's canonical chain is Y and A's
+/// pin names a displaced state of B. Returns the engine and A's roots
+/// before.
+async fn b_reorganizes(below: i64, thief: bool) -> (Engine, MemoryBlobStore, Line, DerivedRoots) {
+    let depth = 1;
     let (alice, bob, carol, dave) = (kp(), kp(), kp(), kp());
     let (mut b, b_pr) = b_with_carol(&bob, &carol).await;
-    let base = b.state.fork().await.expect("fork");
-    for i in 0..depth {
+    for i in 0..below {
         let k = kp();
         b.commit(&bob, "key/create", &k.tmb.to_b64(), Some(&k), T0 + 20 + i)
             .await
-            .expect("B's line X");
+            .expect("B's chain below the fork");
+    }
+    let base = b.state.fork().await.expect("fork");
+    for i in 0..depth {
+        let k = kp();
+        b.commit(
+            &bob,
+            "key/create",
+            &k.tmb.to_b64(),
+            Some(&k),
+            T0 + 20 + below + i,
+        )
+        .await
+        .expect("B's line X");
     }
     let mut a = a_embedding(&alice, &b_pr, &b.state).await;
     a.commit(
@@ -1038,7 +1054,7 @@ async fn b_reorganizes(depth: i64, thief: bool) -> (Engine, MemoryBlobStore, Lin
 /// End to end: yes.
 #[tokio::test]
 async fn pin_survives_b_promoting_a_rival_line() {
-    let (engine, blobs, a, before) = b_reorganizes(1, false).await;
+    let (engine, blobs, a, before) = b_reorganizes(0, false).await;
     assert_eq!(a.roots(&engine).await, before, "live");
     assert_eq!(a.roots(&restart(&blobs).await).await, before, "rebuilt");
 }
@@ -1047,13 +1063,15 @@ async fn pin_survives_b_promoting_a_rival_line() {
 /// of B, whose branch is the one promoted.
 #[tokio::test]
 async fn pin_survives_a_thiefs_branch_of_b_being_promoted() {
-    let (engine, blobs, a, before) = b_reorganizes(1, true).await;
+    let (engine, blobs, a, before) = b_reorganizes(0, true).await;
     assert_eq!(a.roots(&engine).await, before, "live");
     assert_eq!(a.roots(&restart(&blobs).await).await, before, "rebuilt");
 }
 
-/// As above with the pin two commits deep on the displaced line, so the
-/// walk by `pre` crosses a displaced commit that is not the pinned one.
+/// As above with the pin two commits deep in B's chain, below the fork, so
+/// the walk by `pre` crosses commits that precede the displaced one. (A
+/// displaced line is a single commit: a line extended past its first
+/// commit is extended, and the fork rule does not let a rival displace it.)
 #[tokio::test]
 async fn pin_deep_on_a_displaced_line_survives() {
     let (engine, blobs, a, before) = b_reorganizes(2, false).await;
