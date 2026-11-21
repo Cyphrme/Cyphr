@@ -174,7 +174,7 @@ response those configurations produced before this document.
 Covered by `rs/cyphr-server/tests/keyless_matrix.rs` and
 `rs/cyphr-server/tests/receipts.rs`.
 
-### `[receipts-r-stateless]` Issuance is stateless (decision D2)
+### `[receipts-r-stateless]` Issuance is stateless
 
 The server persists nothing new to issue a receipt: no receipt log, no
 retention window, no server-side received-at timestamp. The recipient

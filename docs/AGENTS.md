@@ -148,8 +148,8 @@ sites; Netlify builds on push.
   failure mode, not a standing exception list.
 - **Section citations are broken repo-wide.** SPEC.md was renumbered
   2026-07-02; most `docs/specs/*.md` headers and some rustdoc cite the old
-  §-numbers, and five specs cite dead `.sketches/` paths (content lives in
-  `.ledger/log/`). Check the `be0663f` TOC before following any
+  §-numbers, and five specs cite dead `.sketches/` paths (that material was
+  never published in the repository). Check the `be0663f` TOC before following any
   §-reference.
 - **`docs/plans/` is legacy.** Never plan-of-record (root I6); campaign
   workflow supersedes. Same for `docs/protocol/constraint_coverage.md`
@@ -169,8 +169,8 @@ sites; Netlify builds on push.
   never to `../SPEC.md`: the in-tree copy's section numbers differ, and
   docket reports links to its anchors as dangling references. Do not
   edit or commit `SPEC.md` (root I3).
-- Decision records here can be superseded by forge rulings: the in-repo
-  ledger records KV→SQLite for the index; the settled direction is
+- Decision records here can be superseded by forge rulings: the older in-repo
+  records say KV→SQLite for the index; the settled direction is
   KV-not-SQL (root R3). When docs and forge issues conflict, the forge +
   root `AGENTS.md` win.
 

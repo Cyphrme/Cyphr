@@ -124,9 +124,9 @@ issue).
 
 ### Authentication Summary
 
-Recomputed after campaign: N05-bearer-tokens (cyphrme/cyphr#63), N06-login-flows
-(cyphrme/cyphr#67), and N07-route-protection (cyphrme/cyphr#68) landed real,
-tested login and bearer-token code. The 8 login/bearer rows above move off
+Recomputed after the login work landed: bearer tokens (cyphrme/cyphr#63), login
+flows (cyphrme/cyphr#67), and route protection (cyphrme/cyphr#68) are real,
+tested code. The 8 login/bearer rows above move off
 `⚪ OOS` to `⬜ STRUCTURAL` (verified by `rs/cyphr-server/tests/login.rs`'s
 real HTTP integration tests, not the `errors.toml`/`error_conditions.toml`
 corpus `✅ TESTED` names specifically) -- the same classification this
@@ -214,9 +214,10 @@ document already applies to the lifecycle rows above for the same reason.
 
 ### Lifecycle Summary
 
-Recomputed after campaign: N01-lifecycle-state (LifecycleState enum,
-derive_lifecycle_state) merged cyphrme/cyphr#59; N03-lifecycle-transactions
-(principal/delete, freeze/create, freeze/delete) merged cyphrme/cyphr#64.
+Recomputed after the lifecycle work landed: the lifecycle state (LifecycleState
+enum, derive_lifecycle_state) merged in cyphrme/cyphr#59; the lifecycle
+transactions (principal/delete, freeze/create, freeze/delete) merged in
+cyphrme/cyphr#64.
 All lifecycle state derivation and three closure transactions now have real,
 verified code. Classified STRUCTURAL rather than TESTED per this document's
 own legend (TESTED names specifically `errors.toml`/`error_conditions.toml`;
@@ -224,7 +225,7 @@ these are verified via `tests/golden/lifecycle/*.json` state-computation
 fixtures instead, the same category as `[tx-root-computation]` elsewhere in
 this document).
 
-- ✅ TESTED: 2 (pre-campaign: no-level-1-recovery, dead-terminal)
+- ✅ TESTED: 2 (before that work: no-level-1-recovery, dead-terminal)
 - ⬜ STRUCTURAL: 16 (level constraints, lifecycle-deterministic, zombie-state-bounds, deleted-frozen-exclusive, no-deleted-and-frozen, plus 8 newly-landed: freeze-mutation-lockout, principal-delete, nuke-sequence, freeze-blocks-mutations, unfreeze, no-transactions-on-deleted, no-mutations-on-frozen, delete-irreversible)
 - 🔵 RUNTIME: 4 (design/architectural constraints, unchanged)
 - ⚪ OOS: 8 (errored-orthogonal v1-always-false, canmutate-non-monotonic L5+, merge-_/fork-_ all unimplemented)
