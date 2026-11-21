@@ -48,6 +48,10 @@ jobs:
       - name: Run the large network
         env:
           CYPHR_NETSIM_SIZE: large
+          # Every server the harness spawns inherits this: each use of a
+          # kept state is checked against a cold replay, so a kept-state
+          # divergence fails the run instead of passing silently.
+          CYPHR_KEPT_SHADOW: "1"
         run: cargo test -p cyphr-scenarios --test netsim netsim_network -- --nocapture
       # The harness keeps the op log and every peer's log on a failure; the
       # op log replays the run with CYPHR_NETSIM_REPLAY.

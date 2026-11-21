@@ -137,6 +137,17 @@ without their recorded state. Do not run an older binary on such a store.
   directory belongs to one process. Nothing coordinates two servers on
   one directory.
 
+- **A refused login can cost one replay.** `POST /auth/login` loads the
+  claimed principal before it checks the signature, because the key that
+  must have signed is found in that principal's state
+  (`rs/cyphr-server/src/auth/login.rs`, `login`). A principal whose state
+  the engine keeps costs a lookup. A cold or evicted one costs one replay
+  of its history, then is kept. Two bounds apply: the kept-state cache,
+  which makes the second refused login for the same principal cheap, and
+  the per-IP request limit, which caps how fast one address can ask.
+  Many addresses naming many cold principals can still force a replay
+  each.
+
 ## Promises the system does not keep
 
 These are guarantees a reader might assume. None is provided today.
