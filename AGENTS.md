@@ -313,10 +313,12 @@ resolved unilaterally.
   every push; losing the kept state costs one replay (I1). Commit logs
   share one fixed keyspace triplet scoped by principal and generation, so
   a new principal no longer creates keyspaces. Not resolved: the kept
-  state is in memory and unbounded in the number of principals, and a
-  principal that embeds another is kept as its replay built it, so a write
-  follows the embedded principal to its current tip. Signpost: a latency
-  or throughput requirement the scenario suite cannot meet.
+  state is in memory and holds 128 principals by default
+  (`DEFAULT_KEPT_CAPACITY`), each as large as its history, so a principal
+  evicted by a busier set replays once on its next use; and a principal
+  that embeds another is kept as its replay built it, so a write follows
+  the embedded principal to its current tip. Signpost: a latency or
+  throughput requirement the scenario suite cannot meet.
 - **U4 — EMT→EML conversion.** A one-way, permanent conversion of the
   PT's EMT to an EML is a supported-mode design goal, deferred. Grounding:
   forge issue #40. Signpost: the campaign after the MVP.

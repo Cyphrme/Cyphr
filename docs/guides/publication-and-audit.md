@@ -96,9 +96,10 @@ with two addresses — which is the point. A server without a signing key
 answers `{"tier": "repository"}` and signs nothing; nothing in the auditing
 half of this guide applies to one.
 
-Make something to publish. The `cyphr` CLI builds principals locally and
-has no command that talks to a server, so the push is a `curl` you
-assemble:
+Make something to publish. The `cyphr` CLI can push to a server itself
+(`cyphr push --identity="$PR" --peer=http://127.0.0.1:4100`); this guide
+builds the request by hand with `curl`, so that you hold the raw response
+and its receipt:
 
 ```sh
 PR=$(cyphr --output json key generate --algo ES256 | jq -r .tmb)
@@ -124,8 +125,8 @@ roots, stores the blobs, and hands you a receipt.
 Turn the newest exported commit into a push body and send it:
 
 ```sh
-jq -c --arg pid "$PR" -s '{principal_id: $pid, blobs: [.[-1].txs[]
-  | tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";"")]}' \
+jq -c --arg pid "$PR" -s '.[-1] | {principal_id: $pid, keys: .keys,
+  txs: [.txs[] | map(tojson | @base64 | gsub("\\+";"-") | gsub("/";"_") | gsub("=";""))]}' \
   ./export.jsonl > ./push.json
 
 curl -s -X POST http://127.0.0.1:4100/push \

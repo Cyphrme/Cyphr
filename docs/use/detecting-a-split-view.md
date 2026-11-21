@@ -132,12 +132,18 @@ revoking the stolen key and recovering the record onto one the thief
 does not hold
 ([SPEC §14](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#14-recovery)).
 
-The server does not track any of this today. It refuses a commit on a
-predecessor its copy of the record has already moved past, with a `409`,
-and keeps nothing of the refused branch. A server that took one branch
-and a server that took the other each keep serving their own, and
-neither records that a fork happened. The owner's resolution reaches
-only the servers she pushes it to.
+A server does track a fork it is shown. It refuses a commit that
+verifies on a predecessor its chain has already moved past, with a `409`,
+and keeps that commit as evidence (up to 16 per record, at most 2 per
+signing key). The record is then in Error: the server refuses everything
+but a resolution with a `423`, answers `GET /tip` with a signed held
+statement that names the tied heads and when each was first seen, and
+lists the branches at `GET /branches` and `GET /evidence`. What a server
+cannot do is see a branch it was never given. A server that took one
+branch and a server that took the other each keep serving their own
+record as Active until the two exchange commits, so a fork still shows
+only to someone who compares the two. The owner's resolution reaches only
+the servers she pushes it to.
 
 ## What you hold when you find one
 
