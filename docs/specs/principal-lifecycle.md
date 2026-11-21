@@ -37,9 +37,9 @@ out of their identities.
 
 **`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
 "implemented."** The table's uniform 25/25 `pass` reflects SPEC-internal
-consistency, not implementation status. The following revisions apply post-campaign:
+consistency, not implementation status. The following revisions apply after the lifecycle work:
 
-**Implemented by N01 (lifecycle-state), N03 (lifecycle-transactions):**
+**Implemented (lifecycle state and lifecycle transactions):**
 
 - LifecycleState enum with full derivation from five boolean conditions (Active,
   Frozen, Deleted, Zombie, Dead, Nuked), orthogonal Errored flag —
@@ -49,22 +49,23 @@ consistency, not implementation status. The following revisions apply post-campa
   scenarios with fixture-backed assertions), `tests/golden/lifecycle/*.json`
 - Frozen/Deleted/Zombie/Dead/Nuked states now reach real code paths; all lifecycle
   gates enforced (mutual-exclusivity, no-mutations-on-frozen, Deleted subsumes
-  Frozen per F5 ruling)
+  Frozen)
 
-**Still unimplemented (correctly out of campaign scope):**
+**Still unimplemented (out of scope for the lifecycle work):**
 
 - principal/merge and principal/fork/create (no transactions, no tests)
 - Level 5+ weighted-key thresholds and CanMutateAR non-monotonicity
-- Errored state detection (flag always false in v1; CommitMismatch is candidate
-  future source per findings F8)
+- Errored detection inside `rs/cyphr`: `Principal::is_errored` reports the
+  flag, and the storage engine detects forks and holds the principal in
+  Error (`EngineError::Errored`), but the core does not set the flag itself
 
 **Partially implemented or with known limitations:**
 
 - `Principal::level()` still cannot return `Level::L2` —
-  `rs/cyphr/src/principal.rs` comment: "For now, single key with no commits = Level 1"
+  `Principal::level` in `rs/cyphr/src/principal/accessors.rs` carries the comment: "For now, single key with no commits = Level 1"
 - Nuked vs Dead distinguishability: KeyDelete erases keys; SelfRevoke preserves
   them in revoked set — both trace back to deletion state, making Nuked/Dead
-  separation not externally observable (findings F11, deferred refinement)
+  separation not externally observable (a deferred refinement)
 
 ## Constraints
 
@@ -183,9 +184,9 @@ principal. This transition is irreversible.
 
 - **PRE**: Principal is Active or Frozen. Signing key MUST be active.
 
-  _Ruling note (SPEC F5)_: SPEC.md §11.2 states Freeze permits "no mutations until
+  _Ruling note_: SPEC.md §11.2 states Freeze permits "no mutations until
   unfrozen" (unqualified), while §14.9 discretionarily restricts Freeze to key
-  mutations. The architect ruling (findings.yaml F5) permits principal/delete from
+  mutations. The implementation permits principal/delete from
   both Active and Frozen states. When signed by a Frozen principal, the resulting
   Deleted state subsumes Frozen (per §11.2 mutual-exclusivity): POST sets both
   `IsDeleted` = true and `IsFrozen` = false.
@@ -194,7 +195,7 @@ principal. This transition is irreversible.
   The three lifecycle transactions (principal/delete, freeze/create, freeze/delete)
   each carry their own individual checks rejecting AlreadyDeleted; however, no
   blanket gate rejects all other transaction types against a Deleted principal.
-  This narrow gate is tracked as a follow-up gap (findings.yaml F23 / GitHub issue #65).
+  This narrow gate is tracked as a follow-up gap (GitHub issue #65).
   PR MAY be reused for a new principal only if the keys were not revoked.
   `VERIFIED: agent-check`
 

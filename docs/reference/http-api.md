@@ -155,6 +155,14 @@ principal lookups) map its failures through one function,
 | principal is in Error: only a fork resolution is admitted            | `423`  | `errored`                                        |
 | any other protocol refusal                                           | `422`  | `coz_reuse`, `genesis_incomplete`, or `protocol` |
 | protocol storage failure; blob store, index, load or storage failure | `500`  | none                                             |
+| a sync of the record failed, now or earlier (durability lost)        | `500`  | none                                             |
+
+A failed sync of the record is a `500` with the generic body
+`{"error":"internal storage error"}`. The engine then refuses every later
+write the same way, on every route that writes, until the process
+restarts; reads do not check the flag. The cause is in the server log at `error` level
+(`internal engine error`, `record not durable, writes refused until restart`). See "Durability"
+in `docs/guides/operating-a-server.md`.
 
 The route sections below list only the codes a route adds or where a row
 above is reachable in an unexpected way.
@@ -609,6 +617,11 @@ new principal's genesis.
 }
 ```
 
+A `201` means the record was synced to disk before the answer was built
+(`storage-engine.md` `[record-durable-first]`), for a commit, a retained
+rival and an action-only bundle alike, so the receipt never signs over
+state a power cut can erase. The sync costs one disk flush per push.
+
 `sequence` is the accepted commit's 0-indexed position. `roots.cr` is
 `null` when no commit root exists yet. Statement: `cyphr-server/receipt/commit`
 on an attestor; a receipt that cannot be signed degrades the answer to
@@ -624,6 +637,7 @@ on an attestor; a receipt that cannot be signed degrades the answer to
 | `413`  | The body exceeds the cap (also while buffering for admission or quota).                                                                                                                                                                                                |
 | `422`  | Any other protocol refusal, for example `genesis_incomplete` for an action-only push before any genesis.                                                                                                                                                               |
 | `423`  | The principal is in Error: only a fork resolution is admitted (`kind` `errored`).                                                                                                                                                                                      |
+| `500`  | A storage failure, including a failed sync of the record: that push is answered `500` and not indexed, and if the sync failed, every later write is refused the same way until restart.                                                                                |
 | `503`  | The admission spent-set store is unavailable.                                                                                                                                                                                                                          |
 
 Examples: `push_new_principal_happy_path` (`rs/cyphr-server/tests/e2e.rs`),
@@ -670,7 +684,7 @@ trust object a client replays):
 | :----- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `400`  | Body not JSON of the expected shape; `key` missing; malformed payload, bad `rvk`, oversize payload, wrong `typ`, or a disclosed key that does not hash to its `tmb`. |
 | `401`  | The signature does not verify against the disclosed key.                                                                                                             |
-| `500`  | The observation store failed.                                                                                                                                        |
+| `500`  | The observation store failed, or the engine's record sync failed (every later write then answers `500` until restart).                                               |
 | `507`  | The death set is at its ceiling (`[limits] max_dead_keys`) and no stored principal holds the key. A revoke of a held key is still recorded.                          |
 
 Engine refusals while recording map as in "Engine error mapping".

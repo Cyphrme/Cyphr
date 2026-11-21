@@ -15,7 +15,7 @@
 
 ## Domain
 
-**Problem Domain:** `Principal::verify_key_inclusion` (`rs/cyphr/src/principal.rs`)
+**Problem Domain:** `Principal::verify_key_inclusion` (`rs/cyphr/src/principal/proofs.rs`)
 only serves a caller that already owns and trusts a live `Principal` --
 it reads its trusted roots from `self`. Issue #19 asks for the portable
 alternative: a third party holding only a server's pinned PG and a
@@ -26,7 +26,7 @@ replaying, or querying that principal directly.
 **Target System:** `rs/cyphr/src/inclusion.rs`'s free function
 `verify_key_inclusion` (pre-existing, genuinely `Principal`-free); the
 one new accessor `Principal::sr_inclusion_proof`
-(`rs/cyphr/src/principal.rs`) that makes hop 4 of the proof chain
+(`rs/cyphr/src/principal/proofs.rs`) that makes hop 4 of the proof chain
 reachable from outside the crate; and the end-to-end demonstration in
 `rs/cyphr-server/tests/inclusion_portability.rs`.
 
@@ -51,7 +51,7 @@ top-down from a trusted Principal Root (PR):
 Each hop is a self-contained `polydigest::LeafProof`, checked against
 its own level's root, with a bridge check binding hop `i`'s proven leaf
 value to hop `i-1`'s root (`NodePath::verify`,
-`rs/cyphr/src/principal.rs`). All four hops and roots are generatable
+`rs/cyphr/src/principal/proofs.rs`). All four hops and roots are generatable
 from public APIs: `Principal::active_algs`/`active_keys`/`data_root`
 feed `KeyTree`/`AuthTree`/`StateTree::build_tree` for hops 1-3 (all
 `pub`), and the new `Principal::sr_inclusion_proof` accessor gives hop

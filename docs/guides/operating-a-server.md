@@ -987,6 +987,7 @@ extracting, given what is and is not emitted:
 
 - `server principal established` with its `pg`, at every keyed start. A `pg` that changed is the loudest possible alarm — every client that pinned you will refuse.
 - `witness sync failed` and `witness sync authenticated-channel check failed`, which say a witness's last sync did not complete. They do not cover the quieter case: a sync that succeeded with entries skipped, which is `witness sync applied entries` with a non-zero `rejected` at `cyphr_server=debug`. Watch that one too if you care whether a witness is complete, not merely alive.
+- `internal engine error` with `record not durable, writes refused until restart` at `error`: the record could not be flushed to disk and the server now refuses every write (see "Durability"). Alert on it; `GET /healthz` does not.
 - `configuration error:` on stderr with exit 1, which is a start that never happened.
 - Response status counts from `tower_http=debug`, which covers every status a route handler produces — including a witness's `403` write refusal. It does not cover the fences; see below.
 
@@ -1041,6 +1042,54 @@ are `not_found`, `ambiguous`, `invalid_input`, `malformed_blob`,
 fault carries no `kind`, and neither do refusals built by the fences and
 auth layers. The set may grow, so treat an unknown kind as the generic
 refusal its status code says.
+
+## Durability
+
+**An accepted write is on disk before the server answers.** For every
+push the server stores the commit, appends it to the principal's commit
+log, then asks the operating system to flush the record to disk, and only
+then writes the index and signs the receipt. A `201`, a signed receipt and
+a signed tip report therefore never describe state that a power cut can
+erase. This matters because the receipt is evidence a client keeps: a
+server that signed over a commit and then lost it would, after restart,
+accept a different commit at the same position and sign that too, and the
+two signed statements would convict an honest server of equivocation. The
+same flush covers a retained rival commit (a fork), a naked revoke and an
+action-only push, because the server answers each of them as recorded.
+The rule applies in every mode, keyed or not, witness or authority.
+
+The cost is one disk flush per accepted commit, about 8 ms on a push that
+takes about 40 ms. **Group commit is not implemented:** there is no
+setting that batches flushes across pushes, and no setting that turns the
+flush off.
+
+**If the flush fails, the server refuses every write until you restart
+it.** A failed flush can leave the operating system having dropped the
+pages it covered, and a later flush can then succeed over data that is
+gone. The server does not trust that success. After the first failure it
+answers every write with `500` (`internal storage error`, no `kind`),
+whichever principal it names, and logs each refusal at `error` with the
+cause (`cyphr_server::error`, which the default `RUST_LOG` shows):
+
+```
+ERROR cyphr_server::error: internal engine error error=record not durable, writes refused until restart: <cause>
+```
+
+The storage engine also logs `record sync failed; refusing writes until
+restart` once, under the `cyphr_storage` target, which the default
+`RUST_LOG` filters out. Reads keep working. A gossip round that hits the
+failure logs `the record is not durable` at `error`. What to do:
+
+1. Treat a rising `cyphr_refusals_total{kind="server_error"}` together
+   with that log line as an incident. `GET /healthz` will not show it: the
+   probe writes a sentinel file and does not read the engine's state.
+2. Find the cause (a failing disk, a full device, a lost mount) and fix it.
+3. Restart the server. It replays what reached the disk and serves from
+   there. A commit whose push was answered `500` may or may not have
+   reached the disk; the client learns which by reading `GET /tip` after
+   the restart and pushing again if the commit is missing.
+
+Restarting before fixing the cause makes the next write fail the same way.
 
 ## Restarting and upgrading
 
@@ -1121,9 +1170,15 @@ principal, disk per commit, throughput per core — is unmeasured.
 Named plainly, because finding these out during an incident is worse than
 reading them here:
 
+Limits of the protocol and of the checks around it (revocation timing,
+forks, embedded principals, promises the system does not keep) are in
+[Known limits](known-limits.md). What follows is specific to running the
+server.
+
 - **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No online key rotation.** `rotate-key` (see "Rotating the signing key") works on a stopped server; there is no endpoint or signal that rotates a running one.
 - **No access log by default** (see above to turn one on); counters are `GET /metrics`.
+- **No group commit.** Every accepted commit pays its own disk flush (see "Durability"), so a busy server's push rate is bounded by the flush latency of its disk.
 - **No backup command.** `cyphr-server export` is listed in `--help` and prints `error: export is not yet implemented`. Consistent backups mean stopping the server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
 - **No `Retry-After` on a `429`,** and no indication of which bucket refused, so a well-behaved client cannot back off intelligently.
