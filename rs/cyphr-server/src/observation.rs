@@ -48,6 +48,10 @@ pub(crate) struct DurabilityLost(pub(crate) String);
 pub(crate) struct SyncLatch {
     lost: std::sync::atomic::AtomicBool,
     one_sync: std::sync::Mutex<()>,
+    /// Makes the next sync fail, so a test can drive a whole store through
+    /// a failed `persist`, which fjall cannot be made to do on demand.
+    #[cfg(test)]
+    fail_next_sync: std::sync::atomic::AtomicBool,
 }
 
 impl SyncLatch {
@@ -60,6 +64,11 @@ impl SyncLatch {
         Ok(())
     }
 
+    /// Whether a sync has failed: the store refuses every write.
+    pub(crate) fn lost(&self) -> bool {
+        self.writable().is_err()
+    }
+
     /// Run `sync`; if it fails, latch the store closed.
     pub(crate) fn sync(
         &self,
@@ -68,6 +77,19 @@ impl SyncLatch {
         // The mutex guards no data; a panicked holder left nothing to repair.
         let _one_sync = self.one_sync.lock().unwrap_or_else(|p| p.into_inner());
         self.writable()?;
+        #[cfg(test)]
+        let sync = || {
+            if self
+                .fail_next_sync
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Err(fjall::Error::Io(std::io::Error::other(
+                    "injected sync failure",
+                )))
+            } else {
+                sync()
+            }
+        };
         sync().map_err(|e| {
             self.lost.store(true, std::sync::atomic::Ordering::SeqCst);
             tracing::error!(error = %e, "store sync failed; refusing writes until restart");
@@ -213,6 +235,12 @@ impl ObservationStore {
         })
     }
 
+    /// The latch that closes this store to writes after a failed sync,
+    /// watched by `/healthz` ([`crate::metrics::HealthProbe::watch`]).
+    pub(crate) fn latch(&self) -> std::sync::Arc<SyncLatch> {
+        self.latch.clone()
+    }
+
     /// Serialize a revoke's ceiling check and its writes. Revokes are rare,
     /// so one gate costs nothing and makes the ceiling exact for unheld keys.
     pub async fn revoke_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -282,10 +310,13 @@ impl ObservationStore {
         let dead_count = self.dead_count.clone();
         let latch = self.latch.clone();
         tokio::task::spawn_blocking(move || {
+            // Before the short-circuit: fjall makes an insert visible before
+            // its sync, so after a failed sync a retry would find the key
+            // and report a record that never reached the disk.
+            latch.writable()?;
             if dead_keys.contains_key(&key).map_err(backend)? {
                 return Ok(());
             }
-            latch.writable()?;
             let mut count = dead_count.lock().unwrap_or_else(|p| p.into_inner());
             dead_keys.insert(key, value).map_err(backend)?;
             latch.sync(|| db.persist(PersistMode::SyncAll))?;
@@ -380,5 +411,28 @@ mod tests {
             latch.writable().is_err(),
             "writes are refused until restart"
         );
+    }
+
+    /// Through the store itself: a key whose insert was followed by a failed
+    /// sync is visible to reads (fjall makes an insert visible before its
+    /// sync), but a retry of the same revoke must be refused, not answered
+    /// as already recorded.
+    #[tokio::test]
+    async fn a_retried_revoke_after_a_failed_sync_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObservationStore::open(dir.path()).expect("open");
+        let tmb = Thumbprint::from_bytes(vec![7; 32]);
+        store
+            .latch
+            .fail_next_sync
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let first = store.record(&tmb, serde_json::json!({"revoke": 1})).await;
+        assert!(matches!(first, Err(ObservationError::DurabilityLost(_))));
+        let retry = store.record(&tmb, serde_json::json!({"revoke": 1})).await;
+        assert!(
+            matches!(retry, Err(ObservationError::DurabilityLost(_))),
+            "the retry was answered over a record that never synced: {retry:?}"
+        );
+        assert!(store.latch().lost());
     }
 }

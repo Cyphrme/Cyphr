@@ -1024,6 +1024,10 @@ struct Verified<S: cyphr::eml::Storage> {
 /// its state, over the engine's own durable commit log. It hands out only
 /// a shared reference, so a holder can read state, roots and proofs of any
 /// past log size and cannot append to the engine's log.
+///
+/// It is also what [`StorageEngine::load_principal`] returns: the same
+/// read-only view, replayed from the store instead of read from the kept
+/// state.
 pub struct AtTip<S: cyphr::eml::Storage>(cyphr::Principal<S>);
 
 impl<S: cyphr::eml::Storage> std::ops::Deref for AtTip<S> {
