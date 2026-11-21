@@ -150,6 +150,11 @@ async fn both_extended(alice: usize, thief: usize) {
     h.ok(a.add_backup_key(&pr).await);
     let laptop_key = h.ok(a.pair_device(&pr, &laptop).await);
     h.ok(a.push(&pr, &["p1", "p2"]).await).accepted("base push");
+    // p3 is cut off for both pushes: each side's branch must reach its own
+    // peers before gossip carries the other, whatever the heights, or a
+    // peer already in Error answers the second push 423.
+    h.proxy.partition("p1", "p3");
+    h.proxy.partition("p2", "p3");
     h.ok(t.steal_key(&laptop, &laptop_key).await);
     let mut alice_line = Vec::new();
     for n in 0..alice {
@@ -163,6 +168,8 @@ async fn both_extended(alice: usize, thief: usize) {
         .ok(a.push(&pr, &["p1", "p2"]).await)
         .accepted("alice branch");
     let tt = h.ok(t.push(&pr, &["p3"]).await).accepted("thief branch");
+    h.proxy.heal("p1", "p3");
+    h.proxy.heal("p2", "p3");
 
     // Catches tallest-wins: the taller branch must not make any server
     // Active, and no server may hold a single tip.
