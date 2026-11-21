@@ -997,8 +997,8 @@ mod retained {
         assert!(e.is_errored(&f.id).await.expect("assess"), "both extended");
     }
 
-    /// Backs the depth cap: a third commit on a retained line is not
-    /// retained, and in Error the answer is `Errored` (the refusal is true
+    /// Backs the depth cap: a third commit on a retained line, signed by a
+    /// key of its own, is not retained, and in Error the answer is `Errored` (the refusal is true
     /// whether or not the commit is kept), never `BranchLimit`. Turns red
     /// if the line grows past the depth or the refusal is a 409 quota
     /// error. End to end at the engine seam: yes.
@@ -1007,13 +1007,17 @@ mod retained {
         let f = Fork::new(0).await;
         let (e, _) = f.engine_with(&[]).await;
         extended_canonical(&f, &e).await;
-        let mut p = f.rival_state(10).await;
+        // Each commit of the line has its own signer, so no per-signer
+        // quota explains a refusal: only the line's depth can.
+        let mut p = f.base.fork().await.expect("fork");
+        let (k1, k2, k3) = (fresh_kp(), fresh_kp(), fresh_kp());
+        create_key(&mut p, &f.golden, &k1, NOW + 10).await;
         let _ = f.submit(&e, &blobs(&p, 1)).await;
-        create_key(&mut p, &f.golden, &fresh_kp(), NOW + 700).await;
+        create_key(&mut p, &k1, &k2, NOW + 700).await;
         let _ = f.submit(&e, &blobs(&p, 2)).await;
         assert!(e.is_errored(&f.id).await.expect("assess"));
         let before = branches(&e, &f.id).await;
-        create_key(&mut p, &f.golden, &fresh_kp(), NOW + 701).await;
+        create_key(&mut p, &k2, &k3, NOW + 701).await;
         match f.submit(&e, &blobs(&p, 3)).await {
             Err(EngineError::Errored { .. }) => {},
             other => panic!("expected Errored past the depth, got {other:?}"),
