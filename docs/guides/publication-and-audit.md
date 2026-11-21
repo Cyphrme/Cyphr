@@ -78,14 +78,14 @@ curl -s http://127.0.0.1:4100/server | jq .payload
 ```json
 {
   "tier": "attestor",
-  "pg": "SHA-512:wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "pg": "SHA-512:lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "alg": "Ed25519",
-  "pub": "iQjl20zGarrf02bY-L-C5NeSb_wCPnb3DGHHK8BMXq4",
-  "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+  "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "genesis": {
     "alg": "Ed25519",
-    "pub": "iQjl20zGarrf02bY-L-C5NeSb_wCPnb3DGHHK8BMXq4",
-    "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+    "pub": "jPTSUUyNf2ZAQe77EsWmE0A6qXsuKkqfUDC5U87oJQk",
+    "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
     "first_seen": 0
   }
 }
@@ -109,7 +109,7 @@ cyphr export --identity="$PR" --output ./export.jsonl
 
 ```
 Exported identity to ./export.jsonl
-  identity: xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho
+  identity: N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow
   commits: 2
 ```
 
@@ -144,16 +144,17 @@ done
   "v": 1,
   "payload": {
     "blob_hashes": [
-      "63db3adcb04fa00eb1dbe453f4bce474c67e229b7b3292d2417b4efc9e6e7a2c",
-      "f0ce0e480d5550f9edea4b529ab9ce4db866daef4eadbdc932de33cfcb4d6cc8"
+      "b9532fd78782a4692144cca96239112c5fa56dfb38806b3cf58de463e25e019a",
+      "68c7c8bc59eae3106483ef83de11b84d2fe5a6bcc7ae17c429eef387a7058276",
+      "cdccf0ba6195f36a0cba78f72460e9f4c6e532e4e3e9a39035c0700f8720f61b"
     ],
-    "commit_id": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg",
+    "commit_id": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q",
     "sequence": 0,
     "roots": {
-      "pr": "SHA-256:SLJTafFYjz-0JMAx5cPw_5DAfYzcr3b_CM9zlgme_aA",
-      "sr": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-      "ar": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-      "cr": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg"
+      "pr": "SHA-256:6GfLOb_VXaKMWz4it4iywYh4pgDgVnuM6dbvtbJKlXo",
+      "sr": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+      "ar": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+      "cr": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q"
     }
   },
   "statement": {
@@ -161,20 +162,20 @@ done
     "coz": {
       "pay": {
         "alg": "Ed25519",
-        "now": 1785879800,
-        "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+        "now": 1795229090,
+        "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
         "sequence": 0,
-        "commit_id": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg",
+        "commit_id": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q",
         "roots": {
-          "pr": "SHA-256:SLJTafFYjz-0JMAx5cPw_5DAfYzcr3b_CM9zlgme_aA",
-          "sr": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-          "ar": "SHA-256:M20zos467SonM7JqBoNUcvT47nCtkiMoSGg7Egf9svo",
-          "cr": "SHA-256:g9j_aS8iP8PSKzWFuJdUxqCuzcdaFVcrRQb6c-U-QNg"
+          "pr": "SHA-256:6GfLOb_VXaKMWz4it4iywYh4pgDgVnuM6dbvtbJKlXo",
+          "sr": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+          "ar": "SHA-256:N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+          "cr": "SHA-256:eVZPpSYrDKvm8x-O1SyyvzXzqWJ6o3FSCIQloYP325Q"
         }
       },
-      "sig": "IZUqweqL0RdMhssVsutUTjmK0uS9JdoGf9xSbIaG7OHgSqs4gwSF6AhJp7A8uJZD0-_VYGpEAONGabf_4XkTAg"
+      "sig": "IA7kUFeEi9g9TSI2vgAtUPntGU0YCKvyxjGnm4kDy_DCcxnpR8XXyh_hksGTjKOZCqT0dUgFFB492itJOlg3CQ"
     }
   }
 }
@@ -213,8 +214,8 @@ naturally write them:
 ```json
 {
   "alg": "ES256",
-  "now": 1785880079,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229209,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create",
   "msg": "hello world"
 }
@@ -236,8 +237,8 @@ The same fields, signed over the alphabetically sorted form:
 {
   "alg": "ES256",
   "msg": "hello world",
-  "now": 1785880211,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229341,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create"
 }
 ```
@@ -261,8 +262,8 @@ in order:
 ```json
 {
   "alg": "ES256",
-  "now": 1785880211,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229341,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create",
   "note": { "title": "hello", "tags": ["b", "a"], "body": "world" }
 }
@@ -274,8 +275,8 @@ Sign over this instead — `note`'s three keys sorted, `tags` untouched:
 {
   "alg": "ES256",
   "note": { "body": "world", "tags": ["b", "a"], "title": "hello" },
-  "now": 1785880211,
-  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "now": 1795229341,
+  "tmb": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
   "typ": "example.com/note/create"
 }
 ```
@@ -314,15 +315,15 @@ below reports in full, so the numbers here and there match on purpose:
   "v": 1,
   "payload": {
     "blob_hashes": [
-      "43635be8a87f71b348d78b5b4e5ffde0b94eb46570631132faf9a5c51ea04e2e"
+      "a1cc941d88447059c8db7a99f2c52b53f550ec7fe7f9b33c691c977c9c1be84a"
     ],
-    "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
-    "sequence": 1,
+    "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+    "sequence": 2,
     "roots": {
-      "pr": "SHA-256:MOldD2IVG-RWFVpN72_X3IECouOSNKDkrS7by-tedIU",
-      "sr": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-      "ar": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-      "cr": "SHA-256:fzbJ1XCD8Pmcdy4pToIaatXz21UjY1N7KEaKEUE3vq0"
+      "pr": "SHA-256:SnPB2CXXZtisXfYf7u93-n49U33507l3hxiFh9Csh4c",
+      "sr": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+      "ar": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+      "cr": "SHA-256:sjFnzyHCBQ3NwfHbDCwd3K7h_9P4gJMNH4N-eXQwF8g"
     }
   },
   "statement": {
@@ -330,20 +331,20 @@ below reports in full, so the numbers here and there match on purpose:
     "coz": {
       "pay": {
         "alg": "Ed25519",
-        "now": 1785880211,
-        "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+        "now": 1795229120,
+        "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
         "typ": "cyphr-server/receipt/commit",
-        "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-        "sequence": 1,
-        "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
+        "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+        "sequence": 2,
+        "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
         "roots": {
-          "pr": "SHA-256:MOldD2IVG-RWFVpN72_X3IECouOSNKDkrS7by-tedIU",
-          "sr": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-          "ar": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-          "cr": "SHA-256:fzbJ1XCD8Pmcdy4pToIaatXz21UjY1N7KEaKEUE3vq0"
+          "pr": "SHA-256:SnPB2CXXZtisXfYf7u93-n49U33507l3hxiFh9Csh4c",
+          "sr": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+          "ar": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+          "cr": "SHA-256:sjFnzyHCBQ3NwfHbDCwd3K7h_9P4gJMNH4N-eXQwF8g"
         }
       },
-      "sig": "1888gDSol2_nzuHSxjg_tXUY2Tv-PUkmwlgscVmNpsIrddg8wjACGGndNSiUsNmK8S7FnW92hQevo2Nc2vH4CA"
+      "sig": "JJp5pt774DEO5YSdmkwKTq8pLXBviufyMzK8Th2oubZSaKkwZaVX7GeFw5mqF8j-0Dfl8QcYtwpcCRjWfyTYCg"
     }
   }
 }
@@ -363,14 +364,14 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.payload
 
 ```json
 {
-  "commit_count": 2,
-  "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
-  "last_updated": 1785879942
+  "commit_count": 3,
+  "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+  "last_updated": 1795229090
 }
 ```
 
 Unchanged, `last_updated` included. `GET /patch?pr=$PR` returns the same
-two entries it did before. And nobody can fetch the content back — the
+three entries it did before. And nobody can fetch the content back — the
 content-addressed lookup does not find it:
 
 ```sh
@@ -382,7 +383,7 @@ curl -s "http://127.0.0.1:4101/e/SHA-256:Sea6fBxGvclh1KlA9SVcOSc6gyRRmg_JkKYwT5X
   "v": 1,
   "payload": {
     "error": "entity SHA-256:Sea6fBxGvclh1KlA9SVcOSc6gyRRmg_JkKYwT5Xf4rY not found",
-    "now": 1785880272
+    "now": 1795229402
   },
   "statement": { "kind": "unsigned" }
 }
@@ -477,32 +478,26 @@ curl -s "http://127.0.0.1:4100/patch?pr=$PR&from=$TIPPR" \
 One request, no data transferred, and a fresh signed claim about where the
 server says the principal is.
 
-One endpoint that does not work: **a server cannot report a tip about
-itself.** The server is an ordinary principal in its own store, and
-`/patch` serves its chain like anyone else's — unsigned, for the reason
-below — but the tip report fails:
+A server is an ordinary principal in its own store, so its own chain
+answers like any other's. `GET /tip` with the server's `pg` as `pr` returns
+a signed tip report, and `GET /patch?pr=<pg>` returns its chain with a
+signed tip report over it:
 
 ```sh
-curl -s "http://127.0.0.1:4100/tip?pr=SHA-512:wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw"
+curl -s "http://127.0.0.1:4100/tip?pr=SHA-512:lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q" | jq -c '.payload | {commit_count, commit_id}'
 ```
 
 ```json
 {
-  "v": 1,
-  "payload": {
-    "error": "attestation root re-derivation failed: malformed blob: genesis blob must contain a 'key' field",
-    "now": 1785879825
-  },
-  "statement": { "kind": "unsigned" }
+  "commit_count": 1,
+  "commit_id": "SHA-512:TOosR-0A10HFjb8bnfyD1UJ0BJY4A72rIgFtitq0Xd0L92bIF21KPKMnVvf7KkN5HxfJUYoPQDLbrjEbnJerlA"
 }
 ```
 
-`500`, on every keyed server, permanently. The server's own genesis cozy
-carries no key material — that is why `GET /server` publishes the genesis
-key separately — and the tip attestation path has no way to get it back.
-Verification does not need this endpoint, but a monitor sweeping `/tip`
-across a server's principals will find one that always fails with a
-message that reads like store corruption.
+The statement is a `cyphr-server/receipt/tip`, signed by the server about
+its own chain. Treat it as the server's claim about itself, not as an
+independent check on the server's key: the next section says what that
+takes.
 
 ### Verifying a receipt without trusting the server again
 
@@ -516,10 +511,12 @@ language.
    pinned `pg`, stop — the published key does not back the identity.
 3. Fetch the server's own chain: `GET /patch?pr=<pg>`. The tagged form
    and the bare digest after the `SHA-512:` label both work. The response
-   is unsigned, since the server cannot attest its own tip.
+   carries a signed tip report over the chain, which is the server vouching
+   for itself; do not rely on it for this check.
 4. Replay every entry into a fresh, independent engine of your own,
-   supplying that genesis key explicitly on each commit. The blobs carry
-   no key material, so nothing recovers it from the chain itself.
+   checking the genesis commit's key against the `genesis` object you pinned
+   in step 1. Each entry carries the public keys its commit introduces, in
+   `keys`; the transactions themselves name keys by thumbprint only.
 5. Confirm the receipt's `tmb` is an active key of the chain you just
    replayed.
 6. Verify the signature using the public key from that replayed chain.
@@ -557,7 +554,7 @@ thumbprint with its hash algorithm prefixed — `SHA-512:` followed by
 hashing the canonical string `{"alg":"<alg>","pub":"<pub>"}` built from
 `genesis.alg` and `genesis.pub`, with the algorithm's own hash: SHA-512
 for Ed25519 and ES512, SHA-256 for ES256, SHA-384 for ES384. For the
-attestor above that reproduces `wWKaBAIF…` exactly.
+attestor above that reproduces `lsraVr9s…` exactly.
 
 That shortcut stops holding the moment a principal has more than one
 genesis key, where the root is a tree over all of them rather than a
@@ -618,8 +615,8 @@ produce a split view on demand: it makes one identity sign two
 conflicting views. The steps here gather and check the two answers by
 hand.
 
-Push the same first commit to both, so they agree. Then build two
-conflicting second commits: snapshot the client's local store, add one key,
+Push the same two commits to both (the loop above, once per server), so
+they agree. Then build two conflicting third commits: snapshot the client's local store, add one key,
 export; restore the snapshot, add a different key, export.
 
 ```sh
@@ -636,7 +633,7 @@ Two commits with the same predecessor and different contents. Run each
 export through the same `jq` filter as before (without the loop), keep
 only the last line (`| tail -n 1 > push-x.json`, and `push-y.json` for the
 other) so that only the newest commit goes out, since both servers already
-hold the genesis commit, and send one to each server.
+hold the first two commits, and send one to each server.
 Both take it:
 
 ```sh
@@ -649,22 +646,9 @@ curl -s -X POST http://127.0.0.1:4101/push \
 ```
 
 ```json
-{ "sequence": 1, "commit_id": "SHA-256:DJ7mXgcMovELEH3QAIaNAaWFNFSQbDe6j6CyQWCrjBg" }
-{ "sequence": 1, "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM" }
+{ "sequence": 2, "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y" }
+{ "sequence": 2, "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY" }
 ```
-
-A single server does refuse the second branch. Send the other commit to
-the server that already took one and it is a `409`:
-
-```
-409  payload.error: "protocol: state root mismatch"
-```
-
-That refusal is local bookkeeping, not fork detection. The server rejects
-a commit that does not follow the state it holds; it does not conclude
-anything happened, record the conflicting commit as evidence, or change
-how it answers afterwards. Nothing about a fork exists in the server's
-vocabulary.
 
 Now ask each server where the principal is:
 
@@ -676,40 +660,40 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.statement.coz.pay'
 ```json
 {
   "alg": "Ed25519",
-  "now": 1785879960,
-  "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "now": 1795229090,
+  "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-  "sequence": 1,
-  "commit_id": "SHA-256:DJ7mXgcMovELEH3QAIaNAaWFNFSQbDe6j6CyQWCrjBg",
+  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "sequence": 2,
+  "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
   "roots": {
-    "pr": "SHA-256:H7mluvygAqNaBwUSW7OWnlLxazcG6t_NNPALs3G6JlA",
-    "sr": "SHA-256:eMFV9AUzzfnn8PLTd0sgfqj8vYZdwJN9TBgC1MlNZtc",
-    "ar": "SHA-256:eMFV9AUzzfnn8PLTd0sgfqj8vYZdwJN9TBgC1MlNZtc",
-    "cr": "SHA-256:Iz3NGqU7jCg3i6M6mwgeT_N_ww_ab_CWTquq3DNrwFo"
+    "pr": "SHA-256:TZ_yNik2MjrWwbOAtc3ytIZtUVXGcS41u9kOT_m0c7Y",
+    "sr": "SHA-256:Yu10Am03qfFBLCc-A-Gg5vnR4t2dUVsXCGdqJKGwSg0",
+    "ar": "SHA-256:Yu10Am03qfFBLCc-A-Gg5vnR4t2dUVsXCGdqJKGwSg0",
+    "cr": "SHA-256:NiRFeyfe4RNjUuqME406ANsa1HG2AK4f5CywkE3YXLY"
   },
-  "commit_count": 2,
-  "last_updated": 1785879941
+  "commit_count": 3,
+  "last_updated": 1795229090
 }
 ```
 
 ```json
 {
   "alg": "Ed25519",
-  "now": 1785879960,
-  "tmb": "wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw",
+  "now": 1795229090,
+  "tmb": "lsraVr9sNuOtusTnvuVlQj5hbteg9LOBAsduqNE2bbQuZ0buuXMLg_QgNqVBpyxfy6NwCkV544kb98AuN7ng2Q",
   "typ": "cyphr-server/receipt/tip",
-  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-  "sequence": 1,
-  "commit_id": "SHA-256:1TixInb1rAVG3xj4g2bXV0MRGt03sd2sKjS8uFM_-fM",
+  "pr": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "sequence": 2,
+  "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
   "roots": {
-    "pr": "SHA-256:MOldD2IVG-RWFVpN72_X3IECouOSNKDkrS7by-tedIU",
-    "sr": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-    "ar": "SHA-256:NdGwK05M5Lhi3xU5oiu3JIkGD--fh57WUvDcDilysYc",
-    "cr": "SHA-256:fzbJ1XCD8Pmcdy4pToIaatXz21UjY1N7KEaKEUE3vq0"
+    "pr": "SHA-256:SnPB2CXXZtisXfYf7u93-n49U33507l3hxiFh9Csh4c",
+    "sr": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+    "ar": "SHA-256:iy3JNs1dG7idi2IUMIcXSualYTtoRoTT70SD3YvLy_Q",
+    "cr": "SHA-256:sjFnzyHCBQ3NwfHbDCwd3K7h_9P4gJMNH4N-eXQwF8g"
   },
-  "commit_count": 2,
-  "last_updated": 1785879942
+  "commit_count": 3,
+  "last_updated": 1795229090
 }
 ```
 
@@ -729,6 +713,66 @@ cannot both be true: that is the server equivocating, and its two tip
 reports prove it. With two servers that hold different keys, only the
 first would be present — each would be telling the truth about what it
 holds.
+
+### What one server does with both branches
+
+Send `4100` the commit that `4101` took (`push-y.json`). `4100` already
+holds the other branch, so it refuses with a `409`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "error": "protocol: state root mismatch",
+    "now": 1795229134,
+    "kind": "commit_mismatch"
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+The push is refused, but the server keeps the commit. It verified at its
+predecessor and took a position the chain already holds, so the server
+retains it as a rival branch and its answer about the principal changes:
+`GET /tip` no longer reports a tip. It reports `state: "error"`, the
+fork point, and both heads, and signs that as a `cyphr-server/receipt/held`
+statement:
+
+```sh
+curl -s "http://127.0.0.1:4100/tip?pr=$PR" | jq '.payload'
+```
+
+```json
+{
+  "state": "error",
+  "principal_id": "N6LMjHcpGOkCPkDLksty9fs3_lfTgRzoQQA9HnMRXow",
+  "fork_point": {
+    "height": 2,
+    "pre": "SHA-256:038v6Co3KCUwmzGlaAGSv9wGK4_I30QF-HnmRS4ajj0"
+  },
+  "heads": [
+    {
+      "commit_id": "SHA-256:82H2RINvYeqEghpLkyeg9rOOY4LWkUk9glEs8Cm--0Y",
+      "sequence": 2,
+      "held_since": 1795229090
+    },
+    {
+      "commit_id": "SHA-256:apy0Xxianj4kXkcshKoMRH2Ll5oHIErnEUnh2St1ZzY",
+      "sequence": 2,
+      "held_since": 1795229134
+    }
+  ],
+  "now": 1795229134
+}
+```
+
+`GET /branches?pr=$PR` lists the two heads and marks the one the server
+still treats as canonical, and `GET /evidence?pr=$PR` returns both
+branches whole. So a single server that is shown both branches does notice
+the fork and says so. What it does not do is tell any other server, or
+compare itself with one: the two servers of this guide still disagree with
+each other, and nothing carries one's rival to the other. That comparison
+is still yours.
 
 ### Checking the evidence
 
@@ -892,10 +936,18 @@ holds and pushing it to both:
 ```
 
 The chosen branch advances and the abandoned one is stuck, which is the
-outcome you want. But it is a convention between you and the user, not
-something the server participates in: neither server records that a fork
-happened, that one branch won, or that the other was abandoned. The `409`
-looks the same as any stale push.
+outcome you want. The `409` looks the same as any stale push, because to
+`4100` it is one: it never saw the branch the new commit builds on, and it
+records nothing about the fork, the winner or the abandoned branch.
+
+A server that did see both branches behaves differently. Push the commit to
+`4100` after it has been shown the abandoned branch (the previous
+section) and it is accepted with a `201`: the new commit builds on one of
+the two heads the server holds, so the server settles on that branch, the
+principal leaves the `error` state, and the other head stays on record as a
+non-canonical branch in `GET /branches`. Which servers hold which branch
+at the moment the principal resolves still decides which of them answer
+`201` and which `409`.
 
 ### Watching, in practice
 
