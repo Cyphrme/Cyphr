@@ -81,5 +81,8 @@ tx = [
   ],
 ]
 
+[test.override]
+regroup = true
+
 [test.expected]
 error = "LoneGroupedTransaction"

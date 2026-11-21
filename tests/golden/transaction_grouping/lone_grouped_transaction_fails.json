@@ -89,24 +89,40 @@
             },
             "sig": "RPIOvrbg1uJoRverJar6ep_40-hmJa_FOzIvvAewopUKPbDCYFO1Rhv2sPX1yz6f055npv9GlphfdRgC6G6uQA"
           }
+        ],
+        [
+          {
+            "pay": {
+              "alg": "ES256",
+              "arrow": "SHA-256:4xxyBd6pKigS53u2VejEt1mYXubIwiawEEu-mRp-Dac",
+              "now": 1700000000,
+              "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+              "typ": "cyphr.me/cyphr/commit/create"
+            },
+            "sig": "m2eHqs0Gm7Ewqpzxlm2eZ0jBBNV65Opx2E8hW0AxanlBH5S_DnVlBqc_6eFNmyGPQa7NDbIWnH9REG6zc5jHlw"
+          }
         ]
       ],
       "keys": [
         {
           "alg": "ES256",
           "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
-          "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+          "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+          "tag": "Alice (ES256)",
+          "now": 0
         },
         {
           "alg": "ES256",
           "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-          "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+          "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+          "tag": "Bob (ES256)",
+          "now": 0
         }
       ],
-      "commit_id": "",
-      "ar": null,
-      "sr": null,
-      "pr": ""
+      "commit_id": "SHA-256:VBo8QGKv0URqWuGl6QfJdqrPPNbX1egW-KOFd69Xg5A",
+      "ar": "SHA-256:isQS34qJPlW02zTM8EEU-O0B_cr5nkvADfei8-VA7B8",
+      "sr": "SHA-256:isQS34qJPlW02zTM8EEU-O0B_cr5nkvADfei8-VA7B8",
+      "pr": "SHA-256:di6YiDR9g7nKW_CRmliA3dK1eJSgFdhq4R8C5SyGE_c"
     }
   ],
   "digests": [
@@ -114,7 +130,8 @@
     "41Mgu9G96DMWi0SumCWNJlsRkECRO4gBLi1IDL2UJl4",
     "j_fzNsa3sAV9efSKZdsBNzUgVSSbnIjZzyqHpw5KmIQ",
     "rrI-g0sG7-EIgGF9fwnII39WscAXb1ICwOpvnv0Q2V8",
-    "l4C3JfBqwvDIFpCz9-rP2pluaBG4ud7bTJMX7q6x58M"
+    "l4C3JfBqwvDIFpCz9-rP2pluaBG4ud7bTJMX7q6x58M",
+    "uBZfG1cUJDrXh7jRjfgcNVFDysqqD3yUBKUZDflIYC4"
   ],
   "expected": {
     "key_count": 1,

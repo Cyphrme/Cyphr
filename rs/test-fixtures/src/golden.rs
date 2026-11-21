@@ -1113,7 +1113,18 @@ impl<'a> Generator<'a> {
                 test.name
             ),
         })?;
-        let failing = if is_error_test {
+        let regroup = test
+            .override_
+            .as_ref()
+            .is_some_and(|o| o.regroup.unwrap_or(false));
+        let mut regrouped = None;
+        let failing = if is_error_test && regroup {
+            regrouped = Some(
+                self.regrouped_commit(&test.name, commit_intent, principal, &current_pr)
+                    .await?,
+            );
+            Vec::new()
+        } else if is_error_test {
             // Error tests: sign manually — CommitScope would reject invalid payloads.
             // We need valid signatures over intentionally bad data.
             self.failing_commit(test, commit_intent, principal, &current_pr)?
@@ -1131,7 +1142,10 @@ impl<'a> Generator<'a> {
 
         // For error tests, the failing cozies were not committed - add them
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
-        if is_error_test {
+        if let Some((entry, czds)) = regrouped {
+            commits.push(entry);
+            digests.extend(czds);
+        } else if is_error_test {
             commits.push(Self::cozies_to_commit_entry(&failing)?);
             digests.extend(failing.iter().flatten().map(|c| c.czd.clone()));
         }
@@ -1146,6 +1160,56 @@ impl<'a> Generator<'a> {
             peer: None,
             expected,
         })
+    }
+
+    /// A finalized commit emitted regrouped: the intent's cozies are signed
+    /// and finalized as separate transactions on a fork (so the commit
+    /// transaction and arrow are real), then every mutation coz is moved into
+    /// one transaction, the commit transaction last. The principal itself is
+    /// left at its state before the commit, as for any error vector.
+    async fn regrouped_commit(
+        &self,
+        test_name: &str,
+        commit: &CommitIntent,
+        principal: &cyphr::Principal,
+        pre: &str,
+    ) -> Result<(CommitEntry, Vec<String>), Error> {
+        let split = CommitIntent {
+            tx: commit
+                .tx
+                .iter()
+                .flatten()
+                .map(|c| vec![c.clone()])
+                .collect(),
+        };
+        let mut forked = principal.fork().await.map_err(|e| Error::Generation {
+            name: test_name.to_string(),
+            reason: format!("fork failed: {e}"),
+        })?;
+        self.sign_and_apply_commit(test_name, &split, &mut forked, pre)
+            .await?;
+        let (mut commits, _) = Self::export_principal_commits(&forked)?;
+        let mut entry = commits.pop().ok_or_else(|| Error::Generation {
+            name: test_name.to_string(),
+            reason: "regroup: the finalized commit did not export".to_string(),
+        })?;
+        let closing = entry.txs.pop().ok_or_else(|| Error::Generation {
+            name: test_name.to_string(),
+            reason: "regroup: the commit has no transactions".to_string(),
+        })?;
+        let group: Vec<Value> = entry.txs.drain(..).flatten().collect();
+        entry.txs = vec![group, closing];
+        let czds = forked
+            .commits()
+            .last()
+            .map(|c| {
+                c.transactions()
+                    .iter()
+                    .flat_map(|tx| tx.0.iter().map(|cz| cz.czd().to_b64()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((entry, czds))
     }
 
     /// Generate a multi-commit golden test case.

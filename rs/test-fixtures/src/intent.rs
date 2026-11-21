@@ -162,6 +162,12 @@ pub struct OverrideIntent {
     /// [commit-one-or-more] tests).
     #[serde(default)]
     pub empty_commit: Option<bool>,
+    /// Finalize the commit with each coz as its own transaction, then emit it
+    /// with all its mutation cozies regrouped into one transaction under the
+    /// same signed arrow, the commit transaction last (for tests of a grouping
+    /// the arrow does not cover).
+    #[serde(default)]
+    pub regroup: Option<bool>,
 }
 
 /// An action intent (Level 4).
