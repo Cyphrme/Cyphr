@@ -1891,9 +1891,13 @@ mod push_response_tests {
 /// `GET /healthz` -- can this peer serve? Unauthenticated; the body names
 /// no principal, path, or error text (causes go to the log, not the wire).
 pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // A failed record sync leaves every write refused until restart, and
-    // the sentinel probe may still succeed (it is not the record's sync).
-    if !state.engine.durability_lost() && state.health.storage_writable().await {
+    // A failed sync of the record, the spent set or the death set leaves
+    // that store refusing every write until restart, and the sentinel
+    // probe may still succeed (it is not their sync).
+    if !state.engine.durability_lost()
+        && state.health.stores_writable()
+        && state.health.storage_writable().await
+    {
         (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
     } else {
         (

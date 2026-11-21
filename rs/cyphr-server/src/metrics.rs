@@ -216,6 +216,8 @@ pub struct HealthProbe {
     gate: tokio::sync::Mutex<()>,
     generation: AtomicU64,
     last_ok: AtomicBool,
+    /// Side stores that close themselves to writes after a failed sync.
+    latches: std::sync::Mutex<Vec<std::sync::Arc<crate::observation::SyncLatch>>>,
 }
 
 impl HealthProbe {
@@ -236,7 +238,28 @@ impl HealthProbe {
             gate: tokio::sync::Mutex::new(()),
             generation: AtomicU64::new(0),
             last_ok: AtomicBool::new(true),
+            latches: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Report a store's latch through [`Self::stores_writable`].
+    pub(crate) fn watch(&self, latch: std::sync::Arc<crate::observation::SyncLatch>) {
+        self.latches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(latch);
+    }
+
+    /// Whether every watched store still accepts writes. A store whose
+    /// sync failed refuses them until restart, whatever the record
+    /// directory probe says.
+    pub fn stores_writable(&self) -> bool {
+        !self
+            .latches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .any(|l| l.lost())
     }
 
     /// Whether the record directory accepted a write just now (or within
@@ -306,5 +329,18 @@ mod tests {
             "16 concurrent callers ran {} probes; coalescing is broken",
             runs.load(Ordering::SeqCst)
         );
+    }
+
+    /// `/healthz` reflects every store that refuses writes: once a watched
+    /// store's sync has failed, the probe reports it, whatever the record
+    /// directory sentinel says.
+    #[test]
+    fn a_watched_store_that_lost_a_sync_fails_health() {
+        let probe = HealthProbe::with_probe(|| Ok(()));
+        let latch = Arc::new(crate::observation::SyncLatch::default());
+        probe.watch(latch.clone());
+        assert!(probe.stores_writable());
+        let _ = latch.sync(|| Err(fjall::Error::Io(std::io::Error::other("disk gone"))));
+        assert!(!probe.stores_writable());
     }
 }

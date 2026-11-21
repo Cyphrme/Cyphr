@@ -551,12 +551,15 @@ Examples: `keyed_bootstrapped_server_publishes_attestor_identity`,
 
 ### `GET /healthz`
 
-Whether the server can write to its record directory (a real write probe;
+Whether the server can write: a probe write to its record directory, and
+no store having lost a sync (a real write probe;
 see `docs/guides/operating-a-server.md`, "What the server tells you"). Not
 an envelope.
 
 - `200` `{"status":"ok"}`
-- `503` `{"status":"unavailable","error":"storage unavailable"}`
+- `503` `{"status":"unavailable","error":"storage unavailable"}`: the
+  probe write failed, or the engine, the invite spent set or the death set
+  lost a sync (each then refuses every write until restart).
 
 The body names no principal, path or cause. Examples:
 `healthz_answers_200_on_a_healthy_peer_that_holds_data`,

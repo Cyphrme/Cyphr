@@ -138,12 +138,14 @@ pub fn layer(
     record_dir: &Path,
     resident: ResidentProbe,
     max_body_bytes: usize,
+    health: &crate::metrics::HealthProbe,
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
     let policy = match config {
         AdmissionConfig::Open => return Ok(None),
         AdmissionConfig::Invite { tokens_path } => {
             let hashes = load_token_hashes(tokens_path)?;
             let spent = SpentSet::open(&record_dir.join("admission"))?;
+            health.watch(spent.latch.clone());
             Policy::Invite { hashes, spent }
         },
     };
