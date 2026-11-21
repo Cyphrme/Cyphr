@@ -76,8 +76,9 @@ pub enum Anchor {
 }
 
 /// The verifier's own record of one principal: the chain it has replayed,
-/// and the keys it has seen revoked. Built only from [`Record::new`] and
-/// what [`pull`] verifies; it never regresses.
+/// and the keys it has seen revoked. Built only from [`Record::new`],
+/// [`Record::from_entries`], [`Record::resume`] and what [`pull`] verifies;
+/// it never regresses.
 pub struct Record {
     id: String,
     anchor: Anchor,
@@ -347,8 +348,8 @@ impl Record {
     }
 
     /// The bundles replayed after the first `mark` (see
-    /// [`log_len`](Self::log_len)), in replay order, action-only bundles
-    /// before the commit they precede. A record only ever grows by chains
+    /// [`log_len`](Self::log_len)), in replay order: every commit, then
+    /// every action bundle. A record only ever grows by chains
     /// that agree with what it held, so the first `mark` bundles are
     /// unchanged.
     #[must_use]
@@ -413,8 +414,10 @@ impl Record {
         })
     }
 
-    /// The newest `now` any signed message of the replayed chain carries:
-    /// the principal's own latest word on time.
+    /// The newest `now` any signed message replayed into this record
+    /// carries: the principal's own latest word on time. A record resumed
+    /// over verified state reads only what it replayed since, not the
+    /// commits the state already held.
     #[must_use]
     pub fn latest_now(&self) -> Option<i64> {
         self.bundles_since(0)
@@ -525,8 +528,8 @@ impl Record {
 
 impl Held {
     /// Replay `entries` (the commits after the ones held) and the action
-    /// bundles that go with them onto this chain, in the order they were
-    /// accepted.
+    /// bundles that go with them onto this chain: every commit, then every
+    /// action bundle ([`patch::replay_order`]).
     async fn replay(
         &mut self,
         entries: &[PatchEntry],

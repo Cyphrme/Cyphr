@@ -605,6 +605,5 @@ pub(crate) async fn replay_entry(
     })?;
     replay_held(principal, &decoded)
         .await
-        .map(|r| r.id)
         .map_err(|e| EntryRefusal::Replay(e.source))
 }

@@ -102,7 +102,7 @@ impl Metrics {
     }
 
     /// A gossip round ran `commits` commits through the core: the cost the
-    /// idle gate and the kept records exist to hold to what is new.
+    /// idle gate and the engine's kept state exist to hold to what is new.
     pub fn gossip_replayed(&self, commits: u64) {
         self.gossip_commits_replayed
             .fetch_add(commits, Ordering::Relaxed);

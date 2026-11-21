@@ -297,10 +297,11 @@ pub struct GossipConfig {
     /// gossip off.
     pub peers: Vec<String>,
 
-    /// Seconds between rounds. A round replays each held principal from its
-    /// stored chain (replay-cost caching is deferred), so the default is
-    /// minutes of slack, not seconds; a deployment that wants faster
-    /// convergence pays for it here.
+    /// Seconds between rounds. A round resumes each held principal from the
+    /// engine's kept state and skips one every peer reports idle, so a round
+    /// costs the commits that are new; every round still makes a request
+    /// per peer, so the default is minutes of slack, not seconds, and a
+    /// deployment that wants faster convergence pays for it here.
     pub interval_secs: u64,
 }
 
