@@ -299,65 +299,138 @@ async fn commit_transaction_holds_only_the_commit_create() {
     );
 }
 
-/// The ES256 group order.
+/// The group orders of P-256 and P-384, big-endian.
 const P256_N: [u8; 32] = [
     0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
 ];
+const P384_N: [u8; 48] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xc7, 0x63, 0x4d, 0x81, 0xf4, 0x37, 0x2d, 0xdf,
+    0x58, 0x1a, 0x0d, 0xb2, 0x48, 0xb0, 0xa7, 0x7a, 0xec, 0xec, 0x19, 0x6a, 0xcc, 0xc5, 0x29, 0x73,
+];
+/// The Ed25519 group order, little-endian.
+const ED_L: [u8; 32] = [
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+];
 
-/// `n - s` over big-endian 32 bytes.
-fn negate_s(s: &[u8]) -> Vec<u8> {
-    let mut out = [0u8; 32];
+/// `n - s` over big-endian bytes.
+fn negate_s(n: &[u8], s: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; n.len()];
     let mut borrow = 0i16;
-    for i in (0..32).rev() {
-        let d = i16::from(P256_N[i]) - i16::from(s[i]) - borrow;
+    for i in (0..n.len()).rev() {
+        let d = i16::from(n[i]) - i16::from(s[i]) - borrow;
         borrow = i16::from(d < 0);
         out[i] = (d + 256) as u8;
     }
-    out.to_vec()
+    out
 }
 
-/// The coz at `(tx, i)` with its ES256 signature (r, s) replaced by
-/// (r, n - s): another valid spelling of the same signature.
-fn malleate(wire: &WireBundle, tx: usize, i: usize) -> WireBundle {
+/// `s + L` over little-endian bytes (`s < L < 2^253`, so it fits).
+fn add_l(s: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; 32];
+    let mut carry = 0u16;
+    for i in 0..32 {
+        let d = u16::from(s[i]) + u16::from(ED_L[i]) + carry;
+        out[i] = d as u8;
+        carry = d >> 8;
+    }
+    out
+}
+
+/// Another spelling of the same valid signature: ECDSA (r, s) as
+/// (r, n - s); Ed25519 (R, S) as (R, S + L).
+fn respell(alg: &str, sig: &[u8]) -> Vec<u8> {
+    let (head, tail) = sig.split_at(sig.len() / 2);
+    let other = match alg {
+        "ES256" | "ES384" => {
+            let n: &[u8] = if alg == "ES256" { &P256_N } else { &P384_N };
+            let negated = negate_s(n, tail);
+            // The probe is only a probe if the flip is a sound involution below n.
+            assert_eq!(negate_s(n, &negated), tail, "n - (n - s) = s");
+            assert!(negated.as_slice() < n, "n - s < n");
+            negated
+        },
+        "Ed25519" => {
+            let lifted = add_l(tail);
+            assert_ne!(lifted, tail);
+            assert_eq!(
+                &lifted[31] & 0xe0,
+                0,
+                "S + L < 2^253: still a canonical-width scalar"
+            );
+            lifted
+        },
+        other => panic!("no re-spelling for {other}"),
+    };
+    [head, &other].concat()
+}
+
+/// The coz at `(tx, i)` with its signature re-spelled.
+fn malleate(alg: &str, wire: &WireBundle, tx: usize, i: usize) -> WireBundle {
     let mut coz: Value = serde_json::from_slice(&wire.txs[tx][i]).expect("coz json");
     let sig = Base64UrlUnpadded::decode_vec(coz["sig"].as_str().expect("sig")).expect("b64");
-    assert_eq!(sig.len(), 64, "an ES256 signature is r || s");
-    // The probe is only a probe if the flip is a sound involution below n.
-    let negated = negate_s(&sig[32..]);
-    assert_eq!(negate_s(&negated), &sig[32..], "n - (n - s) = s");
-    assert!(negated.as_slice() < P256_N.as_slice(), "n - s < n");
-    let mut flipped = sig[..32].to_vec();
-    flipped.extend(negated);
-    coz["sig"] = Value::String(b64(&flipped));
+    coz["sig"] = Value::String(b64(&respell(alg, &sig)));
     let mut out = wire.clone();
     out.txs[tx][i] = serde_json::to_vec(&coz).expect("coz");
     out
 }
 
-// Catches: a holder that admits a high-S re-spelling of an honest signature under a different
-// commit id (czd covers the signature bytes; nothing the arrow covers fixes them).
+// Catches: a holder that admits a re-spelled signature (ECDSA high-S, Ed25519 S + L) under a
+// different commit id (czd covers the signature bytes; nothing the arrow covers fixes them).
 // Observed result: see the report that accompanies this test.
 #[tokio::test]
 async fn malleated_signature_is_refused_or_has_the_same_id() {
-    let k = kp(coz::Alg::ES256);
-    let base = holder(&k).await;
-    let wire = honest(&base, &k, &[None, None]).await;
-    let original = admit(&base, &wire).await.expect("the honest commit");
+    for alg in [coz::Alg::ES256, coz::Alg::ES384, coz::Alg::Ed25519] {
+        let k = kp(alg);
+        let base = holder(&k).await;
+        let wire = honest(&base, &k, &[None, None]).await;
+        let original = admit(&base, &wire).await.expect("the honest commit");
 
-    let mut admitted_other = Vec::new();
-    for (tx, cozies) in wire.txs.iter().enumerate() {
-        for i in 0..cozies.len() {
-            match admit(&base, &malleate(&wire, tx, i)).await {
-                Err(_) => {},
-                Ok(id) if id == original => {},
-                Ok(id) => admitted_other.push(((tx, i), id)),
+        let mut admitted_other = Vec::new();
+        for (tx, cozies) in wire.txs.iter().enumerate() {
+            for i in 0..cozies.len() {
+                match admit(&base, &malleate(&k.alg, &wire, tx, i)).await {
+                    Err(_) => {},
+                    Ok(id) if id == original => {},
+                    Ok(id) => admitted_other.push(((tx, i), id)),
+                }
             }
         }
+        assert!(
+            admitted_other.is_empty(),
+            "{}: a re-spelled signature was admitted under another commit id: {admitted_other:?}",
+            k.alg
+        );
     }
-    assert!(
-        admitted_other.is_empty(),
-        "a signature re-spelled as (r, n - s) was admitted under another commit id: \
-         {admitted_other:?}"
-    );
+}
+
+// Catches: a genesis commit admitted under two groupings of its mutation cozies
+// (key/create, principal/create), the same one-arrow-two-ids defect at genesis.
+#[tokio::test]
+async fn one_signed_genesis_admits_exactly_one_grouping() {
+    for extra in 0..=3 {
+        let k = kp(coz::Alg::Ed25519);
+        let others: Vec<Key> = (0..extra).map(|i| key_of(&side_key(i))).collect();
+        let mut p = Principal::implicit(key_of(&k)).await.expect("open");
+        p.commit_genesis(&signer(&k), &others, T, AUTHORITY)
+            .await
+            .expect("genesis");
+        let wire = WireBundle::of_commit(p.commit_at(0).expect("genesis commit")).expect("bundle");
+        let mut admitted = 0;
+        for g in groupings(&wire) {
+            let mut fresh = Principal::implicit(key_of(&k)).await.expect("open");
+            if replay_bundle(&mut fresh, &g.decode().expect("decodes"))
+                .await
+                .is_ok()
+            {
+                admitted += 1;
+            }
+        }
+        assert_eq!(
+            admitted, 1,
+            "{extra} extra keys: {admitted} groupings admitted"
+        );
+    }
 }

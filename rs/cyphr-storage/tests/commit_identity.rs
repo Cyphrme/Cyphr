@@ -9,7 +9,7 @@
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::replay::WireBundle;
 use cyphr_storage::Genesis;
-use cyphr_storage::blob::MemoryBlobStore;
+use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::MemoryIndexer;
 
@@ -103,23 +103,45 @@ impl Chain {
             .map_err(|e| e.to_string())
     }
 
+    /// How many blobs the store holds: the source of truth (I1).
+    async fn blobs(e: &Engine) -> usize {
+        e.blob_store().iter().await.expect("iter").count()
+    }
+
+    /// No rival is retained for the principal and it is not in Error.
+    async fn assert_unforked(&self, e: &Engine, who: &str) {
+        let (_, evidence) = e.fork_evidence(&self.id).await.expect("evidence");
+        assert!(evidence.is_empty(), "{who} holds fork evidence");
+        assert!(
+            !e.is_errored(&self.id).await.expect("assess"),
+            "{who} is in Error"
+        );
+    }
+
     async fn pr(&self, e: &Engine) -> Option<String> {
         e.get_tip(&self.id).await.expect("tip").map(|t| t.pr)
     }
 }
 
-// Catches: an engine that stores the regrouped form of a signed commit that a holder
+// Catches: an engine that stores or retains the regrouped form of a signed commit that a holder
 // of the honest form also stores, so one arrow reaches two commit ids.
 #[tokio::test]
 async fn fresh_holder_refuses_the_regrouped_form_and_admits_the_honest_one() {
     let c = Chain::new().await;
     let e = c.holder().await;
     let before = c.pr(&e).await;
+    let blobs = Chain::blobs(&e).await;
     assert!(
         c.push(&e, &c.regrouped()).await.is_err(),
         "the regrouped form was admitted"
     );
     assert_eq!(c.pr(&e).await, before, "a refusal left the store changed");
+    assert_eq!(
+        Chain::blobs(&e).await,
+        blobs,
+        "the refused push left blobs in the store"
+    );
+    c.assert_unforked(&e, "the refusing holder").await;
     c.push(&e, &c.honest).await.expect("the honest form");
 }
 
@@ -135,6 +157,10 @@ async fn holders_fed_either_order_end_at_one_pr() {
     let _ = c.push(&b, &c.regrouped()).await;
     let (pa, pb) = (c.pr(&a).await, c.pr(&b).await);
     let genesis_only = c.pr(&c.holder().await).await;
+    c.assert_unforked(&a, "holder A (regrouped, then honest)")
+        .await;
+    c.assert_unforked(&b, "holder B (honest, then regrouped)")
+        .await;
     assert_ne!(pa, genesis_only, "the honest form was not admitted by A");
     assert_eq!(pa, pb, "two holders ended at different PRs");
 }
