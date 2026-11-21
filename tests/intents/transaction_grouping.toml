@@ -64,3 +64,22 @@ tx = [
 
 [test.expected]
 error = "MixedTransactionTyp"
+
+# A commit whose only mutation transaction holds several cozies has the
+# mutation root of the same cozies as separate transactions, so one signed
+# arrow would admit two identities. It is refused; the same cozies as
+# separate transactions are the one admitted form.
+[[test]]
+name      = "lone_grouped_transaction_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error = "LoneGroupedTransaction"
