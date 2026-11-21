@@ -2201,7 +2201,8 @@ async fn fork_table_two_extended_branches_stay_error_whatever_their_heights() {
         (&t.thief, n + 1, false, true, at(&t.owner, n + 1)),
         // Row 4: E on C: B's branch is taller, and still no exit.
         (&t.owner, n + 2, false, true, at(&t.owner, n + 2)),
-        // The thief catches up (F on D) and out-extends (G on F).
+        // The thief catches up (F on D, the third commit of a retained
+        // line, past the depth cap: not kept) and out-extends (G on F).
         (&t.thief, n + 2, false, true, at(&t.owner, n + 2)),
         (&t.thief, n + 3, false, true, at(&t.thief, n + 3)),
     ];
@@ -2225,13 +2226,18 @@ async fn fork_table_two_extended_branches_stay_error_whatever_their_heights() {
         if row == 5 {
             let f = commit_id_at(&t.thief, n + 2);
             assert!(
-                state
+                !state
                     .engine
                     .holds_commit(&t.id, f.as_str().expect("id"))
                     .await
                     .expect("holds"),
-                "the refused F is retained as evidence"
+                "F is the third commit of a retained line, past the depth cap"
             );
+        }
+        // E and F extend a held line; G extends F, which is not held, so
+        // it has no `pre` to verify against and is answered as a mismatch.
+        if row == 4 || row == 5 {
+            assert_eq!(status, ERRORED, "row {row}: refused, Error stands");
         }
         drop((app, state));
         let (reopened, rebuilt) = reopen(dir.path()).await;
