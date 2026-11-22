@@ -50,14 +50,17 @@ fn new_inner(arity: u64) -> polydigest::EpochTree {
 /// algorithm in `algs`.
 fn tree_of(algs: &[HashAlg], payloads: Vec<Vec<u8>>, arity: u64) -> Result<polydigest::EpochTree> {
     let mut inner = new_inner(arity);
-    for &alg in algs {
-        inner
-            .register_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
-            .map_err(|e| Error::Storage(e.to_string()))?;
-    }
     for (index, payload) in payloads.into_iter().enumerate() {
         inner
             .set(index as u64, payload, Vec::new())
+            .map_err(|e| Error::Storage(e.to_string()))?;
+    }
+    // Registered after the cells: an append to a tree with an algorithm
+    // registered rehashes every cell for it, so appending `n` cells first
+    // costs O(n^2) hashes and registering after them costs O(n).
+    for &alg in algs {
+        inner
+            .register_algorithm(hash_alg_to_u64(alg), Box::new(MaltHasher::new(alg)))
             .map_err(|e| Error::Storage(e.to_string()))?;
     }
     Ok(inner)
