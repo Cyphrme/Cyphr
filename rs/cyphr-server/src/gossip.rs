@@ -17,7 +17,10 @@
 //! - a rival branch the pull proved is handed to the engine, which keeps it (G1) so `/branches` and
 //!   `/evidence` serve it on;
 //! - a naked revoke that verified is recorded in the death set, so it travels on to the peers that
-//!   ask this server.
+//!   ask this server;
+//! - a resync proof a peer holds (SPEC 15.8 item 2) is offered to the engine with the peer's chain
+//!   from the first commit this server lacks, so a fork the principal resolved by proof resolves
+//!   here too. Like the revoke probe, it is never skipped: a proof moves no head.
 //!
 //! Peers are dialled at the address configured, so a deployment (or the
 //! scenario proxy) can carry and cut the link.
@@ -47,8 +50,8 @@ use std::time::Duration;
 use coz::Thumbprint;
 use cyphr::principal::system_clock;
 use cyphr_client::{
-    ChainSource, HttpConnector, PatchEntry, PullPeer, Record, branch_bundles, peer_heads, pull,
-    verified_revokes,
+    BindingPolicy, ChainSource, Connector, HttpConnector, PatchEntry, PatchRequest, PullPeer,
+    Record, branch_bundles, fetch_patch, fetch_resyncs, peer_heads, pull, verified_revokes,
 };
 use cyphr_storage::index::Indexer as _;
 use tracing::{debug, error, info, warn};
@@ -141,6 +144,9 @@ impl Gossip {
             let id = &summary.principal_id;
             if let Some(keys) = self.idle_keys(state, peers, id).await {
                 probe_revokes(state, peers, &keys).await;
+                for (name, connector) in peers {
+                    offer_peer_resyncs(state, name, connector, id).await;
+                }
                 continue;
             }
             match round_principal(state, peers, id).await {
@@ -346,8 +352,128 @@ async fn round_principal(
             Err(err) => refused(principal_id, &err, "gossip: branch commit answered"),
         }
     }
+    for (name, connector) in peers {
+        offer_peer_resyncs(state, name, connector, principal_id).await;
+    }
     state.metrics.gossip_replayed(record.replayed());
     Ok(memo)
+}
+
+/// The resync proofs `connector`'s peer holds for `principal_id` that this
+/// server does not, each as the `{pay, sig}` coz it was served in.
+pub(crate) async fn fresh_resyncs<C: Connector>(
+    state: &AppState,
+    peer: &str,
+    connector: &C,
+    principal_id: &str,
+) -> Vec<serde_json::Value> {
+    let served = match fetch_resyncs(connector, principal_id).await {
+        Ok(served) => served,
+        Err(err) => {
+            debug!(%peer, %err, "resync proofs not fetched");
+            return Vec::new();
+        },
+    };
+    let held: BTreeSet<String> = state
+        .engine
+        .resyncs(principal_id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|coz| coz["pay"]["id"].as_str().map(str::to_owned))
+        .collect();
+    served
+        .into_iter()
+        .filter(|coz| {
+            coz["pay"]["id"]
+                .as_str()
+                .is_some_and(|id| !held.contains(id))
+        })
+        .collect()
+}
+
+/// Offer the engine each of `pops` with `chain`, the peer's chain, from
+/// the first commit this server does not hold: the line up to a tip it may
+/// not hold, whatever its caps kept. The engine verifies the line and the
+/// proof as it does a pushed one, and keeps what the fork rule over its
+/// commits and the proofs selects (SPEC 15.8).
+pub(crate) async fn offer_resyncs(
+    state: &AppState,
+    principal_id: &str,
+    pops: &[serde_json::Value],
+    chain: &[cyphr::replay::WireBundle],
+) {
+    use cyphr::state::TaggedDigest;
+
+    let alg = match state.engine.get_tip(principal_id).await {
+        Ok(Some(tip)) => tip.commit_id.parse::<TaggedDigest>().ok().map(|d| d.alg()),
+        _ => None,
+    };
+    let mut start = chain.len();
+    if let Some(alg) = alg {
+        for (i, bundle) in chain.iter().enumerate() {
+            let id = bundle
+                .decode()
+                .ok()
+                .and_then(|d| d.commit_id(alg))
+                .map(|c| c.to_string());
+            let held = match id {
+                Some(id) => state
+                    .engine
+                    .holds_commit(principal_id, &id)
+                    .await
+                    .unwrap_or(false),
+                None => false,
+            };
+            if !held {
+                start = i;
+                break;
+            }
+        }
+    }
+    let line = &chain[start..];
+    for pop in pops {
+        match state.engine.submit_resync(principal_id, pop, line).await {
+            Ok(receipt) if receipt.promoted => {
+                info!(principal = %principal_id, "a resync proof made its line the chain");
+            },
+            Ok(receipt) if receipt.stored => info!(principal = %principal_id, "a resync proof stored"),
+            Ok(_) => {},
+            Err(err) => refused(principal_id, &err, "resync proof answered"),
+        }
+    }
+}
+
+/// Fetch `connector`'s peer's resync proofs for `principal_id` and, when it
+/// holds any this server lacks, its chain, and offer them
+/// ([`offer_resyncs`]).
+async fn offer_peer_resyncs(
+    state: &AppState,
+    peer: &str,
+    connector: &HttpConnector,
+    principal_id: &str,
+) {
+    let pops = fresh_resyncs(state, peer, connector, principal_id).await;
+    if pops.is_empty() {
+        return;
+    }
+    let request = PatchRequest {
+        principal_id,
+        anchor: None,
+    };
+    let patch = match fetch_patch(connector, &request, BindingPolicy::NotRequired, None).await {
+        Ok(patch) => patch,
+        Err(err) => {
+            debug!(%peer, %err, "gossip: chain for a resync proof not fetched");
+            return;
+        },
+    };
+    let chain: Vec<cyphr::replay::WireBundle> = patch
+        .entries
+        .iter()
+        .map_while(|e| e.bundle.clone().ok())
+        .collect();
+    offer_resyncs(state, principal_id, &pops, &chain).await;
 }
 
 /// Log the engine's answer to a commit gossip handed it. Most answers are

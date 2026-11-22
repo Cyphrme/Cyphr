@@ -290,6 +290,10 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
         .route("/revoked", axum::routing::get(routes::revoked))
+        .route(
+            "/resync",
+            axum::routing::post(routes::resync).get(routes::resyncs),
+        )
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route("/healthz", axum::routing::get(routes::healthz))

@@ -436,6 +436,19 @@ async fn sync_locked(
         }
     }
 
+    // The authority's resync proofs (SPEC 15.8 item 2): a fork it resolved
+    // by proof, which no commit shows, resolves here before the witness's
+    // tip is compared with its report below.
+    let pops = crate::gossip::fresh_resyncs(state, "authority", &connector, principal_id).await;
+    if !pops.is_empty() {
+        let chain: Vec<cyphr::replay::WireBundle> = patch
+            .entries
+            .iter()
+            .filter_map(|e| e.bundle.clone().ok())
+            .collect();
+        crate::gossip::offer_resyncs(state, principal_id, &pops, &chain).await;
+    }
+
     // Authenticated channel (K10), part 2: the post-apply reconciliation.
     // Independent of anything the wire body claims about itself, compare
     // what the witness's OWN storage engine now holds against what the
