@@ -12,9 +12,9 @@ spec author's branch tip (`be0663f`). The in-tree `SPEC.md` carries
 unratified edits to some cited sections (for example §4.4, §6.4 and §13.7),
 so it is not a reliable source for them.
 
-The router in `rs/cyphr-server/src/lib.rs` (`build_router`) registers 15
+The router in `rs/cyphr-server/src/lib.rs` (`build_router`) registers 17
 routes. Every other method and path answers `404` with
-`{"error":"route not found"}`. All 15 are documented below.
+`{"error":"route not found"}`. All 17 are documented below.
 
 | Route                  | Purpose                                     | Auth             | Rate class         |
 | :--------------------- | :------------------------------------------ | :--------------- | :----------------- |
@@ -26,6 +26,8 @@ routes. Every other method and path answers `404` with
 | `POST /push`           | Submit a commit bundle                      | optional bearer  | `push`             |
 | `POST /revoke`         | Submit a self-signed naked revoke           | none             | `revoke`           |
 | `GET /revoked`         | Naked revokes held for named keys           | none             | `read`             |
+| `POST /resync`         | Submit a resync proof of possession         | none (signed)    | `push`             |
+| `GET /resync`          | Resync proofs held for a principal          | none             | `read`             |
 | `GET /e/{digest}`      | Content-addressed blob lookup               | none             | `read`             |
 | `GET /server`          | Server identity and capability tier         | none             | `read`             |
 | `GET /healthz`         | Storage liveness probe                      | none             | `read`             |
@@ -120,7 +122,7 @@ draws on the `per_ip` bucket. A refusal is `429`. Defaults and tuning are in
 | Class    | Requests                                       |
 | :------- | :--------------------------------------------- |
 | `read`   | every `GET`                                    |
-| `push`   | `POST /push`                                   |
+| `push`   | `POST /push`, `POST /resync`                   |
 | `login`  | `POST /auth/challenge`, `POST /auth/login`     |
 | `revoke` | `POST /revoke`                                 |
 | (none)   | `POST /auth/session`: the `per_ip` bucket only |
@@ -140,7 +142,7 @@ route. `docs/guides/operating-a-server.md` shows the fence response bodies.
 ### Engine error mapping
 
 Routes that call the storage engine (`/tip`, `/patch`, `/branches`,
-`/evidence`, `/e/{digest}`, `/push`, `/revoke`, and the login routes'
+`/evidence`, `/e/{digest}`, `/push`, `/revoke`, `/resync`, and the login routes'
 principal lookups) map its failures through one function,
 `AppError::engine` (`rs/cyphr-server/src/error.rs`):
 
@@ -484,6 +486,26 @@ Example: `revoked_serves_the_accepted_naked_revoke_verifiably`
 returns one element; 200 thumbprints return `400`. SPEC §6.4 defines
 the revoke; it names no route.
 
+### `GET /resync`
+
+The resync proofs of possession this server holds for a principal
+(`SPEC.md` §15.8 item 2). A proof mutates no chain, so a client that replays
+commits cannot learn of one from `/patch`; a peer asks here, and a holder
+that is in Error because of a fork the principal has since resolved by proof
+reaches the same verdict.
+
+Query: `pr` (string, required): the principal.
+
+**200**, always `unsigned`: `{"resyncs": [<coz>, …]}`. Each element is the
+`{pay, sig}` coz as it was accepted, one per asserted tip. The reader
+re-verifies each against the branch it holds
+(`cyphr::resync::verify_resync`, `cyphr_client::Record::asserted`); the
+server is a mirror, not the authority. An unknown principal lists none.
+
+Example: `a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch`
+(`rs/cyphr-server/tests/resync.rs`) lists the proof after `POST /resync`.
+SPEC §15.8 defines the proof; it names no route.
+
 ### `GET /e/{digest}`
 
 Content-addressed lookup: the bytes held under a digest.
@@ -718,6 +740,68 @@ Example: `revoked_serves_the_accepted_naked_revoke_verifiably`
 `rs/cyphr-server/tests/golden/naked_revoke_valid.json` and gets `200`;
 rejections are in `rs/cyphr-server/tests/naked_revoke.rs`. SPEC §6.4 names
 no route.
+
+### `POST /resync`
+
+Submit a resync proof of possession (`SPEC.md` §13, §15.8 item 2): a
+`resync/create` coz signed outside any commit, naming the Principal Root of
+the tip the principal asserts. It is the exit from a fork whose two branches
+are both extended, which no commit can leave (§15.5). It mutates no root.
+
+Body: JSON `{principal_id, coz, line}`.
+
+| Field          | Type   | Meaning                                                                                                                                                                                                     |
+| :------------- | :----- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `principal_id` | string | The principal, as in `/push`.                                                                                                                                                                               |
+| `coz`          | object | `{pay, sig}`: `pay.typ` `<authority>/cyphr/resync/create`, `pay.id` the asserted tip's Principal Root, `pay.tmb` the signer, `pay.alg`, `pay.now` (required; no receipt window is tested), `sig` base64url. |
+| `line`         | array  | Optional. The commits, each in the `/push` bundle form without `principal_id`, from a commit the server holds up to the asserted tip. Needed only when the server does not hold the tip.                    |
+
+The signer must be a key active in the state at the asserted tip, and not
+dead at `now` (the revoke gate that applies to any arrival, §6.4). The tip is
+held, or `line` reaches it; commits past it in `line` are not read. Commits of
+`line` the server does not hold are kept within the branch caps, or past them
+when the proof changes the principal's standing or fork point. The fork rule
+then reads every commit held and every proof held: at a contest, one
+asserted branch is followed whatever is extended elsewhere, more than one is
+Error for good, and none leaves the rule as it was. Where that makes the
+principal Active on a line that is not the chain, the line becomes the chain
+outside the caps and the displaced commits are kept as evidence. A proof for
+a tip that already has one stores nothing.
+
+**200**, always `unsigned`:
+
+```json
+{
+  "v": 1,
+  "payload": {
+    "principal_id": "<b64url>",
+    "id": "<asserted tip PR>",
+    "stored": true,
+    "promoted": false
+  },
+  "statement": { "kind": "unsigned" }
+}
+```
+
+`stored` is `false` when a proof for the tip was already held; `promoted` is
+`true` when the proof made its line the chain.
+
+| Status | When                                                                                                            |
+| :----- | :-------------------------------------------------------------------------------------------------------------- |
+| `401`  | The signer's key is naked-revoked at the proof's `now`.                                                         |
+| `404`  | No such principal; the asserted tip is not held and `line` does not reach it, or does not extend a commit held. |
+| `409`  | The commits of `line` the caps refuse, where the proof changes nothing (`branch_limit`).                        |
+| `422`  | The signer is no active key at the asserted tip, or its signature does not verify.                              |
+
+Engine refusals map as in "Engine error mapping". Gossip and a witness's sync
+carry the proofs a peer lists at `GET /resync`, each with the peer's chain
+from the first commit they lack.
+
+Example: `a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch`
+(`rs/cyphr-server/tests/resync.rs`). SPEC §13 and §15.8 define the proof;
+they name no route and no payload field beyond `typ`: that `id` holds the
+asserted tip's Principal Root and that the signer is read at that tip are
+choices recorded in the frame for the spec author.
 
 ## Authentication
 
