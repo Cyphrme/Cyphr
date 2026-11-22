@@ -434,3 +434,52 @@ async fn many_pops_for_one_tip_store_one_record() {
         "later PoPs for the tip store nothing"
     );
 }
+
+/// Hacker F3. A PoP from a key the principal never held is refused before
+/// any line work: the answer is the same whether the carried line verifies
+/// or breaks at its second commit, so it was decided without reading the
+/// line, and it is not the answer a held signer gets over the same broken
+/// line (which is a line error). Today the whole line is verified first,
+/// under the principal's write lock, so the cost of a refusal grows with
+/// the line a stranger chooses. Nothing is stored either way. This is
+/// deliberately not a timing bound: the observable is which refusal comes
+/// back.
+#[tokio::test]
+async fn a_pop_from_a_never_held_key_is_refused_before_any_line_work() {
+    let rig = Rig::new(3).await;
+    let line = rig.line(2, 6, NOW + 100).await;
+    let e = rig.fed(2).await;
+    let genuine = bundles(&line);
+    let mut broken = genuine.clone();
+    broken[1] = genuine[4].clone();
+    let at = NOW + 2000;
+    let stranger = fresh_kp();
+    let base = rig.blobs(&e).await;
+
+    let stranger_pop = pop(&stranger, &line[5], at);
+    let over_genuine = rig
+        .submit_resync(&e, &stranger_pop, &genuine)
+        .await
+        .expect_err("a never-held signer is refused")
+        .to_string();
+    let over_broken = rig
+        .submit_resync(&e, &stranger_pop, &broken)
+        .await
+        .expect_err("a never-held signer is refused")
+        .to_string();
+    assert_eq!(
+        over_genuine, over_broken,
+        "the refusal must not depend on the line, or the line was read first"
+    );
+    let held_pop = pop(&rig.keys[0], &line[5], at);
+    let held_over_broken = rig
+        .submit_resync(&e, &held_pop, &broken)
+        .await
+        .expect_err("a broken line is refused")
+        .to_string();
+    assert_ne!(
+        over_broken, held_over_broken,
+        "a held signer over a broken line gets a line error, not the stranger's refusal"
+    );
+    assert_eq!(rig.blobs(&e).await, base, "nothing is stored");
+}
