@@ -91,26 +91,58 @@ clocks correct.
   resolution exists, which is the both-extended limit below. The
   specification calls the race itself the fork-resolution race (SPEC
   15.8: the abandoned branch is permanently invalid).
-- **A fork resolves only by a commit.** The proof-of-possession
-  resolution (`resync/create`, SPEC 15.8 item 2) is not implemented: the
-  Rust code has no coz kind for it. A commit resolves a fork only by
-  extending exactly one of its branches
-  (`assessment`, `rs/cyphr/src/fork.rs:120`).
+- **A fork resolves by a commit or by a proof of possession.** A commit
+  resolves a fork only by extending exactly one of its branches. A
+  `resync/create` proof of possession (SPEC 15.8 item 2) is a coz signed
+  outside any commit by one key active at the tip it asserts, with `now`
+  required; `cyphr resync` signs and sends one. At a contest the walk
+  follows the one child whose subtree holds an asserted tip, whatever is
+  extended elsewhere. Proofs into two children leave the principal in
+  Error for good, and only recovery ends it. A proof at or below the fork
+  point changes nothing (`assessment`, `rs/cyphr/src/fork.rs:135`;
+  `rs/cyphr/src/resync.rs`).
 - **A fork with both branches extended locks until resolved.** Height
   does not decide it: the taller branch does not win, and a new commit on
   either branch leaves the principal in Error, because the walk still
   finds two extended branches (`rs/cyphr/src/fork.rs:120`). Holders of the
-  same commits reach the same verdict. The explicit proof-of-possession exit is future work, so
-  nothing at Levels 1 to 4 settles this state yet.
-- **A resolved fork can re-open.** The verdict is a function of the
-  commits held, so a fork the principal settled by extending one branch
-  is Error again when anyone holding a key that was active at the
+  same commits reach the same verdict. A proof of possession settles it.
+- **A fork settled by a commit can re-open.** The verdict is a function
+  of the commits held, so a fork the principal settled by extending one
+  branch is Error again when anyone holding a key that was active at the
   parting point extends the abandoned branch. A stale offline device that
   wakes up and signs on the old branch does this without any attacker.
   Pinned by `one_extended_selects_and_the_other_extended_reopens`
   (`rs/cyphr/tests/fork_rule.rs:246`) and
   `one_extension_resolves_and_the_abandoned_branch_reopens_it`
-  (`rs/cyphr-storage/tests/fork_rule.rs:309`).
+  (`rs/cyphr-storage/tests/fork_rule.rs:309`). A fork settled by a proof
+  of possession does not re-open this way.
+- **A stolen or old key can take a principal over with a proof.** A key
+  active at a branch's tip can sign a proof for its own branch, and every
+  holder follows it. The owner answers with a proof for theirs, which
+  leaves the principal in Error for good. Recovery, including social
+  means, is the answer; the protocol does not try to make fork
+  resolution foolproof at this layer.
+- **A proof's revoke check uses the signer's own `now`.** Like a commit
+  (see the backdating limit above), a proof signed by a revoked key is
+  refused only if its `now` is at or after the receipt time of the
+  revoke, so a holder of a revoked key can date a proof before it.
+- **A refused proof can leave part of its line kept.** A proof arrives
+  with the commits from a held commit up to its tip. If the proof is
+  refused, the commits of that line already kept stay as branch commits
+  within the retention caps (`submit_resync`,
+  `rs/cyphr-storage/src/engine/mod.rs:5531`).
+- **Gossip can lag on a proof.** A server that holds the branch a peer's
+  proof selects, and sees the same heads, does not fetch that proof in a
+  quiet round; it arrives from the sender or a later full round
+  (`rs/cyphr-server/src/gossip.rs`, module note).
+- **A principal in Error costs a full gossip round every tick.** A proof
+  moves no head, so a server never treats a principal it reads in Error,
+  or that a peer reads in Error, as idle (`idle_keys`,
+  `rs/cyphr-server/src/gossip.rs:168`).
+- **A junk proof can block sign-in.** A relying party refuses sign-in
+  while any served proof names a held branch commit it cannot verify, so
+  a peer serving such proofs blocks sign-in for as long as it serves them
+  (`refusal_over`, `rs/cyphr-client/src/relying_party.rs:636`).
 - **Any once-active key can backdate a commit to re-open or lock a
   principal.** A commit signed by a revoked key is refused only if
   its own `now` is at or after the server's receipt time of the revoke
