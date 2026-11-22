@@ -745,3 +745,229 @@ fn harness_failing_scenario_keeps_peer_logs() {
     assert!(!text.is_empty(), "the kept log is empty");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+impl Signer {
+    fn key(&self) -> cyphr::Key {
+        cyphr::Key::new(self.alg.clone(), self.tmb.clone(), self.pubb.clone())
+            .expect("key binds its tmb")
+            .with_first_seen(1_700_000_000)
+    }
+
+    fn software(&self) -> cyphr::signer::SoftwareSigner {
+        cyphr::signer::SoftwareSigner::new(&self.alg, &self.prv, &self.pubb, &self.tmb)
+    }
+}
+
+/// `by` creates `new` over `p` at `now`, a commit `by` finalizes itself.
+async fn create_commit(p: &mut cyphr::Principal, by: &Signer, new: &Signer, now: i64) {
+    let pay = serde_json::to_vec(&serde_json::json!({
+        "alg": by.alg, "id": new.tmb.to_b64(), "now": now,
+        "tmb": by.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create",
+    }))
+    .expect("pay");
+    let (sig, cad) = coz::sign_json(&pay, &by.alg, &by.prv, &by.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &by.alg).expect("czd");
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, Some(new.key()))
+        .expect("apply");
+    scope
+        .finalize_with_software(&by.software(), now, "cyphr.me")
+        .await
+        .expect("finalize");
+}
+
+// Claim: the oracle's check of an Error verdict is not satisfied by any
+// commit on any holder's chain. Three real, non-gossiping peers hold one
+// principal, a five-commit chain C_0..C_4, in Error:
+//   p1: the thief's line R, R', R'' is canonical (three commits over C_1),
+//       and the owner's C_2, C_3 are retained beside it: fork point 2,
+//       heads R'' and C_3;
+//   p2: the owner's chain is canonical, and the thief's R, R' are retained,
+//       R'' refused past the depth: fork point 2, heads C_4 and R';
+//   p3: a rival pair over C_2: fork point 3.
+// So p1 and p2 agree on the fork point and differ on heads (holder-relative
+// heads), and p3 has another fork point. A control verdict naming the true
+// tips passes; each arm hands the oracle a verdict that must be refused:
+//   (a) holders that disagree on the fork point (p1, p3);
+//   (b) a verdict branch that is C_1, below the fork point (the shared
+//       prefix, on every holder's chain, so a branch no contest child
+//       owns);
+//   (c) fewer branches than the widest holder's head list.
+// The commits are signed bundles pushed straight to each peer: the CLI
+// never sends a fork over a tip the peer already holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_oracle_refuses_an_error_verdict_that_is_not_the_forks() {
+    use cyphr_scenarios::actions::{Evidence, Principal, Standing, Tip};
+    use cyphr_scenarios::oracle::Expect;
+    use futures::FutureExt;
+
+    let h = Harness::start(&["p1", "p2", "p3"])
+        .await
+        .expect("start peers");
+    h.require(&[
+        Capability::Transport,
+        Capability::BranchStore,
+        Capability::Evidence,
+    ])
+    .await;
+
+    let k = signer();
+    let mut cur = cyphr::Principal::implicit(k.key()).await.expect("genesis");
+    cur.commit_genesis(&k.software(), &[], 1_700_000_000, "cyphr.me")
+        .await
+        .expect("genesis commit");
+    let mut states = vec![cur.fork().await.expect("fork")];
+    for i in 1..5 {
+        create_commit(&mut cur, &k, &signer(), 1_700_000_000 + i).await;
+        states.push(cur.fork().await.expect("fork"));
+    }
+    let id = k.tmb.to_b64();
+    let pr = Principal(id.clone());
+    let bundle = |p: &cyphr::Principal| {
+        cyphr::replay::WireBundle::of_commit(p.commits().last().expect("commit")).expect("bundle")
+    };
+    let line = async |over: usize, n: i64, now: i64| {
+        let mut p = states[over].fork().await.expect("fork");
+        let mut out = Vec::new();
+        for i in 0..n {
+            create_commit(&mut p, &k, &signer(), now + i).await;
+            out.push(bundle(&p));
+        }
+        out
+    };
+    let post = async |peer: &str, b: &cyphr::replay::WireBundle| {
+        let mut body = serde_json::to_value(b).expect("bundle json");
+        body["principal_id"] = id.as_str().into();
+        h.http
+            .post(format!("http://{}/push", h.peer(peer).addr()))
+            .json(&body)
+            .send()
+            .await
+            .expect("push")
+            .status()
+            .as_u16()
+    };
+    let thief = line(1, 3, 1_700_000_100).await;
+    let owner: Vec<_> = states.iter().map(&bundle).collect();
+    // p1: C_0, C_1, then the thief's line canonical, the owner's retained.
+    for b in owner[..2].iter().chain(&thief) {
+        assert_eq!(post("p1", b).await, 201, "p1: the thief's line");
+    }
+    for b in &owner[2..4] {
+        assert_eq!(post("p1", b).await, 409, "p1: the owner's line is retained");
+    }
+    // p2: the owner's chain canonical, the thief's line retained to depth 2.
+    for b in &owner {
+        assert_eq!(post("p2", b).await, 201, "p2: the owner's chain");
+    }
+    for b in &thief {
+        let status = post("p2", b).await;
+        assert!(
+            status == 409 || status == 423,
+            "p2: the thief's line: {status}"
+        );
+    }
+    // p3: a rival pair over C_2 beside the owner's chain.
+    for b in &owner {
+        assert_eq!(post("p3", b).await, 201, "p3: the owner's chain");
+    }
+    for b in line(2, 2, 1_700_000_200).await {
+        let status = post("p3", &b).await;
+        assert!(status == 409 || status == 423, "p3: the pair: {status}");
+    }
+
+    let views = [
+        h.peer_view("p1", &pr).await.expect("p1"),
+        h.peer_view("p2", &pr).await.expect("p2"),
+        h.peer_view("p3", &pr).await.expect("p3"),
+    ];
+    for (i, v) in views.iter().enumerate() {
+        assert_eq!(
+            v.standing,
+            Standing::Error,
+            "premise: p{} is in Error: {v:?}",
+            i + 1
+        );
+    }
+    assert_eq!(
+        views[0].fork_point, views[1].fork_point,
+        "premise: p1, p2 agree"
+    );
+    assert_ne!(
+        views[0].fork_point, views[2].fork_point,
+        "premise: p3 differs"
+    );
+    assert_ne!(
+        views[0].heads, views[1].heads,
+        "premise: heads are holder-relative"
+    );
+    let commit_id = |p: &cyphr::Principal| {
+        Tip(p
+            .commits()
+            .last()
+            .expect("commit")
+            .tr()
+            .0
+            .tagged_first()
+            .expect("commit id")
+            .to_string())
+    };
+    // The true tips: the thief's R'' (p1's head that is not the owner's
+    // C_3) and the owner's C_4.
+    let r2 = views[0]
+        .heads
+        .iter()
+        .find(|t| **t != commit_id(&states[3]))
+        .cloned()
+        .expect("R'' is a head at p1");
+    let true_tips = vec![r2.clone(), commit_id(&states[4])];
+
+    let verdict = |branches: Vec<Tip>, peers: &[&str]| {
+        let mut v = oracle_verdict(&branches[0].0, Standing::Error);
+        v.branches = branches;
+        v.peers = peers.iter().map(|p| (*p).to_owned()).collect();
+        v.anchor.id = id.clone();
+        v.evidence = vec![Evidence::PrincipalFork(pr.clone())];
+        v
+    };
+    let check = |v: cyphr_scenarios::actions::Verdict, peers: &'static [&'static str]| {
+        let (h, pr) = (&h, &pr);
+        async move {
+            std::panic::AssertUnwindSafe(async move {
+                h.check_verdict(&v, pr, &Expect::new(peers, &pr.0)).await
+            })
+            .catch_unwind()
+            .await
+        }
+    };
+
+    // Control: the true tips are an accepted verdict over p1 and p2.
+    let control = check(verdict(true_tips.clone(), &["p1", "p2"]), &["p1", "p2"]).await;
+    assert!(
+        control.is_ok(),
+        "control: the verdict naming the true tips passes"
+    );
+
+    // (a) Two Error holders with different fork points.
+    let refused = check(verdict(true_tips.clone(), &["p1", "p3"]), &["p1", "p3"]).await;
+    assert!(refused.is_err(), "(a) holders disagree on the fork point");
+
+    // (b) A branch below the fork point: C_1.
+    let refused = check(
+        verdict(vec![r2.clone(), commit_id(&states[1])], &["p1", "p2"]),
+        &["p1", "p2"],
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "(b) a branch below the fork point is on no contest child's branch"
+    );
+
+    // (c) Fewer branches than the widest holder's head list.
+    let refused = check(verdict(vec![r2], &["p1", "p2"]), &["p1", "p2"]).await;
+    assert!(
+        refused.is_err(),
+        "(c) fewer branches than the widest holder's heads"
+    );
+}
