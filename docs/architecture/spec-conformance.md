@@ -1081,7 +1081,7 @@ SPEC 15.8, line 2814. Disposition: `covered`.
   - `rs/cyphr/tests/fork_rule.rs::building_on_a_both_extended_fork_never_leaves_error`
   - `rs/cyphr/tests/fork_rule.rs::one_extended_selects_and_the_other_extended_reopens`
   - `rs/cyphr-storage/tests/fork_rule.rs::one_extension_resolves_and_the_abandoned_branch_reopens_it`
-- fails when: The commit exit is implemented (`assessment`, `rs/cyphr/src/fork.rs`): a new commit resolves a fork only when it leaves exactly one branch extended, a fork with both branches extended stays Error at any height, or an extended abandoned branch fails to re-open it. The proof-of-possession exit (`resync/create`) is not implemented and is mapped at sc-l2822.
+- fails when: a commit takes the principal out of Error while both branches of a fork are extended, a fork is resolved by height, a commit resolves a fork without leaving exactly one branch extended, or an extended abandoned branch does not re-open a resolved fork. The proof-of-possession exit is mapped at sc-l2822.
 
 ```claim
 kind: requirement
