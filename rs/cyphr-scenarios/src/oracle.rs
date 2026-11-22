@@ -267,12 +267,33 @@ impl Harness {
         // the abandoned rival's tip, so that commit is found by position on
         // every live peer's chain, not by being the chain's last.
         if let Some(k) = &v.resolved_by {
-            let (_, _, resolved) = self.verified_evidence(&live, p).await;
+            let (proven, _, resolved) = self.verified_evidence(&live, p).await;
             let Some(at) = resolved.last().copied() else {
-                panic!(
+                // No fork is proven resolved by a commit. A fork both of
+                // whose branches were extended is resolved only by a
+                // resync proof (SPEC 15.8 item 2): the resolver is the
+                // signer of a proof the harness verified itself on every
+                // live peer's chain, beside a proven fork. The peer's
+                // standing or word is never read.
+                assert!(
+                    proven
+                        .iter()
+                        .any(|x| matches!(x, signed::Proven::PrincipalFork { .. })),
                     "verdict names resolved_by {}, but no resolved fork is proven",
                     k.0
-                )
+                );
+                for name in &live {
+                    let proofs = self.served_resyncs(name, p).await;
+                    let chain = self.chain_read(name, p).await;
+                    let verified = signed::verified_resyncs(&proofs, &chain).await;
+                    assert!(
+                        verified.iter().any(|(_, tmb)| *tmb == k.0),
+                        "`{name}`: resolved_by {} names no verified resync proof (verified: \
+                         {verified:?})",
+                        k.0
+                    );
+                }
+                return;
             };
             for name in &live {
                 let signers = self.chain_read(name, p).await.signers;
@@ -288,6 +309,25 @@ impl Harness {
                 );
             }
         }
+    }
+
+    /// The resync proofs `peer` serves for `p` (`GET /resync`), unverified.
+    async fn served_resyncs(&self, peer: &str, p: &Principal) -> Vec<serde_json::Value> {
+        let addr = self.peer(peer).addr();
+        let body: serde_json::Value = self
+            .http
+            .get(format!("http://{addr}/resync"))
+            .query(&[("pr", p.0.as_str())])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("peer `{peer}`: resync read failed: {e}"))
+            .json()
+            .await
+            .unwrap_or_else(|e| panic!("peer `{peer}`: resync body: {e}"));
+        body["payload"]["resyncs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// End the scenario as RED for `cap` unless its route is observable now.

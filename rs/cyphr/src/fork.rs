@@ -5,7 +5,7 @@
 //! a principal's commits; this module is where they all read the same
 //! answer from them.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// A principal's consensus state (SPEC 15.5), as far as forks decide it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -63,6 +63,10 @@ pub struct Contest {
     /// extending the kept one. `None` while the fork stands, or when no
     /// commit settled it (a revoke left the kept commit alone).
     pub by: Option<String>,
+    /// For each commit here the walk passed over, the tips of its branch:
+    /// the held leaves at or above it, sorted. Empty while the fork
+    /// stands.
+    pub abandoned: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// A commit a holder keeps, canonical or retained, as [`assessment`] reads
@@ -103,6 +107,17 @@ pub struct Held {
 /// are the leaves at or above the children of the contest the walk cannot
 /// pass, sorted: each is a tip the principal can assert to resolve.
 ///
+/// `asserted` is the Principal Roots of held commits that carry a valid
+/// held `resync/create` proof of possession (SPEC 15.8 item 2). At a
+/// contest, the children whose subtree holds an asserted commit decide
+/// it: one is followed whatever is extended elsewhere, so a later
+/// extension of the abandoned branch does not re-open the fork; more
+/// than one is Error for good, since no commit or proof leaves it; none
+/// is rule E as above. Assertions at or below the fork point, or naming
+/// nothing held, select no child and change nothing. The heads in Error
+/// stay every leaf at or above the stopping contest's children, asserted
+/// or not.
+///
 /// Every held commit counts: each was admitted when it arrived, a revoke
 /// only gates what arrives after it, and a held message is never judged
 /// again (SPEC 14.12: "Cyphr does not use reversion"; the spec author on
@@ -117,7 +132,7 @@ pub struct Held {
 /// and a verifier holding the same commits reaches the same verdict,
 /// heads and selections as a peer. Held order and duplicates change
 /// nothing.
-pub fn assessment(held: &[Held]) -> Assessment {
+pub fn assessment(held: &[Held], asserted: &[String]) -> Assessment {
     use std::collections::BTreeMap;
 
     // The distinct held commits over each (position, pre).
@@ -135,6 +150,29 @@ pub fn assessment(held: &[Held]) -> Assessment {
             .unwrap_or_default()
     };
     let extended = |c: &Held| over.contains_key(&(c.sequence + 1, Some(c.pr.as_str())));
+
+    // The held commits whose subtree holds an asserted commit (the
+    // commit itself included): each asserted commit and its held
+    // ancestors. Asserted PRs naming nothing held select nothing.
+    let by_pr: HashMap<(u64, &str), &Held> = held
+        .iter()
+        .map(|h| ((h.sequence, h.pr.as_str()), h))
+        .collect();
+    let asserted: HashSet<&str> = asserted.iter().map(String::as_str).collect();
+    let mut asserts: HashSet<&str> = HashSet::new();
+    for h in held.iter().filter(|h| asserted.contains(h.pr.as_str())) {
+        let mut cur = Some(h);
+        while let Some(c) = cur {
+            if !asserts.insert(c.id.as_str()) {
+                break;
+            }
+            cur = c
+                .pre
+                .as_deref()
+                .zip(c.sequence.checked_sub(1))
+                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
+        }
+    }
 
     // The children of the virtual root: the held commits no held commit
     // precedes, at the lowest position that has one. A whole record has
@@ -159,14 +197,21 @@ pub fn assessment(held: &[Held]) -> Assessment {
     while !children.is_empty() {
         let next = match children.as_slice() {
             [only] => Some(*only),
-            many => match many
-                .iter()
-                .copied()
-                .filter(|c| extended(c))
-                .collect::<Vec<&Held>>()[..]
-            {
-                [only] => Some(only),
-                _ => None,
+            many => {
+                let pick = |keep: &dyn Fn(&Held) -> bool| -> Vec<&Held> {
+                    many.iter().copied().filter(|c| keep(c)).collect()
+                };
+                // A PoP decides the contest: one asserted child is
+                // followed whatever is extended elsewhere, more than one
+                // is Error for good, none leaves the choice to rule E.
+                match pick(&|c| asserts.contains(c.id.as_str()))[..] {
+                    [only] => Some(only),
+                    [] => match pick(&|c| extended(c))[..] {
+                        [only] => Some(only),
+                        _ => None,
+                    },
+                    _ => None,
+                }
             },
         };
         let Some(next) = next else {
@@ -179,6 +224,24 @@ pub fn assessment(held: &[Held]) -> Assessment {
         children = children_of(next.sequence + 1, Some(next.pr.as_str()));
     }
 
+    // The held leaves at or above `start`, each once.
+    let leaves_above = |start: Vec<&Held>| -> BTreeSet<String> {
+        let mut leaves: BTreeSet<String> = BTreeSet::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut frontier = start;
+        while let Some(c) = frontier.pop() {
+            if !seen.insert(c.id.as_str()) {
+                continue;
+            }
+            let below = children_of(c.sequence + 1, Some(c.pr.as_str()));
+            if below.is_empty() {
+                leaves.insert(c.id.clone());
+            }
+            frontier.extend(below);
+        }
+        leaves
+    };
+
     let forks = over
         .iter()
         .filter(|(_, c)| c.len() > 1)
@@ -187,12 +250,25 @@ pub fn assessment(held: &[Held]) -> Assessment {
                 .values()
                 .copied()
                 .find(|h| walked.contains(h.id.as_str()));
+            let abandoned = kept
+                .map(|k| {
+                    commits
+                        .values()
+                        .filter(|h| h.id != k.id)
+                        .map(|h| {
+                            let tips = leaves_above(vec![*h]);
+                            (h.id.clone(), tips.into_iter().collect())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             Contest {
                 sequence,
                 pre: pre.map(str::to_owned),
                 commits: commits.keys().map(|id| (*id).to_owned()).collect(),
                 kept: kept.map(|k| k.id.clone()),
                 by: kept.and_then(|k| settled_by_extension(held, k, &walked)),
+                abandoned,
             }
         })
         .collect();
@@ -205,23 +281,9 @@ pub fn assessment(held: &[Held]) -> Assessment {
             fork_point: None,
         };
     };
-    // The leaves at or above the rivals, each once.
-    let mut leaves: BTreeSet<String> = BTreeSet::new();
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut frontier = rivals;
-    while let Some(c) = frontier.pop() {
-        if !seen.insert(c.id.as_str()) {
-            continue;
-        }
-        let below = children_of(c.sequence + 1, Some(c.pr.as_str()));
-        if below.is_empty() {
-            leaves.insert(c.id.clone());
-        }
-        frontier.extend(below);
-    }
     Assessment {
         consensus: Consensus::Error,
-        heads: leaves.into_iter().collect(),
+        heads: leaves_above(rivals).into_iter().collect(),
         forks,
         fork_point: Some(ForkPoint { height, pre }),
     }

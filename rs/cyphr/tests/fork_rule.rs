@@ -116,7 +116,7 @@ fn reference(held: &[Held]) -> Verdict {
 }
 
 fn read(held: &[Held]) -> Verdict {
-    let a = assessment(held);
+    let a = assessment(held, &[]);
     match a.consensus {
         Consensus::Active => {
             assert_eq!(a.heads.len(), 1, "Active has one head");
@@ -136,7 +136,7 @@ fn read(held: &[Held]) -> Verdict {
 }
 
 fn is_error(held: &[Held]) -> bool {
-    assessment(held).consensus == Consensus::Error
+    assessment(held, &[]).consensus == Consensus::Error
 }
 
 /// Add a commit numbered `i` over the held commit whose PR is `p{parent}`.
@@ -198,7 +198,7 @@ proptest! {
         prop_assert!(is_error(&held), "heights {left} vs {right}");
         let mut tips = vec![format!("c{l}"), format!("c{r}")];
         tips.sort();
-        prop_assert_eq!(assessment(&held).heads, tips, "both branch tips are heads");
+        prop_assert_eq!(assessment(&held, &[]).heads, tips, "both branch tips are heads");
     }
 
     /// Catches a rule that skips position 0: two genesis commits are a
@@ -275,7 +275,7 @@ proptest! {
             s ^= s << 13; s ^= s >> 7; s ^= s << 17;
             shuffled.swap(i, (s % (i as u64 + 1)) as usize);
         }
-        let (a, b) = (assessment(&held), assessment(&shuffled));
+        let (a, b) = (assessment(&held, &[]), assessment(&shuffled, &[]));
         prop_assert_eq!(a.consensus, b.consensus);
         prop_assert_eq!(a.heads, b.heads);
         prop_assert_eq!(a.fork_point, b.fork_point);
@@ -295,9 +295,9 @@ fn a_shared_genesis_pr_is_both_extended() {
     let mut c = held_of(2, 1, None);
     c.pre = Some("shared".to_owned());
     let held = [a, b, c];
-    assert!(is_error(&held), "{:?}", assessment(&held));
+    assert!(is_error(&held), "{:?}", assessment(&held, &[]));
     assert_eq!(
-        assessment(&held).fork_point.map(|f| (f.height, f.pre)),
+        assessment(&held, &[]).fork_point.map(|f| (f.height, f.pre)),
         Some((0, None))
     );
 }

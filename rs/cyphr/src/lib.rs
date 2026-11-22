@@ -52,6 +52,9 @@ pub mod probe;
 pub mod proof;
 /// Replay of stored commit bundles: one entry point for every consumer.
 pub mod replay;
+/// Resync proof-of-possession validity (SPEC 13, 15.8): the one rule every
+/// consumer calls.
+pub mod resync;
 /// Naked-revoke validity (SPEC 6.4): the one rule every consumer calls.
 pub mod revoke;
 /// Semantic Tree nodes (KT, AR-node, SR-node) — generalizes `PrincipalTree`'s

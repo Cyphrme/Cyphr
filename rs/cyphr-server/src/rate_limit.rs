@@ -230,7 +230,8 @@ enum Op {
 /// is deliberately ordinary -- no exemption from rate limiting.
 fn classify(method: &Method, path: &str) -> Op {
     match (method, path) {
-        (&Method::POST, "/push") => Op::Push,
+        // A PoP can move a chain as a push does, and costs a replay.
+        (&Method::POST, "/push" | "/resync") => Op::Push,
         (&Method::POST, "/revoke") => Op::Revoke,
         (&Method::POST, "/auth/challenge") | (&Method::POST, "/auth/login") => Op::Login,
         (&Method::GET, _) => Op::Read,

@@ -160,10 +160,31 @@ async fn s04_theft() {
     }
     assert_ne!(at2, tt2);
 
-    h.eventually("both branches to be reported", CONVERGE, || async {
-        let v = bob.verdict(&pr2, &all).await?;
-        Ok(v.branches.contains(&at2) && v.branches.contains(&tt2))
-    })
+    // Both rotations are held and neither is a tip: each peer reports
+    // Error with the two tied heads (SPEC 15.5). The peers are polled
+    // inside the wait: an aggregate verdict can name both branches before
+    // each peer has stored the other's.
+    let want: std::collections::BTreeSet<Tip> = [at2.clone(), tt2.clone()].into_iter().collect();
+    h.eventually(
+        "both branches to be reported, and held by each peer",
+        CONVERGE,
+        || async {
+            let v = bob.verdict(&pr2, &all).await?;
+            if !(v.branches.contains(&at2) && v.branches.contains(&tt2)) {
+                return Ok(false);
+            }
+            for peer in ["p1", "p3"] {
+                let heads: std::collections::BTreeSet<Tip> = match h.peer_view(peer, &pr2).await {
+                    Some(view) => view.heads.iter().cloned().collect(),
+                    None => return Ok(false),
+                };
+                if heads != want {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+    )
     .await;
     let v = h.ok(bob.verdict(&pr2, &all).await);
     h.check_verdict(&v, &pr2, &Expect::new(&all, &pr2.0)).await;
@@ -173,12 +194,4 @@ async fn s04_theft() {
         v.resolved_by.is_none(),
         "no branch is ever picked for Alice"
     );
-    // Both rotations are held and neither is a tip: each peer reports
-    // Error with the two tied heads (SPEC 15.5).
-    let want: std::collections::BTreeSet<Tip> = [at2, tt2].into_iter().collect();
-    for peer in ["p1", "p3"] {
-        let view = h.peer_view(peer, &pr2).await.expect("view");
-        let got: std::collections::BTreeSet<Tip> = view.heads.iter().cloned().collect();
-        assert_eq!(got, want, "{peer}: both tied heads");
-    }
 }

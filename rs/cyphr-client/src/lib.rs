@@ -31,9 +31,10 @@ pub use relying_party::{
 };
 pub use revoke::{NakedRevoke, RevokeFailure, verify_naked_revoke};
 pub use sync::{
-    Anchor, ChainSource, DEFAULT_PATCH_CAP, ForkFinding, PeerHeads, PeerOutcome, PeerStanding,
-    PullPeer, PullReport, Record, RecordTip, RevokedKey, branch_bundles, fetch_revoked, opener_of,
-    peer_heads, pull, verified_revokes,
+    Anchor, Asserted, BranchLine, ChainSource, DEFAULT_PATCH_CAP, ForkFinding, MAX_RESYNCS,
+    PeerHeads, PeerOutcome, PeerStanding, PullPeer, PullReport, Record, RecordTip, RevokedKey,
+    branch_bundles, branch_lines, fetch_resyncs, fetch_revoked, opener_of, peer_heads, pull,
+    verified_revokes,
 };
 
 #[cfg(feature = "http")]

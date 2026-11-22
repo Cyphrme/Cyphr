@@ -43,6 +43,51 @@ pub struct RevokedResponse {
     pub revoked: Vec<serde_json::Value>,
 }
 
+/// Request body for `POST /resync` (SPEC 15.8 item 2): a resync proof of
+/// possession and, when the asserted tip may not be held here, the line of
+/// commits from a held commit up to it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResyncRequest {
+    /// Principal genesis identifier.
+    pub principal_id: String,
+    /// The `resync/create` coz, `{pay, sig}`: `pay.id` is the asserted
+    /// tip's Principal Root, signed by a key active at that tip.
+    pub coz: serde_json::Value,
+    /// The commits from a held commit up to the asserted tip, each in the
+    /// wire form of a push bundle. Optional: a tip the server holds needs
+    /// none. A line is verified as pushed commits are.
+    #[serde(default)]
+    pub line: Vec<cyphr::replay::WireBundle>,
+}
+
+/// Response for `POST /resync`.
+#[derive(Debug, Serialize)]
+pub struct ResyncResponse {
+    /// The principal's storage key.
+    pub principal_id: String,
+    /// The asserted tip's PR.
+    pub id: String,
+    /// `false` when a proof for this tip was already held.
+    pub stored: bool,
+    /// The proof made the line it asserts the principal's chain.
+    pub promoted: bool,
+}
+
+/// Query parameters for `GET /resync`.
+#[derive(Debug, Deserialize)]
+pub struct ResyncQuery {
+    /// Principal genesis identifier.
+    pub pr: String,
+}
+
+/// Response for `GET /resync`.
+#[derive(Debug, Serialize)]
+pub struct ResyncsResponse {
+    /// The resync proof (`{pay, sig}`) held for each asserted tip of the
+    /// principal.
+    pub resyncs: Vec<serde_json::Value>,
+}
+
 /// Most keys one `GET /revoked` may name.
 const MAX_REVOKED_ASKS: usize = 128;
 
@@ -749,6 +794,55 @@ pub async fn revoked(
         }
     }
     Ok(Json(Envelope::unsigned(RevokedResponse { revoked })))
+}
+
+/// `POST /resync` -- a resync proof of possession (SPEC 13, 15.8 item 2)
+/// for a tip, with the line up to it when this server may not hold it.
+///
+/// The proof is self-authenticating, signed by a key of the principal at
+/// the tip it asserts, so the route needs no session. The engine decides
+/// everything else ([`StorageEngine::submit_resync`]): where the fork
+/// rule over what it holds, the proof included, is Active on the asserted
+/// line, that line becomes the chain.
+///
+/// [`StorageEngine::submit_resync`]: cyphr_storage::engine::StorageEngine::submit_resync
+#[tracing::instrument(skip(state, request), fields(principal_id = %request.principal_id))]
+pub async fn resync(
+    State(state): State<Arc<AppState>>,
+    AppJson(request): AppJson<ResyncRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let receipt = state
+        .engine
+        .submit_resync(&request.principal_id, &request.coz, &request.line)
+        .await
+        .map_err(AppError::engine)?;
+    Ok((
+        StatusCode::OK,
+        Json(Envelope::unsigned(ResyncResponse {
+            principal_id: receipt.principal_id,
+            id: receipt.id,
+            stored: receipt.stored,
+            promoted: receipt.promoted,
+        })),
+    ))
+}
+
+/// `GET /resync?pr=<principal>` -- the resync proofs this peer holds for
+/// the principal, one per asserted tip, as the `{pay, sig}` coz each
+/// arrived in. A reader re-verifies each against the branch it holds
+/// (`cyphr::resync::verify_resync`): the peer is a mirror of the proof,
+/// not its authority.
+#[tracing::instrument(skip(state))]
+pub async fn resyncs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ResyncQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let resyncs = state
+        .engine
+        .resyncs(&query.pr)
+        .await
+        .map_err(AppError::engine)?;
+    Ok(Json(Envelope::unsigned(ResyncsResponse { resyncs })))
 }
 
 /// The accepted commit's 0-indexed sequence position: `commit_count`'s

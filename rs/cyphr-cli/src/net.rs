@@ -267,6 +267,27 @@ impl Peer {
         }
     }
 
+    /// Send a resync proof of possession (`{pay, sig}`, SPEC 15.8 item 2)
+    /// for `principal`, with `line`, the commits from one the peer holds up
+    /// to the asserted tip, and return the peer's answer payload.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError`] when the peer is unreachable or refuses the proof.
+    pub async fn post_resync(
+        &self,
+        principal: &str,
+        coz: &Value,
+        line: &[WireBundle],
+    ) -> Result<Value, PeerError> {
+        let body = serde_json::json!({"principal_id": principal, "coz": coz, "line": line});
+        let bytes = serde_json::to_vec(&body).map_err(|e| self.malformed(e.to_string()))?;
+        let answer = self.send(&Request::post("/resync", bytes)).await?;
+        let doc: Value =
+            serde_json::from_slice(&answer).map_err(|e| self.malformed(e.to_string()))?;
+        Ok(doc["payload"].clone())
+    }
+
     /// Send a naked revoke envelope (`{pay, sig, key}`, SPEC 6.4) to the peer.
     ///
     /// # Errors

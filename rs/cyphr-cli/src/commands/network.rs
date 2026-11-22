@@ -233,6 +233,107 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     })
 }
 
+/// `cyphr resync`: sign a proof of possession of the local tip and send it
+/// to the peer with the local commits the peer may lack (SPEC 15.8 item 2).
+///
+/// What the peer holds decides where the line starts: after the local
+/// commit that is its tip, at its fork point while it is in Error, and
+/// otherwise where its chain and the local one part. The peer verifies the
+/// line and the proof; whether the proof resolves anything is the fork rule
+/// over everything it holds.
+pub fn resync(
+    cli: &Cli,
+    identity: &str,
+    peer_url: &str,
+    signer: Option<&str>,
+) -> crate::Result<()> {
+    let store = parse_store(cli)?;
+    let keystore = super::common::open_backend(cli)?;
+    let principal_id = get_principal_id(&parse_principal_genesis(identity)?)?;
+    let wire = wire_id(identity)?;
+    let peer = Peer::new(peer_url, cli.peer_timeout_secs, cli.allow_cleartext)?;
+    // Loaded ahead of the async block: loading drives its own runtime.
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
+
+    // The keys to try: the one named, or each keystore key active at the
+    // local tip (a keystore may hold keys whose secret it does not).
+    let candidates: Vec<String> = match signer {
+        Some(tmb) => vec![tmb.to_owned()],
+        None => keystore
+            .list()?
+            .into_iter()
+            .map(|k| k.tmb)
+            .filter(|t| {
+                Base64UrlUnpadded::decode_vec(t)
+                    .is_ok_and(|b| principal.is_key_active(&coz::Thumbprint::from_bytes(b)))
+            })
+            .collect(),
+    };
+    let tip = principal.pr_tagged()?;
+    let now = current_timestamp();
+    let typ = format!("{}/cyphr/resync/create", cli.authority);
+    let mut signed = None;
+    let mut last_error = Error::Signing("no keystore key is active at the local tip".into());
+    for tmb in candidates {
+        let attempt = keystore
+            .signer(&tmb)
+            .map_err(Error::from)
+            .and_then(|signer| {
+                super::data::sign(&signer, json!({"id": tip, "now": now, "typ": typ}))
+            });
+        match attempt {
+            Ok(proof) => {
+                signed = Some((tmb, proof));
+                break;
+            },
+            Err(e) => last_error = e,
+        }
+    }
+    let (tmb, proof) = signed.ok_or(last_error)?;
+
+    let (answer, sent) = block_on(async {
+        let local = raw_chain(&store, &principal_id).await?;
+        if local.is_empty() {
+            return Err(Error::EmptyHistory(identity.to_owned()));
+        }
+        let start = match peer.tip(&wire).await? {
+            None => 0,
+            Some(TipAnswer::Error { fork_point, .. }) => {
+                usize::try_from(fork_point.height).map_or(local.len(), |h| h.min(local.len()))
+            },
+            Some(tip) => match held_position(&tip, &local) {
+                Some(i) => i + 1,
+                None => {
+                    let theirs = peer.chain(&wire).await?.commits;
+                    let same = |a: &WireBundle, b: &RawCommit| {
+                        b.commit_id
+                            .parse::<TaggedDigest>()
+                            .ok()
+                            .and_then(|id| {
+                                a.decode().ok()?.commit_id(id.alg()).map(|c| c.to_string())
+                            })
+                            .is_some_and(|c| c == b.commit_id)
+                    };
+                    theirs
+                        .iter()
+                        .zip(&local)
+                        .take_while(|(a, b)| same(a, b))
+                        .count()
+                },
+            },
+        };
+        let line: Vec<WireBundle> = local[start..].iter().map(|c| c.bundle.clone()).collect();
+        let answer = peer.post_resync(&wire, &proof.wire(), &line).await?;
+        Ok::<_, Error>((answer, line.len()))
+    })??;
+
+    let out = json!({"identity": identity, "peer": peer_url, "tip": tip, "signer": tmb,
+        "line": sent, "stored": answer["stored"], "promoted": answer["promoted"]});
+    emit(cli, &out, || {
+        println!("Resync of {tip} sent to {peer_url} ({sent} commit(s) of line)");
+    })
+}
+
 /// `cyphr fetch`: verify and store the peer's commits the local store lacks.
 pub fn fetch(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;

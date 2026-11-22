@@ -944,7 +944,7 @@ mod fork_state_from_the_fork_down {
                 .chain(&retained)
                 .cloned()
                 .collect();
-            prop_assert_eq!(assessment(&read), assessment(&whole));
+            prop_assert_eq!(assessment(&read, &[]), assessment(&whole, &[]));
         }
     }
 }
