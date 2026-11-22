@@ -59,17 +59,29 @@ history, or deny service.
 inferable from SPEC.md at `be0663f`," not "implemented in `rs/` or
 `go/`."** What `rs/` does at this revision:
 
-- **Not implemented:** a witness consensus-state machine, retention of
-  either branch of a fork, proof-of-error retention, and state jumping
-  (the `resync/create` proof of possession exists: `rs/cyphr/src/resync.rs`). `git grep` over `rs/` finds no
-  `ConsensusState`, `ProofOfError`, `proof_of_error`, `state_jump` or
-  `jump_to_ps`.
-- **Single chain per server:** `cyphr-server` refuses a commit whose
-  `pre` its copy of the chain has moved past, with `409`, and stores
-  nothing of it
-  (`s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put` in
-  `rs/cyphr-server/tests/spec_conformance.rs`). It does not keep the
-  refused branch as evidence or enter any Error state.
+- **Partly implemented:** the consensus states. `cyphr::fork::Consensus`
+  has only `Active` and `Error` (`rs/cyphr/src/fork.rs:12`), and the
+  storage engine reads it from the held commits
+  (`rs/cyphr-storage/src/engine/mod.rs:5074`). Pending, Resync, Offline,
+  Ignore and Client Mismatch have no counterpart: `git grep` over `rs/`
+  finds no `ConsensusState`.
+- **Implemented:** retention of both branches of a fork. The engine keeps
+  a verified rival as a retained branch (`retain_rival`,
+  `rs/cyphr-storage/src/engine/mod.rs:4873`; `list_branches`, `:6222`),
+  within caps, and `GET /branches` lists them.
+- **Implemented:** proof-of-error retention and service. A held rival is
+  the proof of error, and `GET /evidence` serves each principal fork
+  (`rs/cyphr-server/src/routes.rs:705-721`). No `ProofOfError` type
+  exists; the evidence is the retained commits.
+- **Not implemented:** state jumping. `git grep` over `rs/` finds no
+  `state_jump` or `jump_to_ps`.
+- **Fork handling per server:** `cyphr-server` answers a commit whose
+  `pre` its chain has moved past with `409` (see
+  `s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put` in
+  `rs/cyphr-server/tests/spec_conformance.rs`). A commit that verifies on
+  a held predecessor is kept as a rival and the principal can enter
+  Error; the `423` and `409` contract is in
+  `docs/reference/http-api.md` ("`POST /push`").
 - **Resync fetch:** `GET /patch?pr=…&from=…` serves the delta from a
   content-digest anchor (§13 Resync, step 2). A server in witness mode
   pulls that delta from one configured upstream and verifies each
