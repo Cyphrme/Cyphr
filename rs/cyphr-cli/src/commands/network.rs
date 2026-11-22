@@ -103,8 +103,36 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
             Some(tip) => match held_position(&tip, &local) {
                 Some(i) => i + 1,
                 None => {
-                    forking = Some(describe(&tip));
-                    0
+                    // Over the peer's tip: where the histories part decides
+                    // what is sent. A lone commit beyond it is a stale view
+                    // and moves the peer to Error for nothing the sender can
+                    // finish, so it is refused; two or more extend a branch,
+                    // which is the answer to a fork, and are sent.
+                    let held = describe(&tip);
+                    let theirs = peer.chain(&wire).await?.commits;
+                    let same = |a: &WireBundle, b: &RawCommit| {
+                        b.commit_id
+                            .parse::<TaggedDigest>()
+                            .ok()
+                            .and_then(|id| {
+                                a.decode().ok()?.commit_id(id.alg()).map(|c| c.to_string())
+                            })
+                            .is_some_and(|c| c == b.commit_id)
+                    };
+                    let parts = theirs
+                        .iter()
+                        .zip(&local)
+                        .take_while(|(a, b)| same(a, b))
+                        .count();
+                    if local.len() - parts < 2 {
+                        return Err(PeerError::Stale {
+                            peer: peer.url().to_owned(),
+                            detail: format!("{held} is not in the local history"),
+                        }
+                        .into());
+                    }
+                    forking = Some(held);
+                    parts
                 },
             },
         };
