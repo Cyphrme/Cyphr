@@ -1085,7 +1085,7 @@ SPEC 15.8, line 2814. Disposition: `covered`.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l2822]
