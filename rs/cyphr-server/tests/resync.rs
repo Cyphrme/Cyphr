@@ -111,9 +111,10 @@ fn enc(id: &str) -> String {
     id.replace(':', "%3A")
 }
 
-/// The fork of section 12: the chain C_0..C_2, the line L of three commits
-/// over it (L_3 is offered only after the resync), and R of two over it;
-/// L_3, L_4 and R_3, R_4 are the contest's two extended branches.
+/// The fork of section 12: the chain C_0..C_2, the line L of four commits
+/// over it (L_5 and L_6 are offered after the PoP is asserted or held),
+/// and R of two over it; L_3, L_4 and R_3, R_4 are the contest's two
+/// extended branches.
 struct Fork {
     id: String,
     prefix: Vec<WireBundle>,
@@ -135,7 +136,7 @@ async fn fork() -> Fork {
     let id = test_fixtures::bundle::genesis_id(&genesis).expect("genesis id");
     let c1 = key_commit(&mut chain, "key_a", T + 1).await;
     let c2 = key_commit(&mut chain, "key_b", T + 2).await;
-    let (l, l_states) = line(&chain, &["alice", "bob", "carol"], T + 100).await;
+    let (l, l_states) = line(&chain, &["alice", "bob", "carol", "eve_ed25519"], T + 100).await;
     let (r, r_states) = line(&chain, &["carol", "diana_es384"], T + 200).await;
     Fork {
         id,
@@ -191,8 +192,8 @@ async fn serve(state: &Arc<AppState>) -> String {
 
 /// Catches an exit that does not exist: with both branches extended, a
 /// commit on a head is refused (423), `/resync` over L_4 is accepted,
-/// the principal is Active on L_4, a write on it is admitted and one on the
-/// abandoned branch is not, the abandoned branch is still served as
+/// the principal is Active on the chosen branch's held leaf L_5, a write on it is admitted and one
+/// on the abandoned branch is not, the abandoned branch is still served as
 /// evidence, and `GET /resync` lists the PoP.
 #[tokio::test]
 async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
@@ -207,7 +208,10 @@ async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
     let coz = f.pop_l();
     let (status, body) = post_json(app.clone(), "/resync", resync_body(&f.id, &coz, &[])).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
-    let want = commit_id(&f.l_states[1]);
+    // The walk ends at the held leaf of the chosen branch (frame 12.2:
+    // heads are leaves, "assertions decide where the walk stops"): L_5,
+    // which was held as evidence while in Error, not the asserted L_4.
+    let want = commit_id(&f.l_states[2]);
     assert_eq!(
         state.engine.assess(&f.id).await.expect("assess").heads,
         vec![want.clone()]
@@ -218,9 +222,9 @@ async fn a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch() {
     );
 
     assert_eq!(
-        push(&app, &f.id, &f.l[2]).await,
+        push(&app, &f.id, &f.l[3]).await,
         StatusCode::CREATED,
-        "a write on the chosen tip"
+        "a write on the chosen head"
     );
     let (_, branches) = get_json(app.clone(), &format!("/branches?pr={}", enc(&f.id))).await;
     assert!(
