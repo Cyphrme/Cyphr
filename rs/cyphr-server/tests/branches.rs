@@ -583,16 +583,17 @@ async fn resolution() {
     );
 }
 
-/// Backs SPEC 15.8 (be0663f) and 15.7.1: after C resolves to B, D
-/// (extending A) ties C at the resolution point: both kept, C still the
-/// tip, and the principal is in Error. An extension E of C, a tied head,
-/// out-extends D, so it is admitted and the principal is Active, and the
-/// verdict, tip and branch list are the same live and after a restart that
-/// rebuilds from the blobs. Turns red if D is accepted as the tip or
-/// dropped, E is refused or leaves Error standing, or a rebuild disagrees
-/// with the live engine. End to end: yes.
+/// Backs SPEC 15.8 and 15.7.1 and the spec author on #203 ("They're both
+/// out of compliance"): after C extends B, D (extending A) extends the
+/// other branch too, so both are extended: both kept, C still held, and
+/// the principal is in Error. An extension E of C, a tied head, does not
+/// leave Error however tall its branch is: it is refused, and the verdict
+/// is the same live and after a restart that rebuilds from the blobs.
+/// Turns red if E is admitted (the old tallest-wins rule, which let E
+/// out-extend D), or a rebuild disagrees with the live engine. End to end:
+/// yes.
 #[tokio::test]
-async fn second_resolution_then_extension() {
+async fn both_extended_stays_error_whatever_extends_it() {
     let Resolved {
         f,
         n,
@@ -639,28 +640,30 @@ async fn second_resolution_then_extension() {
         "a rebuild agrees: Error"
     );
 
-    let (tip, list) = extend_c(&app, &c, n, id, StatusCode::CREATED).await;
+    let (tip, list) = extend_c(&app, &c, n, id, ERRORED).await;
     assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "E out-extends D: Active"
+        state.engine.is_errored(id).await.expect("verdict"),
+        "a taller branch is no resolution: Error"
     );
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
     assert_eq!(tip_payload(app.clone(), id).await, tip);
     assert_eq!(heads(&app, id).await, list);
     assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "Active survives a restart"
+        state.engine.is_errored(id).await.expect("verdict"),
+        "a rebuild agrees: Error"
     );
 }
 
-/// The same verdict when E (extending C) arrives before D: D is then a
-/// rival below the head, shorter than E's branch, so it is kept and the
-/// principal stays Active with E the tip, live and after a restart. Turns
-/// red if D's late arrival is dropped, the verdict depends on arrival
-/// order, or a rebuild disagrees. End to end: yes.
+/// The same verdict when E (extending C) arrives before D. With C and E
+/// held, only B's branch is extended: Active. D then extends A, so the
+/// abandoned branch is extended and the fork re-opens: D is kept as a rival
+/// and the principal is in Error, live and after a restart, exactly as when
+/// D arrives before E. Turns red if D's late arrival is dropped, the
+/// verdict depends on arrival order (the old rule kept Active at the taller
+/// tip), or a rebuild disagrees. End to end: yes.
 #[tokio::test]
-async fn extension_then_second_resolution() {
+async fn a_late_extension_of_the_abandoned_branch_reopens_the_fork() {
     let Resolved {
         f,
         n,
@@ -697,8 +700,8 @@ async fn extension_then_second_resolution() {
         "D is kept as a branch: {list:?}"
     );
     assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "E's branch is taller than D's: Active"
+        state.engine.is_errored(id).await.expect("verdict"),
+        "both branches are extended: Error, though E's is taller"
     );
 
     drop((app, state));
@@ -706,8 +709,8 @@ async fn extension_then_second_resolution() {
     assert_eq!(tip_payload(app.clone(), id).await, tip);
     assert_eq!(heads(&app, id).await, list);
     assert!(
-        !state.engine.is_errored(id).await.expect("verdict"),
-        "Active survives a restart"
+        state.engine.is_errored(id).await.expect("verdict"),
+        "a rebuild agrees: Error"
     );
 }
 
@@ -990,13 +993,87 @@ async fn errored_refuses_and_retains() {
     assert_eq!(heads(&app, &t.id).await, list, "E survives a rebuild");
 }
 
+/// Backs the heads of an Error: the leaves at or above the children of the
+/// contest the walk cannot pass, whatever their heights. The owner's A, D
+/// and E are held first (E extends D) and the thief's B and C arrive as
+/// rivals, C extending B: both branches are extended, to unequal heights.
+/// The shorter branch's tip C is a head beside E, at another sequence, and
+/// D (which has E above it) is not; `/tip` and a rebuild say the same.
+/// Turns red if the shorter branch's tip is dropped (heads of the greatest
+/// height only) or D is listed. End to end.
+#[tokio::test]
+async fn error_heads_are_the_leaves_above_the_fork_point() {
+    let t = theft(false).await;
+    let (app, state, dir) = theft_server(&t).await;
+    let pool = load_pool();
+    assert_eq!(
+        push(&app, &t.d, t.n + 1, &t.id).await,
+        StatusCode::CREATED,
+        "D"
+    );
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
+    assert_eq!(
+        push(&app, &e, t.n + 2, &t.id).await,
+        StatusCode::CREATED,
+        "E"
+    );
+    assert!(push(&app, &t.b, t.n, &t.id).await.is_client_error(), "B");
+    assert!(
+        push(&app, &t.c, t.n + 1, &t.id).await.is_client_error(),
+        "C"
+    );
+    for (p, i) in [(&t.b, t.n), (&t.c, t.n + 1)] {
+        let id = commit_id_at(p, i);
+        let held = state
+            .engine
+            .holds_commit(&t.id, id.as_str().expect("id"))
+            .await;
+        assert!(held.expect("holds"), "the rival at {i} is retained");
+    }
+    assert!(
+        errored(&state, &t.id).await,
+        "both branches extended: Error"
+    );
+
+    let mut want = vec![
+        (commit_id_at(&t.c, t.n + 1), t.n as u64 + 1),
+        (commit_id_at(&e, t.n + 2), t.n as u64 + 2),
+    ];
+    want.sort_by_key(|h| h.0.to_string());
+    let read = |tip: &serde_json::Value| -> Vec<(serde_json::Value, u64)> {
+        let mut heads: Vec<_> = tip["heads"]
+            .as_array()
+            .expect("heads")
+            .iter()
+            .map(|h| {
+                (
+                    h["commit_id"].clone(),
+                    h["sequence"].as_u64().expect("sequence"),
+                )
+            })
+            .collect();
+        heads.sort_by_key(|h| h.0.to_string());
+        heads
+    };
+    let tip = tip_payload(app.clone(), &t.id).await;
+    assert_eq!(read(&tip), want, "the leaves above the fork point");
+    drop((app, state));
+    let (app, _state) = reopen(dir.path()).await;
+    assert_eq!(
+        read(&tip_payload(app, &t.id).await),
+        want,
+        "a rebuild agrees"
+    );
+}
+
 /// Backs a revoke as an admission gate only (SPEC 14.12; #203): with the
 /// owner's D and the thief's C tied, in either arrival order of the
 /// branches, a naked revoke of `eve` received before every thief commit
 /// (NOW+4) or after them (NOW+100) re-judges no held commit. Error stands
-/// with both heads, nothing moves or is dropped, and a rebuild agrees; the
-/// owner resolves forward. Turns red if a revoke takes a held commit out
-/// of the fork.
+/// with both heads, nothing moves or is dropped, and a rebuild agrees; no
+/// commit resolves a both-extended fork. Turns red if a revoke takes a
+/// held commit out of the fork.
 #[tokio::test]
 async fn a_revoke_does_not_resolve_both_extended() {
     for thief_first in [true, false] {
@@ -1241,9 +1318,11 @@ async fn rewrite_server(
 /// signed canonical X at n+1, NOW+10) pushes B at n+1 dated A's `now`,
 /// then B' over B: B' ties Y, Error. K's revoke, received at NOW+4, takes
 /// nothing out: X, Y, B and B' are all held, Error stands with Y served,
-/// live and after a rebuild. The owner answers forward: a commit over Y
-/// out-extends B', Active. Turns red if a revoke moves or uncounts a held
-/// commit, or the owner's forward commit does not resolve the fork.
+/// live and after a rebuild. Both A's children are extended (X by Y, B by
+/// B'), so the owner's forward commit over Y does not leave Error: it is
+/// refused, and Error stands. Turns red if a revoke moves or uncounts a
+/// held commit, or the owner's forward commit resolves the fork (the old
+/// tallest-wins rule, which let it out-extend B').
 #[tokio::test]
 async fn a1_a_revoke_rejudges_no_held_rival() {
     let r = rewrite().await;
@@ -1272,22 +1351,24 @@ async fn a1_a_revoke_rejudges_no_held_rival() {
         NOW + 12,
     )
     .await;
-    assert_eq!(push(&app, &next, r.n + 3, &r.id).await, StatusCode::CREATED);
+    assert_eq!(push(&app, &next, r.n + 3, &r.id).await, ERRORED);
     assert!(
-        !errored(&state, &r.id).await,
-        "the owner's commit out-extends B'"
+        errored(&state, &r.id).await,
+        "both branches are extended: the owner's commit resolves nothing"
     );
 }
 
 /// A2: a deleted key's signatures from its active period stand (SPEC
 /// 6.2). `eve` was active at position n and the owner has since deleted
 /// it on-chain (A then D at n+1). Its holder pushes B at n and B' over B:
-/// B' ties D, so the principal is in Error. The owner's next ordinary
-/// commit extends D, a tied head, so it is admitted and resolves the fork
-/// (SPEC 15.8 item 1): Active, live and after a rebuild. Turns red if the
-/// deleted key's branch is not counted, or the owner's commit is refused.
+/// B' ties D, so the principal is in Error: A (extended by D) and B
+/// (extended by B') are both extended. The owner's next ordinary commit
+/// extends D but cannot leave Error (the spec author on #203: both
+/// branches extended are out of compliance): it is refused, live and after
+/// a rebuild. Turns red if the deleted key's branch is not counted, or the
+/// owner's commit is admitted (the old tallest-wins rule).
 #[tokio::test]
-async fn a2_owner_resolves_a_deleted_keys_tie() {
+async fn a2_a_deleted_keys_extended_branch_keeps_the_fork_in_error() {
     let pool = load_pool();
     let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
     let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
@@ -1324,12 +1405,12 @@ async fn a2_owner_resolves_a_deleted_keys_tie() {
     let mut next = chain.fork().await.expect("fork");
     create_key(&mut next, &g, &kp(&pool, "bob"), NOW + 5).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&next, n + 2, &id)).await;
-    assert_eq!(status, StatusCode::CREATED, "the owner's commit: {body:?}");
-    assert!(!errored(&state, &id).await, "it out-extends B': Active");
+    assert_eq!(status, ERRORED, "the owner's commit: {body:?}");
+    assert!(errored(&state, &id).await, "it leaves Error standing");
     let tip = tip_payload(app.clone(), &id).await;
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
-    assert!(!errored(&state, &id).await, "a rebuild agrees");
+    assert!(errored(&state, &id).await, "a rebuild agrees");
     assert_eq!(tip_payload(app, &id).await, tip);
 }
 
@@ -1426,12 +1507,16 @@ async fn a4_resigned_revokes_store_nothing() {
 }
 
 /// Backs fix 3 (SPEC 15.7.1, 15.8 item 1): a `key/delete` resolves a fork
-/// only as an ordinary extending commit. In Error with C and D tied, the
-/// owner's delete of `eve` extends D, a tied head, so it is admitted and
-/// the principal is Active, live and after a rebuild. That the delete
-/// takes nothing out of the fork is
-/// [`a_deleted_keys_line_counts_and_can_out_extend`]. Turns red if the
-/// delete is refused or Error stands.
+/// only as an ordinary extending commit, and removing the rival's signer
+/// is no resolution of its own (the spec author on #203). With C and D
+/// both extended the owner's delete of `eve` extending D is refused and
+/// Error stands. With only A and B held (neither extended) the same
+/// delete extends A, the one extended branch: it is admitted and the
+/// principal is Active, live and after a rebuild. That the delete takes
+/// nothing out of the fork is
+/// [`a_deleted_keys_line_counts_and_cannot_out_extend`]. Turns red if the
+/// delete over a both-extended fork is admitted (the old tallest-wins
+/// rule), or the delete over an unextended fork is refused.
 #[tokio::test]
 async fn key_delete_resolves_only_as_an_extension() {
     let pool = load_pool();
@@ -1450,22 +1535,56 @@ async fn key_delete_resolves_only_as_an_extension() {
     )
     .await;
     let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
-    assert_eq!(status, StatusCode::CREATED, "the delete resolves: {body:?}");
-    assert!(!errored(&state, &t.id).await, "eve's rivals left the fork");
+    assert_eq!(
+        status, ERRORED,
+        "no resolution of a both-extended fork: {body:?}"
+    );
+    assert!(
+        errored(&state, &t.id).await,
+        "eve's rivals stay in the fork"
+    );
     let tip = tip_payload(app.clone(), &t.id).await;
     drop((app, state));
     let (app, state) = reopen(dir.path()).await;
-    assert!(!errored(&state, &t.id).await, "a rebuild agrees");
+    assert!(errored(&state, &t.id).await, "a rebuild agrees");
+    assert_eq!(tip_payload(app, &t.id).await, tip);
+
+    // Neither branch extended: the same delete, over A, resolves.
+    let (app, state, dir) = theft_server(&t).await;
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    let mut del = t.a.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({
+            "id": kp(&pool, "eve_ed25519").tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/delete"
+        }),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 1, &t.id)).await;
+    assert_eq!(status, StatusCode::CREATED, "the delete resolves: {body:?}");
+    assert!(!errored(&state, &t.id).await, "one extended branch: Active");
+    let tip = tip_payload(app.clone(), &t.id).await;
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(!errored(&state, &t.id).await, "a rebuild agrees: Active");
     assert_eq!(tip_payload(app, &t.id).await, tip);
 }
 
 /// The same at the peer whose canonical chain is the losing branch: the
 /// thief resolved first here, so B and C are canonical and the owner's A
-/// and D are retained. The owner's `key/delete` of `eve` extends D, so it
-/// out-extends C and promotes the owner's branch as any extending commit
+/// and D are retained. Both are extended, so the owner's `key/delete` of
+/// `eve` over D is refused and Error stands, as at the peer where the
+/// owner was canonical (verdicts agree whichever branch a peer holds
+/// first). Where only B is canonical and unextended, the delete extends
+/// the retained A and promotes the owner's branch as any extending commit
 /// would (SPEC 15.8 item 1): Active with the delete as `/tip`, live and
-/// after a rebuild, as at the peer where the owner was canonical. Turns
-/// red if the delete is refused (423) or Error stands. End to end.
+/// after a rebuild. Turns red if the delete over a both-extended fork is
+/// admitted (the old tallest-wins rule), or the promotion is refused.
+/// End to end.
 #[tokio::test]
 async fn key_delete_promotes_at_the_losing_peer() {
     let pool = load_pool();
@@ -1485,11 +1604,44 @@ async fn key_delete_promotes_at_the_losing_peer() {
     .await;
     let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
     assert_eq!(
+        status, ERRORED,
+        "no resolution of a both-extended fork: {body:?}"
+    );
+    assert!(errored(&state, &t.id).await, "the delete leaves Error");
+    let held = tip_payload(app.clone(), &t.id).await;
+    drop((app, state));
+    let (app, state) = reopen(dir.path()).await;
+    assert!(errored(&state, &t.id).await, "a rebuild agrees");
+    assert_eq!(tip_payload(app, &t.id).await, held);
+
+    // B canonical and unextended: the delete extends the retained A.
+    let (state, dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CREATED, "B");
+    assert!(push(&app, &t.a, t.n, &t.id).await.is_client_error(), "A");
+    assert!(errored(&state, &t.id).await, "an unextended fork is Error");
+    let mut del = t.a.fork().await.expect("fork");
+    sign_commit(
+        &mut del,
+        &kp(&pool, "golden"),
+        serde_json::json!({
+            "id": kp(&pool, "eve_ed25519").tmb.to_b64(),
+            "typ": "cyphr.me/cyphr/key/delete"
+        }),
+        None,
+        NOW + 7,
+    )
+    .await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 1, &t.id)).await;
+    assert_eq!(
         status,
         StatusCode::CREATED,
-        "the delete promotes D: {body:?}"
+        "the delete promotes A: {body:?}"
     );
-    assert!(!errored(&state, &t.id).await, "the delete out-extends C");
+    assert!(!errored(&state, &t.id).await, "one extended branch: Active");
     let tip = tip_payload(app.clone(), &t.id).await;
     assert_eq!(
         tip["commit_id"], body["payload"]["commit_id"],
@@ -1506,11 +1658,14 @@ async fn key_delete_promotes_at_the_losing_peer() {
 /// position d; K's holder then pushes R_{d-1} over the commit below the
 /// owner's d-1, R_d over it, and R_{d+1} over R_d, all dated inside K's
 /// active period. A removal demotes no earlier signature, so the line
-/// counts: R_d ties the deletion (Error), and R_{d+1} out-extends it and is
-/// admitted as the tip, Active. What undoes it is recovery (SPEC 14), not a
-/// rule here. Turns red if the deleted key's line is not counted.
+/// counts: the owner's chain and R_d are both extended, so Error, and
+/// R_{d+1} cannot out-extend it: it is refused (the spec author on #203:
+/// both branches extended are out of compliance, whatever their heights).
+/// What undoes it is recovery (SPEC 14), not a rule here. Turns red if the
+/// deleted key's line is not counted, or R_{d+1} is admitted as the tip
+/// (the old tallest-wins rule).
 #[tokio::test]
-async fn a_deleted_keys_line_counts_and_can_out_extend() {
+async fn a_deleted_keys_line_counts_and_cannot_out_extend() {
     let pool = load_pool();
     let (g, e) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
     let (shared, id) = genesis(&[&g, &kp(&pool, "diana_es384"), &e], NOW + 2).await;
@@ -1550,39 +1705,45 @@ async fn a_deleted_keys_line_counts_and_can_out_extend() {
         "the chain stays held as a tied head"
     );
     let (status, body) = post_json(app.clone(), "/push", wire(&r, n + 2, &id)).await;
-    assert_eq!(status, StatusCode::CREATED, "R_(d+1): {body:?}");
-    assert_eq!(
-        tip_payload(app, &id).await["commit_id"],
-        commit_id_at(&r, n + 2),
-        "R_(d+1) is the tip"
-    );
-    assert!(!errored(&state, &id).await, "the taller line: Active");
+    assert_eq!(status, ERRORED, "R_(d+1): {body:?}");
+    assert!(errored(&state, &id).await, "the taller line: still Error");
 }
 
 /// Backs the retention bound on promotion against a thief: the thief's B
-/// and C are canonical here, the owner's A and D retained, and the thief
-/// also retains one more `eve`-signed rival B2 at n. The owner's
-/// `key/delete` of `eve` over D promotes the owner's line and displaces B
-/// and C. Displaced commits are blobs already held, swapped one for one
-/// with the line, so they never count against `eve`'s per-key quota: the
-/// thief cannot arm that quota to refuse the owner's resolution. The
-/// delete is admitted, the principal is Active and the delete is `/tip`.
-/// Turns red if the resolution is refused.
+/// is canonical here, the owner's A retained, and the thief also retains
+/// two more `eve`-signed rivals B2 and B3 at n, `eve`'s whole quota
+/// (`BRANCH_PER_KEY`). The owner's `key/delete` of `eve` over A extends
+/// the only unextended-rival line and promotes it, and displaces B.
+/// Displaced commits are blobs already held, swapped one for one with the
+/// line, so they never count against `eve`'s per-key quota (B would be a
+/// third): the thief cannot arm that quota to refuse the owner's
+/// resolution. The delete is admitted, the principal is Active and the
+/// delete is `/tip`. Turns red if the resolution is refused.
 #[tokio::test]
 async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
     let pool = load_pool();
     let t = theft(true).await;
-    let (app, state, _dir) = both_extended(&t, true).await;
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CREATED, "B");
+    assert!(push(&app, &t.a, t.n, &t.id).await.is_client_error(), "A");
     let eve = kp(&pool, "eve_ed25519");
     let mut b2 = t.shared.fork().await.expect("fork");
     create_key(&mut b2, &eve, &kp(&pool, "bob"), NOW + 4).await;
     let (status, body) = post_json(app.clone(), "/push", wire(&b2, t.n, &t.id)).await;
     assert!(status.is_client_error(), "B2 is a rival: {body:?}");
+    let mut b3 = t.shared.fork().await.expect("fork");
+    create_key(&mut b3, &eve, &kp(&pool, "carol"), NOW + 4).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&b3, t.n, &t.id)).await;
+    assert!(status.is_client_error(), "B3 is a rival: {body:?}");
     let retained =
         |b: &Vec<cyphr_storage::engine::BranchTip>| b.iter().filter(|b| !b.canonical).count();
     let before = state.engine.list_branches(&t.id).await.expect("branches");
-    assert_eq!(retained(&before), 3, "A, D and B2 are retained");
-    let mut del = t.d.fork().await.expect("fork");
+    assert_eq!(retained(&before), 3, "A, B2 and B3 are retained");
+    let mut del = t.a.fork().await.expect("fork");
     sign_commit(
         &mut del,
         &kp(&pool, "golden"),
@@ -1591,7 +1752,7 @@ async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
         NOW + 7,
     )
     .await;
-    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 2, &t.id)).await;
+    let (status, body) = post_json(app.clone(), "/push", wire(&del, t.n + 1, &t.id)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -1604,11 +1765,7 @@ async fn a_thief_cannot_arm_the_quota_against_a_resolution() {
         "the delete is /tip"
     );
     let after = state.engine.list_branches(&t.id).await.expect("branches");
-    assert_eq!(
-        retained(&after),
-        3,
-        "B, C and B2 retained in A and D's place"
-    );
+    assert_eq!(retained(&after), 3, "B, B2 and B3 retained in A's place");
 }
 
 /// `old` replaces itself with `new` (SPEC 6.3) at `now`, the commit
@@ -1937,10 +2094,12 @@ async fn fresh_client_replays_after_thief_data_promotion() {
 // ========================================================================
 // The fork rule (SPEC 15.8; nrd: "the commit resolves the fork. If that
 // fails or it's done maliciously, then you have to fall back on
-// recovery"), made deterministic: walk from genesis, at each fork follow
-// the child whose subtree is tallest, and two equally tall subtrees are
-// Error. The thief (holding `eve`) signs A, D, F and G; the owner
-// (`golden`) signs B, C and E.
+// recovery"; the spec author on #203: "An invalid fork is resolved when
+// the principal unambiguously selects one branch"). The verdict is a pure
+// function of the held commits: walk from genesis, and at each fork
+// follow the child that is extended; if none or both are, it is Error.
+// The thief (holding `eve`) signs A, D, F and G; the owner (`golden`)
+// signs B, C and E.
 // ========================================================================
 
 /// The commits of the fork-rule table, over one shared prefix of `n`.
@@ -1985,17 +2144,6 @@ async fn table() -> Table {
     }
 }
 
-/// One row of the fork table: (who pushes, the position, admitted?,
-/// Error?, `/tip`, the heads).
-type Row<'a> = (
-    &'a cyphr::Principal,
-    usize,
-    bool,
-    bool,
-    serde_json::Value,
-    Vec<serde_json::Value>,
-);
-
 /// The verdict a peer holds: (Error?, `/tip` commit id, the heads). In Error
 /// `/tip` names no single tip, so the commit id is null.
 async fn verdict(
@@ -2017,20 +2165,22 @@ fn commit_id_at(p: &cyphr::Principal, i: usize) -> serde_json::Value {
     serde_json::Value::String(id.expect("commit id").to_string())
 }
 
-/// Backs the five-row fork table end to end, each row's verdict checked
-/// live and again after a restart that rebuilds from the blobs:
+/// Backs the fork table end to end, each row's verdict checked live and
+/// again after a restart that rebuilds from the blobs:
 ///
-/// | Held                  | Result                |
-/// | A, B at n             | Error                 |
-/// | + C on B              | Active on B           |
-/// | + D on A              | Error                 |
-/// | + E on C              | Active on B's branch  |
-/// | thief out-extends     | Active on the thief's |
+/// | Held                  | Result                      |
+/// | A, B at n             | Error                       |
+/// | + C on B              | Active on B                 |
+/// | + D on A              | Error (both extended)       |
+/// | + E on C              | Error (a taller B, no exit) |
+/// | + F on D, G on F      | Error (the thief's too)     |
 ///
-/// Turns red if any row's verdict, `/tip` or heads differ, or a restart
-/// changes them.
+/// Turns red if any row's verdict or `/tip` differs, a restart changes
+/// them, or a taller branch ever settles a both-extended fork (the old
+/// tallest-wins rule made rows 4 and 6 Active). The heads of an Error are
+/// not pinned here.
 #[tokio::test]
-async fn fork_table_tallest_subtree_wins_and_a_tie_is_error() {
+async fn fork_table_two_extended_branches_stay_error_whatever_their_heights() {
     let t = table().await;
     let (state, dir) = keyless_server();
     let mut app = build_router(state.clone());
@@ -2040,84 +2190,60 @@ async fn fork_table_tallest_subtree_wins_and_a_tie_is_error() {
     }
     let (n, at) = (t.n, |p: &cyphr::Principal, i| commit_id_at(p, i));
     let a = || at(&t.thief, n);
-    let rows: [Row<'_>; 7] = [
-        (&t.thief, n, true, false, a(), vec![a()]),
+    // (who pushes, the position, admitted?, Error?, `/tip` while Active)
+    let rows: [(&cyphr::Principal, usize, bool, bool, serde_json::Value); 7] = [
+        (&t.thief, n, true, false, a()),
         // Row 1: A and B at n.
-        (&t.owner, n, false, true, a(), vec![a(), at(&t.owner, n)]),
+        (&t.owner, n, false, true, a()),
         // Row 2: C on B.
-        (
-            &t.owner,
-            n + 1,
-            true,
-            false,
-            at(&t.owner, n + 1),
-            vec![at(&t.owner, n + 1)],
-        ),
+        (&t.owner, n + 1, true, false, at(&t.owner, n + 1)),
         // Row 3: D on A.
-        (
-            &t.thief,
-            n + 1,
-            false,
-            true,
-            at(&t.owner, n + 1),
-            vec![at(&t.owner, n + 1), at(&t.thief, n + 1)],
-        ),
-        // Row 4: E on C.
-        (
-            &t.owner,
-            n + 2,
-            true,
-            false,
-            at(&t.owner, n + 2),
-            vec![at(&t.owner, n + 2)],
-        ),
-        // The thief catches up (F on D): a tie again.
-        (
-            &t.thief,
-            n + 2,
-            false,
-            true,
-            at(&t.owner, n + 2),
-            vec![at(&t.owner, n + 2), at(&t.thief, n + 2)],
-        ),
-        // Row 5: the thief out-extends (G on F): Active on its branch,
-        // which only recovery can undo.
-        (
-            &t.thief,
-            n + 3,
-            true,
-            false,
-            at(&t.thief, n + 3),
-            vec![at(&t.thief, n + 3)],
-        ),
+        (&t.thief, n + 1, false, true, at(&t.owner, n + 1)),
+        // Row 4: E on C: B's branch is taller, and still no exit.
+        (&t.owner, n + 2, false, true, at(&t.owner, n + 2)),
+        // The thief catches up (F on D, the third commit of a retained
+        // line, past the depth cap: not kept) and out-extends (G on F).
+        (&t.thief, n + 2, false, true, at(&t.owner, n + 2)),
+        (&t.thief, n + 3, false, true, at(&t.thief, n + 3)),
     ];
-    for (row, (p, i, admitted, error, tip, heads)) in rows.into_iter().enumerate() {
+    for (row, (p, i, admitted, error, tip)) in rows.into_iter().enumerate() {
         let status = push(&app, p, i, &t.id).await;
         assert_eq!(
             status == StatusCode::CREATED,
             admitted,
             "row {row}: {status}"
         );
-        let mut heads: Vec<String> = heads
-            .iter()
-            .map(|h| h.as_str().expect("id").to_owned())
-            .collect();
-        heads.sort();
-        let tip = if error { serde_json::Value::Null } else { tip };
-        let expected = (error, tip, heads);
-        assert_eq!(
-            verdict(&app, &state, &t.id).await,
-            expected,
-            "row {row}: live"
-        );
+        let check = |v: (bool, serde_json::Value, Vec<String>), when: &str| {
+            assert_eq!(v.0, error, "row {row}: {when}");
+            if !error {
+                assert_eq!(v.1, tip, "row {row}: {when}");
+                assert_eq!(v.2, vec![tip.as_str().expect("id").to_owned()]);
+            } else {
+                assert_eq!(v.1, serde_json::Value::Null, "row {row}: no one tip");
+            }
+        };
+        check(verdict(&app, &state, &t.id).await, "live");
+        if row == 5 {
+            let f = commit_id_at(&t.thief, n + 2);
+            assert!(
+                !state
+                    .engine
+                    .holds_commit(&t.id, f.as_str().expect("id"))
+                    .await
+                    .expect("holds"),
+                "F is the third commit of a retained line, past the depth cap"
+            );
+        }
+        // The principal is in Error from row 3: whether the commit extends
+        // a held line (E, F) or one that is not held (G on F), and whether
+        // or not it is kept, the refusal is the Error answer (423).
+        if row >= 4 {
+            assert_eq!(status, ERRORED, "row {row}: refused, Error stands");
+        }
         drop((app, state));
         let (reopened, rebuilt) = reopen(dir.path()).await;
         (app, state) = (reopened, rebuilt);
-        assert_eq!(
-            verdict(&app, &state, &t.id).await,
-            expected,
-            "row {row}: after a restart"
-        );
+        check(verdict(&app, &state, &t.id).await, "after a restart");
     }
 }
 
@@ -2155,16 +2281,19 @@ async fn a_revoke_takes_effect_from_its_own_now() {
 }
 
 /// Backs what lands after a fork is resolved forward: with C (the thief's)
-/// and D tied, the Error gate refuses everything but an extension of a
-/// tied head (SPEC 15.5: "no new transactions or actions are processed
-/// until resolved"), so the owner's action-only bundle is refused (423). A
-/// naked revoke of `eve` received at NOW+5, after C's `now`, re-judges no
-/// held commit (SPEC 14.12), so the bundle is still refused. The owner's
-/// next commit extends D and out-extends C (SPEC 15.8 item 1): Active, and
-/// the same bundle lands without moving the tip. Turns red if a revoke
-/// resolves the fork, or the bundle stays refused after the resolution.
+/// and D both extended, the Error gate refuses everything (SPEC 15.5: "no
+/// new transactions or actions are processed until resolved"), so the
+/// owner's action-only bundle is refused (423). A naked revoke of `eve`
+/// received at NOW+5, after C's `now`, re-judges no held commit (SPEC
+/// 14.12), and the owner's own next commit over D leaves Error standing
+/// whatever its height, so the bundle is still refused. Where only one
+/// branch is extended (A and B held, then D over A) the fork is resolved
+/// (SPEC 15.8 item 1): Active, and the same bundle lands without moving
+/// the tip. Turns red if a revoke or an out-extending commit resolves a
+/// both-extended fork (the old tallest-wins rule), or the bundle stays
+/// refused after a real resolution.
 #[tokio::test]
-async fn a_refused_action_lands_after_resolution() {
+async fn a_refused_action_lands_only_after_a_real_resolution() {
     let t = theft(false).await;
     let (app, state, _dir) = both_extended(&t, false).await;
     let pool = load_pool();
@@ -2182,12 +2311,19 @@ async fn a_refused_action_lands_after_resolution() {
     assert_eq!(status, ERRORED, "refused in Error: {refused:?}");
     revoke_eve(&state, NOW + 5).await;
     assert!(errored(&state, &t.id).await, "a revoke resolves nothing");
-    let (status, still) = post_json(app.clone(), "/push", body.clone()).await;
-    assert_eq!(status, ERRORED, "still refused: {still:?}");
     let mut e = t.d.fork().await.expect("fork");
     create_key(&mut e, &kp(&pool, "golden"), &kp(&pool, "alice"), NOW + 7).await;
-    assert_eq!(push(&app, &e, t.n + 2, &t.id).await, StatusCode::CREATED);
-    assert!(!errored(&state, &t.id).await, "E out-extends C: Active");
+    assert_eq!(push(&app, &e, t.n + 2, &t.id).await, ERRORED);
+    assert!(errored(&state, &t.id).await, "E resolves nothing: Error");
+    let (status, still) = post_json(app.clone(), "/push", body.clone()).await;
+    assert_eq!(status, ERRORED, "still refused: {still:?}");
+
+    let (app, state, _dir) = theft_server(&t).await;
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    let (status, _) = post_json(app.clone(), "/push", body.clone()).await;
+    assert_eq!(status, ERRORED, "refused in an unextended fork");
+    assert_eq!(push(&app, &t.d, t.n + 1, &t.id).await, StatusCode::CREATED);
+    assert!(!errored(&state, &t.id).await, "one extended branch: Active");
     let tip = tip_payload(app.clone(), &t.id).await;
     let (status, landed) = post_json(app.clone(), "/push", body).await;
     assert!(status.is_success(), "the bundle lands: {status} {landed:?}");
@@ -2522,15 +2658,18 @@ async fn witness_syncs_an_authority_in_error_and_holds_both_heads() {
 }
 
 /// Backs a witness that already moved past the fork: it holds a commit E
-/// resolving over one tied head (so it is Active, ahead), and polls an
-/// authority still in Error with heads C and D. Holding each attested
+/// extending one branch (so it is Active, ahead: only A is extended), and
+/// polls an authority in Error with heads C and D. Holding each attested
 /// head, not merely having it as a current head, is what sync requires:
-/// the poll is not a failure and the witness gains the branch it lacked
-/// while staying Active on E. Turns red if sync demands the attested heads
-/// be the witness's current heads (EntryCommitmentMismatch), or the seq
-/// guard drops the branch the witness lacks. End to end over TCP.
+/// the poll is not a failure and the witness gains the branch it lacked.
+/// That branch is extended (by C), so the witness reads the fork as the
+/// authority does, Error: witnesses holding the same commits do not split.
+/// Turns red if sync demands the attested heads be the witness's current
+/// heads (EntryCommitmentMismatch), the seq guard drops the branch the
+/// witness lacks, or the witness stays Active on the taller E. End to end
+/// over TCP.
 #[tokio::test]
-async fn witness_ahead_of_an_error_authority_holds_its_heads() {
+async fn witness_ahead_of_an_error_authority_reads_the_same_error() {
     use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
     use cyphr_server::sync::{SyncOutcome, sync_from_authority};
 
@@ -2604,7 +2743,99 @@ async fn witness_ahead_of_an_error_authority_holds_its_heads() {
             .expect("holds"),
         "the witness gained the branch it lacked"
     );
-    assert!(!errored(&wstate, &t.id).await, "still Active on E");
+    assert!(
+        errored(&wstate, &t.id).await,
+        "both branches held and extended: Error, as at the authority"
+    );
+}
+
+/// Backs a witness holding a line only to the depth cap (`BRANCH_DEPTH`):
+/// the authority's canonical line is the thief's B, C and F, the owner's A
+/// and D retained, so its heads are F and D. The witness holds the owner's
+/// A, D and E as its chain, so it retains B and C and refuses F as past the
+/// depth cap. F is a head the witness could not keep, not one the authority
+/// withheld, so the poll is not a failure; the witness reads the same
+/// Error. Turns red if sync demands every attested head be held
+/// (EntryCommitmentMismatch). End to end over TCP.
+#[tokio::test]
+async fn witness_accepts_a_head_its_depth_cap_refused() {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+    use cyphr_server::sync::{SyncOutcome, sync_from_authority};
+
+    let t = theft(false).await;
+    let pool = load_pool();
+    let (g, eve) = (kp(&pool, "golden"), kp(&pool, "eve_ed25519"));
+    let mut f = t.c.fork().await.expect("fork");
+    create_key(&mut f, &eve, &kp(&pool, "alice"), NOW + 8).await;
+    let mut e = t.d.fork().await.expect("fork");
+    create_key(&mut e, &g, &kp(&pool, "alice"), NOW + 7).await;
+
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    for (p, i) in [(&t.b, t.n), (&t.c, t.n + 1), (&f, t.n + 2)] {
+        assert_eq!(push(&app, p, i, &t.id).await, StatusCode::CREATED);
+    }
+    assert!(push(&app, &t.a, t.n, &t.id).await.is_client_error());
+    assert!(push(&app, &t.d, t.n + 1, &t.id).await.is_client_error());
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let wstate = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    let hold = |p: &cyphr::Principal, i: usize| {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[i]
+            .bundle()
+            .expect("bundle");
+        let (state, id) = (wstate.clone(), t.id.clone());
+        async move { state.engine.submit_commit(&id, None, &bundle).await }
+    };
+    for i in 0..t.n {
+        hold(&t.shared, i).await.expect("shared");
+    }
+    hold(&t.a, t.n).await.expect("A");
+    hold(&t.d, t.n + 1).await.expect("D");
+    hold(&e, t.n + 2).await.expect("E");
+
+    let outcome = sync_from_authority(&wstate, &t.id).await;
+    assert!(
+        !matches!(outcome, SyncOutcome::Failed { .. }),
+        "a head refused by the witness's own cap is not withheld: {outcome:?}"
+    );
+    let f_id = commit_id_at(&f, t.n + 2).as_str().expect("id").to_owned();
+    assert!(
+        !wstate
+            .engine
+            .holds_commit(&t.id, &f_id)
+            .await
+            .expect("holds"),
+        "F is past the witness's depth cap"
+    );
+    assert!(errored(&wstate, &t.id).await, "the same Error");
 }
 
 /// Backs SPEC 15.8 and 6.1 ("create rejects duplicates", judged at the
@@ -2717,4 +2948,426 @@ async fn caught_up_patch_is_signed_whatever_the_anchor_spelling() {
             "{anchor}: an empty range at the tip is attested: {body:?}"
         );
     }
+}
+
+// ========================================================================
+// Rule X over the wire (frame section 11): a pair carries its parent, and a
+// witness binds a head its caps refused to the bytes of the entry that
+// names it.
+// ========================================================================
+
+/// A one-key principal with chain C_0..C_2 (all signed by `golden`), the
+/// thief's J_3, J_4 over C_2, two junk rivals X, Y beside C_2 over C_1 (the
+/// key's whole quota), and the owner's answer O_3, O_4 over C_2.
+struct Prefilled {
+    id: String,
+    chain: Vec<cyphr::Principal>,
+    j: Vec<cyphr::Principal>,
+    x: cyphr::Principal,
+    y: cyphr::Principal,
+    o: Vec<cyphr::Principal>,
+}
+
+async fn prefilled() -> Prefilled {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let (c0, id) = genesis(&[&g], NOW + 2).await;
+    let mut chain = vec![c0];
+    for (i, name) in ["key_a", "key_b"].iter().enumerate() {
+        let mut p = chain[i].fork().await.expect("fork");
+        create_key(&mut p, &g, &kp(&pool, name), NOW + 3 + i as i64).await;
+        chain.push(p);
+    }
+    let extend = async |from: &cyphr::Principal, names: &[&str], now: i64| {
+        let mut out = Vec::new();
+        let mut cur = from.fork().await.expect("fork");
+        for (i, name) in names.iter().enumerate() {
+            create_key(&mut cur, &g, &kp(&pool, name), now + i as i64).await;
+            out.push(cur.fork().await.expect("fork"));
+        }
+        out
+    };
+    let j = extend(&chain[2], &["alice", "bob"], NOW + 10).await;
+    let x = extend(&chain[1], &["carol"], NOW + 20).await.remove(0);
+    let y = extend(&chain[1], &["diana_es384"], NOW + 21)
+        .await
+        .remove(0);
+    let o = extend(&chain[2], &["carol", "eve_ed25519"], NOW + 30).await;
+    Prefilled {
+        id,
+        chain,
+        j,
+        x,
+        y,
+        o,
+    }
+}
+
+/// Backs the `parent` field of `POST /push`: a root the key's full quota
+/// refuses answers `branch_limit`, and its extension pushed with the root
+/// as `parent` lands the pair, which changes the standing to Error. Turns
+/// red if the request cannot carry a parent (the extension alone is an
+/// orphan and nothing lands), or the root alone is not refused with the
+/// cap's answer. End to end.
+#[tokio::test]
+async fn push_with_a_parent_lands_a_pair_at_a_quota_full_server() {
+    let f = prefilled().await;
+    let (state, _dir) = keyless_server();
+    let app = build_router(state.clone());
+    for (i, p) in f.chain.iter().enumerate() {
+        assert_eq!(push(&app, p, i, &f.id).await, StatusCode::CREATED, "C_{i}");
+    }
+    assert_eq!(
+        push(&app, &f.j[0], 3, &f.id).await,
+        StatusCode::CREATED,
+        "J_3"
+    );
+    assert_eq!(
+        push(&app, &f.j[1], 4, &f.id).await,
+        StatusCode::CREATED,
+        "J_4"
+    );
+    for (junk, name) in [(&f.x, "X"), (&f.y, "Y")] {
+        let status = push(&app, junk, 2, &f.id).await;
+        assert!(status.is_client_error(), "{name} is retained: {status}");
+    }
+    assert!(
+        !errored(&state, &f.id).await,
+        "premise: Active on the thief's tip"
+    );
+
+    // Without `parent` the root answers the cap.
+    let (status, body) = post_json(app.clone(), "/push", wire(&f.o[0], 3, &f.id)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body:?}");
+    assert_eq!(body["payload"]["kind"], "branch_limit", "{body:?}");
+
+    // With `parent` the pair lands.
+    let mut request: serde_json::Value =
+        serde_json::from_str(&wire(&f.o[1], 4, &f.id)).expect("request json");
+    let mut parent: serde_json::Value =
+        serde_json::from_str(&wire(&f.o[0], 3, &f.id)).expect("parent json");
+    parent
+        .as_object_mut()
+        .expect("object")
+        .remove("principal_id");
+    request["parent"] = parent;
+    let (status, body) = post_json(app.clone(), "/push", request.to_string()).await;
+    assert!(
+        status == StatusCode::CONFLICT || status == StatusCode::CREATED,
+        "the pair is answered as a retained fork: {status} {body:?}"
+    );
+    for (p, i) in [(&f.o[0], 3), (&f.o[1], 4)] {
+        let id = commit_id_at(p, i);
+        let held = state
+            .engine
+            .holds_commit(&f.id, id.as_str().expect("id"))
+            .await
+            .expect("holds");
+        assert!(held, "commit {i} of the pair is held");
+    }
+    assert!(
+        errored(&state, &f.id).await,
+        "both branches are now extended: Error"
+    );
+}
+
+/// A witness holding B, C as its own chain, an authority in Error holding
+/// A, D, E as its canonical branch with B, C beside it, and the witness's
+/// sync of that authority, the patch's branches rewritten by `mutate`.
+/// The witness keeps A and D of the other branch and its caps refuse E.
+#[derive(Clone, Copy, PartialEq)]
+enum Cap {
+    /// The authority's patch as it served it.
+    Honest,
+    /// E is swapped for F, a genuine commit the witness answers `Errored`.
+    Forge,
+    /// Only E is sent: the declared head is E's own commit, but the witness
+    /// is given nothing of the line below it (frame 11.3, condition 2).
+    OnlyLast,
+    /// E is signed by a key the witness holds revoked, so its answer is
+    /// neither `BranchLimit` nor `Errored` (frame 11.3, condition 3).
+    DeadSigner,
+    /// A hostile authority signs a held report naming F as its head, and
+    /// its patch ends the branch with F's own bytes and declares F as the
+    /// head: condition 1 holds for a commit that does not extend the line.
+    Hostile,
+}
+
+async fn sync_over_cap(mode: Cap) -> cyphr_server::sync::SyncOutcome {
+    use cyphr_server::config::{AuthorityIdentity, ServerConfig, ServerMode};
+
+    let t = theft(false).await;
+    let pool = load_pool();
+    let mut e = t.d.fork().await.expect("fork");
+    let e_signer = if mode == Cap::DeadSigner {
+        "eve_ed25519"
+    } else {
+        "golden"
+    };
+    create_key(&mut e, &kp(&pool, e_signer), &kp(&pool, "alice"), NOW + 7).await;
+
+    let (astate, identity, adir) = common::attestor_server().await;
+    let app = cyphr_server::build_app_router(astate.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: astate.clone(),
+        identity: Some(identity.clone()),
+        dir: adir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind");
+    let url = instance.url().expect("url");
+    for i in 0..t.n {
+        assert_eq!(push(&app, &t.shared, i, &t.id).await, StatusCode::CREATED);
+    }
+    for (p, at) in [(&t.a, t.n), (&t.d, t.n + 1), (&e, t.n + 2)] {
+        assert_eq!(push(&app, p, at, &t.id).await, StatusCode::CREATED);
+    }
+    assert_eq!(push(&app, &t.b, t.n, &t.id).await, StatusCode::CONFLICT);
+    assert!(push(&app, &t.c, t.n + 1, &t.id).await.is_client_error());
+    assert!(errored(&astate, &t.id).await, "the authority is in Error");
+
+    // F extends the witness's own head C: a genuine commit the witness
+    // answers `Errored` (it does not resolve the fork) and does not hold.
+    let mut f = t.c.fork().await.expect("fork");
+    create_key(&mut f, &kp(&pool, "golden"), &kp(&pool, "key_a"), NOW + 8).await;
+    let mut f_entry: serde_json::Value =
+        serde_json::from_str(&wire(&f, t.n + 2, &t.id)).expect("wire json");
+    f_entry
+        .as_object_mut()
+        .expect("object")
+        .remove("principal_id");
+    f_entry["commit_id"] = commit_id_at(&f, t.n + 2);
+    f_entry["sequence"] = (t.n as u64 + 2).into();
+    f_entry["pr"] = f.pr_tagged().expect("pr").into();
+
+    // An on-path party rewrites the branches of every patch answer; the
+    // authority's signed held report is left as it signed it.
+    let e_id = commit_id_at(&e, t.n + 2);
+    let signer = identity.clone();
+    let mutate = std::sync::Arc::new(move |body: &mut serde_json::Value| {
+        if mode != Cap::Forge && mode != Cap::OnlyLast && mode != Cap::Hostile {
+            return;
+        }
+        if mode == Cap::Hostile {
+            let f_id = f_entry["commit_id"].clone();
+            let statement = &mut body["statement"]["coz"];
+            for head in statement["pay"]["heads"]
+                .as_array_mut()
+                .expect("held report heads")
+            {
+                if head["commit_id"] == e_id {
+                    head["commit_id"] = f_id.clone();
+                }
+            }
+            let pay = serde_json::to_vec(&statement["pay"]).expect("pay");
+            let (sig, _) = signer.sign(&pay).expect("the authority signs");
+            statement["sig"] = Base64UrlUnpadded::encode_string(&sig).into();
+            for b in body["payload"]["branches"]
+                .as_array_mut()
+                .expect("branches")
+                .iter_mut()
+                .filter(|b| b["canonical"] == true)
+            {
+                b["head"] = f_id.clone();
+            }
+        }
+        let branches = body["payload"]["branches"]
+            .as_array_mut()
+            .expect("branches");
+        for b in branches.iter_mut().filter(|b| b["canonical"] == true) {
+            let entries = b["entries"].as_array_mut().expect("entries");
+            if mode == Cap::OnlyLast {
+                let last = entries.last().expect("entry").clone();
+                *entries = vec![last];
+                continue;
+            }
+            let (id, seq, pr) = (
+                f_entry["commit_id"].clone(),
+                f_entry["sequence"].clone(),
+                f_entry["pr"].clone(),
+            );
+            let last = entries.last_mut().expect("entry");
+            for (k, v) in f_entry.as_object().expect("object") {
+                last[k.as_str()] = v.clone();
+            }
+            last["commit_id"] = id;
+            last["sequence"] = seq;
+            last["pr"] = pr;
+        }
+    });
+    let upstream = url.clone();
+    let proxy = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move |raw: axum::extract::RawQuery| {
+            let (upstream, mutate) = (upstream.clone(), mutate.clone());
+            async move {
+                let target = match raw.0 {
+                    Some(q) => format!("{upstream}/patch?{q}"),
+                    None => format!("{upstream}/patch"),
+                };
+                let resp = reqwest::Client::new()
+                    .get(&target)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .expect("upstream");
+                // Keep the authority's own status: a witness whose anchor
+                // the authority lacks is told so and asks again.
+                let status =
+                    axum::http::StatusCode::from_u16(resp.status().as_u16()).expect("status");
+                let mut body: serde_json::Value = resp.json().await.expect("upstream json");
+                if status.is_success() {
+                    mutate(&mut body);
+                }
+                (status, axum::Json(body))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let proxy_url = format!("http://{}", listener.local_addr().expect("addr"));
+    let _serve = tokio::spawn(async move {
+        let _ = axum::serve(listener, proxy).await;
+    });
+
+    let wdir = tempfile::tempdir().expect("witness dir");
+    let wstate = std::sync::Arc::new(
+        cyphr_server::AppState::new(ServerConfig {
+            mode: ServerMode::Witness,
+            data_dir: wdir.path().join("data"),
+            authority_url: Some(proxy_url),
+            authority_identity: Some(AuthorityIdentity {
+                alg: identity.alg().name().to_string(),
+                pub_key: identity.pub_key().to_vec(),
+            }),
+            ..Default::default()
+        })
+        .expect("witness"),
+    );
+    for (p, i) in t
+        .shared_indices()
+        .into_iter()
+        .map(|i| (&t.shared, i))
+        .chain([(&t.b, t.n), (&t.c, t.n + 1)])
+    {
+        let bundle = cyphr_storage::export_commits(p).expect("export")[i]
+            .bundle()
+            .expect("bundle");
+        wstate
+            .engine
+            .submit_commit(&t.id, None, &bundle)
+            .await
+            .expect("the witness holds B, C as its chain");
+    }
+    assert!(
+        !errored(&wstate, &t.id).await,
+        "premise: only B is extended"
+    );
+    if mode == Cap::DeadSigner {
+        revoke_eve(&wstate, NOW + 7).await;
+    }
+    cyphr_server::sync::sync_from_authority(&wstate, &t.id).await
+}
+
+impl Theft {
+    fn shared_indices(&self) -> Vec<usize> {
+        (0..self.n).collect()
+    }
+}
+
+/// Backs the binding of a cap-refused head (frame 11.3): a witness whose
+/// caps refuse the end of a line accepts the authority's head for it only
+/// when the head is the commit id of that entry's own bytes. Honest
+/// authority: the head past the cap is E and the last entry is E, so the
+/// sync is not a failure. An on-path party that swaps the last entry for
+/// another genuine commit the witness refuses, leaving the declared head, gets
+/// `EntryCommitmentMismatch`. Turns red if the answer kind alone
+/// qualifies a head (the swap is then accepted as Synced).
+#[tokio::test]
+async fn a_cap_refused_head_must_be_the_last_entrys_own_commit() {
+    use cyphr_server::sync::{SyncFailure, SyncOutcome};
+
+    let honest = sync_over_cap(Cap::Honest).await;
+    assert!(
+        !matches!(honest, SyncOutcome::Failed { .. }),
+        "a real head past the cap whose bytes are the last entry: {honest:?}"
+    );
+
+    // The canonical branch of the authority is A, D, E; swap E for F, a
+    // genuine commit over the witness's head that the witness answers
+    // `Errored`, leaving the declared head E.
+    let swapped = sync_over_cap(Cap::Forge).await;
+    assert!(
+        matches!(
+            swapped,
+            SyncOutcome::Failed {
+                reason: SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "a head no entry hashes to must not be accepted: {swapped:?}"
+    );
+}
+
+/// Backs conditions 2 and 3 of the head binding (frame 11.3), each with the
+/// declared head equal to the last entry's own commit (condition 1 holds):
+/// a head is accepted only when the witness holds the branch to the cap
+/// (here the line is not given, only its last entry), and only when the
+/// entries past the cap were answered `BranchLimit` or `Errored` (here the
+/// entry's signer is revoked at the witness, so it is refused as a dead
+/// key). Both are `EntryCommitmentMismatch`. Turns red if either condition
+/// is dropped.
+#[tokio::test]
+async fn a_cap_refused_head_needs_the_line_held_and_a_cap_answer() {
+    use cyphr_server::sync::{SyncFailure, SyncOutcome};
+
+    for (mode, why) in [
+        (
+            Cap::OnlyLast,
+            "the witness holds nothing of the branch below E",
+        ),
+        (
+            Cap::DeadSigner,
+            "E was refused for a reason other than the cap",
+        ),
+    ] {
+        let outcome = sync_over_cap(mode).await;
+        assert!(
+            matches!(
+                outcome,
+                SyncOutcome::Failed {
+                    reason: SyncFailure::EntryCommitmentMismatch
+                }
+            ),
+            "{why}: {outcome:?}"
+        );
+    }
+}
+
+/// Backs the head binding against a hostile authority (frame 11.3): its
+/// signed held report names F as a head, and its patch ends the branch A,
+/// D with F's own bytes and declares F. F is a genuine signed commit, but it
+/// extends the witness's own chain, not the branch it is named the head of,
+/// and the witness does not hold it. A witness must not take it as the head
+/// of that branch: the entries must chain, and the second must extend the
+/// first. Turns red if conditions 1 to 3 as checked (the head's id is the
+/// last entry's, the first two entries are held, the last was answered
+/// `Errored`) accept an unconnected commit.
+#[tokio::test]
+async fn a_signed_commit_that_does_not_extend_the_line_is_no_head() {
+    use cyphr_server::sync::{SyncFailure, SyncOutcome};
+
+    let outcome = sync_over_cap(Cap::Hostile).await;
+    assert!(
+        matches!(
+            outcome,
+            SyncOutcome::Failed {
+                reason: SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "an unconnected commit was accepted as a head: {outcome:?}"
+    );
 }

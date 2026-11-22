@@ -7,16 +7,18 @@
 //! (their heads, their served and offline-verified evidence), never
 //! predicted; the model supplies only the owner's chain.
 //!
-//! The two flows are the ones the hand-written scenarios pin: two extended
-//! branches settled by the owner's next commit (S03), and a stolen key's
-//! branch settled by the owner's naked revoke and `key/delete` (S04).
+//! The two flows are the ones the hand-written scenarios pin: two
+//! unextended branches settled by the owner's next commit (S03), and a
+//! stolen key's branch settled by the owner's naked revoke and `key/delete`
+//! (S04). A fork whose branches are both extended has no exit in the
+//! chain, so it ends a run and no episode builds one.
 
 use super::Size;
 use super::check::{
     Want, evidence_count, heal_everything, n5_refused, n8_refused, tip_diff, until, verdict_check,
 };
 use super::run::{Failure, PState, act, fail, refresh};
-use crate::actions::{Backup, Client, KeyRef, PeerTip, PushOutcome, Tip};
+use crate::actions::{ActionError, Backup, Client, KeyRef, PeerTip, PushOutcome, Standing, Tip};
 use crate::harness::Harness;
 
 /// Accept a push's tip or name the refusal as the invariant's failure.
@@ -40,7 +42,7 @@ async fn isolate_home(h: &Harness, names: &[String], home: &str) -> Result<(), F
     Ok(())
 }
 
-/// Wait until every holder reports the two tied heads and serves evidence
+/// Wait until every holder reports the two heads and serves evidence
 /// of the fork: N4 before resolution.
 async fn both_heads_everywhere(
     h: &Harness,
@@ -129,22 +131,15 @@ pub(crate) async fn fork<'h>(
     isolate_home(h, names, &ps.home).await?;
     let (home, other) = (ps.home.clone(), ps.holders[1].clone());
     let (c0, c1) = (&ps.clients[0], &ps.clients[1]);
-    for i in 0..2 {
-        act(c0.commit_data(&ps.pr, &format!("fa{idx}x{i}")).await, what)?;
-    }
+    act(c0.commit_data(&ps.pr, &format!("fa{idx}")).await, what)?;
     let t0 = accepted(
         act(c0.push(&ps.pr, &[home.as_str()]).await, what)?,
         "N2",
         what,
     )?;
-    // The verdict names an abandoned branch by its first commit, the one
-    // that took the forked position (S03).
-    let mut abandoned = None;
-    for i in 0..2 {
-        let tip = act(c1.commit_data(&ps.pr, &format!("fb{idx}x{i}")).await, what)?;
-        abandoned.get_or_insert(tip);
-    }
-    let abandoned = abandoned.expect("two commits were made");
+    // The verdict names an abandoned branch by the commit that took the
+    // forked position (S03): here its only one.
+    let abandoned = act(c1.commit_data(&ps.pr, &format!("fb{idx}")).await, what)?;
     let t1 = accepted(
         act(c1.push(&ps.pr, &[other.as_str()]).await, what)?,
         "N2",
@@ -164,8 +159,8 @@ pub(crate) async fn fork<'h>(
     .await?;
     n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
 
-    // SPEC 15.8: one ordinary commit on the first device's head, a tied
-    // head, out-extends the other branch.
+    // SPEC 15.8 item 1: one ordinary commit on the first device's head,
+    // the only extended branch.
     let resolved = c0
         .resolve_fork(&ps.pr, &t0)
         .await
@@ -185,6 +180,97 @@ pub(crate) async fn fork<'h>(
     .await?;
 
     settle(ps, resolved, abandoned);
+    Ok(())
+}
+
+/// Two devices fork the principal across a cut and each extends its branch
+/// twice, so both are extended: every holder must read Error with fork
+/// evidence, and the owner's further commit, which a fork with an
+/// unextended branch would take as its resolution, must be refused.
+pub(crate) async fn lock<'h>(
+    h: &'h Harness,
+    size: &Size,
+    names: &[String],
+    ps: &mut PState<'h>,
+    idx: usize,
+    what: &str,
+) -> Result<(), Failure> {
+    refresh(ps, 0, what).await?;
+    refresh(ps, 1, what).await?;
+    isolate_home(h, names, &ps.home).await?;
+    let (home, other) = (ps.home.clone(), ps.holders[1].clone());
+    let (c0, c1) = (&ps.clients[0], &ps.clients[1]);
+    for i in 0..2 {
+        act(c0.commit_data(&ps.pr, &format!("la{idx}x{i}")).await, what)?;
+    }
+    let t0 = accepted(
+        act(c0.push(&ps.pr, &[home.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
+    for i in 0..2 {
+        act(c1.commit_data(&ps.pr, &format!("lb{idx}x{i}")).await, what)?;
+    }
+    let t1 = accepted(
+        act(c1.push(&ps.pr, &[other.as_str()]).await, what)?,
+        "N2",
+        what,
+    )?;
+    heal_everything(h, names).await?;
+
+    both_heads_everywhere(h, size, ps, [&t0, &t1], what).await?;
+    verdict_check(
+        h,
+        ps,
+        &format!("obs-l{idx}a"),
+        "N4",
+        Want::Forked([&t0, &t1]),
+        what,
+    )
+    .await?;
+
+    // The owner's one further commit, the resolution of a fork with an
+    // unextended branch: every holder must refuse it (423), and none may
+    // settle on it.
+    act(c0.commit_data(&ps.pr, &format!("lc{idx}")).await, what)?;
+    match c0
+        .push(
+            &ps.pr,
+            &ps.holders.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await
+    {
+        Ok(PushOutcome::Accepted(tip)) => {
+            return Err(fail(
+                "N4",
+                format!("{what}: a further commit settled a both-extended fork at {tip:?}"),
+            ));
+        },
+        Ok(PushOutcome::Refused(r)) => {
+            return Err(fail(
+                "N4",
+                format!(
+                    "{what}: refused as {:?}, not as Error: {}",
+                    r.kind, r.detail
+                ),
+            ));
+        },
+        Err(ActionError::Failed(why)) if why.contains("423") => {},
+        Err(e) => return Err(fail("DRIVER", format!("{what}: push: {e}"))),
+    }
+    until(size, "every holder to stay in Error", || async {
+        let mut lines = Vec::new();
+        for holder in &ps.holders {
+            match h.peer_view(holder, &ps.pr).await {
+                Some(v) if v.standing == Standing::Error => {},
+                got => lines.push(format!("`{holder}` reads {got:?}, expected Error")),
+            }
+        }
+        lines
+    })
+    .await
+    .map_err(|m| fail("N4", format!("{what}: {m}")))?;
+    n8_refused(h, c0, &ps.pr, None, "for a principal in Error", what).await?;
     Ok(())
 }
 

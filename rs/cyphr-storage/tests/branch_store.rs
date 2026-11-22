@@ -399,8 +399,9 @@ async fn after_revocation(r: &Revoked) -> WireBundle {
 /// branch only; it is no naked revoke ("signed outside of a commit"), so
 /// it does not stop the key on a rival branch. The canonical commit at 1
 /// revokes `golden`; a `golden`-signed rival R is retained at 1, and B
-/// over R makes R's line the taller: B is admitted as the tip and the
-/// principal is Active, at the engine seam every holder ingests through.
+/// over R extends it, the only extended branch: B is admitted as the tip
+/// and the principal is Active, at the engine seam every holder ingests
+/// through.
 /// Turns red if an in-chain revoke disqualifies a rival branch's commits.
 #[tokio::test]
 async fn an_in_chain_revoke_is_state_of_its_own_branch() {
@@ -420,7 +421,7 @@ async fn an_in_chain_revoke_is_state_of_its_own_branch() {
     );
     r.f.submit(&e, &blobs(&rival, 2))
         .await
-        .expect("B out-extends the revocation's branch");
+        .expect("B extends the only extended branch");
     assert!(!e.is_errored(&r.f.id).await.expect("verdict"));
 }
 
@@ -886,11 +887,14 @@ mod retained {
     }
 
     /// Backs the slot policy (PLAN N18a, per-key quota): one key may retain
-    /// at most `BRANCH_PER_KEY` = 2 rivals of a principal; the next is the
-    /// typed `EngineError::BranchLimit` naming that key, and stores
+    /// at most `BRANCH_PER_KEY` = 2 rivals of a principal; the next, which
+    /// changes neither the standing nor the fork point (the unextended
+    /// tie is already Error), is refused as `EngineError::Errored` (the
+    /// Error refusal is true whether or not the commit is kept; the
+    /// `BranchLimit` answer is for a principal not in Error) and stores
     /// nothing. Turns red if the quota is absent (the third rival is
-    /// kept), the refusal does not name the signing key, or a refusal
-    /// stores blobs or a branch. End to end at the engine seam: yes.
+    /// kept), the refusal is `BranchLimit` in Error, or a refusal stores
+    /// blobs or a branch. End to end at the engine seam: yes.
     #[tokio::test]
     async fn a_key_past_its_quota_is_refused_naming_it() {
         const BRANCH_PER_KEY: usize = 2;
@@ -912,10 +916,8 @@ mod retained {
         f.add_rival(BRANCH_PER_KEY as i64 + 1).await;
         let refused = f.submit(&e, f.rivals.last().expect("rival")).await;
         match refused {
-            Err(EngineError::BranchLimit { key }) => {
-                assert_eq!(key, f.golden.tmb.to_b64(), "the refusal names the key")
-            },
-            other => panic!("expected BranchLimit naming the key, got {other:?}"),
+            Err(EngineError::Errored { .. }) => {},
+            other => panic!("expected Errored (the principal is in Error), got {other:?}"),
         }
         assert_eq!(
             blob_count(&e).await,
@@ -957,10 +959,78 @@ mod retained {
         );
     }
 
+    /// The canonical chain carries one commit past the fork, so a retained
+    /// rival line that is extended makes both branches extended: Error.
+    async fn extended_canonical(f: &Fork, e: &Engine) {
+        let mut p = f.rival_state(0).await;
+        f.submit(e, &blobs(&p, 1)).await.expect("canonical rival");
+        create_key(&mut p, &f.golden, &fresh_kp(), NOW + 500).await;
+        f.submit(e, &blobs(&p, 2)).await.expect("its extension");
+    }
+
+    /// Backs the cap counting lines, not commits (`BRANCH_PER_KEY` = 2
+    /// lines a signer may open, [`BRANCH_DEPTH`](cyphr_storage::engine::BRANCH_DEPTH)
+    /// = 2 commits a line): one key opens two lines and extends each once,
+    /// and all four commits are retained, the second line's extension
+    /// included. Turns red if the quota counts retained commits (the third
+    /// and fourth are then refused). End to end at the engine seam: yes.
+    #[tokio::test]
+    async fn two_lines_by_one_key_are_each_extended_once() {
+        let f = Fork::new(0).await;
+        let (e, _) = f.engine_with(&[]).await;
+        extended_canonical(&f, &e).await;
+        for line in 1..=2 {
+            let mut p = f.rival_state(line * 10).await;
+            let first = blobs(&p, 1);
+            assert!(matches!(
+                f.submit(&e, &first).await,
+                Err(EngineError::Protocol(_))
+            ));
+            create_key(&mut p, &f.golden, &fresh_kp(), NOW + 600 + line).await;
+            let next = blobs(&p, 2);
+            assert!(
+                f.submit(&e, &next).await.is_err(),
+                "an extension of a retained line is not a tip"
+            );
+        }
+        let kept = branches(&e, &f.id).await.iter().filter(|b| !b.3).count();
+        assert_eq!(kept, 4, "two lines of two commits are retained");
+        assert!(e.is_errored(&f.id).await.expect("assess"), "both extended");
+    }
+
+    /// Backs the depth cap: a third commit on a retained line, signed by a
+    /// key of its own, is not retained, and in Error the answer is `Errored` (the refusal is true
+    /// whether or not the commit is kept), never `BranchLimit`. Turns red
+    /// if the line grows past the depth or the refusal is a 409 quota
+    /// error. End to end at the engine seam: yes.
+    #[tokio::test]
+    async fn a_line_past_the_depth_cap_is_refused_as_errored() {
+        let f = Fork::new(0).await;
+        let (e, _) = f.engine_with(&[]).await;
+        extended_canonical(&f, &e).await;
+        // Each commit of the line has its own signer, so no per-signer
+        // quota explains a refusal: only the line's depth can.
+        let mut p = f.base.fork().await.expect("fork");
+        let (k1, k2, k3) = (fresh_kp(), fresh_kp(), fresh_kp());
+        create_key(&mut p, &f.golden, &k1, NOW + 10).await;
+        let _ = f.submit(&e, &blobs(&p, 1)).await;
+        create_key(&mut p, &k1, &k2, NOW + 700).await;
+        let _ = f.submit(&e, &blobs(&p, 2)).await;
+        assert!(e.is_errored(&f.id).await.expect("assess"));
+        let before = branches(&e, &f.id).await;
+        create_key(&mut p, &k2, &k3, NOW + 701).await;
+        match f.submit(&e, &blobs(&p, 3)).await {
+            Err(EngineError::Errored { .. }) => {},
+            other => panic!("expected Errored past the depth, got {other:?}"),
+        }
+        assert_eq!(branches(&e, &f.id).await, before, "nothing was retained");
+    }
+
     /// Backs the slot policy: the total ceiling `BRANCH_LIMIT` = 16 holds
     /// across keys. Eight keys retain two rivals each; a ninth key (within
-    /// its own quota) is refused as `BranchLimit` naming it. Turns red if
-    /// the ceiling is absent or applied per key only. End to end at the
+    /// its own quota) is refused, as `Errored` since the unextended tie is
+    /// already Error and the offer changes nothing. Turns red if the
+    /// ceiling is absent or applied per key only. End to end at the
     /// engine seam: yes.
     #[tokio::test]
     async fn the_total_ceiling_holds_across_keys() {
@@ -1011,10 +1081,8 @@ mod retained {
             .count();
         assert_eq!(kept, 16, "every key within its quota is retained");
         match submit(rival(&signers[0], salt).await).await {
-            Err(EngineError::BranchLimit { key }) => {
-                assert_eq!(key, signers[0].tmb.to_b64(), "the refusal names the key")
-            },
-            other => panic!("expected BranchLimit at the ceiling, got {other:?}"),
+            Err(EngineError::Errored { .. }) => {},
+            other => panic!("expected Errored at the ceiling (in Error), got {other:?}"),
         }
     }
 
@@ -1429,16 +1497,18 @@ async fn a_dead_keys_commit_arriving_after_its_revoke_is_refused() {
     assert_eq!(answers(&e, &f).await, before, "nothing of X4 is kept");
 }
 
-/// Backs F1's forward answer (SPEC 14.12, 15.8 item 1): the thief's
-/// `key_a` line X1, X2 is served and `key_a` is then revoked, so the thief
-/// can extend it no further. The owner out-extends on a rival line with
-/// `golden` alone, within the retention caps: R1 ties nothing (X2 is
-/// taller) and is retained, R2 ties X2 (Error) and is retained, R3 is the
-/// one tallest commit and is admitted and served, Active on the owner's
-/// line, live and after a rebuild. Turns red if the owner's line cannot
-/// out-extend a revoked key's line within two retained commits.
+/// Backs F1's answer under the fork rule (SPEC 14.12, 15.8; the spec
+/// author on #203: both branches extended are out of compliance): the
+/// thief's `key_a` line X1, X2 is served and `key_a` is then revoked, so
+/// the thief can extend it no further. The revoke judges nothing held, so
+/// X1 stays extended. The owner builds a rival line with `golden` alone,
+/// within the retention caps: R1 is retained, R2 extends it, so both
+/// branches are extended and the principal is Error. R3 does not leave it
+/// (the old tallest-wins rule admitted it as the tip): it is refused, and
+/// the verdict is the same after a rebuild. Turns red if a taller owner's
+/// line settles a both-extended fork.
 #[tokio::test]
-async fn the_owner_out_extends_a_revoked_keys_line() {
+async fn the_owner_cannot_out_extend_a_revoked_keys_extended_line() {
     let f = Fork::new(0).await;
     let pool = load_pool();
     let e = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
@@ -1453,14 +1523,15 @@ async fn the_owner_out_extends_a_revoked_keys_line() {
         create_key(&mut r, &f.golden, &kp(&pool, n), NOW + 600 + i as i64).await;
         pushed.push(pushed_tip(&e, &f, &blobs(&r, i + 1)).await);
     }
-    assert!(pushed[0].is_err() && pushed[1].is_err(), "{pushed:?}");
-    assert!(!e.is_errored(&f.id).await.expect("verdict"));
-    let r3 = pushed[2].clone().expect("R3 out-extends the thief's line");
+    assert!(
+        pushed.iter().all(Result::is_err),
+        "R1 and R2 are retained, R3 is no exit: {pushed:?}"
+    );
     for when in ["live", "after a rebuild"] {
-        let tip = e.get_tip(&f.id).await.expect("tip").expect("held");
-        let assessed = e.assess(&f.id).await.expect("assess");
-        assert_eq!(tip.commit_id, r3, "{when}: R3 is served");
-        assert_eq!(assessed.heads, vec![r3.clone()], "{when}: R3 is the head");
+        assert!(
+            e.is_errored(&f.id).await.expect("verdict"),
+            "{when}: both branches extended"
+        );
         e.rebuild_index_from_scratch().await.expect("rebuild");
     }
 }
@@ -1702,8 +1773,8 @@ async fn a_revoke_does_not_change_the_answer_to_a_repeat_of_a_held_commit() {
 /// line as canonical, [G, C1], and the owner's rival R1 at position 1,
 /// `key/replace` of `key_a` by `alice` signed by `key_a`, is retained. R2
 /// extends R1, signed by `alice`, a key only the rival branch introduced.
-/// R2 is admitted: it out-extends the canonical line, which makes R1, R2
-/// the tallest, so the principal is Active on R2. Turns red if the signers
+/// R2 is admitted: it extends R1, the only extended branch, so the
+/// principal is Active on R2. Turns red if the signers
 /// of a resolution are read only from the canonical state, so a key the
 /// retained branch introduced is refused `UnknownKey`.
 #[tokio::test]

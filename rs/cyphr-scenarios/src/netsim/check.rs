@@ -456,7 +456,7 @@ pub(crate) enum Want<'a> {
     /// An unforked principal: Active at the owner's tip, no evidence of any
     /// kind (so a peer's key rollover or restore is not mistaken for one).
     Active(&'a Tip),
-    /// Two tied heads: Error, both branches live, the fork evidenced.
+    /// Two heads: Error, both branches live, the fork evidenced.
     Forked([&'a Tip; 2]),
     /// A resolved fork: Active at the owner's tip, the resolving key named,
     /// the abandoned branch kept.

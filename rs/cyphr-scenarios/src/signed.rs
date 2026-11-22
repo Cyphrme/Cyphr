@@ -369,8 +369,8 @@ pub struct VerifiedSet {
     /// Each rival branch's last commit id: a fork's rival no verified item
     /// extends, or the last extension of one.
     pub rival_tips: std::collections::BTreeSet<String>,
-    /// The position of each resolving commit: one above the tip of a rival
-    /// the chain has out-extended. The commit there extends the kept head
+    /// The position of each resolving commit: one above a rival the chain
+    /// has gone past and no item extends. The commit there extends the kept head
     /// (SPEC 15.8 item 1), and its signer is the verdict's `resolved_by`.
     pub resolved_at: std::collections::BTreeSet<u64>,
 }
@@ -417,9 +417,11 @@ pub async fn verify_evidence_set(
     }
     let extended: std::collections::BTreeSet<&String> =
         set.extensions.iter().map(|e| &e.parent).collect();
-    // A rival the chain has since out-extended is a resolved fork's
-    // abandoned branch (SPEC 15.8): evidence, not a live head. A tie, or a
-    // rival the chain does not pass, is still live.
+    // A rival no verified item extends, which the chain has gone past, is
+    // a resolved fork's abandoned branch (SPEC 15.8): evidence, not a live
+    // head. A tie, or a rival the chain does not pass, is still live; so
+    // is any rival line that was itself extended, since two extended
+    // branches are both out of compliance whatever their heights.
     let top = u64::try_from(chain.commit_ids.len()).map_or(0, |n| n.saturating_sub(1));
     let (live, passed): (Vec<_>, Vec<_>) = set
         .forks
@@ -429,9 +431,17 @@ pub async fn verify_evidence_set(
             let id = proof.commits.iter().find(|c| Some(*c) != mine).cloned()?;
             Some((id, proof.height))
         })
-        .chain(set.extensions.iter().map(|e| (e.id.clone(), e.height)))
         .filter(|(id, _)| !extended.contains(id))
         .partition(|(_, height)| *height >= top);
+    let live = live
+        .into_iter()
+        .chain(
+            set.extensions
+                .iter()
+                .filter(|e| !extended.contains(&e.id))
+                .map(|e| (e.id.clone(), e.height)),
+        )
+        .collect::<Vec<_>>();
     let rival_tips = live.into_iter().map(|(id, _)| id).collect();
     let resolved_at = passed.into_iter().map(|(_, height)| height + 1).collect();
     Ok(VerifiedSet {

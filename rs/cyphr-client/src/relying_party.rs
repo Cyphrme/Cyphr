@@ -61,8 +61,10 @@ pub const BRANCH_COMMIT_LIMIT: usize = 16;
 
 /// How many of those commits one signing key may hold: the engine's
 /// `BRANCH_PER_KEY` (2). A key that forked once is already proven to
-/// equivocate, so a small quota loses no evidence, and a key that floods
-/// rivals cannot starve the rivals of the principal's other keys.
+/// equivocate, so a small quota loses no evidence. A key that floods
+/// rivals can fill its own quota, so the quota bounds what is kept as
+/// junk; a commit that changes the standing is still kept by the engine,
+/// and here it fails closed ([`Refusal::Forked`]).
 pub const BRANCH_COMMITS_PER_KEY: usize = 2;
 
 /// A relying party's own settings.
@@ -278,8 +280,8 @@ impl RelyingParty {
             self.last_pull = Some((self.clock)());
             // A proved fork is the witness's proof of error (SPEC 15.7.1)
             // and stays recorded: a pull the rival peer misses must not
-            // clear it. Only a commit that out-extends a branch resolves
-            // it (SPEC 15.8), which `fork_refusal` reads from what is kept.
+            // clear it. Only a commit that extends one branch and not the
+            // other resolves it (SPEC 15.8), which `fork_refusal` reads from what is kept.
             let chain = self.chain_window(&report.branches);
             self.keep_branches(&report.branches, &chain);
         }
@@ -342,40 +344,31 @@ impl RelyingParty {
                 < BRANCH_COMMITS_PER_KEY
     }
 
-    /// The ids of the kept commits (and `extra`) the kept line has passed:
-    /// below the greatest height held and on no head's line, so no head
-    /// they could become without out-extending the line that passed them
-    /// (SPEC 15.8 makes the abandoned branch permanently invalid).
+    /// The ids of the kept commits (and `extra`) the fork rule has chosen
+    /// against: rivals at a contest the walk passes ([`assessment`]), so
+    /// the fork stands resolved and they are only evidence. A commit at a
+    /// contest still in Error is never passed.
+    ///
+    /// [`assessment`]: cyphr::fork::assessment
     fn passed(
         &self,
         chain: &[cyphr::fork::Held],
         extra: Option<&cyphr::fork::Held>,
     ) -> std::collections::BTreeSet<String> {
-        let mut all: Vec<&cyphr::fork::Held> = chain.iter().collect();
-        all.extend(self.branches.values().chain(extra));
-        let Some(top) = all.iter().map(|h| h.sequence).max() else {
-            return std::collections::BTreeSet::new();
-        };
-        let by_pr: BTreeMap<(u64, &str), &cyphr::fork::Held> = all
+        let mut all: Vec<cyphr::fork::Held> = chain.to_vec();
+        all.extend(self.branches.values().chain(extra).cloned());
+        let assessed = cyphr::fork::assessment(&all);
+        let abandoned: std::collections::BTreeSet<&str> = assessed
+            .forks
             .iter()
-            .map(|h| ((h.sequence, h.pr.as_str()), *h))
+            .filter_map(|c| Some((c, c.kept.as_ref()?)))
+            .flat_map(|(c, kept)| c.commits.iter().filter(move |id| *id != kept))
+            .map(String::as_str)
             .collect();
-        let mut live = std::collections::BTreeSet::new();
-        for head in all.iter().filter(|h| h.sequence == top) {
-            let mut at = Some(*head);
-            while let Some(h) = at {
-                live.insert(h.id.as_str());
-                at = h
-                    .pre
-                    .as_deref()
-                    .zip(h.sequence.checked_sub(1))
-                    .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
-            }
-        }
         self.branches
             .values()
             .chain(extra)
-            .filter(|h| h.sequence < top && !live.contains(h.id.as_str()))
+            .filter(|h| abandoned.contains(h.id.as_str()))
             .map(|h| h.id.clone())
             .collect()
     }
@@ -562,7 +555,7 @@ impl RelyingParty {
 
     /// What the protocol's fork rule (SPEC 15.5-15.8) says against signing
     /// in, over the record's chain and the branches the pulls verified:
-    /// [`Refusal::Forked`] while two branches tie, [`Refusal::LostBranch`]
+    /// [`Refusal::Forked`] while the fork rule cannot choose a branch, [`Refusal::LostBranch`]
     /// when the kept line passes through a commit the record's chain does
     /// not hold, so its keys are those of an abandoned branch. It reads
     /// the chain from one position below the lowest rival, which holds the

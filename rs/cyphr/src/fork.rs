@@ -5,7 +5,7 @@
 //! a principal's commits; this module is where they all read the same
 //! answer from them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
 /// A principal's consensus state (SPEC 15.5), as far as forks decide it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -21,19 +21,20 @@ pub enum Consensus {
 /// it admits a commit or renders a verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assessment {
-    /// Error while two held commits share the greatest height.
+    /// Error while the walk cannot choose between the branches at a fork.
     pub consensus: Consensus,
-    /// The heads, sorted: the held commits of the greatest height. One
-    /// while Active; in Error, each tied head.
+    /// The heads, sorted: the leaf the walk ends at while Active; in Error,
+    /// the leaves at or above the contest the walk cannot pass, whatever
+    /// their heights.
     pub heads: Vec<String>,
     /// Every position where two or more held commits share a `pre`, in
     /// position order.
     pub forks: Vec<Contest>,
-    /// Where the tied heads part: `Some` exactly in Error.
+    /// Where the branches part: `Some` exactly in Error.
     pub fork_point: Option<ForkPoint>,
 }
 
-/// Where tied branches part: the first position the walk cannot choose a
+/// Where the branches part: the first position the walk cannot choose a
 /// commit at, and the Principal Root every branch shares there (SPEC
 /// 15.7.1: commits over the same `pre`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -56,7 +57,7 @@ pub struct Contest {
     /// Their commit ids, sorted.
     pub commits: Vec<String>,
     /// The commit the fork rule's walk follows here; `None` where the walk
-    /// stops at a tie, or follows none of them.
+    /// stops, or follows none of them.
     pub kept: Option<String>,
     /// The key that settled it: the first signer of the walked commit
     /// extending the kept one. `None` while the fork stands, or when no
@@ -83,61 +84,41 @@ pub struct Held {
     pub signed: Vec<String>,
 }
 
-/// The forks of a principal as the protocol reads them (SPEC 15.5-15.8):
-/// walk from genesis over the held commits and, where a position has more
-/// than one child, follow the child whose
-/// subtree is tallest; two equally tall subtrees are Error, and the walk
-/// stops there. That is the spec's "the commit resolves the fork" made
-/// deterministic: a fork is settled by out-extending the other branch,
-/// and a malicious settlement is undone only by recovery (SPEC 14).
+/// The forks of a principal as the protocol reads them (SPEC 15.5-15.8).
 ///
-/// The walk ends at a commit of the greatest height, and two commits of
-/// that height tie at the fork where their lines part, so the principal
-/// is Active exactly when one held commit is the highest: the heads are
-/// the held commits of the greatest height.
+/// A child of a contest (two or more held commits over one `pre`) is
+/// *extended* when a held commit names its Principal Root as `pre`. The
+/// walk starts from a virtual root whose children are the held commits
+/// with no held parent (the genesis commits of a whole record) and, at a
+/// contest, follows the one child that is extended. Where none is, or
+/// more than one is, the principal is in Error and the walk stops: a fork
+/// is an error until the principal resolves it, and it resolves it by
+/// extending one branch and not the other (SPEC 15.8; the spec author on
+/// #203: "An invalid fork is resolved when the principal unambiguously
+/// selects one branch"). Two extended branches are both out of
+/// compliance whatever their heights, and no later commit leaves that
+/// state. Contests off the walked line do not count.
 ///
-/// Every held commit counts: each was admitted when it arrived, a
-/// revoke only gates what arrives after it, and a held
-/// message is never judged again (SPEC 14.12: "Cyphr does not use
-/// reversion"; the spec author on #203: "Retrospection isn't
-/// supported"). A signature from a key's active period stands after the
-/// key is deleted or replaced too (SPEC 6.2), and a revoke inside a commit
-/// is state of its own branch only (SPEC 6.4, 15.8).
+/// While Active the head is the leaf the walk ends at. In Error the heads
+/// are the leaves at or above the children of the contest the walk cannot
+/// pass, sorted: each is a tip the principal can assert to resolve.
 ///
-/// A pure function of the held commits, so a live
-/// engine and one rebuilt from the blobs answer alike (I1), whether a
-/// candidate commit would leave Error is this function over the held
-/// commits plus the candidate, and a verifier holding the same commits
-/// reaches the same verdict, heads and settlements as a peer. "Tallest"
-/// is a statement about what is held now; the forks are what stays true.
+/// Every held commit counts: each was admitted when it arrived, a revoke
+/// only gates what arrives after it, and a held message is never judged
+/// again (SPEC 14.12: "Cyphr does not use reversion"; the spec author on
+/// #203: "Retrospection isn't supported"). A signature from a key's
+/// active period stands after the key is deleted or replaced too (SPEC
+/// 6.2), and a revoke inside a commit is state of its own branch only
+/// (SPEC 6.4, 15.8).
+///
+/// A pure function of the held commits, so a live engine and one rebuilt
+/// from the blobs answer alike (I1): whether a candidate commit would
+/// leave Error is this function over the held commits plus the candidate,
+/// and a verifier holding the same commits reaches the same verdict,
+/// heads and selections as a peer. Held order and duplicates change
+/// nothing.
 pub fn assessment(held: &[Held]) -> Assessment {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let top = held.iter().map(|h| h.sequence).max();
-    let heads: Vec<&Held> = held.iter().filter(|h| Some(h.sequence) == top).collect();
-
-    // The walked line: the commits every head descends from (each head's
-    // own line while Active).
-    let by_pr: HashMap<(u64, &str), &Held> = held
-        .iter()
-        .map(|h| ((h.sequence, h.pr.as_str()), h))
-        .collect();
-    fn line_of<'a>(h: &'a Held, by_pr: &HashMap<(u64, &str), &'a Held>) -> HashSet<&'a str> {
-        let mut line = HashSet::new();
-        let mut at = Some(h);
-        while let Some(h) = at {
-            line.insert(h.id.as_str());
-            at = h
-                .pre
-                .as_deref()
-                .zip(h.sequence.checked_sub(1))
-                .and_then(|(pre, below)| by_pr.get(&(below, pre)).copied());
-        }
-        line
-    }
-    let mut lines = heads.iter().map(|h| line_of(h, &by_pr));
-    let first = lines.next().unwrap_or_default();
-    let walked: HashSet<&str> = lines.fold(first, |acc, line| &acc & &line);
+    use std::collections::BTreeMap;
 
     // The distinct held commits over each (position, pre).
     type Over<'a> = (u64, Option<&'a str>);
@@ -148,6 +129,56 @@ pub fn assessment(held: &[Held]) -> Assessment {
             .entry(h.id.as_str())
             .or_insert(h);
     }
+    let children_of = |sequence: u64, pre: Option<&str>| -> Vec<&Held> {
+        over.get(&(sequence, pre))
+            .map(|c| c.values().copied().collect())
+            .unwrap_or_default()
+    };
+    let extended = |c: &Held| over.contains_key(&(c.sequence + 1, Some(c.pr.as_str())));
+
+    // The children of the virtual root: the held commits no held commit
+    // precedes, at the lowest position that has one. A whole record has
+    // only genesis commits there; the engine's window starts at one
+    // canonical commit.
+    let held_prs: HashSet<(u64, &str)> = held.iter().map(|h| (h.sequence, h.pr.as_str())).collect();
+    let root_at = held
+        .iter()
+        .filter(|h| {
+            h.pre
+                .as_deref()
+                .zip(h.sequence.checked_sub(1))
+                .is_none_or(|(pre, below)| !held_prs.contains(&(below, pre)))
+        })
+        .min_by_key(|h| h.sequence);
+    let mut at: Option<&Held> = None;
+    let mut children: Vec<&Held> = root_at
+        .map(|r| children_of(r.sequence, r.pre.as_deref()))
+        .unwrap_or_default();
+    let mut walked: HashSet<&str> = HashSet::new();
+    let mut stopped: Option<(u64, Option<String>, Vec<&Held>)> = None;
+    while !children.is_empty() {
+        let next = match children.as_slice() {
+            [only] => Some(*only),
+            many => match many
+                .iter()
+                .copied()
+                .filter(|c| extended(c))
+                .collect::<Vec<&Held>>()[..]
+            {
+                [only] => Some(only),
+                _ => None,
+            },
+        };
+        let Some(next) = next else {
+            let first = children[0];
+            stopped = Some((first.sequence, first.pre.clone(), children));
+            break;
+        };
+        walked.insert(next.id.as_str());
+        at = Some(next);
+        children = children_of(next.sequence + 1, Some(next.pr.as_str()));
+    }
+
     let forks = over
         .iter()
         .filter(|(_, c)| c.len() > 1)
@@ -165,27 +196,34 @@ pub fn assessment(held: &[Held]) -> Assessment {
             }
         })
         .collect();
-    let heads: BTreeSet<String> = heads.iter().map(|h| h.id.clone()).collect();
-    let fork_point = (heads.len() > 1).then(|| {
-        // The common chain's last commit; the branches part just above it.
-        let last = held
-            .iter()
-            .filter(|h| walked.contains(h.id.as_str()))
-            .max_by_key(|h| h.sequence);
-        ForkPoint {
-            height: last.map_or(0, |h| h.sequence + 1),
-            pre: last.map(|h| h.pr.clone()),
+
+    let Some((height, pre, rivals)) = stopped else {
+        return Assessment {
+            consensus: Consensus::Active,
+            heads: at.map(|h| h.id.clone()).into_iter().collect(),
+            forks,
+            fork_point: None,
+        };
+    };
+    // The leaves at or above the rivals, each once.
+    let mut leaves: BTreeSet<String> = BTreeSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut frontier = rivals;
+    while let Some(c) = frontier.pop() {
+        if !seen.insert(c.id.as_str()) {
+            continue;
         }
-    });
+        let below = children_of(c.sequence + 1, Some(c.pr.as_str()));
+        if below.is_empty() {
+            leaves.insert(c.id.clone());
+        }
+        frontier.extend(below);
+    }
     Assessment {
-        consensus: if heads.len() > 1 {
-            Consensus::Error
-        } else {
-            Consensus::Active
-        },
-        heads: heads.into_iter().collect(),
+        consensus: Consensus::Error,
+        heads: leaves.into_iter().collect(),
         forks,
-        fork_point,
+        fork_point: Some(ForkPoint { height, pre }),
     }
 }
 

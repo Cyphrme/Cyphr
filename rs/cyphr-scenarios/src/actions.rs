@@ -124,11 +124,19 @@ pub struct PeerTip {
     /// The principal as the peer reports it (a bare digest).
     pub principal_id: String,
     /// The peer's one tip while Active; while it reports Error (no single
-    /// tip, SPEC 15.5) its first tied head, with `pr` and `ar` empty.
+    /// tip, SPEC 15.5) its first head, with `pr` and `ar` empty.
     pub tip: Tip,
-    /// Every head the peer reports: `tip` alone while Active, each tied
-    /// head in Error.
+    /// Every head the peer reports: `tip` alone while Active, each leaf
+    /// above the fork point in Error.
     pub heads: Vec<Tip>,
+    /// The height (commit count up to it) of each head, in `heads` order.
+    pub head_heights: Vec<u64>,
+    /// The peer's own consensus state, as its `/tip` says it: never read
+    /// back from a head count.
+    pub standing: Standing,
+    /// The fork point the peer reports in Error (`height` and `pre`, as it
+    /// states them); `None` while Active.
+    pub fork_point: Option<serde_json::Value>,
     pub height: u64,
     pub pr: String,
     pub ar: String,
@@ -147,6 +155,13 @@ impl PeerTip {
             return Some(PeerTip {
                 principal_id: t["principal_id"].as_str()?.to_owned(),
                 tip: heads.first()?.clone(),
+                head_heights: t["heads"]
+                    .as_array()?
+                    .iter()
+                    .map(|h| Some(h["sequence"].as_u64()? + 1))
+                    .collect::<Option<_>>()?,
+                standing: Standing::Error,
+                fork_point: Some(t["fork_point"].clone()),
                 height: t["heads"][0]["sequence"].as_u64()? + 1,
                 heads,
                 pr: String::new(),
@@ -157,6 +172,9 @@ impl PeerTip {
         Some(PeerTip {
             principal_id: t["principal_id"].as_str()?.to_owned(),
             heads: vec![tip.clone()],
+            head_heights: vec![t["commit_count"].as_u64()?],
+            standing: Standing::Active,
+            fork_point: None,
             tip,
             height: t["commit_count"].as_u64()?,
             pr: t["pr"].as_str()?.to_owned(),
@@ -586,6 +604,29 @@ impl Client<'_> {
             .get(&p.0)
             .cloned()
             .ok_or_else(|| ActionError::Failed(format!("`{}` holds no key for {}", self.name, p.0)))
+    }
+
+    /// Every commit this device holds for `p`, as `cyphr export` writes
+    /// them: one JSON bundle line per commit, in chain order (`txs`, `keys`,
+    /// `commit_id`, roots), action-only lines left out. A scenario that must
+    /// place a fork where the CLI's own push refuses to (it never sends a
+    /// commit over a tip the peer holds) posts these lines to a peer itself.
+    pub async fn exported_commits(&self, p: &Principal) -> ActionResult<Vec<serde_json::Value>> {
+        let file = self.dev.scratch("commits.jsonl");
+        let path = file.to_string_lossy();
+        self.cyphr(&["export", "--identity", &p.0, "--output", &path])
+            .await?;
+        let text = std::fs::read_to_string(&file)
+            .map_err(|e| ActionError::Failed(format!("reading {}: {e}", file.display())))?;
+        let mut lines = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| ActionError::Failed(format!("export line: {e}")))?;
+            if v["txs"].as_array().is_some_and(|t| !t.is_empty()) {
+                lines.push(v);
+            }
+        }
+        Ok(lines)
     }
 
     fn know(&self, p: &Principal, peers: &[&str]) {

@@ -397,12 +397,16 @@ async fn fork_evidence_is_served_and_verified_offline() {
 }
 
 /// Claim (slot policy): one key that pushes more rivals than its quota
-/// (`BRANCH_PER_KEY` = 2) is refused (409) and does not stop a rival signed
-/// by another key of the principal from being kept and served at
-/// `/evidence`, where every served item verifies offline.
+/// (`BRANCH_PER_KEY` = 2) is refused and does not stop a rival signed by
+/// another key of the principal from being kept and served at `/evidence`,
+/// where every served item verifies offline. The principal is already in
+/// Error when the over-quota rivals arrive (three unextended siblings), so
+/// the refusal is the Error answer, 423, and the quota is seen in what is
+/// served (two of golden's), not in the status.
 ///
 /// Turns red if: slots are first-come across keys (the second key's rival
-/// is not served), the quota is absent (the flood is all served), or a
+/// is not served), the quota is absent (the flood is all served), an
+/// over-quota rival is answered as anything but the Error refusal, or a
 /// served item does not verify. End-to-end scenario: yes.
 #[tokio::test]
 async fn slots_one_key_cannot_crowd_out_another() {
@@ -412,18 +416,18 @@ async fn slots_one_key_cannot_crowd_out_another() {
     let pool = load_pool();
     assert_eq!(pr.push_commit(&app, &pr.base, 0).await, StatusCode::CREATED);
 
-    // golden: the first rival takes the position; two more are kept; the
-    // rest are over its quota.
+    // golden: the first rival takes the position; two more are kept (and
+    // leave the principal in Error); the rest are over its quota.
     let flood = ["key_b", "alice", "bob", "carol", "eve_ed25519"];
     for (n, new) in flood.iter().enumerate() {
         let rival = pr.extend(&pr.g, new, NOW + 1 + n as i64).await;
         let status = pr.push_commit(&app, &rival, 1).await;
         assert_eq!(
             status,
-            if n == 0 {
-                StatusCode::CREATED
-            } else {
-                StatusCode::CONFLICT
+            match n {
+                0 => StatusCode::CREATED,
+                1 | 2 => StatusCode::CONFLICT,
+                _ => StatusCode::LOCKED,
             },
             "rival {n}"
         );
@@ -434,7 +438,8 @@ async fn slots_one_key_cannot_crowd_out_another() {
         "golden keeps its two and no more"
     );
 
-    // key_a, another key active at the same pre, still gets its slot.
+    // key_a, another key active at the same pre, still gets its slot: its
+    // rival is retained, answered as the rival it is (409).
     let key_a = kp(&pool, "key_a");
     let theirs = pr.extend(&key_a, "diana_es384", NOW + 50).await;
     assert_eq!(pr.push_commit(&app, &theirs, 1).await, StatusCode::CONFLICT);
@@ -471,9 +476,10 @@ async fn signing_is_unchanged_by_held_evidence() {
         StatusCode::CREATED
     );
 
-    // The chain is a commit taller than the rival will be, so the principal
-    // stays Active: a tie would be Error, whose statement is a held one
-    // (SPEC 15.5, 13.6) and not this tip report.
+    // The chain is extended past the rival's position and the rival will
+    // not be, so the principal stays Active: an unextended tie would be
+    // Error, whose statement is a held one (SPEC 15.5, 13.6) and not this
+    // tip report.
     let mut longer = canonical.fork().await.expect("fork");
     create_key(&mut longer, &pr.g, &kp(&load_pool(), "carol"), NOW + 2).await;
     assert_eq!(pr.push_commit(&app, &longer, 2).await, StatusCode::CREATED);

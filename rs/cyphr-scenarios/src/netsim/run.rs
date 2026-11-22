@@ -445,6 +445,15 @@ pub async fn run(h: &Harness, size: &Size, ops: &[Op]) -> Result<Outcome, Failur
                 }
                 out.episodes += 1;
             },
+            Op::Lock { p } => {
+                state_of(&mut states, *p)?;
+                let ps = states[*p].as_mut().expect("checked above");
+                episode::lock(h, size, &names, ps, i, &what).await?;
+                // The principal is in Error for good: no later op or
+                // barrier builds on it.
+                states[*p] = None;
+                out.episodes += 1;
+            },
             Op::Backup { peer } => backup = Some(act(h.backup_peer(&names[*peer]).await, &what)?),
             Op::Restore { peer } => {
                 let b = backup

@@ -286,11 +286,12 @@ async fn a_fork_is_found_with_one_commit_fetched() {
 
 /// Backs: what a forked peer makes the holder do is bounded by the
 /// holder's own chain. The peer's branch can change the holder's canonical
-/// chain only by out-extending the holder's own branch, so no more of it is
-/// handed on than that takes; the rest arrives as an ordinary extension once
-/// the branch is taken. A peer that has proved one fork and then serves any
-/// number of entries past it gets the same bounded hand-off, where each
-/// entry would otherwise be one submission to the engine.
+/// chain only by extending past the fork where the holder's own branch is
+/// not extended, so no more of it is handed on than that takes; the rest
+/// arrives as an ordinary extension once the branch is taken. A peer that
+/// has proved one fork and then serves any number of entries past it gets
+/// the same bounded hand-off, where each entry would otherwise be one
+/// submission to the engine.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
     let (w, _) = world(&["key_a", "key_b", "alice", "bob"]).await;
@@ -319,7 +320,7 @@ async fn a_forked_peers_branch_is_handed_on_no_longer_than_ours() {
         );
     }
     // The fork is at position 3 and the holder has one commit there: the
-    // rival, and the one commit past it that out-extends the holder.
+    // rival, and the one commit past it that extends it.
     assert_eq!(handed, [2, 2], "bundles handed on, unpadded and padded");
 }
 

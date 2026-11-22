@@ -238,11 +238,25 @@ impl<'a> Round<'a> {
                 opener_of(first).map_err(|e| Error::InvalidArgument(e.to_owned()))?,
             ),
         };
-        for bundle in bundles {
-            if let Err(err) = self
+        for (i, bundle) in bundles.iter().enumerate() {
+            let answer = self
                 .store
                 .submit_commit(&self.principal_id, Some(genesis.clone()), bundle)
-                .await
+                .await;
+            // A cap refused the entry alone, but it may be a line root whose
+            // extension changes the verdict: offer the two together.
+            let answer = match (answer, bundles.get(i + 1)) {
+                (
+                    Err(EngineError::BranchLimit { .. } | EngineError::Errored { .. }),
+                    Some(next),
+                ) => {
+                    self.store
+                        .submit_pair(&self.principal_id, Some(genesis.clone()), bundle, next)
+                        .await
+                },
+                (other, _) => other,
+            };
+            if let Err(err) = answer
                 && is_store_fault(&err)
             {
                 return Err(err.into());

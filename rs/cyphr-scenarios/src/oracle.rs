@@ -114,10 +114,57 @@ impl Harness {
                 .chain(rival_tips.into_iter().map(Tip))
                 .filter(|t| !inner.contains(t))
                 .collect();
-            assert_eq!(
-                claimed_branches, live_heads,
-                "verdict branches differ from the peers' live heads"
+            // Heads are holder-relative: each holder reports the leaves of
+            // what it holds, so a line deeper than a holder's retained
+            // depth ends at a different commit there. What is the same
+            // everywhere is the standing and the fork point; each head
+            // lies on its contest child's branch, which a verdict branch
+            // must be too. Where every Error holder reports the same
+            // heads, the verdict's branches are exactly the live heads.
+            let erred: Vec<_> = held
+                .iter()
+                .filter(|(_, t)| t.standing == Standing::Error)
+                .collect();
+            let points: BTreeSet<String> = erred
+                .iter()
+                .filter_map(|(_, t)| t.fork_point.as_ref().map(ToString::to_string))
+                .collect();
+            assert!(
+                points.len() <= 1,
+                "holders disagree on the fork point: {points:?}"
             );
+            let lists: BTreeSet<Vec<Tip>> = erred.iter().map(|(_, t)| t.heads.clone()).collect();
+            if lists.len() <= 1 {
+                assert_eq!(
+                    claimed_branches, live_heads,
+                    "verdict branches differ from the peers' live heads"
+                );
+            } else {
+                // A branch is a head or rival tip some holder keeps, or a
+                // commit of a holder's chain at or above the agreed fork
+                // point: below it the chain is common to every branch, so
+                // a commit there is no contest child's branch.
+                let fork_height = erred
+                    .iter()
+                    .find_map(|(_, t)| t.fork_point.as_ref()?["height"].as_u64())
+                    .unwrap_or(0);
+                let mut known: BTreeSet<Tip> = live_heads.clone();
+                for name in &live {
+                    let chain = self.chain_read(name, p).await;
+                    let from = usize::try_from(fork_height).unwrap_or(usize::MAX);
+                    known.extend(chain.commit_ids.into_iter().skip(from).map(Tip));
+                }
+                assert!(
+                    claimed_branches.iter().all(|b| known.contains(b)),
+                    "a verdict branch is on no branch a holder holds: {claimed_branches:?}"
+                );
+                let width = erred.iter().map(|(_, t)| t.heads.len()).max().unwrap_or(0);
+                assert_eq!(
+                    claimed_branches.len(),
+                    width,
+                    "one verdict branch per contest child"
+                );
+            }
             assert_eq!(v.standing, Standing::Error, "a fork is reported in Error");
         }
         if v.standing == Standing::Active && v.branches.len() > 1 {
@@ -149,24 +196,43 @@ impl Harness {
             "verdict evidence differs from the items the peers serve"
         );
 
-        // freshness: the lag the oracle observes. A newer height at any
-        // chosen peer than the verdict's tip means a peer reported newer.
-        let verdict_height = held
-            .iter()
-            .find(|(_, t)| t.heads.contains(&v.tip))
-            .map(|(_, t)| t.height);
-        let newer = held
-            .iter()
-            .any(|(_, t)| verdict_height.is_none_or(|h| t.height > h));
+        // freshness: the lag the oracle observes. The verdict claims no
+        // answering peer is ahead of it. Active, that is a height
+        // comparison with the verdict's tip. In Error a peer's heights are
+        // holder-relative (a line deeper than the peer's retained depth
+        // ends earlier there, and the verdict's tip is one representative
+        // among several), so the height of an Error peer is no measure of
+        // being ahead; what stays meaningful is that no Active peer is
+        // taller than the tallest branch the verdict reports.
+        let branch_height = |t: &Tip| {
+            held.iter()
+                .flat_map(|(_, h)| h.heads.iter().zip(&h.head_heights))
+                .filter(|(head, _)| *head == t)
+                .map(|(_, ht)| *ht)
+                .max()
+        };
+        let newer = if v.standing == Standing::Error {
+            let top = v.branches.iter().filter_map(branch_height).max();
+            held.iter()
+                .filter(|(_, t)| t.standing == Standing::Active)
+                .any(|(_, t)| top.is_none_or(|h| t.height > h))
+        } else {
+            let verdict_height = held
+                .iter()
+                .find(|(_, t)| t.heads.contains(&v.tip))
+                .map(|(_, t)| t.height);
+            held.iter()
+                .any(|(_, t)| verdict_height.is_none_or(|h| t.height > h))
+        };
         assert_eq!(
             v.freshness.peer_reported_newer, newer,
             "freshness.peer_reported_newer disagrees with the peers' heights"
         );
         // A peer in Error reports no single tip (SPEC 15.5) and so no age
-        // of one: only a peer with exactly one head has an age to compare.
+        // of one: only a peer that is Active has an age to compare.
         if let Some((name, _)) = held
             .iter()
-            .find(|(_, t)| t.heads.len() == 1 && t.tip == v.tip)
+            .find(|(_, t)| t.standing == Standing::Active && t.tip == v.tip)
         {
             // The peer's age is whole seconds (truncated, so up to 1s low)
             // and is read after the verdict: it can exceed the verdict's age
@@ -189,7 +255,7 @@ impl Harness {
                 None => assert!(
                     self.peer_view(name, p)
                         .await
-                        .is_some_and(|t| t.heads.len() > 1),
+                        .is_some_and(|t| t.standing == Standing::Error),
                     "peer reported a tip"
                 ),
             }

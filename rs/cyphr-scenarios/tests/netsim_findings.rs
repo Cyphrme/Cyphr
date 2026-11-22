@@ -137,6 +137,25 @@ async fn a_naked_revoke_survives_a_stopped_holder() {
     .await;
 }
 
+// A fork whose branches are both extended has no exit in the chain (the spec
+// author on #203: "They're both out of compliance"). Each device makes two
+// commits on its side of a cut; once the cut heals every holder must read
+// Error with fork evidence, and the owner's further commit, which would
+// resolve a fork with an unextended branch, must be refused. The episode
+// retires the principal, so no later op builds on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_both_extended_fork_is_error_at_every_peer() {
+    use cyphr_scenarios::netsim::{Size, plan, run};
+    let size = Size::ci();
+    let ops =
+        plan::parse("create p=0 multikey=false holders=0,1,2\npair p=0 d=0\nlock p=0\nbarrier\n")
+            .expect("op log");
+    let h = run::start(&size, 20_261_121).await.expect("start peers");
+    run::run(&h, &size, &ops)
+        .await
+        .unwrap_or_else(|f| panic!("{f}"));
+}
+
 // Found by the large run (seed 20261117, barrier 2): a relying party refused
 // to sign in a principal whose fork the owner had already resolved, with "the
 // principal forked; its lifecycle state is not Active", while every peer and a

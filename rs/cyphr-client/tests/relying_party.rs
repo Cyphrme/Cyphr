@@ -616,7 +616,7 @@ fn forked_peer(pg: &str, canonical: &Line, rival: &Line, height: usize) -> Mirro
 /// branch, and the principal is Active again. The relying party holds the
 /// fork's commits from every pull and asks the protocol's own rule
 /// (`cyphr::fork::assessment`), so it refuses while two branches tie and
-/// signs the principal in once one branch out-extends the other, though it
+/// signs the principal in once exactly one branch is extended, though it
 /// proved the fork earlier.
 ///
 /// Turns red if the fork is remembered as a flag no later pull can clear.
@@ -654,7 +654,7 @@ async fn a_relying_party_signs_in_after_the_fork_it_proved_is_resolved() {
     let c = rp.challenge();
     assert!(
         rp.sign_in(&login(&device, &pg, AUDIENCE, &c)).is_ok(),
-        "one branch out-extends the other: the principal is Active"
+        "only one branch is extended: the principal is Active"
     );
 }
 
@@ -671,7 +671,7 @@ fn lost_clock() -> i64 {
 ///
 /// Turns red if sign-in reads keys from a chain the fork rule discarded.
 /// End-to-end scenario: yes (the record follows one peer onto the branch
-/// another peer's longer chain then abandons).
+/// another peer's extended chain then abandons).
 #[tokio::test]
 async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     let (g, device, k2, thief, k4) = (kp(), kp(), kp(), kp(), kp());
@@ -691,7 +691,7 @@ async fn a_relying_party_on_the_lost_branch_refuses_its_own_branchs_keys() {
     rp.refresh(&[peer("first", &first)]).await;
     let second = Mirror::of(kept);
     let report = rp.refresh(&[peer("second", &second)]).await;
-    assert_eq!(report.forks.len(), 1, "the longer chain shows the fork");
+    assert_eq!(report.forks.len(), 1, "the extended chain shows the fork");
 
     let c = rp.challenge();
     assert_eq!(

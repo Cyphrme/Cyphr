@@ -160,7 +160,7 @@ impl Peer {
     }
 
     /// What the peer says its tip is for `principal`: one commit while the
-    /// principal is Active, the fork point and tied heads in Error (SPEC
+    /// principal is Active, the fork point and heads in Error (SPEC
     /// 15.5); `None` when the peer holds nothing for it.
     ///
     /// # Errors
@@ -232,8 +232,28 @@ impl Peer {
     /// [`PeerError::Stale`] when the peer answers 409 (its tip has moved
     /// past the commit's predecessor); other [`PeerError`]s otherwise.
     pub async fn push_commit(&self, principal: &str, bundle: &WireBundle) -> Result<(), PeerError> {
+        self.push_commit_with_parent(principal, bundle, None).await
+    }
+
+    /// [`push_commit`](Self::push_commit), with the commit `bundle` extends
+    /// as the request's `parent` when the peer's caps refused it alone: the
+    /// two are one offer there.
+    ///
+    /// # Errors
+    ///
+    /// As [`push_commit`](Self::push_commit).
+    pub async fn push_commit_with_parent(
+        &self,
+        principal: &str,
+        bundle: &WireBundle,
+        parent: Option<&WireBundle>,
+    ) -> Result<(), PeerError> {
         let mut body = serde_json::to_value(bundle).map_err(|e| self.malformed(e.to_string()))?;
         body["principal_id"] = principal.into();
+        if let Some(parent) = parent {
+            body["parent"] =
+                serde_json::to_value(parent).map_err(|e| self.malformed(e.to_string()))?;
+        }
         let bytes = serde_json::to_vec(&body).map_err(|e| self.malformed(e.to_string()))?;
         match self.send(&Request::post("/push", bytes)).await {
             Ok(_) => Ok(()),
