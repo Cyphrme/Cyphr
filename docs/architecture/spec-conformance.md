@@ -48,10 +48,10 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   64 |
+| `covered`      |   65 |
 | `red-existing` |    0 |
 | `red-new`      |    0 |
-| `not-testable` |   10 |
+| `not-testable` |    9 |
 | `out-of-scope` |    2 |
 | `total`        |   76 |
 
@@ -1090,18 +1090,25 @@ evaluator: test
 
 ### [sc-l2822]
 
-SPEC 15.8, line 2822. Disposition: `not-testable`.
+SPEC 15.8, line 2822. Disposition: `covered`.
 
 - spec-line: 2822
 - source: supplement
-- disposition: not-testable
+- disposition: covered
 - spec-text: - **2. PoP assertion** - The principal signs a `resync/create` message
-- tests: none
-- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the PoP exit is not implemented (see line 2814).
+- tests:
+  - `rs/cyphr/tests/resync_assert.rs::one_asserted_child_is_followed_whatever_is_extended_elsewhere`
+  - `rs/cyphr/tests/resync_assert.rs::assertions_in_two_children_are_error_for_good`
+  - `rs/cyphr-storage/tests/resync.rs::a_pop_selects_the_asserted_line_in_every_order`
+  - `rs/cyphr-storage/tests/resync.rs::an_unfit_pop_is_refused_and_stores_nothing`
+  - `rs/cyphr-server/tests/resync.rs::a_pop_resolves_a_both_extended_fork_and_keeps_the_other_branch`
+  - `rs/cyphr-scenarios/tests/s03_resync.rs::s03_resync_resolves_the_double_offline_fork`
+  - `rs/cyphr-scenarios/tests/s04_resync.rs::s04_a_second_branchs_pop_is_error_for_good`
+- fails when: a valid proof of possession from a key active at the asserted tip does not settle the fork on that tip's branch, a proof is accepted that no key active at its tip signed, or proofs into two branches leave the fork resolvable.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
 ```
 
 ### [sc-l2827]
