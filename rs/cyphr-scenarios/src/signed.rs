@@ -451,6 +451,43 @@ pub async fn verify_evidence_set(
     })
 }
 
+/// The resync proofs (`{pay, sig}`, SPEC 15.8 item 2) a peer serves that
+/// this verifier checks itself against `chain`, its own replay of the
+/// peer's chain: the signer's key is read from the chain replayed to the
+/// asserted commit, must be active there, and must verify the signature
+/// (`cyphr::resync::verify_resync`). Each is `(position, signer tmb)`.
+/// A proof naming no commit of `chain` (a rival branch's tip, say) or
+/// failing any check is not returned: what a peer serves vouches for
+/// nothing.
+pub async fn verified_resyncs(items: &[Value], chain: &ChainView) -> Vec<(u64, String)> {
+    let Some(genesis) = chain.genesis.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Ok(resync) = cyphr::resync::parse_resync(item) else {
+            continue;
+        };
+        let Some(at) = chain.prs.iter().position(|pr| *pr == resync.id) else {
+            continue;
+        };
+        let Ok(base) = genesis.fork().await else {
+            continue;
+        };
+        let Ok(state) = replay_chain(base, &chain.entries[..=at]).await else {
+            continue;
+        };
+        let verified = state
+            .get_key(&resync.tmb)
+            .filter(|_| state.is_key_active(&resync.tmb))
+            .is_some_and(|key| cyphr::resync::verify_resync(item, key).is_ok());
+        if verified {
+            out.push((at as u64, resync.tmb.to_b64()));
+        }
+    }
+    out
+}
+
 /// Verify one served evidence item offline. `requested` is the principal
 /// asked about (bare) and `chain` the verifier's own read of its chain.
 ///
