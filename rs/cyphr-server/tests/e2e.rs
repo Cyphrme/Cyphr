@@ -327,8 +327,10 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
                 conflicts += 1
             },
             // All racers are signed by one key, so past its retention quota
-            // a loser is refused as BranchLimit: still a typed refusal.
-            Err(cyphr_storage::engine::EngineError::BranchLimit { .. }) => conflicts += 1,
+            // a loser is refused; two rivals of an unextended tie already
+            // make the principal Error, so the refusal is the Error
+            // answer (423), not BranchLimit: still a typed refusal.
+            Err(cyphr_storage::engine::EngineError::Errored { .. }) => conflicts += 1,
             Err(other) => panic!("unexpected error for a racing submission: {other}"),
         }
     }

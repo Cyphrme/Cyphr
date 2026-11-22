@@ -887,11 +887,14 @@ mod retained {
     }
 
     /// Backs the slot policy (PLAN N18a, per-key quota): one key may retain
-    /// at most `BRANCH_PER_KEY` = 2 rivals of a principal; the next is the
-    /// typed `EngineError::BranchLimit` naming that key, and stores
+    /// at most `BRANCH_PER_KEY` = 2 rivals of a principal; the next, which
+    /// changes neither the standing nor the fork point (the unextended
+    /// tie is already Error), is refused as `EngineError::Errored` (the
+    /// Error refusal is true whether or not the commit is kept; the
+    /// `BranchLimit` answer is for a principal not in Error) and stores
     /// nothing. Turns red if the quota is absent (the third rival is
-    /// kept), the refusal does not name the signing key, or a refusal
-    /// stores blobs or a branch. End to end at the engine seam: yes.
+    /// kept), the refusal is `BranchLimit` in Error, or a refusal stores
+    /// blobs or a branch. End to end at the engine seam: yes.
     #[tokio::test]
     async fn a_key_past_its_quota_is_refused_naming_it() {
         const BRANCH_PER_KEY: usize = 2;
@@ -913,10 +916,8 @@ mod retained {
         f.add_rival(BRANCH_PER_KEY as i64 + 1).await;
         let refused = f.submit(&e, f.rivals.last().expect("rival")).await;
         match refused {
-            Err(EngineError::BranchLimit { key }) => {
-                assert_eq!(key, f.golden.tmb.to_b64(), "the refusal names the key")
-            },
-            other => panic!("expected BranchLimit naming the key, got {other:?}"),
+            Err(EngineError::Errored { .. }) => {},
+            other => panic!("expected Errored (the principal is in Error), got {other:?}"),
         }
         assert_eq!(
             blob_count(&e).await,
@@ -1027,8 +1028,9 @@ mod retained {
 
     /// Backs the slot policy: the total ceiling `BRANCH_LIMIT` = 16 holds
     /// across keys. Eight keys retain two rivals each; a ninth key (within
-    /// its own quota) is refused as `BranchLimit` naming it. Turns red if
-    /// the ceiling is absent or applied per key only. End to end at the
+    /// its own quota) is refused, as `Errored` since the unextended tie is
+    /// already Error and the offer changes nothing. Turns red if the
+    /// ceiling is absent or applied per key only. End to end at the
     /// engine seam: yes.
     #[tokio::test]
     async fn the_total_ceiling_holds_across_keys() {
@@ -1079,10 +1081,8 @@ mod retained {
             .count();
         assert_eq!(kept, 16, "every key within its quota is retained");
         match submit(rival(&signers[0], salt).await).await {
-            Err(EngineError::BranchLimit { key }) => {
-                assert_eq!(key, signers[0].tmb.to_b64(), "the refusal names the key")
-            },
-            other => panic!("expected BranchLimit at the ceiling, got {other:?}"),
+            Err(EngineError::Errored { .. }) => {},
+            other => panic!("expected Errored at the ceiling (in Error), got {other:?}"),
         }
     }
 
