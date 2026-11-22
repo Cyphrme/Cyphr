@@ -509,11 +509,21 @@ async fn the_owner_answers_a_thiefs_tip_through_the_cli() {
         (2, 1, 1),
         "the thief's commits"
     );
+    // Gossip must not hand a server the thief's commits before the test
+    // posts them (it answered p3's J_1 with 422 when p1 had been given
+    // them first), so every link is cut while the thief's commits go in.
+    for (a, b) in [("p1", "p2"), ("p1", "p3"), ("p2", "p3")] {
+        h.proxy.partition(a, b);
+    }
     for peer in servers {
         assert_eq!(post(peer, &j[0]).await, 201, "{peer}: J_1");
         assert_eq!(post(peer, &j[1]).await, 201, "{peer}: J_2");
         assert_eq!(post(peer, &x[0]).await, 409, "{peer}: junk x is retained");
         assert_eq!(post(peer, &y[0]).await, 409, "{peer}: junk y is retained");
+    }
+
+    for (a, b) in [("p1", "p2"), ("p1", "p3"), ("p2", "p3")] {
+        h.proxy.heal(a, b);
     }
 
     // The owner's answer, only by the CLI.
