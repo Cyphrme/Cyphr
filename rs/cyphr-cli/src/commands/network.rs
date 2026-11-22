@@ -96,14 +96,14 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         // there, and a fork is sent, never refused here, so the principal
         // can answer it. The peer keeps it as a rival, refuses it by its
         // caps, or reads Error; none of that is for this sender to judge.
-        let mut forking = false;
+        let mut forking: Option<String> = None;
         let mut in_error = false;
         let start = match peer.tip(&wire).await? {
             None => 0,
             Some(tip) => match held_position(&tip, &local) {
                 Some(i) => i + 1,
                 None => {
-                    forking = true;
+                    forking = Some(describe(&tip));
                     0
                 },
             },
@@ -119,6 +119,7 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
         // peer's caps refused alone is offered again with its extension.
         let mut parent: Option<&WireBundle> = None;
         for (i, commit) in local.iter().enumerate().skip(start) {
+            let offered_pair = parent.is_some();
             match peer
                 .push_commit_with_parent(&wire, &commit.bundle, parent.take())
                 .await
@@ -129,9 +130,24 @@ pub fn push(cli: &Cli, identity: &str, peer_url: &str) -> crate::Result<()> {
                 // rival, or refused by the caps or the Error state (409,
                 // 423), so the next one goes with this as its `parent`.
                 Err(PeerError::Refused { message, .. })
-                    if forking && message.contains("COZ_REUSE") => {},
-                Err(PeerError::Stale { .. }) if forking => {
+                    if forking.is_some() && message.contains("COZ_REUSE") => {},
+                // A pair the peer answers 409 is kept as a fork there.
+                Err(PeerError::Stale { .. }) if forking.is_some() && offered_pair => {},
+                Err(PeerError::Stale { .. }) if forking.is_some() && i + 1 < local.len() => {
                     parent = Some(&commit.bundle);
+                },
+                // A lone commit over a tip the peer holds, with nothing after
+                // it to offer it with: the peer did not take it, and the
+                // sender must rebase onto what the peer holds.
+                Err(PeerError::Stale { .. }) if forking.is_some() => {
+                    return Err(PeerError::Stale {
+                        peer: peer.url().to_owned(),
+                        detail: format!(
+                            "{} is not in the local history",
+                            forking.as_deref().unwrap_or_default()
+                        ),
+                    }
+                    .into());
                 },
                 // The peer is in Error: it refuses what does not resolve
                 // its fork (or cannot keep it past its caps), and the next
